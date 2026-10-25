@@ -46,13 +46,31 @@ describe('shortAttemptTmpDir', () => {
     expect(paths.tmpDir.startsWith('/h/')).toBe(false);
   });
 
-  it('the policy still allows the temp dir and still denies the shared temp roots around it', () => {
+  // This test used to assert `denyWrite` still contained '/tmp' and '/private/tmp' while the attempt
+  // temp sits inside them — "allows the temp dir AND denies the shared roots around it". That
+  // combination is not what the sandbox runtime does: its README states that for WRITES `denyWrite`
+  // takes precedence over `allowWrite` (the reverse of reads, where `allowRead` wins). So the deny on
+  // the ancestor won and the attempt could not write its own temp:
+  //   EPERM: operation not permitted, mkdir '/private/tmp/fb-8ac70c2cde/HH0KfR7JCSG9zBDVFZQSa'
+  // thrown by vitest's config resolution. That is the `base-unit-smoke` failure that latched the
+  // feedback executor for three days (2026-10-22 … 2026-10-25, five consecutive 24h latches), and
+  // THIS test is why it shipped: it asserted the broken pairing as the intended policy.
+  it('the policy allows the temp dir for real: no denyWrite entry is an ancestor of it, and the shared temp stays unwritable', () => {
     const tmpDir = shortAttemptTmpDir('init-x', 1, '/private/tmp');
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir, depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/h.json', homeDir: '/u' };
     const rt = buildSandboxRuntimeSettings(p);
     expect(rt.filesystem.allowWrite).toContain(tmpDir);
     expect(rt.filesystem.allowRead).toContain(tmpDir);
-    expect(rt.filesystem.denyWrite).toEqual(expect.arrayContaining(['/tmp', '/private/tmp']));
+    // The real invariant: an allow is worthless if a deny sits above it.
+    for (const denied of rt.filesystem.denyWrite) {
+      expect(tmpDir === denied || tmpDir.startsWith(`${denied}/`)).toBe(false);
+    }
+    // And the shared temp itself is STILL not writable — because writes are allowlist-based and it
+    // is never in allowWrite. That, not the deny entry, is what keeps it closed.
+    expect(rt.filesystem.allowWrite).not.toContain('/tmp');
+    expect(rt.filesystem.allowWrite).not.toContain('/private/tmp');
+    // The other shared temp roots, which no attempt path sits under, stay denied.
+    expect(rt.filesystem.denyWrite).toEqual(expect.arrayContaining(['/var/tmp']));
     const cc = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.worktrees'], worktreeChildren: ['w', 'w-publish'] }) as { env: { TMPDIR: string }; permissions: { allow: string[] } };
     expect(cc.env.TMPDIR).toBe(tmpDir);
     expect(cc.permissions.allow).toContain(`Edit(/${tmpDir}/**)`.replace('//', '/' + '/'));

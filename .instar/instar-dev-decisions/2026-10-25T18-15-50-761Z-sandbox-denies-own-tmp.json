@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-25T18:15:50.761Z",
+  "slug": "sandbox-denies-own-tmp",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -289,12 +289,27 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
 export function systemTempDenies(workspace: string, attemptTmpDir?: string): string[] {
   const candidates = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
   try { candidates.push(fs.realpathSync(os.tmpdir())); } catch { candidates.push(os.tmpdir()); } // @silent-fallback-ok: the unresolved temp path is still denied
-  // Compared by REAL path: on macOS `/tmp` is a symlink to `/private/tmp`, so a textual
-  // startsWith against the unresolved spelling would leave the resolved ancestor denied.
-  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } }; // @silent-fallback-ok: an unresolvable path falls back to its lexical form
-  const protect = [real(workspace), ...(attemptTmpDir ? [real(attemptTmpDir)] : [])];
+  // Compared by REAL path, because the two spellings differ per platform: `/tmp` is a symlink to
+  // `/private/tmp` on macOS and `/private/tmp` resolves to `/tmp` on some Linux hosts. Resolving
+  // only the leaf is not enough — an attempt temp directory that does not exist YET cannot be
+  // realpath'd, so one side would stay lexical and never match the other (that bug was in the first
+  // cut of this fix and the short-attempt-tmpdir test caught it). Resolve the deepest ancestor that
+  // DOES exist and re-append the rest, so both sides land in the same spelling either way.
+  const realish = (target: string): string => {
+    const abs = path.resolve(target);
+    let head = abs;
+    const tail: string[] = [];
+    for (;;) {
+      try { return path.join(fs.realpathSync(head), ...tail); } catch { /* @silent-fallback-ok: walk up to the deepest existing ancestor */ }
+      const parent = path.dirname(head);
+      if (parent === head) return abs;
+      tail.unshift(path.basename(head));
+      head = parent;
+    }
+  };
+  const protect = [realish(workspace), ...(attemptTmpDir ? [realish(attemptTmpDir)] : [])];
   return [...new Set(candidates)].filter((dir) => {
-    const d = real(dir);
+    const d = realish(dir);
     return !protect.some((p) => p === d || p.startsWith(`${d}${path.sep}`));
   });
 }

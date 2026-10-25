@@ -5,7 +5,7 @@
 **Author:** `Echo (instar-dev agent)`
 **Second-pass reviewer:** `not required — see §4/§5 (no new decision surface; one deny-list predicate, pinned from both sides)`
 **Tier:** `1` — one function, one optional parameter, two callsites in the same expression; ~12 added lines. A revert fully undoes it; no persistent state, no user-facing surface.
-**Effort:** 0 spec rounds, 0 review rounds, 1 commit attempt. Proportionate — and deliberately smaller than the change that found it.
+**Effort:** 0 spec rounds, 0 review rounds, 2 commits (the second fixes a spelling bug in the first — see Conclusion). Proportionate, and deliberately smaller than the change that found it.
 
 ## Summary of the change
 
@@ -31,9 +31,23 @@ resolution. Reads were unaffected, which is exactly what the runtime's read/writ
 predicts.
 
 `systemTempDenies` now takes an optional `attemptTmpDir` and protects an ancestor of **either**
-path, compared by real path (`/tmp` is a symlink to `/private/tmp` on macOS, so a textual
-`startsWith` against the unresolved spelling missed it). Both callsites — `denyRead` and
-`denyWrite` in `buildSandboxRuntimeSettings` — pass `p.tmpDir`.
+path. Both callsites — `denyRead` and `denyWrite` in `buildSandboxRuntimeSettings` — pass
+`p.tmpDir`.
+
+The comparison resolves the deepest EXISTING ancestor and re-appends the rest (`realish`). A plain
+`realpathSync` is not enough and that was a real bug in the first cut of this fix: the spellings
+differ per platform (`/tmp` is a symlink to `/private/tmp` on macOS; `/private/tmp` resolves to
+`/tmp` on some Linux hosts), and an attempt temp directory that does not exist yet cannot be
+resolved at all — so one side stayed lexical, never matched the other, and the exemption silently
+did nothing.
+
+**A pre-existing test asserted the broken policy, and that is why the bug shipped.**
+`execute-short-attempt-tmpdir.test.ts` contained *"the policy still allows the temp dir and still
+denies the shared temp roots around it"*, asserting `denyWrite` contained both `/tmp` and
+`/private/tmp` while the attempt temp sat inside them. That pairing is exactly what the runtime
+does not honour. The test is rewritten to assert the real invariant — no `denyWrite` entry may be
+an ancestor of `p.tmpDir`, and the shared temp stays unwritable because it is never in `allowWrite`
+— with the history recorded above it so nobody restores the old assertion.
 
 **How this was found, which matters for trusting it:** not by reasoning. The probe's own captured
 stderr named the path and the throwing module, because the change merged hours earlier
@@ -175,8 +189,11 @@ but it is *not* equally proven for reads, because `denyRead` also stops carrying
 no probe covers reading a foreign file in the system temp. That residue is named rather than
 smoothed over.
 
-The fix itself is small and pinned from both sides: reverting the exemption fails a test, and
-over-exempting fails a test, both verified by deliberately breaking the code each way.
+The fix itself is small and pinned from three sides, all verified by deliberately breaking the
+code: reverting the `attemptTmpDir` arm fails, over-exempting fails, and a leaf-only
+`realpathSync` — the spelling bug the first cut actually had — fails. That third mutation matters
+most: the first cut typechecked, passed my own new tests, and did nothing, and it was the
+PRE-EXISTING test (the one that had asserted the wrong policy) that caught it once rewritten.
 
 Worth recording about provenance: this was found by reading the probe's own captured stderr, not
 by reasoning. Two hypotheses I held with some confidence — the npm cache and the host test-runner
@@ -207,9 +224,12 @@ adversarial rounds precisely because it touched a gate's inputs; this one does n
 - The runtime's documented precedence (`node_modules/@anthropic-ai/sandbox-runtime/README.md`):
   "`denyWrite` takes precedence over `allowWrite`" and, for reads, "`allowRead` takes precedence
   over `denyRead`".
-- Mutation-verified both directions: reverting the `attemptTmpDir` arm fails the settings test;
-  exempting every system temp whenever a tmpDir is passed also fails it.
+- Mutation-verified three ways: reverting the `attemptTmpDir` arm fails; exempting every system
+  temp whenever a tmpDir is passed fails; and a leaf-only `realpathSync` instead of `realish`
+  fails (the defect the first cut shipped with).
 - `tests/unit/feedback-factory/` 46 files / 643 tests green; `npm run lint` clean; `tsc` clean.
+- Observed on this host, which is why `realish` exists: `realpathSync('/private/tmp')` → `/tmp`,
+  while `realpathSync('/private/tmp/fb-<id>')` throws because the directory does not exist yet.
 
 ---
 

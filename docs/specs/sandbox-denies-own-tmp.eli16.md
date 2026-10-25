@@ -48,9 +48,23 @@ always does.
 ## What is new
 
 One function now protects both. A shared temporary directory is dropped from the deny list when
-it is an ancestor of the workspace **or** of the attempt's own temporary directory, compared by
-real path (on macOS `/tmp` is a link to `/private/tmp`, so comparing the spellings as text would
-have missed it).
+it is an ancestor of the workspace **or** of the attempt's own temporary directory.
+
+Comparing those paths turned out to be the fiddly part, and the first attempt at this fix got it
+wrong. The same directory has different spellings on different machines — on macOS `/tmp` is a
+link to `/private/tmp`, and on some Linux machines `/private/tmp` resolves back to `/tmp`. The
+obvious approach is to ask the operating system to resolve each path before comparing. But the
+attempt's own directory often doesn't exist yet at the moment the rules are built, and you cannot
+resolve a path that isn't there — so one side came back resolved and the other came back as
+written, they never matched, and the exemption quietly did nothing at all. It now resolves the
+deepest part of the path that *does* exist and re-attaches the rest, so both sides end up spelled
+the same way either way.
+
+A second thing had to change. A test already existed asserting the broken arrangement as correct
+— "still allows the temp folder and still denies the shared area around it" — and that is why the
+problem shipped in the first place: the test made the policy look deliberate and verified. It now
+checks the thing that actually matters (no denial may sit above the attempt's own folder) with the
+history written beside it, so nobody restores the old assertion.
 
 ## The safeguards, in plain terms
 
@@ -60,8 +74,11 @@ have missed it).
 - **The rehearsal proves that every run.** One of the must-fail probes writes to the shared
   temporary area and must be refused. If this change had loosened anything, that probe would
   start passing and the rehearsal would fail — the opposite of a silent regression.
-- **The test pins it from both sides.** Reverting the change fails a test, and exempting too much
-  also fails a test. Both were verified by deliberately breaking the code each way.
+- **The tests pin it from three sides.** Reverting the change fails a test, exempting too much
+  fails a test, and comparing the paths the naive way — the mistake the first attempt made — fails
+  a test too. All three were verified by deliberately breaking the code each way. The third is the
+  one worth noting: that first attempt compiled, passed the new tests I had written for it, and
+  did nothing useful.
 
 ## What you actually need to decide
 

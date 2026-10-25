@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "sandbox-denies-own-tmp",
+  "sessionId": "55e0f463-f29d-4d85-9f19-92a6a4d10aad",
+  "timestamp": "2026-10-25T18:08:27.018Z",
+  "artifactPath": "upgrades/side-effects/sandbox-denies-own-tmp.md",
+  "artifactSha256": "0229e9c0e541bf19f28c3dabd6236c0f941c8c40f5eb6d4299839af19e11adba",
+  "coveredFiles": [
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-short-attempt-tmpdir.test.ts",
+    "upgrades/next/sandbox-denies-own-tmp.md",
+    "upgrades/side-effects/sandbox-denies-own-tmp.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up on the same commit: the exemption's path comparison now resolves the deepest EXISTING ancestor instead of realpath'ing the leaf, because an attempt temp that does not exist yet cannot be resolved and the first cut therefore did nothing. Also rewrites the pre-existing short-attempt-tmpdir test, which had asserted the broken allow+deny pairing as intended policy and is why the bug shipped. Still no decision surface over agent behaviour; the canary verdict, latch and ladder are untouched. Pinned three ways by mutation-verified tests, including against the first cut's own defect.",
+  "eli16Path": "docs/specs/sandbox-denies-own-tmp.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sandbox-denies-own-tmp.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
