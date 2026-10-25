@@ -192,6 +192,8 @@ export interface LocalVerifyAutoUpdaterView {
     pendingUpdate?: string | null;
     coalescingUntil?: string | null;
     pendingUpdateDetectedAt?: string | null;
+    /** The applied-but-not-restarted state: the restart is waiting (holds, sessions, window). */
+    restartDeferral?: { active?: boolean; firstDeferredAt?: string | null } | null;
   };
   /** What would hold a restart right now (sessions, then `hold:<name>` entries). */
   getRestartBlockers?(): string[];
@@ -200,7 +202,8 @@ export interface LocalVerifyAutoUpdaterView {
 /**
  * Spec §2 Restarts rule (b), read from the AutoUpdater: "update pending" means autoApply is
  * on and `pendingUpdate` is set or `coalescingUntil` holds a time (not the `'notified'`
- * placeholder), timed from `pendingUpdateDetectedAt`. `otherBlockers`: anything other than
+ * placeholder), OR the update is applied and its restart is deferred (`restartDeferral.active`),
+ * timed from the earlier of `pendingUpdateDetectedAt` and `restartDeferral.firstDeferredAt`. `otherBlockers`: anything other than
  * this verifier's own hold would delay the restart anyway. Pure.
  */
 export function updatePendingFromAutoUpdater(
@@ -209,11 +212,21 @@ export function updatePendingFromAutoUpdater(
 ): UpdatePendingState {
   const coalescingIsTime = typeof status.coalescingUntil === 'string' && status.coalescingUntil !== 'notified'
     && Number.isFinite(Date.parse(status.coalescingUntil));
-  const pending = status.config?.autoApply === true && (status.pendingUpdate != null || coalescingIsTime);
-  const since = status.pendingUpdateDetectedAt ? Date.parse(status.pendingUpdateDetectedAt) : Number.NaN;
+  const beforeApply = status.config?.autoApply === true && (status.pendingUpdate != null || coalescingIsTime);
+  // After the apply the AutoUpdater clears pendingUpdate and only its durable restart
+  // deferral says an update is waiting. That waiting restart is pending too: without it a
+  // busy queue starts the next verify seconds after each one ends and the restart, retried
+  // every 5 minutes, waits for the queue to drain (2026-10-25: v1.3.1429 held for hours).
+  const deferral = status.restartDeferral;
+  const restartWaiting = deferral?.active === true;
+  const pending = beforeApply || restartWaiting;
+  const detected = status.pendingUpdateDetectedAt ? Date.parse(status.pendingUpdateDetectedAt) : Number.NaN;
+  const deferred = restartWaiting && deferral?.firstDeferredAt ? Date.parse(deferral.firstDeferredAt) : Number.NaN;
+  const candidates = [detected, deferred].filter((x) => Number.isFinite(x));
   return {
     pending,
-    pendingSinceMs: Number.isFinite(since) ? since : null,
+    // The earliest known start, so the 120-minute cap counts the whole wait.
+    pendingSinceMs: candidates.length > 0 ? Math.min(...candidates) : null,
     // Unknown blockers count as "something else is delaying": never pause on a guess.
     otherBlockers: blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
   };

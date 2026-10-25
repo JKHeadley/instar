@@ -23,5 +23,6 @@ describe('statusForResult', () => {
     expect(statusForResult({ ok: false, code: 'queue-full' })).toBe(429);
     expect(statusForResult({ ok: false, code: 'pr-unreadable' })).toBe(502);
     expect(statusForResult({ ok: false, code: 'pr-invalid-shas' })).toBe(502);
+    expect(statusForResult({ ok: false, code: 'pr-closed' })).toBe(409);
   });
 });

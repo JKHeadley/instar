@@ -39,7 +39,8 @@ export function statusForResult(r: RequestResult): number {
     case 'untrusted-head': return 403;
     case 'pr-unreadable':
     case 'pr-invalid-shas': return 502;
-    case 'main-unhealthy': return 409;
+    case 'main-unhealthy':
+    case 'pr-closed': return 409;
     case 'stopping': return 503;
     default: return 500;
   }

@@ -620,6 +620,7 @@ describe('rule (b): a pending update pauses NEW starts so the queue cannot hold 
     expect(s.svc.restartHolds(4 * 3_600_000)).toEqual([]);
     s.advance(UPDATE_PAUSE_MAX_MS + 1);
     await s.svc.tick();
+    await s.flush(); // it waited past the pre-start window: the open/base check runs first
     expect(s.spawned).toHaveLength(2);
   });
 
@@ -1346,5 +1347,107 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     await s.finish(1, null);
     expect(s.records.map((r) => r.errorStep)).toEqual(['crash', 'crash']);
     expect(s.svc.snapshot().verifierHold).toBeNull();
+  });
+});
+
+// ── 2026-10-25: a restart deferred only for this verifier pauses new starts; closed PRs are skipped ──
+
+describe('a deferred restart is a pending update (the applied-but-not-restarted gap)', () => {
+  it('updatePendingFromAutoUpdater: an active restartDeferral with pendingUpdate cleared is pending, timed from firstDeferredAt', () => {
+    const base = { config: { autoApply: true }, pendingUpdate: null, coalescingUntil: null, pendingUpdateDetectedAt: null };
+    const deferral = { active: true, firstDeferredAt: '2026-10-21T12:00:00.000Z' };
+    expect(updatePendingFromAutoUpdater({ ...base, restartDeferral: deferral }, ['hold:local-verify:pr-1']))
+      .toEqual({ pending: true, pendingSinceMs: T0, otherBlockers: false });
+    // Not active, absent or null: not pending (both sides of the boundary).
+    expect(updatePendingFromAutoUpdater({ ...base, restartDeferral: { ...deferral, active: false } }, []).pending).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...base, restartDeferral: null }, []).pending).toBe(false);
+    expect(updatePendingFromAutoUpdater(base, []).pending).toBe(false);
+    // The earlier of detection and first deferral starts the 120-minute cap.
+    expect(updatePendingFromAutoUpdater({ ...base, pendingUpdateDetectedAt: '2026-10-21T11:00:00.000Z', restartDeferral: deferral }, []).pendingSinceMs)
+      .toBe(T0 - 3_600_000);
+    // Something else delaying the restart still never pauses.
+    expect(updatePendingFromAutoUpdater({ ...base, restartDeferral: deferral }, ['echo-topic-1', 'hold:local-verify:pr-1']).otherBlockers).toBe(true);
+  });
+
+  it('through the real AutoUpdater: once the restart is deferred only for a running verify, the next queued verify does not start; the restart then goes ahead', async () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-au-gap-')));
+    dirs.push(tmp);
+    fs.mkdirSync(path.join(tmp, 'state'), { recursive: true });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const checker = { getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker;
+    const st = { get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager;
+    const u = new AutoUpdater(checker, st, tmp, { preRestartDelaySecs: 0 });
+    try {
+      const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+      s.advance(Date.now() - T0); // the AutoUpdater reads the real clock
+      await s.svc.request(1);
+      await s.svc.request(2);
+      u.setSessionDeps({ listRunningSessions: () => [] });
+      registerLocalVerifyRestartHold(u, s.svc);
+      const gated = () => (u as unknown as { gatedRestart(v: string, b?: boolean): Promise<void> }).gatedRestart('0.9.9', false);
+      await gated();
+      // The apply already cleared pendingUpdate: only the deferral says the update is waiting.
+      expect(u.getStatus().pendingUpdate).toBeNull();
+      expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-1'] });
+      await s.finish(0, ok(record()));
+      await s.svc.tick();
+      expect(s.spawned).toHaveLength(1); // PR 2 waits: the running one finished, nothing new started
+      expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([2]);
+      expect(fs.readFileSync(s.svc.auditPath, 'utf-8')).toContain('"event":"update-pause"');
+      expect(s.svc.restartHolds(4 * 3_600_000)).toEqual([]);
+      await gated(); // the 5-minute retry: nothing holds it now
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
+      // The deferral is gone (on a real server the process restarts here); the queue resumes.
+      await s.svc.tick();
+      expect(s.spawned).toHaveLength(2);
+    } finally {
+      u.stop();
+      log.mockRestore();
+    }
+  });
+});
+
+describe('closed PRs are skipped', () => {
+  it('POST for a merged or closed PR answers pr-closed and queues nothing; an unknown answer queues it', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) }, open: { 1: false, 2: null } });
+    expect(await s.svc.request(1)).toEqual({ ok: false, code: 'pr-closed' });
+    expect(s.spawned).toHaveLength(0);
+    expect(fs.readFileSync(s.svc.auditPath, 'utf-8')).toContain('"reason":"pr-closed"');
+    expect(await s.svc.request(2)).toMatchObject({ ok: true, status: 'queued' });
+    expect(s.spawned).toHaveLength(1);
+  });
+
+  it('a pr-closed refusal also drops the queued entry for that PR; a run in flight carries on', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1); // in flight
+    await s.svc.request(2); // queued
+    s.open[1] = false;
+    s.open[2] = false;
+    expect(await s.svc.request(2)).toEqual({ ok: false, code: 'pr-closed' });
+    expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([]);
+    expect(await s.svc.request(1)).toEqual({ ok: false, code: 'pr-closed' });
+    expect(s.svc.snapshot().inFlight?.pr).toBe(1); // not cancelled
+    const rows = fs.readFileSync(s.svc.auditPath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(rows.some((r) => r.event === 'dequeued' && r.pr === 2 && r.reason === 'closed')).toBe(true);
+  });
+
+  it('a PR that closed while it waited is dequeued (reason closed) at pick time, not started; an unknown answer still starts', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }), 4: view({ headRefOid: sha('f') }) } });
+    for (const pr of [1, 2, 3, 4]) await s.svc.request(pr);
+    s.advance(MERGE_LINE.baseRefreshAfterMs + 60_000); // they waited: the pre-start check runs
+    s.open[2] = false; // merged while it waited
+    s.open[3] = null; // GitHub unreadable: keeps its place
+    await s.finish(0, ok(record()));
+    await s.flush();
+    await s.flush();
+    expect(s.spawned).toHaveLength(2);
+    const started = JSON.parse(fs.readFileSync(s.spawned[1].args[s.spawned[1].args.indexOf('--input') + 1], 'utf-8'));
+    expect(started.pr).toBe(3);
+    expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([4]);
+    const audit = fs.readFileSync(s.svc.auditPath, 'utf-8');
+    const rows = audit.trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(rows.some((r) => r.event === 'dequeued' && r.pr === 2 && r.reason === 'closed')).toBe(true);
+    expect(rows.some((r) => r.event === 'dequeued' && r.pr === 3)).toBe(false);
   });
 });

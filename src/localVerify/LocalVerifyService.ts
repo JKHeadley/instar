@@ -358,7 +358,7 @@ export interface InFlightIntent {
 export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' };
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' };
 
 interface InFlight {
   entry: QueueEntry;
@@ -879,6 +879,18 @@ export class LocalVerifyService {
     if (!explicit && !this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
     const view = await this.seams.prView(pr).catch(() => null);
     if (!view) return { ok: false, code: 'pr-unreadable' };
+    // A merged or closed PR has nothing to verify (an unknown answer queues it: the pre-start check asks again).
+    if ((await this.seams.isPrOpen(pr).catch(() => null)) === false) {
+      this.audit({ event: 'refused', pr, reason: 'pr-closed' });
+      // A queued entry for it is no better: drop it now (a run in flight carries on to its own record).
+      const queued = this.queue.findIndex((e) => e.pr === pr && e.kind !== 'main');
+      if (queued >= 0) {
+        const [e] = this.queue.splice(queued, 1);
+        this.audit({ event: 'dequeued', pr, reason: 'closed', headSha: e.headSha });
+        this.pump();
+      }
+      return { ok: false, code: 'pr-closed' };
+    }
     if (!checkEligibility(view, this.cfg).eligible) {
       this.audit({ event: 'refused', pr, reason: 'untrusted-head' });
       return { ok: false, code: 'untrusted-head' };
@@ -1100,8 +1112,9 @@ export class LocalVerifyService {
     });
     if (d.kind !== 'start') return;
     const next = this.queue[d.index];
-    if (next.kind !== 'main' && this.seams.baseHead && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
-      // The verify tests the merge with TODAY's base: re-read it right before the start.
+    if (next.kind !== 'main' && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
+      // The verify tests the merge with TODAY's base: re-read it right before the start, and
+      // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
       this.starting = next;
       void this.refreshBaseThenPump(next);
       return;
@@ -1113,23 +1126,32 @@ export class LocalVerifyService {
 
   /**
    * Re-read the base branch's head for an entry about to start (the entry stays in the
-   * queue meanwhile, so a request for the same PR still finds it). A read failure starts
-   * the run on the last known base (audited). Identical merge inputs already verified
+   * queue meanwhile, so a request for the same PR still finds it), and ask whether the PR
+   * is still open: a definite "closed" drops it (audited `dequeued`, reason `closed`); an
+   * unknown answer keeps it. A base read failure starts the run on the last known base (audited). Identical merge inputs already verified
    * green under this policy derive a record instead of re-running. Then pump again.
    */
   private async refreshBaseThenPump(entry: QueueEntry): Promise<void> {
-    let fresh: string | null = null;
-    try { fresh = await this.seams.baseHead!(entry.baseRefName); } catch { fresh = null; }
+    const [fresh, open] = await Promise.all([
+      this.seams.baseHead ? this.seams.baseHead(entry.baseRefName).catch(() => null) : Promise.resolve(null),
+      this.seams.isPrOpen(entry.pr).catch(() => null),
+    ]);
     this.starting = null;
     if (this.stopped) return;
-    if (this.queue.includes(entry)) {
-      if (fresh && isValidSha(fresh)) {
-        if (fresh !== entry.baseSha) {
-          this.audit({ event: 'base-refreshed', pr: entry.pr, headSha: entry.headSha, oldBase: entry.baseSha, newBase: fresh });
-          entry.baseSha = fresh;
+    if (this.queue.includes(entry) && open === false) {
+      // Unknown (null) keeps it: only a definite "not open" drops an entry.
+      this.queue.splice(this.queue.indexOf(entry), 1);
+      this.audit({ event: 'dequeued', pr: entry.pr, reason: 'closed', headSha: entry.headSha });
+    } else if (this.queue.includes(entry)) {
+      if (this.seams.baseHead) { // without a base reader the base stays as resolved
+        if (fresh && isValidSha(fresh)) {
+          if (fresh !== entry.baseSha) {
+            this.audit({ event: 'base-refreshed', pr: entry.pr, headSha: entry.headSha, oldBase: entry.baseSha, newBase: fresh });
+            entry.baseSha = fresh;
+          }
+        } else {
+          this.audit({ event: 'base-refresh-failed', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha });
         }
-      } else {
-        this.audit({ event: 'base-refresh-failed', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha });
       }
       entry.baseResolvedAt = this.now();
       const exec = this.execIndex.get(executionKey(entry.headSha, entry.baseSha));
