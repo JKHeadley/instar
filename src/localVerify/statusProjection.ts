@@ -76,6 +76,13 @@ export interface ProjectionPr {
   /** §2 eligibility (author is the agent or operator login, not cross-repository). */
   eligible: boolean;
   floor: FloorMode;
+  /**
+   * Local floor only: why the local verifier cannot vouch for this head right now
+   * (`verifier-disabled`, `settings-unreadable`, `awaiting-edit-a`, …). A held
+   * local-floor PR projects `pending` with that reason named; it NEVER falls to
+   * the Actions mirror (2026-10-25: that fallback merged five unverified PRs).
+   */
+  hold?: string | null;
 }
 
 export interface ProjectionInput {
@@ -168,7 +175,14 @@ export function projectMirror(m: MirrorInput): Projection {
 
 /** One PR's projection on its floor. */
 export function projectPr(input: ProjectionInput): Projection {
-  if (input.pr.floor === 'local' && input.pr.eligible) return projectLocal(input);
+  if (input.pr.floor === 'local' && input.pr.eligible) {
+    // Fail closed: while the local verifier cannot vouch (disabled mid-flight, a
+    // settings read failed, an edit is outstanding), the required status is
+    // `pending` with the reason named. Only `projectLocal` may ever say `success`
+    // on the local floor; the Actions mirror is never consulted for it.
+    if (input.pr.hold) return p('pending', `local-floor-held:${input.pr.hold}`, `local-floor held · ${input.pr.hold}`);
+    return projectLocal(input);
+  }
   if (!input.mirror) return p('pending', 'mirror-unavailable');
   return projectMirror(input.mirror);
 }

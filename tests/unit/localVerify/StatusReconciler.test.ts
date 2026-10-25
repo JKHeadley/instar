@@ -60,6 +60,7 @@ function setup(opts: { postStatuses?: boolean; enabled?: boolean; rulesRequire?:
     checkRuns: new Map<string, CheckRunView[] | null>(),
     postStatuses: opts.postStatuses ?? true,
     enabled: opts.enabled ?? true,
+    bypass: 'never' as string | null,
     holdsAtPost: null as null | (() => boolean),
     blockPosts: false,
     failPosts: false,
@@ -87,9 +88,9 @@ function setup(opts: { postStatuses?: boolean; enabled?: boolean; rulesRequire?:
     {
       readRulesBranches: async () => [{ type: 'required_status_checks', parameters: { required_status_checks: (opts.rulesRequire ?? true) ? [{ context: 'instar/local-verify' }] : [], strict_required_status_checks_policy: false } }],
       readBranch: async () => ({ name: 'main', protection: { required_status_checks: { contexts: [] } } }),
-      readRulesetBypass: async () => 'never',
+      readRulesetBypass: async () => st.bypass,
       now: () => st.t,
-      audit: () => {},
+      audit: (e) => { audits.push({ src: 'floor-gate', ...e }); },
     },
   );
 
@@ -452,14 +453,16 @@ describe('StatusReconciler — canaries and modes', () => {
     expect(s.posts).toEqual([expect.objectContaining({ head: sha('f'), state: 'success', description: 'actions-floor green' })]);
   });
 
-  it('verifier disabled: only the mirror runs, and only while GitHub requires the check', async () => {
+  it('verifier disabled: nothing runs while GitHub does not require the check; while it does, a configured-local eligible head is HELD (pending), never mirrored', async () => {
     const off = setup({ enabled: false, rulesRequire: false });
     expect((await off.rec.pass()).outcome).toBe('inactive');
     expect(off.posts).toEqual([]);
     const on = setup({ enabled: false, rulesRequire: true });
     await on.rec.pass(); await on.rec.drain();
-    // The eligible PR with a green record is mirrored (actions floor), not locally authorized.
-    expect(on.posts).toEqual([expect.objectContaining({ state: 'success', description: 'actions-floor green' })]);
+    // Before 2026-10-25 this eligible PR was mirrored (actions-floor green) although the
+    // verifier was off. The configured floor is local: the verifier being off is a hold.
+    expect(on.posts).toEqual([expect.objectContaining({ state: 'pending', description: 'local-floor held · verifier-disabled' })]);
+    expect(on.posts.some((p) => p.state === 'success')).toBe(false);
   });
 
   it('the local floor is used only once the settings make it effective', async () => {
@@ -611,5 +614,90 @@ describe('StatusReconciler — second-pass review fixes', () => {
     const live = setup({ postStatuses: true });
     await live.rec.pass();
     expect(live.rec.status().requiredButNotPosting).toBe(false);
+  });
+});
+
+describe('StatusReconciler — a local-floor install never posts success from the Actions floor (2026-10-25)', () => {
+  // The incident: at 04:08:46Z the ruleset-bypass read failed (rules + branch still
+  // readable), the gate read `settings-unreadable`, the floor fell to `actions`, and
+  // the mirror posted `success · actions-floor green` on five heads whose latest
+  // local record was `error: verifier-mismatch`. GitHub auto-merge merged all five.
+
+  it('(a) configured local + verifier disabled/unavailable ⇒ pending with the hold named, never success; one audit row + one signal per episode', async () => {
+    const s = setup({ enabled: false, rulesRequire: true });
+    // Green record on disk AND green Actions runs: neither may produce success here.
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts).toEqual([expect.objectContaining({ head: sha('a'), state: 'pending', description: 'local-floor held · verifier-disabled' })]);
+    expect(s.posts.some((p) => p.state === 'success')).toBe(false);
+    expect(s.audits.filter((a) => a.event === 'local-floor-held')).toEqual([expect.objectContaining({ reason: 'verifier-disabled', from: null })]);
+    expect(s.signals).toEqual(['local-verify:local-floor-held']);
+    expect((s.rec.status() as { floor: { hold: unknown } }).floor.hold).toBe('verifier-disabled');
+    // A second pass in the same episode: no second audit row, no second signal.
+    s.st.prs = [pr({ rollup: [lvStatus('PENDING')] })];
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.audits.filter((a) => a.event === 'local-floor-held')).toHaveLength(1);
+    expect(s.signals).toEqual(['local-verify:local-floor-held']);
+  });
+
+  it('(b) the incident replay: a transient bypass-read failure withdraws success to a named pending, never to actions-floor green; recovery re-posts success and audits the release', async () => {
+    const s = setup();
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts.at(-1)).toMatchObject({ state: 'success' }); // genuine local record
+    s.st.prs = [pr({ rollup: [lvStatus('SUCCESS')] })];
+
+    s.st.bypass = null; // only the ruleset-bypass read fails — rules + branch still readable
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.rec.status()).toMatchObject({ settingsReadable: true, floor: { settingsState: 'settings-unreadable', hold: 'settings-unreadable' } });
+    expect(s.posts.at(-1)).toMatchObject({ head: sha('a'), state: 'pending', description: 'local-floor held · settings-unreadable' });
+    expect(s.posts.some((p) => p.description === 'actions-floor green')).toBe(false);
+    expect(s.audits.find((a) => a.event === 'local-floor-held')).toMatchObject({ reason: 'settings-unreadable', from: null });
+    expect(s.signals).toEqual(['local-verify:local-floor-held']);
+
+    // The five merged PRs' shape: no green local record at this head (latest = verifier error).
+    s.st.records.set(`7:${sha('a')}`, record({ outcome: 'error' }));
+    s.st.prs = [pr({ rollup: [lvStatus('PENDING')] })];
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts.some((p) => p.state === 'success' && p.description === 'actions-floor green')).toBe(false);
+    expect(s.posts.at(-1)).toMatchObject({ state: 'pending' });
+
+    // Recovery (04:10:19Z): bypass readable again; the genuine record decides once more.
+    s.st.records.set(`7:${sha('a')}`, record());
+    s.st.bypass = 'never';
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts.at(-1)).toMatchObject({ state: 'success' });
+    expect(s.audits.find((a) => a.event === 'local-floor-released')).toMatchObject({ from: 'settings-unreadable' });
+    expect((s.rec.status() as { floor: { hold: unknown } }).floor.hold).toBeNull();
+    // A fresh episode signals again (it is a new transition, not a repeat).
+    s.st.prs = [pr({ rollup: [lvStatus('SUCCESS')] })];
+    s.st.bypass = null;
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.signals).toEqual(['local-verify:local-floor-held', 'local-verify:local-floor-held']);
+  });
+
+  it('(b2) a not-yet-effective edit (awaiting-edit-a) on a configured-local install is a hold too, not the mirror', async () => {
+    const s = setup({ rulesRequire: false });
+    s.st.records.clear();
+    await s.rec.pass(); await s.rec.drain();
+    // The check is not required on GitHub, so this pending blocks nothing — but it is
+    // still never an Actions-floor success stamped with the local verifier's name.
+    expect(s.posts.at(-1)).toMatchObject({ state: 'pending', description: 'local-floor held · awaiting-edit-a' });
+    expect(s.posts.some((p) => p.description === 'actions-floor green')).toBe(false);
+  });
+
+  it('(c) configured actions: behaviour unchanged — the mirror posts actions-floor green even while the settings are unreadable, and nothing is held', async () => {
+    const s = setup({ floor: 'actions' });
+    s.st.records.clear();
+    s.st.bypass = null;
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts.at(-1)).toMatchObject({ state: 'success', description: 'actions-floor green' });
+    expect(s.audits.some((a) => a.event === 'local-floor-held')).toBe(false);
+    expect(s.signals).toEqual([]);
+    expect((s.rec.status() as { floor: { hold: unknown; configured: string } }).floor).toMatchObject({ configured: 'actions', hold: null });
+    // An ineligible PR on a configured-local install is the mirror's too (its merge authority was never local).
+    const local = setup();
+    local.st.bypass = null;
+    local.st.prs = [pr({ number: 9, headSha: sha('f'), author: 'someone-else' })];
+    await local.rec.pass(); await local.rec.drain();
+    expect(local.posts.at(-1)).toMatchObject({ head: sha('f'), state: 'success', description: 'actions-floor green' });
   });
 });

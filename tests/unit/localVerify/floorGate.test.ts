@@ -79,14 +79,42 @@ describe('FloorGate', () => {
     expect(g.floorFor({ repo: REPO, eligible: true })).toBe('actions');
   });
 
-  it('before any read, and on unreadable settings, the floor is actions and the check counts as required (mirror stays on)', async () => {
+  it('before any read, and on unreadable settings, a configured-local eligible PR stays on the local floor WITH a named hold; the check counts as required', async () => {
     const { g } = gate({ rules: null });
-    expect(g.floorFor({ repo: REPO, eligible: true })).toBe('actions');
+    expect(g.floorFor({ repo: REPO, eligible: true })).toBe('local');
+    expect(g.localHold()).toBe('settings-unreadable');
     expect(g.checkRequired()).toBe(true);
     await g.refresh();
     expect(g.state()).toBe('settings-unreadable');
     expect(g.checkRequired()).toBe(true);
-    expect(g.floorFor({ repo: REPO, eligible: true })).toBe('actions');
+    expect(g.floorFor({ repo: REPO, eligible: true })).toBe('local');
+    expect(g.localHold()).toBe('settings-unreadable');
+    // An ineligible PR, or a configured-actions install, is the mirror's — no hold.
+    expect(g.floorFor({ repo: REPO, eligible: false })).toBe('actions');
+  });
+
+  it('2026-10-25 incident shape: rules + branch readable, ONLY the ruleset-bypass read failed ⇒ settings-unreadable, settingsReadable() still true, and the floor must NOT become actions', async () => {
+    const { g } = gate({ bypass: null });
+    await g.refresh();
+    expect(g.state()).toBe('settings-unreadable');
+    expect(g.settingsReadable()).toBe(true); // the reconciler's early-return guard does not fire here
+    expect(g.floorFor({ repo: REPO, eligible: true })).toBe('local');
+    expect(g.localHold()).toBe('settings-unreadable');
+  });
+
+  it('localHold names every non-effective state and is null when effective or configured actions', async () => {
+    const a = gate({ rules: rulesWith([]) }); await a.g.refresh();
+    expect(a.g.localHold()).toBe('awaiting-edit-a');
+    const b = gate({ branch: branchWith(['Build']) }); await b.g.refresh();
+    expect(b.g.localHold()).toBe('awaiting-edit-b');
+    const c = gate({ bypass: 'always' }); await c.g.refresh();
+    expect(c.g.localHold()).toBe('bypass-not-never');
+    const ok = gate({}); await ok.g.refresh();
+    expect(ok.g.localHold()).toBeNull();
+    const actions = gate({ floor: 'actions', bypass: null }); await actions.g.refresh();
+    expect(actions.g.localHold()).toBeNull();
+    expect(actions.g.configuredLocal()).toBe(false);
+    expect(actions.g.floorFor({ repo: REPO, eligible: true })).toBe('actions');
   });
 
   it('a readable ruleset without the check ⇒ not required', async () => {
@@ -123,7 +151,8 @@ describe('FloorGate', () => {
     const { g } = gate({ branch: { name: 'main', protected: true } });
     await g.refresh();
     expect(g.state()).toBe('settings-unreadable');
-    expect(g.floorFor({ repo: REPO, eligible: true })).toBe('actions');
+    expect(g.floorFor({ repo: REPO, eligible: true })).toBe('local');
+    expect(g.localHold()).toBe('settings-unreadable');
     expect(g.settingsReadable()).toBe(false);
   });
 

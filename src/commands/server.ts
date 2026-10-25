@@ -22367,6 +22367,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       const lvHooks: import('../localVerify/localVerifyWiring.js').LocalVerifyHooks = {};
       // Deduped attention for local-verify signals (main-red, status-stuck, mirror-pending, …).
       lvHooks.signal = (key, detail) => {
+        if (key === 'local-verify:local-floor-held') {
+          // A configured-local install whose local verifier cannot vouch right now
+          // holds its eligible heads at `pending` instead of falling back to the
+          // Actions mirror (2026-10-25: that fallback merged five unverified PRs).
+          DegradationReporter.getInstance().report({
+            feature: 'local-verify-status-floor',
+            primary: 'Post instar/local-verify from a genuine local verify record',
+            fallback: `Hold eligible heads at pending (${String(detail.reason ?? 'unknown')}) — the Actions mirror is never used on the local floor`,
+            reason: `local floor held: ${String(detail.reason ?? 'unknown')}`,
+            impact: 'Eligible PRs cannot merge until the local verifier can vouch again; no unverified head is marked success',
+          });
+        }
         if (!telegram) return;
         const id = typeof detail.head === 'string' && key === 'local-verify:mirror-pending' ? `${key}:${detail.head}` : key;
         void telegram.createAttentionItem({

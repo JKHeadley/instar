@@ -171,6 +171,31 @@ describe('projectMirror — the Actions-floor mirror', () => {
     expect(projectPr(input({ record: null, mirror: mirror() })).state).toBe('pending');
     expect(projectPr(input({ record: null }, { floor: 'actions' }))).toMatchObject({ state: 'pending', reason: 'mirror-unavailable' });
   });
+
+  it('a HELD local-floor PR is pending with the hold named — never success, even with a green record and green Actions runs (2026-10-25)', () => {
+    for (const hold of ['verifier-disabled', 'settings-unreadable', 'awaiting-edit-a', 'bypass-not-never']) {
+      const p = projectPr(input({ mirror: mirror() }, { hold }));
+      expect(p.state).toBe('pending');
+      expect(p.reason).toBe(`local-floor-held:${hold}`);
+      expect(p.description).toContain(hold);
+      expect(p.description.length).toBeLessThanOrEqual(140);
+    }
+    // No hold (null/undefined/''): the local authorization decides as before.
+    expect(projectPr(input({}, { hold: null })).state).toBe('success');
+    expect(projectPr(input({}, { hold: '' })).state).toBe('success');
+    expect(projectPr(input({ record: null }, { hold: null }))).toMatchObject({ state: 'pending', reason: 'awaiting-verify' });
+  });
+
+  it('a hold is a local-floor notion only: the Actions floor and ineligible PRs ignore it (configured-actions behaviour unchanged)', () => {
+    expect(projectPr(input({ record: null, mirror: mirror() }, { floor: 'actions', hold: 'settings-unreadable' })).state).toBe('success');
+    expect(projectPr(input({ record: null, mirror: mirror() }, { eligible: false, hold: 'settings-unreadable' })).state).toBe('success');
+  });
+
+  it('projectHead: a held PR sharing a head with an authorized one keeps the head pending', () => {
+    const h = projectHead([input(), input({}, { number: 8, hold: 'settings-unreadable' })]);
+    expect(h.state).toBe('pending');
+    expect(h.reason).toBe('shared-head:local-floor-held:settings-unreadable');
+  });
 });
 
 describe('projectHead — shared heads', () => {

@@ -18,6 +18,17 @@
  * projection now and by safe-merge (via the server) and the watcher later.
  * The mirror stays on whenever the check is required; unreadable ⇒ treated as
  * required — independent of `monitoring.localVerify.enabled`.
+ *
+ * Fail closed (2026-10-25): the CONFIGURED floor decides which authority may say
+ * `success`. An eligible PR of a configured-local install is on the local floor
+ * even while the settings are not (yet, or transiently not) effective — it then
+ * carries a named `localHold()` and projects `pending`, never the Actions mirror.
+ * On 2026-10-25T04:08:46Z one of the three settings reads (the ruleset bypass)
+ * failed, `state()` read `settings-unreadable`, `floorFor` answered `actions`,
+ * and the mirror posted `success · actions-floor green` on five heads the local
+ * suite had never passed; GitHub's native auto-merge merged all five. The Actions
+ * floor is for installs whose configured floor IS `actions` (and for ineligible
+ * PRs, whose merge authority was never local).
  */
 
 import { LOCAL_VERIFY_STATUS_CONTEXT, type FloorMode } from './statusProjection.js';
@@ -184,10 +195,31 @@ export class FloorGate {
     return !!this.settings && this.settings.rulesetRequiresCheck !== null && this.settings.classicContexts !== null;
   }
 
-  /** The single floor-selection function (§3). */
+  /** The configured floor is local for this install's repo (config local, the watcher's repo is this repo). */
+  configuredLocal(): boolean {
+    return this.cfg.configFloor() === 'local' && this.cfg.repo === this.cfg.watcherRepo();
+  }
+
+  /**
+   * The single floor-selection function (§3). The CONFIGURED floor decides: an
+   * eligible PR of a configured-local install is on the local floor whether or not
+   * GitHub's settings are effective right now — see `localHold()` for the latter.
+   * A settings state other than `effective` never moves a PR onto the Actions mirror.
+   */
   floorFor(pr: { repo: string; eligible: boolean }): FloorMode {
-    return this.cfg.configFloor() === 'local' && pr.repo === this.cfg.repo && pr.repo === this.cfg.watcherRepo()
-      && pr.eligible && this.state() === 'effective' ? 'local' : 'actions';
+    return this.configuredLocal() && pr.repo === this.cfg.repo && pr.eligible ? 'local' : 'actions';
+  }
+
+  /**
+   * Why the local floor cannot vouch for a head right now: the settings state when
+   * it is not `effective` (`settings-unreadable`, `awaiting-edit-a`, …); null when
+   * effective or when the configured floor is not local. The projection turns a
+   * hold into `pending · local-floor-held:<reason>` — never into the mirror.
+   */
+  localHold(): string | null {
+    if (!this.configuredLocal()) return null;
+    const state = this.state();
+    return state === 'effective' ? null : state;
   }
 
   /** Contexts the mirror unions in (excluding instar/local-verify, done by the projection). */

@@ -195,6 +195,8 @@ export class StatusReconciler {
   private readonly stuckSince = new Map<string, number>();
   private readonly mirrorPendingSince = new Map<string, number>();
   private readonly raised = new Set<string>();
+  /** The current local-floor hold reason (null = the local floor can vouch); transitions are audited once. */
+  private heldReason: string | null = null;
   private wasHolder = false;
   private acquiredEpoch: number | null = null;
   private lastSeenOtherHolder: string | null = null;
@@ -276,7 +278,7 @@ export class StatusReconciler {
           : gate.state;
     const mh = this.service?.mainHealth() ?? null;
     return {
-      floor: { configured: gate.configFloor, effective, reason, settingsState: gate.state, checkRequired: gate.checkRequired, settings: gate.settings, lastReadAt: gate.lastReadAt },
+      floor: { configured: gate.configFloor, effective, reason, hold: this.heldReason, settingsState: gate.state, checkRequired: gate.checkRequired, settings: gate.settings, lastReadAt: gate.lastReadAt },
       mainHealth: mh ? { state: mh.state, mainHead: mh.currentMainHead, redHead: mh.redHead, reason: mh.reason, lastGreenHead: mh.lastGreenHead, pendingMainHead: mh.pendingMainHead, mainInFlight: mh.mainInFlight } : null,
       // The spec's pool-wide floor comparison on lease takeover reads the previous
       // holder's audit log, which is machine-local; it is not built (accepted).
@@ -378,7 +380,8 @@ export class StatusReconciler {
     await this.floorGate.refresh();
     if (!this.floorGate.settingsReadable()) {
       // Unreadable settings never stop the pass: the check counts as required (the
-      // mirror stays on), the floor stays actions, and withdrawals still go out.
+      // mirror stays on for actions-floor heads), a configured-local head is HELD
+      // (pending, named — never the mirror), and withdrawals still go out.
       // Only the mirror's per-head check-run reads back off after read failures.
       this.seams.audit({ event: 'settings-unreadable' });
     }
@@ -404,6 +407,7 @@ export class StatusReconciler {
     }
 
     const enabled = this.cfg.localVerifyEnabled() && this.service !== null;
+    this.noteHold(this.localHold(enabled));
     if (!enabled && !this.floorGate.checkRequired()) {
       return { at, outcome: 'inactive', heads: 0, submitted: 0, floorState: this.floorGate.state() };
     }
@@ -514,13 +518,50 @@ export class StatusReconciler {
     return a.admit;
   }
 
-  private floorOf(pr: OpenPr, enabled: boolean): { eligible: boolean; floor: FloorMode } {
+  /**
+   * Why the configured local floor cannot vouch right now, or null. `verifier-disabled`
+   * when `monitoring.localVerify.enabled` is off or the service is absent; otherwise
+   * the gate's non-effective settings state. Null on a configured-actions install.
+   */
+  private localHold(enabled: boolean): string | null {
+    if (!this.floorGate.configuredLocal()) return null;
+    return enabled ? this.floorGate.localHold() : 'verifier-disabled';
+  }
+
+  /**
+   * One audit row + one signal per hold EPISODE (transition into a hold, or a change
+   * of its reason), and one audit row when it releases. Before 2026-10-25 a held
+   * configured-local install silently fell back to the Actions mirror; the hold is
+   * now the loud, named state that replaces that fallback.
+   */
+  private noteHold(hold: string | null): void {
+    if (hold === this.heldReason) return;
+    const from = this.heldReason;
+    this.heldReason = hold;
+    if (hold === null) {
+      this.seams.audit({ event: 'local-floor-released', from });
+      this.raised.delete('local-verify:local-floor-held');
+      return;
+    }
+    this.seams.audit({ event: 'local-floor-held', reason: hold, from });
+    this.raised.delete('local-verify:local-floor-held'); // a changed reason is a new episode
+    this.raise('local-verify:local-floor-held', 'local-verify:local-floor-held', {
+      reason: hold,
+      note: 'configured floor is local: eligible heads project pending until the local verifier can vouch; the Actions mirror is never used for them',
+    });
+  }
+
+  private floorOf(pr: OpenPr, enabled: boolean): { eligible: boolean; floor: FloorMode; hold: string | null } {
     const eligible = checkEligibility(
       { author: pr.author ? { login: pr.author } : null, isCrossRepository: pr.isCrossRepository, headRefName: pr.headRefName, headRefOid: pr.headSha, baseRefName: pr.baseRefName, baseRefOid: '' },
       { expectedGhLogin: this.cfg.agentLogin, operatorGhLogin: this.cfg.operatorGhLogin },
     ).eligible;
-    const floor: FloorMode = enabled ? this.floorGate.floorFor({ repo: this.cfg.repo, eligible }) : 'actions';
-    return { eligible, floor };
+    // The CONFIGURED floor decides which authority may say success. A disabled or
+    // not-yet-effective local verifier is a HOLD on the local floor (pending, named),
+    // never a fall-through to the Actions mirror (2026-10-25).
+    const floor: FloorMode = this.floorGate.floorFor({ repo: this.cfg.repo, eligible });
+    const hold = floor === 'local' ? this.localHold(enabled) : null;
+    return { eligible, floor, hold };
   }
 
   /** Per-pass fresh reads a projection needs (check runs for mirror heads). */
@@ -553,9 +594,9 @@ export class StatusReconciler {
     const mh = this.service?.mainHealth();
     const { protectionContexts, rulesetContexts } = this.floorGate.contexts();
     return ctx.prs.map((pr) => {
-      const { eligible, floor } = this.floorOf(pr, enabled);
+      const { eligible, floor, hold } = this.floorOf(pr, enabled);
       return {
-        pr: { number: pr.number, headSha: head, baseRefName: pr.baseRefName, eligible, floor },
+        pr: { number: pr.number, headSha: head, baseRefName: pr.baseRefName, eligible, floor, hold },
         repo: this.cfg.repo,
         record: this.service?.getRecord(pr.number, head, pr.baseRefName) ?? null,
         verifying: this.service?.isVerifying(pr.number, head) ?? false,
@@ -585,7 +626,7 @@ export class StatusReconciler {
     // record whose posted status differs from its projection for > 15 minutes.
     // In dry-run nothing is posted by design, so the canary is not armed.
     const inputs = this.inputsFor(head);
-    const greenAdmissible = enabled && inputs.some((i) => i.pr.floor === 'local' && i.pr.eligible && projectLocal(i).state === 'success');
+    const greenAdmissible = enabled && inputs.some((i) => i.pr.floor === 'local' && i.pr.eligible && !i.pr.hold && projectLocal(i).state === 'success');
     if (this.cfg.postStatuses() && greenAdmissible && obs !== desired.state) {
       const since = this.stuckSince.get(head) ?? now;
       this.stuckSince.set(head, since);
