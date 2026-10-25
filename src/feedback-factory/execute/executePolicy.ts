@@ -257,10 +257,10 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
       // The WHOLE home directory and the shared temp directories are read-denied (other agents'
       // homes, follow-me config homes, sign-in files, shell history, other users' temp files);
       // only the attempt's own trees are re-allowed. The toolchain lives outside home.
-      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace)])],
+      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace, p.tmpDir)])],
       allowRead: [p.workspace, p.depsCache, p.tmpDir],
       allowWrite: [p.workspace, p.tmpDir, ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile), ...(opts.extraWrite ?? [])],
-      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, '.claude'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace)],
+      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, '.claude'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
     },
     enableWeakerNestedSandbox: false,
     enableWeakerNetworkIsolation: false,
@@ -269,16 +269,34 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
 }
 
 /**
- * Shared system temp directories. Claude Code's sandbox allows writes there by default; the policy
- * allows only the attempt's own temp directory, so the shared ones are denied (unless one is an
- * ancestor of the workspace, which never holds in production where the workspace is under the
- * agent home).
+ * Shared system temp directories, denied unless one is an ancestor of something the attempt MUST
+ * be able to use — the workspace, or the attempt's own temp directory.
+ *
+ * The tmpDir arm is load-bearing and was the 2026-10-22..25 `base-unit-smoke` failure. The attempt's
+ * temp directory is deliberately placed under the system temp (`shortAttemptTmpDir`, because unix
+ * socket paths must stay short), and the sandbox runtime documents that for WRITES `denyWrite` takes
+ * precedence over `allowWrite` (the opposite of reads, where `allowRead` wins). So a deny on
+ * `/private/tmp` overrode the allow on `/private/tmp/fb-<id>` and the attempt could not create a
+ * directory inside its own temp: `EPERM … mkdir '/private/tmp/fb-8ac70c2cde/…'`, thrown by vitest's
+ * config resolution. Reads were unaffected, which is why only the smoke probe died and the lint gate
+ * passed. Dropping the ancestor does NOT open the rest of the system temp: writes are allowlist-based
+ * and the system temp itself is never in `allowWrite`, which the canary's `bash-write-system-temp`
+ * must-fail probe proves on every run.
+ *
+ * The workspace arm is the original one and still never fires in production, where the workspace
+ * lives under the agent home.
  */
-export function systemTempDenies(workspace: string): string[] {
+export function systemTempDenies(workspace: string, attemptTmpDir?: string): string[] {
   const candidates = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
   try { candidates.push(fs.realpathSync(os.tmpdir())); } catch { candidates.push(os.tmpdir()); } // @silent-fallback-ok: the unresolved temp path is still denied
-  const ws = path.resolve(workspace);
-  return [...new Set(candidates)].filter((dir) => !ws.startsWith(`${path.resolve(dir)}${path.sep}`));
+  // Compared by REAL path: on macOS `/tmp` is a symlink to `/private/tmp`, so a textual
+  // startsWith against the unresolved spelling would leave the resolved ancestor denied.
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } }; // @silent-fallback-ok: an unresolvable path falls back to its lexical form
+  const protect = [real(workspace), ...(attemptTmpDir ? [real(attemptTmpDir)] : [])];
+  return [...new Set(candidates)].filter((dir) => {
+    const d = real(dir);
+    return !protect.some((p) => p === d || p.startsWith(`${d}${path.sep}`));
+  });
 }
 
 /**

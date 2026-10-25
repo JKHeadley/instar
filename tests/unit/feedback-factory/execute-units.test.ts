@@ -56,9 +56,33 @@ describe('policy', () => {
     expect(s.filesystem.denyWrite).toEqual(expect.arrayContaining(['/h/.worktrees/w/.git', `/h/.worktrees/w/${EVIDENCE_FILE}`, '/h/.worktrees/w/.claude', p.depsCache, p.publishClone, '/tmp']));
     expect(s.filesystem.denyRead).toEqual(expect.arrayContaining(['/u', '/tmp', '/h', p.publishClone, '/u/.ssh', '/u/.claude', '/u/.config']));
     expect(s.filesystem.allowRead).toEqual([p.workspace, p.depsCache, p.tmpDir]);
+    // Production shape: the attempt temp is a SHORT path under the system temp. denyWrite must not
+    // carry an ancestor of it, or the attempt cannot write its own temp (denyWrite beats allowWrite).
+    const shortTmp = fs.realpathSync('/tmp');
+    const sp = { ...p, tmpDir: `${shortTmp}/fb-8ac70c2cde` };
+    const ss = buildSandboxRuntimeSettings(sp);
+    expect(ss.filesystem.allowWrite).toContain(sp.tmpDir);
+    for (const denied of ss.filesystem.denyWrite) {
+      expect(sp.tmpDir === denied || sp.tmpDir.startsWith(`${denied}/`)).toBe(false);
+    }
+    // ...and the system temp itself is still not writable, because writes are allowlist-based.
+    expect(ss.filesystem.allowWrite).not.toContain(shortTmp);
+    expect(ss.filesystem.allowWrite).not.toContain('/tmp');
     expect(buildSandboxRuntimeSettings(p, { network: ['registry.npmjs.org'] }).network.allowedDomains).toEqual(['registry.npmjs.org']);
     expect(credentialReadDenies('/u')).toContain('/u/Library/Keychains');
     expect(systemTempDenies('/tmp/x/ws')).not.toContain('/tmp');
+    // The attempt's OWN temp directory lives under the system temp on purpose (short unix socket
+    // paths). The runtime documents denyWrite as taking precedence over allowWrite, so a deny on
+    // the ancestor made the attempt's own temp unwritable: `EPERM ... mkdir '/private/tmp/fb-<id>/..'`
+    // from vitest's config resolution — three days of `base-unit-smoke` failing (2026-10-22..25).
+    const realTmp = fs.realpathSync('/tmp');
+    expect(systemTempDenies('/h/.worktrees/w', `${realTmp}/fb-abc123`)).not.toContain(realTmp);
+    expect(systemTempDenies('/h/.worktrees/w', `${realTmp}/fb-abc123`)).not.toContain('/tmp');
+    // Dropping the ancestor must not drop the OTHER shared temps.
+    expect(systemTempDenies('/h/.worktrees/w', `${realTmp}/fb-abc123`)).toEqual(expect.arrayContaining(['/var/tmp']));
+    // With no attempt temp under it, the system temp stays denied (the must-fail probe's premise).
+    expect(systemTempDenies('/h/.worktrees/w')).toContain(realTmp);
+    expect(systemTempDenies('/h/.worktrees/w', '/h/.worktrees/w-tmp')).toContain(realTmp);
   });
 
   it('Claude settings: dontAsk allowlist, denies web/MCP and every sibling of the workspace, no system-temp write deny', () => {

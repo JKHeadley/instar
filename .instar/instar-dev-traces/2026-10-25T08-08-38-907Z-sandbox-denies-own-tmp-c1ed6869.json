@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "sandbox-denies-own-tmp",
+  "sessionId": "55e0f463-f29d-4d85-9f19-92a6a4d10aad",
+  "timestamp": "2026-10-25T08:08:38.907Z",
+  "artifactPath": "upgrades/side-effects/sandbox-denies-own-tmp.md",
+  "artifactSha256": "cd65d60fa0b43848f8d36a8f742c3d166c45a6543c57d4e29991bda63a7e6d1b",
+  "coveredFiles": [
+    "docs/specs/sandbox-denies-own-tmp.eli16.md",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/sandbox-denies-own-tmp.md",
+    "upgrades/side-effects/sandbox-denies-own-tmp.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One predicate in one function gains a second protected path, plus the optional argument at its two callsites in the same settings object. No decision surface over agent behaviour: the canary verdict, latch and retry ladder are untouched, and the change can only REMOVE a filesystem deny entry, never add one. Safe for writes by the runtime's documented allowlist semantics plus the canary's own bash-write-system-temp must-fail probe, which proves it every run; the read arm's residue is named explicitly in Under-block. Pinned from both directions by mutation-verified tests (revert fails; over-exempt fails). A revert fully undoes it; no persistent state.",
+  "eli16Path": "docs/specs/sandbox-denies-own-tmp.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sandbox-denies-own-tmp.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
