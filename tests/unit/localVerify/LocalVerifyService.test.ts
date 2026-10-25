@@ -63,7 +63,10 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const timers: Array<() => void> = [];
   const starved: Array<{ pr: number }> = [];
   const records: LocalVerifyRecord[] = [];
+  const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
   let holders: number[] = [];
+  /** What the verifier files on disk compute right now; null (the default) = unknown, never holds. */
+  let diskVersion: string | null = null;
   let t = Date.parse('2026-10-21T12:00:00.000Z');
   let pid = 5000;
   const intentPath = path.join(stateDir, 'state', 'local-verify', 'inflight.json');
@@ -89,6 +92,8 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     foreignSuiteHolders: () => holders.map((pid) => ({ pid })),
     onStarved: (i) => { starved.push(i); },
     onRecord: (r) => { records.push(r); },
+    signal: (key, detail) => { signals.push({ key, detail }); },
+    installedVerifierVersion: () => diskVersion,
     now: () => t,
     setTimer: (fn) => { timers.push(fn); },
   };
@@ -109,8 +114,9 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     await flush();
   };
   return {
-    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, intentPath,
+    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, intentPath,
     setHolders: (h: number[]) => { holders = h; },
+    setDiskVersion: (v: string | null) => { diskVersion = v; },
     advance: (ms: number) => { t += ms; },
     finish, flush,
   };
@@ -839,11 +845,12 @@ describe('verifierVersion: the real import graph, node, and a child-side check',
     expect(JSON.parse(fs.readFileSync(result, 'utf-8'))).toMatchObject({ kind: 'crash', detail: expect.stringMatching(/^verifier-mismatch/) });
   });
 
-  it('the service records a verifier-mismatch crash as errorStep verifier-mismatch', async () => {
+  it('the service treats a verifier-mismatch crash as a hold, never an error record (see "verifier changed on disk")', async () => {
     const s = setup({ views: { 1: view() } });
     await s.svc.request(1);
     await s.finish(0, { kind: 'crash', detail: 'verifier-mismatch: server vh3:a, child vh3:b' } as unknown as VerifyRunResult);
-    expect(s.records[0]).toMatchObject({ outcome: 'error', errorStep: 'verifier-mismatch' });
+    expect(s.records).toEqual([]);
+    expect(s.svc.snapshot().verifierHold).toMatchObject({ where: 'run', detail: 'verifier-mismatch: server vh3:a, child vh3:b' });
   });
 
   it('records survive a boot whose verifier content is unchanged, and re-verify when it changed', async () => {
@@ -1184,5 +1191,160 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(s.spawned).toHaveLength(1);
     const saved = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8')) as { entries: Array<{ pr: number }> };
     expect(saved.entries.map((e) => e.pr)).toEqual([2]);
+  });
+});
+
+// ── Verifier changed on disk (2026-10-24: 00:12:52Z, 10:36:40Z, 2026-10-25T02:59:55Z): an update replaced the dist under the running server ──
+import { VERIFIER_HOLD_SIGNAL_MS, isVerifierMismatch } from '../../../src/localVerify/LocalVerifyService.js';
+
+describe('verifier changed on disk: a verifier-mismatch holds the queue for the restart instead of erroring every entry', () => {
+  const mismatch = (child = 'vh2:new') => ({ kind: 'crash', detail: `verifier-mismatch: server 1.0.0, child ${child}` } as unknown as VerifyRunResult);
+  const audit = (dir: string) => fs.readFileSync(path.join(dir, 'logs', 'local-verify.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+  const queueOnDisk = (dir: string) => (JSON.parse(fs.readFileSync(path.join(dir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<{ pr: number; attempts: number; errorRetries: number }> }).entries;
+
+  it('isVerifierMismatch: the child\'s refusal and nothing else', () => {
+    expect(isVerifierMismatch({ kind: 'crash', detail: 'verifier-mismatch: server a, child b' })).toBe(true);
+    expect(isVerifierMismatch({ kind: 'crash', detail: 'ENOSPC' })).toBe(false);
+    expect(isVerifierMismatch({ kind: 'crash', detail: '' })).toBe(false);
+    expect(isVerifierMismatch(null)).toBe(false);
+    expect(isVerifierMismatch(ok(record()))).toBe(false);
+  });
+
+  it('(a) the mismatch puts the entry back at the head with its attempts unchanged, audits one event, and starts nothing further', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.svc.request(3);
+    expect(s.spawned).toHaveLength(1); // PR 1 running (attempts 1)
+    await s.finish(0, mismatch());
+    // Back at the head, in order, the attempt not counted; no retry counter burned.
+    expect(s.svc.snapshot().queue.map((e) => [e.pr, e.attempts, e.errorRetries])).toEqual([[1, 0, 0], [2, 0, 0], [3, 0, 0]]);
+    expect(s.svc.snapshot().inFlight).toBeNull();
+    expect(s.svc.snapshot().verifierHold).toMatchObject({ where: 'run', detail: expect.stringMatching(/^verifier-mismatch/) });
+    // Nothing more starts, however many ticks and requests: the cascade that burned 10 PRs in one second is closed.
+    for (let i = 0; i < 5; i++) { s.advance(30_000); await s.svc.tick(); }
+    expect(await s.svc.request(4)).toEqual({ ok: false, code: 'pr-unreadable' }); // an unknown PR is still refused as usual…
+    s.views[4] = view({ headRefOid: sha('f') });
+    expect(await s.svc.request(4)).toMatchObject({ ok: true, status: 'queued' }); // …a readable one still queues (behind the held ones)
+    expect(s.spawned).toHaveLength(1);
+    expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([1, 2, 3, 4]);
+    expect(audit(s.stateDir).filter((l) => l.event === 'verifier-changed')).toHaveLength(1);
+    expect(audit(s.stateDir).filter((l) => l.event === 'verifier-changed')[0]).toMatchObject({ where: 'run', pr: 1, headSha: sha('a'), serverVersion: '1.0.0' });
+    expect(audit(s.stateDir).some((l) => l.event === 'run-error' || l.event === 'error-auto-retry' || l.event === 'record')).toBe(false);
+    // The durable queue carries every entry, intact, for the next boot.
+    expect(queueOnDisk(s.stateDir).map((e) => [e.pr, e.attempts, e.errorRetries])).toEqual([[1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]]);
+  });
+
+  it('(c) no error record is written for a mismatch: the journal stays empty, GET record is null, and the next boot drops nothing as already-recorded', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, mismatch());
+    expect(s.records).toEqual([]);
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    expect(fs.existsSync(s.svc.journalPath)).toBe(false);
+    expect(s.svc.snapshot().records).toBe(0);
+  });
+
+  it('(b) after the restart the restored queue runs again, in order, on the new verifier version', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.svc.request(3);
+    await s.finish(0, mismatch('vh2:new'));
+    s.svc.shutdown(); // the update's restart
+    expect(queueOnDisk(s.stateDir).map((e) => e.pr)).toEqual([1, 2, 3]);
+    // The new process computes its verifierVersion from the new files; no hold is carried over.
+    const s2 = setup({ stateDir: s.stateDir, views: s.views, verifierVersion: 'vh2:new' });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().verifierHold).toBeNull();
+    expect(s2.svc.snapshot().queue.map((e) => [e.pr, e.attempts])).toEqual([[1, 0], [2, 0], [3, 0]]); // nothing dropped as already-recorded
+    expect(audit(s.stateDir).filter((l) => l.event === 'queue-restored').pop()).toMatchObject({ restored: 3, dropped: 0 });
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(s2.spawned[0].args[s2.spawned[0].args.indexOf('--input') + 1], 'utf-8'))).toMatchObject({ pr: 1, verifierVersion: 'vh2:new' });
+    await s2.finish(0, ok(record({ verifierVersion: 'vh2:new' })));
+    expect(s2.records).toHaveLength(1);
+    expect(s2.spawned).toHaveLength(2); // PR 2 follows
+  });
+
+  it('a `main` entry is handled the same way: re-queued, no main record, no main error retry', async () => {
+    const s = setup({ views: {} });
+    s.svc.noteMainHead(sha('7'));
+    await s.svc.settle();
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(s.spawned[0].args[s.spawned[0].args.indexOf('--input') + 1], 'utf-8'))).toMatchObject({ kind: 'main', headSha: sha('7') });
+    const before = s.svc.mainHealth();
+    await s.finish(0, mismatch());
+    expect(s.svc.snapshot().queue.map((e) => [e.kind, e.headSha, e.attempts])).toEqual([['main', sha('7'), 0]]);
+    expect(s.svc.mainHealth()).toMatchObject({ state: before.state, redHead: before.redHead, lastGreenHead: before.lastGreenHead });
+    expect(audit(s.stateDir).some((l) => l.event === 'main-record' || l.event === 'main-error-retry' || l.event === 'run-error')).toBe(false);
+    expect(audit(s.stateDir).filter((l) => l.event === 'verifier-changed')[0]).toMatchObject({ where: 'run', kind: 'main', headSha: sha('7') });
+    for (let i = 0; i < 3; i++) { s.advance(30_000); await s.svc.tick(); }
+    expect(s.spawned).toHaveLength(1);
+  });
+
+  it('pre-start check: files that no longer compute the server\'s version enter the hold without spawning; matching files again release it', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    s.setDiskVersion('1.0.0'); // in step: starts as usual
+    await s.svc.request(1);
+    expect(s.spawned).toHaveLength(1);
+    await s.svc.request(2);
+    s.setDiskVersion('vh2:replaced'); // npm replaced the dist while PR 1 runs
+    await s.finish(0, ok(record()));
+    expect(s.records).toHaveLength(1); // the finished run is recorded under the version it ran as
+    expect(s.spawned).toHaveLength(1); // PR 2 is NOT spawned into a child that would refuse
+    expect(s.svc.snapshot().verifierHold).toMatchObject({ where: 'before-start', detail: 'verifier-mismatch: server 1.0.0, disk vh2:replaced' });
+    expect(s.svc.snapshot().queue.map((e) => [e.pr, e.attempts])).toEqual([[2, 0]]);
+    expect(audit(s.stateDir).filter((l) => l.event === 'verifier-changed')).toEqual([expect.objectContaining({ where: 'before-start', serverVersion: '1.0.0' })]);
+    for (let i = 0; i < 3; i++) { s.advance(30_000); await s.svc.tick(); }
+    expect(s.spawned).toHaveLength(1);
+    // The files compute the server's version again (a flip that undid itself): the hold lifts, the queue resumes.
+    s.setDiskVersion('1.0.0');
+    s.advance(30_000);
+    await s.svc.tick();
+    expect(s.svc.snapshot().verifierHold).toBeNull();
+    expect(s.spawned).toHaveLength(2);
+    expect(audit(s.stateDir).filter((l) => l.event === 'verifier-hold-released')).toHaveLength(1);
+  });
+
+  it('an unknown on-disk version (no seam answer, or a read error) never holds: the child\'s own check decides', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setDiskVersion(null);
+    await s.svc.request(1);
+    expect(s.spawned).toHaveLength(1);
+    const s2 = setup({ views: { 1: view() } });
+    (s2.svc as unknown as { seams: LocalVerifyServiceSeams }).seams.installedVerifierVersion = () => { throw new Error('ENOENT mid-replacement'); };
+    await s2.svc.request(1);
+    expect(s2.spawned).toHaveLength(1);
+    expect(s2.svc.snapshot().verifierHold).toBeNull();
+  });
+
+  it('a hold that outlives the restart it waits for is signalled once (local-verify:verifier-hold), then stays quiet', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, mismatch());
+    s.advance(VERIFIER_HOLD_SIGNAL_MS - 1);
+    await s.svc.tick();
+    expect(s.signals).toEqual([]);
+    s.advance(1);
+    await s.svc.tick();
+    expect(s.signals).toEqual([{ key: 'local-verify:verifier-hold', detail: expect.objectContaining({ heldMs: VERIFIER_HOLD_SIGNAL_MS, queued: 2, serverVersion: '1.0.0' }) }]);
+    for (let i = 0; i < 4; i++) { s.advance(VERIFIER_HOLD_SIGNAL_MS); await s.svc.tick(); }
+    expect(s.signals).toHaveLength(1);
+    expect(audit(s.stateDir).filter((l) => l.event === 'verifier-hold-overdue')).toHaveLength(1);
+    expect(s.spawned).toHaveLength(1); // still held: only a restart (or the files matching again) resumes
+  });
+
+  it('an ordinary crash is still an error record with one automatic re-run (the mismatch path changed nothing else)', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.finish(0, { kind: 'crash', detail: 'spawn ENOMEM' } as unknown as VerifyRunResult);
+    expect(s.spawned).toHaveLength(2); // the error auto-retry
+    await s.finish(1, null);
+    expect(s.records.map((r) => r.errorStep)).toEqual(['crash', 'crash']);
+    expect(s.svc.snapshot().verifierHold).toBeNull();
   });
 });

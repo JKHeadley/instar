@@ -115,6 +115,9 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
       signal: (k, d) => opts.hooks?.signal?.(k, d),
       isAncestor: (a, d) => isAncestorInBareClone(opts.agentHome, a, d),
+      // The same computation, over the files as they are NOW: an update that replaced the dist
+      // under this still-running server holds the queue for the restart instead of burning it.
+      installedVerifierVersion: () => computeVerifierVersion(path.dirname(mainEntry), undefined, { protectedList: PROTECTED_PATH_PREFIXES }),
     },
   );
   return { service, reason: null };

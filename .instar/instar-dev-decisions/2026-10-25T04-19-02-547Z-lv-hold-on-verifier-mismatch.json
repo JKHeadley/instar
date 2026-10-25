@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-25T04:19:02.547Z",
+  "slug": "lv-hold-on-verifier-mismatch",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 107,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts"
+    ],
+    "addedLines": 102,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

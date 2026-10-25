@@ -16,7 +16,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
+import type { LocalVerifyServiceSeams } from '../../src/localVerify/LocalVerifyService.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
+import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
+import { PROTECTED_PATH_PREFIXES } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -78,10 +81,16 @@ describe('local-verify lifecycle (production wiring)', () => {
     });
     expect(built.reason).toBeNull();
     expect(built.service).not.toBeNull();
+    // Wiring integrity: the pre-start verifier check is a real computation over the installed
+    // files (the same one the config's verifierVersion came from), not a no-op; in step at boot.
+    const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    expect(typeof seams.installedVerifierVersion).toBe('function');
+    expect(seams.installedVerifierVersion!()).toBe(computeVerifierVersion(path.dirname(DIST_ENTRY), undefined, { protectedList: PROTECTED_PATH_PREFIXES }));
+    expect(seams.installedVerifierVersion!()).toMatch(/^vh\d+:[0-9a-f]{32}$/);
     await built.service!.boot();
     const r = await request(serve(ctx(stateDir, built.service))).get('/local-verify');
     expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, records: 0 });
+    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0 });
     built.service!.shutdown();
   });
 

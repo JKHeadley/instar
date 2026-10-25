@@ -145,6 +145,12 @@ export interface LocalVerifyServiceSeams {
   onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
   /** The AutoUpdater state rule (b) needs (narrow seam; absent or null ⇒ never pauses). */
   updatePending?(): UpdatePendingState | null;
+  /**
+   * The verifier version as the files ON DISK compute it right now (what a run child spawned
+   * now would see). Absent or null ⇒ unknown: the pre-start check never holds, the child's own
+   * check still refuses a changed verifier.
+   */
+  installedVerifierVersion?(): string | null;
   /** Deduped attention signal (`local-verify:main-red`, `local-verify:main-unverified`, `local-verify:flaky:<file>`). */
   signal?(key: string, detail: Record<string, unknown>): void;
   /** A `main` head's subject and parents (release collapse); null when unreadable (verify as usual). */
@@ -396,6 +402,26 @@ export interface UpdatePendingState {
 export const UPDATE_PAUSE_MAX_MS = 120 * 60_000;
 
 /**
+ * A verifier-changed hold normally ends with the update's restart (~1 min after the files
+ * land). One that outlives this is a restart that is not coming: it is signalled once.
+ */
+export const VERIFIER_HOLD_SIGNAL_MS = 15 * 60_000;
+
+/** A run child's `verifier-mismatch` refusal (runVerifyMain.checkVerifierVersion), as distinct from any other crash. */
+export function isVerifierMismatch(result: VerifyRunResult | { kind: 'crash'; detail: string } | null): boolean {
+  return !!result && result.kind === 'crash' && String((result as { detail?: unknown }).detail ?? '').startsWith('verifier-mismatch');
+}
+
+/** The verifier-changed hold: the installed verifier differs from the one this server labels records with. */
+export interface VerifierHold {
+  since: number;
+  detail: string;
+  /** How it was found: the run child refused, or the pre-start check saw the files differ. */
+  where: 'run' | 'before-start';
+  signalled: boolean;
+}
+
+/**
  * Spec §2 Restarts rule (b): while an update is pending and this verifier's own hold is the
  * only thing delaying the restart, NO NEW verify starts (the running one finishes and the
  * restart goes ahead). Starts resume once the update has been pending > 120 min, or when
@@ -474,6 +500,12 @@ export class LocalVerifyService {
   /** Rule (b) pause bookkeeping. */
   private pausedSince: number | null = null;
   private updateProvider: (() => UpdatePendingState | null) | null = null;
+  /**
+   * The installed verifier changed under this server (an update replaced the files on disk;
+   * the restart follows). Nothing starts while set; the hold is in-memory only, so the next
+   * boot — whose verifierVersion is computed from the new files — resumes the queue in order.
+   */
+  private verifierHold: VerifierHold | null = null;
   /** Merge line (CMT-980): the late-bound watcher, the open hold, and when `main` last moved. */
   private mergeHandoff: MergeHandoff | null = null;
   /** The live kill switch (`monitoring.localVerify.mergeLine`); absent ⇒ on. */
@@ -537,13 +569,15 @@ export class LocalVerifyService {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']> } {
+  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']> } {
+    const h = this.verifierHold;
     return {
       queue: this.queue.map((e) => ({ ...e })),
       inFlight: this.inFlight
         ? { pr: this.inFlight.entry.pr, headSha: this.inFlight.entry.headSha, ...(this.inFlight.entry.kind ? { kind: this.inFlight.entry.kind } : {}) }
         : null,
       blocked: this.blockedBy !== null,
+      verifierHold: h ? { since: new Date(h.since).toISOString(), detail: h.detail, where: h.where } : null,
       records: this.index.size,
       flakyFiles: this.flakyFiles(),
       mergeLine: this.mergeLine(),
@@ -934,6 +968,7 @@ export class LocalVerifyService {
   /** Periodic driver: orphan unblock, starvation signal, start the next run. */
   async tick(): Promise<void> {
     if (this.blockedBy) await this.reapOrphan();
+    if (this.verifierHold) this.recheckVerifierHold();
     this.notePause();
     this.checkStarved();
     this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
@@ -995,10 +1030,59 @@ export class LocalVerifyService {
     return paused;
   }
 
+  /**
+   * The installed verifier changed under this server: hold the queue for the restart. One open
+   * hold at a time (the first finding is audited; later ones while held are the same event).
+   * Never a record, never an attempt — the entries are intact for the next boot, which resumes
+   * them in order.
+   */
+  private enterVerifierHold(detail: string, where: VerifierHold['where'], ctx: Record<string, unknown> = {}): void {
+    if (this.verifierHold) return;
+    this.verifierHold = { since: this.now(), detail, where, signalled: false };
+    this.audit({ event: 'verifier-changed', where, detail, serverVersion: this.cfg.verifierVersion, ...ctx });
+  }
+
+  /**
+   * Before a start: do the files on disk still compute this server's verifierVersion? When they
+   * do not, a run child spawned now would refuse (`verifier-mismatch`), so the hold is entered
+   * without spawning. Unknown (no seam, a read error mid-replacement) ⇒ false: the child's own
+   * check still decides.
+   */
+  private verifierChangedOnDisk(): boolean {
+    if (this.verifierHold) return true;
+    let disk: string | null = null;
+    try { disk = this.seams.installedVerifierVersion?.() ?? null; } catch { disk = null; } // @silent-fallback-ok: unknown never holds; the run child re-checks
+    if (disk === null || disk === this.cfg.verifierVersion) return false;
+    this.enterVerifierHold(`verifier-mismatch: server ${this.cfg.verifierVersion}, disk ${disk}`, 'before-start');
+    return true;
+  }
+
+  /**
+   * While held: the files may compute this server's version again (a flip that undid itself),
+   * which releases the hold; a hold that outlives the restart it waits for is signalled once.
+   */
+  private recheckVerifierHold(): void {
+    const h = this.verifierHold;
+    if (!h) return;
+    let disk: string | null = null;
+    try { disk = this.seams.installedVerifierVersion?.() ?? null; } catch { disk = null; } // @silent-fallback-ok: unknown keeps the hold
+    if (disk !== null && disk === this.cfg.verifierVersion) {
+      this.verifierHold = null;
+      this.audit({ event: 'verifier-hold-released', heldMs: this.now() - h.since, where: h.where });
+      return;
+    }
+    const heldMs = this.now() - h.since;
+    if (!h.signalled && heldMs >= VERIFIER_HOLD_SIGNAL_MS) {
+      h.signalled = true;
+      this.audit({ event: 'verifier-hold-overdue', heldMs, where: h.where, queued: this.queue.length });
+      this.seams.signal?.('local-verify:verifier-hold', { heldMs, detail: h.detail, queued: this.queue.length, serverVersion: this.cfg.verifierVersion });
+    }
+  }
+
   private pump(): void {
     this.persistQueue();
     // A merge hand-off holds the queue (bounded): the next PR is verified on top of the merge, not against it.
-    if (this.stopped || this.restoring || this.inFlight || this.starting || this.blockedBy || this.mergeHold || this.queue.length === 0) return;
+    if (this.stopped || this.restoring || this.inFlight || this.starting || this.blockedBy || this.mergeHold || this.verifierHold || this.queue.length === 0) return;
     if (this.notePause()) return; // an update is waiting only on us: let the running verify end, start nothing
     const holders = this.seams.foreignSuiteHolders();
     if (holders.length > 0) {
@@ -1006,6 +1090,9 @@ export class LocalVerifyService {
       this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });
       return;
     }
+    // The files on disk must still be the verifier this server labels records with: an update
+    // that landed under us holds the queue for the restart instead of spawning a child that refuses.
+    if (this.verifierChangedOnDisk()) return;
     this.queue.sort((a, b) => b.priority - a.priority); // stable: FIFO within a priority
     const d = decideStart({
       foreignHolders: 0, queue: this.queue, now: this.now(),
@@ -1187,6 +1274,15 @@ export class LocalVerifyService {
     this.removeRunFiles(f);
     if (f.cancelled) {
       this.audit({ event: 'cancelled', pr: f.entry.pr, headSha: f.entry.headSha, exit });
+    } else if (isVerifierMismatch(result)) {
+      // The run child found the installed verifier differs from this server's (an update landed
+      // on disk; the restart follows). Not this entry's fault and not an attempt: it goes back
+      // to the head of the queue with no record, and nothing starts until the restart. PR and
+      // `main` entries alike — the old 'error' record burned the whole queue in a second
+      // (2026-10-24, three times: 9, 4 and 10 PRs), each record dequeuing its entry, so the next boot restored nothing.
+      f.entry.attempts = Math.max(0, f.entry.attempts - 1);
+      this.queue.unshift(f.entry);
+      this.enterVerifierHold(String((result as { detail: string }).detail), 'run', { pr: f.entry.pr, headSha: f.entry.headSha, ...(f.entry.kind ? { kind: f.entry.kind } : {}), exit });
     } else if (f.entry.kind === 'main' && result?.kind !== 'requeue') {
       if (!result || result.kind === 'crash' || result.kind === 'invalid') {
         this.audit({ event: 'run-error', kind: 'main', headSha: f.entry.headSha, exit });
@@ -1195,9 +1291,7 @@ export class LocalVerifyService {
         this.completeMain(result.record, f.entry, { reasons: result.reasons, failures: result.failures });
       }
     } else if (!result || result.kind === 'crash' || result.kind === 'invalid') {
-      const step = !result ? 'crash'
-        : result.kind === 'crash' ? (String(result.detail ?? '').startsWith('verifier-mismatch') ? 'verifier-mismatch' : 'crash')
-          : 'invalid-record';
+      const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
       this.audit({ event: 'run-error', pr: f.entry.pr, step, exit, detail: result && 'detail' in result ? result.detail : undefined });
       this.complete(this.syntheticError(f.entry, step), 'run');
       this.handleErrorRetry(f.entry);
