@@ -8913,6 +8913,17 @@ The automatic "Message received. Composing response..." ack I send a peer over t
       result.upgraded.push('CLAUDE.md: added A2A ack waits for a live session section');
     }
 
+    // A2A new thread with a peer (Echo Bugs 10000000781, Agent awareness). OWN
+    // sniff key `A2A new thread with a peer` — content-sniffed.
+    if (!content.includes('A2A new thread with a peer')) {
+      content += '\n\n' + `### A2A new thread with a peer
+
+A send to a peer with no \`threadId\` continues my existing conversation with that peer. To open a separate thread with the same peer, I pass \`newThread: true\` to \`threadline_send\` (or \`newThread\` / \`fork: true\` to \`POST /threadline/relay-send\`): the response's \`threadId\` is the new thread, and later sends on it pass that \`threadId\`. \`newThread\` together with a \`threadId\` is refused (400 \`fork-conflicts-with-threadId\`), and a new thread that did not go out as one is a 502 \`fork-not-honoured\`, never a success on the old thread. **When to use** (PROACTIVE): a second, unrelated piece of work with a peer I already talk to → \`newThread: true\`, so the two conversations do not mix.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added A2A new thread with a peer section');
+    }
+
     // Lifeline ingress secret (docs/specs/telegram-internal-route-lifeline-secret.md,
     // Agent awareness). OWN sniff key `Telegram internal routes need the lifeline
     // secret` — content-sniffed for idempotency.
@@ -12235,6 +12246,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // of the relay's automatic ack, framework-agnostic — a Codex/Gemini agent
       // must know what an ack, and a missing ack, now mean.
       '### A2A ack waits for a live session',
+      // A2A new thread with a peer: a server-side relay-send option,
+      // framework-agnostic — a Codex/Gemini agent must know how to open a
+      // second thread with a peer and what the 400/502 mean.
+      '### A2A new thread with a peer',
       // A2A local-route trust: a server-side check on the same-machine inbound
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
       // the watch-only counters.

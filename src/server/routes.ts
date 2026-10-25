@@ -38011,6 +38011,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ success: false, error: 'Missing required fields: targetAgent, message' });
       return;
     }
+    // Explicit new-thread intent (`fork` / `newThread`). A request that names a
+    // thread AND asks for a new one cannot honour both, so it is refused rather
+    // than silently sent on the named thread.
+    const forkRequested = req.body?.fork === true || req.body?.newThread === true;
+    if (forkRequested && typeof threadId === 'string' && threadId) {
+      res.status(400).json({
+        success: false,
+        refused: true,
+        reason: 'fork-conflicts-with-threadId',
+        error: 'newThread/fork asks for a new thread, but a threadId was also given. Send one or the other.',
+      });
+      return;
+    }
     // ── A2A cross-machine route (docs/specs/a2a-cross-machine-route.md §3) ──
     // A request that carries THIS server's boot secret is my own mesh handler
     // running a send that a relay standby of mine forwarded here. ONLY under the
@@ -38302,6 +38315,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // first-contact messages aren't dropped on the recipient side. Both
     // sender and recipient will agree on this id going forward.
     let effectiveThreadId = threadId ?? randomUUID();
+    // The thread THIS route decided the wire must carry when the caller named
+    // none: a requested fork (the freshly minted id) or an enforced join of the
+    // canonical thread. Left undefined, the relay leg passes no thread and the
+    // relay client continues its own per-peer thread, which is the default
+    // "continue the conversation" behaviour — and which would silently swallow
+    // a fork.
+    let routeDecidedWireThreadId: string | undefined = forkRequested ? effectiveThreadId : undefined;
 
     // ── Robustness Phase 2 (D-E): conversation-discipline resolver ──────────
     // Default-join the canonical thread for a verified (peer, workstream) instead
@@ -38314,7 +38334,6 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const cdCfg = (ctx.config as { threadline?: { canonicalHistory?: { conversationDiscipline?: { enabled?: boolean; dryRun?: boolean }; workstreamKeyMode?: 'subject-slug' | 'peer-only' | 'off' } } }).threadline?.canonicalHistory;
       const resolverEnabled = resolveDevAgentGate(cdCfg?.conversationDiscipline?.enabled, ctx.config as { developmentAgent?: boolean });
       const resolverDryRun = cdCfg?.conversationDiscipline?.dryRun ?? true;
-      const forkRequested = req.body?.fork === true || req.body?.newThread === true;
       // Best-effort VERIFIED principal available locally (never a name the peer
       // asserts): a fingerprint-shaped target or a curated nickname mapping.
       const resolverPrincipal = looksLikeFingerprint ? targetAgent : (nicknameResolvedFp ?? undefined);
@@ -38331,6 +38350,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           isHolder: true, // single-holder: this server is the holder for local conversations
         });
         effectiveThreadId = decided.threadId;
+        if (!threadId && (forkRequested || decided.decision === 'joined:existing-binding')) {
+          routeDecidedWireThreadId = effectiveThreadId;
+        }
       } catch { /* @silent-fallback-ok: the resolver is recoverable routing; on any error keep the minted threadId */ }
     }
 
@@ -38854,7 +38876,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // The relay leg's thread + resend mark, exactly as the local relay leg
         // would have carried them (a2a-backup-routes §1).
         const ft = backupRoutesOn ? classifyFallthrough(localPostOutcome) : null;
-        const forwardThreadId = ft?.postIssued ? effectiveThreadId : (typeof threadId === 'string' && threadId ? threadId : undefined);
+        const forwardThreadId = ft?.postIssued
+          ? effectiveThreadId
+          : (typeof threadId === 'string' && threadId ? threadId : routeDecidedWireThreadId);
         let outcome: ForwardOutcome;
         try {
           outcome = await fwdCtx.forward({
@@ -38977,7 +39001,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // proven. Exempt from the ledger's 5-minute replay wait: the relay has
       // never seen this id. The relay leg's verdict stays the row's verdict.
       const fallthrough = backupRoutesOn ? classifyFallthrough(localPostOutcome) : null;
-      const relayLegThreadId = fallthrough?.postIssued ? effectiveThreadId : threadId;
+      const relayLegThreadId = fallthrough?.postIssued ? effectiveThreadId : (threadId ?? routeDecidedWireThreadId);
       if (fallthrough?.postIssued) {
         if (fallthrough.marked) {
           backupRouteCounters.markedFallthrough++;
@@ -39024,6 +39048,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       const { messageId: relayMsgId, threadId: effectiveRelayThreadId } = sent;
+      // A requested fork must have gone on the wire on the new thread. The relay
+      // client honours an explicit thread, so a mismatch means a client that
+      // ignored it. The message is already out, so every record below still
+      // runs; only the answer changes: a 502 saying where it went (and not to
+      // resend), never a success on the old thread.
+      if (forkRequested && relayLegThreadId && effectiveRelayThreadId !== relayLegThreadId) {
+        console.error(`[relay-send] newThread requested but the relay client sent on ${effectiveRelayThreadId} instead of ${relayLegThreadId} (message ${relayMsgId})`);
+        const origJson = res.json.bind(res);
+        (res as unknown as { json: (b: unknown) => unknown }).json = (body: unknown) => {
+          if (body && typeof body === 'object' && (body as { success?: boolean }).success) {
+            res.status(502);
+            Object.assign(body as Record<string, unknown>, {
+              success: false,
+              reason: 'fork-not-honoured',
+              error: `A new thread was requested, but the message was delivered on the existing thread ${effectiveRelayThreadId}. Do not resend it.`,
+            });
+          }
+          return origJson(body as Record<string, unknown>);
+        };
+      }
       // waitForReply: the reply listener is registered NOW, before any await, so
       // it runs concurrently with the verdict wait (no time comes off the reply
       // budget, and a fast reply can never land in a gap with no listener).

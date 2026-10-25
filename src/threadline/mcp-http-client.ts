@@ -67,6 +67,9 @@ export async function sendMessageViaHttp(
         // Forward the caller's intent string; relay-send stamps it onto the
         // local commitment record so context is available when the reply lands.
         purpose: params.purpose,
+        // Explicit new-thread intent; relay-send refuses it rather than
+        // silently continuing the existing thread.
+        ...(params.newThread ? { newThread: true } : {}),
       }),
     });
 

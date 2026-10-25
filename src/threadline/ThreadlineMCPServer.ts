@@ -145,6 +145,8 @@ export interface SendMessageParams {
   originTopicId?: number;
   /** Optional intent string. Stored locally on the commitment, never sent over the wire. */
   purpose?: string;
+  /** Open a NEW thread with this peer instead of continuing the existing one. */
+  newThread?: boolean;
 }
 
 export interface SendMessageResult {
@@ -600,7 +602,11 @@ export class ThreadlineMCPServer {
       {
         agentId: z.string().describe('Target agent name or fingerprint (e.g. "AI Guy" or "fd9268c2...")'),
         threadId: z.string().optional().describe(
-          'Thread ID to resume (omit for new conversation)'
+          'Thread ID to resume. Omit to continue the current conversation with this agent (or start the first one).'
+        ),
+        newThread: z.boolean().default(false).describe(
+          'Open a NEW, separate thread with this agent instead of continuing the existing one. ' +
+          'Cannot be combined with threadId.'
         ),
         message: z.string().describe('Message content'),
         inReplyTo: z.string().optional().describe(
@@ -679,6 +685,7 @@ export class ThreadlineMCPServer {
             timeoutSeconds: args.timeoutSeconds,
             originTopicId: args.originTopicId,
             purpose: args.purpose,
+            ...(args.newThread ? { newThread: true } : {}),
           });
 
           if (!result.success) {
