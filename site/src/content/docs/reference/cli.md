@@ -172,6 +172,13 @@ instar channels doctor [adapter] # Diagnose adapter issues
 instar channels status          # Show adapter status
 ```
 
+Telegram message-origin maintenance is local-only on purpose (never an HTTP route):
+
+```bash
+instar telegram-origin enroll-browser <profileId>  # After a Telegram Web K update: run the read-only canary and enroll the build if it is on the reviewed list. Sends nothing.
+  [--evidence-out <file>]                           # Write the canary result as JSON
+```
+
 ## Relationships
 
 ```bash
