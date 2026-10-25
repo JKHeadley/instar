@@ -278,6 +278,7 @@ describe('Feature Delivery Completeness', () => {
       ['/telegram/system-topics', 'telegramSystemTopicsAwareness'],
       ['Origin worker health:', 'telegramOriginWorkerAwareness'],
       ['Dashboard edit rejection:', 'telegramDashboardEditAwareness'],
+      ['Telegram Web K updates:', 'telegramOriginBrowserDriftAwareness'], // telegram-message-origin Web K drift: the browser-route hold on an unreviewed build (failedBuilds, one attention item per failed build) + the reviewed re-enrollment path (`instar telegram-origin enroll-browser`); composed into telegramOriginAwareness() for new agents, own content-sniff + shadow addendum for existing ones.
     ];
     for (const [phrase, builder] of featureAddenda) {
       it(`origin addendum "${phrase}" reaches new and existing framework instructions`, () => {
