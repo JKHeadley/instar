@@ -1010,6 +1010,22 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Un-droppable growth-digest delivery: a retryable blocked send re-queues + escalates instead of consuming its weekly window (dev-gated).',
   },
   {
+    // A/B (maturation-followthrough-fix Standards A + B): the engine reads the
+    // real dark-flag inventory and every dark flag gets owner + deadline +
+    // proof-of-life. Registered here deliberately so this feature DOGFOODS its
+    // own guarantee — it is itself a staged switch, so its own registry tracks
+    // it, and the Guard-Posture Tripwire catches an enabled→disabled rollback.
+    key: 'monitoring.growthAnalyst.darkFlagInventory.enabled',
+    kind: 'config',
+    configPath: 'monitoring.growthAnalyst.darkFlagInventory.enabled',
+    dryRunConfigPath: 'monitoring.growthAnalyst.darkFlagInventory.dryRun',
+    defaultEnabled: false,
+    process: 'server',
+    expectRuntime: false,
+    component: 'GrowthMilestoneAnalyst',
+    description: 'Code-derived staged-switch inventory: every dark / dry-run guard gets a durable owner, deadline and proof-of-life instead of only the features whose spec opted in.',
+  },
+  {
     key: 'monitoring.blockerLedger.enabled',
     kind: 'config',
     configPath: 'monitoring.blockerLedger.enabled',

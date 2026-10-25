@@ -86,8 +86,6 @@ export interface ProjectionInput {
   /** A verify of exactly (pr, head) is queued or running. */
   verifying: boolean;
   mainHealth: MainHealthView;
-  operatorApprovedHead: boolean;
-  approverAcceptanceMatches: boolean;
   /** Required for the mirror (actions floor or ineligible); ignored on the local floor. */
   mirror?: MirrorInput;
 }
@@ -119,8 +117,12 @@ export function projectLocal(input: ProjectionInput): Projection {
     return p('failure', 'lane-counts', `lane-counts · ${statusDescription(record)}`);
   }
   const flagged = record.harnessChanging || record.protectedPath || record.skipsAdded || record.testsRemoved;
-  if (flagged && !input.operatorApprovedHead) return p('pending', 'awaiting-operator-approval', `awaiting-operator-approval · ${statusDescription(record)}`);
-  if (flagged && !input.approverAcceptanceMatches) return p('pending', 'approver-dependent', `approver-dependent · ${statusDescription(record)}`);
+  // A flagged record needs the independent second-pass review the verifier found in the
+  // head's tree; operator approval is not part of it (directive 2026-10-22: the operator
+  // approves constitution changes only, enforced by GitHub through CODEOWNERS).
+  if (flagged && record.independentReview?.concurred !== true) {
+    return p('pending', 'awaiting-independent-review', `awaiting-independent-review · ${statusDescription(record)}`);
+  }
   if (mainHealth.state !== 'healthy') {
     // The repair exception: a record verified against the current `main` head.
     const repair = mainHealth.mainHeadSha !== null && record.baseSha === mainHealth.mainHeadSha;

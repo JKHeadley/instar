@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-23T17:01:25.047Z",
+  "slug": "transfer-drain-close-refused",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 97,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionDrainRunner.ts",
+      "src/core/SessionManager.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

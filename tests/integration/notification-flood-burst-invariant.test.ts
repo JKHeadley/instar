@@ -431,6 +431,7 @@ describe('Standard C — topic-less notice routing default (contract, adapter bo
         category: 'burst-test',
         priority,
         sourceContext: `/crit/${priority}`,
+        needsUser: true, // a real "act now" item — passes the default hub filter
       });
       expect(item.coalesced).toBe(true);
       expect(item.topicId).toBeDefined();

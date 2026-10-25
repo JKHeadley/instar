@@ -1,5 +1,6 @@
 import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 import { poolReadSelectionAwareness } from './poolReadAwareness.js';
+import { peerHomebaseAwareness, PEER_HOMEBASE_AWARENESS_V1_LIMITS, PEER_HOMEBASE_AWARENESS_V2_LIMITS } from './peerHomebaseAwareness.js';
 import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
  * Post-Update Migrator — the "intelligence download" layer.
@@ -7047,6 +7048,38 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added pool-read selection + failure-reason awareness');
     }
 
+    // peer-conversation-homebase-topic — where a peer agent's notices go.
+    // Its OWN sniff string, deliberately: nesting it under the pool-read guard above would
+    // mean an agent that already received that card could never receive this one, which is
+    // the Migration Parity defect the standard exists to prevent (a feature that only
+    // reaches new agents is a broken feature).
+    if (!content.includes('per-peer homebase topic')) {
+      content += '\n' + peerHomebaseAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added per-peer homebase topic awareness');
+    } else if (content.includes(PEER_HOMEBASE_AWARENESS_V1_LIMITS) || content.includes(PEER_HOMEBASE_AWARENESS_V2_LIMITS)) {
+      // The first card said there was no backfill, the second that a failed creation waited for
+      // the next server start; both are now wrong. Replace the whole card in
+      // place (it is the last thing up to the next heading) so the agent stops repeating it.
+      const start = content.indexOf("### Where a peer agent's notices go (per-peer homebase topic)");
+      const after = start >= 0 ? content.indexOf('\n#', start + 10) : -1;
+      if (start >= 0) {
+        content = content.slice(0, start) + peerHomebaseAwareness() + (after >= 0 ? content.slice(after) : '\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: refreshed per-peer homebase topic awareness (backfill)');
+      }
+    }
+    // The topic was renamed to "🤝 <peer>" — an agent holding the original card would keep
+    // looking for the old "<peer> · Threadline · <fp6>" name, so swap the card in place.
+    else if (content.includes('named `"<peer> · Threadline · <fp6>"`')) {
+      const replaced = replacePeerHomebaseCard(content, peerHomebaseAwareness());
+      if (replaced !== content) {
+        content = replaced;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated per-peer homebase topic awareness (🤝 <peer> naming)');
+      }
+    }
+
     if (!content.includes('/telegram/system-topics')) {
       content += '\n' + telegramSystemTopicsAwareness();
       patched = true;
@@ -8374,6 +8407,13 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(skillDrivenEnd, skillDrivenEnd + '\n' + "- **Failed sign-in repairs retry slowly** \u2014 a repair that ended `failed` on a budget or transient reason (not a safety refusal, not an operator cancel) tries again on its own while the account stays signed out: 6 hours after the failure, then 24 hours apart, at most 3 times per incident. Unattended identities restart with no tap; approval-mode accounts are re-offered for one tap. The next try time is `nextAttemptAt` on the episode in `GET /subscription-relogin` and shows on the dashboard cell. A failure notice is held while a retry will still follow; approval re-offers never go out 23:00–08:00 local; a helper-reported hard line (CAPTCHA, phone check, wrong account, unexpected site) or too few stored backup codes (fewer than a full run plus one; any backup-code account on the Mac helper path) holds the account at approval. Stop one repair's retries: \"Don't retry on its own\" on its failed cell. Off switch: `subscriptionPool.assistedRelogin.slowRetry.enabled: false`. When the user asks \"why did that repair start again by itself?\" \u2192 this.");
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
+      }
+      // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
+      const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
+      if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {
+        content = content.replace(slowRetryEnd, slowRetryEnd + '\n' + "- **Last-resort sign-in model (one-subscription agents)** — the repair's own model calls (the step supervisor and the page navigator) run on the shared internal model first. On an agent with a single subscription that model runs on the very login that is dead, and on the Mac helper path there is no other healthy account to run the helper on, so until now the only account's expired sign-in always waited for you. Now, if the vault holds an Anthropic API key under the name `relogin_last_resort_anthropic_api_key`, a lightweight model over that key answers those calls when the shared model fails, and a repair with no other healthy account on this machine drives the server-side browser path with agent navigation instead of stopping at `no-healthy-seat` (its audit shows `last-resort-drive-started`). Placing the key under that name is the consent to spend; `ANTHROPIC_API_KEY` and the general `intelligenceProvider` setting are never read, every other internal call stays on the subscription, and the caps are 60 calls per drive and 300 per day (`subscriptionPool.assistedRelogin.lastResort`: `enabled`, `keyName`, `model`, `maxCallsPerDrive`, `maxCallsPerDay`; off with `enabled: false`). Success is still decided only by Instar (completed login, verified email, a real authenticated call). Two accounts need no key: the other account runs the helper, Claude or Codex, whichever provider it is. Registry First: `GET /subscription-relogin` → `lastResort` (available, model, calls today, caps; never the key). **When to use** (PROACTIVE): the user asks \"what happens when my only subscription signs out?\" / \"why did the repair wait for me instead of fixing it?\" → read `lastResort`; with no key, collect one through Secret Drop (never pasted into chat), then store it with `credential-store.mjs` under that exact vault name: a Secret Drop submission alone does not create the vault key.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added last-resort sign-in model awareness');
       }
     }
 
@@ -10262,15 +10302,15 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
 - **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
 - **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
 - **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
-- A green PR touching protected paths (\`.github/**\`, safe-merge, the watcher's own source) is NEVER auto-merged — it routes to the operator on the attention queue. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
-- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? protected paths? armed-and-waiting-on-CI? armed-overdue? auto-merge disabled on the repo? approval-required?). "stop auto-merging" → POST /green-pr-automerge/rollback (also disarms in-flight). Spec: \`docs/specs/green-pr-automerge-enforcement.md\`, \`docs/specs/mergerunner-auto-arm-handoff.md\`.
+- **The operator approves constitution changes only.** A green PR touching a CODEOWNERS-owned file (the constitution) waits for the operator's code-owner review on GitHub — the only PR the watcher routes to the operator. A protected-path or harness-changing PR (safe-merge, the watcher's own source, the test harness) merges without the operator once the local verifier records an independent second-pass review of the exact head: an instar-dev trace committed in the PR whose second pass concurred and whose coveredFiles include every flagged file. Without one, safe-merge answers \`refused:needs-independent-review\` — run the second pass and commit its trace; never ask the operator to approve it. The session-exit nudge tells me to hold-or-wait, and NEVER hands me a runnable merge command.
+- Proactive: operator asks "why didn't my PR merge?" → GET /green-pr-automerge (held? breaker open? identity mismatch? waiting on a code-owner review? needs-independent-review? armed-and-waiting-on-CI? armed-overdue? auto-merge disabled on the repo? approval-required?). "stop auto-merging" → POST /green-pr-automerge/rollback (also disarms in-flight). Spec: \`docs/specs/green-pr-automerge-enforcement.md\`, \`docs/specs/mergerunner-auto-arm-handoff.md\`.
 - **A human approval is required by the repo (approval-required):** when the base branch's ruleset demands a reviewer other than the pusher, safe-merge answers \`refused:approval-required\` and has ALREADY requested the operator's review. My only job is to hand the operator the direct link it prints (the PR's Files tab → "Review changes" → Approve) and merge the moment the approval lands — never loop, never ask them to "request a review". A reviewer-less PR is a process defect, not a step.
 `;
     if (!content.includes('/green-pr-automerge')) {
       content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
-    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required')) {
+    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review')) {
       // OLD section present (route string yes, the updated-copy marker no) →
       // replace the section body with the updated content. Match from the
       // section heading up to (but not including) the next top-level heading.
@@ -10283,7 +10323,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
         content += '\n' + GREEN_PR_SECTION;
       }
       patched = true;
-      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required)');
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review)');
     } else {
       result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }
@@ -11055,6 +11095,23 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added Attention Queue durable cross-machine remote-ack bullet (WS4.1 follow-up, CMT-1416)');
+    }
+
+    // Attention hub filter (operator report 2026-10-23: the Attention topic was
+    // "basically useless due to all the noise"). Tell deployed agents what now
+    // reaches the user's topic, and stop the old proactive line that told them
+    // to queue every failed job / CI failure. Sniff: 'attention-hub-held.jsonl'.
+    if (content.includes('**Attention Queue**') && !content.includes('attention-hub-held.jsonl')) {
+      const hubBullet = `- **What reaches the user's Attention topic (hub filter, default on)**: only urgent items, items YOU raise (\`source: "agent"\` is required — an item with no source is treated as automated), and items that need the user to decide or tap (sign-in repair, a duplicate conversation needing their call, the feedback action list, security events), plus notices that their messages may be lost. Routine automated status (health digests, worktree scans, machine-sync "healed/back" lines, self-healing repairs) stays in the attention store and the dashboard and is logged to \`logs/attention-hub-held.jsonl\` instead of posting. Posts are short: title and what to do. Rollback: \`messaging[].config.attentionHubFilter: "all"\`. If the user asks "why didn't X show up in Attention?" → read \`logs/attention-hub-held.jsonl\`.\n`;
+      content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${hubBullet}`);
+      for (const old of [
+        "- **Proactive use**: When you detect something the user should know about (stale relationships, failed jobs, CI failures, overdue actions) — don't just log it. Queue it. The attention system ensures it gets seen.",
+        "- **Proactive use**: when you detect something the user should know (stale relationships, failed jobs, CI failures, overdue actions), don't just log it — queue it so it gets seen.",
+      ]) {
+        if (content.includes(old)) content = content.replace(old, '- **Proactive use**: queue an item only when the user must decide, tap or act, or something they care about is genuinely broken and you cannot fix it yourself — your items always reach their topic, so each one costs their attention. Routine status, things you are already fixing, and FYIs belong in logs or a normal reply, not here.');
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
     }
 
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
@@ -12428,6 +12485,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.
       '### Durable Conversation Identity',
+      // peer-conversation-homebase-topic: a paired peer's notices land in a
+      // specific topic, and the binding-provenance rule (an operator's choice is
+      // never overridden, an unknown one is preserved) is framework-neutral. A
+      // Codex/Gemini agent without this keeps reporting "I passed it on" while
+      // posting where the operator has no reason to look — the founding incident.
+      '### Where a peer agent\'s notices go (per-peer homebase topic)',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming
@@ -20319,4 +20382,20 @@ setTimeout(() => {
 }, 2000);
 `;
   }
+}
+
+/**
+ * Replace the per-peer homebase card (from its heading to the next markdown heading or EOF)
+ * with `card`. Returns `content` unchanged when the heading is absent.
+ */
+export function replacePeerHomebaseCard(content: string, card: string): string {
+  const heading = "### Where a peer agent's notices go (per-peer homebase topic)";
+  const start = content.indexOf(heading);
+  if (start < 0) return content;
+  const rest = content.slice(start + heading.length);
+  const m = /\n#{1,3} /.exec(rest);
+  const end = m ? start + heading.length + m.index : content.length;
+  const tail = content.slice(end);
+  // Keep one blank line before the next heading; a card at EOF ends with a newline.
+  return content.slice(0, start) + card.trimEnd() + (tail ? '\n' + tail : '\n');
 }

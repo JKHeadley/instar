@@ -16,12 +16,13 @@
  */
 
 import path from 'node:path';
-import { computeInventory, LANES, type LaneName } from './inventory.js';
+import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
 import { readUnhandledErrors } from './unhandledErrorsReporter.js';
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
-import { evaluateSkipRatchet, type ChangedTestFile } from './skipRatchet.js';
-import { classifyHarness, protectedPath as isProtectedPath } from './harnessClassifier.js';
-import { FLAKY_RETRIED_MAX, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
+import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
+import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
+import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
+import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
 
 // ── Seams ──────────────────────────────────────────────────────────────
@@ -79,11 +80,23 @@ export interface OrchestratorSeams {
   sleep(ms: number): Promise<void>;
   /** Live full-suite holders of the host test-runner bound that are not one of `ours`. */
   foreignSuiteHolders(ours: ReadonlySet<number>): Array<{ pid: number }>;
+  /**
+   * Take ONE full-suite slot of the host test-runner bound for the lane phase, so the
+   * concurrent lane processes (children of this process) nest under it. Returns the
+   * release function, 'busy' when the slot is held elsewhere (the run re-queues), or
+   * null when the bound admitted without a slot (fail-open). Absent ⇒ no hold.
+   */
+  holdSuiteSlot?(): Promise<(() => void) | 'busy' | null>;
   log(event: Record<string, unknown>): void;
   /** Every file reachable through relative imports from `files` (absolute paths; roots included). */
   importGraph?(files: string[]): string[];
   /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
   unhandledErrorsReporter?(): string | null;
+  /**
+   * The TypeScript module for the skip ratchet's parser. Absent ⇒ resolved from the
+   * run worktree (installed by `npm ci`), then the verifier's own install.
+   */
+  typescript?(): TsModule;
 }
 
 // ── Input / output ─────────────────────────────────────────────────────
@@ -215,6 +228,9 @@ class RunError extends Error {
   }
 }
 
+/** The record flags plus the independent review a flagged record may carry. */
+type Flags = Pick<LocalVerifyRecord, 'harnessChanging' | 'protectedPath' | 'skipsAdded' | 'testsRemoved' | 'independentReview'>;
+
 class RunFailure extends Error {
   constructor(public readonly reason: string) {
     super(reason);
@@ -233,7 +249,6 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const d = input.deadlines ?? LOCAL_VERIFY_DEADLINES;
   const p = verifyPaths(input.agentHome, input.headSha);
   const startedAtMs = seams.now();
-  let waitedMs = 0;
   const overlaps: Overlap[] = [];
   const ourPids = new Set<number>();
   const laneRuns: LaneRunInput[] = [];
@@ -241,9 +256,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let mergeTree = '';
   let mergeCommit = '';
   let worktreeCreated = false;
-  let flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
+  let flags: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
 
-  const remaining = () => d.totalActiveMs - (seams.now() - startedAtMs - waitedMs);
+  const remaining = () => d.totalActiveMs - (seams.now() - startedAtMs);
   /** Deadline for a step: its own budget, capped by what is left of the total. */
   const budget = (stepMs: number) => {
     const left = remaining();
@@ -381,51 +396,113 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     const tree = await gitOk(['ls-tree', '-r', '--name-only', mergeCommit], 'inventory');
     const inventory = computeInventory(tree.split('\n').filter(Boolean));
 
-    for (let i = 0; i < LANES.length; i++) {
-      const lane = LANES[i];
-      await singleFlight(lane.name, i === 0);
-      const reportPath = path.join(p.reportsDir, `${lane.name}.json`);
-      const env: NodeJS.ProcessEnv = { ...runEnv };
+    // ── 4. The lanes, all at once, inside one suite slot ──
+    // One foreign-suite check, then this run takes ONE full-suite slot of the host
+    // test-runner bound and holds it for every lane; each lane's vitest is a child of
+    // this (verify) process, so its own slot request nests under that hold instead of
+    // queuing behind its sibling lanes. The e2e lane runs as LOCAL_VERIFY_LIMITS.e2eShards
+    // vitest shards. Every lane process gets its own TMPDIR and TMUX_TMPDIR (its own
+    // tmux server), which is what made a parallel e2e safe (spec "Parallel lanes").
+    await singleFlight(LANES[0].name);
+    const releaseSlot = seams.holdSuiteSlot ? await seams.holdSuiteSlot() : null;
+    if (releaseSlot === 'busy') {
+      const o = { at: seams.now(), beforeLane: LANES[0].name, holders: seams.foreignSuiteHolders(ourPids).map((h) => h.pid) };
+      overlaps.push(o);
+      seams.log({ event: 'overlap', ...o, slot: 'busy' });
+      throw new Requeue('foreign-suite-at-start');
+    }
+    try {
+      const settled = await Promise.allSettled(LANES.map((lane) => runLane(lane)));
+      const firstError = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
+      if (firstError) throw firstError.reason;
+      for (const s of settled) if (s.status === 'fulfilled') laneRuns.push(s.value);
+    } finally {
+      if (typeof releaseSlot === 'function') releaseSlot();
+    }
+
+    async function runLane(lane: (typeof LANES)[number]): Promise<LaneRunInput> {
+      const shards = lane.name === 'e2e' ? LOCAL_VERIFY_LIMITS.e2eShards : 1;
+      const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
       if (lane.name === 'unit') {
-        env.AUDIT_CHANGE_KIND = 'pull_request';
-        env.AUDIT_CHANGE_BASE_SHA = input.baseSha;
-        env.AUDIT_CHANGE_HEAD_SHA = input.headSha;
+        // 4 workers whatever the bound's posture: the nested clamp only applies while it
+        // enforces, and the parallel lanes' worker total (4 + 1 + 1 + 1) is the claim.
+        laneEnv.INSTAR_TEST_WORKERS = String(LOCAL_VERIFY_LIMITS.unitWorkersParallel);
+        laneEnv.AUDIT_CHANGE_KIND = 'pull_request';
+        laneEnv.AUDIT_CHANGE_BASE_SHA = input.baseSha;
+        laneEnv.AUDIT_CHANGE_HEAD_SHA = input.headSha;
       }
-      const errorsPath = path.join(p.reportsDir, `${lane.name}.errors.json`);
-      if (reporter) env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
       const t = seams.now();
-      const r = await exec(
-        path.join(binDir, 'vitest'),
-        ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`],
-        lane.name, budget(d.lanes[lane.name]), env,
-      );
-      let report: ParsedLaneReport | null = null;
-      const text = seams.fs.readFile(reportPath);
-      if (text != null) {
-        try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
+      // allSettled: every shard's process has exited before the lane settles, even when one
+      // shard hits its deadline (nothing is left running outside the slot or the cleanup).
+      const settledParts = await Promise.allSettled(Array.from({ length: shards }, async (_, k) => {
+        const key = shards > 1 ? `${lane.name}-${k + 1}` : lane.name;
+        const reportPath = path.join(p.reportsDir, `${key}.json`);
+        const errorsPath = path.join(p.reportsDir, `${key}.errors.json`);
+        const pTmp = seams.fs.mkdtemp('lv-tmp-');
+        const pTmux = seams.fs.mkdtemp('lv-tmux-');
+        tempDirs.push(pTmp, pTmux);
+        const env: NodeJS.ProcessEnv = { ...laneEnv, TMPDIR: pTmp, TMUX_TMPDIR: pTmux };
+        if (reporter) env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
+        const r = await exec(
+          path.join(binDir, 'vitest'),
+          ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
+            ...(shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
+          key, budget(d.lanes[lane.name]), env,
+        );
+        let report: ParsedLaneReport | null = null;
+        const text = seams.fs.readFile(reportPath);
+        if (text != null) {
+          try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
+        }
+        const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
+        return { report, status: r.status, unhandled };
+      }));
+      const shardError = settledParts.find((x): x is PromiseRejectedResult => x.status === 'rejected');
+      if (shardError) throw shardError.reason;
+      const parts = settledParts.map((x) => (x as PromiseFulfilledResult<{ report: ParsedLaneReport | null; status: number | null; unhandled: number | null }>).value);
+      // A lane's report is the union of its shards' reports; a missing shard report is a
+      // missing lane report (the inventory rule then fails the run).
+      // A file reported by two shards makes the lane report untrusted (missing): the verdict
+      // must not depend on which shard's entry was kept.
+      let report: ParsedLaneReport | null = { files: new Map() };
+      for (const part of parts) {
+        if (!part.report || !report) { report = null; continue; }
+        for (const [f, c] of part.report.files) {
+          if (report.files.has(f)) {
+            seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
+            report = null;
+            break;
+          }
+          report.files.set(f, c);
+        }
       }
-      let exitCode = r.status;
+      // A numeric non-zero exit of any shard wins over a signal exit (null), so a shard killed
+      // after writing its report can never hide its sibling's failed exit.
+      const nonZero = parts.find((x) => typeof x.status === 'number' && x.status !== 0);
+      let exitCode: number | null = nonZero ? nonZero.status : parts.some((x) => x.status === null) ? null : 0;
+      const unhandled = parts.some((x) => x.unhandled === null) ? null : parts.reduce((n, x) => n + (x.unhandled as number), 0);
       // Isolation re-run: a lane whose only problem is 1..3 failed files re-runs exactly
       // those files once, one at a time, under what is left of the lane budget.
-      const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
       const failedHere = report ? [...report.files.entries()].filter(([, c]) => c.failed > 0).map(([f]) => f) : [];
+      const ineligible = failedHere.length > 0 ? await ineligibleFor(failedHere) : new Set<string>();
+      // Read and spend the shared re-run budget with no await in between: lanes finish concurrently.
       const decision = decideIsolationRerun({
         report, laneFiles: inventory.byLane[lane.name] ?? [],
         maxFiles: LOCAL_VERIFY_LIMITS.isolationRerunMaxFiles, budgetLeft: rerunBudget,
         unhandledErrors: unhandled,
-        ineligible: failedHere.length > 0 ? await ineligibleFor(failedHere) : new Set<string>(),
+        ineligible,
       });
       if (decision.rerun.length > 0 && report) {
         rerunBudget -= decision.rerun.length;
         const laneDeadlineAt = t + d.lanes[lane.name];
-        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, env, laneDeadlineAt);
+        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt);
         // The exit code is cleared only when the failed files explain it: they all passed alone
         // AND the lane reported zero unhandled errors (checked before the re-run).
         if (allPassed && unhandled === 0) exitCode = 0;
       } else if (decision.reason !== 'no-failures') {
         seams.log({ event: 'isolation-rerun-skipped', lane: lane.name, reason: decision.reason });
       }
-      laneRuns.push({ lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode });
+      return { lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode };
     }
 
     // ── 5. Tree must be clean, then the inventory rule ──
@@ -560,31 +637,18 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     return all;
   }
 
-  async function singleFlight(lane: LaneName, first: boolean): Promise<void> {
-    let holders = seams.foreignSuiteHolders(ourPids);
+  /** A live foreign full suite before the lanes start re-queues the run (never an attempt). */
+  async function singleFlight(lane: LaneName): Promise<void> {
+    const holders = seams.foreignSuiteHolders(ourPids);
     if (holders.length === 0) return;
-    const note = () => {
-      const o = { at: seams.now(), beforeLane: lane, holders: holders.map((h) => h.pid) };
-      overlaps.push(o);
-      seams.log({ event: 'overlap', ...o });
-    };
-    note();
-    if (first) throw new Requeue('foreign-suite-at-start');
-    const waitStart = seams.now();
-    while (holders.length > 0) {
-      if (seams.now() - waitStart >= LOCAL_VERIFY_LIMITS.waitInPlaceMs) {
-        waitedMs += seams.now() - waitStart;
-        throw new Requeue('foreign-suite-wait-exceeded');
-      }
-      await seams.sleep(LOCAL_VERIFY_LIMITS.holderPollMs);
-      holders = seams.foreignSuiteHolders(ourPids);
-      if (holders.length > 0) note();
-    }
-    waitedMs += seams.now() - waitStart;
+    const o = { at: seams.now(), beforeLane: lane, holders: holders.map((h) => h.pid) };
+    overlaps.push(o);
+    seams.log({ event: 'overlap', ...o });
+    throw new Requeue('foreign-suite-at-start');
   }
 
-  async function classify(): Promise<typeof flags> {
-    const out = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
+  async function classify(): Promise<Flags> {
+    const out: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
     let rows: Array<{ status: string; path: string }> | null = null;
     try {
       const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base')).trim();
@@ -616,9 +680,35 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const t = await pair(r.path, r.status);
         tests.push({ path: r.path, base: t.base, head: t.head });
       }
-      const ratchet = evaluateSkipRatchet(tests);
-      out.skipsAdded = ratchet.skipsAdded;
-      out.testsRemoved = ratchet.testsRemoved;
+      // The ratchet cannot be measured without the parser. That is not a harness
+      // change: the record says what it could not rule out (skips added, tests
+      // removed), and the changed test files are the paths a review must cover.
+      let ratchetPaths: string[];
+      try {
+        const ratchet = evaluateSkipRatchet(tests, seams.typescript ? seams.typescript() : loadTypescript([p.runDir]));
+        out.skipsAdded = ratchet.skipsAdded;
+        out.testsRemoved = ratchet.testsRemoved;
+        ratchetPaths = ratchet.perFile.map((f) => f.path);
+      } catch (e) {
+        ratchetPaths = tests.map((t) => t.path).filter((f) => isInventoried(f));
+        // Always logged (the 2026-10-23 misclassification went unseen for lack of a signal); flagged only when it matters.
+        seams.log({ event: 'skip-ratchet-failure', inventoriedChanged: ratchetPaths.length, detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+        if (ratchetPaths.length > 0) {
+          out.skipsAdded = true;
+          out.testsRemoved = true;
+        }
+      }
+      if (out.harnessChanging || out.protectedPath || out.skipsAdded || out.testsRemoved) {
+        // The paths that flagged the record; an independent second-pass review must cover them all.
+        const harnessPaths = out.harnessChanging ? harnessReasonPaths(verdict.reasons) : [];
+        const flaggedPaths = harnessPaths === null ? null : [...new Set([
+          ...harnessPaths,
+          ...protectedPathMatches(changedPaths, input.protectedList),
+          ...(out.skipsAdded || out.testsRemoved ? ratchetPaths : []),
+        ])].sort();
+        const review = await findIndependentReview(rows, flaggedPaths, show, mb);
+        if (review) out.independentReview = review;
+      }
     } catch (e) {
       // Any read failure classifies the PR as harness-changing (routes it to the operator).
       seams.log({ event: 'classify-read-failure', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
@@ -627,6 +717,52 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       else out.protectedPath = true;
     }
     return out;
+  }
+
+  /**
+   * An instar-dev trace this PR added or changed, read from the head's tree (so
+   * nothing committed after the head counts), whose second pass concurred and
+   * whose coveredFiles include every flagged path. One judge, shared with the
+   * pre-commit gate (scripts/lib/instar-dev-trace.mjs).
+   *
+   * Bound to the head (replaces the head-binding the operator approval had, i.e.
+   * dismiss-stale-reviews-on-push): no flagged path may have changed after the
+   * trace's last commit — `git log <traceLast>..<head> -- <flagged>` must be empty,
+   * so the last commit touching any flagged path is the trace's commit or an
+   * ancestor of it. A later push that edits a flagged file needs a new review.
+   */
+  async function findIndependentReview(
+    rows: Array<{ status: string; path: string }>,
+    flaggedPaths: string[] | null,
+    show: (rev: string, file: string) => Promise<string | null>,
+    mergeBase: string,
+  ): Promise<{ trace: string; concurred: true } | null> {
+    const problems: string[] = [];
+    for (const r of rows) {
+      if (r.status === 'D' || !isTracePath(r.path)) continue;
+      let trace: unknown = null;
+      try { trace = JSON.parse((await show(input.headSha, r.path)) ?? ''); } catch { /* @silent-fallback-ok: an unreadable trace counts as no review; the absence is logged below */ trace = null; }
+      const artifactPath = trace && typeof trace === 'object' ? (trace as { artifactPath?: unknown }).artifactPath : undefined;
+      const artifactText = typeof artifactPath === 'string' && artifactPath
+        ? await show(input.headSha, artifactPath).catch(() => null)
+        : null;
+      const problem = independentReviewProblem({ trace, flaggedPaths, artifactText }) ?? await staleAfterTrace(r.path, flaggedPaths ?? [], mergeBase);
+      if (problem === null) return { trace: r.path, concurred: true };
+      problems.push(`${r.path}: ${problem}`);
+    }
+    seams.log({ event: 'independent-review-absent', flaggedPaths: flaggedPaths ?? 'unknown', problems: problems.slice(0, 10) });
+    return null;
+  }
+
+  /** null when no flagged path changed after the trace's last commit; otherwise the reason. */
+  async function staleAfterTrace(tracePath: string, flaggedPaths: string[], mergeBase: string): Promise<string | null> {
+    const t = await git(['log', '-1', '--format=%H', `${mergeBase}..${input.headSha}`, '--', tracePath], 'review-binding');
+    const traceLast = t.status === 0 ? t.stdout.trim() : '';
+    if (!isValidSha(traceLast)) return 'trace-commit-unreadable';
+    const later = await git(['log', '--format=%H', `${traceLast}..${input.headSha}`, '--', ...flaggedPaths], 'review-binding');
+    if (later.status !== 0) return 'review-binding-unreadable';
+    const after = later.stdout.split('\n').map((x) => x.trim()).filter(Boolean);
+    return after.length ? `flagged-changed-after-trace:${after[0].slice(0, 12)}` : null;
   }
 
   async function cleanup(failed: boolean): Promise<string | null> {

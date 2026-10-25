@@ -615,8 +615,12 @@ export interface SessionTerminateAuthorityOptions {
   /**
    * Trusted assertion from the topic-transfer drain (SessionDrainRunner): this
    * close retires the local copy of a topic that is moving to another machine.
-   * Lifts ONLY the `standing-session` keep (a standing coordinator must not stay
-   * live on both machines); every other keep-guard is still re-checked.
+   * Lifts the `standing-session` keep (a standing coordinator must not stay
+   * live on both machines), the `recent-user-message` keep (the conversation
+   * continues on the target, so the user's latest message is no reason to keep
+   * this copy), and the lease-holder gate (the owner closing its OWN copy on a
+   * fenced drain order — the old owner is usually not the lease holder). Every
+   * other keep-guard is still re-checked; a refusal aborts the transfer.
    */
   topicTransferClose?: boolean;
   workEvidence?: string[];
@@ -2184,8 +2188,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // A peer cannot perform that cleanup remotely, and the capability is not
       // part of terminateSession's public options. The literal reason check is
       // defense in depth against capability reuse for another kill class.
+      // Topic-transfer drain carve-out: the drain runner closes THIS machine's
+      // own copy of a topic it was ordered (fenced by the transferring CAS) to
+      // hand away. The old owner is usually not the lease holder, so without
+      // this the gate refused every remote drain close — and ownership moved
+      // while the session stayed alive (2026-10-23). Runtime-private flag.
+      const isAuthorizedTopicTransferClose = opts?.topicTransferClose === true;
       if (!holdsServingLease
           && !isAuthorizedTopicMovedCloseout
+          && !isAuthorizedTopicTransferClose
           && !isAuthorizedLocalAgeLimit) {
         this.emit('reapBlocked', { session, reason, skipped: 'not-lease-holder', origin });
         return { terminated: false, skipped: 'not-lease-holder' };
@@ -2211,7 +2222,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const bypassedReasons: string[] = [];
         if (opts?.bypassRecoveryFlag) bypassedReasons.push('recovery-in-flight');
         if (opts?.bypassActiveProcessKeep) bypassedReasons.push('active-process');
-        if (opts?.bypassRecentUserMessageForConfirmedMove) bypassedReasons.push('recent-user-message');
+        if (opts?.bypassRecentUserMessageForConfirmedMove || opts?.topicTransferClose === true) {
+          bypassedReasons.push('recent-user-message');
+        }
         // `standDownDrainedClose` (duplicate-session stand-down §Drained-close).
         // P20 — VERIFY THE STATE, NOT ITS SYMBOL: the caller's claim buys nothing
         // on its own. This authority asks its OWN probe whether the session is

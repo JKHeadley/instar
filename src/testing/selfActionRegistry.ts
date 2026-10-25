@@ -2229,7 +2229,7 @@ const localVerifyCapacityRequeue: SelfActionController = {
   perTargetBoundK: Number.POSITIVE_INFINITY,
   ticks: 48,
   tickMs: 5 * 60_000,
-  eternalSentinel: { reason: 'a capacity-blocked verify re-queues after each full 30-minute wait in place; never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
+  eternalSentinel: { reason: 'a capacity-blocked verify re-queues (holders checked before every start; a busy suite slot at lane start re-queues); never an attempt, starved signal once per entry', rateFloorMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs },
   makeUnderPressure(f, sink) {
     const t0 = f.clock.nowMs();
     const queue = [201, 202].map((pr) => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, notBefore: undefined as number | undefined }));

@@ -244,13 +244,13 @@ export interface HotPathState {
 export interface GreenPrBlock {
   pr: number;
   message: string;
-  variant: 'mergeable' | 'protected-paths' | 'disarmed';
+  variant: 'mergeable' | 'code-owner-review' | 'disarmed';
 }
 
 /** A minimal projection of the watcher's last-tick snapshot for Layer 2. */
 export interface GreenPrSnapshotForBlock {
   at: number;
-  entries: Array<{ pr: number; headRefName: string; kind: 'mergeable' | 'protected-paths' }>;
+  entries: Array<{ pr: number; headRefName: string; kind: 'mergeable' | 'code-owner-review' }>;
 }
 
 /**
@@ -282,11 +282,11 @@ export function computeGreenPrBlock(args: {
       message: `PR #${match.pr} (your branch) is green, but the auto-merge watcher is disabled by operator rollback — do NOT merge it manually; confirm with the operator.`,
     };
   }
-  if (match.kind === 'protected-paths') {
+  if (match.kind === 'code-owner-review') {
     return {
       pr: match.pr,
-      variant: 'protected-paths',
-      message: `PR #${match.pr} (your branch) is green but touches protected paths — it needs the operator's review and merge; it is already on the attention queue. Do NOT merge it manually.`,
+      variant: 'code-owner-review',
+      message: `PR #${match.pr} (your branch) is green but changes a constitution file — it waits for the operator's code-owner review on GitHub, then the watcher lands it. Do NOT merge it manually.`,
     };
   }
   return {

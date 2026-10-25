@@ -124,6 +124,25 @@ export function codeownersOutsideApprover(codeowners: string | null, paths: stri
   return out;
 }
 
+/** The changed paths CODEOWNERS assigns to ANY owner (the independent review never admits these; their owner's GitHub review is required). */
+export function codeownersOwned(codeowners: string | null, paths: string[]): string[] {
+  if (!codeowners) return [];
+  const rules: Array<{ re: RegExp; owners: string[] }> = [];
+  for (const raw of codeowners.split('\n')) {
+    const lineText = raw.replace(/#.*$/, '').trim();
+    if (!lineText) continue;
+    const [pattern, ...owners] = lineText.split(/\s+/);
+    rules.push({ re: codeownersPattern(pattern), owners });
+  }
+  const out: string[] = [];
+  for (const p of paths) {
+    let owners: string[] | null = null;
+    for (const rule of rules) if (rule.re.test(p)) owners = rule.owners;
+    if (owners && owners.length > 0) out.push(p);
+  }
+  return out;
+}
+
 function codeownersPattern(pattern: string): RegExp {
   const anchored = pattern.startsWith('/');
   let p = pattern.replace(/^\//, '');

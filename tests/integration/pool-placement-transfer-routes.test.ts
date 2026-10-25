@@ -515,6 +515,31 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       expect(ownReg.read('303')!.ownershipEpoch).toBe(epochBefore);
     });
 
+    // 2026-10-23: the remote owner could not close its session (lease gate), the
+    // claim landed anyway and two sessions served one conversation. The owner now
+    // aborts; the route must not set the pin either, or the next message would
+    // re-place the topic on the target while the old session is still running.
+    it('refused-close-failed (REMOTE owner) → 409 failedNeedsRetry, NO pin, ownership untouched', async () => {
+      own('3909', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      sendDrainImpl = () => ({ ok: false, status: 'refused-close-failed', reason: 'close-refused:not-lease-holder', runSuspended: true });
+      const epochBefore = ownReg.read('3909')!.ownershipEpoch;
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 3909, to: 'Mac Mini' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.failedNeedsRetry).toBe(true);
+      expect(String(r.body.error)).toContain('could not close its session');
+      expect(String(r.body.error)).toContain('close-refused:not-lease-holder');
+      expect(r.body.autonomousRunSuspended).toBe(true);
+      expect(pinStore.get('3909')).toBeNull();
+      expect(ownReg.read('3909')!.ownerMachineId).toBe(PEER);
+      expect(ownReg.read('3909')!.ownershipEpoch).toBe(epochBefore);
+    });
+
     it('a drain failure that is NOT an abort degrades to today\'s pin path (recorded, never blocking)', async () => {
       own('304', SELF);
       sendDrainImpl = () => { throw new Error('mesh unreachable'); };

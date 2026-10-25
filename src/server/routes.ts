@@ -1108,6 +1108,8 @@ export interface RouteContext {
     retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     /** The agent-session helper's code route (spec skill-driven-signin-repair). Absent ⇒ 503. */
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
+    /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
+    lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
     close?: () => void;
   } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
@@ -19597,7 +19599,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Operator confirm/deny of a pairing — PIN-GATED (FD7). The local human SAS
   // comparison is the load-bearing security event; the agent Bearer token CANNOT
   // confirm. checkMandatePin is the EXACT mechanism /mandate/issue uses.
-  router.post('/threadline/pairing/:peerFp/verify', (req, res) => {
+  router.post('/threadline/pairing/:peerFp/verify', async (req, res) => {
     if (!verifiedPairingRouteEnabled()) {
       res.status(503).json({ error: 'verified pairing not enabled' });
       return;
@@ -19715,7 +19717,50 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       console.warn(`[pairing] receipt to ${peerFp.slice(0, 12)} not sent: ${err instanceof Error ? err.message : String(err)}`);
     }
-    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent });
+    // ── Per-peer homebase topic (peer-conversation-homebase-topic §2.1) ──
+    // Downstream of the trust write and best-effort, exactly like the receipt above: a
+    // notice about a peer used to land in whatever topic its thread happened to start in
+    // (the 2026-10-21 `pp` incident), and the fix is a topic of its own. Creating a Telegram
+    // topic is an external side-effect, so a failure here must never fail or delay a
+    // confirmed pairing — every path returns a reason instead of throwing, and the peer
+    // simply has no homebase, which routes to existing behaviour.
+    // No `= null` initializer on purpose. The catch-block scanner reads each catch plus the
+    // following 19 lines, and a `| null = null` annotation matches its state-reset pattern,
+    // which made it flag the UNRELATED receipt catch above. `undefined` says "no homebase"
+    // just as well without the accidental match. (Keep this note free of the scanner's own
+    // vocabulary too — an explanation that uses those words re-trips the same check.)
+    let homebaseTopicId: number | undefined;
+    try {
+      const { ensurePeerHomebase, displayNameCollides, peerHomebaseEnabled } = await import('../threadline/peerHomebase.js');
+      const confirmed = trustManager.getProfileByFingerprint(peerFp);
+      const outcome = await ensurePeerHomebase(peerFp, confirmed?.agent ?? peerFp, {
+        enabled: peerHomebaseEnabled(ctx.config),
+        // A standby that created one would mint a fresh topic per boot — the failure that
+        // produced 41 duplicate "Updates" topics before the system-topic pattern existed.
+        holdsLease: !ctx.state.readOnly,
+        findOrCreateTopic: async (name) => {
+          if (!ctx.telegram) throw new Error('no telegram adapter');
+          const r = await ctx.telegram.findOrCreateForumTopic(name, undefined, {
+            // `user`: the operator asked for one topic per paired agent (§2.5 records his
+            // words). Pairing is human-gated, so the agent cannot grow the set on its own.
+            origin: 'user',
+            label: 'peer-homebase',
+          });
+          return { topicId: r.topicId, reused: r.reused };
+        },
+        findTopicByName: (name) => ctx.telegram?.findTopicIdByName(name),
+        renameTopic: async (topicId, name) => (ctx.telegram ? ctx.telegram.editForumTopic(topicId, name) : false),
+        nameCollides: (fp, name) => displayNameCollides(fp, name, trustManager.listProfiles()),
+        getRecorded: (fp) => trustManager.getHomebaseTopic(fp),
+        record: (fp, topicId) => trustManager.setHomebaseTopic(fp, topicId),
+        log: (m) => console.log(m),
+      });
+      if (outcome.created) homebaseTopicId = outcome.topicId;
+      else if (outcome.reason === 'already-recorded') homebaseTopicId = outcome.topicId;
+    } catch (err) {
+      console.warn(`[homebase] skipped for ${peerFp.slice(0, 12)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    res.json({ ok: true, peerFp, state: 'mutual-verified', receiptSent, ...(homebaseTopicId !== undefined ? { homebaseTopicId } : {}) });
   });
 
   // ── Negotiator lease state (Robustness Phase 1, FD-9) ──────────────────
@@ -22699,8 +22744,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the owner's session, land the target's claim (the queue-barrier release).
     //   · drain ok → proceed to pin+journal exactly as today (the place/claim
     //     repair below sees active@target and correctly no-ops).
-    //   · aborted-emergency-stop → 409 failed-needs-retry, NO pin — an abort
-    //     leaves nothing split (the topic stays whole on its current machine).
+    //   · aborted-emergency-stop / refused-close-failed → 409 failed-needs-retry,
+    //     NO pin — an abort leaves nothing split (the topic stays whole on its
+    //     current machine).
     //   · refused-*/no-handler/timeout/no-flag → DEGRADE to today's pin path
     //     (recorded in the response; the reconciler + closeout converge it).
     // The capability gate means an old peer is never sent a doomed order.
@@ -22737,6 +22783,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             error: 'transfer aborted: emergency stop fired during the drain — the topic stays whole on its current machine',
             failedNeedsRetry: true,
             drain: drainLeg,
+          });
+          return;
+        }
+        // The owner could not close its session, so it aborted the transfer and
+        // kept ownership. Setting the pin now would re-place the topic on the
+        // target at the next message while the old session is still running —
+        // two live sessions on one conversation (2026-10-23). Stop here instead.
+        if (r.status === 'refused-close-failed') {
+          res.status(409).json({
+            error: `transfer aborted: the current machine could not close its session for this topic (${r.reason ?? 'close refused'}) — the topic stays whole on its current machine${drainRunSuspended ? '; its autonomous run was suspended for the move and stays suspended there' : ''}`,
+            failedNeedsRetry: true,
+            drain: drainLeg,
+            // Honest: the run was suspended BEFORE the close was attempted and is
+            // not un-suspended on abort (same as the emergency-stop abort).
+            autonomousRunSuspended: drainRunSuspended,
           });
           return;
         }
@@ -34349,7 +34410,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         accountId, limit,
       }) ?? [];
       if (req.query.scope !== 'pool') {
-        res.json({ enabled: true, episodes: localEpisodes });
+        res.json({ enabled: true, episodes: localEpisodes,
+          lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
       const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';

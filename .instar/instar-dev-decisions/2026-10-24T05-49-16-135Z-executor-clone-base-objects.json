@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-24T05:49:16.135Z",
+  "slug": "executor-clone-base-objects",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

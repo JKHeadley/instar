@@ -179,20 +179,18 @@ describe('safe-merge local floor against a stub agent server', () => {
     expect((await run()).verdict).toEqual({ ok: true });
   });
 
-  it('a harness-changing record: no operator approval → refused; approved but executor not constructed → approver-dependent', async () => {
+  it('a harness-changing record without an independent review is refused — even with an operator approval, and never reads the executor status', async () => {
     st.record = { code: 200, body: { record: record({ harnessChanging: true }) } };
-    expect((await run()).verdict?.result).toBe('refused:needs-operator-approval');
     const approved = [{ user: { login: 'JKHeadley' }, state: 'APPROVED', commit_id: HEAD, submitted_at: '2026-10-21T00:00:00Z' }];
+    // Even the operator's approval of exactly this head admits nothing (directive 2026-10-22).
     const r = await run({ reviews: approved });
-    expect(r.verdict?.result).toBe('refused:approver-dependent');
-    expect(r.verdict?.problems.join(' ')).toMatch(/executor-not-constructed/);
+    expect(r.verdict?.result).toBe('refused:needs-independent-review');
+    expect(st.seenPaths.some((p) => p.startsWith('/feedback-factory/execute/status'))).toBe(false);
   });
 
-  it('a harness-changing record with the operator approval and a matching executor acceptance merges', async () => {
-    st.record = { code: 200, body: { record: record({ harnessChanging: true }) } };
-    st.executor = { code: 200, body: { availability: { approver: 'JKHeadley', independence: { independent: false, reasons: ['browser-profile-account'], accepted: true } } } };
-    const approved = [{ user: { login: 'JKHeadley' }, state: 'APPROVED', commit_id: HEAD, submitted_at: '2026-10-21T00:00:00Z' }];
-    expect((await run({ reviews: approved })).verdict).toEqual({ ok: true });
+  it('a harness-changing record carrying the verifier-recorded independent review merges', async () => {
+    st.record = { code: 200, body: { record: record({ harnessChanging: true, independentReview: { trace: '.instar/instar-dev-traces/t.json', concurred: true } }) } };
+    expect((await run()).verdict).toEqual({ ok: true });
   });
 
   it('a failing merge-time body check refuses (src change without a decision record)', async () => {

@@ -104,7 +104,8 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(f!.actionsFloor.map((c) => c.context)).toEqual(expect.arrayContaining(['Type Check', 'Build', 'eli16']));
     expect(f!.actionsFloor.some((c) => c.context === 'instar/local-verify')).toBe(false);
     expect(f!.actionsFloor.length).toBeGreaterThan(6); // the pinned classic contexts are included
-    expect(typeof f!.approverAcceptance).toBe('function');
+    // Directive 2026-10-22: the status loop no longer reads an operator/executor acceptance.
+    expect((f as unknown as Record<string, unknown>).approverAcceptance).toBeUndefined();
   });
 
   it('status loop built through the production wiring: alive over HTTP (200), boots a pass, posts nothing in dry-run', async () => {

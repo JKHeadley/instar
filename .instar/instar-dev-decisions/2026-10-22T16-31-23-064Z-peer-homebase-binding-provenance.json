@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-22T16:31:23.064Z",
+  "slug": "peer-homebase-binding-provenance",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 85,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/peerHomebase.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

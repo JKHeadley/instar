@@ -262,6 +262,18 @@ describe('effects executor pass-through (wiring integrity)', () => {
     expect(calls.statuses.find((s) => s.id === 'y')!.silent).toBe(true);
   });
 
+  it('follow-up lines on an item the Attention hub filter withholds are not posted; the status still closes', async () => {
+    const { calls, tg } = recorder();
+    tg.attentionHubAdmits = () => false;
+    executeMachineCoherenceEffects([
+      { kind: 'append', itemId: 'h', text: 'this divergence is back — re-opening' },
+      { kind: 'resolve', itemId: 'h', note: 'healed' },
+    ], { telegram: () => tg });
+    await flush();
+    expect(calls.sends).toHaveLength(0);
+    expect(calls.statuses.map((s) => s.id)).toEqual(['h']);
+  });
+
   it('a null adapter never throws (fail toward silence)', async () => {
     executeMachineCoherenceEffects([{ kind: 'resolve-status', itemId: 'z' }], { telegram: () => null });
     await flush(); // no throw = pass

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "peer-homebase-backfill",
+  "sessionId": "9f20ba87-0cb5-4119-9871-29178023642f",
+  "timestamp": "2026-10-23T17:16:04.701Z",
+  "artifactPath": "upgrades/side-effects/peer-homebase-backfill.md",
+  "artifactSha256": "c41385ac40886de7dba4314850b7a8ab9a7350199f1804f623e77a1925258abc",
+  "specPath": "docs/specs/peer-conversation-homebase-topic.md",
+  "coveredFiles": [
+    "docs/specs/peer-conversation-homebase-topic.eli16.md",
+    "docs/specs/peer-conversation-homebase-topic.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/peerHomebaseAwareness.ts",
+    "src/server/routes.ts",
+    "src/threadline/peerHomebase.ts",
+    "src/threadline/peerHomebaseBackfill.ts",
+    "src/threadline/recordThreadMessage.ts",
+    "tests/integration/peer-homebase-create-and-record.test.ts",
+    "tests/unit/PostUpdateMigrator-peerHomebaseRefresh.test.ts",
+    "tests/unit/peer-homebase-backfill.test.ts",
+    "upgrades/next/peer-homebase-backfill.md",
+    "upgrades/side-effects/peer-homebase-backfill.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "spec-driven fix; flips a fleet default and creates external Telegram topics",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
