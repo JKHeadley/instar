@@ -977,3 +977,24 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-view { overflow-x: hidden; }
 .sess-input { min-width: 0; }
 .sess-term .xterm { max-width: 100%; }
+
+/* ── How I'm doing inside (under-the-hood.md: Integrated-Being + Process health + claim checks + Evidence) ─── */
+.inside-sub { margin: var(--s-3) 0 var(--s-1); font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.inside-line { margin: var(--s-1) 0 var(--s-2); font-size: 15px; line-height: 1.45; color: var(--text-strong); text-wrap: pretty; overflow-wrap: anywhere; }
+.inside-line.attn { color: var(--attn); } .inside-line.unknown { color: var(--text-muted); }
+.inside-tiles { margin: 0 0 var(--s-3); align-items: center; }
+.inside-tiles-note { font-size: 12.5px; color: var(--text-faint); }
+.inside-filters { margin: 0 var(--s-2) var(--s-2); }
+.inside-filters .link-btn, .inside-stage .link-btn { min-height: 44px; }
+.inside-day { margin-top: var(--s-2); }
+.inside-day-label { margin: var(--s-2) 0 0; font-size: 11.5px; }
+.kind-icon { flex: none; width: 18px; margin-top: 2px; text-align: center; font-size: 14px; line-height: 1.2; color: var(--accent); }
+.kind-icon.attn { color: var(--attn); } .kind-icon.unknown { color: var(--text-faint); } .kind-icon.bad { color: var(--bad); }
+.inside-stage { display: flex; align-items: center; gap: 4px; margin: 0 0 var(--s-1); }
+.inside-tech { margin-top: var(--s-3); }
+.inside-tech h3 { margin: var(--s-3) 0 var(--s-1); }
+.inside-form { display: flex; gap: var(--s-2); align-items: center; margin: var(--s-2) 0; }
+.inside-form .reason-input { flex: 1; min-width: 0; font-size: 16px; }
+.inside-fold .list-rows > .card-note:first-child { margin-top: var(--s-2); }
+.inside-lookup-out, .inside-chain-out, .inside-history { margin-top: var(--s-2); }
+.list-section .inside-fold { border: 0; border-top: 1px solid var(--hairline); border-radius: 0; background: none; padding: var(--s-1) 0 0; margin-top: var(--s-2); }
