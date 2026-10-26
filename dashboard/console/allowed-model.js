@@ -104,7 +104,10 @@ const GUARD_WORDS = {
   'on-dry-run': 'watching only', off: 'off', 'diverged-pending-restart': 'changed, waiting for a restart', errored: 'errored',
   missing: 'missing', 'off-runtime-divergent': 'off while running',
 };
-const NEEDS_LOOK = new Set(['on-unverified', 'on-stale', 'on-blind', 'diverged-pending-restart', 'errored', 'missing', 'off-runtime-divergent']);
+// The same rule as Home's card: a check counts as needing a look only when it is off where
+// it should be on, errored, missing, diverged, or guarding nothing. "On, not confirmed" is
+// the ordinary state of about half the checks (not instrumented) and is listed, not counted.
+const NEEDS_LOOK = new Set(['diverged-pending-restart', 'errored', 'missing', 'off-runtime-divergent']);
 
 export function guardWord(g) {
   if (g.loadBearingAccepted) return 'risk accepted';
@@ -115,7 +118,7 @@ export function guardWord(g) {
   return GUARD_WORDS[g.effective] || String(g.effective || 'unknown').replace(/-/g, ' ');
 }
 
-/** Off where it should be on, or on but not proven. */
+/** Off where it should be on, broken, or guarding nothing. */
 export function needsLook(g) {
   if (g.loadBearingAccepted) return false;
   if (g.loadBearingGap) return true;

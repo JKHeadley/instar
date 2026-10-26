@@ -181,7 +181,7 @@ describe('safety checks', () => {
   it('puts off-where-it-should-be-on and unproven checks first', () => {
     expect(needsLook(gap)).toBe(true);
     expect(needsLook(deviant)).toBe(true);
-    expect(needsLook(unverified)).toBe(true);
+    expect(needsLook(unverified)).toBe(false); // listed, not counted: the same rule as Home
     expect(needsLook(fine)).toBe(false);
     expect(needsLook(byDesign)).toBe(false);
     expect(needsLook(accepted)).toBe(false);
