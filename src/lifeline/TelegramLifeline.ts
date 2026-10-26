@@ -570,12 +570,12 @@ export class TelegramLifeline {
       // running (with whatever it is doing) and the next lifeline adopts it. Detached
       // before any await so no supervisor callback can still reach the server.
       console.log('[Lifeline] lifeline-only restart — leaving the server running for the next lifeline to adopt');
-      try { this.supervisor.detach(); } catch { /* best-effort */ }
+      try { this.supervisor.detach(); } catch { /* @silent-fallback-ok: detach only clears timers; a throw here must not stop the exit */ }
     }
     try { await this.telegramOriginBoot?.close(); }
     catch (error) { console.error('[telegram-origin] lifeline shutdown cleanup incomplete', error); }
     if (!keepServer) {
-      try { await this.supervisor.stop(); } catch { /* best-effort */ }
+      try { await this.supervisor.stop(); } catch { /* @silent-fallback-ok: the process is exiting; a failed stop is found by the successor's orphan handling */ }
     }
   }
 

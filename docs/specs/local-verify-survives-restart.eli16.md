@@ -27,6 +27,7 @@ On the night of 2026-10-25, PR 2350 was first in that line for hours and never g
 
 - If the server is genuinely gone when the new lifeline starts, it starts a fresh one, which is what happens today. If it is there but busy, the new lifeline watches it with the usual patience rather than killing it on arrival.
 - Two independent outside reviews (GPT-6 Astra and Gemini 4 Argon) read the plan and the code; every finding they raised was fixed, except one test shape that cannot run without talking to GitHub, which is covered another way.
+- The change went through the same check line it fixes. Its first run came back red on one housekeeping test (a code-hygiene marker was missing on an error handler, no behavior involved); that was fixed and the check re-run before merging.
 - Nothing new is blocked or refused. The changes only move a PR forward in the line and raise an alarm sooner.
 - Undoing it is a plain revert. The two new fields saved with the line are optional, and an older server ignores them.
 

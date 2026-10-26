@@ -14,11 +14,12 @@ import http from 'node:http';
 import net from 'node:net';
 import { ServerSupervisor } from '../../src/lifeline/ServerSupervisor.js';
 
-function tmuxPath(): string | null {
+/** The e2e lane runs on a machine with tmux (every session test needs it); a missing tmux is a loud failure, not a skip. */
+function tmuxPath(): string {
   for (const p of ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux']) {
-    try { execFileSync(p, ['-V'], { stdio: 'ignore' }); return p; } catch { /* next */ }
+    try { execFileSync(p, ['-V'], { stdio: 'ignore' }); return p; } catch { /* @silent-fallback-ok: probing candidate paths; the last resort below fails loudly */ }
   }
-  return null;
+  try { return execFileSync('which', ['tmux'], { encoding: 'utf-8' }).trim(); } catch { throw new Error('tmux is required for this e2e test and was not found'); }
 }
 const TMUX = tmuxPath();
 
@@ -30,7 +31,7 @@ const cleanup: Array<() => void> = [];
 afterEach(() => { for (const f of cleanup.splice(0)) { try { f(); } catch { /* best-effort */ } } });
 
 function sessionPanePid(name: string): number {
-  return Number(execFileSync(TMUX!, ['list-panes', '-t', `=${name}:`, '-F', '#{pane_pid}'], { encoding: 'utf-8' }).trim());
+  return Number(execFileSync(TMUX, ['list-panes', '-t', `=${name}:`, '-F', '#{pane_pid}'], { encoding: 'utf-8' }).trim());
 }
 
 function supervisor(projectName: string, port: number): ServerSupervisor {
@@ -41,13 +42,13 @@ function supervisor(projectName: string, port: number): ServerSupervisor {
   return s;
 }
 
-describe.skipIf(!TMUX)('lifeline-only restart: the server survives and the successor adopts it', () => {
+describe('lifeline-only restart: the server survives and the successor adopts it', () => {
   it('same pane pid across detach + a fresh supervisor start(); the busy (non-answering) case adopts too; a gone session spawns', async () => {
     const name = `keepsrv-${process.pid}-${Date.now().toString(36)}`;
     const port = await freePort();
     // The stand-in server: a process in a tmux session, like the real `echo-server` session.
-    execFileSync(TMUX!, ['new-session', '-d', '-s', name, 'sleep', '600'], { stdio: 'ignore' });
-    cleanup.push(() => execFileSync(TMUX!, ['kill-session', '-t', `=${name}`], { stdio: 'ignore' }));
+    execFileSync(TMUX, ['new-session', '-d', '-s', name, 'sleep', '600'], { stdio: 'ignore' });
+    cleanup.push(() => execFileSync(TMUX, ['kill-session', '-t', `=${name}`], { stdio: 'ignore' }));
     const pidBefore = sessionPanePid(name);
     expect(pidBefore).toBeGreaterThan(0);
 
@@ -88,7 +89,7 @@ describe.skipIf(!TMUX)('lifeline-only restart: the server survives and the succe
     c.detach();
 
     // And once the session is genuinely gone, start() spawns (the P1 behaviour, unchanged).
-    execFileSync(TMUX!, ['kill-session', '-t', `=${name}`], { stdio: 'ignore' });
+    execFileSync(TMUX, ['kill-session', '-t', `=${name}`], { stdio: 'ignore' });
     cleanup.pop();
     const d = supervisor(name, port);
     (d as unknown as { serverSessionName: string }).serverSessionName = name;
