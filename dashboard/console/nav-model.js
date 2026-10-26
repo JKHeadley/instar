@@ -54,7 +54,7 @@ export const GROUPS = [
     tabs: [
       { id: 'machines', label: 'Machines', icon: 'server', desc: 'Each machine’s health, which one leads, and how they reach each other.' },
       { id: 'systems', label: 'Health', icon: 'heart', desc: 'Whether each of my subsystems is working.' },
-      { id: 'subscriptions', label: 'Subscriptions', icon: 'key', desc: 'Accounts, usage left before reset, and sign-in repair.' },
+      { id: 'subscriptions', label: 'Accounts', icon: 'key', desc: 'Subscriptions and sign-ins: usage left before reset, and fixing a sign-in from your phone.' },
       { id: 'resources', label: 'Resource usage', icon: 'cpu', desc: 'CPU and memory for the server and every session.' },
       { id: 'tokens', label: 'Tokens', icon: 'coins', desc: 'Token use across sessions in the last day.' },
       { id: 'spend', label: 'Spend', icon: 'wallet', desc: 'What background AI calls cost, and the spending limits.' },
@@ -101,6 +101,7 @@ export function allTabIds() {
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   machines: '#/capacity/machines',
+  subscriptions: '#/capacity/accounts',
 };
 
 /** Where a tile goes: the native page when it exists, else the legacy tab. */

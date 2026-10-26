@@ -157,3 +157,46 @@ export function actionButton({ label, kind = 'primary', confirm, reason, run, do
 
 /** replaceChildren that skips null/false (a bare null would render as the text "null"). */
 export function setKids(node, ...kids) { node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false)); }
+
+// ── PIN sheet (00-patterns.md §4: one look, per-action adapters) ───────────
+// adapter 'session': POST /dashboard/unlock → operator-session token, held in page
+//   memory only until the server-set expiry; later session actions reuse it.
+// adapter 'body': the typed PIN is returned for exactly one request and the field
+//   is cleared at once; it is never stored or replayed.
+let opSession = null; // { token, expiresAt }
+export function operatorSession() {
+  return opSession && Date.parse(opSession.expiresAt) > Date.now() + 5000 ? opSession.token : null;
+}
+export function forgetOperatorSession() { opSession = null; }
+
+export function askPin({ title, explain, adapter = 'body' }) {
+  if (adapter === 'session' && operatorSession()) return Promise.resolve({ session: operatorSession() });
+  return new Promise((resolve) => {
+    const input = el('input', { class: 'pin-input', type: 'password', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '12', 'aria-label': 'Dashboard PIN' });
+    const err = el('p', { class: 'unlock-error', role: 'alert' });
+    const go = el('button', { class: 'btn-primary', type: 'submit', text: 'Continue' });
+    let settled = false;
+    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const form = el('form', { class: 'pin-form' }, el('p', { class: 'confirm-text', text: explain || 'This needs your dashboard PIN.' }), input, go, err);
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const pin = input.value;
+      if (!pin) { err.textContent = 'Type your PIN.'; return; }
+      if (adapter === 'body') { input.value = ''; finish({ pin }); closeSheet(); return; }
+      go.disabled = true; err.textContent = '';
+      try {
+        const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
+        input.value = '';
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || typeof d.operatorSessionToken !== 'string' || !d.operatorSessionToken) {
+          err.textContent = d.error ? `${d.error}${typeof d.attemptsRemaining === 'number' ? ` · ${d.attemptsRemaining} tries left` : ''}` : 'That did not work.';
+          go.disabled = false; input.focus(); return;
+        }
+        opSession = { token: d.operatorSessionToken, expiresAt: d.operatorSessionExpiresAt || new Date(Date.now() + 10 * 60000).toISOString() };
+        finish({ session: opSession.token }); closeSheet();
+      } catch { err.textContent = 'The server could not be reached.'; go.disabled = false; }
+    });
+    sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
+    setTimeout(() => input.focus(), 50);
+  });
+}

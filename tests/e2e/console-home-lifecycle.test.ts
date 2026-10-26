@@ -23,6 +23,7 @@ import {
 } from '../../dashboard/console/home-model.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
+import { buildAccountsPage } from '../../dashboard/console/accounts-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -125,6 +126,16 @@ describe('Console Home E2E (feature is alive)', () => {
     const h = healthOf(sys.status === 200 ? { ok: true, data: sys.body } : { ok: false, reason: String(sys.status) });
     expect(typeof h.ok).toBe('boolean');
     if (!h.ok) expect(h.reason.length).toBeGreaterThan(0);
+  });
+
+  it('the Accounts page maps the real account-pool answer to a page or an honest reason', async () => {
+    const r = await request(server.getApp()).get('/subscription-pool?scope=pool').set(auth);
+    const page = buildAccountsPage(r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: `the server answered ${r.status}` }, Date.now());
+    if (page.ok) expect(Array.isArray(page.accounts)).toBe(true);
+    else expect(page.reason.length).toBeGreaterThan(10);
+    // The sign-in start route refuses without a PIN; the console never sends one it did not just collect.
+    const s = await request(server.getApp()).post('/subscription-pool/matrix/start-cell').set(auth).send({ accountId: 'a', machineId: 'm' });
+    expect([400, 401, 403, 404, 503]).toContain(s.status);
   });
 });
 

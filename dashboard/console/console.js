@@ -11,6 +11,7 @@ import {
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
 import { renderMachines } from './machines.js';
+import { renderAccounts } from './accounts.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -422,6 +423,7 @@ function footNote() {
 const NATIVE = {
   'work/promises': renderPromises,
   'capacity/machines': renderMachines,
+  'capacity/accounts': renderAccounts,
 };
 
 function route() {
