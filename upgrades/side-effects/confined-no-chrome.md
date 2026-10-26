@@ -106,6 +106,25 @@ unchanged; `gemini-3.1-pro-preview` could not be re-probed (no gemini auth on th
 and is carried unchanged. Rollback: revert the manifest hunk; the lint then fails again on
 staleness, which is the honest state.
 
+## Carried alongside (2): two relogin tests stop using the machine-wide browser-seat lease
+
+Both local verifies of this PR (70e5e2b29 and b87f3abfa) failed 7 tests in
+`tests/integration/subscription-relogin-runtime.test.ts` and 2 in
+`tests/e2e/subscription-relogin-lifecycle.test.ts`, which pass in isolation. Cause, reproduced: the
+tests built `createSubscriptionReloginRuntime` without a `seatLease`, so the runtime used its
+production default — the MACHINE-WIDE lease file `~/.instar/state/playwright-seat-lease.json`
+(10-minute TTL). During both verify runs another live session on this machine (`holderLabel:
+echo-instar-dashboard-makeover`) held that seat, so every drive answered seat-busy and the
+episode never left `approved` (`vi.waitFor` default 1 s). `main`'s own verify waves these files
+through its isolation re-run; a PR cannot when the failing files are `related-to-change` — and
+`src/core/credentialEnvNames.ts` is in their import graph, so this PR was the one that paid.
+Fix (test-only, same pattern the sibling relogin tests already use): each runtime gets
+`seatLease: new PlaywrightSeatLease({ filePath: <the test's own state dir>/seat-lease.json })`.
+Proof: with `HOME` pointed at a fake home whose seat file is held by another holder, the old test
+fails 7/8 (the exact verifier signature) and the patched files pass 8/8 and 8/8. Production is
+untouched (the default stays the machine-wide lease). The class — a production-shaped test reading
+host-global state under `HOME` — is filed to the feedback queue.
+
 ## Conclusion
 
 Ship. One flag, proven live, strictly fewer startup questions for a session that could never use
@@ -120,7 +139,7 @@ Not required.
 - Live failure: `logs/server.log` 2026-10-25T22:49:43–54Z — `awaiting-trust-dismissal → awaiting-browser-dismissal (action keys)` then `awaiting-browser-dismissal → failed`, degradation `startup browser-offer-not-dismissed (observed browser-offer)`; `GET /feedback-factory/execute/status` → `session-last-screen` detail quoting the offer; canary 15:49:57 PDT failed only the session probes.
 - Live proof (2026-10-25 15:57 PDT, Claude Code 2.1.303, tmux, `CLAUDE_CONFIG_DIR=<a login without the Chrome flag>`): `claude --permission-mode dontAsk --tools Bash,Read` → after the trust dialog, the screen shows "Claude in Chrome extension detected … ❯ No, keep browser tools off / Yes, use my browser"; `claude --no-chrome --permission-mode dontAsk --tools Bash,Read` → after the trust dialog, straight to the prompt with the `don't ask on` footer. Under a login WITH `claudeInChromeDefaultEnabled: false`, neither variant shows the offer (which is why the 12:48 canary had not hit it).
 - Honest note on the live proof: pressing Esc to end the offer in the un-flagged variant wrote `claudeInChromeDefaultEnabled: false` into that login's `.claude.json` (Claude Code records the answer). That is the answer a human would give and is harmless; it is named here because the test touched a real login's config, and because it means the SAME login would not show the offer again — the pool's other un-flagged logins still would, which is why the flag (not the config edit) is the fix.
-- First local verify (70e5e2b29, 2026-10-25 23:33–23:53Z): 7 integration + 2 e2e failures, all in `subscription-relogin-runtime` / `subscription-relogin-lifecycle`, which do not touch the confined argv and pass 16/16 on this branch locally on the same merge base; the verifier retains no per-test output (filed fb-e30113d7-578). Re-verified on this head.
+- Local verifies 1 and 2 (70e5e2b29, b87f3abfa): 7 integration + 2 e2e failures in the relogin files — root cause and proof in 'Carried alongside (2)' above (busy machine-wide browser-seat lease; fixed in-test). The verifier retains no per-test output (filed fb-e30113d7-578); the cause was found by running the full integration lane locally with `--reporter=json` kept.
 - Unit: `session-manager-confined-reroute.test.ts`, `session-manager-confined-spawn.test.ts`, `feedback-factory/execute-units.test.ts` — 68/68 green with the exact argv pinned including `--no-chrome`; `tsc` clean.
 
 ## Class-Closure Declaration (display-only mirror)
