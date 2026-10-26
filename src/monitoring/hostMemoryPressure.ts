@@ -173,11 +173,14 @@ export function makeDecompressionRateSampler(
   return {
     sample(nowMs?: number): number | null {
       let reading: SystemMemoryReading;
-      // @silent-fallback-ok — an unreadable vm_stat is UNKNOWN, not zero: `null` propagates as
-      // `decompressionsPerSec: null`, which grades nothing (the compressor readings are
-      // observability only) and is reported as null on `pressure.inputs`. `readSystemMemoryPressure`
-      // already logs and degrades on its own read failures, so reporting again here would double-count.
-      try { reading = read(); } catch { return null; }
+      try { reading = read(); } catch {
+        // @silent-fallback-ok — an unreadable vm_stat is UNKNOWN, not zero: `null` propagates as
+        // `decompressionsPerSec: null`, which grades nothing (the compressor readings are
+        // observability only) and is reported as null on `pressure.inputs`.
+        // `readSystemMemoryPressure` already logs and degrades on its own read failures, so
+        // reporting again here would double-count the same event.
+        return null;
+      }
       return sampleFrom(reading, nowMs);
     },
     /** Derive the rate from a reading the caller already took — ONE vm_stat per sample, not three. */
