@@ -115,6 +115,12 @@ export interface EnrollmentWizardConfig {
    */
   emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
   /**
+   * attention-lifecycle-close-on-cause §3.3 — the email-gate row for a login is
+   * over: its completion validated, or the login left the pending set. Called
+   * with the login/account id; the wiring clears by the gate's id prefix.
+   */
+  clearAttention?: (accountId: string, resolution: string) => void;
+  /**
    * Witness for a login that completed WITHOUT telling instar.
    *
    * A `url-code-paste` flow (Claude) ends by the operator pasting a code back
@@ -175,6 +181,7 @@ export class EnrollmentWizard {
   private readonly agentHome?: string;
   private readonly oracle?: IdentityOracle;
   private readonly emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
+  private readonly clearAttention?: (accountId: string, resolution: string) => void;
   private readonly credentialWitness?: (login: PendingLogin) => Promise<number | null> | number | null;
   private readonly authRevisionWitness?: EnrollmentWizardConfig['authRevisionWitness'];
   private readonly completionSweepInFlight = new Set<string>();
@@ -187,6 +194,7 @@ export class EnrollmentWizard {
     this.agentHome = cfg.agentHome;
     this.oracle = cfg.oracle;
     this.emitAttention = cfg.emitAttention;
+    this.clearAttention = cfg.clearAttention;
     this.credentialWitness = cfg.credentialWitness;
     this.authRevisionWitness = cfg.authRevisionWitness;
   }
@@ -412,6 +420,8 @@ export class EnrollmentWizard {
   complete(id: string): PendingLogin | null {
     const login = this.store.complete(id);
     this.ensureCompletedLoginReady(login);
+    // §3.3 — the login left the pending set: any email-gate row about it is over.
+    if (login) { try { this.clearAttention?.(login.id, 'cleared: the login completed and left the pending set'); } catch { /* observability only */ } }
     return login;
   }
 
@@ -499,6 +509,7 @@ export class EnrollmentWizard {
 
     if (verdict.selectable) {
       this.logger.log(`[EnrollmentWizard] follow-me completion ${login.id} validated as ${verdict.email}`);
+      try { this.clearAttention?.(login.id, 'cleared: the enrollment validated against the expected account email'); } catch { /* observability only */ }
       return { outcome: 'validated', login, email: verdict.email };
     }
 

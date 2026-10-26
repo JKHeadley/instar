@@ -123,20 +123,24 @@ describe('GuardPostureProbe — G3 separate episode track (real createAttentionI
     expect(adapter.getAttentionItem('guard-posture-loadbearing:ep-2')).toBeUndefined();
   });
 
-  it('masking PERSISTS if only the healthKey is split without splitting the episode id (inert-lever guard)', async () => {
-    // The REAL funnel dedups by ITEM ID. A second emit with the SAME id but a
-    // DIFFERENT healthKey is dropped — proving the healthKey is NOT the de-masking
-    // lever; the separate item-id (episode track) is.
+  it('a second emit on the SAME id refreshes that one row (never a second row); the healthKey is not the lever, the episode id is', async () => {
+    // The REAL funnel keys rows by ITEM ID. A second emit with the SAME id but a
+    // DIFFERENT healthKey lands on the same row — since attention-lifecycle-close-on-cause
+    // §3.1 a changed body REFRESHES that row in place (the newer ask is what the
+    // operator sees) instead of being dropped; either way it is ONE row, proving
+    // the healthKey is NOT the de-masking lever; the separate item-id (episode track) is.
     await adapter.createAttentionItem({
       id: 'guard-posture:ep-1', title: 'first', summary: 'acute A',
       category: 'guard-posture', priority: 'HIGH', healthKey: 'key-A',
     });
     await adapter.createAttentionItem({
-      id: 'guard-posture:ep-1', title: 'second', summary: 'acute B (masked)',
+      id: 'guard-posture:ep-1', title: 'second', summary: 'acute B (refreshed)',
       category: 'guard-posture', priority: 'HIGH', healthKey: 'key-B',
     });
     const stored = adapter.getAttentionItem('guard-posture:ep-1')!;
-    expect(stored.summary).toBe('acute A'); // the SECOND was masked despite a new healthKey
+    expect(stored.summary).toBe('acute B (refreshed)'); // refreshed in place, not a sibling row
+    expect(stored.occurrences).toBe(2);
+    expect(adapter.getAttentionItems('OPEN').filter((i) => i.id.startsWith('guard-posture:'))).toHaveLength(1);
     // The fix would use a DIFFERENT id (a separate track) — which does surface:
     await adapter.createAttentionItem({
       id: 'guard-posture-loadbearing:ep-1', title: 'lb', summary: 'lb gap',

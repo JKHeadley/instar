@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "attention-lifecycle-close-on-cause",
+  "sessionId": "56f304c0-397c-48b5-a063-a29a48e9f94a",
+  "timestamp": "2026-10-26T12:59:17.281Z",
+  "artifactPath": "upgrades/side-effects/attention-lifecycle-close-on-cause.md",
+  "artifactSha256": "e69db5203d3ec099a7efa885b3a410e3730299ad6771637e599204ce724b4fc0",
+  "specPath": "docs/specs/attention-lifecycle-close-on-cause.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/attention-lifecycle-close-on-cause.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

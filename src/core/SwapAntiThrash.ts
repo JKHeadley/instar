@@ -228,7 +228,9 @@ export interface SwapAntiThrashEngineOptions {
   ledger: SwapLedger;
   getKnobs: () => AntiThrashKnobs;
   machineId?: string;
-  raiseAttention?: (id: string, title: string, body: string) => void;
+  raiseAttention?: (id: string, title: string, body: string, conditionKey?: string) => void;
+  /** attention-lifecycle-close-on-cause §3.3 — close a row whose condition ended (readings fresh again; hops below threshold). */
+  clearAttention?: (conditionKey: string, resolution: string) => void;
   logger?: { log: (m: string) => void; warn: (m: string) => void };
   now?: () => number;
 }
@@ -237,7 +239,10 @@ export class SwapAntiThrashEngine {
   private readonly ledger: SwapLedger;
   private readonly getKnobs: () => AntiThrashKnobs;
   private readonly machineId: string;
-  private readonly raiseAttention: (id: string, title: string, body: string) => void;
+  private readonly raiseAttention: (id: string, title: string, body: string, conditionKey?: string) => void;
+  private readonly clearAttention: (conditionKey: string, resolution: string) => void;
+  /** Sessions whose reactive-hops row is open (cleared when fresh hops fall below the threshold). */
+  private readonly reactiveHopItemOpen = new Set<string>();
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly now: () => number;
 
@@ -275,6 +280,7 @@ export class SwapAntiThrashEngine {
     this.getKnobs = opts.getKnobs;
     this.machineId = opts.machineId ?? 'local';
     this.raiseAttention = opts.raiseAttention ?? (() => {});
+    this.clearAttention = opts.clearAttention ?? (() => {});
     this.logger = opts.logger ?? { log: () => {}, warn: () => {} };
     this.now = opts.now ?? (() => Date.now());
   }
@@ -490,6 +496,9 @@ export class SwapAntiThrashEngine {
       nonDisabled.length >= 2 &&
       nonDisabled.every((a) => !readingValidity(a, nowMs, k.quotaFreshnessMs).valid);
     if (!blind) {
+      if (this.blindEpisodeId && this.alertedEpisodeIds.has(this.blindEpisodeId)) {
+        this.clearAttention('swap-antithrash:measurement-blind', 'cleared: fresh quota readings are back on the pool');
+      }
       this.blindSinceMs = null;
       this.blindEpisodeId = null;
       return;
@@ -505,6 +514,7 @@ export class SwapAntiThrashEngine {
         `swap-antithrash-${this.blindEpisodeId}`,
         'Proactive account optimization is measurement-blind',
         `No fresh quota readings on any pool account for ${Math.round((nowMs - this.blindSinceMs) / 60000)}+ min — proactive swapping is effectively paused until the quota poller recovers (reactive rescue is unaffected).`,
+        'swap-antithrash:measurement-blind',
       );
     }
   }
@@ -769,14 +779,19 @@ export class SwapAntiThrashEngine {
     hops.push(args.nowMs);
     const fresh = hops.filter((t) => args.nowMs - t <= k.reversalWindowMs);
     this.reactiveHops.set(args.session, fresh);
+    if (fresh.length < k.reactiveHopAlertThreshold && this.reactiveHopItemOpen.delete(args.session)) {
+      this.clearAttention(`swap-antithrash:reactive-hops:${args.session}`, 'cleared: reactive hops for the session dropped below the cascade threshold');
+    }
     if (fresh.length >= k.reactiveHopAlertThreshold) {
       const epId = `reactive-hops-${args.session}-${fresh[0]}`;
       if (!this.reactiveHopAlerted.has(epId)) {
         this.reactiveHopAlerted.add(epId);
+        this.reactiveHopItemOpen.add(args.session);
         this.raiseAttention(
           `swap-antithrash-${epId}`,
           'Reactive account swaps are cascading',
           `Session "${args.session}" has emergency-hopped accounts ${fresh.length} times in the last ${Math.round(k.reversalWindowMs / 60000)} min — the pool is genuinely saturated (every hop was a forced rescue; the reactive guarantee is working, but there is no cool account to land on).`,
+          `swap-antithrash:reactive-hops:${args.session}`,
         );
       }
     }
