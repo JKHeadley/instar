@@ -50,16 +50,14 @@ describe('Console Home E2E (feature is alive)', () => {
     const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
       requestTimeoutMs: 10_000, version: '0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, monitoring: {} } as unknown as InstarConfig;
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
+      // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
+      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
     features = new FeatureRegistry(stateDir, { hmacKey: AUTH });
     await features.open();
     for (const def of BUILTIN_FEATURES) features.register(def);
     const autonomyManager = new AutonomyProfileManager({ stateDir, config });
-    server = new AgentServer({ config, commitmentTracker: tracker, featureRegistry: features, autonomyManager,
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
-      // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
-      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
-    server = new AgentServer({ config, commitmentTracker: tracker, initiativeTracker: initiatives,
+    server = new AgentServer({ config, commitmentTracker: tracker, featureRegistry: features, autonomyManager, initiativeTracker: initiatives,
       sessionManager: { listRunningSessions: () => [], getSession: () => null } as never,
       state: new StateManager(stateDir) });
     await server.start();
@@ -207,6 +205,8 @@ describe('Console Home E2E (feature is alive)', () => {
     // The guard list maps to rows or an honest reason.
     const g = buildGuards(await read('/guards'));
     if (g.ok) expect(g.counts.total).toBeGreaterThan(0); else expect(g.reason.length).toBeGreaterThan(10);
+  });
+
   it('the Plans page reads the real /projects, /initiatives and /blockers routes and its writes meet the real gates', async () => {
     await initiatives.create({ id: 'e2e-plan', title: 'Pick the launch name', description: 'd', phases: [{ id: 'a', name: 'Draft' }], needsUser: true, needsUserReason: 'choose between two names' } as never);
     await initiatives.create({ id: 'e2e-project', title: 'Console makeover', description: 'd', kind: 'project', phases: [{ id: 'a', name: 'Rounds' }],
