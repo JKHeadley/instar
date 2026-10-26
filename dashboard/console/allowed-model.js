@@ -38,7 +38,7 @@ export function meaningRows(resolved) {
   const rows = [];
   if (typeof resolved.autoApplyUpdates === 'boolean') rows.push({ label: 'Updates install themselves', text: yesNo(resolved.autoApplyUpdates) });
   if (typeof resolved.autoRestart === 'boolean') rows.push({ label: 'I restart after updates', text: yesNo(resolved.autoRestart) });
-  if (typeof resolved.trustAutoElevate === 'boolean') rows.push({ label: 'I ask before raising my own trust', text: yesNo(!resolved.trustAutoElevate) });
+  if (typeof resolved.trustAutoElevate === 'boolean') rows.push({ label: 'Raising my own trust level', text: resolved.trustAutoElevate ? 'allowed when I have earned it, without asking you' : 'only when you say so' });
   return rows;
 }
 
@@ -126,9 +126,35 @@ export function needsLook(g) {
   return NEEDS_LOOK.has(g.effective);
 }
 
-function humanKey(key) {
-  return String(key || 'A safety check').replace(/^monitoring\./, '').replace(/\.enabled$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._-]/g, ' ').replace(/^./, (c) => c.toUpperCase());
+// Plain names for the setting keys the guards are known by. Anything not listed is
+// humanized: prefixes dropped, camelCase split and lower-cased, known acronyms kept upper.
+const GUARD_NAMES = {
+  'models.tierEscalation.dryRun': 'Model escalation (watch-only mode)',
+  'models.tierEscalation.enabled': 'Model escalation for heavy work',
+  'monitoring.autonomousHeartbeat.enabled': 'Autonomous-run heartbeat',
+  'monitoring.collaborationRedrive.enabled': 'Collaboration re-drive',
+  'monitoring.greenPrAutoMerge.enabled': 'Green PR auto-merge',
+  'monitoring.orphanedWorkSentinel.enabled': 'Orphaned-work sentinel',
+  'monitoring.reportExternalProcesses': 'Report external processes',
+  'monitoring.staleBackstop.enabled': 'Stale backstop',
+  'monitoring.burnDetection.enabled': 'Token-burn detection',
+  'monitoring.crashLoopPauser.enabled': 'Crash-loop pauser',
+  'monitoring.promptGate.enabled': 'Prompt gate',
+  'multiMachine.peerExecution.enabled': 'Autonomous execution on a paired machine',
+  'scheduler.enabled': 'Scheduled jobs',
+};
+const ACRONYMS = new Set(['pr', 'llm', 'cpu', 'gpu', 'mcp', 'ssh', 'a2a', 'api', 'ci', 'jsonl', 'json', 'tcc', 'url', 'http', 'https', 'tls', 'ws', 'sse', 'ui', 'ux', 'pin', 'id', 'oauth', 'otp', 'totp', 'aup', 'pid', 'io', 'os']);
+export function guardName(key) {
+  const k = String(key || '').trim();
+  if (!k) return 'A safety check';
+  if (GUARD_NAMES[k]) return GUARD_NAMES[k];
+  const words = k.replace(/^(monitoring|intelligence|sessions|multiMachine|messaging|scheduler)\./, '').replace(/\.enabled$/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(/[._\-\s]+/).filter(Boolean)
+    .map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w.toLowerCase()));
+  const out = words.join(' ');
+  return out.charAt(0).toUpperCase() + out.slice(1);
 }
+const humanKey = guardName;
 
 /** Which writes a row offers. Only this machine's rows can be written; peers never. */
 export function guardActions(g, local) {

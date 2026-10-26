@@ -106,14 +106,19 @@ describe('console shell (jsdom)', () => {
     expect(again.querySelectorAll('button.row')).toHaveLength(5);
   });
 
-  it('group pages link to their native pages as ordinary links, with no iframe', async () => {
+  it('group pages link to their native pages as ordinary links, with no iframe; moved tabs sit behind "Where did things move?"', async () => {
     const doc = await boot('t');
     dom.window.location.hash = '#/work';
     dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
     await flush();
     const tiles = [...doc.querySelectorAll('a.tile')].map((a) => a.getAttribute('href'));
-    expect(tiles).toContain('#/work/sessions?paste=1');
+    expect(tiles).toContain('#/work/sessions');
+    expect(tiles).not.toContain('#/work/sessions?paste=1'); // a "Now inside …" pointer, not a destination
     expect(tiles.every((h) => (h || '').startsWith('#/'))).toBe(true);
     expect(doc.querySelector('iframe')).toBeNull();
+    (doc.querySelector('.moved-link') as HTMLButtonElement).click();
+    const moved = [...doc.querySelectorAll('.sheet a.moved-row')].map((a) => a.getAttribute('href'));
+    expect(moved).toContain('#/work/sessions?paste=1');
+    expect(doc.querySelector('.sheet .row-title')!.textContent).toMatch(/→/);
   });
 });

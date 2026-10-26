@@ -114,6 +114,13 @@ export function healthOf(res) {
   };
 }
 
+/** The sampler keys a row `session:<id>` with the id cut short; match the whole id or its start. */
+export function nameOf(shortId, names = {}) {
+  if (names[shortId]) return names[shortId];
+  if (shortId.length >= 8) { const k = Object.keys(names).find((key) => key.startsWith(shortId)); if (k) return names[k]; }
+  return 'A session';
+}
+
 /** What is using this machine, from /resources/summary. */
 export function usageOf(res, sessionNames = {}) {
   if (!res || !res.ok) return { ok: false, reason: res ? res.reason : 'not read' };
@@ -128,7 +135,7 @@ export function usageOf(res, sessionNames = {}) {
     summary: agg ? `Instar is using ${Math.round(agg.currentCpuPercent || 0)}% CPU and ${gb(agg.currentRssBytes)} of memory now (peak ${Math.round(agg.peakCpuPercent || 0)}% in the last hour).` : 'No total reading yet.',
     rows: [
       server ? { main: 'The agent server', sub: `${Math.round(server.currentCpuPercent || 0)}% CPU · ${gb(server.currentRssBytes)}` } : null,
-      ...sessions.slice(0, 5).map((s) => ({ main: sessionNames[String(s.source).slice(8)] || 'A session', sub: `${Math.round(s.currentCpuPercent || 0)}% CPU · ${gb(s.currentRssBytes)}` })),
+      ...sessions.slice(0, 5).map((s) => ({ main: nameOf(String(s.source).slice(8), sessionNames), sub: `${Math.round(s.currentCpuPercent || 0)}% CPU · ${gb(s.currentRssBytes)}` })),
     ].filter(Boolean),
   };
 }

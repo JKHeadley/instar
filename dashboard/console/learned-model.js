@@ -31,6 +31,31 @@ export function seenWords(n) {
   return n > 1 ? `seen ${n} times` : 'seen once';
 }
 
+/**
+ * The ledger writes about "The user"; this page is written to you. "The user wants X"
+ * → "You want X": the subject is swapped and the verb right after it is put back in the
+ * second person. Anything that does not start that way is left alone.
+ */
+const THIRD_TO_SECOND = { is: 'are', was: 'were', has: 'have', does: 'do', 'doesn’t': 'don’t', "doesn't": "don't", "isn't": "aren't", 'isn’t': 'aren’t', "wasn't": "weren't", "hasn't": "haven't" };
+export function youify(text) {
+  const s = String(text || '');
+  const m = /^(The|This) user(’s|'s)?\s+(\S+)([\s\S]*)$/i.exec(s);
+  if (!m) return s;
+  if (m[2]) return `Your ${m[3]}${m[4]}`;
+  const verb = m[3];
+  const lower = verb.toLowerCase();
+  let v = THIRD_TO_SECOND[lower];
+  if (!v) {
+    if (/ies$/.test(lower) && lower.length > 4) v = lower.replace(/ies$/, 'y');
+    else if (/(ss|sh|ch|x|z|o)es$/.test(lower)) v = lower.replace(/es$/, '');
+    else if (/[^s]s$/.test(lower) && !/ss$/.test(lower)) v = lower.replace(/s$/, '');
+    else v = verb; // "asked", "corrected", "will": already fine in the second person
+  }
+  // A second clause about the same subject ("… and prefers clarity") follows suit.
+  const rest = m[4].replace(/\b(and|but|or) (wants|prefers|expects|needs|asks|likes|dislikes|requires|reports|indicates|is|has)\b/, (_, c, w) => `${c} ${THIRD_TO_SECOND[w] || w.replace(/s$/, '')}`);
+  return `You ${v}${rest}`;
+}
+
 /** Plain-ish text for display: control and bidi characters removed, length capped. */
 export function clean(value, max = 280) {
   let s = value == null ? '' : String(value);
@@ -48,7 +73,7 @@ export function parsePreferenceBlock(block) {
     const line = raw.trim();
     if (!line.startsWith('- ')) continue;
     const m = PREF_LINE.exec(line);
-    const text = clean(m ? m[1] : line.slice(2));
+    const text = youify(clean(m ? m[1] : line.slice(2)));
     if (!text) continue;
     const confidence = m ? Number(m[2]) : NaN;
     const seen = m ? Math.max(1, parseInt(m[3], 10) || 1) : null;
@@ -124,7 +149,7 @@ export function buildPreferenceEntries(res, { lastGood = null, now = Date.now(),
   const rows = [];
   for (const e of d.entries) {
     if (!e || typeof e.learning !== 'string') continue;
-    const text = clean(e.learning);
+    const text = youify(clean(e.learning));
     if (!text) continue;
     const confidence = Number.isFinite(e.confidence) ? e.confidence : null;
     const seen = Number.isFinite(e.dedupeCount) && e.dedupeCount >= 1 ? Math.floor(e.dedupeCount) : 1;
@@ -180,7 +205,7 @@ export function isWatching(r) {
 }
 
 export function correctionRow(r, now = Date.now()) {
-  const summary = clean(r.scrubbedSummary) || kindWords(r.kind);
+  const summary = youify(clean(r.scrubbedSummary)) || kindWords(r.kind);
   const when = ago(r.updatedAt || r.detectedAt, now);
   return {
     key: `corr:${r.id}`, id: r.id,
@@ -264,7 +289,8 @@ export function learnedHeadline({ prefs, corrections }) {
   if (prefs && prefs.off && (!corrections || corrections.off)) return { text: 'Learning from corrections is off on this agent.', tone: 'muted' };
   if (!prefs || !prefs.ok) return { text: 'Can’t tell what I’ve learned about you.', tone: 'muted' };
   const n = prefs.total;
-  if (n === 0) return { text: 'Nothing yet — correct me the same way twice and it shows up here.', tone: 'ok' };
+  // The same rule the body states: a correction has to come back on different days.
+  if (n === 0) return { text: 'Nothing yet — correct me the same way on a couple of different days and it shows up here.', tone: 'ok' };
   return { text: `I’ve picked up ${n === 1 ? '1 thing' : `${n} things`} about how you like to work.`, tone: prefs.stale ? 'muted' : 'ok' };
 }
 

@@ -281,17 +281,21 @@ export function mandatesHeadline({ slips, approvals, audit }) {
   if (!slips || !slips.ok) return { text: slips && slips.off ? 'Permission slips are switched off on this agent.' : 'Can’t tell what you have allowed.', tone: 'muted' };
   if (slips.counts.invalid) return { text: `${slips.counts.invalid === 1 ? 'One slip’s' : `${slips.counts.invalid} slips’`} signature doesn’t check out.`, tone: 'bad' };
   const waitUnknown = approvals && !approvals.ok && !approvals.hidden;
-  if (slips.counts.active === 0) return { text: 'No slips — every agent-to-agent action is refused until you sign one.', tone: 'ok' };
+  // Agents can still message each other with no slip; only the actions a slip governs are refused.
+  if (slips.counts.active === 0) return { text: 'No permission slips. Agents can still talk to each other; only actions that need a slip are refused.', tone: 'ok' };
   return { text: `${slips.counts.active === 1 ? '1 slip' : `${slips.counts.active} slips`} active; ${waitUnknown ? 'can’t tell if anything is waiting.' : 'nothing waiting.'}`, tone: waitUnknown ? 'muted' : 'ok' };
 }
 
+/**
+ * The two numbers that matter on arrival. "people with grants" and "decision record
+ * intact" were housekeeping chips: the slip's own sheet lists its people, and a broken
+ * record is an incident that leads the page on its own.
+ */
 export function mandatesFacts({ slips, approvals, audit }) {
   const facts = [];
   if (approvals && !approvals.hidden) facts.push(approvals.ok ? { n: approvals.rows.length, label: 'waiting on you', tone: approvals.rows.length ? 'attn' : null } : { n: '?', label: 'waiting on you' });
   facts.push(slips && slips.ok ? { n: slips.counts.active, label: slips.counts.active === 1 ? 'active slip' : 'active slips' } : { n: '?', label: 'active slips' });
-  if (slips && slips.ok) facts.push({ n: slips.counts.people, label: slips.counts.people === 1 ? 'person with a grant' : 'people with grants' });
-  if (audit && audit.ok) facts.push({ n: audit.chain.state === 'broken' ? 'broken' : audit.chain.state === 'intact' ? 'intact' : '?', label: 'decision record', tone: audit.chain.state === 'broken' ? 'bad' : null });
-  else facts.push({ n: '?', label: 'decision record' });
+  if (audit && audit.ok && audit.chain.state === 'broken') facts.push({ n: 'broken', label: 'decision record', tone: 'bad' });
   return facts.slice(0, 4);
 }
 
@@ -381,8 +385,8 @@ export function resultWords(kind, status, data) {
   if (status >= 400) return { ok: false, text: `Not done: ${err || `the server answered ${status}`}. Nothing has changed.` };
   if (kind === 'issue') return { ok: true, text: `Issued${data && data.delivered ? ' and delivered to the other machine' : ''}. The slip is active.` };
   if (kind === 'revoke') return { ok: true, text: 'Revoked. Everything this slip allowed is refused from now on.' };
-  if (kind === 'grant') return { ok: true, text: 'Granted. The slip now carries it.' };
-  if (kind === 'approve') return { ok: true, text: data && data.alreadyApproved ? 'This was already approved.' : 'Approved. The grant is active.' };
+  if (kind === 'grant') return { ok: true, text: 'Done. The slip now carries it.' };
+  if (kind === 'approve') return { ok: true, text: data && data.alreadyApproved ? 'This was already approved.' : 'Approved. It is in force.' };
   if (kind === 'deny') return { ok: true, text: 'Declined.' };
   return { ok: true, text: 'Done.' };
 }

@@ -31,7 +31,7 @@ const sess = (over: Record<string, unknown> = {}) => ({
 const poolOf = (sessions: unknown[], pool: Record<string, unknown> = {}) => ok({ sessions, pool: { enabled: false, selfMachineId: 'm-studio', selfMachineNickname: 'Mac Studio', machines: [], failed: [], duplicateTopics: [], ...pool } });
 
 describe('words', () => {
-  it('spans and models read plainly; a bare family name says the version was not recorded', () => {
+  it('spans and models read plainly; a bare family name is said as it is', () => {
     expect(spanWords(30_000)).toBe('now');
     expect(spanWords(25 * 60_000)).toBe('25 min');
     expect(spanWords(3 * 3600_000)).toBe('3 h');
@@ -39,7 +39,7 @@ describe('words', () => {
     expect(spanWords(-1)).toBeNull();
     expect(modelWords('claude-opus-5-5')).toBe('Opus 5.5');
     expect(modelWords('claude-fable-5')).toBe('Fable 5');
-    expect(modelWords('opus')).toBe('Opus, version not recorded');
+    expect(modelWords('opus')).toBe('Opus'); // a bare family name is said plainly; 'version not recorded' is not for the title line
     expect(modelWords('gpt-6-astra')).toBe('GPT-6 Astra');
     expect(modelWords('')).toBeNull();
     expect(modelWords('weird-model')).toBe('weird-model');
@@ -114,8 +114,8 @@ describe('the list', () => {
   });
   it('the title line says the model in words', () => {
     expect(titleLine({ machineNickname: 'Mac Studio', model: 'claude-opus-5-5' })).toBe('Mac Studio · Opus 5.5');
-    expect(titleLine({ machineNickname: 'Mac Studio', model: 'opus', type: 'job' })).toBe('Mac Studio · Opus, version not recorded · scheduled job');
-    expect(titleLine({ machineNickname: 'Laptop', model: null })).toBe('Laptop · model not recorded');
+    expect(titleLine({ machineNickname: 'Mac Studio', model: 'opus', type: 'job' })).toBe('Mac Studio · Opus · scheduled job');
+    expect(titleLine({ machineNickname: 'Laptop', model: null })).toBe('Laptop');
   });
 });
 

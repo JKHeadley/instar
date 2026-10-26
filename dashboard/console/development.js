@@ -79,11 +79,12 @@ export function groupExtras(g, { get }) {
         : m.detected === 'no' ? `Not a development agent: ${m.basis}. The Development tile is hidden unless you switch it on here.`
           : `Couldn’t tell whether this is a development agent (${m.basis}). Show developer tools?`;
     });
+    const why = el('details', { class: 'raw more-fold' }, el('summary', { text: 'Why' }), detected,
+      note('This only decides what this browser shows. Every action on that page is still checked by the server.'));
     return [el('h2', { class: 'eyebrow section-label', text: 'Developer tools' }),
       el('section', { class: 'list-section', id: 'sec-dev-tools' },
         el('label', { class: 'switch-row' }, box, el('span', { text: 'Show developer tools (the Development page) in this browser' })),
-        detected,
-        note('This only decides what this browser shows. Every action on that page is still checked by the server.'))];
+        why)];
   }
   return [];
 }

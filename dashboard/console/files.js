@@ -16,7 +16,7 @@ import {
   buildListing, buildFile, saveBody, saveResult, conflictWords, stashFor, readStash,
   parseRecent, pushRecent, recentRows, pinnedFrom, searchLoaded, buildConfig, folderInput,
   configPatch, configResultWords, filesHeadline, refusalWords,
-  searchUrl, buildSearch, previewPlan, previewResult,
+  searchUrl, buildSearch, previewPlan, previewResult, splitSystem,
 } from './files-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, sheetIsOpen, note } from './ui.js';
 
@@ -49,6 +49,7 @@ function lib(name) {
 const S = {
   listings: {},          // dir → listing model
   expanded: new Set(),   // folders open in Browse
+  showSystem: false,     // dot-folders and generated folders shown in Browse
   file: null,            // the opened file's model
   openedAt: null,        // when it was opened (for the conflict sentence)
   view: 'rendered',      // markdown: rendered | source
@@ -124,7 +125,7 @@ export async function renderFiles(main, ctx) {
       const ms = r.ok && r.data && Array.isArray(r.data.machines) ? r.data.machines : [];
       const self = ms.find((m) => m && (m.isSelf || m.machineId === r.data.selfMachineId));
       S.machine = ms.length > 1 ? String((self && (self.nickname || self.name)) || 'this machine') : '';
-      if (S.machine && page) { const t = page.querySelector('[data-machine]'); if (t) t.textContent = `Files on ${S.machine}. Each machine has its own.`; }
+      if (S.machine && page) { const t = page.querySelector('[data-machine]'); if (t) t.textContent = `Files on ${S.machine}.`; }
     });
   }
   page = el('div', { class: 'files-page', 'data-for': want });
@@ -252,7 +253,10 @@ function group(title, kids) {
 
 function addLevel(container, listing, depth) {
   if (listing.empty) container.append(el('p', { class: 'empty-line', text: listing.empty }));
-  for (const e of listing.entries) {
+  // At the top level, dot-folders and generated folders wait behind one tap.
+  const split = depth === 0 ? splitSystem(listing) : { plain: listing.entries, system: [] };
+  const shown = depth === 0 && !S.showSystem ? split.plain : listing.entries;
+  for (const e of shown) {
     container.append(rowBtn({ key: `tree:${e.path}`, main: e.name, sub: e.sub, path: e.path, type: e.type }, () => (e.type === 'directory' ? toggle(e.path) : go(e.path)), depth));
     if (e.type === 'directory' && S.expanded.has(e.path)) {
       const child = S.listings[e.path];
@@ -260,6 +264,10 @@ function addLevel(container, listing, depth) {
       else if (!child.ok) container.append(el('p', { class: 'card-note files-refusal', 'data-refused': child.kind, text: child.text }));
       else addLevel(container, child, depth + 1);
     }
+  }
+  if (depth === 0 && split.system.length) {
+    container.append(el('button', { class: 'link-btn files-system', type: 'button', 'aria-expanded': S.showSystem ? 'true' : 'false', 'data-system': '1',
+      text: S.showSystem ? 'Hide system files' : `Show system files (${split.system.length})`, onclick: () => { S.showSystem = !S.showSystem; paint(); } }));
   }
   if (listing.cut) container.append(note(listing.cut));
 }
