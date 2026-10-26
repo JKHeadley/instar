@@ -301,8 +301,8 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   const waiting = s.waiting.map((c) => promiseNeed(c, now, { brief: briefOf }));
   const waitingStale = s.olderWaiting.map((c) => promiseNeed(c, now, { stale: true, brief: briefOf }));
   const olderCarried = n.older - n.olderWaiting;
-  const all = [...s.missed.map((c) => toRow(c, 'bad')), ...s.dueSoon.map((c) => toRow(c)), ...s.carrying.map((c) => toRow(c))];
-  const open = all.length + waiting.length;   // = n.open: waiting + missed + dueSoon + carrying
+  const all = [...s.missed.map((c) => toRow(c, 'bad')), ...s.missedUnclear.map((c) => toRow(c, 'unknown')), ...s.dueSoon.map((c) => toRow(c)), ...s.carrying.map((c) => toRow(c))];
+  const open = all.length + waiting.length;   // = n.open: waiting + missed + missedUnclear + dueSoon + carrying
   // Coverage honesty: a mesh read that carries no replica rows has not shown other machines.
   const replicas = list.filter((c) => c && c.viewSource === 'replica');
   const origins = new Set(replicas.map((c) => c.originMachineId));

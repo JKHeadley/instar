@@ -14,10 +14,11 @@ const NOW = Date.parse('2026-10-26T18:00:00Z');
 const iso = (minsAgo: number) => new Date(NOW - minsAgo * 60_000).toISOString();
 const DAY = 1440;
 const ok = (data: unknown) => ({ ok: true, data });
-const c = (over: Record<string, unknown> = {}) => ({ id: `CMT-${Math.random().toString(16).slice(2, 6)}`, status: 'pending', owner: 'agent', blockedOn: 'none', createdAt: iso(60), agentResponse: 'I will report back', ...over });
+let seqN = 0;
+const c = (over: Record<string, unknown> = {}) => { const id = `CMT-${++seqN}`; return { id, status: 'pending', owner: 'agent', blockedOn: 'none', createdAt: iso(60), agentResponse: `I will report back on ${id}`, ...over }; };
 
 describe('promises: one partition of "open"', () => {
-  it('waiting / missed / due soon / carrying / older / closed, with open = the first four', () => {
+  it('waiting / missed / due soon / carrying / older / closed, with open = waiting + missed + due soon + carrying', () => {
     const s = sortPromises([
       c({ owner: 'user', blockedOn: 'user-input' }),
       c({ status: 'violated' }),
@@ -30,8 +31,17 @@ describe('promises: one partition of "open"', () => {
       c({ status: 'delivered', resolvedAt: iso(60) }),
       c({ status: 'delivered', resolvedAt: iso(10 * DAY) }),
     ], NOW);
-    expect(s.counts).toEqual({ waiting: 1, missed: 3, dueSoon: 1, carrying: 1, older: 2, olderWaiting: 1, closed: 1, open: 6 });
+    expect(s.counts).toEqual({ waiting: 1, missed: 3, missedUnclear: 0, dueSoon: 1, carrying: 1, older: 2, olderWaiting: 1, closed: 1, open: 6 });
     expect(s.older[0].owner).toBe('user'); // older rows that wait on the operator come first and still say so
+  });
+  it('missed: a fragment with no promise language is listed apart; the same sentence said twice is one miss', () => {
+    const s = sortPromises([
+      c({ status: 'violated', agentResponse: 'Changing the schedule now' }),
+      c({ status: 'violated', agentResponse: 'I’ll report back shortly.', createdAt: iso(10) }),
+      c({ status: 'violated', agentResponse: 'I’ll report back  shortly.', createdAt: iso(20) }),
+    ], NOW);
+    expect(s.counts).toMatchObject({ missed: 1, missedUnclear: 1, open: 2 });
+    expect(s.repeats.get(s.missed[0])).toHaveLength(1);
   });
   it('newest first inside a section, so Home never leads with a 67-day-old promise', () => {
     const s = sortPromises([c({ status: 'violated', createdAt: iso(67 * DAY) }), c({ status: 'violated', createdAt: iso(4 * DAY) })], NOW);
@@ -45,7 +55,7 @@ describe('promises: one partition of "open"', () => {
     expect(promiseRefs(c({ agentResponse: 'After Justin approves attention item agent:echo-disk-cleanup-2026-10-23, clear 51 worktrees; also PR #2350 and pull request 2357' }))).toEqual({ prs: [2350, 2357], attentionIds: ['agent:echo-disk-cleanup-2026-10-23'], emails: [] });
     const about = promisesAbout([c({ owner: 'user', blockedOn: 'user-authorization', agentResponse: 'merge PR 2350 after you confirm' }), c({ owner: 'user', blockedOn: 'user-input', agentResponse: 'needs a password' }), c({ agentResponse: 'PR 1 merged by me' })], 'pr', NOW);
     expect(about.map((p) => p.subKind)).toEqual(['approval']);
-    expect(promiseNeed(c({ owner: 'user', blockedOn: 'user-input' }), NOW).sub).toBe('A decision I’m waiting on you for');
+    expect(promiseNeed(c({ owner: 'user', blockedOn: 'user-input' }), NOW).sub).toBe('Needs your answer');
   });
 });
 

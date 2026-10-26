@@ -150,7 +150,10 @@ export function buildRecordedCost(res) {
   const list = Array.isArray(d.rows) ? d.rows : null;
   const t = d.totals;
   if (!list || !t || typeof t !== 'object') return { state: 'failed', reason: 'The spend view answered without its rows or totals.', rows: [] };
-  const rows = list.filter((r) => r && typeof r === 'object').map(costRow);
+  // A row with no tokens and no dollars says nothing; it is counted, not shown.
+  const allRows = list.filter((r) => r && typeof r === 'object').map(costRow);
+  const rows = allRows.filter((r) => r.tokens > 0 || r.unpriced > 0 || (r.usd !== null && r.usd > 0));
+  const hiddenEmpty = allRows.length - rows.length;
   const netUsd = Number(t.netUsd) || 0;
   const unpricedTokens = (Number(t.unpricedTokensIn) || 0) + (Number(t.unpricedTokensOut) || 0);
   const tokens = (Number(t.tokensIn) || 0) + (Number(t.tokensOut) || 0);
@@ -160,7 +163,8 @@ export function buildRecordedCost(res) {
   const subscriptionTokens = rows.filter((r) => r.basis === 'subscription').reduce((a, r) => a + r.tokens, 0);
   // The plain sentence: dollars first, the basis spelled out in words, never a label in the headline.
   const BASIS_PLAIN = { estimated: 'estimated from token counts and a price list', 'provider-reported': 'reported by the provider', 'basis not stated': 'basis not stated' };
-  let costWords = 'No pay-per-use cost';
+  // $0 with unpriced tokens is NOT "no cost": the cost of those tokens is unknown.
+  let costWords = unpricedTokens > 0 ? 'Recorded cost $0 · actual cost unknown' : 'No pay-per-use cost';
   let howWords = null;
   if (netUsd > 0) {
     costWords = `About ${fmtUsd(netUsd)} of pay-per-use cost`;
@@ -169,7 +173,7 @@ export function buildRecordedCost(res) {
   }
   const rb = d.reportingBasis && typeof d.reportingBasis === 'object' ? d.reportingBasis : {};
   return {
-    state: 'ok', reason: null, rows, netUsd, grossUsd: Number(t.grossUsd) || 0, creditUsd: Number(t.creditUsd) || 0, unpricedTokens, tokens, bases, costWords, howWords, subscriptionTokens,
+    state: 'ok', reason: null, rows, hiddenEmpty, netUsd, grossUsd: Number(t.grossUsd) || 0, creditUsd: Number(t.creditUsd) || 0, unpricedTokens, tokens, bases, costWords, howWords, subscriptionTokens,
     grain: d.grain || 'day', horizonNote: typeof d.horizonNote === 'string' ? d.horizonNote : null,
     lastReconcileAt: rb.lastReconcileAt || null, rollupMaintained: rb.rollupMaintained === true, source: rb.source || null,
     amortized: typeof t.amortizedSubscriptionUsd === 'number' ? t.amortizedSubscriptionUsd : null,
@@ -400,26 +404,28 @@ export function buildCostsPage(res, now = Date.now(), { window = DEFAULT_WINDOW 
   if (recorded.state === 'ok') headline = `${recorded.costWords} ${w.phrase} on this machine.`;
   else if (recorded.state === 'off') headline = 'Spend figures aren’t available on this agent.';
   else headline = 'Can’t tell what AI use cost on this machine.';
+  // The first screen says one thing under the headline; how pricing works, the limits
+  // and the ledger's provenance go behind "More detail" (page.explain).
   const subParts = [];
+  const explain = [];
   if (recorded.state === 'ok') {
     if (recorded.howWords) subParts.push(recorded.howWords);
-    if (recorded.unpricedTokens > 0) subParts.push(`${fmtTokens(recorded.unpricedTokens)} tokens went through with no price on file for their route, so they are counted but not priced.`);
-    if (recorded.subscriptionTokens > 0) subParts.push(`${fmtTokens(recorded.subscriptionTokens)} tokens ran on subscriptions, which are not billed per token.`);
+    if (recorded.unpricedTokens > 0) subParts.push(`${fmtTokens(recorded.unpricedTokens)} tokens have no price on file, so what they cost is unknown.`);
+    if (recorded.subscriptionTokens > 0) explain.push(`${fmtTokens(recorded.subscriptionTokens)} tokens ran on subscriptions, which are not billed per token.`);
+    if (recorded.unpricedTokens > 0) explain.push('Unpriced tokens went through a route with no price on file; they are counted but not priced.');
   } else subParts.push(recorded.reason);
-  if (limits.controls.sentence && limits.routesSentence) subParts.push(`${limits.controls.sentence.replace(/\.$/, '')}, and ${limits.routesSentence.charAt(0).toLowerCase()}${limits.routesSentence.slice(1)}`);
-  else if (limits.controls.sentence) subParts.push(limits.controls.sentence);
-  else if (limits.routesSentence) subParts.push(limits.routesSentence);
-  if (limits.controls.state === 'failed') subParts.push(limits.controls.reason);
-  subParts.push('Figures are this machine’s own ledger.');
+  if (limits.controls.sentence && limits.routesSentence) explain.push(`${limits.controls.sentence.replace(/\.$/, '')}, and ${limits.routesSentence.charAt(0).toLowerCase()}${limits.routesSentence.slice(1)}`);
+  else if (limits.controls.sentence) explain.push(limits.controls.sentence);
+  else if (limits.routesSentence) explain.push(limits.routesSentence);
+  if (limits.controls.state === 'failed') explain.push(limits.controls.reason);
+  explain.push('Figures are this machine’s own ledger.');
 
   const facts = [];
-  if (recorded.state === 'ok') facts.push({ n: fmtUsd(recorded.netUsd), label: `recorded cost${recorded.bases.length ? ' · ' + recorded.bases.join(', ') : ''}`, tone: recorded.netUsd > 0 ? 'attn' : null });
+  if (recorded.state === 'ok') facts.push({ n: fmtUsd(recorded.netUsd), label: recorded.unpricedTokens > 0 && recorded.netUsd === 0 ? 'recorded · actual unknown' : `recorded cost${recorded.bases.length ? ' · ' + recorded.bases.join(', ') : ''}`, tone: recorded.netUsd > 0 ? 'attn' : recorded.unpricedTokens > 0 ? 'unknown' : null });
   else facts.push({ n: recorded.state === 'off' ? 'off' : 'Can’t tell', label: 'recorded cost', tone: 'unknown' });
   if (recorded.state === 'ok' && recorded.unpricedTokens > 0) facts.push({ n: fmtTokens(recorded.unpricedTokens), label: 'tokens unpriced', tone: 'unknown' });
-  if (checks.state === 'ok') facts.push({ n: checks.real.toLocaleString('en-US'), label: `background checks${checks.errors ? ` · ${checks.errors} failed` : ''}`, tone: checks.errors ? 'attn' : null });
-  else facts.push({ n: checks.state === 'off' ? 'off' : 'Can’t tell', label: 'background checks', tone: 'unknown' });
   facts.push({ n: limits.controls.word || 'Can’t tell', label: 'limits', tone: limits.controls.state !== 'ok' ? 'unknown' : limits.controls.anyKeyFrozen ? 'attn' : null });
 
   const tone = recorded.state === 'failed' ? 'attn' : (limits.controls.anyKeyFrozen || (checks.state === 'ok' && checks.errors > 0)) ? 'attn' : recorded.state === 'off' ? 'muted' : 'ok';
-  return { headline, sub: subParts.filter(Boolean).join(' '), tone, facts, window: w, recorded, limits, checks, conversations, routing };
+  return { headline, sub: subParts.filter(Boolean).join(' '), explain: explain.filter(Boolean), tone, facts, window: w, recorded, limits, checks, conversations, routing };
 }

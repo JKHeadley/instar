@@ -324,7 +324,8 @@ describe('Cross-page coherence: one shared source for every count', () => {
     expect(accountsPage.ok && accountsPage.needs.length).toBe(needsOfKind(needs, (i: { kind: string; topic?: string }) => i.kind === 'account' || (i.kind === 'promise' && i.topic === 'sign-in')).length);
     expect(accountsPage.ok && accountsPage.needs.length).toBe(2);
     expect(accountsPage.ok && accountsPage.expired.length).toBe(10);
-    expect(accountsPage.ok && accountsPage.headline).toBe('2 sign-ins need you. 10 other sign-ins expired on Mac Mini and Mama PC, mine to repair.');
+    expect(accountsPage.ok && accountsPage.headline).toBe('2 sign-ins need you.');
+    expect(accountsPage.ok && accountsPage.facts.find((f) => /tap/.test(f.label))).toMatchObject({ n: 2, label: 'need your tap' });
     expect(needs.details!.join(' ')).toContain('10 sign-ins expired on Mac Mini and Mama PC — mine to repair, not yours (1 repairing)');
     // Passwords & keys: the promise about a password shows there, never "Nothing is waiting".
     expect(secretsPromised.length).toBe(needsOfKind(needs, (i: { kind: string; topic?: string }) => i.kind === 'promise' && i.topic === 'password').length);

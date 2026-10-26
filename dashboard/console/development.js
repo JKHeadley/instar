@@ -276,12 +276,12 @@ function shippingBody(s, deps) {
     foot.append(stop);
   }
   const release = toneLine(s.release, s.release.attentionId ? el('a', { class: 'inline-link', href: '#/home', text: ' Open the item' }) : null);
+  // The fold line above already says "N on the way, M stuck"; the tiles split that number, so no sentence repeats it.
   return [
-    el('p', { class: 'card-line', text: s.headline }),
+    s.rows.length ? null : el('p', { class: 'card-line', text: s.headline }),
     tiles(s.tiles),
     release, toneLine(s.watcher),
     s.partial ? note('Partial: one of Shipping’s sources did not answer; its tile says why. The others are real.') : null,
-    s.repoKnown ? null : note('GitHub links are off: the repository name comes from the Pace read, which did not answer.'),
     list, foot,
   ];
 }
@@ -289,8 +289,10 @@ function shippingBody(s, deps) {
 function openPr(r, s, deps) {
   const strip = el('ol', { class: 'stages' }, r.stages.map((st) => el('li', { class: `stage${st === r.stage ? ' current' : ''}`, 'data-tone': st === r.stage ? (r.tone || 'ok') : null, text: st })));
   const rec = r.record || {};
+  const ALSO = { needs: 'needs you', stuck: 'stuck', armed: 'set to merge', testing: 'testing', held: 'held' };
   const lines = [
     { label: 'State', text: r.sub },
+    Array.isArray(r.also) && r.also.length ? { label: 'Also', text: r.also.map((a) => `${ALSO[a.group] || a.group}: ${a.sub}`).join('\n') } : null,
     r.group === 'needs' ? { label: 'Why it waits', text: 'GitHub requires a reviewer other than the pusher; the watcher merges the moment the approval lands.' } : null,
     r.group === 'held' ? { label: 'Why it waits', text: 'A [HOLD] title or a hold / do-not-merge label excludes it from arming.' } : null,
     rec.lastOutcome ? { label: 'Last outcome', text: String(rec.lastOutcome).replace(/[:-]/g, ' ') } : null,
@@ -300,6 +302,7 @@ function openPr(r, s, deps) {
   if (rec.headRefOid || rec.headSha || rec.armedHead) body.push(el('p', { class: 'mono card-line', text: `commit ${String(rec.headRefOid || rec.headSha || rec.armedHead).slice(0, 12)}` }));
   const acts = el('div', { class: 'sheet-actions' });
   if (r.href) acts.append(el('a', { class: 'btn-primary btn-inline', href: r.href, target: '_blank', rel: 'noopener', text: 'Open on GitHub ↗' }));
+  else body.push(note('No GitHub link: the repository name was not read (it comes from the Pace read, which did not answer).'));
   const status = el('p', { class: 'action-status', role: 'status' });
   if (r.group !== 'held') {
     const hold = el('button', { class: 'btn-quiet', type: 'button', text: 'Hold this pull request' });

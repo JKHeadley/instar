@@ -85,23 +85,47 @@ export function nextDue(c) {
 
 const byNewest = (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0);
 
+// A missed promise is a sentence that commits to a future action. A chat fragment with no
+// such language ("Changing the schedule now", "Exactly what you asked for") is listed apart
+// as "missedUnclear", never dropped: the model can only tell the wording, not whether anyone was waiting.
+const PROMISE_LANGUAGE = /\b(?:I['’]ll|I will|we['’]ll|will|shortly|soon|back (?:with|in|shortly|soon|once|when|after)|report(?:ing)? back|going to|then I|once |when (?:it|that|the|I)|after (?:the|that|I|this)|next|by (?:morning|tonight|tomorrow|end of|EOD|\d)|coming|in (?:a|an|\d+) (?:minute|min|hour|day|few))\b/i;
+export function looksLikePromise(c) {
+  const text = String((c && (c.agentResponse || c.userRequest)) || '');
+  if (!text.trim()) return false;
+  return PROMISE_LANGUAGE.test(text) || /\b(?:deliver|send|post|merge|fix|check|confirm|finish|open|write|run|build|report|ship|land)\b/i.test(text) && /\b(?:I|me|my)\b/.test(text);
+}
+export const normText = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** One record per distinct FULL wording (newest kept); `repeats` maps a kept record to the records that said the same. */
+function dedupeRecords(list, repeats) {
+  const by = new Map();
+  for (const c of list) {
+    const k = normText(c.agentResponse || c.userRequest || c.id);
+    const kept = by.get(k);
+    if (!kept) { by.set(k, c); repeats.set(c, []); } else repeats.get(kept).push(c);
+  }
+  return [...by.values()];
+}
+
 /**
  * THE definition of "open" — one partition of every promise record, used by Home's
  * card, its "See all N" and the Promises page headline and sections:
  *   waiting      active, waits on the operator, touched within 14 days
- *   missed       violated or past its hard deadline, at any age (age is not evidence it was handled)
+ *   missed       violated or past its hard deadline, at any age (age is not evidence it was handled),
+ *                worded as a promise; one entry per distinct wording
+ *   missedUnclear the same, but the wording carries no promise language (listed apart, never dropped)
  *   dueSoon      active, carried by the agent, due within a day
  *   carrying     active, carried by the agent, touched within 14 days
  *   older        active, untouched for 14+ days (waiting or carried) — behind a tap, out of the counts
  *   closed       delivered / withdrawn / expired within the last 7 days
- * `open` = waiting + missed + dueSoon + carrying. `olderWaiting` is the subset of older that waits on the operator.
+ * `open` = waiting + missed + missedUnclear + dueSoon + carrying. `olderWaiting` is the subset of older that waits on the operator.
  */
 export function sortPromises(list, now = Date.now()) {
-  const s = { waiting: [], missed: [], dueSoon: [], carrying: [], older: [], closed: [] };
+  const s = { waiting: [], missed: [], missedUnclear: [], dueSoon: [], carrying: [], older: [], closed: [] };
   for (const c of list || []) {
     if (!c) continue;
     if (isActiveCommitment(c, now) || c.status === 'violated') {
-      if (isMissed(c, now) && !waitsOnOperator(c)) s.missed.push(c);
+      if (isMissed(c, now) && !waitsOnOperator(c)) (looksLikePromise(c) ? s.missed : s.missedUnclear).push(c);
       else if (!isFresh(c, now)) s.older.push(c);
       else if (waitsOnOperator(c)) s.waiting.push(c);
       else {
@@ -114,17 +138,21 @@ export function sortPromises(list, now = Date.now()) {
       if (Number.isFinite(r) && now - r <= CLOSED_WINDOW_MS) s.closed.push(c);
     }
   }
-  s.waiting.sort(byNewest); s.missed.sort(byNewest); s.carrying.sort(byNewest);
+  s.waiting.sort(byNewest); s.missed.sort(byNewest); s.missedUnclear.sort(byNewest); s.carrying.sort(byNewest);
+  // Missed: one entry per distinct promise (the same sentence recorded several times is one miss).
+  const repeats = new Map();
+  s.missed = dedupeRecords(s.missed, repeats);
+  s.missedUnclear = dedupeRecords(s.missedUnclear, repeats);
   s.dueSoon.sort((a, b) => nextDue(a) - nextDue(b));
   s.older.sort((a, b) => Number(waitsOnOperator(b)) - Number(waitsOnOperator(a)) || byNewest(a, b));
   s.closed.sort((a, b) => (Date.parse(b.resolvedAt) || 0) - (Date.parse(a.resolvedAt) || 0));
   const olderWaiting = s.older.filter(waitsOnOperator);
   const counts = {
-    waiting: s.waiting.length, missed: s.missed.length, dueSoon: s.dueSoon.length, carrying: s.carrying.length,
+    waiting: s.waiting.length, missed: s.missed.length, missedUnclear: s.missedUnclear.length, dueSoon: s.dueSoon.length, carrying: s.carrying.length,
     older: s.older.length, olderWaiting: olderWaiting.length, closed: s.closed.length,
-    open: s.waiting.length + s.missed.length + s.dueSoon.length + s.carrying.length,
+    open: s.waiting.length + s.missed.length + s.missedUnclear.length + s.dueSoon.length + s.carrying.length,
   };
-  return { ...s, olderWaiting, counts };
+  return { ...s, olderWaiting, counts, repeats };
 }
 
 const PROMISE_TEXT = (c) => `${c.agentResponse || ''} ${c.userRequest || ''}`;
@@ -264,7 +292,7 @@ export function cellRepair(row, episode, { unavailable = false, now = Date.now()
     if (row && row.status === 'active') return { state: 'ok', label: 'signed in (not re-checked)', needsTap: false, expired: false };
     return { state: 'unknown', label: String((row && row.status) || 'unknown').replace(/-/g, ' '), needsTap: false, expired: false };
   }
-  if (episode && episode.state === 'suggested') return { state: 'tap', label: 'repair ready — needs your tap', needsTap: true, expired: true, action: 'approve' };
+  if (episode && episode.state === 'suggested') return { state: 'tap', label: 'repair ready; needs your tap', needsTap: true, expired: true, action: 'approve' };
   if (episode && episode.state === 'waiting-operator-only') return { state: 'tap', label: 'the repair needs a step only you can do', needsTap: true, expired: true, action: 'approve' };
   if (episode && episode.state === 'failed') {
     const next = Date.parse(episode.nextAttemptAt);

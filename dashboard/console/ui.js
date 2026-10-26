@@ -40,7 +40,7 @@ export function cantTell(reason) {
 }
 
 /** 2. A section of rows with a title and count; collapsible sections start closed. */
-export function section({ id, title, rows, collapsed = false, empty, limit = 20, onRow, tone }) {
+export function section({ id, title, rows, collapsed = false, empty, limit = 20, showAll = false, onRow, tone }) {
   const wrap = el('section', { class: `list-section${tone ? ' ' + tone : ''}`, id: `sec-${id}` });
   const head = el(collapsed ? 'button' : 'div', { class: 'list-head', type: collapsed ? 'button' : null, 'aria-expanded': collapsed ? 'false' : null },
     el('h2', { class: 'eyebrow', text: title }), el('span', { class: 'list-count', text: String(rows.length) }),
@@ -48,7 +48,8 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
   const body = el('div', { class: 'rows list-rows', hidden: collapsed });
   let shown = 0;
   const renderMore = () => {
-    const next = rows.slice(shown, shown + limit);
+    // showAll: the first tap reveals every remaining row ("Show all 22") instead of one more page.
+    const next = rows.slice(shown, shown === 0 || !showAll ? shown + limit : rows.length);
     for (const r of next) {
       const b = el('button', { class: 'row', type: 'button', 'data-focus-key': r.key },
         el('span', { class: r.tone === 'bad' ? 'dot bad' : r.tone === 'attn' ? 'dot attn' : r.tone === 'unknown' ? 'dot unknown' : 'dot' }),
@@ -60,7 +61,7 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
     }
     shown += next.length;
     more.hidden = shown >= rows.length;
-    more.textContent = `Show ${Math.min(limit, rows.length - shown)} more`;
+    more.textContent = showAll ? `Show all ${rows.length}` : `Show ${Math.min(limit, rows.length - shown)} more`;
   };
   const more = el('button', { class: 'link-btn show-more', type: 'button' });
   more.addEventListener('click', renderMore);
