@@ -41,6 +41,13 @@ export async function renderMachines(main, ctx) {
     cards,
     legacyLink(),
   );
+  // #/capacity/machines?this=1 (the Health and Resource usage tiles) opens This machine once;
+  // the query is dropped so a refresh or a closed sheet never re-opens it.
+  if (new URLSearchParams(location.hash.split('?')[1] || '').get('this') === '1') {
+    history.replaceState(null, '', '#/capacity/machines');
+    const self = page.machines.find((m) => m.isSelf);
+    if (self) openMachine(self, { get, health, guards, names });
+  }
 }
 
 function legacyLink() {

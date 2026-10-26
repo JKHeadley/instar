@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GROUPS, allTabIds, legacyHref, ICONS } from '../../dashboard/console/nav-model.js';
+import { GROUPS, allTabIds, legacyHref, ICONS, NATIVE_PAGES, tabHref } from '../../dashboard/console/nav-model.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HTML = fs.readFileSync(path.resolve(__dirname, '../../dashboard/index.html'), 'utf-8');
@@ -31,6 +31,14 @@ describe('console navigation', () => {
 
   it('has five top-level destinations for the phone bar (Home + four groups)', () => {
     expect(GROUPS).toHaveLength(4);
+  });
+
+  it('every legacy tab has a native console home (none falls back to the legacy dashboard)', () => {
+    const missing = allTabIds().filter((id) => !NATIVE_PAGES[id]);
+    expect(missing).toEqual([]);
+    expect(tabHref('systems')).toBe('#/capacity/machines?this=1');
+    expect(tabHref('resources')).toBe('#/capacity/machines?this=1');
+    expect(tabHref('insights')).toBe('#/capacity/costs');
   });
 
   it('links to the legacy dashboard by ordinary URL', () => {

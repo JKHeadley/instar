@@ -83,13 +83,14 @@ describe('console shell (jsdom)', () => {
     expect(again.querySelectorAll('button.row')).toHaveLength(5);
   });
 
-  it('group pages link to legacy tabs as ordinary links, with no iframe', async () => {
+  it('group pages link to their native pages as ordinary links, with no iframe', async () => {
     const doc = await boot('t');
     dom.window.location.hash = '#/work';
     dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
     await flush();
     const tiles = [...doc.querySelectorAll('a.tile')].map((a) => a.getAttribute('href'));
-    expect(tiles).toContain('/dashboard?tab=dropzone');
+    expect(tiles).toContain('#/work/sessions?paste=1');
+    expect(tiles.every((h) => (h || '').startsWith('#/'))).toBe(true);
     expect(doc.querySelector('iframe')).toBeNull();
   });
 });
