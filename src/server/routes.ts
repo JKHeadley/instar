@@ -32457,6 +32457,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         note: 'Restart the server for the submission cycle to begin.',
       });
     } catch (err) {
+      // @silent-fallback-ok — not silent: the failure is answered to the caller as a 500 naming the error.
       res.status(500).json({ error: `Failed to enable telemetry: ${err instanceof Error ? err.message : err}` });
     }
   });

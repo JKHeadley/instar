@@ -126,6 +126,8 @@ Astra's verdict was "not ready" on the first draft; every finding is answered in
 
 The first local verify on the rebased head found one real regression: the hourly pass's catch only console-logged a failure, which `tests/unit/no-silent-fallbacks.test.ts` counts as a new silent fallback (495 over a 494 baseline). The catch now also reports `Telegram.AttentionLifecycle` to `DegradationReporter`; a failed pass is skipped and rows stay as they are until the next hour. No baseline change, no new authority, no new self-action. The relogin integration/e2e failures in the same run also fail on unrelated PRs (2350, 2356, 2357) and pass on main and in isolation; they are not caused by this change.
 
+The second verify run (base v1.3.1443) failed the same ratchet at 495 on main itself: a routes.ts change merged between v1.3.1440 and v1.3.1443 shifted the extractor window so the telemetry-enable route's catch (which answers a 500 naming the error, so it is not silent) started counting. That catch now carries an in-window `@silent-fallback-ok` with that reason; the scanner reports 494 again. No behavior change.
+
 ## Evidence pointers
 
 - `tests/unit/AttentionLifecycle.test.ts`, `tests/unit/attention-lifecycle-store.test.ts`, `tests/unit/commitment-operator-wait-expiry.test.ts`, `tests/unit/attention-producer-hooks.test.ts`
