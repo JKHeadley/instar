@@ -75,7 +75,7 @@ export const GROUPS = [
     question: 'How is it set up, and what has it learned?',
     tabs: [
       { id: 'features', label: 'What I’m allowed to do', icon: 'toggle', desc: 'How independent I am, the safety checks, and which features are on.' },
-      { id: 'preferences-learning', label: 'Preferences', icon: 'sparkle', desc: 'What I have learned from your corrections.' },
+      { id: 'preferences-learning', label: 'What I’ve learned about you', icon: 'sparkle', desc: 'How you like things, picked up from your corrections, and the corrections I am still watching.' },
       { id: 'files', label: 'Files', icon: 'folder', desc: 'Browse and edit project files.' },
     ],
     hood: [
@@ -115,6 +115,7 @@ export const NATIVE_PAGES = {
   mandates: '#/people/mandates',
   secrets: '#/people/secrets',
   features: '#/settings/allowed',
+  'preferences-learning': '#/settings/learned',
   'pr-pipeline': '#/work/development?s=shipping',
   throughput: '#/work/development?s=pace',
   'feedback-drain': '#/work/development?s=feedback',
