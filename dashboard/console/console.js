@@ -18,6 +18,7 @@ import { renderPlans } from './plans.js';
 import { renderCosts } from './costs.js';
 import { renderSchedule } from './schedule.js';
 import { renderDevelopment, groupExtras } from './development.js';
+import { renderMandates } from './mandates.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -437,6 +438,7 @@ const NATIVE = {
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
   'people/messages': renderMessages,
+  'people/mandates': renderMandates,
   'settings/allowed': renderAllowed,
 };
 

@@ -787,3 +787,31 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .pace-bar.today { background: transparent; border: 1.5px dashed var(--accent); }
 .pace-bar.picked { background: var(--teal-200); }
 .pace-bar.today.picked { background: var(--accent-wash); }
+
+/* ── Permission slips (people-settings.md: Mandates → Permission slips) ─── */
+.incident { display: flex; flex-direction: column; gap: 4px; margin: 0 0 var(--s-4); padding: var(--s-4) var(--s-5); border-radius: var(--r-lg); border: 1px solid var(--bad-line); background: var(--bad-wash); }
+.incident-title { font-weight: 800; color: var(--bad); font-size: 13px; letter-spacing: .04em; text-transform: uppercase; }
+.incident-text { margin: 0; color: var(--text-strong); font-size: 15px; }
+.slip-cards { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.slip-card { display: flex; flex-direction: column; gap: 6px; width: 100%; min-height: 44px; padding: var(--s-3) var(--s-4); text-align: left; cursor: pointer;
+  border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-raised); color: inherit; font: inherit; }
+.slip-card:hover { border-color: var(--accent); }
+.slip-card.invalid { border-color: var(--bad-line); background: var(--bad-wash); }
+.slip-title { font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+.slip-summary { font-size: 15.5px; font-weight: 600; line-height: 1.4; color: var(--text-strong); text-wrap: pretty; }
+.slip-invalid { font-size: 13.5px; font-weight: 600; color: var(--bad); }
+.slip-foot { display: flex; align-items: center; gap: var(--s-2); }
+.slip-foot .row-sub { flex: 1; min-width: 0; }
+.approval-card { margin-top: var(--s-2); }
+.history-line { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 var(--s-1); font-size: 13.5px; color: var(--text-muted); }
+.history-line.bad, .history-line.bad .history-chain { color: var(--bad); font-weight: 600; }
+.history-chain { color: var(--text-faint); }
+.grant-fields { display: grid; grid-template-columns: 1fr; gap: var(--s-2); }
+@media (min-width: 700px) { .grant-fields { grid-template-columns: repeat(3, 1fr); } }
+.grant-fields .limit-field { margin-top: 0; }
+.grant-fields select.reason-input, .grant-fields input.reason-input { max-width: none; }
+.grant-form .btn-primary { margin-top: var(--s-2); }
+.author-fold { border: 1px dashed var(--hairline-strong); border-radius: var(--r-lg); padding: var(--s-3) var(--s-4); }
+.author-fold .card-note { margin: var(--s-2) 0; }
+.change-list li.muted { color: var(--text-faint); }
+.reason-input.mono { font-family: var(--font-mono); font-size: 13px; }

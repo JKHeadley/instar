@@ -34,6 +34,7 @@ import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { buildSchedulePage, buildHistory as buildRunHistory, runStartWords } from '../../dashboard/console/schedule-model.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { buildShipping, buildFeedback, buildPace, developmentHeadline, maintainerMode } from '../../dashboard/console/development-model.js';
+import { buildSlips, buildAudit, buildApprovals, mandatesHeadline, mandatesFacts } from '../../dashboard/console/mandates-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -405,5 +406,42 @@ describe('Console Home E2E (feature is alive)', () => {
     // The bearer-only shipping writes are dark on this server (503), never a silent 200.
     expect((await request(server.getApp()).post('/green-pr-automerge/hold').set(auth).send({ pr: 1, reason: 'e2e' })).status).toBe(503);
     expect((await request(server.getApp()).post('/local-verify').set(auth).send({ pr: 1 })).status).toBe(503);
+  });
+
+  it('the Permission-slips page runs the real mandate routes through its model: an empty store reads as "none issued", the record is intact, and every PIN route refuses without one', async () => {
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const [slipsRes, auditRes, approvalsRes, usersRes] = await Promise.all([read('/mandate'), read('/mandate/audit?limit=200'), read('/authorization-requests?status=pending'), read('/permissions/users')]);
+    // The real engine is alive on a server with a stateDir: 200, never a 401/403/404/500.
+    expect(slipsRes.status).toBe(200);
+    expect(auditRes.status).toBe(200);
+    expect([200, 503]).toContain(approvalsRes.status); // dev-gated feature: on or honestly off
+    expect([200, 500]).toContain(usersRes.status);     // the registry may not exist on a bare server; the page degrades to a text field
+    const slips = buildSlips(slipsRes, { now: Date.now() });
+    const audit = buildAudit(auditRes, { now: Date.now() });
+    const approvals = buildApprovals(approvalsRes);
+    expect(slips).toMatchObject({ ok: true, active: [], ended: [], counts: { active: 0, ended: 0, people: 0, invalid: 0 } });
+    expect(audit).toMatchObject({ ok: true, rows: [], countLabel: 'No decisions recorded yet.', chain: { state: 'intact' } });
+    if (approvalsRes.status === 503) expect(approvals.hidden).toBe(true); else expect(approvals.ok).toBe(true);
+    const h = mandatesHeadline({ slips, approvals, audit });
+    if (approvals.ok && approvals.rows.length) expect(h.tone).toBe('attn');
+    else expect(h).toEqual({ text: 'No slips — every agent-to-agent action is refused until you sign one.', tone: 'ok' });
+    expect(mandatesFacts({ slips, approvals, audit })).toContainEqual({ n: 'intact', label: 'decision record', tone: null });
+    // Every write the page offers is PIN-gated: without a PIN the server refuses (403) or says no PIN is configured (503); nothing answers 2xx.
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    for (const [p, body] of [
+      ['/mandate/issue', { scope: 'e2e', agents: ['a'.repeat(32), 'b'.repeat(32)], authorities: [{ action: 'sign-code-review', bounds: {} }], expiresAt: future }],
+      ['/mandate/nope/revoke', { reason: 'e2e' }],
+      ['/mandate/nope/grants', { grants: [{ floorAction: 'prod-deploy', grantedTo: 'U1', authorizedBy: 'e2e', expiresAt: future }] }],
+      ['/authorization-requests/nope/approve', {}],
+      ['/authorization-requests/nope/deny', { denyReason: 'e2e' }],
+    ] as const) {
+      const r = await request(server.getApp()).post(p).set(auth).send(body);
+      expect([403, 503], p).toContain(r.status);
+    }
+    // Nothing was issued by those refusals.
+    expect((await read('/mandate')).data.mandates).toEqual([]);
   });
 });
