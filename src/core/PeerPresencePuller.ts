@@ -26,6 +26,8 @@
  */
 
 import { clampCoherenceAdvert } from './machineCoherenceAdvert.js';
+import { classifyPullFailure, type PullFailureShape } from './machineLiveness.js';
+import { clampLoadReport, type MachineLoadReport } from './machineLoadReport.js';
 
 /** A peer to consider polling: its machine id + resolved tunnel URL (null ⇒ unreachable). */
 export interface PeerPresenceMachine {
@@ -106,6 +108,38 @@ export interface PeerCapacity {
    *  receive clamp — recorded so the peer classifies `advert-rejected` (a loud
    *  named condition), never silently treated as advert-less. */
   coherenceAdvertRejected?: { atMs: number; reason: string };
+  /**
+   * The peer's own direct contacts with OTHER machines, as ages on the peer's
+   * clock (trustworthy-machine-load A4). Display only — never refreshes our
+   * own evidence, never re-relayed, never feeds placement. Sanitized on
+   * receive (bounded entry count, finite non-negative ages).
+   */
+  peerSightings?: Record<string, { ageMs: number }>;
+  /**
+   * The peer's multi-signal load report (trustworthy-machine-load B1), CLAMPED
+   * on receive. Stored in its own receipt-stamped registry slot so a coarse
+   * beat can never erase it. Absent = older peer = load `unknown`, never `ok`.
+   */
+  loadReport?: MachineLoadReport;
+}
+
+/** Bound on sighting entries accepted from one peer. */
+export const MAX_PEER_SIGHTINGS = 64;
+
+/** Receive clamp for a peer's sightings block. Returns undefined when unusable. */
+export function sanitizePeerSightings(raw: unknown): Record<string, { ageMs: number }> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, { ageMs: number }> = {};
+  let n = 0;
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (n >= MAX_PEER_SIGHTINGS) break;
+    if (typeof id !== 'string' || id.length === 0 || id.length > 128) continue;
+    const age = (v as { ageMs?: unknown } | null)?.ageMs;
+    if (typeof age !== 'number' || !Number.isFinite(age) || age < 0) continue;
+    out[id] = { ageMs: age };
+    n++;
+  }
+  return out;
 }
 
 /**
@@ -126,6 +160,8 @@ export const SESSION_STATUS_ADVERT_FIELDS = [
   'seamlessnessFlags',
   'servesChannels',
   'coherenceAdvert',
+  'peerSightings',
+  'loadReport',
 ] as const;
 
 /**
@@ -154,7 +190,11 @@ export function narrowSessionStatusToPeerCapacity(
     seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags'];
     servesChannels?: import('./types.js').MachineCapacity['servesChannels'];
     coherenceAdvert?: unknown;
+    peerSightings?: unknown;
+    loadReport?: unknown;
   };
+  const loadReport = cap.loadReport !== undefined ? clampLoadReport(cap.loadReport) : null;
+  const sightings = cap.peerSightings !== undefined ? sanitizePeerSightings(cap.peerSightings) : undefined;
   return {
     selfReportedLastSeen: cap.selfReportedLastSeen,
     loadAvg: cap.loadAvg,
@@ -167,6 +207,8 @@ export function narrowSessionStatusToPeerCapacity(
     // THE FIX (4th instance of the narrowing-return-forgets-a-field class): the
     // peer's receive advert must cross the wire or replication never starts.
     ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}),
+    ...(sightings !== undefined ? { peerSightings: sightings } : {}),
+    ...(loadReport ? { loadReport } : {}),
     // Machine-coherence advert (§3.2): CLAMPED on receive, right here in the
     // narrowing step (M4 — the spec's designated clamp point). A clean advert
     // passes rebuilt-byte-identical; a malformed one becomes a rejection marker
@@ -202,9 +244,18 @@ export interface PeerPresencePullerDeps {
    */
   fetchPeerCapacity: (machineId: string, url: string) => Promise<PeerCapacity | null>;
   /** Record an observed peer heartbeat into the pool registry (marks it online for the failover window). */
-  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary; seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags']; servesChannels?: import('./types.js').MachineCapacity['servesChannels']; coherenceAdvert?: import('./machineCoherenceAdvert.js').CoherenceAdvert; coherenceAdvertRejected?: { atMs: number; reason: string } }) => void;
+  recordHeartbeat: (obs: { machineId: string; selfReportedLastSeen: string; loadAvg?: number; rttMs?: number; loadReport?: MachineLoadReport; quotaState?: { blocked: boolean; blockedUntil?: string; reason?: string }; guardPosture?: import('./types.js').GuardPostureSummary; seamlessnessFlags?: import('./types.js').MachineCapacity['seamlessnessFlags']; servesChannels?: import('./types.js').MachineCapacity['servesChannels']; coherenceAdvert?: import('./machineCoherenceAdvert.js').CoherenceAdvert; coherenceAdvertRejected?: { atMs: number; reason: string } }) => void;
   /** Wall clock — injectable for tests. Defaults to `Date`. */
   now?: () => Date;
+  /** Monotonic ms clock for round-trip timing — injectable for tests. */
+  monoNow?: () => number;
+  /**
+   * Record a failed direct attempt and its shape (trustworthy-machine-load A1).
+   * Display-only evidence; MUST NOT throw into the puller.
+   */
+  recordPullFailure?: (machineId: string, shape: PullFailureShape) => void;
+  /** Record a peer's sightings of other machines (A4, display only). MUST NOT throw. */
+  recordPeerSightings?: (observerMachineId: string, sightings: Record<string, { ageMs: number }>) => void;
   /** Optional structured log line per pass (e.g. for the boot log). */
   log?: (line: string) => void;
 
@@ -273,18 +324,33 @@ export class PeerPresencePuller {
    * Never rejects.
    */
   async pullOnce(): Promise<{ recorded: string[] }> {
-    const peers = this.d.listPeers().filter((m) => m.machineId !== this.d.selfMachineId && !!m.url);
+    const all = this.d.listPeers().filter((m) => m.machineId !== this.d.selfMachineId);
+    // A peer with no resolvable URL is a failed attempt of shape `no-route`
+    // (display evidence only — it was never recorded online before either).
+    for (const m of all) if (!m.url) this.noteFailure(m.machineId, 'no-route');
+    const peers = all.filter((m) => !!m.url);
+    const mono = this.d.monoNow ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
     const results = await Promise.all(
       peers.map(async (m): Promise<string | null> => {
         let cap: PeerCapacity | null = null;
+        let failure: unknown = null;
+        const startedMs = mono();
         try {
           cap = await this.d.fetchPeerCapacity(m.machineId, m.url as string);
-        } catch {
+        } catch (err) {
           cap = null; // unreachable / rejected → not recorded; ages out of online
+          failure = err ?? new Error('fetch failed');
         }
-        if (!cap) return null;
+        if (!cap) {
+          this.noteFailure(m.machineId, classifyPullFailure(failure));
+          return null;
+        }
+        const rttMs = Math.max(0, mono() - startedMs);
         const seen = cap.selfReportedLastSeen ?? (this.d.now?.() ?? new Date()).toISOString();
-        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}), ...(cap.servesChannels !== undefined ? { servesChannels: cap.servesChannels } : {}), ...(cap.coherenceAdvert !== undefined ? { coherenceAdvert: cap.coherenceAdvert } : {}), ...(cap.coherenceAdvertRejected !== undefined ? { coherenceAdvertRejected: cap.coherenceAdvertRejected } : {}) });
+        if (cap.peerSightings && this.d.recordPeerSightings) {
+          try { this.d.recordPeerSightings(m.machineId, cap.peerSightings); } catch { /* @silent-fallback-ok: display-only sightings must never break the presence pass (the puller's never-throw contract) */ }
+        }
+        this.d.recordHeartbeat({ machineId: m.machineId, selfReportedLastSeen: seen, loadAvg: cap.loadAvg, rttMs, ...(cap.loadReport !== undefined ? { loadReport: cap.loadReport } : {}), ...(cap.quotaState !== undefined ? { quotaState: cap.quotaState } : {}), ...(cap.guardPosture !== undefined ? { guardPosture: cap.guardPosture } : {}), ...(cap.seamlessnessFlags !== undefined ? { seamlessnessFlags: cap.seamlessnessFlags } : {}), ...(cap.servesChannels !== undefined ? { servesChannels: cap.servesChannels } : {}), ...(cap.coherenceAdvert !== undefined ? { coherenceAdvert: cap.coherenceAdvert } : {}), ...(cap.coherenceAdvertRejected !== undefined ? { coherenceAdvertRejected: cap.coherenceAdvertRejected } : {}) });
         // REPLICATION-GATED journal-delta drive — only when the server wired the
         // delta deps (i.e. replication.enabled === true). Otherwise a complete
         // no-op (engine/transport stay dark). Never throws into the puller.
@@ -311,6 +377,10 @@ export class PeerPresencePuller {
     const recorded = results.filter((r): r is string => r !== null);
     if (recorded.length && this.d.log) this.d.log(`recorded ${recorded.length} peer(s) online over HTTP: ${recorded.join(', ')}`);
     return { recorded };
+  }
+
+  private noteFailure(machineId: string, shape: PullFailureShape): void {
+    try { this.d.recordPullFailure?.(machineId, shape); } catch { /* @silent-fallback-ok: display-only failure evidence must never break the presence pass (the puller's never-throw contract) */ }
   }
 
   /**

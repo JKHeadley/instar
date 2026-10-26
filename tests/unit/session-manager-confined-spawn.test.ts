@@ -153,7 +153,7 @@ describe('confined spawn (feedback executor)', () => {
       const argv = lastNewSessionArgv();
       const launch = launchArgvFrom(argv, CLAUDE);
       expect(launch).not.toContain('--dangerously-skip-permissions');
-      expect(launch).toEqual(expect.arrayContaining(['--permission-mode', 'dontAsk', '--tools', '--settings', '/trusted/settings.json', '--setting-sources', 'local', '--strict-mcp-config']));
+      expect(launch).toEqual(expect.arrayContaining(['--permission-mode', 'dontAsk', '--tools', '--no-chrome', '--settings', '/trusted/settings.json', '--setting-sources', 'local', '--strict-mcp-config']));
       expect(launch.indexOf('--permission-mode')).toBeLessThan(launch.indexOf('-p'));
       expect(argv[argv.indexOf('-c') + 1]).toBe(ws);
       const env = argv.filter((_a, i) => argv[i - 1] === '-e');

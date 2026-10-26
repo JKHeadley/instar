@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { createSubscriptionReloginRuntime } from '../../src/core/SubscriptionReloginRuntime.js';
+import { PlaywrightSeatLease } from '../../src/core/PlaywrightSeatLease.js';
 import type { SubscriptionAccount, SubscriptionPool } from '../../src/core/SubscriptionPool.js';
 import type { SubscriptionLoginEpisode, SubscriptionLoginLedger } from '../../src/core/SubscriptionLoginLedger.js';
 import type { EnrollmentWizard } from '../../src/core/EnrollmentWizard.js';
@@ -51,6 +52,9 @@ describe('production-shaped subscription re-login runtime', () => {
     })), chooseExpectedAccount: vi.fn(), fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(),
     readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}) };
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      // A private seat lease: the default is the machine-wide file under HOME, which a live browser
+      // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
       mode: 'approval', pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-api', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as unknown as IdentityOracle,
@@ -102,6 +106,9 @@ describe('production-shaped subscription re-login runtime', () => {
     readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}) };
     const pasteBack = { finish: vi.fn(async () => 'complete') } as unknown as ClaudePasteBackController;
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      // A private seat lease: the default is the machine-wide file under HOME, which a live browser
+      // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
       mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
         minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-app-server', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
@@ -154,6 +161,9 @@ describe('production-shaped subscription re-login runtime', () => {
     readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}) };
     const pasteBack = { finish: vi.fn(async () => 'complete') } as unknown as ClaudePasteBackController;
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      // A private seat lease: the default is the machine-wide file under HOME, which a live browser
+      // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
       mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
         minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-rollout', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
@@ -208,6 +218,9 @@ describe('production-shaped subscription re-login runtime', () => {
     const navigate = vi.fn(async (input: { offered: string[] }) => input.offered.includes('click:2') ? 'click:2' : 'give-up');
     const pasteBack = { finish: vi.fn(async () => 'complete') } as unknown as ClaudePasteBackController;
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      // A private seat lease: the default is the machine-wide file under HOME, which a live browser
+      // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
       mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
         minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-app-server', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
@@ -268,6 +281,9 @@ describe('production-shaped subscription re-login runtime', () => {
     })), chooseExpectedAccount: vi.fn(), fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(),
     readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}) };
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      // A private seat lease: the default is the machine-wide file under HOME, which a live browser
+      // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
       mode: 'unattended', unattendedPolicy: { identities: [account.email], minimumSuccessfulRepairs: 0,
         minimumEvidenceDays: 0 }, pool, ledger, enrollment,
       profiles: { resolve: () => ({ profile: { id: 'profile-stale' }, dirExists: true }), listProfiles: () => [{
@@ -306,6 +322,9 @@ describe('production-shaped subscription re-login runtime', () => {
       corroboration: 'exchange-corroborated', outcome: null, provenance: 'observed' };
     const enrollment = { getById: () => null, start: vi.fn(), refresh: vi.fn() } as unknown as EnrollmentWizard;
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      // A private seat lease: the default is the machine-wide file under HOME, which a live browser
+      // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
       mode: 'unattended', unattendedPolicy: { identities: ['someone-else@example.com'],
         minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
       pool: { getAvailability: () => ({ state: 'ready' }), get: () => ({ ...account }), list: () => [{ ...account }] } as unknown as SubscriptionPool,
@@ -340,6 +359,9 @@ describe('production-shaped subscription re-login runtime', () => {
       }) } as unknown as SubscriptionPool;
     const quotaPoller = { pollAccount: vi.fn() } as unknown as QuotaPoller;
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
+      // A private seat lease: the default is the machine-wide file under HOME, which a live browser
+      // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
       mode: 'approval', pool,
       ledger: { listEpisodes: () => [{ ...source }], recordStatus: vi.fn() } as unknown as SubscriptionLoginLedger,
       enrollment: { getById: () => pending, start: vi.fn(async () => (pending = {

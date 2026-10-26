@@ -48,6 +48,7 @@ import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
+import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
@@ -175,6 +176,7 @@ import { buildGuardInventory, buildHeartbeatPostureBlock } from '../monitoring/g
 import { readAcceptedFallbacks, scopeAcceptedFallbacks } from '../monitoring/guardAcceptedFallbacks.js';
 import { createGuardPostureProbes } from '../monitoring/probes/GuardPostureProbe.js';
 import { GuardPostureStore } from '../core/GuardPostureStore.js';
+import { MachineEvidenceStore } from '../core/MachineEvidenceStore.js';
 import { AttentionConditionStore } from '../core/AttentionConditionStore.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from '../server/peerUrlGuard.js';
 import { formatWatchdogUserMessage, formatWatchdogSessionNotice } from '../monitoring/watchdog-notifications.js';
@@ -240,7 +242,7 @@ import { CanonicalState } from '../core/CanonicalState.js';
 import { ExternalOperationGate, AUTONOMY_PROFILES } from '../core/ExternalOperationGate.js';
 import { MessageSentinel } from '../core/MessageSentinel.js';
 import { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
+import { AutonomyProfileManager, PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
@@ -622,6 +624,12 @@ let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+// merge-line-author-eligibility-and-handoff-resume (D2): the topic's open
+// commitments for a no-message respawn's continuation instruction. Late-bound to
+// the real CommitmentTracker once it is constructed; null ⇒ 'unavailable'.
+let _activeCommitmentsForTopic:
+  | ((topicId: number) => Array<HandoffCommitment & { createdAt?: string }>)
+  | null = null;
 
 /** Narrow, testable ownership of the stale-generation recovery side effect. */
 export function clearGenerationlessCodexResumeBinding(
@@ -1388,9 +1396,21 @@ export async function spawnSessionForTopic(
         `[telegram:${topicId}] ${msg}`,
       );
     } else {
-      parts.push(
-        `HANDOFF ONLY: No new user message accompanies this framework switch. Load the context above, do not narrate or re-scope it, and wait silently for the next user message.`,
-      );
+      // D2: resume in-flight work (after a stop/already-done check); wait silently
+      // only when nothing is in flight. Unreadable commitments are 'unavailable', never "none".
+      let openCommitments: HandoffCommitment[] | 'unavailable' = 'unavailable';
+      if (_activeCommitmentsForTopic) {
+        try {
+          openCommitments = [..._activeCommitmentsForTopic(topicId)]
+            .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+        } catch (err) {
+          console.warn(`[telegram→session] Open commitments for topic ${topicId} could not be read for the handoff instruction: ${err instanceof Error ? err.message : String(err)}`);
+          openCommitments = 'unavailable';
+        }
+      } else {
+        console.warn(`[telegram→session] Open commitments for topic ${topicId} unavailable for the handoff instruction (tracker not wired)`);
+      }
+      parts.push(buildHandoffContinuationInstruction(openCommitments));
     }
 
     bootstrapMessage = parts.join('\n');
@@ -14444,6 +14464,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the §3.5.2 bind-pin and denormalizes boundTuple onto the commitment.
     commitmentTracker.setConversationBinder(conversationBinder);
     commitmentTracker.start();
+    _activeCommitmentsForTopic = (topicId) => commitmentTracker.getActiveByTopicId(topicId);
     console.log(pc.green('  Commitment tracker enabled'));
 
     // SubscriptionPool — multi-account subscription registry (P1.1 of the
@@ -16976,12 +16997,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // tunnel/tmux recovery cascade — the recovery storm that piled more load on the host
     // and re-wedged it. developmentAgent gate: LIVE on a dev agent / DARK on the fleet;
     // when off the handler is byte-for-byte today's behavior (D6).
+    // trustworthy-machine-load B1: the load sampler + the event-loop-lag reader are
+    // declared here (before the wake handler and the pool registry) so neither
+    // closure can hit a temporal-dead-zone read during startup.
+    let _machineLoadSampler: import('../core/machineLoadReport.js').MachineLoadSampler | null = null;
+    let _eventLoopLagReader: (() => number | null) | null = null;
     const _tmuxAsyncHotPathWakeGuard = resolveDevAgentGate(
       config.monitoring?.tmuxResilience?.asyncHotPath?.enabled,
       config,
     );
     sleepWakeDetector.on('wake', async (event: { sleepDurationSeconds: number; timestamp: string; lowConfidence?: boolean }) => {
       console.log(`[SleepWake] Wake detected after ~${event.sleepDurationSeconds}s sleep`);
+      // B2 wake grace: lag alone cannot read impaired/saturated for 2 min after a wake.
+      try { _machineLoadSampler?.noteWake(); } catch { /* @silent-fallback-ok — grace re-arm is best-effort observability */ }
 
       // (A.5) Marker short-circuit (residual guard): a sync subprocess op is in flight
       // RIGHT NOW (the cross-process mirror reports inFlight, not stale) → this "wake" is
@@ -19818,6 +19846,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     for (const def of BUILTIN_FEATURES) {
       featureRegistry.register(def);
     }
+    // Autonomous evolution is on iff the RESOLVED approval mode is 'autonomous' — an explicit
+    // evolution.approvalMode, else the autonomy profile's default — exactly as the consumer
+    // above decides. Shared with the shown state so bootstrap and `effective` agree
+    // (spec feature-transition-applies-action §2.7, review r2).
+    featureRegistry.setConfiguredResolver('autonomous-evolution', (cfg) => {
+      const explicit = (cfg.evolution as { approvalMode?: unknown } | undefined)?.approvalMode;
+      const mode = explicit === 'autonomous' || explicit === 'ai-assisted'
+        ? explicit
+        : PROFILE_DEFAULTS[autonomyManager.getProfile()].evolutionApprovalMode;
+      return mode === 'autonomous';
+    });
     if (featureRegistryReady) {
       featureRegistry.bootstrap(config as unknown as Record<string, unknown>);
     }
@@ -22388,6 +22427,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const wiringOpts = {
             repoPath, safeMergePath, stateDir: config.stateDir, machineId: gpMachineId,
             repo: 'JKHeadley/instar', agentNamespace,
+            expectedGhLogin: typeof (gpCfg as { expectedGhLogin?: unknown }).expectedGhLogin === 'string' ? (gpCfg as { expectedGhLogin: string }).expectedGhLogin : undefined,
             mergeTimeoutMs: Number(gpCfg.mergeTimeoutMs) || 1_500_000,
             mergeKillGraceMs: Number(gpCfg.mergeKillGraceMs) || 60_000,
             // mergerunner-auto-arm-handoff M2: thread the two runner-path fields so
@@ -22610,6 +22650,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Durable last-known posture (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)) —
           // survives local restarts so a dark peer renders with its real age.
           postureStore: new GuardPostureStore(config.stateDir),
+          // Durable last DIRECT contact per peer (trustworthy-machine-load A3) —
+          // a restart renders `stale, last direct contact <age> ago`, never `offline`.
+          evidenceStore: new MachineEvidenceStore(config.stateDir),
+          selfMachineId: () => poolSelfId,
           listMachines: () =>
             poolIdMgr.getActiveMachines().map(({ machineId, entry }) => ({
               machineId,
@@ -22629,6 +22673,35 @@ export async function startServer(options: StartOptions): Promise<void> {
         const poolSelfId =
           machineHeartbeat?.config?.machineId ??
           (poolIdMgr.hasIdentity() ? poolIdMgr.loadIdentity().machineId : null);
+
+        // trustworthy-machine-load B1: ONE cached multi-signal load report for this
+        // machine, sampled every 15 s OUTSIDE the heartbeat path (async vm_stat /
+        // sysctl / proc reads), read O(1) by the self beat and `session-status`.
+        // The first sample is awaited so the first heartbeat carries a report.
+        try {
+          const loadMod = await import('../core/machineLoadReport.js');
+          const spawnSemMod = await import('../core/hostSpawnSemaphore.js');
+          const testSemMod = await import('../core/hostTestRunnerSemaphore.js');
+          _machineLoadSampler = new loadMod.MachineLoadSampler({
+            eventLoopLagP99Ms: () => _eventLoopLagReader?.() ?? null,
+            sessions: () => ({
+              active: state.listSessions().filter((x) => x.status === 'running' || x.status === 'starting').length,
+              max: typeof config.sessions?.maxSessions === 'number' ? config.sessions.maxSessions : null,
+            }),
+            // peek(), not status(): status() spin-acquires the host lock (up to 2 s,
+            // synchronously) and rewrites the holders file — on a 15 s timer that
+            // would inflate the very event-loop lag this report measures.
+            spawnCapSaturated: () => { const st = spawnSemMod.getHostSpawnSemaphore().peek(); return st.liveHolders >= st.cap; },
+            testRunnerSaturated: () => testSemMod.getHostTestRunnerSemaphore().status().suite.saturated,
+            log: (line) => console.log(pc.dim(`  [load-report] ${line}`)),
+          });
+          await _machineLoadSampler.start();
+          console.log(pc.dim(`  [load-report] sampler started (verdict: ${_machineLoadSampler.verdict()})`));
+        } catch (err) {
+          // @silent-fallback-ok (logged): without a sampler the self beat carries no
+          // load report and peers read this machine's load as `unknown` — honest, never `ok`.
+          console.log(pc.yellow(`  [load-report] sampler unavailable: ${err instanceof Error ? err.message : String(err)}`));
+        }
 
         // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
         // "Cutover discipline"). Wired HERE (not at setRoleGuard) because the
@@ -22791,6 +22864,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 machineId: poolSelfId,
                 selfReportedLastSeen: new Date().toISOString(),
                 loadAvg: osMod.loadavg()[0],
+                // trustworthy-machine-load B1: the cached multi-signal report (O(1) read)
+                // + the session fields it fills (previously never populated).
+                ...((): Partial<import('../core/MachinePoolRegistry.js').HeartbeatObservation> => {
+                  const lr = _machineLoadSampler?.read() ?? null;
+                  if (!lr) return {};
+                  return {
+                    loadReport: lr,
+                    ...(lr.sessionsActive !== null ? { activeSessionCount: lr.sessionsActive } : {}),
+                    ...(lr.sessionsMax !== null ? { maxSessions: lr.sessionsMax } : {}),
+                  };
+                })(),
                 quotaState: selfQuotaState(),
                 // B5 — advertise this machine's REAL poll state (the lifeline's
                 // truth file), so the pool's exactly-one-listener guard counts
@@ -24737,7 +24821,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               const preferencesAdvert = (preferenceReplicaStore && _preferencesManagerForSync)
                 ? _preferencesManagerForSync.getReplicationAdvert()
                 : undefined;
-              return { ...base, journalAdvert, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
+              // trustworthy-machine-load A4: this machine's OWN direct contacts as
+              // ages on its own clock (display-only sightings for the asker).
+              const peerSightings = machinePoolRegistry?.getSightingsAdvert() ?? {};
+              // B1: the report's `sampleAgeMs` must be CURRENT at send time — the
+              // copy on the self beat was stamped up to 30 s ago, which would let a
+              // receiver's 60 s freshness check pass a ~90 s-old report.
+              const liveLoadReport = _machineLoadSampler?.read() ?? null;
+              return { ...base, ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
             },
             // A2A cross-machine route (docs/specs/a2a-cross-machine-route.md).
             // Both verbs are ALWAYS registered; with the gate off both refuse.
@@ -27028,6 +27119,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return null;
             },
+            // trustworthy-machine-load A1/A4: failure shapes + peer sightings are
+            // display-only evidence slots (never placement inputs).
+            recordPullFailure: (machineId, shape) => { machinePoolRegistry?.recordPullFailure(machineId, shape); },
+            recordPeerSightings: (observer, sightings) => { machinePoolRegistry?.recordPeerSightings(observer, sightings); },
             // REPLICATION-GATED: present only when replication.enabled === true.
             ..._journalDeltaDeps,
             // COMMITMENTS-COHERENCE-SPEC §3.2 — pull delta pages when the
@@ -28518,6 +28613,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             : undefined,
           logDir: path.join(config.stateDir, 'logs'),
         }, _writeAdmissionOwnershipStore);
+        // trustworthy-machine-load B1: the load report reads the SAME event-loop gauge.
+        _eventLoopLagReader = () => writeAdmission?.eventLoopStats().p99 ?? null;
         state.attachWriteAdmission(writeAdmission);
         // One-time legacy-key cleanup (§3.3): the pre-re-key shared
         // `session-build-context` kv entry is removed on the LEASE HOLDER only
