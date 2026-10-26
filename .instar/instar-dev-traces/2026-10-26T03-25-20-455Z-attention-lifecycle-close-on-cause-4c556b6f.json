@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "attention-lifecycle-close-on-cause",
+  "sessionId": "56f304c0-397c-48b5-a063-a29a48e9f94a",
+  "timestamp": "2026-10-26T03:25:20.455Z",
+  "artifactPath": "upgrades/side-effects/attention-lifecycle-close-on-cause.md",
+  "artifactSha256": "73d028043516cc9da406833552ac92d291a1e398bf964e0ffc5adcd98a0275f2",
+  "specPath": "docs/specs/attention-lifecycle-close-on-cause.md",
+  "coveredFiles": [
+    "tests/unit/monitoring/guard-posture-probe-loadbearing.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test update for the one-row-per-condition contract (same id + changed body refreshes in place), part of the converged attention-lifecycle spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
