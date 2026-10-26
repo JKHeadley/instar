@@ -290,13 +290,13 @@ describe('actions', () => {
 describe('run history with skips', () => {
   const hist = ok({ runs: [
     { runId: 'r1', slug: 'git-sync', startedAt: minsAgo(30), completedAt: minsAgo(27), durationSeconds: 180, result: 'success', trigger: 'scheduled' },
-    { runId: 'r2', slug: 'git-sync', startedAt: minsAgo(1500), durationSeconds: 12, result: 'failure', error: 'exit 1', trigger: 'dashboard-manual' },
+    { runId: 'r2', slug: 'git-sync', startedAt: minsAgo(2100), durationSeconds: 12, result: 'failure', error: 'exit 1', trigger: 'dashboard-manual' },
   ], total: 2 });
   it('skips carry their recorded reason, or say none was recorded; they sort into the strip by time', () => {
-    const h = buildHistory(hist, ok({ events: [{ slug: 'git-sync', timestamp: minsAgo(10), reason: 'quota' }, { slug: 'git-sync', timestamp: minsAgo(1400) }] }), NOW);
+    const h = buildHistory(hist, ok({ events: [{ slug: 'git-sync', timestamp: minsAgo(10), reason: 'quota' }, { slug: 'git-sync', timestamp: minsAgo(2000) }] }), NOW);
     expect(h.ok).toBe(true);
     expect(h.marks.map((m) => m.word)).toEqual(['skipped (usage limit)', 'succeeded', 'skipped (no reason recorded)', 'failed']);
-    // Day labels follow the local clock: the two recent marks share a day; the old ones are not "Today".
+    // Day labels follow the local clock: the two recent marks share a day; the old ones are over 25 h back, so they are not "Today" in any timezone (CI runs in UTC).
     expect(h.marks[0].day).toBe(h.marks[1].day);
     expect(h.marks[2].day).not.toBe('Today');
     expect(h.marks[3].day).not.toBe('Today');
