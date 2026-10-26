@@ -69,12 +69,26 @@ describe('server-boot wiring: Topic Profile orchestrator + carrier (TOPIC-PROFIL
       expect(depsBlock()).toContain('{ awaitInitialInjection: true }');
     });
 
-    it('a history-only framework handoff waits silently instead of fabricating a latest message', () => {
+    it('a history-only handoff never fabricates a latest message, and resumes in-flight work via the shared helper', () => {
       expect(src).toContain('if (hasLatestMessage)');
-      expect(src).toContain('HANDOFF ONLY: No new user message accompanies this framework switch.');
-      const handoffBranch = src.match(/else \{\s*parts\.push\(\s*`HANDOFF ONLY:[\s\S]*?\);\s*\}/)?.[0];
-      expect(handoffBranch).toBeTruthy();
-      expect(handoffBranch).not.toContain("The user's latest message:");
+      // merge-line-author-eligibility-and-handoff-resume D2: the no-message branch
+      // no longer says "wait silently" unconditionally; it uses the pure helper.
+      expect(src).not.toContain('HANDOFF ONLY: No new user message accompanies this framework switch.');
+      const start = src.indexOf('// D2: resume in-flight work');
+      expect(start).toBeGreaterThan(0);
+      const branch = src.slice(start, src.indexOf('bootstrapMessage = parts.join', start));
+      expect(branch).toContain('parts.push(buildHandoffContinuationInstruction(openCommitments));');
+      expect(branch).not.toContain("The user's latest message:");
+      // Unreadable commitments are 'unavailable', never an empty list.
+      expect(branch).toContain("let openCommitments: HandoffCommitment[] | 'unavailable' = 'unavailable';");
+    });
+
+    it('the open-commitments reader is late-bound to the REAL CommitmentTracker (not a stub)', () => {
+      expect(src).toContain('_activeCommitmentsForTopic = (topicId) => commitmentTracker.getActiveByTopicId(topicId);');
+      const ctor = src.indexOf('const commitmentTracker = new CommitmentTracker({');
+      const bind = src.indexOf('_activeCommitmentsForTopic = (topicId) => commitmentTracker.getActiveByTopicId(topicId);');
+      expect(ctor).toBeGreaterThan(0);
+      expect(bind).toBeGreaterThan(ctor);
     });
 
     it('claudeResume delegates to the real resume map', () => {

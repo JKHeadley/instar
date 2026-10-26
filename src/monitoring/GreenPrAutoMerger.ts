@@ -25,7 +25,7 @@ import {
   type HoldMemoryEntry,
   classifyCandidate,
   holdReasonOf,
-  headInNamespace,
+  agentOwnership,
   stuckRedChecks,
   selectOldest,
   debounceHoldRelease,
@@ -252,6 +252,18 @@ export interface GreenPrState {
   identity?: { login: string | null; resolvedAt: number };
   /** Episodes that gave up (surfaced via attention), for the aggregate. */
   attentionLines?: string[];
+  /**
+   * merge-line-author-eligibility: listed PRs the ownership filter refused on the
+   * last fresh list (fork / author-mismatch / ownership-unknown). Rebuilt each tick.
+   */
+  notAgentOwned?: Array<{
+    pr: number;
+    headRefName: string;
+    headRefOid: string;
+    reason: string;
+    hasVerifyRecord: boolean;
+    firstSeenAt: number;
+  }>;
   /** Current episode where authored PRs exist but none use this watcher namespace. */
   namespaceMismatch?: {
     firstSeenAt: number;
@@ -441,6 +453,43 @@ export class GreenPrAutoMerger extends EventEmitter {
     try { effective = this.localVerify?.effectiveFloor() ?? null; } catch { /* @silent-fallback-ok: local-verify fail-safe — an unreadable floor is the actions floor, never permission */ effective = null; }
     // The list is `--author @me` (the agent's own login), same-repo namespace branches.
     return selectMergeFloor({ effectiveFloor: effective, configRepo: this.cfg.repo, repo: this.cfg.repo, eligible: true });
+  }
+
+  /** The one ownership read (merge-line-author-eligibility) every pass shares. */
+  private ownership(pr: PrSummary): ReturnType<typeof agentOwnership> {
+    return agentOwnership(pr, this.cfg.agentNamespace, this.cfg.expectedGhLogin);
+  }
+
+  /**
+   * Visibility for a listed PR the ownership filter still refuses (a fork, another
+   * author, unknown ownership): rebuilt from each fresh list into
+   * `state.notAgentOwned` (exposed as a count on GET /green-pr-automerge), plus ONE
+   * audit line per (pr, head) — never silent, never one line per tick.
+   */
+  private observeNotAgentOwned(prs: PrSummary[], state: GreenPrState): void {
+    const prior = new Map((state.notAgentOwned ?? []).map((e) => [e.pr, e]));
+    const next: NonNullable<GreenPrState['notAgentOwned']> = [];
+    for (const pr of prs) {
+      const o = this.ownership(pr);
+      if (o.owned) continue;
+      const entry = {
+        pr: pr.number,
+        headRefName: pr.headRefName,
+        headRefOid: pr.headRefOid,
+        reason: o.reason,
+        hasVerifyRecord: this.recordFor(pr),
+        firstSeenAt: prior.get(pr.number)?.headRefOid === pr.headRefOid ? prior.get(pr.number)!.firstSeenAt : this.deps.now(),
+      };
+      next.push(entry);
+      if (prior.get(pr.number)?.headRefOid !== pr.headRefOid) {
+        this.deps.audit({
+          kind: 'green-pr-automerge', event: 'skipped:not-agent-owned',
+          pr: pr.number, head: pr.headRefOid, headRefName: pr.headRefName,
+          reason: o.reason, hasVerifyRecord: entry.hasVerifyRecord,
+        });
+      }
+    }
+    state.notAgentOwned = next;
   }
 
   private recordFor(pr: PrSummary): boolean {
@@ -654,6 +703,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     const { eligible, snapshotEntries } = await this.gather(candidates, state, floor);
     state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
     const namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
+    this.observeNotAgentOwned(candidates, state);
 
     // Red-PR watchdog (red-pr-watchdog): surface my own PRs stuck RED past the
     // threshold. Runs on every acting/warm-up tick that got a fresh PR list —
@@ -687,7 +737,7 @@ export class GreenPrAutoMerger extends EventEmitter {
         const row = candidates.find((p) => p.number === h.pr);
         const why = !row ? 'not-listed'
           : row.headRefOid !== h.head ? 'head-moved'
-            : (classifyCandidate(row, this.cfg.agentNamespace, { floor, hasRecord: this.recordFor(row) }).skip ?? 'waiting');
+            : (classifyCandidate(row, this.cfg.agentNamespace, { floor, hasRecord: this.recordFor(row), expectedGhLogin: this.cfg.expectedGhLogin }).skip ?? 'waiting');
         this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-not-eligible', pr: h.pr, head: h.head, reason: why });
         this.deps.saveState(state);
         return { acted: false, reason: `handoff-not-eligible:${why}` };
@@ -758,7 +808,9 @@ export class GreenPrAutoMerger extends EventEmitter {
         continue;
       }
       const verdict = classifyCandidate(pr, this.cfg.agentNamespace,
-        floor === 'local' ? { floor, hasRecord: this.recordFor(pr) } : { floor });
+        floor === 'local'
+          ? { floor, hasRecord: this.recordFor(pr), expectedGhLogin: this.cfg.expectedGhLogin }
+          : { floor, expectedGhLogin: this.cfg.expectedGhLogin });
       // Hold-release debounce (R3): a PR that WAS held resumes only after the
       // marker is absent for holdReleaseTicks AND tickIntervalMs elapsed.
       const heldNow = holdReasonOf(pr) !== null;
@@ -840,7 +892,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     prs: PrSummary[],
     state: GreenPrState,
   ): Promise<boolean> {
-    const outside = prs.filter((pr) => !headInNamespace(pr.headRefName, this.cfg.agentNamespace));
+    const outside = prs.filter((pr) => !this.ownership(pr).owned);
     const mismatched = prs.length > 0 && outside.length === prs.length;
     if (!mismatched) {
       if (state.namespaceMismatch) {
@@ -875,7 +927,7 @@ export class GreenPrAutoMerger extends EventEmitter {
       });
       await this.refreshAggregate(state, [
         `configuration:branch-namespace-mismatch — saw ${prs.length} authored open PR(s), ` +
-        `but none starts with ${this.cfg.agentNamespace}/ (examples: ${sampleBranches.join(', ')})`,
+        `but none starts with ${this.cfg.agentNamespace}/ or is a same-repo PR by ${this.cfg.expectedGhLogin || 'the configured login'} (examples: ${sampleBranches.join(', ')})`,
       ]);
     }
     return true;
@@ -927,7 +979,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     };
     const ready = prs
       .filter((pr) => nextReady[pr.number] !== undefined)
-      .filter((pr) => classifyCandidate(pr, this.cfg.agentNamespace, { floor: 'local', hasRecord: false }).skip === 'no-verify-record')
+      .filter((pr) => classifyCandidate(pr, this.cfg.agentNamespace, { floor: 'local', hasRecord: false, expectedGhLogin: this.cfg.expectedGhLogin }).skip === 'no-verify-record')
       .filter((pr) => !this.recordFor(pr))
       .filter((pr) => nowMs - next[pr.number].firstSeenAt >= VERIFY_HEAD_STABLE_MS)
       .sort((a, b) => (readyAt(a) - readyAt(b)) || (a.number - b.number));
@@ -1379,8 +1431,8 @@ export class GreenPrAutoMerger extends EventEmitter {
     const lines: string[] = [];
 
     for (const pr of prs) {
-      // Only my own PRs (branch-namespace proxy for author).
-      if (!headInNamespace(pr.headRefName, this.cfg.agentNamespace)) continue;
+      // Only my own PRs (namespace or same-repo author — merge-line-author-eligibility).
+      if (!this.ownership(pr).owned) continue;
       const stuck = stuckRedChecks(pr, now, thresholdMs);
       if (stuck.length === 0) {
         // Green / recovered / not-yet-stuck → clear any prior raise.

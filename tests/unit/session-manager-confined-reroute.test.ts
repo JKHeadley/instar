@@ -137,7 +137,7 @@ describe('confined spawn on the subscription (rerouted interactive) lane', () =>
       expect(launch).not.toContain('-p');
       expect(launch).not.toContain('--dangerously-skip-permissions');
       expect(launch).toEqual(expect.arrayContaining(['--settings', '/trusted/settings.json', '--setting-sources', 'local',
-        '--strict-mcp-config', '--permission-mode', 'dontAsk', '--tools', 'Bash,Read,Edit,Write,Glob,Grep,TodoWrite']));
+        '--strict-mcp-config', '--permission-mode', 'dontAsk', '--tools', 'Bash,Read,Edit,Write,Glob,Grep,TodoWrite', '--no-chrome']));
       expect(launch[launch.indexOf('--session-id') + 1]).toBe(uuid);
       expect(argv[argv.indexOf('-c') + 1]).toBe(ws);
       const env = argv.filter((_a, i) => argv[i - 1] === '-e');
@@ -214,7 +214,8 @@ describe('confined spawn on the subscription (rerouted interactive) lane', () =>
     const flags = applyClaudeConfinement(argv, { tmpDir: '/t' }, { sessionId: 'sid', tmuxSession: 'tm' }, '/cfg');
     expect(flags).toEqual(['-e', 'CLAUDE_CODE_TMPDIR=/t', '-e', 'TMPDIR=/t']);
     const at = argv.indexOf(CLAUDE);
-    expect(argv.slice(at)).toEqual([CLAUDE, '--model', 'opus', '--permission-mode', 'dontAsk', '--tools', 'Bash,Read,Edit,Write,Glob,Grep,TodoWrite', '-p', 'prompt']);
+    // `--no-chrome`: the Claude in Chrome startup offer never appears in a confined session (2026-10-25 canary failure).
+    expect(argv.slice(at)).toEqual([CLAUDE, '--model', 'opus', '--permission-mode', 'dontAsk', '--tools', 'Bash,Read,Edit,Write,Glob,Grep,TodoWrite', '--no-chrome', '-p', 'prompt']);
     expect(argv.slice(0, 2)).toEqual(['/usr/bin/env', '-i']);
     expect(argv).toContain('CLAUDE_CONFIG_DIR=/cfg');
   });
