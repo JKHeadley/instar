@@ -40,6 +40,7 @@ function makePuller(opts: {
     fetchPeerCapacity: opts.fetchImpl,
     recordHeartbeat: (obs) => recorded.push(obs),
     now: opts.now,
+    monoNow: () => 0, // rttMs reads 0 under a frozen monotonic clock
   });
   return { puller, recorded };
 }
@@ -56,7 +57,7 @@ describe('PeerPresencePuller.pullOnce', () => {
 
     expect(res.recorded).toEqual(['m_mini']);
     expect(recorded).toEqual([
-      { machineId: 'm_mini', selfReportedLastSeen: '2026-05-29T10:00:00.000Z', loadAvg: 1.25 },
+      { machineId: 'm_mini', selfReportedLastSeen: '2026-05-29T10:00:00.000Z', loadAvg: 1.25, rttMs: 0 },
     ]);
   });
 
@@ -304,6 +305,9 @@ describe('narrowSessionStatusToPeerCapacity — the shared receive-mapping (wiri
       beatSeq: 4,
       flags: { developmentAgent: 'false', 'sessionPool.stage': 'dark' },
     },
+    // trustworthy-machine-load A4/B1: display-only sightings + the clamped load report.
+    peerSightings: { m_pc: { ageMs: 180_000 } },
+    loadReport: { bootId: 'boot-x', seq: 2, sampleAgeMs: 400, verdict: 'elevated', cpuIdlePct: 12, loadPerCore: 1.1, memAvailablePct: 40 },
   };
   const UNWRAPPED_JOURNAL = { 'learning-record': { incarnation: 'inc-j', lastSeq: 12 } };
 

@@ -24,6 +24,18 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/machineLiveness.ts",
+      "reason": "Display-only machine-evidence derivation (trustworthy-machine-load P1) reached through MachinePoolRegistry; it gates nothing in Stage-B canaried delivery and is certified by its own suites (tests/unit/machine-liveness*.test.ts, tests/integration/machine-liveness-pool.test.ts)"
+    },
+    {
+      "file": "src/core/machineLoadReport.ts",
+      "reason": "Reporting-only load sampler + verdict table (trustworthy-machine-load P1) reached through MachinePoolRegistry; it gates nothing in Stage-B canaried delivery and is certified by its own suites (tests/unit/machine-load-report.test.ts, tests/e2e/machine-load-report-lifecycle.test.ts)"
+    },
+    {
+      "file": "src/monitoring/hostMemoryPressure.ts",
+      "reason": "cross-cutting host-memory reader shared far beyond Codex delivery (reaper, revival, load report), certified by its own suite; binding it would re-freeze releases on unrelated churn"
+    },
+    {
       "file": "src/core/mergeDefaults.ts",
       "reason": "Pure shallow defaults-merge helper (no I/O, no state, no delivery logic) reached only through the excluded SessionLivenessOracle.ts; outside Stage-B canaried delivery behavior and covered by its own unit tests (tests/unit/core/mergeDefaults.test.ts)"
     },
