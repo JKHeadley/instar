@@ -1,0 +1,17 @@
+<!-- bump: patch -->
+## What Changed
+
+- **The hourly attention lifecycle pass now runs on send-only servers.** PR #2361's boot and hourly passes (merge duplicate rows, close rows whose cause cleared, expire untouched rows) were armed only when the server long-polled Telegram. A server whose lifeline holds the poll lease, and every standby machine, runs in send-only mode, so no automatic pass ever ran there; `GET /attention/lifecycle` stayed at the last manual sweep. The send-only branch now calls `TelegramAdapter.startSendOnlyMaintenance()`, which arms the same timers (idempotent with a later `start()`, cleared by `stop()`). Rollback: `messaging[].config.attentionLifecycle.enabled: false`.
+
+## What to Tell Your User
+
+The attention list cleanup I promised now really runs every hour. Until this fix it only ran when it was started by hand, because of how my Telegram connection is set up, so old and duplicate items kept piling up. Nothing for you to do.
+
+## Summary of New Capabilities
+
+- No new capability; the existing hourly attention lifecycle pass now runs on every server, including send-only and standby ones.
+
+## Evidence
+
+- Live: every server on the operator's machines logs "Telegram send-only mode (lifeline owns polling (lease detected))"; `GET /attention/lifecycle` showed `lastSweepAt` 2026-10-26T17:46Z (a manual sweep) hours later.
+- Tests: `tests/unit/attention-lifecycle-send-only.test.ts`, `tests/integration/attention-lifecycle-send-only.test.ts`, `tests/e2e/attention-lifecycle-send-only-alive.test.ts`.

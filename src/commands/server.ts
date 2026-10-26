@@ -8227,6 +8227,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
+      // Send-only still owns the attention store: run its hourly lifecycle
+      // pass here too (start() is never called on this path). Idempotent.
+      telegram.startSendOnlyMaintenance();
 
       // Resolve any topic names still using the fallback "topic-NNNN" pattern
       telegram.resolveUnknownTopicNames().catch(err => {

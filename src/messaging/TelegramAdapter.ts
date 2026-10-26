@@ -5173,6 +5173,27 @@ export class TelegramAdapter implements MessagingAdapter {
     return report;
   }
 
+  /**
+   * Start the background maintenance a send-only adapter still owes the agent.
+   *
+   * A send-only adapter (lifeline owns polling, or this machine is a standby)
+   * never calls start(), but it still owns the attention store, so the hourly
+   * attention lifecycle pass (merge duplicates, close cleared conditions,
+   * expire untouched rows) must run here too. Before this, every server whose
+   * lifeline held the poll lease never ran a single automatic pass.
+   *
+   * Idempotent: a later start() (or a second call) never adds a second timer,
+   * and stop() clears what this started.
+   */
+  startSendOnlyMaintenance(): void {
+    this.startAttentionLifecycleTimers();
+  }
+
+  /** True while the attention lifecycle boot + hourly timers are armed. */
+  get attentionLifecycleTimersRunning(): boolean {
+    return this.attentionLifecycleTimer !== null;
+  }
+
   private startAttentionLifecycleTimers(): void {
     if (this.attentionLifecycleTimer) return;
     const tick = () => {
