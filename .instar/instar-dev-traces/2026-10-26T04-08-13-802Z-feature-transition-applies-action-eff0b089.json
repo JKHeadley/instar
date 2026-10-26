@@ -50,5 +50,14 @@
   "tier": 2,
   "tierReasoning": "The operator path is new authority (a PIN proof lets a switch bypass the discovery consent graph) and every deployed agent's feature switches change behaviour; a revert undoes it but the fleet-wide reach and the authority call make it Tier 2.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The Consent & Discovery Framework defined enableAction/disableAction on every FeatureDefinition and added PATCH /config \"for\" them, but no code path ever invoked the action; the dashboard toggle and the transition route only moved the registry state. Latent since the framework shipped; surfaced 2026-10-25 while building the console page that reads the switch. Two definitions were also bound to keys with no consumer (threadline.enabled, evolution.autoImplement) — the same class: a declared contract nothing executes or reads."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the setting change runs once inside an operator- or agent-initiated POST /features/:id/transition and is serialized per feature; no tick, retry, respawn or recovery path triggers it"
+  }
 }
