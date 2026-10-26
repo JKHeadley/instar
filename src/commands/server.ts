@@ -1103,6 +1103,30 @@ let _spawnAdmission: import('../core/SpawnAdmission.js').SpawnAdmission | null =
 // itself is already in durable custody, this only tells the user why it waits).
 const _allRefusingNoticeAt = new Map<number, number>();
 const ALL_REFUSING_NOTICE_COOLDOWN_MS = 30 * 60_000;
+
+/**
+ * trustworthy-machine-load C5: every machine refused new work. The message is
+ * already in durable custody; say so ONCE per topic per episode on the
+ * deterministic send path (never the LLM gate, which can fail closed under the
+ * very load being reported) and raise ONE deduped attention item.
+ */
+function noteAllMachinesRefusing(telegram: TelegramAdapter, topicId: number): void {
+  const last = _allRefusingNoticeAt.get(topicId) ?? 0;
+  if (Date.now() - last < ALL_REFUSING_NOTICE_COOLDOWN_MS) return;
+  _allRefusingNoticeAt.set(topicId, Date.now());
+  telegram.sendToTopic(topicId,
+    'Your message is saved. All of my machines are overloaded right now and are not taking new work; I will answer as soon as one has room.',
+  ).catch(() => { /* @silent-fallback-ok: the message is already in durable custody; the attention item below also carries it */ });
+  void telegram.createAttentionItem({
+    id: `work-admission:all-refusing:${new Date().toISOString().slice(0, 13)}`, // one per UTC hour
+    title: 'Every machine is overloaded — new conversations are waiting',
+    summary: `A message in topic ${topicId} is held in the durable queue because no machine is accepting new work.`,
+    description: 'Each machine closed its own admission on its load verdict (saturated or impaired). Queued messages are delivered when a machine reopens. Nothing is dropped and nothing is killed automatically.',
+    category: 'system',
+    priority: 'HIGH',
+    sourceContext: 'work-admission',
+  }).catch(() => { /* @silent-fallback-ok: observability only; custody and the holding notice are unaffected */ });
+}
 let _ownerDarkLadder: import('../core/OwnerDarkLadder.js').OwnerDarkLadder | null = null;
 let _judgmentProvenance: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog | null = null;
 let _duplicateReconciler: import('../monitoring/DuplicateSessionReconciler.js').DuplicateSessionReconciler | null = null;
@@ -2957,28 +2981,7 @@ export function wireTelegramRouting(
         // fall-through. Wiring pins assert both directions.
         if ((outcome.action === 'queued' || outcome.action === 'placement-blocked') && outcome.acked) {
           console.log(`[inbound-queue] topic ${topicId} msg ${msg.id} in durable custody (${outcome.detail ?? outcome.action}) — drain will deliver`);
-          if (outcome.detail === 'all-machines-refusing-work') {
-            // C5: every machine is refusing new work. The message is saved; say so
-            // ONCE per topic per episode on the deterministic send path (never the
-            // LLM gate, which can fail closed under the very load being reported),
-            // and raise ONE deduped attention item.
-            const last = _allRefusingNoticeAt.get(topicId) ?? 0;
-            if (Date.now() - last >= ALL_REFUSING_NOTICE_COOLDOWN_MS) {
-              _allRefusingNoticeAt.set(topicId, Date.now());
-              telegram.sendToTopic(topicId,
-                'Your message is saved. All of my machines are overloaded right now and are not taking new work; I will answer as soon as one has room.',
-              ).catch(() => {});
-              void telegram.createAttentionItem({
-                id: `work-admission:all-refusing:${new Date().toISOString().slice(0, 13)}`,
-                title: 'Every machine is overloaded — new conversations are waiting',
-                summary: `A message in topic ${topicId} is held in the durable queue because no machine is accepting new work.`,
-                description: 'Each machine closed its own admission on its load verdict (saturated or impaired). Queued messages are delivered when a machine reopens. Nothing is dropped and nothing is killed automatically.',
-                category: 'system',
-                priority: 'HIGH',
-                sourceContext: 'work-admission',
-              }).catch(() => {});
-            }
-          }
+          if (outcome.detail === 'all-machines-refusing-work') noteAllMachinesRefusing(telegram, topicId);
           return;
         }
         // 'handled-locally' / 'spawned'(self) / 'owner-dead-replaced'(self) /
@@ -26465,9 +26468,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // U4.1 §2E (i): hard-pin fulfilment requires the pinned machine
               // SUSTAINED-online (late-bound; absent/boot window ⇒ plain-online).
               sustainedOnline: (m) => (_ws13SustainedOnline ? _ws13SustainedOnline(m) : true),
-              // trustworthy-machine-load C5: rank by load evidence once this machine
-              // enforces overload admission (dry-run keeps today's order).
-              overloadAwareRanking: () => _workAdmission?.enforced() === true,
+              overloadAwareRanking: () => _workAdmission?.enforced() === true, // trustworthy-machine-load C5
             }),
             // Placement must consult the breaker too: a message re-placed OFF a
             // suspect owner must not be placed right back ONTO it. Suspect

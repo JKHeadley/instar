@@ -408,6 +408,7 @@ export class MachineLoadSampler {
     };
     if (this.d.onSample) {
       try { this.d.onSample(verdict); } catch (err) {
+        // @silent-fallback-ok (logged): an observer failure never breaks sampling — the report is still cached above.
         this.d.log?.(`admission observer failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }

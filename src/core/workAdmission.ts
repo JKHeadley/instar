@@ -134,6 +134,7 @@ export class WorkAdmission {
         this.selfHelpFiredThisEpisode = true;
         this.counters.selfHelpRuns += 1;
         try { this.d.onSustainedOverload(verdict, this.closedAtMs ?? this.now()); } catch (err) {
+          // @silent-fallback-ok (logged): the self-help notice is observability; admission state is unaffected.
           this.d.log?.(`self-help failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
