@@ -2279,6 +2279,23 @@ export interface MachineCapacity {
   nickname?: string;
   /** Liveness, computed as (now(router) − routerReceivedAt) < failoverThreshold. */
   online: boolean;
+  /**
+   * Honest display liveness (trustworthy-machine-load spec A2): live /
+   * unreachable / stale / unknown, with the age and source of its evidence.
+   * DISPLAY ONLY — `online` keeps its existing placement semantics.
+   */
+  liveness?: import('./machineLiveness.js').MachineLiveness;
+  /** Load average carried by the last DIRECT contact, with that contact's time (A3). */
+  lastDirectLoadAvg?: { value: number; at: string };
+  /** Round-trip time of the last successful direct pull, ms (B3). */
+  lastPullRttMs?: number;
+  /** Multi-signal load report from the machine itself (trustworthy-machine-load B1). */
+  loadReport?: import('./machineLoadReport.js').MachineLoadReport;
+  loadReportReceivedAt?: string;
+  /** The report's own age: sampleAgeMs + time since receipt. */
+  loadReportAgeMs?: number;
+  /** The machine's verdict (B2) while its report is fresh (≤60 s); `unknown` otherwise. */
+  loadVerdict?: import('./machineLoadReport.js').LoadVerdict;
   /** The machine's own last-heartbeat timestamp (ISO) — debugging only. */
   selfReportedLastSeen?: string;
   /** When the router last observed this machine, on the ROUTER's clock (ISO). */

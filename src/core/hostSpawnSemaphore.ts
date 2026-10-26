@@ -360,6 +360,26 @@ export class HostSpawnSemaphore {
     }, /* fallbackOnLockFail */ undefined);
   }
 
+  /**
+   * LOCK-FREE peek: live-holder count after an in-memory prune, WITHOUT the
+   * file lock and WITHOUT writing the holders file. For periodic samplers
+   * (the 15 s machine load report) that must never spin on the lock or inflate
+   * event-loop lag under spawn contention — `status()` takes the lock and
+   * rewrites the file, which is right for the route but wrong on a timer.
+   * Best-effort: never throws (a read error reports zero holders).
+   */
+  peek(): { cap: number; liveHolders: number } {
+    let live: SpawnHolder[] = [];
+    try {
+      live = this.pruneDead(this.readHolders().holders);
+    } catch {
+      // @silent-fallback-ok: a peek is observability — a read error reports
+      // zero holders rather than throwing into a sampler tick.
+      live = [];
+    }
+    return { cap: this.cap, liveHolders: live.length };
+  }
+
   /** Read-only status (count of live holders after a prune). Best-effort: never throws. */
   status(): SpawnSemaphoreStatus {
     let live: SpawnHolder[] = [];

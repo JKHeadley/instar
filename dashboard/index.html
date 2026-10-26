@@ -613,6 +613,14 @@
        those three into `.tab-purpose` is a tracked migration (it changes their
        visual size, so it is done deliberately, not big-bang). Until then: reach
        for `.tab-purpose`; do not add a fifth variant or an inline-styled line. */
+    /* Console makeover (docs/specs/console-makeover.md, Rollout): the one link from
+       the legacy dashboard to the new console, which runs beside it until MVP. */
+    .new-console-link {
+      font-size: 12px; font-weight: 600; white-space: nowrap; padding: 3px 10px;
+      border: 1px solid var(--accent-dim, #2d6a6c); border-radius: 999px; color: var(--accent);
+      text-decoration: none;
+    }
+    .new-console-link:hover { background: var(--bg-hover); }
     .tab-purpose {
       font-size: 13px;
       color: var(--text-dim);
@@ -3072,6 +3080,7 @@
       <div class="header-left">
         <img class="logo" src="/dashboard/logo.png" alt="Instar">
         <h1>Instar Dashboard</h1>
+        <a class="new-console-link" href="/dashboard/console/">Try the new console</a>
         <button class="nav-toggle" id="navToggle" aria-label="Open navigation menu" aria-expanded="false" onclick="toggleNavMenu()">&#9776; <span id="navToggleLabel">Sessions</span></button>
         <nav class="tab-bar" id="tabBar" aria-label="Dashboard sections">
           <div class="tab-group" role="group" aria-label="Runtime">
@@ -4848,7 +4857,9 @@
     function machineStatusInfo(m) {
       const es = m && m.emptyState;
       if (es && es.kind && es.text) {
-        // 'online' is calm; 'offline'/'unreachable' both read as offline styling.
+        // 'online' is calm; 'offline'/'unreachable' read as offline styling;
+        // 'stale'/'unknown' (honest-evidence kinds) read as the muted offline
+        // styling too, but their TEXT never says offline (trustworthy-machine-load A5).
         return { cls: es.kind === 'online' ? 'online' : 'offline', text: es.text };
       }
       // No server-computed empty-state present (shouldn't happen for a 0-session
@@ -5263,7 +5274,12 @@
         // Only the status placement itself removes; a once-seen divergence is still placeable.
         const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
         if (m.machineId === newSessionSelfMachineId) label += ' (this machine)';
-        if (offline) label += ' (offline)';
+        // trustworthy-machine-load A5: the online flag alone never justifies
+        // "offline"; name the evidence-derived state when the server sends one.
+        if (offline) {
+          const ls = m.liveness && m.liveness.state;
+          label += ls === 'unreachable' ? ' (not answering)' : ls === 'stale' ? ' (not checked recently)' : ' (no recent contact)';
+        }
         else if (clockOff) label += ' (clock out of step)';
         else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
         opt.text = label;

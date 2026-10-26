@@ -1,0 +1,95 @@
+// safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
+/**
+ * Console makeover E2E (docs/specs/console-makeover.md, MVP 5): the feature is
+ * alive on the production initialization path. A REAL AgentServer serves the
+ * console page, and every route Home reads answers through the real auth +
+ * routing stack; the shipped view-models turn those real answers into cards
+ * that are either a real reading or an explicit "can't tell" — never a crash and
+ * never a fabricated "fine".
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import request from 'supertest';
+import { AgentServer } from '../../src/server/AgentServer.js';
+import { StateManager } from '../../src/core/StateManager.js';
+import type { InstarConfig } from '../../src/core/types.js';
+import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
+import { LiveConfig } from '../../src/config/LiveConfig.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import {
+  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
+} from '../../dashboard/console/home-model.js';
+
+describe('Console Home E2E (feature is alive)', () => {
+  const AUTH = 'console-home-e2e';
+  const auth = { Authorization: `Bearer ${AUTH}` };
+  let tmp = '';
+  let server: AgentServer;
+  let tracker: CommitmentTracker;
+
+  beforeAll(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-home-e2e-'));
+    const stateDir = path.join(tmp, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+    tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir), originMachineId: 'e2e' });
+    const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10_000, version: '0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, monitoring: {} } as unknown as InstarConfig;
+    server = new AgentServer({ config, commitmentTracker: tracker,
+      sessionManager: { listRunningSessions: () => [], getSession: () => null } as never,
+      state: new StateManager(stateDir) });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts' });
+  });
+
+  it('serves the console page and its modules from the real server', async () => {
+    const page = await request(server.getApp()).get('/dashboard/console/');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('console.js');
+    expect(page.headers['x-frame-options']).toBe('DENY');
+    const js = await request(server.getApp()).get('/dashboard/console/home-model.js');
+    expect(js.status).toBe(200);
+  });
+
+  it('the token check the console uses is a protected route, not /health', async () => {
+    expect((await request(server.getApp()).get('/sessions')).status).toBe(401);
+    expect((await request(server.getApp()).get('/sessions').set(auth)).status).toBe(200);
+  });
+
+  it('every Home source answers through the real stack and maps to an honest card', async () => {
+    tracker.record({ userRequest: 'approve the plan', agentResponse: 'waiting for your yes', type: 'one-time-action',
+      verificationMethod: 'manual', owner: 'user', blockedOn: 'user-input' } as never);
+
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: `the server answered ${r.status}` };
+    };
+    const cards = {
+      reach: buildReach(await read('/health')),
+      needs: buildNeeds(await read('/attention?scope=pool')),
+      doing: buildDoing(await read('/sessions?scope=pool')),
+      promised: buildPromised(await read('/commitments?scope=mesh')),
+      running: buildRunning(await read('/pool')),
+      allowed: buildAllowed(await read('/guards'), await read('/mandate')),
+    };
+    const allowedStates = ['ok', 'attn', 'bad', 'unknown', 'partial', 'stale'];
+    for (const [id, c] of Object.entries(cards)) {
+      expect(allowedStates, id).toContain(c.state);
+      expect(typeof c.value, id).toBe('string');
+      // "Can't tell" always carries its reason.
+      if (c.state === 'unknown') expect(c.line.length, id).toBeGreaterThan(5);
+    }
+    // The real commitment that waits on the operator surfaces.
+    expect(cards.promised.state).toBe('attn');
+    expect(cards.promised.value).toBe('1 need you');
+    expect(headline(cards).text).not.toBe('All quiet.');
+  });
+});

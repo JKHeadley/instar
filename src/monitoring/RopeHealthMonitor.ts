@@ -795,7 +795,10 @@ export class RopeHealthMonitor {
         sentences.push(`${p.nickname} is AWAKE but refusing this machine's signed messages (~${min} min) — a key/identity mismatch, not a sleeping machine.`);
       } else if (st.condition === 'peer-offline') {
         const min = st.allDownSince ? Math.round((nowMs - st.allDownSince) / 60_000) : 0;
-        sentences.push(`${p.nickname} is offline (~${min} min) — expected (its heartbeat stopped).`);
+        // trustworthy-machine-load A5: "offline" needs positive evidence; this
+        // branch has none (all ropes silent + the relayed heartbeat stopped), so
+        // say what is known and how old it is.
+        sentences.push(`${p.nickname} has not answered on any rope for ~${min} min and its relayed heartbeat has stopped — not confirmed offline (it may be asleep, restarting or overloaded).`);
       } else if (st.condition === 'degraded') {
         const rows = this.safeSnapshot().filter((r) => r.peer === p.machineId && r.dead);
         const kinds = rows.map((r) => r.kind).join(', ') || 'a rope';
