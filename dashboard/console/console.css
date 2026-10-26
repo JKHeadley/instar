@@ -510,3 +510,26 @@ a.btn-inline { color: #062022; }
 .reason-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
 
 [hidden] { display: none !important; }
+
+/* ── Machines ─────────────────────────────────────────────────────────── */
+.machine-cards { display: grid; gap: var(--s-3); grid-template-columns: 1fr; }
+@media (min-width: 900px) { .machine-cards { grid-template-columns: 1fr 1fr; } }
+.machine-card { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: var(--s-4) var(--s-5); border-radius: var(--r-lg);
+  border: 1px solid var(--hairline); background: var(--surface); color: var(--text); cursor: pointer; transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease); }
+.machine-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.machine-card[data-state="attn"] { border-color: rgb(251 191 36 / .35); }
+.machine-card[data-state="bad"] { border-color: var(--bad-line); }
+.machine-card[data-state="stale"], .machine-card[data-state="unknown"] { border-style: dashed; border-color: var(--unknown-line); }
+.mc-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mc-name { font-weight: 700; font-size: 16px; color: var(--text-strong); letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-tag { font-size: 11.5px; font-weight: 600; color: var(--accent); background: var(--accent-wash); padding: 2px 8px; border-radius: 999px; }
+.mc-state { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.machine-card[data-state="attn"] .mc-state { color: var(--attn); }
+.machine-card[data-state="bad"] .mc-state { color: var(--bad); }
+.machine-card[data-state="stale"] .mc-state, .machine-card[data-state="unknown"] .mc-state { color: var(--unknown); }
+.mc-line { font-size: 14px; color: var(--text); padding-left: 15px; }
+.mc-evidence { font-size: 12.5px; color: var(--text-muted); padding-left: 15px; }
+.sheet-block { display: flex; flex-direction: column; gap: var(--s-2); }
+.sheet-block .eyebrow { margin: 0; }
+.rename-row { display: flex; gap: var(--s-2); }
+.rename-row .reason-input { flex: 1; }

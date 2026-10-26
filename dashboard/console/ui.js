@@ -154,3 +154,6 @@ export function actionButton({ label, kind = 'primary', confirm, reason, run, do
   });
   return box;
 }
+
+/** replaceChildren that skips null/false (a bare null would render as the text "null"). */
+export function setKids(node, ...kids) { node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false)); }

@@ -2,7 +2,7 @@
 // Read with Home's rules; actions use the bearer token only (no PIN on these routes).
 
 import { buildPromisesPage, storyOf, actionsFor } from './promises-model.js';
-import { el, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const RAW_KEYS = ['id', 'status', 'owner', 'blockedOn', 'actionClass', 'topicId', 'createdAt', 'nextUpdateDueAt', 'hardDeadlineAt', 'checkInAt', 'lastHeartbeatAt', 'heartbeatCount', 'cadenceMs', 'beaconEnabled', 'beaconPaused', 'beaconPausedReason', 'resolvedAt', 'resolution', 'originMachineId', 'viewSource', 'stalenessMs'];
@@ -16,7 +16,7 @@ export function topicLink(chatId, topicId) {
 
 export async function renderPromises(main, ctx) {
   const { get, post } = ctx;
-  main.replaceChildren(el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Promises' }), el('h1', { class: 'page-title skeleton', text: 'Loading promises' })));
+  setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Promises' }), el('h1', { class: 'page-title skeleton', text: 'Loading promises' })));
   const [res, pool] = await Promise.all([get('/commitments?scope=mesh', 8000), get('/pool')]);
   const machines = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines : [];
   const names = Object.fromEntries(machines.map((m) => [m.machineId, m.nickname || m.machineId]));
@@ -26,11 +26,11 @@ export async function renderPromises(main, ctx) {
   const peers = pool.ok ? machines.filter((m) => !(m.isSelf || (selfId && m.machineId === selfId))).length : null;
   const page = buildPromisesPage(res, Date.now(), { expectedPeers: peers, names });
 
-  if (!page.ok) { main.replaceChildren(pageHead({ eyebrow: 'Work · Promises', headline: 'Promises', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
+  if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Work · Promises', headline: 'Promises', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
   const { sections: s, counts: n } = page;
 
   const open = (r) => openPromise(r, { post, chatId, names, refresh: () => renderPromises(main, ctx) });
-  main.replaceChildren(
+  setKids(main, 
     pageHead({
       eyebrow: 'Work · Promises', headline: page.headline, sub: page.sub, tone: page.tone,
       facts: [

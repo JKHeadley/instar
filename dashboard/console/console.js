@@ -10,6 +10,7 @@ import {
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
+import { renderMachines } from './machines.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -183,7 +184,7 @@ const CARDS = [
   { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
   { id: 'doing', title: 'What I’m doing', href: legacyHref('sessions'), col: 'main' },
   { id: 'reach', title: 'Can I reach you', href: legacyHref('origins'), col: 'side' },
-  { id: 'running', title: 'Where I’m running', href: legacyHref('machines'), col: 'side' },
+  { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
   { id: 'allowed', title: 'What I’m allowed to do', href: legacyHref('machines'), col: 'side' },
 ];
 
@@ -420,6 +421,7 @@ function footNote() {
 // Native feature pages, by hash path. A feature not listed here still opens its legacy tab.
 const NATIVE = {
   'work/promises': renderPromises,
+  'capacity/machines': renderMachines,
 };
 
 function route() {

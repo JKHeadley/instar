@@ -22,6 +22,7 @@ import {
   buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
 } from '../../dashboard/console/home-model.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
+import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -108,6 +109,22 @@ describe('Console Home E2E (feature is alive)', () => {
     const after = await request(server.getApp()).get('/commitments?scope=mesh').set(auth);
     const page2 = buildPromisesPage({ ok: true, data: after.body }, Date.now(), { expectedPeers: 0 });
     expect(page2.sections.closed.map((x) => x.id)).toContain(rec.id);
+  });
+
+  it('the Machines page reads the real pool and health routes and shows one honest card on a single machine', async () => {
+    const pool = await request(server.getApp()).get('/pool').set(auth);
+    const page = buildMachinesPage(pool.status === 200 ? { ok: true, data: pool.body } : { ok: false, reason: `the server answered ${pool.status}` }, null, Date.now());
+    if (pool.status === 200) {
+      expect(page.ok).toBe(true);
+      expect(page.machines.length).toBeGreaterThanOrEqual(1);
+    } else {
+      expect(page.ok).toBe(false);
+      expect(page.reason).toContain(String(pool.status));
+    }
+    const sys = await request(server.getApp()).get('/systems/status').set(auth);
+    const h = healthOf(sys.status === 200 ? { ok: true, data: sys.body } : { ok: false, reason: String(sys.status) });
+    expect(typeof h.ok).toBe('boolean');
+    if (!h.ok) expect(h.reason.length).toBeGreaterThan(0);
   });
 });
 

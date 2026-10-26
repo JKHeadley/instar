@@ -100,6 +100,7 @@ export function allTabIds() {
 /** Features rebuilt natively in the console, by legacy tab id. */
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
+  machines: '#/capacity/machines',
 };
 
 /** Where a tile goes: the native page when it exists, else the legacy tab. */
