@@ -14,6 +14,7 @@ import {
   insideHeadline, insideFacts, machineNote, recentUrl, failuresUrl, claimsUrl, chainUrl, lookupUrl, validEntryId,
   entryStory, failureStory, patternStory, reviewStory, revokeRequest, revokeConfirmWords, revokeResultWords, inferLookup,
   CHIPS, KINDS, KIND_WORDS, COUNTERPARTIES, COUNTERPARTY_WORDS, STAGE_INFO, LOOKUP_KINDS, SCOPES, ADVISORY, CLAIM_KEYS, REVIEW_KEYS, CLAIMS_PAGE, WINDOW_STEP,
+  setPeerNames,
 } from './inside-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
 
@@ -38,13 +39,14 @@ async function send(req) {
 export async function renderInside(main, ctx) {
   const { get } = ctx;
   if (!main.querySelector('.inside-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [recent, stats, sessions, pool, insights, week, all, claimsRes, reviewsRes, ...pages] = await Promise.all([
+  const [recent, stats, sessions, pool, insights, week, all, claimsRes, reviewsRes, pairingRes, ...pages] = await Promise.all([
     get(recentUrl({ limit: view.limit, counterparty: view.counterparty })), get('/shared-state/stats'), get('/shared-state/sessions'), get('/pool'),
     get('/failures/insights?limit=50'), get('/failures/analysis?sinceDays=7'), get('/failures/analysis'),
-    get(claimsUrl(view.claimsLimit)), get('/class-reviews?limit=20'),
+    get(claimsUrl(view.claimsLimit)), get('/class-reviews?limit=20'), get('/threadline/pairing'),
     get(failuresUrl()), ...view.older.map((b) => get(failuresUrl(b))),
   ]);
   const now = Date.now();
+  setPeerNames(pairingRes);
   const activity = buildActivity(recent, { chip: view.chip, kind: view.kind, counterparty: view.counterparty, limit: view.limit, now });
   const problems = buildProblems({ insights, pages, week, all }, { lastGood: lastProblems, now });
   if (problems.ok && !problems.stale) lastProblems = { model: problems, at: now };

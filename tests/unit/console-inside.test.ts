@@ -372,3 +372,17 @@ describe('how I’m doing inside, in a DOM', () => {
     _resetInsideState();
   });
 });
+
+describe('agent names on activity rows', () => {
+  it('a paired fingerprint reads as its name; an unpaired one as a short id; a failed pairing read names nobody', async () => {
+    const m = await import('../../dashboard/console/inside-model.js');
+    const fp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    const other = 'd5d07ce5f9b199abac3a90ea3c90d269';
+    m.setPeerNames({ ok: true, data: { pairings: [{ peerFp: fp.toUpperCase(), peerName: 'Dawn' }, { peerFp: other, peerName: other }] } });
+    expect(m.counterpartyWords({ type: 'agent', name: fp })).toBe('with Dawn');
+    expect(m.counterpartyWords({ type: 'agent', name: other })).toBe('with agent d5d07ce5…');
+    expect(m.counterpartyWords({ type: 'agent', name: 'Scout' })).toBe('with Scout');
+    m.setPeerNames({ ok: false, status: 503, data: {} });
+    expect(m.counterpartyWords({ type: 'agent', name: fp })).toBe('with agent 8c7928aa…');
+  });
+});

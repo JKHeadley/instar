@@ -69,12 +69,33 @@ export function recentUrl({ limit = WINDOW_STEP, counterparty = null } = {}) {
   return `/shared-state/recent?limit=${n}${counterparty && COUNTERPARTIES.includes(counterparty) ? `&counterpartyType=${counterparty}` : ''}`;
 }
 
+/** Agent names known from pairing, keyed by lowercased fingerprint. The records name an agent by fingerprint only. */
+let peerNames = {};
+
+/** Read the names out of GET /threadline/pairing; a failed read leaves no names (rows fall back to a short id). */
+export function setPeerNames(res) {
+  const map = {};
+  const list = res && res.ok && res.data && Array.isArray(res.data.pairings) ? res.data.pairings : [];
+  for (const p of list) {
+    const fp = typeof p.peerFp === 'string' ? p.peerFp.toLowerCase() : '';
+    const name = clean(p.peerName, 'label');
+    if (fp && name && name.toLowerCase() !== fp) map[fp] = name;
+  }
+  peerNames = map;
+}
+
+/** A bare 32-hex fingerprint becomes the paired name, else a short id; any other name is shown as recorded. */
+export function agentLabel(name) {
+  if (!/^[0-9a-f]{32}$/i.test(name)) return name;
+  return peerNames[name.toLowerCase()] || `agent ${name.slice(0, 8)}…`;
+}
+
 export function counterpartyWords(cp) {
   if (!cp || typeof cp !== 'object') return 'with someone not recorded';
   const name = clean(cp.name, 'label');
   switch (cp.type) {
     case 'user': return name && name !== 'user' ? `with ${name}` : 'with you';
-    case 'agent': return name ? `with ${name}` : 'with an agent';
+    case 'agent': return name ? `with ${agentLabel(name)}` : 'with an agent';
     case 'self': return 'on my own';
     case 'system': return 'by the system';
     default: return 'with someone not recorded';
