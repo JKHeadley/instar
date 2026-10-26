@@ -74,7 +74,7 @@ export const GROUPS = [
     id: 'settings', label: 'Settings', icon: 'settings',
     question: 'How is it set up, and what has it learned?',
     tabs: [
-      { id: 'features', label: 'Features', icon: 'toggle', desc: 'Switch features on and off, and set how independent I am.' },
+      { id: 'features', label: 'What I’m allowed to do', icon: 'toggle', desc: 'How independent I am, the safety checks, and which features are on.' },
       { id: 'preferences-learning', label: 'Preferences', icon: 'sparkle', desc: 'What I have learned from your corrections.' },
       { id: 'files', label: 'Files', icon: 'folder', desc: 'Browse and edit project files.' },
     ],
@@ -103,6 +103,7 @@ export const NATIVE_PAGES = {
   machines: '#/capacity/machines',
   subscriptions: '#/capacity/accounts',
   origins: '#/people/messages',
+  features: '#/settings/allowed',
 };
 
 /** Where a tile goes: the native page when it exists, else the legacy tab. */

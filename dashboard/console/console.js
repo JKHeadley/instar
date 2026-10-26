@@ -13,6 +13,7 @@ import { renderPromises } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
+import { renderAllowed } from './allowed.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -187,7 +188,7 @@ const CARDS = [
   { id: 'doing', title: 'What I’m doing', href: legacyHref('sessions'), col: 'main' },
   { id: 'reach', title: 'Can I reach you', href: '#/people/messages', col: 'side' },
   { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
-  { id: 'allowed', title: 'What I’m allowed to do', href: legacyHref('machines'), col: 'side' },
+  { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
 
 const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'partial', stale: 'out of date' };
@@ -426,6 +427,7 @@ const NATIVE = {
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,
   'people/messages': renderMessages,
+  'settings/allowed': renderAllowed,
 };
 
 function route() {

@@ -24,6 +24,10 @@ import {
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
 import { buildAccountsPage } from '../../dashboard/console/accounts-model.js';
+import { buildFeatures, buildProfile, buildHistory, buildGuards, walkToEnabled } from '../../dashboard/console/allowed-model.js';
+import { FeatureRegistry } from '../../src/core/FeatureRegistry.js';
+import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
+import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -31,6 +35,7 @@ describe('Console Home E2E (feature is alive)', () => {
   let tmp = '';
   let server: AgentServer;
   let tracker: CommitmentTracker;
+  let features: FeatureRegistry;
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-home-e2e-'));
@@ -42,7 +47,11 @@ describe('Console Home E2E (feature is alive)', () => {
       requestTimeoutMs: 10_000, version: '0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, monitoring: {} } as unknown as InstarConfig;
-    server = new AgentServer({ config, commitmentTracker: tracker,
+    features = new FeatureRegistry(stateDir, { hmacKey: AUTH });
+    await features.open();
+    for (const def of BUILTIN_FEATURES) features.register(def);
+    const autonomyManager = new AutonomyProfileManager({ stateDir, config });
+    server = new AgentServer({ config, commitmentTracker: tracker, featureRegistry: features, autonomyManager,
       sessionManager: { listRunningSessions: () => [], getSession: () => null } as never,
       state: new StateManager(stateDir) });
     await server.start();
@@ -50,6 +59,7 @@ describe('Console Home E2E (feature is alive)', () => {
 
   afterAll(async () => {
     await server.stop();
+    features.close();
     SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts' });
   });
 
@@ -137,5 +147,57 @@ describe('Console Home E2E (feature is alive)', () => {
     const s = await request(server.getApp()).post('/subscription-pool/matrix/start-cell').set(auth).send({ accountId: 'a', machineId: 'm' });
     expect([400, 401, 403, 404, 503]).toContain(s.status);
   });
-});
 
+  it('the allowed page walks real features to on through the real routes and reads the real profile', async () => {
+    const app = server.getApp();
+    const read = async (p: string) => {
+      const r = await request(app).get(p).set(auth);
+      return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: `the server answered ${r.status}` };
+    };
+    const deps = {
+      getInfo: (id: string) => read(`/features/${id}`),
+      transition: async (id: string, body: Record<string, unknown>) => {
+        const r = await request(app).post(`/features/${id}/transition`).set(auth).send(body);
+        return { ok: r.status === 200, status: r.status, data: r.body };
+      },
+      confirmChallenge: async () => true,
+    };
+    const list = buildFeatures(await read('/features'));
+    expect(list.ok).toBe(true);
+    const byId = (id: string) => list.groups.flatMap((g: { features: unknown[] }) => g.features).find((f: { id: string }) => f.id === id);
+
+    // A fresh local-tier feature: undiscovered → enabled, no consent record.
+    const local = byId('evolution-system');
+    expect(local.state).toBe('undiscovered');
+    expect((await walkToEnabled(local, deps)).steps).toEqual(['aware', 'interested', 'enabled']);
+    // A fresh network-tier feature: the real registry refuses without consent, accepts with it.
+    const net = byId('publishing-telegraph');
+    const bare = await request(app).post('/features/publishing-telegraph/transition').set(auth).send({ to: 'aware' });
+    expect(bare.status).toBe(200);
+    await request(app).post('/features/publishing-telegraph/transition').set(auth).send({ to: 'interested' });
+    const refused = await request(app).post('/features/publishing-telegraph/transition').set(auth).send({ to: 'enabled' });
+    expect(refused.body.error.code).toBe('CONSENT_REQUIRED');
+    const netWalk = await walkToEnabled(net, deps);
+    expect(netWalk.ok).toBe(true);
+    expect(features.getConsentRecordsForFeature('publishing-telegraph', 'default')[0].mechanism).toBe('explicit-written');
+    // A self-governing feature passes its activation challenge.
+    const sg = await walkToEnabled(byId('autonomous-evolution'), deps);
+    expect(sg.ok).toBe(true);
+    expect((await read('/features/autonomous-evolution')).data.state.discoveryState).toBe('enabled');
+    // A disabled feature comes back in one direct step.
+    await request(app).post('/features/evolution-system/transition').set(auth).send({ to: 'disabled' });
+    expect((await walkToEnabled(local, deps)).steps).toEqual(['enabled']);
+
+    // The profile, its switch with a reason, and the history it writes.
+    const profile = buildProfile(await read('/autonomy'));
+    expect(profile.ok).toBe(true);
+    const sw = await request(app).post('/autonomy/profile').set(auth).send({ profile: 'collaborative', reason: 'console e2e' });
+    expect(sw.status).toBe(200);
+    const h = buildHistory(await read('/autonomy/history'));
+    expect(h.ok).toBe(true);
+    expect(h.rows[0].sub).toBe('console e2e');
+    // The guard list maps to rows or an honest reason.
+    const g = buildGuards(await read('/guards'));
+    if (g.ok) expect(g.counts.total).toBeGreaterThan(0); else expect(g.reason.length).toBeGreaterThan(10);
+  });
+});
