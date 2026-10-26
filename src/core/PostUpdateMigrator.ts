@@ -272,6 +272,23 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
 }
 
+/**
+ * Feature switches apply their setting (spec feature-transition-applies-action).
+ * SHARED by `generateClaudeMd` and `migrateClaudeMd` (Agent Awareness + Migration
+ * Parity). Content-sniff marker: the heading below.
+ */
+export function FEATURE_SWITCH_CLAUDEMD_SECTION(port: number): string {
+  return `
+
+### Feature switches apply their setting (read \`effective\` before saying a feature is on)
+
+\`POST /features/:id/transition\` to \`enabled\`/\`disabled\` now ALSO sends the feature's own setting change (its \`enableAction\`/\`disableAction\`, e.g. \`PATCH /config\`) server-side, one switch per feature at a time, and answers with \`apply\` — \`{ outcome: applied | refused | failed | not-applied, httpStatus, detail }\`. The recorded choice is kept even when the setting change is refused; \`apply.detail\` carries the route's reason.
+- **Registry First — is feature X actually on?** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/features/X\` → \`effective\`: \`recorded\` (the switch), \`configured\` (the config key now), \`atBoot\` (the key when this process started; null = unknown), \`status\` (\`on\` · \`off\` · \`on-after-restart\` · \`off-after-restart\` · \`recorded-only\` · \`not-recorded\`) and a plain \`summary\`. Quote the summary; never tell the user a feature is "on" from \`state.enabled\` alone, and never say "running" — \`on\` means the setting was on at start, not a verified process.
+- The operator's own switch (the dashboard Features tab, with a fresh PIN unlock as \`X-Instar-Operator-Session\`) may set any feature on/off from any state and is itself the consent record. An agent call without that proof still walks the discovery graph (consent record, activation challenge) exactly as before.
+- **When to use** (PROACTIVE): user asks "I switched X on, why isn't it working?" → read \`effective.status\` + \`lastAttempt\`; \`recorded-only\` with a reason means the setting change was refused (fix the cause, then switch again); \`on-after-restart\` means it needs a restart (offer \`POST /sessions/restart-all\` or a server restart as appropriate).
+`;
+}
+
 export function CODEX_CONNECT_CLAUDEMD_SECTION(): string {
   return `
 
@@ -7638,6 +7655,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Hand-started Codex connect section');
     }
 
+    // Feature switches apply their setting (spec feature-transition-applies-action) —
+    // Agent Awareness + Migration Parity: existing agents learn `apply` + `effective`
+    // and stop reporting a feature as on from state.enabled alone. Same text as
+    // generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('### Feature switches apply their setting')) {
+      content += FEATURE_SWITCH_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feature switches apply their setting section');
+    }
+
     // Normal-Chrome browser (spec normal-chrome-builtin-skill) — Agent Awareness +
     // Migration Parity: existing agents learn when to reach for /normal-chrome-browser
     // and its helper scripts. Same text as generateClaudeMd. Content-sniff on the heading.
@@ -12232,6 +12259,7 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // peer-credential-guard-tailscale-coherence: a pool read's failure reasons
       // are server-side and framework-neutral — a Codex/Gemini agent runs the

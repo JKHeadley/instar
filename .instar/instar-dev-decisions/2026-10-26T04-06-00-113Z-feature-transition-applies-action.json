@@ -1,0 +1,39 @@
+{
+  "ts": "2026-10-26T04:06:00.113Z",
+  "slug": "feature-transition-applies-action",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 775,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/commands/server.ts",
+      "src/core/AutonomyProfileManager.ts",
+      "src/core/FeatureActionApplier.ts",
+      "src/core/FeatureDefinitions.ts",
+      "src/core/FeatureRegistry.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 684,
+    "deletedLines": 91
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The Consent & Discovery Framework (Phase 1/2) defined enableAction/disableAction on every FeatureDefinition and added PATCH /config \"for\" them, but no code path ever invoked the action; the dashboard toggle and the transition route only moved the registry state. Latent since the framework shipped; surfaced 2026-10-25 while building the console page that reads the switch. Two definitions were also bound to keys with no consumer (threadline.enabled, evolution.autoImplement) — the same class: a declared contract nothing executes or reads."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

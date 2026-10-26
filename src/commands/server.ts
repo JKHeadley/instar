@@ -240,7 +240,7 @@ import { CanonicalState } from '../core/CanonicalState.js';
 import { ExternalOperationGate, AUTONOMY_PROFILES } from '../core/ExternalOperationGate.js';
 import { MessageSentinel } from '../core/MessageSentinel.js';
 import { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
+import { AutonomyProfileManager, PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
@@ -19812,6 +19812,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     for (const def of BUILTIN_FEATURES) {
       featureRegistry.register(def);
     }
+    // Autonomous evolution is on iff the RESOLVED approval mode is 'autonomous' — an explicit
+    // evolution.approvalMode, else the autonomy profile's default — exactly as the consumer
+    // above decides. Shared with the shown state so bootstrap and `effective` agree
+    // (spec feature-transition-applies-action §2.7, review r2).
+    featureRegistry.setConfiguredResolver('autonomous-evolution', (cfg) => {
+      const explicit = (cfg.evolution as { approvalMode?: unknown } | undefined)?.approvalMode;
+      const mode = explicit === 'autonomous' || explicit === 'ai-assisted'
+        ? explicit
+        : PROFILE_DEFAULTS[autonomyManager.getProfile()].evolutionApprovalMode;
+      return mode === 'autonomous';
+    });
     if (featureRegistryReady) {
       featureRegistry.bootstrap(config as unknown as Record<string, unknown>);
     }

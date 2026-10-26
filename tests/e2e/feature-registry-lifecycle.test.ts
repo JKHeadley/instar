@@ -38,11 +38,17 @@ describe('E2E: Feature Registry Lifecycle', () => {
     // Config with some features enabled
     const rawConfig = {
       projectName: 'feature-reg-e2e',
-      threadline: { enabled: true },
+      threadline: { relayEnabled: true },
       tunnel: { enabled: true, type: 'quick' },
       gitBackup: { enabled: true },
       externalOperations: { enabled: true },
       feedback: { enabled: true },
+      // Default-on features (their consumers run unless `enabled: false`) are switched off
+      // explicitly here so the "left undiscovered" assertions below describe reality.
+      publishing: { enabled: false },
+      dashboard: { fileViewer: { enabled: false } },
+      evolution: { enabled: false },
+      inputGuard: { enabled: false },
     };
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(rawConfig));
 
@@ -346,7 +352,7 @@ describe('E2E: Feature Registry Lifecycle', () => {
 
     // Re-bootstrap with threadline enabled in config
     registry.bootstrap({
-      threadline: { enabled: true },
+      threadline: { relayEnabled: true },
       tunnel: { enabled: true, type: 'quick' },
       gitBackup: { enabled: true },
       externalOperations: { enabled: true },
@@ -365,16 +371,22 @@ describe('E2E: Feature Registry Lifecycle', () => {
       enabled: true,
     });
 
-    // Overwrite config.json without gitBackup so bootstrap reads it as disabled
+    // Overwrite config.json with gitBackup explicitly off so bootstrap reads it as disabled
+    // (git backup is default-on: an ABSENT key would mean on, as its consumer treats it).
     fs.writeFileSync(
       path.join(stateDir, 'config.json'),
-      JSON.stringify({ projectName: 'feature-reg-e2e', threadline: { enabled: true }, tunnel: { enabled: true, type: 'quick' } }),
+      JSON.stringify({ projectName: 'feature-reg-e2e', threadline: { relayEnabled: true }, tunnel: { enabled: true, type: 'quick' }, gitBackup: { enabled: false }, publishing: { enabled: false }, dashboard: { fileViewer: { enabled: false } }, evolution: { enabled: false }, inputGuard: { enabled: false } }),
     );
 
-    // Re-bootstrap without gitBackup
+    // Re-bootstrap with gitBackup off
     registry.bootstrap({
-      threadline: { enabled: true },
+      threadline: { relayEnabled: true },
       tunnel: { enabled: true, type: 'quick' },
+      gitBackup: { enabled: false },
+      publishing: { enabled: false },
+      dashboard: { fileViewer: { enabled: false } },
+      evolution: { enabled: false },
+      inputGuard: { enabled: false },
     });
 
     const state = registry.getState('git-backup');
@@ -386,11 +398,15 @@ describe('E2E: Feature Registry Lifecycle', () => {
       path.join(stateDir, 'config.json'),
       JSON.stringify({
         projectName: 'feature-reg-e2e',
-        threadline: { enabled: true },
+        threadline: { relayEnabled: true },
         tunnel: { enabled: true, type: 'quick' },
         gitBackup: { enabled: true },
         externalOperations: { enabled: true },
         feedback: { enabled: true },
+        publishing: { enabled: false },
+        dashboard: { fileViewer: { enabled: false } },
+        evolution: { enabled: false },
+        inputGuard: { enabled: false },
       }),
     );
   });
@@ -402,8 +418,8 @@ describe('E2E: Feature Registry Lifecycle', () => {
       lastDeclinedAt: '2026-03-22T00:00:00Z',
     });
 
-    // Re-bootstrap without evolution enabled
-    registry.bootstrap({});
+    // Re-bootstrap with evolution explicitly off (it is default-on)
+    registry.bootstrap({ evolution: { enabled: false } });
 
     const state = registry.getState('evolution-system', 'default');
     // Should still be declined — bootstrap only touches undiscovered → enabled and enabled → disabled
@@ -612,14 +628,14 @@ describe('E2E: Feature Registry Lifecycle', () => {
   // ── Phase 1j: resolveConfigValue Edge Cases ─────────────────────
 
   it('bootstrap handles nested config paths', () => {
-    // autonomous-evolution uses 'evolution.autoImplement' — a nested boolean
+    // autonomous-evolution uses 'evolution.approvalMode' — a nested key that is on at ONE value
     registry.setState('autonomous-evolution', 'default', {
       discoveryState: 'undiscovered',
       enabled: false,
     });
 
     registry.bootstrap({
-      evolution: { enabled: true, autoImplement: true },
+      evolution: { enabled: true, approvalMode: 'autonomous' },
     });
 
     const state = registry.getState('autonomous-evolution');
