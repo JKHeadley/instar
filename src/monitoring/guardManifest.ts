@@ -802,6 +802,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'CPU/memory sampling + rate-limit-event ledger (read-only observability).',
   },
   {
+    key: 'monitoring.workAdmission.enabled',
+    kind: 'config',
+    configPath: 'monitoring.workAdmission.enabled',
+    defaultEnabled: false, // dark on the fleet; ON (dry-run) for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'WorkAdmission',
+    description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session; dry-run logs would-refuse only.',
+  },
+  {
     key: 'monitoring.processFootprintMonitor.enabled',
     kind: 'config',
     configPath: 'monitoring.processFootprintMonitor.enabled',

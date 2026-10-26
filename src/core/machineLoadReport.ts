@@ -56,6 +56,14 @@ export interface MachineLoadReport {
   verdict: LoadVerdict;
   /** Seconds since this machine's agent server started (B2 boot grace). */
   uptimeS: number;
+  /**
+   * Admission (spec C1): false while this machine is closed to new work because it
+   * is overloaded. null when this machine runs no admission control (older code,
+   * or the feature is dark) — a reader treats null as "not refusing".
+   */
+  acceptingWork?: boolean | null;
+  /** True only when the machine ACTS on `acceptingWork` (enabled, not dry-run). */
+  admissionEnforced?: boolean;
 }
 
 /** A report older than this is `unknown` however fresh the transport contact (B1). */
@@ -180,6 +188,10 @@ export function clampLoadReport(raw: unknown): MachineLoadReport | null {
     testRunnerSaturated: boolOrNull(r.testRunnerSaturated),
     verdict: typeof r.verdict === 'string' && VERDICTS.has(r.verdict) ? (r.verdict as LoadVerdict) : 'unknown',
     uptimeS: numOrNull(r.uptimeS, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+    // Admission (P2): only when the sender carries the fields — a report from
+    // older code clamps byte-identical (absent ⇒ "not refusing", never a substitute).
+    ...(r.acceptingWork !== undefined ? { acceptingWork: boolOrNull(r.acceptingWork) } : {}),
+    ...(r.admissionEnforced !== undefined ? { admissionEnforced: r.admissionEnforced === true } : {}),
   };
 }
 
@@ -239,6 +251,10 @@ export function detectLoadPlatform(platform: string = process.platform, osReleas
 // ── Sampler ──────────────────────────────────────────────────────────────
 
 export interface MachineLoadSamplerDeps {
+  /** Called once after every sample with the new verdict (spec C1 admission feeds on it). */
+  onSample?: (verdict: LoadVerdict) => void;
+  /** Current admission state, read at report time (spec C1). Absent ⇒ fields omitted. */
+  admission?: () => { acceptingWork: boolean; enforced: boolean } | null;
   platform?: LoadPlatform;
   cpus?: () => Array<{ times: { user: number; nice: number; sys: number; idle: number; irq: number } }>;
   loadavg?: () => number[];
@@ -265,7 +281,7 @@ export interface MachineLoadSamplerDeps {
  * first heartbeat (B1).
  */
 export class MachineLoadSampler {
-  private readonly d: Required<Pick<MachineLoadSamplerDeps, 'platform' | 'cpus' | 'loadavg' | 'totalmem' | 'readMemAvailablePct' | 'readNativePressure' | 'eventLoopLagP99Ms' | 'sessions' | 'spawnCapSaturated' | 'testRunnerSaturated' | 'now' | 'monoNow' | 'bootId' | 'intervalMs'>> & { log?: (line: string) => void };
+  private readonly d: Required<Pick<MachineLoadSamplerDeps, 'platform' | 'cpus' | 'loadavg' | 'totalmem' | 'readMemAvailablePct' | 'readNativePressure' | 'eventLoopLagP99Ms' | 'sessions' | 'spawnCapSaturated' | 'testRunnerSaturated' | 'now' | 'monoNow' | 'bootId' | 'intervalMs'>> & { log?: (line: string) => void; onSample?: (verdict: LoadVerdict) => void; admission?: () => { acceptingWork: boolean; enforced: boolean } | null };
   private samples: LoadSample[] = [];
   private seq = 0;
   private prevCpu: { idle: number; total: number } | null = null;
@@ -294,6 +310,8 @@ export class MachineLoadSampler {
       bootId: deps.bootId ?? `${process.pid.toString(36)}-${Date.now().toString(36)}`,
       intervalMs: deps.intervalMs ?? LOAD_SAMPLE_INTERVAL_MS,
       log: deps.log,
+      onSample: deps.onSample,
+      admission: deps.admission,
     };
     this.startedMono = mono();
     this.graceUntilMono = this.startedMono + LOAD_BOOT_GRACE_MS;
@@ -388,6 +406,11 @@ export class MachineLoadSampler {
         verdict,
       },
     };
+    if (this.d.onSample) {
+      try { this.d.onSample(verdict); } catch (err) {
+        this.d.log?.(`admission observer failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /** The cached report with its CURRENT sample age; null before the first sample. O(1). */
@@ -398,7 +421,14 @@ export class MachineLoadSampler {
       ...this.cached.report,
       sampleAgeMs: Math.max(0, mono - this.cached.sampledMono),
       uptimeS: Math.max(0, Math.floor((mono - this.startedMono) / 1000)),
+      ...this.admissionFields(),
     };
+  }
+
+  private admissionFields(): { acceptingWork?: boolean; admissionEnforced?: boolean } {
+    if (!this.d.admission) return {};
+    const a = safe(() => this.d.admission!(), null);
+    return a ? { acceptingWork: a.acceptingWork, admissionEnforced: a.enforced } : {};
   }
 
   /** The machine's own current verdict (`unknown` before the first sample). */

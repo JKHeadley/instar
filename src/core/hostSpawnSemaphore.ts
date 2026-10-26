@@ -380,6 +380,20 @@ export class HostSpawnSemaphore {
     return { cap: this.cap, liveHolders: live.length };
   }
 
+  /**
+   * LOCK-FREE list of live holders (same prune and best-effort contract as
+   * `peek()`). The recovery-slot owner uses it to release a holder whose
+   * session has already ended (trustworthy-machine-load C2).
+   */
+  listHolders(): SpawnHolder[] {
+    try {
+      return this.pruneDead(this.readHolders().holders);
+    } catch {
+      // @silent-fallback-ok: observability read — an error reports no holders.
+      return [];
+    }
+  }
+
   /** Read-only status (count of live holders after a prune). Best-effort: never throws. */
   status(): SpawnSemaphoreStatus {
     let live: SpawnHolder[] = [];

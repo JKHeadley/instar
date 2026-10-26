@@ -9,6 +9,7 @@
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
+import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { randomUUID, type KeyObject } from 'node:crypto';
@@ -3395,6 +3396,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * (PARALLEL-DEV-ISOLATION-SPEC.md). Without `topicId`, falls back to the
    * legacy main-checkout behavior for back-compat with non-topic-bound jobs.
    */
+  /**
+   * Overload admission (trustworthy-machine-load Part C). Set by the server when
+   * WorkAdmission is constructed; null = no admission control (today's behavior).
+   */
+  private admissionGate: ((kind: AdmissionKind, sessionName: string) => AdmissionDecision) | null = null;
+  /** Releases a recovery slot taken at admission when the spawn fails before `running` (second-pass #1). */
+  private admissionRelease: ((sessionName: string) => void) | null = null;
+
+  setAdmissionGate(
+    gate: ((kind: AdmissionKind, sessionName: string) => AdmissionDecision) | null,
+    release: ((sessionName: string) => void) | null = null,
+  ): void {
+    this.admissionGate = gate;
+    this.admissionRelease = release;
+  }
+
+  private releaseAdmissionFor(sessionName: string): void {
+    try { this.admissionRelease?.(sessionName); } catch { /* @silent-fallback-ok — the slot is reclaimed by the startup grace / pid death */ }
+  }
+
+  /** Throws AdmissionRefusedError when an enforcing admission gate refuses the spawn. */
+  private checkAdmission(kind: AdmissionKind, sessionName: string): void {
+    if (!this.admissionGate) return;
+    let decision: AdmissionDecision;
+    try { decision = this.admissionGate(kind, sessionName); } catch (err) {
+      // @silent-fallback-ok (logged): a broken admission gate fails toward starting
+      // the session — reachability over protection (The Agent Is Always Reachable).
+      console.warn(`[SessionManager] admission gate failed, admitting ${sessionName}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!decision.allowed) throw new AdmissionRefusedError(decision.reason ?? 'overloaded', decision.detail ?? 'machine overloaded');
+  }
+
   async spawnSession(options: {
     name: string;
     prompt: string;
@@ -3521,6 +3555,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (this.tmuxSessionExists(tmuxSession)) {
       throw new Error(`tmux session "${tmuxSession}" already exists`);
     }
+    // Overload admission (Part C1): automatic work is not started on an
+    // overloaded machine; the caller retries (jobs) or keeps its message queued.
+    this.checkAdmission('automatic', tmuxSession);
 
     // ── PARALLEL-DEV-ISOLATION (PARALLEL-DEV-ISOLATION-SPEC.md AC-1) ──
     // If WorktreeManager is wired AND topicId provided, resolve a topic worktree
@@ -6665,6 +6702,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         `Running: ${runningSessions.map(s => s.name).join(', ')}`
       );
     }
+    // Overload admission (Part C2): while overloaded, an operator session starts
+    // only by taking the one host-wide recovery slot.
+    this.checkAdmission('operator', tmuxSession);
 
     // Generate session ID before tmux spawn so we can pass it as env var
     const interactiveSessionId = this.generateId();
@@ -6955,6 +6995,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     } catch (err) {
       this.revokeOriginSession(interactiveSessionId);
+      this.releaseAdmissionFor(tmuxSession); // a failed spawn must not hold the recovery slot
       throw new Error(`Failed to create interactive tmux session: ${this.originSpawnError(err)}`);
     }
 
@@ -7109,6 +7150,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           this.state.saveSession(failed);
         }
       } catch { /* state cleanup is best-effort */ }
+      this.releaseAdmissionFor(tmuxSession); // the fresh respawn below re-admits on its own
 
       this.emit('resumeFailed', {
         tmuxSession,

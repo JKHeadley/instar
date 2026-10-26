@@ -1,4 +1,5 @@
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
@@ -13301,6 +13302,18 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.processFootprintMonitor.status());
+  });
+
+  // ── Overload admission status (trustworthy-machine-load Part C) ──
+  // Registry First: is this machine open to new work, is it enforcing, who holds
+  // the host-wide recovery slot, and what has it refused. 503 when dark here.
+  router.get('/work-admission', (_req, res) => {
+    const wa = getActiveWorkAdmission();
+    if (!wa) {
+      res.status(503).json({ enabled: false, error: 'overload admission not enabled on this agent (monitoring.workAdmission — dev-agent gated)' });
+      return;
+    }
+    res.json(wa.status());
   });
 
   // ── Fork-bomb prevention: host-wide spawn-cap status (forkbomb-prevention-simple §P1/§P3) ──

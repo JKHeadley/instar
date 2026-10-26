@@ -1362,6 +1362,7 @@ export type SkipReason =
   | 'paused'          // Scheduler is paused
   | 'quota'           // Quota constraints
   | 'memory-pressure' // Memory gate blocked the job (distinct from quota)
+  | 'overload'        // Machine overloaded: admission closed to new automatic work (trustworthy-machine-load C1)
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
@@ -6549,6 +6550,21 @@ export interface MonitoringConfig {
     idleSampleIntervalMs?: number;
     /** Retain CPU/mem samples for this many days; older rows pruned (default: 7). */
     retentionDays?: number;
+  };
+  /**
+   * Overload admission (trustworthy-machine-load Part C): close this machine to new
+   * automatic work while it is saturated/impaired, keep one host-wide recovery slot
+   * for an operator session, and advertise the state so placement skips it.
+   * `enabled` undefined resolves via the developmentAgent gate; `dryRun` defaults
+   * true (log would-refuse, refuse nothing). Status: GET /work-admission.
+   */
+  workAdmission?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Consecutive ok/elevated samples (15 s each) before admission reopens (default 5). */
+    reopenAfterGoodSamples?: number;
+    /** Consecutive saturated/impaired samples before the self-help notice (default 3). */
+    selfHelpAfterSaturatedSamples?: number;
   };
   /**
    * ProcessFootprintMonitor — observe-only per-machine process-count measurement
