@@ -31,8 +31,11 @@ describe('accounts page model', () => {
       episodes: [{ id: 'e1', accountId: 'luna', machineId: 'm2', state: 'failed', updatedAt: iso(-10) }] });
     expect(p.headline).toBe('1 sign-in needs you.');
     expect(p.needs[0]).toMatchObject({ machine: 'Mac Mini', action: 'retry', episodeId: 'e1' });
+    // An expired sign-in nothing is repairing is NOT "needs you": it is listed as expired, with a Sign in.
     const q = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW);
-    expect(q.needs[0].action).toBe('start');
+    expect(q.needs).toEqual([]);
+    expect(q.expired[0].action).toBe('start');
+    expect(q.headline).not.toMatch(/needs you/);
   });
   it('names a machine that did not answer, never by its id', () => {
     const p = buildAccountsPage(ok({ accounts: [row({})], pool: { failed: [{ machineId: 'm9' }] } }), NOW, { names: { m9: 'Laptop' } });
@@ -46,7 +49,9 @@ describe('accounts page model', () => {
   });
   it('cell states in words', () => {
     expect(cellState({ status: 'active', loginCheck: 'ok' }).label).toBe('signed in');
-    expect(cellState({ status: 'needs-reauth' }).state).toBe('attn');
+    expect(cellState({ status: 'needs-reauth' }).state).toBe('expired');
+    expect(cellState({ status: 'needs-reauth' }, { state: 'suggested' })).toMatchObject({ state: 'attn', label: 'repair ready; needs your tap' });
+    expect(cellState({ status: 'needs-reauth' }, { state: 'failed' }).state).toBe('attn');
     expect(cellState({ status: 'needs-reauth' }, { state: 'running' }).label).toBe('signing in');
   });
   it('reset times only for the future', () => {
@@ -86,8 +91,11 @@ describe('accounts page in a DOM', () => {
     const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
     await tick(15);
     const doc = dom.window.document;
-    expect(doc.querySelector('.page-title')!.textContent).toBe('1 sign-in needs you.');
-    (doc.querySelector('#sec-needs button.btn-quiet') as HTMLButtonElement).click();
+    // No repair is running or waiting: the lapsed cell sits behind the Expired fold, never as "needs you".
+    expect(doc.querySelector('.page-title')!.textContent).not.toMatch(/needs you/);
+    expect(doc.querySelector('#sec-needs')).toBeNull();
+    (doc.querySelector('#sec-expired .list-head') as HTMLButtonElement).click();
+    (doc.querySelector('#sec-expired button.btn-quiet') as HTMLButtonElement).click();
     await tick(3);
     const pin = doc.querySelector('.pin-input') as HTMLInputElement;
     pin.value = '123456';
@@ -101,5 +109,46 @@ describe('accounts page in a DOM', () => {
     await tick(3);
     expect(posts[1]).toEqual({ url: '/subscription-pool/follow-me/submit-code', body: { machineId: 'm2', id: 'L1', code: 'abc-123' } });
     expect(doc.querySelector('.signin-steps .action-status')!.textContent).toBe('Signed in on Mac Mini.');
+  });
+});
+
+
+describe('QA content fixes — Accounts', () => {
+  const dawn = (over: Record<string, unknown>) => row({ id: 'dawn', nickname: 'Dawn', email: 'dawn@x.io', ...over });
+  const self = { machineId: 'm1', nickname: 'Mac Studio' };
+  it('states the scope: usable on THIS machine vs expired elsewhere; a repair waiting on a tap is the only "needs you"', () => {
+    const p = buildAccountsPage(ok({ accounts: [
+      row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' }), row({ machineId: 'm3', machineNickname: 'Mama PC', status: 'needs-reauth' }),
+      dawn({}), dawn({ machineId: 'm3', machineNickname: 'Mama PC', status: 'needs-reauth' }),
+    ] }), NOW, { self, episodes: [{ id: 'e1', accountId: 'dawn', machineId: 'm3', state: 'suggested', updatedAt: iso(-10) }] });
+    expect(p.headline).toBe('1 sign-in needs you.');
+    expect(p.needs.map((n: { accountId: string; machine: string; action: string }) => [n.accountId, n.machine, n.action])).toEqual([['dawn', 'Mama PC', 'approve']]);
+    expect(p.expired.map((n: { accountId: string; machine: string }) => [n.accountId, n.machine])).toEqual([['luna', 'Mac Mini'], ['luna', 'Mama PC']]);
+    const facts = Object.fromEntries(p.facts.map((f: { label: string; n: unknown }) => [f.label, f.n]));
+    expect(facts).toMatchObject({ 'needs your tap': 1, 'usable on Mac Studio': 2, 'expired elsewhere': 3 });
+    expect(p.sub).toBe('2 accounts are usable on Mac Studio; 3 sign-ins have expired on other machines, 1 waiting for your tap.');
+    // One row per account, naming the machines it waits on.
+    expect(p.expiredRows).toHaveLength(1);
+    expect(p.expiredRows[0]).toMatchObject({ accountId: 'luna', sub: 'Expired on Mac Mini and Mama PC; no repair is running.', action: 'open', single: null });
+    expect(p.needsRows[0]).toMatchObject({ accountId: 'dawn', sub: 'An automatic repair is ready to run on Mama PC.', action: 'approve' });
+    expect(p.needsRows[0].single.machine).toBe('Mama PC');
+  });
+  it('a repair the agent is running is neither needs-you nor expired; with no self machine the scope is "usable somewhere"', () => {
+    const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })] }), NOW, {
+      episodes: [{ id: 'e2', accountId: 'luna', machineId: 'm2', state: 'running', updatedAt: iso(-1) }] });
+    expect(p.needs).toEqual([]);
+    expect(p.expired).toEqual([]);
+    expect(p.accounts[0].cells[1]).toMatchObject({ state: 'working', label: 'signing in' });
+    expect(p.facts.find((f: { label: string }) => f.label === 'usable somewhere')!.n).toBe(1);
+    expect(p.facts.some((f: { label: string }) => /expired/.test(f.label))).toBe(false);
+    expect(p.sub).toBe('');
+  });
+  it('"most used" is said in words, never as a bare percentage label', () => {
+    const p = buildAccountsPage(ok({ accounts: [row({ lastQuota: { measuredAt: iso(-5), fable: { utilizationPct: 100, resetsAt: iso(120) }, sevenDay: { utilizationPct: 76 } } })] }), NOW, { self });
+    const f = p.facts.find((x: { label: string }) => /most used/.test(x.label))!;
+    expect(f).toMatchObject({ n: 'Luna', label: 'most used: all of its Fable weekly limit', tone: 'bad' });
+    const q = buildAccountsPage(ok({ accounts: [row({})] }), NOW, { self });
+    expect(q.facts.find((x: { label: string }) => /most used/.test(x.label))).toMatchObject({ n: 'Luna', label: 'most used: 60% of its weekly limit' });
+    expect(q.facts.some((x: { label: string }) => x.label === 'most used · Luna')).toBe(false);
   });
 });

@@ -5,6 +5,7 @@ import { buildPromisesPage, storyOf, actionsFor } from './promises-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
+const MISSED_SHOWN = 5; // the most recent missed promises on the first screen; "Show all N" for the rest
 const RAW_KEYS = ['id', 'status', 'owner', 'blockedOn', 'actionClass', 'topicId', 'createdAt', 'nextUpdateDueAt', 'hardDeadlineAt', 'checkInAt', 'lastHeartbeatAt', 'heartbeatCount', 'cadenceMs', 'beaconEnabled', 'beaconPaused', 'beaconPausedReason', 'resolvedAt', 'resolution', 'originMachineId', 'viewSource', 'stalenessMs'];
 
 /** Telegram link to a topic in the agent's main group, when we know the group. */
@@ -43,7 +44,8 @@ export async function renderPromises(main, ctx) {
     page.coverage ? note(page.coverage) : null,
     el('div', { class: 'page-sections' },
       section({ id: 'waiting', title: 'Waiting on you', rows: s.waiting.map((r) => ({ ...r, tone: 'attn' })), empty: 'Nothing is waiting on you.', onRow: open }),
-      n.missed ? section({ id: 'missed', title: 'Missed', rows: s.missed.map((r) => ({ ...r, tone: 'bad' })), onRow: open }) : null,
+      n.missed ? section({ id: 'missed', title: 'Missed', rows: s.missed.map((r) => ({ ...r, tone: 'bad' })), limit: MISSED_SHOWN, showAll: true, onRow: open }) : null,
+      n.missedUnclear ? section({ id: 'missedUnclear', title: 'Missed, but maybe not promises', rows: s.missedUnclear.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }) : null,
       section({ id: 'dueSoon', title: 'Due within a day', rows: s.dueSoon, empty: 'Nothing is due in the next day.', onRow: open }),
       section({ id: 'carrying', title: 'I’m carrying', rows: s.carrying, collapsed: true, onRow: open }),
       section({ id: 'handled', title: 'Older, still open', rows: s.handled.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }),
@@ -88,6 +90,7 @@ function openPromise(r, { post, chatId, names, refresh }) {
       reason: 'Why it no longer matters', run: (why) => result('withdraw', { reason: why }), done: () => setTimeout(() => { closeSheet(); refresh(); }, 700),
     })));
   }
+  if (Array.isArray(r.dupes) && r.dupes.length) blocks.push(note(`This promise was registered ${r.dupes.length + 1} times with the same wording; the newest is shown. The others: ${r.dupes.map((d) => d.id).join(', ')}.`));
   blocks.push(details(c, RAW_KEYS));
   sheet({ title: r.main.length > 70 ? r.main.slice(0, 68) + '…' : r.main }, ...blocks);
 }

@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
   buildPlansPage, buildInTheWay, buildAutonomousRuns, projectNeedsOk, currentRoundIndex, projectLine, initiativeLine, needsYouWords,
-  roundWord, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, blockerRow, blockerStory, linkChips, stepList, autonomousRow, OLDER_MS, MOVING_MS,
+  roundWord, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, blockerRow, blockerStory, blockerText, BLOCKER_TITLE_MAX, linkChips, stepList, autonomousRow, OLDER_MS, MOVING_MS,
 } from '../../dashboard/console/plans-model.js';
 import { NATIVE_PAGES, tabHref } from '../../dashboard/console/nav-model.js';
 
@@ -76,8 +76,11 @@ describe('plans page model — sorting', () => {
     const items = [init({ lastTouchedAt: minsAgo(5), updatedAt: minsAgo(5) }), init({ lastTouchedAt: daysAgo(9), updatedAt: daysAgo(9) }), init({ lastTouchedAt: daysAgo(20), updatedAt: daysAgo(20) }), init({ lastTouchedAt: daysAgo(30), updatedAt: daysAgo(30), needsUser: true })];
     const p = buildPlansPage(full({ initiatives: ok({ items }) }), NOW);
     expect(p.counts).toMatchObject({ inFlight: 1, idle: 1, older: 2, olderNeedsYou: 1, needsYou: 0 });
-    expect(p.headline).toBe('2 plans in flight.');
-    expect(p.sub).toContain('2 older, still open.');
+    expect(p.headline).toBe('1 plan in flight.'); // moving only: idle plans are not "in flight"
+    expect(p.sub).toContain('3 idle, still open.'); // idle + older, the same number the idle tile shows
+    expect(p.counts.open).toBe(1);
+    expect(p.counts.idleTotal).toBe(3);
+    expect(p.facts.find((f: { label: string }) => f.label === 'idle')!.n).toBe(3);
     expect(p.sections.older.find((r: { needs: string }) => r.needs)!.needs).toBe('Waiting on you');
     expect(JSON.stringify(p)).not.toMatch(/handled/i);
     expect(OLDER_MS).toBeGreaterThan(MOVING_MS);
@@ -322,5 +325,53 @@ describe('plans page in a DOM', () => {
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 10));
     expect(posted[1]).toEqual(['/projects/stopped-one/resume', { roundIndex: 1 }]);
     expect(doc.querySelector('.sheet .action-status')!.textContent).toContain('Scheduled to resume');
+  });
+});
+
+
+describe('QA content fixes — Plans', () => {
+  const heredoc = `cd /Users/x/.instar/agents/echo && cat <<'EOF' | .instar/scripts/telegram-reply.sh 61449
+The blocker is merged and the queue is moving again. Main now passes the check it had been failing.
+EOF
+curl -s -X POST http://localhost:4042/commitments/CMT-1/deliver`;
+  it('a blocker that is a shell command shows a short title and a one-line reason; the raw text stays in the record', () => {
+    const r = blockerRow(blocker({ state: 'candidate', detectedText: heredoc }), NOW);
+    expect(r.main).toBe('The blocker is merged and the queue is moving again.');
+    expect(r.sub).toBe('Just spotted · flagged in a message I was sending');
+    expect(r.main.length).toBeLessThanOrEqual(BLOCKER_TITLE_MAX);
+    expect(r.record.detectedText).toBe(heredoc);
+    const cmd = blockerRow(blocker({ state: 'candidate', detectedText: 'cd ~/.instar/agents/echo && AUTH=$(node .instar/scripts/secret-get.mjs authToken); curl -s -X POST -H "Authorization: Bearer $AUTH" http://localhost:4042/commitments/CMT-1029/probe -d \'{"checked":true}\'' }), NOW);
+    expect(cmd.main).toBe('A command I ran');
+    expect(cmd.sub).toBe('Just spotted · flagged in a command I ran');
+    const story = blockerStory(cmd.record, NOW);
+    expect(story[0].text).toMatch(/full text is under Details/);
+    // Plain text is unchanged, clipped only when long.
+    expect(blockerRow(blocker({ state: 'dry-run', detectedText: 'Vercel token expired' }), NOW).main).toBe('Vercel token expired');
+    const long = blockerRow(blocker({ state: 'dry-run', detectedText: 'x'.repeat(200) }), NOW);
+    expect(long.main.length).toBe(BLOCKER_TITLE_MAX);
+    expect(long.main.endsWith('…')).toBe(true);
+    expect(blockerText(heredoc)).toMatchObject({ kind: 'message' });
+    expect(blockerText('Need Cloudflare').kind).toBe('text');
+  });
+  it('the headline, the sub line and the tiles come from one partition: in flight = needs you + moving; idle = idle + older', () => {
+    const items = [
+      init({ lastTouchedAt: minsAgo(5), updatedAt: minsAgo(5) }), init({ lastTouchedAt: minsAgo(50), updatedAt: minsAgo(50) }),
+      init({ lastTouchedAt: daysAgo(9), updatedAt: daysAgo(9) }),
+      init({ lastTouchedAt: daysAgo(20), updatedAt: daysAgo(20) }), init({ lastTouchedAt: daysAgo(30), updatedAt: daysAgo(30) }), init({ lastTouchedAt: daysAgo(40), updatedAt: daysAgo(40) }),
+      init({ needsUser: true, needsUserReason: 'pick', lastTouchedAt: minsAgo(9), updatedAt: minsAgo(9) }),
+    ];
+    const blockers = ok({ entries: [blocker({ state: 'candidate' }), blocker({ state: 'dry-run' }), blocker({ state: 'true-blocker', terminal: { kind: 'true-blocker', reasonKind: 'operator-only-secret', recheckAfter: daysAgo(1) } })], total: 3 });
+    const p = buildPlansPage(full({ initiatives: ok({ items }), blockers }), NOW);
+    expect(p.counts).toMatchObject({ planNeedsYou: 1, inFlight: 2, idle: 1, older: 3, open: 3, idleTotal: 4, inTheWay: 3, stuck: 1, working: 2 });
+    expect(p.headline).toBe('3 plans in flight. 1 needs you; 1 is stuck.');
+    expect(p.sub).toBe('4 idle, still open. Plans on this machine.');
+    const n = Object.fromEntries(p.facts.map((f: { label: string; n: number }) => [f.label, f.n]));
+    expect(n).toEqual({ 'needs you': 1, 'in the way': 3, moving: 2, idle: 4 });
+    expect(n['needs you'] + n.moving).toBe(p.counts.open); // the headline number
+    expect(n.idle).toBe(p.counts.idleTotal);                // the sub-line number
+    // No open plan moving, some idle: say so instead of "0 plans in flight".
+    const quiet = buildPlansPage(full({ initiatives: ok({ items: items.slice(3, 6) }) }), NOW);
+    expect(quiet.headline).toBe('No plan is moving.');
+    expect(quiet.sub).toBe('3 idle, still open. Plans on this machine.');
   });
 });

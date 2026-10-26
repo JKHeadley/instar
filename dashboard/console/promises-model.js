@@ -44,6 +44,43 @@ function machineName(id, names) {
   return (names && names[id]) || 'another machine';
 }
 
+/** "from Laptop, current" / "from Laptop, 18 h old" / "from Laptop, age unknown" — never "just now old". */
+export function replicaWords(c, names, now = Date.now()) {
+  const st = Number(c.stalenessMs);
+  const known = c.stalenessMs !== null && c.stalenessMs !== undefined && Number.isFinite(st);
+  const who = `from ${machineName(c.originMachineId, names)}`;
+  if (!known) return `${who}, age unknown`;
+  if (st < 60000) return `${who}, current`;
+  return `${who}, ${ago(now - st, now).replace(' ago', '')} old`;
+}
+
+// A missed promise is a sentence that commits to a future action. A chat fragment with no
+// such language ("Changing the schedule now", "Exactly what you asked for") is listed apart,
+// never dropped: the model can only tell the wording, not whether anyone was waiting.
+const PROMISE_LANGUAGE = /\b(?:I['’]ll|I will|we['’]ll|will|shortly|soon|back (?:with|in|shortly|soon|once|when|after)|report(?:ing)? back|going to|then I|once |when (?:it|that|the|I)|after (?:the|that|I|this)|next|by (?:morning|tonight|tomorrow|end of|EOD|\d)|coming|in (?:a|an|\d+) (?:minute|min|hour|day|few))\b/i;
+export function looksLikePromise(c) {
+  const text = String((c && (c.agentResponse || c.userRequest)) || '');
+  if (!text.trim()) return false;
+  return PROMISE_LANGUAGE.test(text) || /\b(?:deliver|send|post|merge|fix|check|confirm|finish|open|write|run|build|report|ship|land)\b/i.test(text) && /\b(?:I|me|my)\b/.test(text);
+}
+
+const normText = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+/**
+ * Collapse word-for-word duplicates (the same promise registered several times) into one
+ * row that says how many times it was said; the newest stays, the others ride in `dupes`.
+ */
+export function dedupeRows(rows) {
+  const by = new Map();
+  for (const r of rows) {
+    const k = normText(r.main);
+    const kept = by.get(k);
+    if (!kept) by.set(k, { ...r, dupes: [] });
+    else kept.dupes.push(r);
+  }
+  return [...by.values()].map((r) => (r.dupes.length ? { ...r, sub: `${r.sub} · said ${r.dupes.length + 1} times` } : r));
+}
+
 /** A row in plain words. */
 export function toRow(c, now = Date.now(), names = {}) {
   const due = nextDue(c);
@@ -54,10 +91,7 @@ export function toRow(c, now = Date.now(), names = {}) {
   if (isMissed(c, now)) bits.push('missed');
   else if (due && due > now) bits.push(`due ${until(due, now)}`);
   if (c.beaconPaused) bits.push('reminders paused');
-  if (c.viewSource === 'replica') {
-    const fresh = Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null;
-    bits.push(`from ${machineName(c.originMachineId, names)}${fresh ? `, ${ago(now - c.stalenessMs, now).replace(' ago', '')} old` : ', age unknown'}`);
-  }
+  if (c.viewSource === 'replica') bits.push(replicaWords(c, names, now));
   return {
     key: `${c.originMachineId || 'own'}:${c.id}`,
     id: c.id,
@@ -81,14 +115,14 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   if (!list) return { ok: false, reason: 'The promise list answered without records.' };
 
   const fresh = (c) => now - lastTouched(c) <= STALE_DAYS * DAY;
-  const s = { waiting: [], missed: [], dueSoon: [], carrying: [], handled: [], closed: [] };
+  const s = { waiting: [], missed: [], missedUnclear: [], dueSoon: [], carrying: [], handled: [], closed: [] };
   for (const c of list) {
     if (!c) continue;
     if (isActiveCommitment(c, now) || c.status === 'violated') {
       // A missed promise stays in Missed at any age: age is not evidence it was handled.
       // Anything else untouched for 14 days is listed as "Older, still open" and not
       // counted in the headline (Home's rule, the operator's noise requirement).
-      if (isMissed(c, now) && !waitsOnOperator(c)) s.missed.push(c);
+      if (isMissed(c, now) && !waitsOnOperator(c)) (looksLikePromise(c) ? s.missed : s.missedUnclear).push(c);
       else if (!fresh(c)) s.handled.push(c);
       else if (waitsOnOperator(c)) s.waiting.push(c);
       else {
@@ -104,7 +138,10 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   const byNewest = (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0);
   for (const k of Object.keys(s)) s[k].sort(k === 'dueSoon' ? (a, b) => nextDue(a) - nextDue(b) : k === 'closed' ? (a, b) => Date.parse(b.resolvedAt) - Date.parse(a.resolvedAt) : byNewest);
   const sections = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map((c) => toRow(c, now, names))]));
-  const counts = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.length]));
+  // Missed: one row per distinct promise (the fact, the headline and the list count the same rows).
+  sections.missed = dedupeRows(sections.missed);
+  sections.missedUnclear = dedupeRows(sections.missedUnclear);
+  const counts = Object.fromEntries(Object.entries(sections).map(([k, v]) => [k, v.length]));
 
   const replicas = list.filter((c) => c && c.viewSource === 'replica');
   const origins = new Set(replicas.map((c) => c.originMachineId));

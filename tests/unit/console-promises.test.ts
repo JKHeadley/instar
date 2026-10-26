@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildPromisesPage, storyOf, actionsFor, until, nextDue } from '../../dashboard/console/promises-model.js';
+import { buildPromisesPage, storyOf, actionsFor, until, nextDue, dedupeRows, looksLikePromise, replicaWords, toRow } from '../../dashboard/console/promises-model.js';
 import { buildPromised } from '../../dashboard/console/home-model.js';
 import { topicLink } from '../../dashboard/console/promises.js';
 
@@ -13,7 +13,7 @@ const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
 const minsAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
 const inMins = (m: number) => new Date(NOW + m * 60_000).toISOString();
-const c = (over: Record<string, unknown>) => ({ id: `CMT-${Math.random().toString(36).slice(2, 7)}`, status: 'pending', owner: 'agent', blockedOn: 'none', createdAt: minsAgo(60), agentResponse: 'Do X', userRequest: 'Please X', viewSource: 'own', originMachineId: 'm1', ...over });
+const c = (over: Record<string, unknown>) => ({ id: `CMT-${Math.random().toString(36).slice(2, 7)}`, status: 'pending', owner: 'agent', blockedOn: 'none', createdAt: minsAgo(60), agentResponse: "I'll do X and report back.", userRequest: 'Please X', viewSource: 'own', originMachineId: 'm1', ...over });
 const mesh = (rows: unknown[]) => ok({ enabled: true, scope: 'mesh', commitments: rows });
 
 describe('promises page model', () => {
@@ -26,7 +26,7 @@ describe('promises page model', () => {
     const rows = [
       c({ blockedOn: 'user-input' }),
       c({ status: 'violated' }),
-      c({ hardDeadlineAt: minsAgo(5) }),
+      c({ hardDeadlineAt: minsAgo(5), agentResponse: "I'll send the summary by tonight." }), // distinct wording: not a duplicate of the one above
       c({ nextUpdateDueAt: inMins(120) }),
       c({}),
       c({ createdAt: minsAgo(60 * 24 * 30) }),
@@ -34,7 +34,7 @@ describe('promises page model', () => {
       c({ status: 'delivered', resolvedAt: minsAgo(60 * 24 * 10) }),
     ];
     const p = buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 });
-    expect(p.counts).toEqual({ waiting: 1, missed: 2, dueSoon: 1, carrying: 1, handled: 1, closed: 1 });
+    expect(p.counts).toEqual({ waiting: 1, missed: 2, missedUnclear: 0, dueSoon: 1, carrying: 1, handled: 1, closed: 1 });
     expect(p.headline).toBe('1 promise is waiting on you.');
   });
 
@@ -128,5 +128,51 @@ describe('promises page in a DOM', () => {
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 10));
     expect(posted).toEqual(['/commitments/CMT-1/deliver']);
     expect(doc.querySelector('.action-status')!.textContent).toBe('Marked as done.');
+  });
+});
+
+
+describe('QA content fixes — Promises › Missed', () => {
+  it('collapses word-for-word duplicates into one row that says how many times it was said; the count and the fact agree', () => {
+    const text = 'On it. Deleting the leftover fake message first, then opening the leak fix as a pull request. I’ll report back as each lands.';
+    const rows = [
+      c({ id: 'CMT-1', status: 'violated', agentResponse: text, createdAt: minsAgo(60 * 24 * 66) }),
+      c({ id: 'CMT-2', status: 'violated', agentResponse: text, createdAt: minsAgo(60 * 24 * 66 + 5) }),
+      c({ id: 'CMT-3', status: 'violated', agentResponse: text.toUpperCase(), createdAt: minsAgo(60 * 24 * 66 + 9) }),
+      c({ id: 'CMT-4', status: 'violated', agentResponse: 'I’ll check every credential against Bitwarden and report back.', createdAt: minsAgo(60 * 24 * 33) }),
+    ];
+    const p = buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 });
+    expect(p.counts.missed).toBe(2);
+    expect(p.headline).toBe('2 promises were missed.');
+    expect(p.sections.missed.map((r: { id: string }) => r.id)).toEqual(['CMT-4', 'CMT-1']); // newest first; the newest copy stands for its duplicates
+    const dup = p.sections.missed[1];
+    expect(dup.sub).toBe('missed · said 3 times');
+    expect(dup.dupes.map((d: { id: string }) => d.id)).toEqual(['CMT-2', 'CMT-3']);
+    expect(p.sections.missed[0].dupes).toEqual([]);
+    expect(dedupeRows([{ key: 'a', main: 'x', sub: 'missed' }, { key: 'b', main: 'y', sub: 'missed' }])).toHaveLength(2);
+  });
+  it('a missed record with no promise language is set apart as "maybe not a promise", never dropped and never counted as missed', () => {
+    const rows = [
+      c({ status: 'violated', agentResponse: 'Changing the schedule now' }),
+      c({ status: 'violated', agentResponse: 'Exactly what you asked for, and the pull request is down to those two lines.' }),
+      c({ status: 'violated', agentResponse: 'Moving the switch to now so builds go live as soon as they’re ready. Back shortly.' }),
+    ];
+    const p = buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 });
+    expect(p.counts.missed).toBe(1);
+    expect(p.counts.missedUnclear).toBe(2);
+    expect(p.sections.missed[0].main).toMatch(/Back shortly/);
+    expect(looksLikePromise({ agentResponse: 'Changing the schedule now' })).toBe(false);
+    expect(looksLikePromise({ agentResponse: 'I will send the summary tonight.' })).toBe(true);
+    expect(looksLikePromise({ agentResponse: 'Got it — checking the live state now. Back shortly with the real list.' })).toBe(true);
+    expect(looksLikePromise({ agentResponse: '' })).toBe(false);
+  });
+  it('a replica row says "current", an age, or "age unknown" — never "just now old"', () => {
+    const names = { m2: 'Laptop' };
+    expect(replicaWords({ originMachineId: 'm2', stalenessMs: 1000 }, names, NOW)).toBe('from Laptop, current');
+    expect(replicaWords({ originMachineId: 'm2', stalenessMs: 18 * 3600000 }, names, NOW)).toBe('from Laptop, 18 h old');
+    expect(replicaWords({ originMachineId: 'm2', stalenessMs: null }, names, NOW)).toBe('from Laptop, age unknown');
+    const row = toRow(c({ viewSource: 'replica', originMachineId: 'm2', stalenessMs: 5000 }), NOW, names);
+    expect(row.sub).not.toMatch(/just now old/);
+    expect(row.sub).toContain('from Laptop, current');
   });
 });
