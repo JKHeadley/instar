@@ -9325,6 +9325,13 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge line awareness (CMT-980)');
     }
+    // local-verify merge-conflict notice (fb-7838de2d-178): agents that already have the
+    // Local Verify section learn where a no-longer-merging PR shows. Content-sniff on the id.
+    if (content.includes('/local-verify') && !content.includes('local-verify:conflict:')) {
+      content += '\n- Local Verify merge conflicts: a PR that no longer merges into `main` is not re-run and does not silently leave the queue: `GET /local-verify` lists it under `conflicts`, its `instar/local-verify` status says "rebase needed", and one attention item (`local-verify:conflict:<pr>:<head7>`) is raised; pushing a rebase queues the new head and closes it.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify merge-conflict awareness');
+    }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';
       patched = true;
