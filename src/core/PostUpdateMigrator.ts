@@ -66,6 +66,7 @@ import {
   READINESS_STALL_NOTICE_BULLET,
   READINESS_STALL_NOTICE_MARKER,
   REAPER_BACKGROUND_WORK_BULLET,
+  REAPER_PRESSURE_BULLET,
   REAPER_BACKGROUND_WORK_MARKER,
   REROUTED_LOGIN_EXPIRED_BULLET,
   REROUTED_LOGIN_EXPIRED_MARKER,
@@ -10507,11 +10508,26 @@ CLI-created worktrees under \`~/.instar/agents/<agent>/.worktrees/\` accumulate 
     // and (b) a silent, reviewable decision trail + endpoint exists. Without this an
     // agent asked "what is the reaper considering / why isn't it acting under load?"
     // has no grounded answer. Idempotent via content-sniffing on the new route path.
+    // The NEW wording lives in ONE place — `REAPER_PRESSURE_BULLET` in templates.ts — so an
+    // agent initialized from the template and an agent patched by this migrator cannot drift
+    // apart. Two legacy forms are replaced in place, because a deployed agent carries whichever
+    // of the two wrote its CLAUDE.md (round-2 finding: keying only on the migrator's own old
+    // sentence left every template-initialized agent unpatched).
+    const REAPER_PRESSURE_SENTENCE = REAPER_PRESSURE_BULLET.replace(/^- /, '');
+    /** Form A: the sentence this migrator wrote before reaper-pressure-signals. */
+    const REAPER_PRESSURE_SENTENCE_LEGACY = `The idle-session reaper's pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`. \`GET /sessions/reaper\`'s \`pressure.inputs\` shows freePct, loadPerCore, and the memTier/cpuTier breakdown.`;
+    /**
+     * Form B: the FULL bullet an older `templates.ts` wrote at init — taken verbatim, not
+     * abbreviated. A prefix match would replace the first sentence and leave the stale
+     * "tune the CPU thresholds" sentence behind, so a migrated agent would read the new text
+     * and then be told the load-per-core knobs are the tuning controls (round-2 re-check).
+     */
+    const REAPER_PRESSURE_BULLET_LEGACY = `- Pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`.`;
     if (!content.includes('/sessions/reaper/audit')) {
       const section = `
 ## SessionReaper — CPU-aware pressure + decision audit
 
-The idle-session reaper's pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`. \`GET /sessions/reaper\`'s \`pressure.inputs\` shows freePct, loadPerCore, and the memTier/cpuTier breakdown.
+${REAPER_PRESSURE_SENTENCE}
 
 A silent **decision audit** records every keep/kill decision *change* (logged on transition, not every tick) plus the reap-path events, each stamped with the pressure tier that drove it, to \`logs/reaper-audit.jsonl\`.
 - Read the tail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/reaper/audit?limit=50"\` → \`{ entries: [...] }\`. Read-only, no notifications — purely for inspection.
@@ -10520,6 +10536,20 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added SessionReaper CPU-aware + decision-audit section');
+    } else if (!content.includes('cpuBusyPct') && (content.includes(REAPER_PRESSURE_SENTENCE_LEGACY) || content.includes(REAPER_PRESSURE_BULLET_LEGACY))) {
+      // Migration parity (reaper-pressure-signals): every deployed agent already carries the
+      // section, so the new wording is swapped IN PLACE — the install-if-missing branch above
+      // never reaches them and they would keep telling users the load average decides. Both
+      // legacy forms are handled; an operator-rewritten sentence matches neither and is left
+      // alone rather than clobbered.
+      if (content.includes(REAPER_PRESSURE_SENTENCE_LEGACY)) {
+        content = content.replace(REAPER_PRESSURE_SENTENCE_LEGACY, REAPER_PRESSURE_SENTENCE);
+      }
+      if (content.includes(REAPER_PRESSURE_BULLET_LEGACY)) {
+        content = content.replace(REAPER_PRESSURE_BULLET_LEGACY, REAPER_PRESSURE_BULLET);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: replaced the reaper pressure sentence in place (reaper-pressure-signals)');
     } else {
       result.skipped.push('CLAUDE.md: SessionReaper CPU-aware + decision-audit section already present');
     }

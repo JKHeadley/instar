@@ -168,35 +168,106 @@ const MEM_MODERATE_FREE_PCT = 12;
 const MEM_CRITICAL_FREE_PCT = 5;
 
 const TIER_ORDER: Record<PressureTier, number> = { normal: 0, moderate: 1, critical: 2 };
+const worst = (a: PressureTier, b: PressureTier): PressureTier => (TIER_ORDER[a] >= TIER_ORDER[b] ? a : b);
+
+/** Which CPU signal decides `cpuTier`. `'busy'` (default) = sampled real CPU busy %; `'load'` = the legacy 1-min load ÷ cores (rollback lever). */
+export type CpuSignal = 'busy' | 'load';
+
+export interface PressureInputs {
+  freePct: number;
+  /** 1-min load ÷ cores. Still sampled and reported; decides cpuTier ONLY under cpuSignal 'load'. */
+  loadPerCore: number | null;
+  /** Real CPU busy % over the last interval (hostCpuBusySampler); null = unknown. */
+  cpuBusyPct?: number | null;
+  /** macOS compressor pages as % of total (OCCUPANCY); null = unmeasurable (non-macOS). */
+  compressorPct?: number | null;
+  /** Decompressions per second since the last sample (ACTIVITY, observable); null = unmeasurable / first sample. */
+  decompressionsPerSec?: number | null;
+  /** The kernel's own verdict: `kern.memorystatus_vm_pressure_level` 1 normal / 2 warn / 4 critical; null off-macOS. */
+  kernelMemoryPressureLevel?: number | null;
+}
+
+export interface PressureThresholds {
+  cpuModerateLoadPerCore: number;
+  cpuCriticalLoadPerCore: number;
+  /** Busy-% thresholds for the 'busy' signal. */
+  cpuModerateBusyPct?: number;
+  cpuCriticalBusyPct?: number;
+  cpuSignal?: CpuSignal;
+}
+
+export const DEFAULT_CPU_BUSY_THRESHOLDS = { cpuModerateBusyPct: 75, cpuCriticalBusyPct: 90 } as const;
 
 /**
  * Pure pressure classifier — the single source of truth for the reaper's tier.
- * tier = WORST of the memory tier (free %) and the CPU tier (1-min load ÷ cores).
- * `loadPerCore: null` (cores unknown) drops CPU out of the calc (memory-only),
- * preserving the pre-CPU behavior. Fully unit-testable (no `os` dependency).
+ * tier = WORST of the memory tier and the CPU tier.
+ *
+ * MEMORY: the available-memory tier (free %), UNCHANGED by this spec. The compressor
+ * readings (`compressorPct`, `decompressionsPerSec`, `kernelMemoryPressureLevel`) are
+ * REPORTED as observables and grade NOTHING. Two drafts graded them and round-2 review
+ * measured both into the ground: a healthy Studio reads 35% occupancy and 10k-94k
+ * decompressions/s at kernel pressure level 1, and `kern.memorystatus_level` (the continuous
+ * quantity behind that level, ~(phys - wired - compressor)/phys) reads 59 on that healthy
+ * machine while the 2026-10-25 laptop computes to ~67 — i.e. every candidate memory signal
+ * says that laptop's memory was FINE. So no memory grade is shipped here; the readings are
+ * collected as the evidence a future spec needs (see reaper-pressure-signals §3b).
+ *
+ * CPU: under `cpuSignal: 'busy'` (default) the tier comes from sampled real CPU busy %, and
+ * an UNKNOWN sample (`null` — the first tick after boot) yields `normal` so the tier is
+ * memory-only. It deliberately does NOT fall back to `loadPerCore`: on macOS the 1-min load
+ * average read 9.4/core at 36-44% idle (its macOS computation is poorly documented; the
+ * measured disagreement is the evidence, not a mechanism story). `cpuSignal: 'load'`
+ * restores the legacy grading exactly (the rollback lever). Fully unit-testable.
  */
 export function computePressure(
-  inputs: { freePct: number; loadPerCore: number | null },
-  thresholds: { cpuModerateLoadPerCore: number; cpuCriticalLoadPerCore: number },
+  inputs: PressureInputs,
+  thresholds: PressureThresholds,
 ): PressureReading {
-  const memTier: PressureTier =
+  const freeTier: PressureTier =
     inputs.freePct < MEM_CRITICAL_FREE_PCT ? 'critical'
       : inputs.freePct < MEM_MODERATE_FREE_PCT ? 'moderate'
         : 'normal';
+  // The compressor readings are OBSERVABLES ONLY — they grade nothing, so memTier is the
+  // available-memory tier exactly as before this spec. Withdrawn deliberately: every bar we
+  // tried (occupancy; occupancy AND decompression rate; finally the kernel's own
+  // `kern.memorystatus_vm_pressure_level`) was measured against real machines in review and
+  // none separated the 2026-10-25 laptop from a healthy one. Reporting them without a grade
+  // is the honest position AND the data a later spec needs; a dark grade nobody can show
+  // would fire on the incident it was built for is worse than none.
+  const compressorPct = inputs.compressorPct;
+  const activity = inputs.decompressionsPerSec;
+  const level = inputs.kernelMemoryPressureLevel;
+  const memTier = freeTier;
+
+  const cpuSignal: CpuSignal = thresholds.cpuSignal === 'load' ? 'load' : 'busy';
   let cpuTier: PressureTier = 'normal';
-  if (inputs.loadPerCore != null && Number.isFinite(inputs.loadPerCore)) {
-    cpuTier =
-      inputs.loadPerCore >= thresholds.cpuCriticalLoadPerCore ? 'critical'
-        : inputs.loadPerCore >= thresholds.cpuModerateLoadPerCore ? 'moderate'
-          : 'normal';
+  if (cpuSignal === 'load') {
+    if (inputs.loadPerCore != null && Number.isFinite(inputs.loadPerCore)) {
+      cpuTier =
+        inputs.loadPerCore >= thresholds.cpuCriticalLoadPerCore ? 'critical'
+          : inputs.loadPerCore >= thresholds.cpuModerateLoadPerCore ? 'moderate'
+            : 'normal';
+    }
+  } else {
+    const busy = inputs.cpuBusyPct;
+    if (busy != null && Number.isFinite(busy)) {
+      const mod = thresholds.cpuModerateBusyPct ?? DEFAULT_CPU_BUSY_THRESHOLDS.cpuModerateBusyPct;
+      const crit = thresholds.cpuCriticalBusyPct ?? DEFAULT_CPU_BUSY_THRESHOLDS.cpuCriticalBusyPct;
+      cpuTier = busy >= crit ? 'critical' : busy >= mod ? 'moderate' : 'normal';
+    }
   }
-  const tier = TIER_ORDER[cpuTier] >= TIER_ORDER[memTier] ? cpuTier : memTier;
+  const tier = worst(cpuTier, memTier);
   const round = (n: number): number => Math.round(n * 100) / 100;
   return {
     tier,
     inputs: {
       freePct: Math.round(inputs.freePct * 10) / 10,
       loadPerCore: inputs.loadPerCore == null ? null : round(inputs.loadPerCore),
+      cpuBusyPct: inputs.cpuBusyPct == null || !Number.isFinite(inputs.cpuBusyPct) ? null : round(inputs.cpuBusyPct),
+      compressorPct: compressorPct == null || !Number.isFinite(compressorPct) ? null : round(compressorPct),
+      decompressionsPerSec: activity == null || !Number.isFinite(activity) ? null : round(activity),
+      kernelMemoryPressureLevel: level == null ? null : level,
+      cpuSignal,
       memTier,
       cpuTier,
     },

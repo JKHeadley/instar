@@ -6728,8 +6728,19 @@ export interface MonitoringConfig {
      *  (overall tier = worst of memory and CPU). Default 1.0. */
     cpuModerateLoadPerCore?: number;
     /** CPU pressure: load-per-core at/above which pressure is `critical`.
-     *  Default 1.5. */
+     *  Default 1.5. Decides cpuTier ONLY under `cpuSignal: 'load'`. */
     cpuCriticalLoadPerCore?: number;
+    /**
+     * Which CPU signal decides cpuTier (spec reaper-pressure-signals). `'busy'` (default):
+     * sampled real CPU busy % from os.cpus() tick deltas. `'load'`: the legacy 1-min load ÷
+     * cores — the rollback lever. The load average read 9.4/core on 2026-10-25 while the
+     * CPU was 36-44% idle (macOS counts I/O-blocked threads), so it is no longer the default.
+     */
+    cpuSignal?: 'busy' | 'load';
+    /** Busy-% at/above which cpuTier is `moderate` (cpuSignal 'busy'). Default 75. */
+    cpuModerateBusyPct?: number;
+    /** Busy-% at/above which cpuTier is `critical` (cpuSignal 'busy'). Default 90. */
+    cpuCriticalBusyPct?: number;
     /** Under CPU pressure, require positive descendant-CPU progress before the
      *  `active-process` existence-veto keeps a session — so a wedged/idle child
      *  (live PID, ~0 CPU) no longer holds an otherwise-reapable idle session
