@@ -22,6 +22,7 @@ import { renderAgents } from './agents.js';
 import { renderMandates } from './mandates.js';
 import { renderSecrets } from './secrets.js';
 import { renderLearned } from './learned.js';
+import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
@@ -449,6 +450,7 @@ const NATIVE = {
   'people/secrets': renderSecrets,
   'settings/allowed': renderAllowed,
   'settings/learned': renderLearned,
+  'settings/inside': renderInside,
   'settings/files': renderFiles,
 };
 

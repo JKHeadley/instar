@@ -189,7 +189,7 @@ describe('what I’ve learned, in a DOM', () => {
     expect([...doc.querySelectorAll('#sec-watching .row-title')].map((n) => n.textContent)).toEqual(['Plainer wording']);
     expect(doc.querySelector('#sec-earlier .list-rows')!.hasAttribute('hidden')).toBe(true);
     expect(doc.querySelector('.learned-change')!.textContent).toBe('To change one, tell me in chat.');
-    expect((doc.querySelector('.foot-note a') as HTMLAnchorElement).getAttribute('href')).toBe('/dashboard?tab=preferences-learning');
+    expect((doc.querySelector('.foot-note a') as HTMLAnchorElement).getAttribute('href')).toBe('#/settings/inside?s=claims');
 
     (doc.querySelector('.pref-card') as HTMLButtonElement).click();
     expect(doc.querySelector('.sheet .sheet-title')!.textContent).toBe('A preference I picked up');

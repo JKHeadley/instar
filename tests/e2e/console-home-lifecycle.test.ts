@@ -41,6 +41,9 @@ import { PreferencesManager } from '../../src/core/PreferencesManager.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 import { buildRequests, buildKeys, buildSync, secretsHeadline, secretsFacts, requestBody, resultWords as secretResultWords } from '../../dashboard/console/secrets-model.js';
 import { buildListing, buildFile, saveBody, saveResult, buildConfig, configPatch, configResultWords, pinnedFrom, filesHeadline } from '../../dashboard/console/files-model.js';
+import { buildActivity, buildChain, buildStats, buildBindings, buildProblems, buildClaims, buildReviews, buildLookup, insideHeadline, recentUrl, failuresUrl, claimsUrl, chainUrl, lookupUrl, revokeRequest } from '../../dashboard/console/inside-model.js';
+import { SharedStateLedger } from '../../src/core/SharedStateLedger.js';
+import { FailureLedger } from '../../src/monitoring/FailureLedger.js';
 import { buildSessions, sessionsHeadline, sessionsFacts, closeRequest, closeResultWords, createBody, createResultWords, doorChoices, machineChoices } from '../../dashboard/console/sessions-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
@@ -718,5 +721,105 @@ describe('Console "What I\'ve learned about you" E2E (feature is alive)', () => 
     expect(buildCorrections([c, older])).toMatchObject({ ok: true, shown: 1, moreFailed: null });
     // The page is read only: the bearer token alone writes nothing through it (POST /corrections needs the intent header).
     expect((await request(server.getApp()).post('/corrections').set(auth).send({})).status).not.toBe(200);
+  });
+});
+
+describe('Console "How I\'m doing inside" E2E (feature is alive)', () => {
+  const AUTH = 'console-inside-e2e';
+  const auth = { Authorization: `Bearer ${AUTH}` };
+  let tmp = '';
+  let server: AgentServer;
+  let ledger: SharedStateLedger;
+  let commitmentId = '';
+  let decisionId = '';
+  let replacingId = '';
+  const read = async (p: string) => {
+    const r = await request(server.getApp()).get(p).set(auth);
+    return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+  };
+
+  beforeAll(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-inside-e2e-'));
+    const stateDir = path.join(tmp, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+    // Real records before the server starts: two failures in the real ledger, three ledger entries.
+    const fl = new FailureLedger({ dbPath: path.join(stateDir, 'failure-ledger.db') });
+    fl.open({ filedBy: 'e2e', source: 'agent-diagnosed', severity: 'medium', summary: 'Two writers raced on the state file', detail: { redacted: 'src/x.ts', full: 'FULL-DETAIL-NEVER-SERVED' }, category: 'concurrency', attribution: 'automatic' });
+    fl.open({ filedBy: 'e2e', source: 'agent-diagnosed', severity: 'low', summary: 'A setting was misread', detail: { redacted: '', full: '' }, category: 'config-parse', attribution: 'inferred' });
+    fl.close();
+    ledger = new SharedStateLedger({ stateDir, config: { enabled: true }, salt: 'e2e-salt' });
+    const base = { emittedBy: { subsystem: 'threadline' as const, instance: 'e2e' }, provenance: 'subsystem-asserted' as const };
+    const decision = await ledger.append({ ...base, kind: 'decision', subject: 'Decided to retry on Codex', counterparty: { type: 'self', name: 'self', trustTier: 'trusted' }, dedupKey: 'e2e:decision' });
+    const replacing = await ledger.append({ ...base, kind: 'decision', subject: 'Decided to retry on Opus instead', supersedes: decision!.id, counterparty: { type: 'self', name: 'self', trustTier: 'trusted' }, dedupKey: 'e2e:decision2' });
+    const c = await ledger.append({ ...base, emittedBy: { subsystem: 'session', instance: 'sess-1' }, provenance: 'session-asserted', kind: 'commitment', subject: 'Hand off the review to Dawn', counterparty: { type: 'agent', name: 'Dawn', trustTier: 'trusted' }, dedupKey: 'e2e:commit',
+      commitment: { mechanism: { type: 'passive-wait', refResolvedAt: new Date().toISOString(), refStatus: 'valid' }, status: 'open', deadline: new Date(Date.now() + 3600_000).toISOString() } });
+    decisionId = decision!.id; replacingId = replacing!.id; commitmentId = c!.id;
+    const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10_000, version: '0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: path.join(stateDir, 'jobs.json'), maxParallelJobs: 1 }, messaging: [], updates: {},
+      integratedBeing: { enabled: true }, monitoring: { failureLearning: { enabled: true }, correctionClassReview: { enabled: true } } } as unknown as InstarConfig;
+    const sessionManager = { listRunningSessions: () => [], getSession: () => null } as never;
+    server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), sharedStateLedger: ledger } as never);
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts' });
+  });
+
+  it('runs the real ledger routes through the page model: 200, counted within the window, a commitment is never called open, the chain walks back', async () => {
+    const [recent, stats, sessions] = await Promise.all([read(recentUrl()), read('/shared-state/stats'), read('/shared-state/sessions')]);
+    expect(recent.status).toBe(200);
+    expect(stats.status).toBe(200);
+    expect(sessions.status).toBe(503); // the session-write surface (v2) ships off: the bindings block is hidden, not empty
+    const a = buildActivity(recent);
+    expect(a).toMatchObject({ ok: true, n: 3, line: 'Among the 3 most recent records: 2 decisions.' });
+    const c = a.ok && a.rows.find((r) => r.id === commitmentId);
+    expect(c && c.status && c.status.key).toBe('unknown');
+    expect(c && c.sub).toBe('Commitment · with Dawn · Status unknown: later history isn’t loaded');
+    // The decision that was replaced: its later history IS in the window, but it is not a commitment, so no status claim.
+    expect(buildStats(stats)).toMatchObject({ ok: true });
+    expect(buildBindings(sessions)).toEqual({ ok: false, hidden: true });
+    const chain = buildChain(await read(chainUrl(replacingId)));
+    expect(chain).toMatchObject({ ok: true, words: 'It replaced 1 earlier record.' });
+    expect(chain.ok && chain.rows.map((r) => r.id)).toEqual([replacingId, decisionId]);
+    // The counterparty filter is the route's own.
+    const agents = buildActivity(await read(recentUrl({ counterparty: 'agent' })), { counterparty: 'agent' });
+    expect(agents.ok && agents.rows.map((r) => r.id)).toEqual([commitmentId]);
+    // Revoke is refused without the intent header and without the token; with v2 off it answers 503 either way.
+    expect((await request(server.getApp()).post(revokeRequest('11111111-1111-4111-8111-111111111111').path)).status).toBe(401);
+    expect((await request(server.getApp()).post(revokeRequest('11111111-1111-4111-8111-111111111111').path).set(auth).set('X-Instar-Request', '1')).status).toBe(503);
+  });
+
+  it('runs the real failure, claim, review and memory routes: problems are read with the page’s own `before`, the full detail never crosses, off sources read as off', async () => {
+    const [insights, first, week, all, claimsRes, reviewsRes] = await Promise.all([
+      read('/failures/insights?limit=50'), read(failuresUrl()), read('/failures/analysis?sinceDays=7'), read('/failures/analysis'), read(claimsUrl()), read('/class-reviews?limit=20'),
+    ]);
+    for (const r of [insights, first, week, all]) expect(r.status).toBe(200);
+    expect(JSON.stringify(first.data)).not.toContain('FULL-DETAIL-NEVER-SERVED');
+    const older = await read(failuresUrl(new Date(Date.now() + 60_000).toISOString()));
+    expect(older.status).toBe(200);
+    const p = buildProblems({ insights, pages: [first, older], week, all });
+    expect(p).toMatchObject({ ok: true, weekTotal: 2, openShown: 2, line: 'Nothing repeating. 2 one-off problems this week.' });
+    expect(p.ok && p.rows.map((r) => r.main).sort()).toEqual(['A settings problem: A setting was misread', 'A timing clash (two things ran at once): Two writers raced on the state file']);
+    expect(p.ok && p.stageWords).toBe('Watching quietly (no alerts)');
+    expect([200, 503]).toContain(reviewsRes.status);
+    expect(buildReviews(reviewsRes).ok || buildReviews(reviewsRes).off).toBe(true);
+    expect([200, 503]).toContain(claimsRes.status);
+    const claims = buildClaims(claimsRes);
+    expect(claims.ok ? claims.contradicted : 'off').not.toBeUndefined();
+    // No semantic memory on this agent: the lookup says it is off, never "no sources".
+    const mem = await read(lookupUrl({ id: '11111111-1111-4111-8111-111111111111', kind: 'entity' }));
+    expect(mem.status).toBe(503);
+    expect(buildLookup(mem, { kind: 'entity' })).toMatchObject({ ok: false, off: true });
+    const h = insideHeadline({ activity: buildActivity(await read(recentUrl())), problems: p, claims, reviews: buildReviews(reviewsRes) });
+    expect(h.tone).toBe('ok');
+    // Every route the page reads refuses without the token.
+    for (const path of [recentUrl(), '/shared-state/stats', failuresUrl(), '/failures/insights?limit=50', claimsUrl(), '/class-reviews?limit=20']) {
+      expect((await request(server.getApp()).get(path)).status, path).toBe(401);
+    }
   });
 });

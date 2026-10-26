@@ -10,7 +10,6 @@ import {
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
 } from './learned-model.js';
 import { el, setKids, pageHead, section, sheet, story, details, note, cantTell } from './ui.js';
-import { legacyHref } from './nav-model.js';
 
 const PAGE = 20;
 // The last good preferences build, so a failed refresh shows it with its age (stale) instead of nothing.
@@ -41,8 +40,8 @@ export async function renderLearned(main, ctx) {
   sections.push(el('p', { class: 'card-note learned-change', text: 'To change one, tell me in chat.' }));
   parts.push(el('div', { class: 'page-sections' }, sections),
     el('p', { class: 'foot-note' },
-      document.createTextNode('Checks on my own claims (class reviews and claim observations) are still on the '),
-      el('a', { href: legacyHref('preferences-learning'), text: 'legacy Preferences tab' }),
+      document.createTextNode('Checks on my own claims (class reviews and claim observations) are in '),
+      el('a', { href: '#/settings/inside?s=claims', text: 'How I’m doing inside' }),
       document.createTextNode('.')));
   setKids(main, el('div', { class: 'learned-page' }, parts));
 }
