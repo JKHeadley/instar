@@ -3,7 +3,7 @@
 // One model with Home: the waiting-on-you, active and 14-day rules come from
 // home-model.js, so Home's card and this page can never disagree.
 
-import { isActiveCommitment, waitsOnOperator, isMissed, lastTouched, STALE_DAYS, REPLICA_FRESH_MS, ago, failure } from './home-model.js';
+import { isActiveCommitment, waitsOnOperator, isMissed, lastTouched, STALE_DAYS, REPLICA_FRESH_MS, ago, failure, briefOf } from './home-model.js';
 
 export { failure };
 
@@ -63,7 +63,8 @@ export function toRow(c, now = Date.now(), names = {}) {
     id: c.id,
     origin: c.originMachineId || null,
     replica: c.viewSource === 'replica',
-    main: c.agentResponse || c.userRequest || c.id,
+    // One plain sentence, ids stripped; the sheet's story carries the full text and the id.
+    main: briefOf(c.agentResponse || c.userRequest) || c.id,
     sub: bits.join(' · '),
     end: ago(c.createdAt, now) || '',
     record: c,

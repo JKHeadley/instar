@@ -8,7 +8,7 @@
 import {
   failure, buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { GROUPS, icon, tabHref, hubTiles, hoodTiles, movedList } from './nav-model.js';
 import { renderPromises } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
@@ -25,7 +25,7 @@ import { renderLearned } from './learned.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
-import { sheetIsOpen, closeSheet } from './ui.js';
+import { sheetIsOpen, closeSheet, sheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -202,7 +202,9 @@ const CARDS = [
   { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
 
-const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'partial', stale: 'out of date' };
+// The card's own colour carries attn/bad; a technical status word on the face
+// ("failing", "partial") only repeats what the line and rows already say.
+const STATE_WORD = { ok: null, attn: null, bad: null, unknown: 'can’t tell', partial: null, stale: 'out of date' };
 
 function cardShell(def) {
   const card = el('section', { class: `card${def.feature ? ' feature' : ''}`, id: `card-${def.id}`, 'data-state': 'loading', 'aria-busy': 'true' },
@@ -251,7 +253,8 @@ function paintCard(def, model, repaint = false) {
   card.querySelector('.dot').className = dotClass(model.state);
   const age = card.querySelector('.card-age');
   const word = STATE_WORD[model.state];
-  age.textContent = [model.coverage && !word ? model.coverage : word, model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
+  // Coverage ("partial view") is housekeeping: it lives under Details, never on the face.
+  age.textContent = [word, model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
   card.toggleAttribute('data-partial', Boolean(model.coverage));
 
   const value = card.querySelector('.card-value');
@@ -412,7 +415,6 @@ function renderHome(main) {
       el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main').map(cardShell)),
       el('div', { class: 'col col-side' }, CARDS.filter((c) => c.col === 'side').map(cardShell)),
     ),
-    footNote(),
   );
   loadHome();
   if (refreshTimer) clearInterval(refreshTimer);
@@ -427,33 +429,41 @@ function tile(t, withIcon = true) {
   return a;
 }
 
+// A hub page shows only its destinations. Where a legacy tab moved to is one tap
+// away ("Where did things move?"); the migration prose is gone from the face.
 function renderGroup(main, g) {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   const parts = [
     el('section', { class: 'group-head' },
       el('div', { class: 'eyebrow', text: g.label }),
       el('h1', { text: g.question }),
-      el('p', { text: 'Each of these opens in the dashboard, where everything works exactly as before.' }),
     ),
-    el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
+    el('div', { class: 'tiles' }, hubTiles(g).map((t) => tile(t))),
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
   ];
-  if (g.hood && g.hood.length) {
+  const hood = hoodTiles(g);
+  if (hood.length) {
     parts.push(
       el('h2', { class: 'eyebrow section-label', text: 'Under the hood' }),
-      el('div', { class: 'tiles tiles-hood' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
+      el('div', { class: 'tiles tiles-hood' }, hood.map((t) => tile({ ...t, icon: 'wrench' }))),
     );
   }
-  parts.push(footNote());
+  const b = el('button', { class: 'link-btn moved-link', type: 'button', text: 'Where did things move?', 'aria-haspopup': 'dialog' });
+  b.addEventListener('click', () => movedSheet(g, movedList(g)));
+  parts.push(el('p', { class: 'foot-note' }, b));
   main.replaceChildren(...parts);
 }
 
-function footNote() {
-  return el('p', { class: 'foot-note' },
-    document.createTextNode('This is the new Instar console. Everything is still in the '),
-    el('a', { href: '/dashboard', text: 'legacy dashboard' }),
-    document.createTextNode('.'),
-  );
+/** Old tab → new place, one row each; every row is an ordinary link to the new home. */
+function movedSheet(g, moved) {
+  const rows = el('div', { class: 'rows moved-rows' }, moved.map((m) => el('a', { class: 'row moved-row', href: m.href },
+    el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: `${m.label} → ${m.to}` }), el('span', { class: 'row-sub', text: m.what ? `${m.group} · ${m.what}` : m.group })),
+    el('span', { class: 'row-end' }, el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })))));
+  for (const a of rows.querySelectorAll('a')) a.addEventListener('click', () => closeSheet());
+  sheet({ title: 'Where did things move?' },
+    el('p', { class: 'confirm-text', text: 'These tabs of the old dashboard now live inside another page. Tap one to open its new home.' }),
+    rows,
+    el('p', { class: 'card-note' }, document.createTextNode('The old tabs are still in the '), el('a', { href: '/dashboard', text: 'legacy dashboard' }), document.createTextNode('.')));
 }
 
 // ── routing ───────────────────────────────────────────────────────────────

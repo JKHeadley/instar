@@ -526,8 +526,8 @@ describe('Console Home E2E (feature is alive)', () => {
     if (approvalsRes.status === 503) expect(approvals.hidden).toBe(true); else expect(approvals.ok).toBe(true);
     const h = mandatesHeadline({ slips, approvals, audit });
     if (approvals.ok && approvals.rows.length) expect(h.tone).toBe('attn');
-    else expect(h).toEqual({ text: 'No slips — every agent-to-agent action is refused until you sign one.', tone: 'ok' });
-    expect(mandatesFacts({ slips, approvals, audit })).toContainEqual({ n: 'intact', label: 'decision record', tone: null });
+    else expect(h).toEqual({ text: 'No permission slips. Agents can still talk to each other; only actions that need a slip are refused.', tone: 'ok' });
+    expect(mandatesFacts({ slips, approvals, audit }).map((f) => f.label)).not.toContain('decision record'); // an intact record is not a first-screen chip; a broken one is
     // Every write the page offers is PIN-gated: without a PIN the server refuses (403) or says no PIN is configured (503); nothing answers 2xx.
     const future = new Date(Date.now() + 3600_000).toISOString();
     for (const [p, body] of [

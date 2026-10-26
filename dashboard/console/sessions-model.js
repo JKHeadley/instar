@@ -6,6 +6,9 @@
 // answers in words, and the WebSocket frames the terminal sends. Nothing here touches
 // the DOM.
 
+import { shortName } from './home-model.js';
+export { shortName };
+
 export const WORKING_MS = 2 * 60_000;   // activity under 2 min reads "working"
 export const QUIET_MS = 10 * 60_000;    // 10+ min without activity reads "quiet" (never "stuck")
 export const HISTORY_FIRST = 2000;      // lines the server sends on subscribe
@@ -32,7 +35,7 @@ export function modelWords(id) {
   if (!id || typeof id !== 'string') return null;
   const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
   let m = /^(fable|opus|sonnet|haiku)$/i.exec(id);
-  if (m) return `${cap(m[1].toLowerCase())}, version not recorded`;
+  if (m) return cap(m[1].toLowerCase());
   m = /^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:-(\d{8}))?$/.exec(id);
   if (m) return `${cap(m[1])} ${m[2]}${m[3] ? '.' + m[3] : ''}`;
   m = /^gpt-(\d+(?:\.\d+)?)(?:-([a-z]+))?$/.exec(id);
@@ -53,7 +56,7 @@ export function sessionKey(s) {
 
 /** The name the operator knows: the Telegram topic name when there is one. */
 export function sessionTitle(s) {
-  const n = String((s && (s.platformName || s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
+  const n = shortName(String((s && (s.platformName || s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim());
   return n.length > 80 ? n.slice(0, 77) + '…' : n || 'A session';
 }
 
@@ -181,8 +184,9 @@ export function partialWords(m) {
 
 /** The title bar under the name: "Mac Studio · Opus 5.5". */
 export function titleLine(s) {
-  return [s.machineNickname, modelWords(s.model) || 'model not recorded', s.type === 'job' ? 'scheduled job' : null].filter(Boolean).join(' · ');
+  return [s.machineNickname, modelWords(s.model), s.type === 'job' ? 'scheduled job' : null].filter(Boolean).join(' · ');
 }
+
 
 // ── Close ────────────────────────────────────────────────────────────────
 /** The exact request: local DELETE, or the relay to the owning machine. */

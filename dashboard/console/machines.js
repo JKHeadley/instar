@@ -3,7 +3,8 @@
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
 import { buildMachinesPage, ropesFor, healthOf, usageOf } from './machines-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { guardName } from './allowed-model.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'dot unknown', unknown: 'dot unknown' };
@@ -15,7 +16,8 @@ export async function renderMachines(main, ctx) {
   const live = sessions.ok && Array.isArray(sessions.data && sessions.data.sessions) ? sessions.data.sessions.filter((s) => s.status === 'running' || s.status === 'starting') : [];
   const byMachine = {};
   const names = {};
-  for (const s of live) { byMachine[s.machineId] = (byMachine[s.machineId] || 0) + 1; if (s.id) names[s.id] = s.name; }
+  // Resource rows are keyed `session:<id>`; name them by every id a session record carries.
+  for (const s of live) { byMachine[s.machineId] = (byMachine[s.machineId] || 0) + 1; for (const k of [s.id, s.tmuxSession, s.sessionId]) if (k) names[k] = s.name || s.tmuxSession || k; }
   const gs = guards.ok && guards.data && guards.data.summary;
   const needsLook = gs ? (Number(gs.offDeviant) || 0) + (Array.isArray(gs.loadBearingGapKeys) ? gs.loadBearingGapKeys.length : 0) : 0;
   const page = buildMachinesPage(pool, health, Date.now(), { sessionsByMachine: sessions.ok ? byMachine : undefined, needsLook });
@@ -29,8 +31,10 @@ export async function renderMachines(main, ctx) {
         m.isSelf ? el('span', { class: 'mc-tag', text: 'this one' }) : null,
         m.leading ? el('span', { class: 'mc-tag', text: 'leading' }) : null,
         el('span', { class: 'mc-state', text: m.label })),
-      el('span', { class: 'mc-line', text: [m.verdict ? `${m.verdict}${typeof m.perCore === 'number' ? ` · load ${m.perCore.toFixed(1)} per core` : ''}` : 'no load reading', typeof m.sessions === 'number' ? `${m.sessions} ${m.sessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean).join(' · ') }),
-      el('span', { class: 'mc-evidence', text: m.age ? `last evidence ${m.age}${m.estimated && !page.single ? ' (estimated)' : ''}` : 'no evidence since this server started' }),
+      // The face: what is running there, and the load only when there is a reading worth a
+      // word. "no load reading" and "last evidence just now" are housekeeping (in the sheet).
+      el('span', { class: 'mc-line', text: [m.verdict && m.verdict !== 'ok' ? `${m.verdict}${typeof m.perCore === 'number' ? ` · load ${m.perCore.toFixed(1)} per core` : ''}` : null, typeof m.sessions === 'number' ? `${m.sessions} ${m.sessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean).join(' · ') || (m.state === 'ok' && typeof m.sessions === 'number' ? 'nothing running' : '') }),
+      el('span', { class: 'mc-evidence', text: m.state === 'ok' && (m.age === 'just now' || !m.age) ? '' : m.age ? `last evidence ${m.age}${m.estimated && !page.single ? ' (estimated)' : ''}` : 'no evidence since this server started' }),
     );
     card.addEventListener('click', () => openMachine(m, { get, health, guards, names }));
     return card;
@@ -39,7 +43,7 @@ export async function renderMachines(main, ctx) {
     pageHead({ eyebrow: 'Capacity · Machines', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     !sessions.ok ? note(`Couldn't count sessions: ${sessions.reason}.`) : null,
     cards,
-    legacyLink(),
+    fold('Also in the legacy dashboard', legacyLink()),
   );
   // #/capacity/machines?this=1 (the Health and Resource usage tiles) opens This machine once;
   // the query is dropped so a refresh or a closed sheet never re-opens it.
@@ -83,16 +87,25 @@ async function openMachine(m, { get, health, guards, names }) {
   const panel = sheet({ title: m.name }, ...body, details(m.record, ['machineId', 'nickname', 'online', 'routerReceivedAt', 'selfReportedLastSeen', 'loadAvg', 'ropeCondition', 'clockSkewStatus', 'pollingActive']));
   if (m.isSelf) {
     const sb = panel.querySelector('.sheet-body');
-    const [sys, res] = await Promise.all([get('/systems/status'), get('/resources/summary?sinceHours=1')]);
+    const [sys, res, local] = await Promise.all([get('/systems/status'), get('/resources/summary?sinceHours=1'), get('/sessions')]);
     const h = healthOf(sys);
-    const u = usageOf(res, names);
+    // Name the resource rows from this machine's own session list too (the pool read may have timed out).
+    const named = { ...names };
+    if (local.ok && Array.isArray(local.data && local.data.sessions)) for (const x of local.data.sessions) for (const k of [x.id, x.tmuxSession, x.sessionId]) if (k && !named[k]) named[k] = x.name || x.tmuxSession || k;
+    const u = usageOf(res, named);
     const g = guards.ok && guards.data && Array.isArray(guards.data.guards) ? guards.data.guards : null;
     const isOn = (e) => e === 'on-confirmed' || e === 'on-unverified' || e === 'on-stale' || e === 'on-blind';
     const wrong = g ? g.filter((x) => x.effective && !isOn(x.effective) && !(x.effective === 'off' && x.offClass === 'dark-default') && x.effective !== 'on-dry-run') : null;
     const after = sb.querySelector('.raw');
-    sb.insertBefore(block('My parts here', h.ok ? el('p', { class: 'card-line', text: h.summary }) : note(`Can’t tell: ${h.reason}.`), h.ok ? rowsList(h.rows.slice(0, 12)) : null), after);
+    // Parts that need a look sit on the face; the working ones (and their counters, "21481
+    // interventions") are one tap deeper.
+    const needLook = h.ok ? h.rows.filter((r) => r.tone === 'attn') : [];
+    const working = h.ok ? h.rows.filter((r) => r.tone !== 'attn') : [];
+    sb.insertBefore(block('My parts here', h.ok ? el('p', { class: 'card-line', text: h.summary }) : note(`Can’t tell: ${h.reason}.`), needLook.length ? rowsList(needLook) : null,
+      working.length ? fold(needLook.length ? `The ${working.length} working` : 'Show them', rowsList(working.slice(0, 12))) : null), after);
     sb.insertBefore(block('What’s using it', u.ok ? el('p', { class: 'card-line', text: u.summary }) : note(`Can’t tell: ${u.reason}.`), u.ok ? rowsList(u.rows) : null), after);
-    sb.insertBefore(block('Safety checks', wrong === null ? note('Can’t tell: the safety checks did not answer.') : wrong.length ? rowsList(wrong.map((x) => ({ main: x.criticalPath || x.key, sub: x.criticalPath ? x.key : '', end: 'off', tone: 'attn' }))) : el('p', { class: 'card-line', text: 'Every safety check that should be on is on.' })), after);
+    // Safety checks carry plain names; the raw setting key is in each row's second line.
+    sb.insertBefore(block('Safety checks', wrong === null ? note('Can’t tell: the safety checks did not answer.') : wrong.length ? rowsList(wrong.map((x) => ({ main: x.criticalPath || guardName(x.key), sub: x.criticalPath ? guardName(x.key) : '', end: 'off', tone: 'attn' }))) : el('p', { class: 'card-line', text: 'Every safety check that should be on is on.' })), after);
   }
   if (m.id !== 'self') panel.querySelector('.sheet-body').append(renameBlock(m, get));
 }

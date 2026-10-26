@@ -2,7 +2,7 @@
 // Read with Home's rules; actions use the bearer token only (no PIN on these routes).
 
 import { buildPromisesPage, storyOf, actionsFor } from './promises-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const RAW_KEYS = ['id', 'status', 'owner', 'blockedOn', 'actionClass', 'topicId', 'createdAt', 'nextUpdateDueAt', 'hardDeadlineAt', 'checkInAt', 'lastHeartbeatAt', 'heartbeatCount', 'cadenceMs', 'beaconEnabled', 'beaconPaused', 'beaconPausedReason', 'resolvedAt', 'resolution', 'originMachineId', 'viewSource', 'stalenessMs'];
@@ -40,7 +40,6 @@ export async function renderPromises(main, ctx) {
         { n: n.carrying + n.dueSoon, label: 'I’m carrying', href: '#/work/promises?s=carrying' },
       ],
     }),
-    page.coverage ? note(page.coverage) : null,
     el('div', { class: 'page-sections' },
       section({ id: 'waiting', title: 'Waiting on you', rows: s.waiting.map((r) => ({ ...r, tone: 'attn' })), empty: 'Nothing is waiting on you.', onRow: open }),
       n.missed ? section({ id: 'missed', title: 'Missed', rows: s.missed.map((r) => ({ ...r, tone: 'bad' })), onRow: open }) : null,
@@ -49,6 +48,8 @@ export async function renderPromises(main, ctx) {
       section({ id: 'handled', title: 'Older, still open', rows: s.handled.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }),
       section({ id: 'closed', title: 'Closed this week', rows: s.closed, collapsed: true, onRow: open }),
     ),
+    // Which machines this view covers is housekeeping: one tap deeper, never on the face.
+    page.coverage ? fold('Details', note(page.coverage)) : null,
     legacyLink(),
   );
   // A fact links to its section: open it and scroll there.

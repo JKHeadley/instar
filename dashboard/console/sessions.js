@@ -373,20 +373,20 @@ function moreSheet(view) {
   const blocks = [story([
     { label: 'Machine', text: s.machineNickname || 'This machine' },
     { label: 'Model', text: modelWords(s.model) || 'not recorded' },
-    { label: 'Kind', text: s.type === 'job' ? 'a scheduled job' : 'a conversation' },
-    { label: 'Chat', text: s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)' },
   ])];
   const actions = el('div', { class: 'sheet-actions sess-actions' });
-  if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Switch door and model', 'data-door': '1', onclick: () => doorSheet(view) }));
+  if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Change model', 'data-door': '1', onclick: () => doorSheet(view) }));
   actions.append(el('button', { class: 'btn-quiet', type: 'button', text: 'Paste long text', 'data-paste-here': '1', onclick: () => pasteSheet(view.key) }));
   blocks.push(actions, closeBlock(view));
   const t = s.telemetry || {};
   blocks.push(details({
+    name: s.name, kind: s.type === 'job' ? 'a scheduled job' : 'a conversation',
+    chat: s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)',
     tmuxSession: s.tmuxSession, id: s.id, machineId: s.machineId, model: s.model, startedAt: s.startedAt,
     toolsUsed: Array.isArray(t.toolsUsed) && t.toolsUsed.length ? t.toolsUsed.join(', ') : null,
     backgroundTasks: Array.isArray(t.subagentsSpawned) ? t.subagentsSpawned.length : null,
     eventCount: t.eventCount ?? null, lastActivity: t.lastActivity || null,
-  }, ['tmuxSession', 'id', 'machineId', 'model', 'startedAt', 'lastActivity', 'toolsUsed', 'backgroundTasks', 'eventCount']));
+  }, ['name', 'kind', 'chat', 'tmuxSession', 'id', 'machineId', 'model', 'startedAt', 'lastActivity', 'toolsUsed', 'backgroundTasks', 'eventCount']));
   sheet({ title: view.titleSub.closest('.sess-open').querySelector('.sess-title').textContent }, ...blocks);
 }
 

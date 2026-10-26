@@ -83,6 +83,8 @@ export function sheet({ title, onClose }, ...content) {
     el('div', { class: 'sheet-body' }, content));
   const scrim = el('div', { class: 'scrim', onclick: () => closeSheet() });
   const root = el('div', { class: 'sheet-root' }, scrim, panel);
+  // One placement everywhere: the sheet is appended to <body>, never inside the page, so
+  // a sticky or transformed ancestor can never shift it (bottom on a phone, right on desktop).
   document.body.append(root);
   const onKey = (e) => { if (e.key === 'Escape') closeSheet(); };
   document.addEventListener('keydown', onKey);
@@ -104,6 +106,17 @@ export function sheetIsOpen() { return Boolean(openSheet); }
 /** Story lines: label + text pairs. */
 export function story(lines) {
   return el('dl', { class: 'story' }, lines.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]));
+}
+
+/**
+ * Something the operator can dive into but need not see first: a closed fold with a
+ * plain label. The first-screen rule (console-makeover.md): housekeeping, coverage
+ * notes, explanations and ids live here, never on the page face.
+ */
+export function fold(label, ...kids) {
+  const d = el('details', { class: 'raw more-fold' }, el('summary', { text: label }));
+  for (const k of kids.flat()) if (k != null && k !== false) d.append(k);
+  return d;
 }
 
 /** A fold with raw fields (identifiers last, mono). */
