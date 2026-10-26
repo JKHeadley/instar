@@ -28,9 +28,9 @@ Shared rules for all seven (from the makeover spec and the research synthesis):
 
   | Adapter | Routes in these two groups |
   |---|---|
-  | (a) Bearer only | Pairing: make an invite, check an invite, decline, cancel an invite, dismiss a restart notice, turn pairing on (`POST /threadline/pairing/invites`, `…/invites/inspect`, `…/:iid/decline`, `DELETE …/invites/:iid`, `DELETE …/restart-notices/:id`, `POST /threadline/pairing/enable`); Telegram mirroring `PATCH /threadline/telegram-bridge/config`; secrets `POST /secrets/request`, `DELETE /secrets/pending/:token`; autonomy profile `POST /autonomy/profile`; feature switches `POST /features/:id/transition`; rubber-stamp dismiss; files `POST /api/files/save`, `PATCH /api/files/config` (with `X-Instar-Request: 1`); preference conflicts `POST /state/resolve-conflict` |
+  | (a) Bearer only | Pairing: make an invite, check an invite, decline, cancel an invite, dismiss a restart notice, turn pairing on (`POST /threadline/pairing/invites`, `…/invites/inspect`, `…/:iid/decline`, `DELETE …/invites/:iid`, `DELETE …/restart-notices/:id`, `POST /threadline/pairing/enable`); Telegram mirroring `PATCH /threadline/telegram-bridge/config`; secrets `POST /secrets/request`, `DELETE /secrets/pending/:token`; autonomy profile `POST /autonomy/profile`; feature switches `POST /features/:id/transition`; rubber-stamp dismiss; files `POST /api/files/save`, `PATCH /api/files/config` (with `X-Instar-Request: 1`) |
   | (b) Operator session (held for its server lifetime) | Message origins: `GET /telegram/origins*`, `GET /telegram/origins/status` and `POST /telegram/origin-display` (header only, `src/server/telegramOriginRoutes.ts:24`, `src/server/originDisplayPreferences.ts:18`) |
-  | (c) Body PIN, cleared after the one action | Pairing approve / finish / not them / it's one of my agents (`checkMandatePin`, `src/server/routes.ts:19403`–`:19446`); mandate issue, revoke, grants (`:13804`, `:13926`, `:13995`); authorization approve and deny (`:14125`, `:14171`); accepting a dark-but-load-bearing guard's fallback, and revoking that (`:10622`, `:10643`) |
+  | (c) Body PIN, cleared after the one action | Pairing approve / finish / not them / it's one of my agents (`checkMandatePin`, `src/server/routes.ts:19403`–`:19446`); mandate issue, revoke, grants (`:13804`, `:13926`, `:13995`); authorization approve and deny (`:14125`, `:14171`); accepting a dark-but-load-bearing guard's fallback, and revoking that (`:10622`, `:10643`; this machine's rows only) |
 
   Adapter (c) actions ask every time. That is a deliberate change from the legacy pairing
   card, which kept the raw PIN for the whole page (`dashboard/pairing.js:14`, `:225`); the
@@ -92,20 +92,20 @@ inline JS `index.html:7107–7352`.
 
 **What is wrong with it today.**
 - The question "is that agent there?" has no answer on the page, although `/threadline/peers/health` (dark, queued, last heard, `connectedNow`) and `/threadline/health` (my own relay state) exist.
-- Thread rows lead with a raw thread id and "msgs · in / out" (`index.html:7237`); messages carry `trust:verified` and an 8-char id as metadata (`:7298`).
+- Thread rows lead with the agent's name, but put a 16-character thread id on the second line and "msgs · in / out" below it (`index.html:7250`–`:7253`); messages carry `trust:verified` and an 8-char id as metadata (`:7298`).
 - The conversation view is a fixed `280px 1fr` two-pane grid (`index.html:4335`) — unusable at 390 px.
-- Allow/deny lists ask Justin to type a fingerprint, though the agent already knows its peers (`knownPeers` from `/threadline/pairing/invites`).
+- Allow/deny lists ask Justin to type a fingerprint, though the agent already knows its peers (`knownPeers` from `/threadline/pairing/invites`, `src/server/routes.ts:19347`). Typing does have one use the native page keeps: adding a name or fingerprint for an agent not yet known, and removing an entry whose agent is no longer listed (`index.html:4317`, `:4326`, `:7171`).
 - "Pairing is turned off" is a dead end (`pairing.js:209`) while `POST /threadline/pairing/enable` exists.
 - Three sections, three Refresh buttons, ~1,993 words loaded (UX standard baseline).
 
 **The new design.**
 - *Arrival:* headline — "PP is waiting for you to finish pairing." / "2 agents, both reachable." / "1 agent hasn't answered in 6 h." Facts: agents paired · waiting on you · not answering · my relay (only shown when not connected: "I'm not connected to the agent network — checking again").
-- *Layout:* (1) **Waiting on you** cards, only when any (restart notice, leak alarm, approve, finish). (2) **Agents** — one row per known agent (union of pairings and peer health): name, plain state ("Paired · answered 4 min ago", "Messages waiting since 09:12 — may be offline", "Pairing not finished"), chevron. (3) **Connect another agent** button. (4) collapsed **Mirroring to Telegram**.
+- *Layout:* (1) **Waiting on you** cards, only when any (restart notice, leak alarm, approve, finish). (2) **Agents** — one row per agent from four sources: pairings, peer health, the counterparties in this machine's thread history (the legacy conversation list reads inbox and outbox directly, so it includes agents with no pairing or health row, `src/threadline/ThreadlineObservability.ts:118`, `:145`), and every name or fingerprint already in a mirroring rule. Each row: name, plain state ("Paired · answered 4 min ago", "Messages waiting since 09:12 — may be offline", "Pairing not finished", or **"History only"** for an agent we have conversations with but no pairing), chevron. A history-only row is never shown as paired, and its conversations stay reachable even when pairing or peer health is off. (3) **Connect another agent** button. (4) collapsed **Mirroring to Telegram**, ending with a small **Advanced: edit the rules** disclosure: the allow and deny lists as plain rows with Remove, and one field to add a name or fingerprint (the same `PATCH /threadline/telegram-bridge/config` the legacy card sends).
 - *Agent detail (sheet → full page on desktop):* status line with evidence and age; its conversations newest first, each opening a chat-bubble view (in left, out right, out-of-turn arrival is normal — Muse); per-message footer only on tap (time, delivery outcome); "Mirror this agent to Telegram: always / never / default" (writes allow/deny list — no typing); short fingerprint under "For support".
 - *Primary actions:* Approve / Finish are one tap on the waiting card, then the PIN sheet (adapter c: asked for this action, cleared after it). "Connect another agent" opens a sheet: who it's for (Someone new / known agents), valid 1 h or 24 h, **Make invite** → the invite text with **Copy** and **Share** (Web Share API on phone) and the plain instruction "Send this privately to their person." A second tab in the same sheet: **I was sent one** → paste → **Check** → the approve card.
 - *Secondary / destructive:* Decline (bearer), Not them (red, confirm sheet: "That invite is used up", then PIN), Cancel invite (bearer), "It's one of my agents" (PIN), Dismiss notice (bearer) — in a "…" menu on each card or row. Search lives behind a search icon in the Agents header and searches all messages. Bridge switches stay in the collapsed section; turning the master switch off shows the consequence ("No agent conversations will reach Telegram").
-- *Honest states:* pairing 503 "turned off" → card with **Turn on pairing** (`POST /threadline/pairing/enable`; shows the returned `sayToPerson`, polls `GET …/enable`; states "This restarts my server; this page reconnects"); 503 "runs on another machine" → names that machine from `GET /pool/placement` if known; peer health 503 → agent rows show "Can't tell if it's reachable"; thread read failure → can't-tell block in the detail, list kept; stale peer row past 15 min → age shown.
-- *Multi-machine:* `GET /threadline/peers/health?scope=pool` and `/threadline/conversations?scope=mesh` — each conversation names its holder machine when not this one ("This conversation lives on Mac Studio"). Unreachable peers named in a partial note.
+- *Honest states:* pairing 503 "turned off" → card with **Turn on pairing** (`POST /threadline/pairing/enable`; shows the returned `sayToPerson`, polls `GET …/enable`; states "This restarts my server; this page reconnects"); 503 "runs on another machine" (`this machine does not hold the Threadline relay identity`, `src/server/routes.ts:19559`) → names the lease holder from `GET /pool` → `router.holder` (`src/server/routes.ts:21533`–`:21535`; the lease holder runs the relay), mapped to its nickname, and links to that machine's console; with no pool, "Pairing runs on another of my machines" without a name. (Not `GET /pool/placement`: it requires `?topic=` and answers 400 without it, `:22478`.); peer health 503 → agent rows show "Can't tell if it's reachable"; thread read failure → can't-tell block in the detail, list kept; stale peer row past 15 min → age shown.
+- *Multi-machine:* `GET /threadline/peers/health?scope=pool` and `/threadline/conversations?scope=mesh` — each conversation names its holder machine when not this one ("This conversation lives on Mac Studio"). The mesh route supplies ownership records only (`src/server/routes.ts:18870`); the messages themselves come from `/threadline/observability/threads/:threadId`, which reads this machine's files only (`:18904`). So a remote conversation is a summary row with **Open on Mac Studio** (a link to that machine's console), never an empty bubble view presented as its history. Unreachable peers named in a partial note.
 - *Rough sketch:*
 ```
 ┌ Other agents ───────────────────┐
@@ -120,20 +120,23 @@ inline JS `index.html:7107–7352`.
 │ ● PP    Paired · 4 min ago    › │
 │ ● Codey Paired · 2 h ago      › │
 │ ◌ Scout Messages waiting 6 h  › │
+│ ○ Muse  History only          › │
 │ [ + Connect another agent ]     │
 │ ▸ Mirroring to Telegram         │
 └─────────────────────────────────┘
 ```
 
 **Merge / split / cut.** Pairing, peer health and conversations merge into per-agent
-records. Bridge allow/deny lists become a per-agent choice (the lists remain the storage).
-Free-text "agent filter" and "has Telegram topic" filter are cut in favour of search plus
-per-agent grouping; nothing they returned is lost.
+records. Bridge allow/deny lists become a per-agent choice (the lists remain the storage),
+with the small advanced rule editor kept for names not in the agent list. Free-text "agent
+filter" and "has Telegram topic" filter are cut in favour of search plus per-agent grouping;
+nothing they returned is lost, because agents known only from thread history, and agents
+named only in a rule, still get a row.
 
 **Data.** Existing: `/threadline/pairing*`, `/threadline/peers/health?scope=pool`,
 `/threadline/health`, `/threadline/conversations?scope=mesh`,
 `/threadline/observability/{threads,threads/:id,search}`, `/threadline/telegram-bridge/config`,
-`/threadline/pairing/enable`, `/pool/placement`. None new.
+`/threadline/pairing/enable`, `/pool` (`router.holder`, to name the relay machine). None new.
 
 **Effort and order.** L. README step 5 (after Permission slips and Passwords & keys); needs the
 PIN sheet and the sheet pattern from step 1.
@@ -161,26 +164,28 @@ with the operator session (`X-Instar-Operator-Session`), **Unlock with PIN** on 
 - Settings are a drill-down tile, so the most common change takes three taps.
 
 **The new design.**
-- *Arrival:* headline from `/health` `telegramOrigin.heldForward` plus status — "3 replies to you are held; the oldest since 09:40." / "No replies held." / "Can't tell whether replies are held." Facts: held now · expired undelivered (from `expiredUnreported`) · recording (on / not fully set up) · footer on messages (shown / hidden).
-- *Layout:* (1) **Held replies** list when any — conversation name, how long held, why in plain words (`hold_reason` mapped: "routed through Mac Studio", "outside the allowed chat"), tap for detail. (2) **Recent messages** — one line each: conversation, time, "Mac Studio · Claude Code · Opus 5.5", delivered/held/failed dot; tap opens the full record with plain labels ("Signature checks out", "Machine name came from this machine's settings"). (3) **Footer on messages** row → settings sheet.
+- *Arrival:* headline from `/health` `telegramOrigin.heldForward` plus status — "3 replies to you are held; the oldest since 09:40." / "No replies held." / "Can't tell whether replies are held." Facts: held now · expired undelivered (from `expiredUnreported`) · recording (on / partly). Whether the footer is shown is the first line of Settings, not a fact.
+- *Layout:* (1) **Held replies** list when any — conversation name, how long held, why in plain words (`hold_reason` mapped: "waiting to be routed through the machine that holds the conversation", "addressed outside the chats this agent may write to"; `dashboard/console/messages-model.js:7`), tap for detail. The list is the `held[]` array `/telegram/origins/status` already returns (`src/messaging/telegram-origin/TelegramOriginRuntime.ts:266`). (2) **Settings** — the **Footer on messages** row → settings sheet. (3) **Recording details**, collapsed, only when some part of recording is not ready. (4) **The message log** (who wrote each message) stays in the legacy tab for now, as a link at the foot of the page; see *Recent messages, later* below.
 - *Primary action:* reading. The settings sheet: "Show who wrote each message" master switch, then machine / app / model switches, a "For one conversation" picker with "Same as everywhere" — one Save, conflict shown as "Changed elsewhere — reload to see it".
-- *Secondary:* Load more at the list end; a "Recording details" disclosure holds enrollment, counts and freshness verbatim for support.
+- *Secondary:* a "Recording details" disclosure holds the parts of recording that are not ready, verbatim for support.
+- *Recent messages, later:* a native list (conversation, time, "Mac Studio · Claude Code · Opus 5.5", delivered/held/failed dot, tap for the full record in plain labels, Load more) is built only when the server can return the newest messages first. `GET /telegram/origins` takes a `limit`, a `cursor` and exact-match filters and nothing else (`src/server/telegramOriginRoutes.ts:141`–`:149`), so a native page could not promise "recent". Asked for as feedback fb-bd38d155-5ea; until it lands, the legacy tab keeps the log.
 - *Honest states:* operator session missing → one unlock card ("Message records need your PIN") using the shared PIN sheet with adapter (b): `POST /dashboard/unlock`, the session token held in page memory only until its server expiry (15 minutes by default, `src/server/DashboardOperatorSessionStore.ts:18`), then asked again; the raw PIN is not kept; status unavailable → can't tell, held count never shown as zero; pool audit failing → local list with "Only this machine's messages — the others didn't answer"; `topicsMayBeIncomplete` → "Some conversations aren't listed".
-- *Multi-machine:* recent messages use `scope=pool`; coverage line always present ("All 3 machines" / "This machine only"). Held replies are per machine; each row names its machine.
+- *Multi-machine:* held replies are this machine's (the status route is local); the page says "on this machine" when the pool has more than one. When the native message log arrives it uses `scope=pool` with a coverage line ("All 3 machines" / "This machine only").
 - *Rough sketch:*
 ```
 ┌ Messages to you ────────────────┐
 │ 3 replies to you are held.      │
 │ Oldest since 09:40.             │
 │ held 3 · expired 0 · recording on│
-├ Held ───────────────────────────┤
-│ ▌Instar 2.0 · 42 min            │
-│ ▌routed through Mac Studio    › │
-├ Recent · all 3 machines ────────┤
-│ ● Echo desk 10:14 Studio·Opus › │
-│ ● Lifeline  10:02 Mini·Codex  › │
-│ ○ Bugs      09:40 held        › │
+├ Held replies ───────────────────┤
+│ ▌Instar 2.0             42 min  │
+│ ▌waiting to be routed through │
+│ ▌the machine that holds it    › │
+├ Settings ───────────────────────┤
 │ Footer on messages: shown     › │
+│ ▸ Recording details             │
+│ The full message log is in the  │
+│ legacy Message origins tab ↗    │
 └─────────────────────────────────┘
 ```
 
@@ -188,11 +193,10 @@ with the operator session (`X-Instar-Operator-Session`), **Unlock with PIN** on 
 today links to this legacy tab). Display settings also linked from the Settings page.
 Nothing cut; the support fields move under "Recording details".
 
-**Data.** Existing: `/health` (`telegramOrigin.heldForward`), `/telegram/origins/status`,
-`/telegram/origins?scope=pool`, `/telegram/origins/:id`, `/telegram/origin-display`,
-`/dashboard/unlock`. A held-replies **list** (not just the count) is needed: the smallest
-form is an optional `held[]` already present in `/telegram/origins/status` (per CLAUDE.md
-`held[].hold_reason`); confirm at build, else add it there.
+**Data.** Existing: `/health` (`telegramOrigin.heldForward`), `/telegram/origins/status`
+(its `held[]` list, confirmed at build), `/telegram/origin-display`, `/dashboard/unlock`.
+Later, with the native message log: `/telegram/origins?scope=pool` and
+`/telegram/origins/:id`, once a newest-first option exists (fb-bd38d155-5ea).
 
 **Effort and order.** M. README step 3; introduces the adapter-(b) operator session in the console.
 
@@ -339,7 +343,7 @@ may do alone. *"How independent is the agent right now, and what is switched on?
 
 **The new design.**
 - *Arrival:* the profile as a sentence, large: "I handle routine work on my own and ask you before important decisions." (Supervised). Facts: profile · safety checks ("2 off where they should be on", amber; hidden when all are on) · features on (n of 13) · suggestions waiting.
-- *Layout:* (1) **Profile** — four-step segmented control (Cautious … Autonomous) under the sentence, each step a one-line description; below it "What that means right now": updates install themselves (yes/no), I restart after updates (yes/no), I ask before raising my own trust (yes/no) from `resolved`. (2) **Safety checks** — the one home of the guard list (from `GET /guards`, and `?scope=pool` on a multi-machine install, with a machine chip per row): checks that are off where they should be on, or on but unverified, are listed first as rows, each saying which machine and what the check protects; "all 38 others on" is collapsed below. Home's "What I'm allowed to do" card opens this page, so a deviant check is one tap from Home; Machines shows only a count that links here. A dark-but-load-bearing check offers **Accept the risk** and **Stop accepting it** (`POST`/`DELETE /guards/:key/accept-fallback`, adapter c, with the reason and owner the route requires). (3) **Suggestions** — only when any (see below). (4) **Features** — grouped lists, each row name + one-liner + state word and a switch. (5) **History** collapsed.
+- *Layout:* (1) **Profile** — four-step segmented control (Cautious … Autonomous) under the sentence, each step a one-line description; below it "What that means right now": updates install themselves (yes/no), I restart after updates (yes/no), I ask before raising my own trust (yes/no) from `resolved`. (2) **Safety checks** — the one home of the guard list (from `GET /guards`, and `?scope=pool` on a multi-machine install, with a machine chip per row): checks that are off where they should be on, or on but unverified, are listed first as rows, each saying which machine and what the check protects; "all 38 others on" is collapsed below. Home's "What I'm allowed to do" card opens this page, so a deviant check is one tap from Home; Machines shows only a count that links here. A dark-but-load-bearing check on **this machine's** row offers **Accept the risk** and **Stop accepting it** (`POST`/`DELETE /guards/:key/accept-fallback`, adapter c, with the reason and owner the route requires); the confirmation names the machine ("Accept this risk on Mac Studio"). A row from another machine gets **Open on Mac Mini** (a link to that machine's console) instead: both routes write with this server's own state directory and machine id (`src/server/routes.ts:10637`, `:10646`), and the same check key exists on every machine, so a button here would change this machine's record while the operator meant the other one. No PIN or operator session is forwarded to another server. (3) **Suggestions** — only when any (see below). (4) **Features** — grouped lists, each row name + one-liner + state word and a switch. (5) **History** collapsed.
 - *Turning a feature on or off is driven by the server's own state machine.* The sheet reads the feature's current state and its `validTransitions` from `GET /features/:id` (`src/server/routes.ts:40029`, `:40044`) and offers only those, in words; it never assumes a path. The graph applies to every tier (`src/core/FeatureRegistry.ts:177`): a feature not yet discovered can only become *aware*; *aware* can become *interested*, *deferred* or *declined*; only *interested* can become *enabled*; *deferred* and *declined* go back through *aware*; *enabled* can become *disabled* and *disabled* can become *enabled* again directly. So "Turn on" for a feature that is not yet interested sends the steps one at a time (`POST /features/:id/transition`, `:40069`), re-reading `validTransitions` after each, and stops with the server's reason at the first refusal. For network and self-governing tiers the last step carries a consent record built from the data implications the sheet showed, with mechanism `explicit-written` (refused without one, `src/core/FeatureRegistry.ts:468`); for self-governing, the server answers the first enable with a challenge, which the sheet presents and completes ("Confirm: let the agent act without asking for this", `:480`). Turning off is one tap with an undo toast; re-enabling a disabled feature is one step.
 - *Suggestions:* earned trust opportunities (`/autonomy/elevation/opportunities`) are shown as information with **Not now** (`/autonomy/elevation/dismiss`). There is **no accept button**: `POST /autonomy/elevation/record` only records a decision event for tracking (`src/server/routes.ts:31674`) and changes no permission, so a "Yes" button would pretend to grant something. The suggestion instead says how to act on it today ("To allow this, move the profile to Collaborative, or tell me in chat"). An accept button arrives only with a real apply route.
 - *Profile change:* tapping a step opens a confirm sheet listing what changes ("Updates will install without asking. You'll get a summary instead of approvals."), an optional "why" line (sent as `reason`), **Switch**.
@@ -357,6 +361,7 @@ may do alone. *"How independent is the agent right now, and what is switched on?
 │ restart after update · yes      │
 ├ Safety checks · 2 need a look ──┤
 │ ▲ Watchdog off · Mac Mini     › │
+│   [Open on Mac Mini ↗]          │
 │ ▲ Reaper unverified · Studio  › │
 │   36 others on                ▾ │
 ├ Suggestion ─────────────────────┤
@@ -414,7 +419,7 @@ polled, all read-only.
 
 **The new design.**
 - *Arrival:* "I've picked up 7 things about how you like to work." / "Nothing yet — correct me the same way twice and it shows up here." Facts: preferences · new this week · corrections being watched · conflicts between machines (only when any).
-- *Layout:* (1) **How you like things** — each preference as a quoted sentence ("Lead with the short answer"), under it "learned Oct 12 · seen 4 times". Tap → sheet: the sentence, where it came from (linked corrections), when it was learned, how often it was seen. Read only in this build. (2) **Two machines disagree** — only when `/state/conflicts` has preference conflicts: both versions side by side, **Keep this one** each (`POST /state/resolve-conflict`, which exists). (3) **Things I'm still watching** — corrections not yet a preference, plain status ("Seen twice, waiting for a third day"). (4) A quiet line: "To change one, tell me in chat." No edit, forget or "tell me directly" controls in this build.
+- *Layout:* (1) **How you like things** — each preference as a quoted sentence ("Lead with the short answer"), under it "learned Oct 12 · seen 4 times". Tap → sheet: the sentence, where it came from (linked corrections), when it was learned, how often it was seen. Read only in this build. (2) **Two machines disagree** — only when `/state/conflicts` has preference conflicts: an advisory line per conflict ("Mac Mini and Mac Studio learned different versions of this; I use both as hints until it is settled"), with which machines and when. No **Keep this one** button in this build: the conflict ledger holds each version's machine and clock stamp, not the preference text (`src/core/ConflictStore.ts:46`–`:49`), and `POST /state/resolve-conflict` only marks the conflict resolved (`src/server/routes.ts:22452`; `src/core/ConflictStore.ts:220`–`:249`), leaving it to the caller to write the chosen preference, which that route never does. A button would close the warning without the choice taking effect. Showing both texts, applying the winner, replicating it and recording that the operator chose it belong to the later preference-write change. (3) **Things I'm still watching** — corrections not yet a preference, plain status ("Seen twice, waiting for a third day"). (4) A quiet line: "To change one, tell me in chat." No edit, forget or "tell me directly" controls in this build.
 - *Primary action:* reading. Learned preferences stay advisory, as today; none is presented as something the operator said.
 - *Honest states:* 503 → "Learning from corrections is off on this agent" (no fake empty list); preferences read fails → can't tell, corrections still shown; stale → last good list with age; a replicated preference from another machine is marked "learned on Mac Mini".
 - *Multi-machine:* preferences union across machines when replication is on (`scope: mesh` in the session-context response); rows from other machines say so; forgetting propagates as a tombstone.
@@ -431,7 +436,7 @@ polled, all read-only.
 │  Oct 3 · seen 6 times · Mini  › │
 ├ Still watching (3) ─────────────┤
 │ Plainer wording — seen twice  › │
-│ [ Tell me something directly ]  │
+│ To change one, tell me in chat. │
 └─────────────────────────────────┘
 ```
 
@@ -441,8 +446,9 @@ Verification observations (`GET /completion-claim/audit?limit=20`,
 section, **Checks on my own claims** (`under-the-hood.md`); until that section ships, the
 legacy tab keeps them, linked from the hood tile. Nothing is deleted.
 
-**Data.** Existing: `/preferences/session-context`, `/corrections`, `/state/conflicts`,
-`/state/resolve-conflict`. **New for this build, one read:**
+**Data.** Existing: `/preferences/session-context`, `/corrections`, `/state/conflicts`
+(read only; `/state/resolve-conflict` is not called in this build, see above). **New for
+this build, one read:**
 - `GET /preferences` → `{ entries: [{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }] }` (the structured `PreferenceEntry`, `src/core/PreferencesManager.ts:40`; `violationPattern` omitted). Read only; it replaces parsing the formatted text block.
 
 **Later, a separate backend change (not a small route wrapper).** Editing, forgetting and
@@ -462,6 +468,7 @@ own before any button ships:
   provenance would be lost on other machines; and the session-context read can take the
   union of machines' copies (`src/server/routes.ts:28098`), so "forget" must be shown to
   remove every machine's copy and not return through that union.
+- *Settling a conflict between machines.* "Keep this one" needs the two versions' texts (re-derived from the union reader), a write of the chosen one as a normal replicated record, and operator attribution; the existing resolve route records only the decision.
 - *Concurrent edits and re-learning.* What happens when two machines edit the same
   preference, and whether a forgotten preference may be learned again from new
   corrections, must be decided before "I'll stop loading this" can be promised.
@@ -491,7 +498,7 @@ change it safely."*
 - Deep links `?tab=files&path=…`; back button on phone.
 
 **What is wrong with it today.**
-- No way to find a file except walking folders; the root lists at most 500 entries silently (`src/server/fileRoutes.ts` `sorted.slice(0, 500)`).
+- No way to find a file except walking folders. Lists stop at 500 entries: a nested folder's answer already says so (`truncated` and `totalEntries`, `src/server/fileRoutes.ts:648`–`:650`), but the project-root answer cuts at 500 with no flag (`:550`, `:561`), and the legacy client shows neither.
 - The editor is a bare textarea with tiny toolbar buttons; on a phone, Save sits at the top while the keyboard covers the bottom half.
 - No review before save; Overwrite on conflict discards the other change blind.
 - Download (`/api/files/download`) and copy-link (`/api/files/link`) routes exist with no button; a binary file is a dead end.
@@ -510,16 +517,16 @@ change it safely."*
 - *Multi-machine:* files are this machine's disk; the header names the machine when the pool has more than one. No cross-machine browse.
 - *Rough sketch:*
 ```
-┌ Files ──────────────────────────┐   ┌ ‹ CLAUDE.md             … ─┐
-│ ⌕ Find a file                   │   │ .claude/  ·  editable       │
-├ Recent ─────────────────────────┤   │ [Rendered|Source]           │
-│ CLAUDE.md          .claude/   › │   │ ## Telegram Relay           │
-│ LIVE-PATH-PLAN.md  docs/      › │   │ Every message you receive…  │
+┌ Files ──────────────────────────┐   ┌ ‹ CLAUDE.md    [Cancel][Save]┐
+│ ⌕ Find a file                   │   │ Unsaved · .claude/          │
+├ Recent ─────────────────────────┤   │ ## Telegram Relay           │
+│ CLAUDE.md          .claude/   › │   │ Every message you receive…  │
+│ LIVE-PATH-PLAN.md  docs/      › │   │ |                           │
 ├ Pinned ─────────────────────────┤   │                             │
-│ AGENT.md · MEMORY.md            │   │                             │
-├ Browse ─────────────────────────┤   ├─────────────────────────────┤
-│ ▸ .claude   ▸ .instar   ▸ docs  │   │ Unsaved  [Cancel][Review&save]│
-│ Folders you can browse        › │   │ (keyboard)                  │
+│ AGENT.md · MEMORY.md            │   ├─────────────────────────────┤
+├ Browse ─────────────────────────┤   │ (keyboard)                  │
+│ ▸ .claude   ▸ .instar   ▸ docs  │   │                             │
+│ Folders you can browse        › │   │                             │
 └─────────────────────────────────┘   └─────────────────────────────┘
 ```
 
@@ -527,8 +534,10 @@ change it safely."*
 replaced by sheets.
 
 **Data.** Existing: `/api/files/{list,read,save,config,download,link}`. **New, smallest:**
-`GET /api/files/search?q=` (name match, capped, returns `truncated`), and a `truncated: true`
-field on `/api/files/list` when the 500 cap applies. Search must apply the same path rules
+`GET /api/files/search?q=` (name match, capped, returns `truncated`), and the same
+`truncated` and `totalEntries` fields on the project-root branch of `/api/files/list` that
+nested folders already return (`src/server/fileRoutes.ts:648`); the native page shows them
+for both. Search must apply the same path rules
 the other file routes do, not just a name scan of allowed paths: every candidate goes
 through the existing checks (`checkRelativePathAllowed` and `validatePath`,
 `src/server/fileRoutes.ts:246`; the never-served list re-checked after resolving symlinks,

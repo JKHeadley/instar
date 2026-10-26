@@ -45,8 +45,8 @@ Why these merges:
   and money is a different decision from allowance. The cost view links to it for "covered by
   your subscription".
 - **One item leaves Capacity:** "Autonomous throughput observations" (on the Machines tab today,
-  `index.html:4182`) is about runs, not machines. It moves to Work (beside Projects), or under
-  Throughput in Under the hood.
+  `index.html:4182`) is about runs, not machines. It moves to one place: the **Autonomous runs**
+  section of Plans (`work.md`), with its existing per-run decision and elapsed-time fields.
 - **Under the hood loses Routing map and LLM activity** (both become sections of the cost view).
   Their legacy tiles stay in Under the hood, pointing at the new sections, until legacy removal.
 
@@ -191,7 +191,7 @@ coping, and if not, how do I know?"*
 ```
 
 **Merge / split / cut.** Absorbs Resource usage and Health as machine-detail sections. Moves
-"Autonomous throughput observations" out (to Work). Machine identity stays here (it is about which
+"Autonomous throughput observations" out (to Plans › Autonomous runs, `work.md`). Machine identity stays here (it is about which
 machine is which). Nothing dropped.
 
 **Data.** Existing: `/pool`, `/guards` (and `?scope=pool` for peer guard counts),
@@ -370,8 +370,12 @@ does any sign-in need me?"*
   *Needs you* (sign-ins, approvals; hidden at zero), *Most used* (account + % + resets in),
   *Accounts* (n working of m), *In use now* (which account this machine is serving with).
 - *Layout:*
-  1. **Needs you** (only when non-empty): one card per thing, each with one button: "Sign in
-     Echo's Claude on Mama PC", "Approve Laptop using your Codex account (expires 3:40pm)".
+  1. **Needs you** (only when non-empty): one card per machine ("Mac Mini: 3 accounts need
+     signing in"), one row and one button per account inside it ("Sign in", "Repair", "Try
+     again"), plus one card per follow-me approval ("Approve Laptop using your Codex account
+     (expires 3:40pm)"). Grouping by machine is how it was built
+     (`dashboard/console/accounts.js:32`–`:41`): when a machine loses its sign-ins, they all go
+     at once, and five cards for one cause read as five problems.
   2. **Allowance**: one row per account, grouped Claude / Codex / other: name, a single bar for
      the tightest window with "62% · resets 4:10pm", second window in small type. Tap → account
      detail: both windows, reading age, which machines it works on, recent sign-in history (from
@@ -391,8 +395,9 @@ does any sign-in need me?"*
   (`dashboard/subscriptions.js:437`, `:1021`), which the server gates on operator proof
   (`src/server/routes.ts:34626`, `:34748`), so it uses the operator session (adapter b). Repair
   identity, Set up an empty cell and Approve follow-me take a body PIN (adapter c) each time. Unattended repair
-  settings appear read-only in account detail ("Repairs itself without asking: yes/no") with a
-  link to legacy until a native form exists.
+  settings appear read-only in account detail ("Repairs itself without asking: yes/no"), with
+  no link: the legacy tab has no form for them either (the route is in the no-UI list above),
+  so a link would be a dead end. Changing them is a later native form, or asking the agent.
 - *Honest states:* "Can't read accounts: <reason>"; "No reading yet" per account; reading age
   shown when over 1 h (not 6 h); "Usage isn't readable for this kind of account" (grok);
   partial: a machine whose pool answer failed shows its chips dashed, "no answer from Mama PC";
@@ -405,10 +410,12 @@ does any sign-in need me?"*
 ```
 ┌──────────────────────────────┐
 │ Accounts                      │
-│ 1 sign-in needs you.          │
+│ 2 sign-ins need you.          │
 ├──────────────────────────────┤
-│ ▲ Sign in Claude (echo@…)     │
-│   on Mama PC    [ Sign in ]   │
+│ ▲ Mama PC: 2 accounts need    │
+│   signing in                  │
+│   Claude · echo@…   [Sign in] │
+│   Codex · justin@…  [Repair]  │
 ├──────────────────────────────┤
 │ Allowance                     │
 │ Claude · echo   ▓▓▓▓▓░ 62%    │

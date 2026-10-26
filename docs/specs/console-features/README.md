@@ -17,10 +17,13 @@ inventories every control and write action the legacy tab has (nothing is lost),
 names what is wrong today with the code that causes it, and describes the new page
 with a phone sketch.
 
-These plans were revised after round-1 reviews by GPT-6 Astra and Gemini 4 Argon
+These plans were revised after two rounds of review by GPT-6 Astra and Gemini 4 Argon
 (`../reports/console-features-review-r1-astra.md`,
-`../reports/console-features-review-r1-argon.md`). What changed is in **Review
-changes** at the end.
+`../reports/console-features-review-r1-argon.md`,
+`../reports/console-features-review-r2-astra.md`,
+`../reports/console-features-review-r2-argon.md`). What changed is in **Review
+changes** at the end; what is already built, and where it differs, is in **Built so
+far**.
 
 ## The new map: 29 tabs become 16 places
 
@@ -70,7 +73,8 @@ wrong today, and the native pages fix it:
 - **Subscriptions:** a built "logins waiting" panel is never shown; the account grid
   scrolls sideways on a phone; a write request goes out on every 30 s poll.
 - **Feedback drain:** a failed data read renders "Nothing needs you".
-- **Files:** the folder list is silently cut at 500 entries.
+- **Files:** the project-root list is cut at 500 entries with no flag (nested folders do
+  return `truncated`), and the legacy page shows neither.
 - **Throughput:** hard-coded to the Instar repository and two logins, so an ordinary
   user can be shown Instar's history as if it were theirs.
 - **Job history** shows times without dates; **Send content** says "text or files"
@@ -84,8 +88,9 @@ Most pages need no new route. Part of this plan:
    ordinary user's console never shows maintainer pages. It controls visibility only;
    every route keeps its own gate.
 2. Preferences: one structured read, `GET /preferences`.
-3. Files: a search route (under the same path rules as the other file routes) and a
-   `truncated` flag on the folder list.
+3. Files: a search route (under the same path rules as the other file routes), and the
+   `truncated` / `totalEntries` fields on the project-root list that nested folders
+   already return.
 4. Accounts: run the follow-me scan on the server's own timer, so the console never
    writes on a poll.
 
@@ -104,7 +109,7 @@ review, and the first needs the operator's yes):
 ## Build order (the one order every group plan uses)
 
 1. **Promises** — proves the shared patterns (`00-patterns.md`: page, list, detail
-   sheet, actions, PIN sheet, states). Already being built. One representative screen
+   sheet, actions, PIN sheet, states). Built (see Built so far). One representative screen
    is judged at phone size in four states (populated, empty, failed, mid-action)
    before the patterns are reused.
 2. **Machines**, with a visible **This machine** view (health and resource use) that
@@ -128,6 +133,54 @@ Each page ships behind the console (legacy stays the default until the MVP call)
 with the three test tiers, phone and desktop screenshots, and a review pass. Existing
 legacy controllers are reused where practical.
 
+## Built so far
+
+On branch `feat/console-native-1`, four pages are built natively in `dashboard/console/`:
+**Promises** (`promises.js`), **Machines** (`machines.js`), **Accounts**
+(`accounts.js`) and **Messages to you** (`messages.js`), each with a pure model file
+beside it. Their tiles inside the console open the native page
+(`dashboard/console/nav-model.js:101`–`:105`). (A native *What I'm allowed to do* page
+was being written, uncommitted, while this was revised; it is not covered here.) The
+console is not yet the default, so
+the checklist below still gates the switch-over; the rows these pages have not met are
+named here.
+
+Where the build was the more honest choice, the plan was changed to match it:
+
+- **Promises:** a promise the tracker has marked `violated` offers no Mark delivered,
+  because the server refuses it (`src/monitoring/CommitmentTracker.ts:910`;
+  `dashboard/console/promises-model.js:155`). `work.md` now says so.
+- **Accounts:** Needs you is one card per machine with a row per account
+  (`dashboard/console/accounts.js:32`–`:41`), not one card per sign-in. `capacity.md`
+  now says so.
+- **Messages to you:** shows held replies (the `held[]` list from
+  `/telegram/origins/status`), recording status and the footer settings. The message log
+  stays in the legacy tab, linked from the page, because `GET /telegram/origins` has no
+  newest-first option (`src/server/telegramOriginRoutes.ts:141`–`:149`; filed as feedback
+  fb-bd38d155-5ea). `people-settings.md` now says so, and that the held list is this
+  machine's.
+
+Where the build differs and the plan stands (to fix in the build):
+
+- **Promises:** a waiting-on-you promise untouched for 14+ days moves to *Older, still
+  open* and leaves Waiting on you's count (`dashboard/console/promises-model.js:91`–`:92`,
+  and Home the same at `home-model.js:213`). `00-patterns.md` §2 keeps it counted in its
+  own section. Missed promises already stay counted at any age on both screens
+  (`home-model.js:215`, `promises-model.js:91`). A violated promise is not offered
+  **Drop**, though `withdraw` accepts it (`CommitmentTracker.ts:850`). Drop sits at the
+  bottom of the sheet rather than in a "⋯" menu (a cosmetic difference).
+- **Machines:** no *Needs a look* block above the cards; a failing part shows only
+  inside This machine's detail. Deviant safety checks are listed in that detail
+  (`dashboard/console/machines.js:88`) instead of as a count linking to *What I'm allowed
+  to do*, because that page is not native yet (interim). Identity recovery and SSH
+  pairing are a legacy link (`machines.js:47`). The Health and Resource usage tiles still
+  open legacy. With no pool the card is called "This machine", not by its nickname
+  (`machines-model.js:40`).
+- **Accounts:** not built yet: follow-me approval, identity repair (legacy link), the
+  *Sign-ins in progress* list, sign-in history and swap reasons in account detail, the
+  unattended-repair line, the desktop table. The page never calls the follow-me scan, so
+  no write happens on a poll.
+
 ## Old control → native control checklist (the switch-over gate)
 
 A legacy tab's tile switches to its native page only when every row for that tab
@@ -149,6 +202,8 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Send content | Recent pastes (last 20) with delete | Recent pastes (count, expandable), Delete with confirm | work.md |
 | Send content | (not possible today) text to another machine's session | "Type it into the session" over the live stream, with that machine's answer | work.md |
 | Jobs | List with live updates, summary cards, sort, filter chips | Schedule: facts, Needs a look / Coming up / Everything else (search + origin filter) | work.md |
+| Jobs | Sort: failing first / priority / name / last run | Sort control inside All jobs (Everything else expanded) | work.md |
+| Jobs | (not possible today) late jobs | "Late" only for enabled jobs that run on that machine; others "off" / "runs on …" | work.md |
 | Jobs | Detail: status, last/next run, 50-run sparkline, history table (50 runs) | Detail sheet: last 20 as marks + **Show all 50** as a dated list | work.md |
 | Jobs | Configuration fold (raw cron, model, priority, supervision, tags, pre-flight, machines) | Details fold | work.md |
 | Jobs | Run now (with 409 / 429) | Run now, following the run to its end | work.md |
@@ -157,7 +212,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Jobs | Migration banner: confirm / roll back | "Setup issues" line → each explained, same two actions | work.md |
 | Jobs | Issues card (kind filter, refresh, dismiss) | "Setup issues (n)" list, kinds in Details | work.md |
 | Commitments | Tiles Open / Due soon / Overdue / Waiting on you / Quiet, rows, full record | Promises: facts, sections, detail sheet; Quiet → "paused reminders" state | work.md |
-| Commitments | **Mark delivered** on every displayed promise, incl. waiting on you | Mark delivered on every promise shown (secondary on waiting-on-you, missed and older rows) | work.md |
+| Commitments | **Mark delivered** on every displayed promise, incl. waiting on you | Mark delivered on every promise shown (secondary on waiting-on-you, missed and older rows), except one the server already closed as `violated` | work.md |
 | Projects | Card: rounds, progress, stages, drift, id/version | Plans row + project detail sheet (rounds track, drift sentence, Details) | work.md |
 | Projects | Halt | "Stop this round" with the honest interruption sheet | work.md |
 | Projects | Ack round 0 | "OK, continue round N" with the current round | work.md |
@@ -166,11 +221,12 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Initiatives | "Show projects + children" checkbox | Always shown, children folded | work.md |
 | Initiatives | Tiles, record, signal record, Refresh | Plans facts, sections, detail sheet | work.md |
 | Blockers | Tiles Truly stuck / Being worked / Resolved, record | In the way section (+ access requests in Needs you), Cleared this week | work.md |
+| Blockers | Every resolved entry returned, no seven-day cut | Older cleared blockers (collapsed, counted) | work.md |
 | Machines | Glance, per-machine record, guard counts | Machines cards and detail; guard count links to the safety-check list | capacity.md |
 | Machines | Rename | Inline rename with error text | capacity.md |
 | Machines | Identity recovery: Rotate, Acknowledge, Approve / Deny claim | Identity section sheets (operator session) | capacity.md |
 | Machines | SSH pair health | Connections section | capacity.md |
-| Machines | Autonomous throughput observations | Moves to Work (beside Plans) | capacity.md |
+| Machines | Autonomous throughput observations (per-run decision, minutes flat) | Plans › Autonomous runs, same decision and minutes | work.md |
 | Health | Subsystems, records, events, Refresh | This machine › My parts here; Health shortcut on Capacity; failures on the Machines landing page | capacity.md |
 | Resource usage | CPU / memory per source, Refresh | This machine › What's using it | capacity.md |
 | Subscriptions | Account cards with quota bars | Allowance rows + account detail | capacity.md |
@@ -180,6 +236,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Subscriptions | Submit code; Cancel a sign-in | Sign-ins in progress / cell sheet, bearer | capacity.md |
 | Subscriptions | Repair sign-in / Try again / Cancel repair / Don't retry on its own (local and any machine) | Cell sheet, operator session | capacity.md |
 | Subscriptions | Pending logins panel (built, never shown) | Sign-ins in progress list | capacity.md |
+| Subscriptions | (no legacy UI) unattended-repair settings | Read-only line in account detail, no link | capacity.md |
 | Spend | Grain: daily / **hourly / monthly / total**; Refresh | Time control + More detail: By hour (30 days) / By day / By month / All time | capacity.md |
 | Spend | Estimated cost, text processed, per-model and per-key records | Recorded cost section with cost basis and committed limits kept separate | capacity.md |
 | Spend | Money-layer switch: Turn on / Re-check / Also record it here / Turn off; Restart | Spending controls sheets with exact plan text + nonce (later; legacy link until then) | capacity.md |
@@ -193,11 +250,13 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Threadline | Approve, Decline, Finish, Not them, It's one of my agents | Waiting cards / "…" menus (PIN each time where the server asks) | people-settings.md |
 | Threadline | Make an invite (for whom, 1 h / 24 h), Copy / Done, Check an invite, Cancel an invite | Connect another agent sheet (Make / I was sent one), Copy and Share | people-settings.md |
 | Threadline | Paired-agents list | Agents list with reachability | people-settings.md |
+| Threadline | Conversations with agents that have no pairing or health row | "History only" rows in the Agents list | people-settings.md |
 | Threadline | Telegram bridge: master, auto-create, mirror; allow/deny lists | Mirroring to Telegram section; per-agent always / never / default | people-settings.md |
+| Threadline | Allow/deny: add any typed name or fingerprint, remove any entry | Advanced: edit the rules (rows with Remove, one add field) | people-settings.md |
 | Threadline | Thread list (filters), thread view, message search, Refresh | Agent detail conversations, search icon | people-settings.md |
 | Message origins | Display settings (picker, agent defaults, four checkboxes, Save) | Footer on messages sheet | people-settings.md |
 | Message origins | Recording status | Facts + Recording details disclosure | people-settings.md |
-| Message origins | Recent messages, Load more, Refresh | Recent list with Load more; held replies list | people-settings.md |
+| Message origins | Recent messages, Load more, Refresh | Held replies list natively; the message log stays a legacy link until `/telegram/origins` can return newest first (fb-bd38d155-5ea) | people-settings.md |
 | Mandates | Approve / Decline requests | Waiting for you cards (PIN each time) | people-settings.md |
 | Mandates | Issued mandates, grants | Active slips, slip detail | people-settings.md |
 | Mandates | Grant a person an action | "Let a person act" in slip detail | people-settings.md |
@@ -209,14 +268,16 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Features | Autonomy profile Change / Apply, profile history | Profile control + confirm sheet with reason; History | people-settings.md |
 | Features | Feature switches and detail | Features list; switch driven by `validTransitions`, consent and challenge in the sheet | people-settings.md |
 | Features | (on Machines today) guard list | Safety checks section, one tap from Home | people-settings.md |
-| Preferences | Preferences, recent corrections | How you like things (structured read), Things I'm still watching | people-settings.md |
-| Preferences | **Class reviews**, **Claim Verification observations** | How I'm doing inside › Checks on my own claims | under-the-hood.md |
+| Features | (no legacy UI) accept a dark-but-load-bearing check's risk, stop accepting it | Accept the risk / Stop accepting it on this machine's rows only (PIN each time); other machines' rows link there | people-settings.md |
+| Features | (no legacy UI) earned-trust and rubber-stamp suggestions | Not now / Dismiss on the suggestion | people-settings.md |
+| Preferences | Preferences, recent corrections | How you like things (structured read), Things I'm still watching; conflicts between machines shown as advisory (no Keep this one) | people-settings.md |
+| Preferences | **Class reviews**, **Claim Verification observations** | How I'm doing inside › Checks on my own claims (Recent claim observations, four verdict words, coverage notes apart, "advisory only") | under-the-hood.md |
 | Files | Tree, open, render, highlight, binary placeholder | Browse, viewer | people-settings.md |
 | Files | Edit, Save, Cancel, ⌘S, Esc, unsaved-changes guard | Edit button, sticky Save / Cancel header | people-settings.md |
 | Files | Copy | "…" → Copy text | people-settings.md |
 | Files | Conflict: Overwrite / Reload / Cancel | Reload theirs / Overwrite with mine, Copy my version | people-settings.md |
 | Files | 401 stash and restore; deep links `?path=` | Kept, made visible; URL adapter | people-settings.md |
-| PR pipeline | PR list (never worked) | Shipping (read-only) + Open on GitHub | under-the-hood.md |
+| PR pipeline | PR list (never worked) | Shipping (read-only) + Open on GitHub; release watchdog line (episodes, not a change count) | under-the-hood.md |
 | Evidence | Viewer scope; by-entity lookup; What cites this (kind, source id); Inspect evidence | Look up a memory's sources (one field, kind picker when ambiguous, scope picker) | under-the-hood.md |
 | Throughput | Author select, window select | Person picker, window picker | under-the-hood.md |
 | Throughput | Charts: merges, latency, rework, reverts, **median push iterations**, changed lines, index | Four plain numbers + charts incl. Push iterations and Index | under-the-hood.md |
@@ -282,3 +343,26 @@ findings are A1–A9, and points raised only in its body sections are listed aft
 | Argon (security) — `consoleProfile` must not be relied on for access | Accepted; stated in `00-patterns.md` §9 and under-the-hood.md: visibility only, every read and write keeps its server gate. |
 | Argon (over-engineering) — Pace 30-day double-window math | Accepted. Cut: Pace shows the selected window's plain numbers from one fetch; no client-side comparison. |
 | Argon (build order) — costs before Accounts, as capacity.md had it | Not adopted; see A7. |
+
+### Round 2
+
+"Astra" = GPT-6 Astra (verdict: ready with changes, 9 findings). "Argon" = Gemini 4
+Argon (verdict: ready, three minor cleanups, R1–R3).
+
+| Finding | Handled |
+|---|---|
+| Astra 1 — a pooled safety-check row can accept risk on the wrong machine | Accepted, smallest fix. Accept the risk / Stop accepting it only on this machine's rows, the confirmation names the machine; other machines' rows get **Open on <machine>**. Confirmed: both routes write with this server's `stateDir` and `meshSelfId` (`src/server/routes.ts:10637`, `:10646`). No PIN or session is forwarded. |
+| Astra 2 — "Keep this one" closes the warning without applying the choice | Accepted. Removed; conflicts shown as advisory. Confirmed: the ledger holds origins and clock stamps only (`src/core/ConflictStore.ts:49`) and the route only marks resolved (`src/server/routes.ts:22452`; the store leaves the write to the caller, `ConflictStore.ts:220`–`:226`). Settling a conflict joins the later preference-write change. |
+| Astra 3 — Other agents can hide conversations and lose bridge-rule editing | Accepted. The Agents list also takes thread-history counterparties and every name in a mirroring rule, with a "History only" state; an Advanced rule editor keeps add-any / remove-any; remote conversations are summaries with Open on <machine>, since thread reads are local (`:18904`). The legacy criticism is corrected: rows lead with the name, the thread id is the second line (`dashboard/index.html:7250`–`:7253`). |
+| Astra 4 — parity holes: older resolved blockers, autonomous-run panel, job sorting | Accepted. **Older cleared blockers**; one home for autonomous runs, Plans › Autonomous runs with the existing decision and minutes; the sort control kept inside All jobs (the legacy orders are failing first, priority, name, last run, `dashboard/index.html:8677`–`:8690`). All three added to the checklist. |
+| Astra 5 — "Late" would flag disabled and out-of-scope jobs | Accepted. Late only when `enabled` and `runsOnThisMachine` (`src/server/routes.ts:16651`; scheduler registers only those, `src/scheduler/JobScheduler.ts:270`–`:273`); worded "past its recorded next-run time"; no `nextScheduled` → unknown. |
+| Astra 6 — Shipping promises release facts its read cannot give | Accepted. "Release watchdog: N unresolved episodes · last checked …" with the attention link; never a change count or "everything released". `/local-verify/record` added for a row's last result, keyed from the queue entry's `pr`, `headSha`, `baseRefName`. A field-to-display table is pinned now. |
+| Astra 7 — claim audit rows are treated as verified claims | Accepted. Titled Recent claim observations; four verdict words mapped from both vocabularies; coverage and settlement events kept apart; "Advisory only" kept; no success fraction until record kinds and de-duplication are defined. |
+| Astra 8 — Development puts the approval below two dashboards | Accepted. A concrete pending-approval card sits directly under the headline; Shipping, Feedback and Pace follow as collapsed one-line summaries, one open at a time on a phone. Feedback now precedes Pace. |
+| Astra 9a — `GET /pool/placement` used as a pairing-holder lookup | Accepted. Replaced by `GET /pool` → `router.holder` (`src/server/routes.ts:21533`–`:21535`); placement needs `?topic=` (400 without, `:22478`). |
+| Astra 9b — dead legacy link for unattended-repair settings | Accepted. Read-only line, no link. |
+| Astra 9c — "folder list silently truncated" overstated | Accepted. Narrowed: nested folders return `truncated` and `totalEntries` (`src/server/fileRoutes.ts:648`); the project-root branch does not (`:561`); the change adds them to the root and shows both. README defect and server-needs lines corrected. |
+| Argon R1 — align `home-model.js` missed-promise aging | Already true in the code: missed (agent-owned) promises are counted at any age on Home (`dashboard/console/home-model.js:215`) and on Promises (`promises-model.js:91`). The open gap is the waiting-on-you case, listed under Built so far as a build fix. |
+| Argon R2 — two stale wireframes | Fixed: Preferences ends with "To change one, tell me in chat."; the Files editor sketch has Save / Cancel in the top header. |
+| Argon R3 — checklist misses guard acceptance and suggestion dismissals | Added both rows under Features. |
+| Built-page alignment (not a review finding) | Plans changed to match the build where it was more honest (violated promises, Accounts grouped by machine, the message log kept in legacy); other differences listed under Built so far. |

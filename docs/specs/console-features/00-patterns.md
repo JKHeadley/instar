@@ -132,7 +132,11 @@ Each feature plan names its own freshness limit and any feature-specific failure
 
 Every list that can span machines shows the machine as context on each row and a
 machine filter chip when there is more than one. An unreachable machine is named in
-the page, never silently missing. A single-machine install (where `GET /pool`
+the page, never silently missing. A write that changes one machine's own state is
+offered only on rows of the machine serving the page, unless its route takes a
+machine target (as sign-in repair and commitment writes do); another machine's row
+gets **Open on <machine>**, a link to that machine's console, and no PIN or session is
+forwarded to another server. A single-machine install (where `GET /pool`
 answers `enabled: false` with an empty machine list, `src/server/routes.ts:21517`)
 still gets every per-machine view, as **This machine**.
 

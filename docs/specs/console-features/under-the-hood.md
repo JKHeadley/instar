@@ -51,8 +51,9 @@ turned on" message or, worse for Throughput, a chart of somebody else's project.
    fallback is to split *Problems I caught* and *Checks on my own claims* into a second
    page, "Did my work hold up?"; that is recorded here, not built.
 3. **Development** (maintainer only) = PR pipeline rebuilt as **Shipping** +
-   Throughput as **Pace** + Feedback drain as **Feedback**. Three sections of one
-   area, each still deep-linkable.
+   Feedback drain as **Feedback** + Throughput as **Pace**. Three sections of one
+   area, each still deep-linkable, under a pending-approval card (see the end of this
+   file).
 
 **Where they live in navigation.**
 
@@ -234,8 +235,15 @@ from the three live systems.
   **Testing** (local verify queue; position and "about 45 min each"), **Set to
   merge** (armed, GitHub merges when checks pass; overdue past 24 h in amber),
   **Stuck** (stuck-red PRs, failed verifies). Under the tiles one line from
-  release readiness: "Finished work waiting for a release: 4 changes, oldest 2
-  days" or "Everything merged is released."
+  the release watchdog: "Release watchdog: 1 unresolved episode · last checked 10
+  min ago", with **Open the item** when it carries an attention id, or "Release
+  watchdog: nothing unresolved · last checked 10 min ago". It never says how many
+  changes are unreleased or that everything is released: `/release-readiness`
+  returns the count of unresolved watchdog episodes, the oldest one's commit, the
+  tick time and an attention id (`src/server/routes.ts:15917`–`:15937`), and an
+  episode is keyed by the oldest unreleased commit, one per stall, not one per
+  change (`src/monitoring/ReleaseReadinessSentinel.ts:315`). Zero episodes is not
+  a release inventory.
 - *Layout:* phone: headline, tiles as a 2×2 grid, then one list of PRs ordered
   needs-you → stuck → testing → armed, each row "#2391 · waiting for your review ·
   2 h". Tap a row → a stage strip (queued → verifying → passed → set to merge →
@@ -281,7 +289,7 @@ from the three live systems.
 │ │Set to    ││Stuck     │         │
 │ │merge  1  ││    0     │         │
 │ └──────────┘└──────────┘         │
-│ Released: 4 changes waiting, 2d  │
+│ Release watchdog: 1 open · 10m   │
 │ ─────────────────────────────    │
 │ #2391 your review · 2h   [Open ↗]│
 │ #2388 testing · 1st in line    › │
@@ -297,13 +305,29 @@ phase ever ships a metrics route, it becomes one more source of the *Stuck* tile
 **Data.** Existing: `GET /green-pr-automerge` (`episodes[]`, `armed[]`,
 `armedCount`, `stuckRed`, `snapshot`, `breaker`, `lastTickAt`,
 `lastSuccessfulListAt`, `invariantOk`), `GET /local-verify` (queue, merge line),
-`GET /local-verify/status`, `GET /release-readiness` (`openEpisodes`,
-`oldestOpenSha`, `lastTickAt`). PR titles are not in these payloads; rows show the
-number and link to GitHub rather than adding a GitHub call. No new route.
+`GET /local-verify/status`, `GET /local-verify/record?pr=&head=&base=` (one PR's
+last verify result, `src/localVerify/localVerifyRoutes.ts:104`; read only for a row
+whose three keys are known, which a queue entry carries as `pr`, `headSha`,
+`baseRefName`, `src/localVerify/LocalVerifyService.ts:185`–`:190`), `GET
+/release-readiness` (`openEpisodes`, `oldestOpenSha`, `openAttentionId`,
+`lastTickAt`). PR titles are not in these payloads; rows show the number and link
+to GitHub rather than adding a GitHub call. No new route.
+
+Which field drives which part of the page (pinned now; a contract test checks it at
+build time):
+
+| On the page | Field | Source |
+|---|---|---|
+| Needs you | `snapshot.entries[]` with `kind: 'code-owner-review'`; episodes whose `lastOutcome` is `refused:approval-required` | `/green-pr-automerge` (`src/monitoring/GreenPrAutoMerger.ts:230`–`:236`, `:1115`) |
+| Testing | `queue[]` and `inFlight` (position = index in `queue`) | `/local-verify` (`src/localVerify/LocalVerifyService.ts:572`) |
+| Set to merge | `armed[]` (`pr`, `armedAt`, `overdue`) | `/green-pr-automerge` (`src/server/routes.ts:16003`) |
+| Stuck | `stuckRed[]`; episodes with `state: 'gave-up'` | `/green-pr-automerge` (`src/monitoring/greenPrLogic.ts:267`–`:273`) |
+| A row's last verify result | the record for its `pr` + `headSha` + `baseRefName` | `/local-verify/record` |
+| Watcher health line | `lastTickAt`, `lastSuccessfulListAt`, `breaker`, `invariantOk` | `/green-pr-automerge` |
+| Release watchdog line | `openEpisodes`, `lastTickAt`, `openAttentionId` | `/release-readiness` |
 
 **Effort and order.** M, read-only, README step 5 (after maintainer mode). The new
-controls are later. Field names of `episodes[]` to be pinned by a contract test at
-build time.
+controls are later. The table above is checked by a contract test at build time.
 
 **Open questions for the operator.** Should **Stop auto-merging** be on the phone
 page at all, or only reachable by asking the agent? (It is bearer-allowed today,
@@ -416,7 +440,7 @@ shipping faster or slower than before, and is quality holding?"
   as a real outage.
 - "Latest" shows today's partial day as if it were complete.
 
-**The new design.** **Pace**, the second section of Development.
+**The new design.** **Pace**, a section of Development (third in its order).
 - *Arrival (glance):* one plain sentence about the selected window, with no
   comparison to an earlier one: "Last 14 days: 41 merges, 1 revert." Four plain
   numbers: **Merged** (count), **Time to merge** ("a typical day's median: 5.8 h"),
@@ -697,12 +721,30 @@ assumed.
   observations** from `GET /completion-claim/audit?limit=20`
   (`dashboard/preferences-learning.js:333`–`:334`; routes `src/server/routes.ts:29636`,
   `:29876`). Read-only.
-- *Arrival (glance):* one line, for example "Last 20 claims I made about finished
-  work: 18 checked out, 2 couldn't be checked." Facts (at most two): **Checked
-  claims** and **Class reviews** (count and the last verdict).
-- *Layout:* two collapsed lists, newest first, each row one plain sentence with its
-  date ("Said the fix was merged · checked out · 12 Oct"); tap → the record with the
-  raw verdict and ids under Technical. "Show more" past 20.
+- *What the claim records are.* `GET /completion-claim/audit` limits audit records,
+  not distinct claims (`src/server/routes.ts:29876`–`:29878`), and its stream mixes
+  several kinds: general claim observations with `supported / refuted /
+  unverifiable` (`src/monitoring/ClaimObservation.ts:64`, `:420`), settlement events
+  (`:481`), coverage-gap and other events (`:486`), and older completion verdicts in
+  another vocabulary, `corroborated / uncorroborated-contradicted /
+  uncorroborated-unknown / not-eligible` (`src/monitoring/CompletionClaimVerifier.ts:24`,
+  `:269`). One message can add several records. So the section counts nothing as a
+  success rate until the record kinds and the de-duplication rule are written down.
+- *Arrival (glance):* titled **Recent claim observations**. One line, for example
+  "Of the last 20 observations, 1 contradicts what I said." (a contradiction leads),
+  or "Recent claim observations: none contradict what I said." Facts (at most two):
+  **Contradicted** (count, red when above zero) and **Class reviews** (count and the
+  last verdict).
+- *Layout:* the observations list, newest first, each row one plain sentence with its
+  date and one of four words: **Evidence supports it** (`supported`, `corroborated`),
+  **Evidence contradicts it** (`refuted`, `uncorroborated-contradicted`; red, shown
+  open), **Couldn't verify** (`unverifiable`, `uncorroborated-unknown`), **Not
+  evaluated** (`not-eligible`, or `evaluated: false`). Coverage-gap and settlement
+  events are a separate collapsed **Coverage notes** list, never mixed into the
+  verdicts. Every row and its record say **"Advisory only — nothing was blocked"**, as
+  the legacy detail does (`dashboard/preferences-learning.js:270`). Then the collapsed
+  class reviews list. Tap → the record with the raw verdict and ids under Technical.
+  "Show more" past 20.
 - *Primary / secondary actions:* none; read-only.
 - *Honest states:* each source on its own: 503 → that list's "Off on this agent"
   line; failure → that list can't tell; empty → "No claims checked yet".
@@ -711,9 +753,12 @@ assumed.
 
 ```
 │ Checks on my own claims          │
-│ 18 of 20 checked out; 2 couldn't │
-│ be checked.                      │
-│ ▸ Claims I made (20)             │
+│ Of the last 20 observations, 1   │
+│ contradicts what I said.         │
+│ ✕ Said the fix was merged ·      │
+│   evidence contradicts it · 12 Oct│
+│ ▸ Recent claim observations (20) │
+│ ▸ Coverage notes (3)             │
 │ ▸ Class reviews (6)              │
 ```
 
@@ -784,7 +829,7 @@ need me, and is it actually being turned into fixes?"
   "Nothing here needs you" (`feedback-drain-headline.js`, `calmLine`), which is
   the "renders as fine" failure the console forbids.
 
-**The new design.** **Feedback**, the third section of Development.
+**The new design.** **Feedback**, a section of Development (second in its order).
 - *Arrival (glance):* the existing decision sentence, kept verbatim in logic, plus
   a progress line: "Feedback is waiting on one approval from you." or "Nothing
   needs you. 12 reports sorted today; 2 fixes waiting for GitHub approval." Tiles:
@@ -851,7 +896,7 @@ need me, and is it actually being turned into fixes?"
 └──────────────────────────────────┘
 ```
 
-**Merge / split / cut.** Merge into Development as its third section. The
+**Merge / split / cut.** Merge into Development as one of its sections. The
 pause/stall attention items the drain already raises reach Home's *What needs
 you*, so the operator need not open this page to learn it needs him; the page is
 where he acts. Nothing is dropped: every PIN action above has a home; the
@@ -880,8 +925,8 @@ problems, checks on my claims
 ├ What my other conversations   ├ Shipping   ← pr-pipeline
 │   have been doing             │   (green-PR watcher, local verify,
 │   ← integrated-being          │    release readiness)
-├ Problems I caught in my own   ├ Pace       ← throughput
-│   work ← process-health       └ Feedback   ← feedback-drain
+├ Problems I caught in my own   ├ Feedback   ← feedback-drain
+│   work ← process-health       └ Pace       ← throughput
 │   (omitted when off, for an
 │    ordinary user)
 ├ Checks on my own claims
@@ -894,5 +939,16 @@ problems, checks on my claims
 Each combined page opens on its own one-sentence headline built from its
 sections' headlines (the worst state first, coverage stated, same rules as Home),
 and each section is deep-linkable (`#shipping`, `#feedback`, …) so links the agent
-sends land on the right part. Legacy tabs stay reachable from Settings → "Legacy
+sends land on the right part.
+
+**Development's order on a phone.** Directly under the headline comes the one thing
+that needs him, as a concrete card with its button: a pending Feedback approval
+(the readiness or triage authority card with its PIN action) or a Shipping
+needs-you row with **Open on GitHub**. When several wait, the oldest is the card and
+the rest are a counted line under it. Then Shipping, Feedback and Pace as three
+collapsed one-line summaries ("Shipping: 3 on their way, 1 testing" / "Feedback: 12
+queued, sorting on" / "Pace: 14 merges in 7 days"), each opening in place; only one
+is open at a time on a phone. So no chart or healthy list ever sits between the
+operator and a PIN action. This page is composed from the three sections' own reads;
+no new cross-page logic is built for it. Legacy tabs stay reachable from Settings → "Legacy
 dashboard" until the makeover's inventory-gated removal.

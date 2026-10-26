@@ -75,8 +75,11 @@ list, a full-screen detail sheet on phone), built once with Promises and reused.
 - **"Needs you" is always first and always small.** Items waiting on the operator lead;
   routine items are a count you can open. Open items untouched 14+ days go to
   **"Older, still open"** (`00-patterns.md` §2): shown with their count, not counted in
-  the headline, never described as handled. Missed, overdue, failed, late and
-  approval-waiting items keep a visible count in their own section whatever their age.
+  the headline, never described as handled. Missed, overdue, failed and late items
+  keep a visible count in their own section whatever their age. A promise waiting on
+  the operator that he has not touched in 14 days also moves to "Older, still open"
+  (each row still says "waiting on your approval"), so the headline stays the short
+  list of what is current — the operator's own rule: an overloaded list gets ignored.
 - **Working, slow, stuck and failed are four different looks.** No list is only
   successes.
 - **Writes use the bearer token only: adapter (a) for every route in this group**
@@ -332,7 +335,8 @@ have run actually run?"
 
 **The new design.**
 - *Arrival (glance):* headline, for example "12 scheduled jobs. 1 failed its last two
-  runs; 1 is late." Facts: **Late** (next run over 10 min in the past and not running),
+  runs; 1 is late." Facts: **Late** (past its recorded next-run time by over 10 min and not running; only
+  for a job that is `enabled` and `runsOnThisMachine` on that machine's row — see below),
   **Failing**, **Running** (with "longer than usual" when past twice its median
   duration), **Off**.
 - *Layout:* phone: facts, then groups *Needs a look* (late, failing, running long),
@@ -345,6 +349,15 @@ have run actually run?"
   table reads, `dashboard/index.html:8880`), as a dated list; tapping a mark or row
   shows date, time, duration, and the error or skip reason. "Details" fold: raw cron, model, priority, supervision, tags, machines,
   origin (instar default / yours / your copy of a default).
+- *What "late" may claim.* `/jobs` lists every configured job, including disabled ones
+  and ones scoped to another machine, and keeps a saved `state.nextScheduled` for them
+  (`src/server/routes.ts:16626`–`:16651`); the scheduler only registers jobs that are
+  enabled and scoped to this machine (`src/scheduler/JobScheduler.ts:270`–`:273`). So the
+  late test runs per machine row only when `enabled` is true and `runsOnThisMachine` is
+  true (`:16651`). A disabled or out-of-scope job is never late and never counts as a
+  failure; it shows "off" or "runs on Mac Mini". The words are "past its recorded next-run
+  time", not "missed": a saved time is not proof the run was owed. A job with no
+  `nextScheduled` shows "next run unknown", not on time.
 - *Primary actions:* Run now (one tap; the button becomes a live line "Running 1 min 20 s"
   and keeps following the run until it ends, however long). On/Off switch (one tap; asks
   only for high and critical jobs, as today).
@@ -386,9 +399,11 @@ have run actually run?"
 └──────────────────────────────┘
 ```
 
-**Merge / split / cut.** Stays its own view. Cut: the sort select (the grouping does its
-job) and the "Instar defaults / Your jobs" chips (become a filter inside Everything
-else). Dead code `toggleJobEnabled` is not carried over.
+**Merge / split / cut.** Stays its own view. The sort select moves behind **All jobs**
+(the expanded *Everything else* list): a small "Sort: failing first / priority / name / last
+run" control there keeps every legacy order (`dashboard/index.html:8677`–`:8690`), since
+grouping cannot stand in for sorting by priority, name or last run. The "Instar defaults /
+Your jobs" chips become a filter inside the same list. Dead code `toggleJobEnabled` is not carried over.
 
 **Data.** Existing: `GET /jobs?scope=pool`, `/jobs/events`, `/jobs/:slug/history`,
 `/jobs/:slug/run`, `PATCH /jobs/:slug`, override, unfork, save, migration-status/confirm/
@@ -439,53 +454,9 @@ dropped, and is any of it waiting on me?"
   *I'm carrying* (collapsed to a count), *Older, still open* (agent-owned and on-track
   promises untouched 14+ days: collapsed, shown with its count, not counted in the
   headline, never called handled), *Closed recently* (delivered, withdrawn, last 7
-  days). *Waiting on you* and *Missed* are exempt from the age rule: their own count
-  always includes old ones, and old ones show as a counted line inside the section
-  ("+3 older, still open ›"). The
-  detail sheet reads as a short story: "You asked: … I said: … Waiting on: your approval
-  for a production deploy. Next check: Friday 09:00. Topic: Bug: login loop (open in
-  Telegram)." Details fold: id, cadence, heartbeats, deadlines, origin machine.
-- *Primary actions:* for waiting-on-you rows, the action that unblocks it: "Open the
-  conversation" (deep link to the topic) is the default; the reply happens in Telegram,
-  where the agent hears it. For agent-owned rows: **Mark delivered** (one tap, confirm
-  inline "Mark as done?"). **Mark delivered stays available on every promise shown**,
-  as the legacy tab offers it on every record including the waiting-on-you list
-  (`dashboard/glance.js:523`, `:555`): on waiting-on-you, missed and older rows it is a
-  secondary action in the detail sheet, beside the default.
-- *Secondary / destructive actions:* "Drop this promise" in "⋯", asking for a one-line
-  reason (the server requires one) → `POST /commitments/:id/withdraw`. "Resume reminders"
-  shows only on a paused beacon → `POST /commitments/:id/resume`. No PIN.
-- *Honest states:* loading; empty ("No open promises."); can't tell (request failed, or
-  `enabled:false`: "Promise tracking is off on this agent"); partial (no replica rows:
-  "Only this machine's promises are visible"; a replica over 15 min old: "Mac Mini's
-  promises are from 22 min ago"); per promise *missed*, *due soon*, *paused reminders*,
-  *waiting on you*. A failed write shows the server's message on the sheet, never an
-  `alert()`.
-- *Multi-machine:* `?scope=mesh`; rows from another machine say "from Mac Mini, 3 min
-  old".
-- *Not here:* commitments recorded in the shared conversation record (Integrated-Being)
-  are a different store with their own fields; they keep their own detail sheet in
-  *How I'm doing inside* and are not shown or counted here (see `under-the-hood.md`). Writes to a replica row go to the owner (the server forwards); a 409 "ambiguous
-  across machines" is shown in words with a retry that names the origin.
-- *Rough sketch:*
-```
-┌──────────────────────────────┐
-│ Promises                     │
-│ 2 waiting on you. 9 more     │
-│ I'm carrying.                │
-│ [2 you][1 missed][0 soon][9] │
-│ WAITING ON YOU               │
-│ ▸ Approve the prod deploy  › │
-│   2 d ago · your yes         │
-│ ▸ Pick a name for the bot  › │
-│ MISSED                       │
-│ ✕ Morning summary         › │
-│   due yesterday 08:00        │
-│ I'm carrying (9)           › │
-│ Older, still open (14)     › │
-│ Closed this week (6)       › │
-└──────────────────────────────┘
-```
+  days). *Missed* is exempt from the age rule: a missed promise stays in Missed at any age. A
+  promise waiting on you but untouched 14+ days sits in *Older, still open*, where its
+  row still reads "waiting on your approval"; it is out of the headline count on purpose.
 
 **Merge / split / cut.** Stays its own view (it is Home's second-most important card's
 detail). The legacy "Quiet" tile becomes the *paused reminders* state on rows.
@@ -636,6 +607,18 @@ route.
   (`dashboard/index.html:3620`) plus the three it lacked.
   Detail for an initiative: title, its description, steps as a checklist with dates,
   links (spec, PR, topic) as tappable chips, and the digest reason in words.
+- *Autonomous runs (moved here from Machines).* A collapsed **Autonomous runs (n)**
+  section directly under *In flight*, from `GET /autonomous/throughput-floor`
+  (`src/server/routes.ts:8095`; the legacy reader is `dashboard/index.html:6670`). One
+  row per observed run: the conversation (topic name, else "Topic 13481"), its `decision`
+  in words (`healthy` "making progress", `flatline-observed` "no new work and no message
+  from me for 2 h" using the smaller of `outputFlatForMs` and `managerSilentForMs`, the
+  same minutes the legacy panel shows; `baseline` "just started being watched";
+  `unknown`, `ineligible`, `breaker-open` "can't tell" with the row's `reason`;
+  `src/monitoring/AutonomousThroughputFloor.ts:66`–`:69`). When any row is
+  `flatline-observed` the section opens on arrival. 503 → "Autonomous runs aren't observed on
+  this agent" (not "none running"); no rows → "No autonomous runs are being observed".
+  Read only; the floor observes and never acts.
 - *Primary action:* opening a plan. Where a plan needs him, the row's chevron becomes an
   amber "Open" that lands on the exact thing (the project OK button, the topic link).
 - *Secondary / destructive actions:* none new for initiatives (the server has PATCH and
@@ -665,17 +648,20 @@ route.
 │ ● Telegram issues grp      › │
 │   step 3 of 5 · 2 h ago      │
 │ ● Feedback fixes (user)    › │
+│ Autonomous runs (2)        › │
 │ Idle (1) ›   Finished (23) › │
 └──────────────────────────────┘
 ```
 
-**Merge / split / cut.** Absorbs Projects and Blockers. The "Show projects + children"
+**Merge / split / cut.** Absorbs Projects and Blockers, and the Machines tab's autonomous
+throughput panel. The "Show projects + children"
 checkbox is cut (they are always shown, children folded). The status select becomes
 the status chips (Paused / Halted / Waiting on you above *In flight*; Completed /
 Archived / Abandoned inside *Finished*).
 
 **Data.** Existing: `GET /initiatives` (no `excludeKind`), `/initiatives/digest`,
-`/projects/:id` for round detail, `/blockers`. No new route.
+`/projects/:id` for round detail, `/blockers`, `/autonomous/throughput-floor`. No new
+route.
 
 **Effort and order.** M (with Projects and Blockers). README step 5.
 
@@ -712,7 +698,9 @@ Archived / Abandoned inside *Finished*).
 - *Layout:* rows: the blocker's own text, then a plain state: "Truly stuck for now ·
   rechecking Monday" (red), "Trying it safely first" / "Checking who can clear it"
   (teal, working), "Waiting on you for access" (amber, in Needs you). Resolved ones are
-  a collapsed "Cleared this week (4)". Detail sheet: what looked stuck, what was tried,
+  a collapsed "Cleared this week (4)", followed by a collapsed **Older cleared blockers
+  (n)** holding every other resolved entry `/blockers` returned, because the legacy tab
+  shows them all with no seven-day cut (`dashboard/glance.js:602`, `:622`). Detail sheet: what looked stuck, what was tried,
   where it stands, the recheck date, and for resolved ones the note "it turned out not to
   be a wall" with the playbook name. Details fold: id, origin, raw state, timestamps,
   playbook path.
@@ -733,6 +721,7 @@ Archived / Abandoned inside *Finished*).
 │ ◐ Deploy needs DNS change  › │
 │   trying it safely first     │
 │ Cleared this week (4)      › │
+│ Older cleared blockers (11)› │
 ```
 
 **Merge / split / cut.** Merged into Plans as a section. The tab is retired once Plans
