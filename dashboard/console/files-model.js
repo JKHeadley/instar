@@ -324,7 +324,17 @@ export function configResultWords(status, data) {
 /** The headline: plain on arrival; said only when something is wrong. */
 export function filesHeadline({ root, machine }) {
   if (root && !root.ok) return { text: root.kind === 'off' ? 'The file viewer is switched off.' : 'Can’t read the file list.', tone: root.kind === 'off' ? 'unknown' : 'bad', sub: root.text };
-  return { text: 'Open a file, or find one by name.', tone: 'ok', sub: machine ? `Files on ${machine}. Each machine has its own.` : null };
+  return { text: 'Open a file, or find one by name.', tone: 'ok', sub: machine ? `Files on ${machine}.` : null };
+}
+
+/** Repository machinery (dot-folders, dependencies, build output) that Browse keeps behind "Show system files". */
+export function isSystemEntry(e) {
+  const name = String(e && e.name || '');
+  return name.startsWith('.') || ['node_modules', 'dist', 'build', 'coverage', '__pycache__'].includes(name);
+}
+export function splitSystem(listing) {
+  const entries = listing && Array.isArray(listing.entries) ? listing.entries : [];
+  return { plain: entries.filter((e) => !isSystemEntry(e)), system: entries.filter(isSystemEntry) };
 }
 
 // ── finding a file across the whole project (GET /api/files/search) ──────

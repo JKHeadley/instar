@@ -8,7 +8,7 @@ import {
   buildProfile, buildHistory, buildGuards, buildSuggestions, buildFeatures, flattenFeature, profileChanges,
   walkToEnabled, canTurnOff, canUndoOff, needsConsent, facts, applyText, refusalText, PROFILE_LABEL, PROFILE_SENTENCE, STATE_WORD,
 } from './allowed-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const featureErrors = new Map(); // feature id → the server's last refusal, shown beside the row
@@ -77,16 +77,23 @@ export async function renderAllowed(main, ctx) {
 function profileBlock(profile, post, refresh) {
   const wrap = el('section', { class: 'list-section', id: 'sec-profile' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'How independent I am' })));
   if (!profile.ok) { wrap.append(cantTell(profile.reason)); return wrap; }
+  const current = profile.steps.find((s) => s.current);
+  // The face shows the level in force and one Change button; the four-option chooser is
+  // one tap deeper so it never crowds out the safety checks below.
   const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Autonomy profile' });
   for (const s of profile.steps) {
     seg.append(el('button', { class: `seg-step${s.current ? ' current' : ''}`, type: 'button', 'aria-pressed': s.current ? 'true' : 'false',
       onclick: () => { if (!s.current) confirmProfile(profile, s.id, post, refresh); } },
     el('span', { class: 'seg-label', text: s.label }), el('span', { class: 'seg-desc', text: s.desc })));
   }
-  wrap.append(seg);
-  if (profile.meaning.length) {
-    wrap.append(el('h3', { class: 'eyebrow sub-label', text: 'What that means right now' }), story(profile.meaning));
-  } else wrap.append(note('Can’t tell what this profile means right now: the answer had no settings.'));
+  const change = el('button', { class: 'btn-quiet btn-small', type: 'button', text: 'Change', 'data-change-profile': '1' });
+  change.addEventListener('click', () => sheet({ title: 'How independent should I be?' }, el('p', { class: 'confirm-text', text: `Now: ${current ? current.label : profile.profile}. Pick another level to switch.` }), seg));
+  wrap.append(el('div', { class: 'profile-now' },
+    el('span', { class: 'profile-level', text: current ? current.label : profile.profile }),
+    el('span', { class: 'row-sub', text: current ? current.desc : '' }),
+    change));
+  if (profile.meaning.length) wrap.append(fold('What that means right now', story(profile.meaning)));
+  else wrap.append(note('Can’t tell what this profile means right now: the answer had no settings.'));
   return wrap;
 }
 

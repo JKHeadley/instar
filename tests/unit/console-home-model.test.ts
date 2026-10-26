@@ -162,7 +162,7 @@ describe('What I have promised', () => {
   it('promises waiting on the operator are pointed at, not counted a second time', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);
     expect(m.waitingCount).toBe(2);
-    expect(m.waiting.map((r: { sub: string }) => r.sub.split(' · ')[0])).toEqual(['An approval I’m waiting on you for', 'A decision I’m waiting on you for']);
+    expect(m.waiting.map((r: { sub: string }) => r.sub.split(' · ')[0])).toEqual(['Needs your approval', 'Needs your answer']);
     expect(m.value).toBe('3 open promises');
     expect(m.line).toBe('2 of them are waiting on you, listed under What needs you.');
     expect(m.state).not.toBe('attn');

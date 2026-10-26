@@ -207,7 +207,7 @@ describe('folder access', () => {
   it('the headline only speaks up when something is wrong', () => {
     expect(filesHeadline({ root: buildListing(ok({ path: '', entries: [] }), ''), machine: '' })).toMatchObject({ tone: 'ok', sub: null });
     expect(filesHeadline({ root: buildListing(no(500, 'x'), ''), machine: '' })).toMatchObject({ text: 'Can’t read the file list.', tone: 'bad' });
-    expect(filesHeadline({ root: undefined, machine: 'the mini' }).sub).toBe('Files on the mini. Each machine has its own.');
+    expect(filesHeadline({ root: undefined, machine: 'the mini' }).sub).toBe('Files on the mini.');
   });
   it('the tile flips to the native page; the legacy id stays', () => {
     expect(NATIVE_PAGES.files).toBe('#/settings/files');
@@ -285,6 +285,10 @@ describe('files in a DOM', () => {
     expect(doc.querySelector('.page-title')!.textContent).toBe('Open a file, or find one by name.');
     const sectionTitles = [...doc.querySelectorAll('.files-browse .list-section .eyebrow')].map((n) => n.textContent);
     expect(sectionTitles).toEqual(['Pinned', 'Browse']); // no Recent yet
+    // Dot-folders wait behind "Show system files"; one tap lists them.
+    expect([...doc.querySelectorAll('.files-tree .file-row .row-title')].map((n) => n.textContent)).toEqual(['docs', 'CLAUDE.md']);
+    expect(doc.querySelector('.files-system')!.textContent).toBe('Show system files (1)');
+    (doc.querySelector('.files-system') as HTMLButtonElement).click();
     expect([...doc.querySelectorAll('.files-tree .file-row .row-title')].map((n) => n.textContent)).toEqual(['.claude', 'docs', 'CLAUDE.md']);
 
     // Expand a folder (lazy), then find by name across opened folders.

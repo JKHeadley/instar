@@ -5,7 +5,7 @@
 // Home's card and this page can never disagree on what is open.
 
 import { sortPromises, waitsOnOperator, isMissed, lastTouched, nextDue, DUE_SOON_MS, CLOSED_WINDOW_MS } from './shared-counts.js';
-import { REPLICA_FRESH_MS, ago, failure } from './home-model.js';
+import { REPLICA_FRESH_MS, ago, failure, briefOf } from './home-model.js';
 
 export { failure, isMissed, lastTouched, nextDue, DUE_SOON_MS, CLOSED_WINDOW_MS };
 
@@ -52,7 +52,8 @@ export function toRow(c, now = Date.now(), names = {}) {
     id: c.id,
     origin: c.originMachineId || null,
     replica: c.viewSource === 'replica',
-    main: c.agentResponse || c.userRequest || c.id,
+    // One plain sentence, ids stripped; the sheet's story carries the full text and the id.
+    main: briefOf(c.agentResponse || c.userRequest) || c.id,
     sub: bits.join(' · '),
     end: ago(c.createdAt, now) || '',
     record: c,

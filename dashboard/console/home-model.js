@@ -14,7 +14,7 @@
 import {
   ago, plural, STALE_DAYS, readState,
   needsOperator, groupKey, attentionNeeds,
-  waitsOnOperator, isActiveCommitment, lastTouched, isMissed, sortPromises, promiseNeed,
+  waitsOnOperator, isActiveCommitment, lastTouched, isMissed, sortPromises, promiseNeed, promiseFull,
   guardsNeedingLook, needsYou, accountNeeds as accountNeedsOf, prsNeedingYou,
   machineState, liveState, machineLabel, LIVE_MS, STALE_MS,
 } from './shared-counts.js';
@@ -37,6 +37,33 @@ export function duration(ts, now = Date.now()) {
   return 'for ' + a.replace(' ago', '');
 }
 
+// ── Row wording: one plain sentence on the face, the original text behind the tap ──
+/** Thread ids, attention-item ids, fingerprints and embedded timestamps out of a sentence. */
+export function stripIds(text) {
+  return String(text || '')
+    .replace(/\s*\((?:thread[- ][\w-]+|\d{1,2}:\d{2}Z? ?\d{4}-\d{2}-\d{2}[^)]*|as of [^)]*)\)/gi, '')
+    .replace(/\s*\bon thread\s+[0-9a-f]{6,}\b/gi, '')
+    .replace(/\bthread[- ](?:id[- ])?[0-9a-z][\w-]{5,}\b/gi, 'that thread')
+    .replace(/\battention item\s+agent:[\w.:-]+/gi, 'the attention item')
+    .replace(/\bagent:[\w.:-]+/g, 'it')
+    .replace(/\b[0-9a-f]{32,}\b/gi, '')
+    .replace(/\s{2,}/g, ' ').replace(/\s+([,.;:)])/g, '$1').replace(/\(\s*\)/g, '').trim();
+}
+
+export const BRIEF_MAX = 110;
+/** The first sentence, ids stripped, capped at a word boundary; "" in → "" out. */
+export function briefOf(text, max = BRIEF_MAX) {
+  const clean = stripIds(text);
+  if (!clean) return '';
+  const m = /^(.{20,}?[.!?])(?:\s|$)/.exec(clean);
+  let s = m ? m[1] : clean;
+  if (s.length > max) {
+    const cut = s.slice(0, max - 1);
+    const at = Math.max(cut.lastIndexOf(' '), cut.lastIndexOf(','), cut.lastIndexOf(';'));
+    s = `${cut.slice(0, at > 40 ? at : max - 1).replace(/[,;:\s]+$/, '')}…`;
+  }
+  return s;
+}
 // ── 1. Can I reach you ────────────────────────────────────────────────────
 export function buildReach(res, now = Date.now()) {
   if (!res.ok) return unknownCard(`Couldn't read delivery status: ${res.reason}.`);
@@ -56,7 +83,7 @@ export function buildReach(res, now = Date.now()) {
   }
   if (expired > 0) return { state: 'bad', value: `${expired} lost`, line: 'Some replies expired before they reached you.', rows, age };
   if (count > 0) return { state: 'attn', value: `${count} held`, line: 'Replies are written but not delivered yet.', rows, age };
-  return { state: 'ok', value: 'No replies held', line: '', rows, age, details: ['Checked on this machine.'] };
+  return { state: 'ok', value: 'No replies held', line: '', rows, age, details: ['Checked on this machine only; each machine holds its own replies.'] };
 }
 
 // ── 2. What needs you ─────────────────────────────────────────────────────
@@ -64,8 +91,9 @@ export function buildNeeds(res, now = Date.now(), names = null) {
   if (!res.ok) return unknownCard(`Couldn't read the attention queue: ${res.reason}.`);
   const items = Array.isArray(res.data && res.data.items) ? res.data.items : null;
   if (!items) return unknownCard('The attention queue answered without a list.');
-  // One rule for who needs the operator and how repeats fold (shared-counts.attentionNeeds).
-  const { all, current, routine } = attentionNeeds(items, now);
+  // One rule for who needs the operator and how repeats fold (shared-counts.attentionNeeds);
+  // the face is one plain sentence (briefOf), the original title and id behind the tap.
+  const { all, current, routine } = attentionNeeds(items, now, { brief: briefOf });
   const stale = all.length - current.length;
   const rows = current.slice(0, MAX_ROWS);
   const failed = (res.data.pool && Array.isArray(res.data.pool.failed)) ? res.data.pool.failed : [];
@@ -166,12 +194,14 @@ export function combineNeeds(attn, prom, extra = {}) {
   const base = { count, pending, rows: list.items.slice(0, MAX_ROWS), all, details, byKind, label: list.label,
     fromQueue: list.items.filter((r) => r.kind === 'attention').length, fromPromises: list.items.filter((r) => r.kind === 'promise').length,
     fromAccounts: list.items.filter((r) => r.kind === 'account').length, fromPrs: list.items.filter((r) => r.kind === 'pr').length };
-  // Face line: only what changes what the operator should conclude. A mixed list says what kinds.
+  // Face line: only what changes what the operator should conclude. A mixed list says what
+  // kinds; the headline already says "There may be more." for partial coverage, so the card
+  // keeps that note in Details rather than repeating it on its face.
   const kinds = Object.keys(byKind).length > 1 ? list.label.replace(/^[^:]*: /, '').replace(/^./, (c) => c.toUpperCase()) + '.' : '';
+  if (!pending && !failedSources.length && !(attnOk && attn.line) && (dated || partialCoverage)) details.push('Some machines may not be shown, so there may be more.');
   const faceLine = pending ? (list.pending[0] === 'attention' ? 'Still checking the attention queue…' : list.pending[0] === 'promises' ? 'Still checking your promises…' : 'Still checking…')
     : failedSources.length ? `Couldn't read ${failedSources.map((f) => f.what).join(' or ')}, so there may be more.`
-    : (attnOk && attn.line) ? attn.line
-    : (dated || partialCoverage) ? [kinds, 'Some machines may not be shown, so there may be more.'].filter(Boolean).join(' ') : kinds;
+    : (attnOk && attn.line) ? attn.line : kinds;
   if (count > 0) {
     return { ...base, state: incomplete ? 'partial' : 'attn', coverage: incomplete ? 'partial view' : null,
       value: plural(count, 'thing', 'things'), valueTone: 'attn', line: faceLine };
@@ -183,9 +213,24 @@ export function combineNeeds(attn, prom, extra = {}) {
 }
 
 // ── 3. What I'm doing ─────────────────────────────────────────────────────
+/**
+ * A generated session name, shortened for a list: a run id made of hex chunks
+ * ("feedback-feedback-b26e90ab-3a37-4-828b1f71-a2") becomes "feedback b26e90ab";
+ * a name a person wrote is left alone. The full name stays in the session's Details.
+ */
+export function shortName(name) {
+  const n = String(name || '').trim();
+  const parts = n.split('-');
+  const hexish = (w) => /^[0-9a-f]{4,}$/i.test(w) || /^\d+$/.test(w) || (/^[0-9a-f]{1,3}$/i.test(w) && parts.length > 4);
+  const firstHex = parts.findIndex((w) => /^[0-9a-f]{6,}$/i.test(w));
+  if (firstHex < 1 || parts.slice(firstHex).filter(hexish).length < 2) return n;
+  const words = [...new Set(parts.slice(0, firstHex).filter((w) => !hexish(w)))];
+  return `${words.join(' ')} ${parts[firstHex].slice(0, 8)}`.trim();
+}
+
 /** Strip machine prefixes and bracketed bootstrap noise from a session name. */
 export function sessionLabel(s) {
-  const name = String((s && (s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
+  const name = shortName(String((s && (s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim());
   return name.length > 80 ? name.slice(0, 77) + '…' : name;
 }
 
@@ -237,11 +282,13 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   if (!list) return unknownCard('Commitments answered without a list.');
   const s = sortPromises(list, now);
   const n = s.counts;
+  // The face is one plain sentence; the full promise text, what you asked and the id sit behind the tap.
+  const fullOf = promiseFull;
   const toRow = (c, tone) => ({
     key: `${c.originMachineId || 'own'}:${c.id}`,
-    detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
+    detail: fullOf(c),
     expandable: true,
-    main: c.agentResponse || c.userRequest || c.id,
+    main: briefOf(c.agentResponse || c.userRequest) || 'A promise',
     sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : (isMissed(c, now) ? 'missed' : ''),
       c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : ''].filter(Boolean).join(' · '),
     end: ago(c.createdAt, now) || '',
@@ -249,8 +296,10 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   });
   // Promises waiting on the operator are listed under "What needs you" (combineNeeds),
   // never counted a second time here.
-  const waiting = s.waiting.map((c) => promiseNeed(c, now));
-  const waitingStale = s.olderWaiting.map((c) => promiseNeed(c, now, { stale: true }));
+  // Waiting rows are shared-counts.promiseNeed (the same item Home's needs card and the
+  // pages count), with the brief face and the full text behind the tap.
+  const waiting = s.waiting.map((c) => promiseNeed(c, now, { brief: briefOf }));
+  const waitingStale = s.olderWaiting.map((c) => promiseNeed(c, now, { stale: true, brief: briefOf }));
   const olderCarried = n.older - n.olderWaiting;
   const all = [...s.missed.map((c) => toRow(c, 'bad')), ...s.dueSoon.map((c) => toRow(c)), ...s.carrying.map((c) => toRow(c))];
   const open = all.length + waiting.length;   // = n.open: waiting + missed + dueSoon + carrying

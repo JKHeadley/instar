@@ -38,7 +38,7 @@ export function meaningRows(resolved) {
   const rows = [];
   if (typeof resolved.autoApplyUpdates === 'boolean') rows.push({ label: 'Updates install themselves', text: yesNo(resolved.autoApplyUpdates) });
   if (typeof resolved.autoRestart === 'boolean') rows.push({ label: 'I restart after updates', text: yesNo(resolved.autoRestart) });
-  if (typeof resolved.trustAutoElevate === 'boolean') rows.push({ label: 'I ask before raising my own trust', text: yesNo(!resolved.trustAutoElevate) });
+  if (typeof resolved.trustAutoElevate === 'boolean') rows.push({ label: 'Raising my own trust level', text: resolved.trustAutoElevate ? 'allowed when I have earned it, without asking you' : 'only when you say so' });
   return rows;
 }
 
@@ -99,11 +99,12 @@ export function buildHistory(res, now = Date.now()) {
 }
 
 // ── Safety checks ─────────────────────────────────────────────────────────
-// The rule for "needs a look", the words for a guard's state and the count itself
-// live in shared-counts.js (guardNeedsLook / guardWord / guardsNeedingLook): the
-// same source Home's card and the Machines page read, scope stated.
-import { guardWord, guardNeedsLook, guardsNeedingLook } from './shared-counts.js';
-export { guardWord };
+// The rule for "needs a look", the words for a guard's state, the plain name for a
+// setting key and the count itself live in shared-counts.js (guardNeedsLook /
+// guardWord / guardName / guardsNeedingLook): the same source Home's card and the
+// Machines page read, scope stated.
+import { guardWord, guardName, guardNeedsLook, guardsNeedingLook } from './shared-counts.js';
+export { guardWord, guardName };
 export function needsLook(g) { return guardNeedsLook(g); }
 
 /** Which writes a row offers. Only this machine's rows can be written; peers never. */

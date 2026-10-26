@@ -234,7 +234,7 @@ describe('profile', () => {
     expect(p.steps.find((s: { current: boolean }) => s.current).id).toBe('supervised');
     expect(p.steps[0].desc).toBe('Approve everything');
     expect(meaningRows(dash.resolved)).toEqual([
-      { label: 'Updates install themselves', text: 'yes' }, { label: 'I restart after updates', text: 'no' }, { label: 'I ask before raising my own trust', text: 'no' },
+      { label: 'Updates install themselves', text: 'yes' }, { label: 'I restart after updates', text: 'no' }, { label: 'Raising my own trust level', text: 'allowed when I have earned it, without asking you' },
     ]);
   });
   it('says autonomy is not set up on a 404, never pretends supervised', () => {
@@ -366,7 +366,7 @@ describe('allowed page in a DOM', () => {
     for (let i = 0; i < 15; i++) await new Promise((r) => setTimeout(r, 20));
     const doc = dom.window.document;
     expect(doc.querySelector('.page-title')!.textContent).toContain('routine work');
-    expect(doc.querySelector('.seg-step.current .seg-label')!.textContent).toBe('Supervised');
+    expect(doc.querySelector('.profile-now .profile-level')!.textContent).toBe('Supervised');
     // /autonomy/elevation answered 404: the suggestions section is hidden, no claim.
     expect(doc.querySelector('#sec-suggestions')).toBeNull();
     // The read-only feature has no switch; its row shows the server's reason.

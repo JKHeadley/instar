@@ -9,7 +9,7 @@ import {
   buildPreferences, buildPreferenceEntries, isMissingRoute, dateWords, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
 } from './learned-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, fold } from './ui.js';
 
 const PAGE = 20;
 // The last good preferences build, so a failed refresh shows it with its age (stale) instead of nothing.
@@ -60,13 +60,13 @@ function prefsBlock(prefs) {
   }
   if (prefs.stale) wrap.append(note(prefs.staleWords));
   if (!prefs.rows.length) {
-    wrap.append(el('p', { class: 'empty-line', text: prefs.total ? 'I keep some preferences, but none fit in what loads at the start of a conversation.' : 'Nothing saved yet. Correct me the same way on a couple of different days and it shows up here.' }));
+    wrap.append(el('p', { class: 'empty-line', text: prefs.total ? 'I keep some preferences, but none fit in what loads at the start of a conversation.' : 'Nothing saved yet.' }));
   } else {
     wrap.append(el('div', { class: 'pref-cards' }, prefs.rows.map((p) => prefCard(p, prefs))));
   }
   if (prefs.notLoadedWords) wrap.append(note(prefs.notLoadedWords));
-  if (prefs.meshWords) wrap.append(note(prefs.meshWords));
-  wrap.append(el('p', { class: 'card-note', text: ADVISORY_LINE }));
+  // How these are used, and where they come from, one tap deeper.
+  wrap.append(fold('About these', el('p', { class: 'card-note', text: ADVISORY_LINE }), prefs.meshWords ? note(prefs.meshWords) : null));
   return wrap;
 }
 

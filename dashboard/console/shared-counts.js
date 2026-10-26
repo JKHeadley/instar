@@ -153,29 +153,38 @@ export function promiseRefs(c) {
 /** The words for what a waiting promise needs: an answer or an approval. */
 export function promiseKind(c) { return c.blockedOn === 'user-authorization' ? 'approval' : 'answer'; }
 
-/** One needs-you item for a promise waiting on the operator. */
-export function promiseNeed(c, now = Date.now(), { stale = false } = {}) {
+/** The full promise text behind a row's tap: what I said, what you asked, and the id. */
+export function promiseFull(c) {
+  return [c.agentResponse ? `I said: ${c.agentResponse}` : null, c.userRequest ? `You asked: ${c.userRequest}` : null, c.id ? `Promise ${c.id}` : null].filter(Boolean).join('\n\n');
+}
+
+/**
+ * One needs-you item for a promise waiting on the operator. `brief` (home-model's
+ * briefOf) turns the face into one plain sentence; the full text sits in `detail`.
+ */
+export function promiseNeed(c, now = Date.now(), { stale = false, brief = null } = {}) {
   const replica = c.viewSource === 'replica' && c.originMachineId
     ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : '';
   const kind = promiseKind(c);
+  const text = c.agentResponse || c.userRequest || '';
   return {
     kind: 'promise', subKind: kind, topic: promiseTopic(c), refs: promiseRefs(c),
     key: `promise:${c.originMachineId || 'own'}:${c.id}`, id: c.id, stale,
     last: lastTouched(c), prio: 5,
-    main: c.agentResponse || c.userRequest || c.id,
-    sub: [kind === 'approval' ? 'An approval I’m waiting on you for' : 'A decision I’m waiting on you for', replica, stale ? `untouched ${STALE_DAYS}+ days` : ''].filter(Boolean).join(' · '),
+    main: (brief ? brief(text) : text) || (brief ? 'A promise' : c.id),
+    sub: [kind === 'approval' ? 'Needs your approval' : 'Needs your answer', replica, stale ? `untouched ${STALE_DAYS}+ days` : ''].filter(Boolean).join(' · '),
     end: ago(c.createdAt, now) || '',
     tone: stale ? 'unknown' : 'attn',
-    detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
+    detail: promiseFull(c),
     expandable: true,
     record: c,
   };
 }
 
 /** The waiting promises about one topic ('pr' | 'password' | 'sign-in'), as needs-you items; the page's own share of the one list. */
-export function promisesAbout(list, topic, now = Date.now()) {
+export function promisesAbout(list, topic, now = Date.now(), { brief = null } = {}) {
   const s = sortPromises(list, now);
-  return s.waiting.filter((c) => promiseTopic(c) === topic).map((c) => promiseNeed(c, now));
+  return s.waiting.filter((c) => promiseTopic(c) === topic).map((c) => promiseNeed(c, now, { brief }));
 }
 
 // ═══ Attention items ═══════════════════════════════════════════════════════
@@ -198,8 +207,12 @@ export function groupKey(i) {
   return `${String(i.category || '')}|${String(i.title || i.summary || '').trim().toLowerCase().replace(/\s+/g, ' ')}`;
 }
 
-/** Open attention items needing the operator, grouped: one needs-you item per group. */
-export function attentionNeeds(items, now = Date.now()) {
+/**
+ * Open attention items needing the operator, grouped: one needs-you item per group.
+ * `brief` (home-model's briefOf) makes the face one plain sentence; the original
+ * title, the description and the item id go behind the tap.
+ */
+export function attentionNeeds(items, now = Date.now(), { brief = null } = {}) {
   const open = (items || []).filter((i) => i && i.status === 'OPEN');
   const mine = open.filter(needsOperator);
   const groups = new Map();
@@ -214,14 +227,18 @@ export function attentionNeeds(items, now = Date.now()) {
   const all = [...groups.values()].map((g) => {
     const top = g.items.slice().sort((a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9))[0];
     const stale = !g.items.some(neverStale) && now - g.last > STALE_DAYS * DAY;
+    const title = String(top.title || top.summary || '').trim();
+    const main = (brief ? brief(title) : title) || 'Untitled item';
     return {
       kind: 'attention', ids: g.items.map((i) => i.id).filter(Boolean),
       key: `attention:${groupKey(top)}`, stale, last: g.last, prio: PRIORITY[top.priority] ?? 9,
-      main: top.title || top.summary || 'Untitled item',
+      main,
       sub: [g.items.length > 1 ? `${g.items.length} copies` : null, [...g.machines].join(', ') || null, String(top.priority || '').toLowerCase()].filter(Boolean).join(' · '),
       end: ago(g.last, now) || '',
       tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
-      detail: top.description || top.body || '',
+      detail: brief
+        ? [main !== title ? title : null, top.description || top.body || '', top.id ? `Item ${top.id}` : null].filter(Boolean).join('\n\n')
+        : (top.description || top.body || ''),
       expandable: true,
     };
   }).sort((a, b) => Number(a.stale) - Number(b.stale) || a.prio - b.prio || b.last - a.last);
@@ -419,9 +436,35 @@ export function guardsNeedingLook(res, { scope = 'local', names = null } = {}) {
   };
 }
 
-export function humanKey(key) {
-  return String(key || 'A safety check').replace(/^monitoring\./, '').replace(/\.enabled$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._-]/g, ' ').replace(/^./, (c) => c.toUpperCase());
+// Plain names for the setting keys the guards are known by. Anything not listed is
+// humanized: prefixes dropped, camelCase split and lower-cased, known acronyms kept upper.
+const GUARD_NAMES = {
+  'models.tierEscalation.dryRun': 'Model escalation (watch-only mode)',
+  'models.tierEscalation.enabled': 'Model escalation for heavy work',
+  'monitoring.autonomousHeartbeat.enabled': 'Autonomous-run heartbeat',
+  'monitoring.collaborationRedrive.enabled': 'Collaboration re-drive',
+  'monitoring.greenPrAutoMerge.enabled': 'Green PR auto-merge',
+  'monitoring.orphanedWorkSentinel.enabled': 'Orphaned-work sentinel',
+  'monitoring.reportExternalProcesses': 'Report external processes',
+  'monitoring.staleBackstop.enabled': 'Stale backstop',
+  'monitoring.burnDetection.enabled': 'Token-burn detection',
+  'monitoring.crashLoopPauser.enabled': 'Crash-loop pauser',
+  'monitoring.promptGate.enabled': 'Prompt gate',
+  'multiMachine.peerExecution.enabled': 'Autonomous execution on a paired machine',
+  'scheduler.enabled': 'Scheduled jobs',
+};
+const ACRONYMS = new Set(['pr', 'llm', 'cpu', 'gpu', 'mcp', 'ssh', 'a2a', 'api', 'ci', 'jsonl', 'json', 'tcc', 'url', 'http', 'https', 'tls', 'ws', 'sse', 'ui', 'ux', 'pin', 'id', 'oauth', 'otp', 'totp', 'aup', 'pid', 'io', 'os']);
+export function guardName(key) {
+  const k = String(key || '').trim();
+  if (!k) return 'A safety check';
+  if (GUARD_NAMES[k]) return GUARD_NAMES[k];
+  const words = k.replace(/^(monitoring|intelligence|sessions|multiMachine|messaging|scheduler)\./, '').replace(/\.enabled$/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(/[._\-\s]+/).filter(Boolean)
+    .map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w.toLowerCase()));
+  const out = words.join(' ');
+  return out.charAt(0).toUpperCase() + out.slice(1);
 }
+export const humanKey = guardName;
 
 // ═══ Machine load ══════════════════════════════════════════════════════════
 export const LOAD_REPORT_MAX_AGE_MS = 60_000;

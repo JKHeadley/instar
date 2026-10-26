@@ -210,7 +210,7 @@ describe('the page', () => {
     // Pairing elsewhere names the holder; a partial pool read is a note, not silence.
     const elsewhere = buildAgentsPage({ ...q, pairingRes: pairings([]), invitesRes: off('invite pairing unavailable (this machine does not run the Threadline relay)'), peersRes: ok({ peers: [peer()], pool: { failed: [{ machineId: 'mini', error: 'offline' }] } }) }, NOW);
     expect(elsewhere.sub).toContain('Pairing runs on the mini');
-    expect(elsewhere.notes).toContain('No delivery records from the mini.');
+    expect(elsewhere.details).toContain('No delivery records from the mini.'); // coverage housekeeping: one tap deeper, never a note on the face
     const disagree = buildAgentsPage({ ...q, health: health({ state: 'connected' }, { identityCoherence: { state: 'disagree' } }) }, NOW);
     expect(disagree.sub).toContain('My machines disagree');
     expect(buildAgentsPage({ ...q, pairingRes: pairings([]), peersRes: ok({ peers: [] }), convRes: conv([]) }, NOW)).toMatchObject({ headline: 'No other agents yet.', sub: 'Connect another agent to start.' });

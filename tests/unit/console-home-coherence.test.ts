@@ -112,7 +112,7 @@ describe('Home coherence: headline count === What needs you count', () => {
     const { cards } = home(attentionEmpty, promisesTen);
     const n = cards.needs as unknown as { rows: { main: string; sub: string }[]; all: { main: string; sub: string; stale?: boolean }[] };
     expect(n.rows[0].main).toBe('Waiting for your answer on question 1');
-    expect(n.rows[0].sub.startsWith('A decision I’m waiting on you for')).toBe(true);
+    expect(n.rows[0].sub.startsWith('Needs your answer')).toBe(true);
     expect(n.all).toHaveLength(11);
     expect(n.all[10].stale).toBe(true);
   });

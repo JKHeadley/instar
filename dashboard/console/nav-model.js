@@ -92,6 +92,29 @@ export const GROUPS = [
   },
 ];
 
+/**
+ * Tiles that only point at where a legacy tab moved ("Now inside …"). They are not
+ * destinations, so a hub page keeps them off its face and lists them in the
+ * "Where did things move?" sheet instead.
+ */
+export function isMovedTile(t) {
+  return typeof t.desc === 'string' && /^Now (inside|one line)/.test(t.desc);
+}
+export function hubTiles(g) { return g.tabs.filter((t) => !isMovedTile(t)); }
+export function hoodTiles(g) { return (g.hood || []).filter((t) => !isMovedTile(t)); }
+/**
+ * old tab → new place, from the tile's own words ("Now inside Plans: …" → "Plans").
+ * With a group, that group's moves come first; the rest of the console follows, so the
+ * same sheet answers the question on every hub.
+ */
+export function movedList(g = null) {
+  const groups = g ? [g, ...GROUPS.filter((x) => x !== g)] : GROUPS;
+  return groups.flatMap((grp) => [...grp.tabs, ...(grp.hood || [])].filter(isMovedTile).map((t) => {
+    const m = /^Now (?:inside|one line at the top of)\s+([^:]+?)(?:\s+\((\w+)\))?\s*(?::\s*(.*)|\.?)$/.exec(t.desc);
+    return { id: t.id, group: grp.label, label: t.label, to: m ? m[1].trim() : t.desc.replace(/^Now\s+/, ''), href: tabHref(t.id), what: (m && m[3]) || '' };
+  }));
+}
+
 /** Every legacy tab id the console links to. */
 export function allTabIds() {
   return GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id));

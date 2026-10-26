@@ -9,7 +9,7 @@ import {
   issueRequest, revokeRequest, grantRequest, approveRequest, denyRequest, resultWords,
   FLOOR_ACTIONS, GRANT_DURATIONS, AUTHORITIES_TEMPLATE, humanAction, defaultExpiryLocal,
 } from './mandates-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const AUDIT_LIMIT = 200;
@@ -59,7 +59,7 @@ export async function renderMandates(main, ctx) {
   }
   sections.push(historyBlock(audit, deps));
   sections.push(authorFold(slips, deps));
-  parts.push(el('div', { class: 'page-sections' }, sections), el('p', { class: 'foot-note' }, el('a', { href: legacyHref('mandates'), text: 'Open mandates in the legacy dashboard' })));
+  parts.push(el('div', { class: 'page-sections' }, sections), el('p', { class: 'foot-note' }, el('a', { href: legacyHref('mandates'), text: 'Open permission slips in the legacy dashboard' })));
   setKids(main, el('div', { class: 'slips-page' }, parts));
 }
 
@@ -67,7 +67,7 @@ export async function renderMandates(main, ctx) {
 function approvalsBlock(approvals, deps) {
   const wrap = el('section', { class: 'list-section', id: 'sec-waiting' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Waiting for you' }), approvals.ok ? el('span', { class: 'list-count', text: String(approvals.rows.length) }) : null));
   if (!approvals.ok) { wrap.append(el('p', { class: 'card-note', text: approvals.reason })); return wrap; }
-  if (!approvals.rows.length) { wrap.append(el('p', { class: 'empty-line', text: 'Nothing is waiting for your approval.' })); return wrap; }
+  if (!approvals.rows.length) { wrap.append(el('p', { class: 'empty-line', text: 'Nothing to approve right now.' })); return wrap; }
   for (const r of approvals.rows) wrap.append(approvalCard(r, deps));
   return wrap;
 }
@@ -124,7 +124,7 @@ function declineSheet(r, cardStatus, deps) {
 // ── Active slips ──────────────────────────────────────────────────────────
 function activeBlock(slips, deps) {
   const wrap = el('section', { class: 'list-section', id: 'sec-active' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Active slips' }), el('span', { class: 'list-count', text: String(slips.active.length) })));
-  if (!slips.active.length) { wrap.append(el('p', { class: 'empty-line', text: 'No slip is active. With none, every agent-to-agent action is refused.' })); return wrap; }
+  if (!slips.active.length) { wrap.append(el('p', { class: 'empty-line', text: 'No slip is active. Agents can still message each other; an action that needs a slip waits until you sign one.' })); return wrap; }
   wrap.append(el('div', { class: 'slip-cards' }, slips.active.map((c) => slipCardEl(c, deps))));
   return wrap;
 }
@@ -159,7 +159,7 @@ function grantForm(c, deps) {
   const what = el('select', { class: 'reason-input', 'aria-label': 'What they may do' }, FLOOR_ACTIONS.map((a) => el('option', { value: a, text: humanAction(a), selected: a === 'prod-deploy' || null })));
   const how = el('select', { class: 'reason-input', 'aria-label': 'For how long' }, GRANT_DURATIONS.map((d) => el('option', { value: String(d.minutes), text: d.label, selected: d.minutes === 60 || null })));
   const status = el('p', { class: 'action-status', role: 'status' });
-  const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Grant with PIN', 'data-grant': c.id });
+  const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Add with PIN', 'data-grant': c.id });
   go.addEventListener('click', async () => {
     const dry = grantRequest(c.record, { grantedTo: who.value, floorAction: what.value, minutes: how.value }, 'x');
     if (!dry.ok) { status.textContent = dry.problems.join(' '); return; }
@@ -179,7 +179,7 @@ function grantForm(c, deps) {
     deps.usersKnown && !people.length ? note('No registered people to pick from; a Slack user id works.') : null,
     !deps.usersKnown ? note('Couldn’t read the registered people, so a Slack user id is needed.') : null,
     el('div', { class: 'grant-fields' }, el('label', { class: 'limit-field' }, el('span', { text: 'Who' }), who), el('label', { class: 'limit-field' }, el('span', { text: 'May' }), what), el('label', { class: 'limit-field' }, el('span', { text: 'For' }), how)),
-    note('The person you pick may take that one action for that window. A grant can never outlive the slip; revoking the slip ends it.'),
+    note('The person you pick may take that one action for that window. It can never outlive the slip; revoking the slip ends it.'),
     go, status);
 }
 
@@ -193,7 +193,7 @@ function revokeBlock(c, deps) {
     const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel', onclick: () => setKids(box, open) });
     const n = c.grants.filter((g) => g.live).length;
     go.addEventListener('click', async () => {
-      const pin = await askPin({ title: 'Revoke this slip', explain: `Ends “${c.title}”${n ? ` and the ${n === 1 ? '1 grant' : `${n} grants`} it carries` : ''}, now. Can’t be undone. Your PIN goes in this one request and is not kept.`, adapter: 'body' });
+      const pin = await askPin({ title: 'Revoke this slip', explain: `Ends “${c.title}”${n ? ` and the ${n === 1 ? '1 person’s permission' : `${n} people’s permissions`} it carries` : ''}, now. Can’t be undone. Your PIN goes in this one request and is not kept.`, adapter: 'body' });
       if (!pin) return;
       const body = revokeRequest(pin.pin, why.value); pin.pin = '';
       const panel = sheet({ title: 'Revoking…' }, el('p', { class: 'action-status', role: 'status', text: 'Working…' }));
@@ -203,7 +203,7 @@ function revokeBlock(c, deps) {
       panel.querySelector('.action-status').textContent = w.text;
       if (w.ok) setTimeout(() => { closeSheet(); deps.refresh(); }, 1000);
     });
-    setKids(box, el('div', { class: 'confirm' }, el('p', { class: 'confirm-text', text: `Ends this slip${n ? ` and the ${n === 1 ? '1 grant' : `${n} grants`} it carries` : ''}, now. Can’t be undone.` }), why, el('div', { class: 'confirm-row' }, cancel, go), status));
+    setKids(box, el('div', { class: 'confirm' }, el('p', { class: 'confirm-text', text: `Ends this slip${n ? ` and the ${n === 1 ? '1 person’s permission' : `${n} people’s permissions`} it carries` : ''}, now. Can’t be undone.` }), why, el('div', { class: 'confirm-row' }, cancel, go), status));
     why.focus();
   });
   box.append(open);
@@ -213,9 +213,10 @@ function revokeBlock(c, deps) {
 // ── Decision history ──────────────────────────────────────────────────────
 function historyBlock(audit, deps) {
   if (!audit.ok) return el('section', { class: 'list-section', id: 'sec-history' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Decision history' })), cantTell(audit.reason));
-  const sec = section({ id: 'history', title: 'Decision history', rows: audit.rows, collapsed: audit.chain.state !== 'broken' && audit.rows.length > 0, empty: 'No decisions recorded yet. Every allow and refusal lands here.', onRow: (r) => openDecision(r, deps) });
-  const head = sec.querySelector('.list-head');
-  head.after(el('p', { class: `history-line${audit.chain.state === 'broken' ? ' bad' : ''}` }, el('span', { text: audit.countLabel }), el('span', { class: 'history-chain', text: audit.chain.words })));
+  const sec = section({ id: 'history', title: 'Decision history', rows: audit.rows, collapsed: audit.chain.state !== 'broken', empty: 'No decisions recorded yet. Every allow and refusal lands here.', onRow: (r) => openDecision(r, deps) });
+  const line = el('p', { class: `history-line${audit.chain.state === 'broken' ? ' bad' : ''}` }, el('span', { text: audit.countLabel }), el('span', { class: 'history-chain', text: audit.chain.words }));
+  if (audit.chain.state === 'broken') sec.querySelector('.list-head').after(line);
+  else if (audit.rows.length) sec.querySelector('.list-rows').prepend(line);
   return sec;
 }
 
