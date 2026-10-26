@@ -50,9 +50,11 @@ fail honestly (`session-ran-every-probe`) rather than pass.
 
 ## 3. Level-of-abstraction fit
 
-The constant is the single place every confined launch's permission/tool arguments come from, and
-the tests pin the exact argv at both call sites (reroute lane, confined spawn). Putting the flag
-anywhere else would let one lane drift.
+The constant is the single place every confined launch's permission/tool arguments come from. The
+adapter test (`session-manager-confined-reroute.test.ts`, `applyClaudeConfinement`) pins the exact
+argv order including `--no-chrome` before `-p`; the two launch-site tests (reroute lane, confined
+spawn) check membership of the flag (Codex review finding 3 corrected this sentence, which had
+claimed exact pins at both sites). Putting the flag anywhere else would let one lane drift.
 
 ## 4. Signal vs authority compliance
 
@@ -91,6 +93,19 @@ gets the change with the release.
 
 Revert the commit. No persisted state.
 
+## Carried alongside: model-registry review (a found problem that blocked this commit)
+
+`scripts/model-registry-freshness.manifest.json`: the 45-day review window expired at 00:00 UTC
+2026-10-26 (last reviewed 2026-09-10) and the strict pre-commit lint began refusing every commit
+in the repo — including this PR's follow-up. Fix now (it blocks the current work): the review is
+done and recorded in `$lastReviewNote`. Pins re-checked live on 2026-10-25: codex `gpt-6-astra`
+answered three independent review runs that day; `claude-fable-5` (and the current Claude 5.5 ids
+`claude-fable-5-1`, `claude-opus-5-5`) answered `claude -p --model` probes on CLI 2.1.303 — the two
+5.5 ids are ADDED as frontier rows (verifiedAt 2026-10-25) and no pin moved, so routing is
+unchanged; `gemini-3.1-pro-preview` could not be re-probed (no gemini auth on the reviewing machine)
+and is carried unchanged. Rollback: revert the manifest hunk; the lint then fails again on
+staleness, which is the honest state.
+
 ## Conclusion
 
 Ship. One flag, proven live, strictly fewer startup questions for a session that could never use
@@ -105,6 +120,7 @@ Not required.
 - Live failure: `logs/server.log` 2026-10-25T22:49:43–54Z — `awaiting-trust-dismissal → awaiting-browser-dismissal (action keys)` then `awaiting-browser-dismissal → failed`, degradation `startup browser-offer-not-dismissed (observed browser-offer)`; `GET /feedback-factory/execute/status` → `session-last-screen` detail quoting the offer; canary 15:49:57 PDT failed only the session probes.
 - Live proof (2026-10-25 15:57 PDT, Claude Code 2.1.303, tmux, `CLAUDE_CONFIG_DIR=<a login without the Chrome flag>`): `claude --permission-mode dontAsk --tools Bash,Read` → after the trust dialog, the screen shows "Claude in Chrome extension detected … ❯ No, keep browser tools off / Yes, use my browser"; `claude --no-chrome --permission-mode dontAsk --tools Bash,Read` → after the trust dialog, straight to the prompt with the `don't ask on` footer. Under a login WITH `claudeInChromeDefaultEnabled: false`, neither variant shows the offer (which is why the 12:48 canary had not hit it).
 - Honest note on the live proof: pressing Esc to end the offer in the un-flagged variant wrote `claudeInChromeDefaultEnabled: false` into that login's `.claude.json` (Claude Code records the answer). That is the answer a human would give and is harmless; it is named here because the test touched a real login's config, and because it means the SAME login would not show the offer again — the pool's other un-flagged logins still would, which is why the flag (not the config edit) is the fix.
+- First local verify (70e5e2b29, 2026-10-25 23:33–23:53Z): 7 integration + 2 e2e failures, all in `subscription-relogin-runtime` / `subscription-relogin-lifecycle`, which do not touch the confined argv and pass 16/16 on this branch locally on the same merge base; the verifier retains no per-test output (filed fb-e30113d7-578). Re-verified on this head.
 - Unit: `session-manager-confined-reroute.test.ts`, `session-manager-confined-spawn.test.ts`, `feedback-factory/execute-units.test.ts` — 68/68 green with the exact argv pinned including `--no-chrome`; `tsc` clean.
 
 ## Class-Closure Declaration (display-only mirror)
