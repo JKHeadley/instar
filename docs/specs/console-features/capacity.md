@@ -10,20 +10,31 @@ following `TEMPLATE.md`. Read-only inventory was taken from `dashboard/index.htm
 **What "Capacity" means, in one sentence:** *what I have to work with: the computers I run on,
 the AI accounts I think with and how much each has left, and what that thinking costs.*
 
-The group page says that sentence at the top, then shows **three tiles instead of six**:
+The group page says that sentence at the top, then shows **three tiles instead of six**, plus
+a **Health** shortcut (below):
 
 | New view | Its question | Built from legacy tabs |
 |---|---|---|
-| **Machines** | Where am I running, and is each machine coping? | `machines`, `resources`, `systems` (Health) |
+| **Machines** | Where am I running, and is each machine coping? | `machines`, `resources`, `systems` (Health); always includes **This machine** |
 | **Accounts** | How much AI allowance is left, and does any sign-in need you? | `subscriptions` |
-| **What thinking costs** | What is AI use costing, where does it go, and are the limits set? | `tokens`, `spend`, `llm-activity`, `routing-map` |
+| **What thinking costs** | What AI cost is recorded on this machine, where does AI use go, and are limits set? | `tokens`, `spend`, `llm-activity`, `routing-map` |
+
+**Health stays findable.** Health is not hidden inside a drill-down. The Capacity page carries a
+**Health** shortcut under the three tiles, with a one-line local summary from
+`GET /systems/status` ("All my parts on this machine are working" / "2 parts need a look:
+Watchdog, Telegram relay" / "Can't tell: couldn't read my parts"). It opens **This machine ›
+My parts here**. The Machines landing page also surfaces failures before any drill-down (see
+Machines). This matters because Home does not read `/systems/status`: Home's cards read held
+replies (`/health`), attention, sessions, commitments, pool, guards and mandates
+(`dashboard/console/console.js:354`–`:363` at commit 4313dffb1), so a failing subsystem need not appear there. The
+old name "Health" stays a search alias.
 
 Why these merges:
 
 - **Resource usage and Health describe one machine each.** Both read only the machine that
-  serves the page (`/resources/summary`, `/systems/status`). On their own tabs they look like
-  agent-wide facts; inside the machine's detail they are what they are: "this machine's CPU and
-  memory" and "the parts of me running on this machine".
+  serves the page (`/resources/summary`, `src/server/routes.ts:13249`; `/systems/status`,
+  `:30983`). On their own tabs they look like agent-wide facts; inside **This machine** they are
+  what they are: "this machine's CPU and memory" and "the parts of me running on this machine".
 - **Tokens, Spend, LLM activity and Routing map are four halves of one question.** They share
   sources (Spend and LLM activity both read the feature-metrics ledger), use the same label
   "Text processed" for two different things (`glance.js:1218` vs `:1661`), and run on three
@@ -43,21 +54,31 @@ Why these merges:
 
 - Read-only first cut. Every write action that is not yet native shows as a clearly labelled
   link into the legacy tab ("Do this in the classic dashboard ↗"), so nothing is lost on day one.
-- **One PIN sheet.** Where the server requires operator proof, the console asks once per visit
-  through `POST /dashboard/unlock`, holds the operator session **in memory only**, and reuses it.
-  No PIN for anything the bearer token already allows (rename, cancel a sign-in, submit a code,
-  freeze a paid door).
+- **One PIN sheet, per-action adapters** (`00-patterns.md` §4a). Each write in this group uses
+  the adapter its route actually checks:
+
+  | Adapter | Routes in this group |
+  |---|---|
+  | (a) Bearer only | Rename a machine `PATCH /pool/machines/:id`; submit a sign-in code `POST /subscription-pool/follow-me/submit-code`; cancel a sign-in `POST /subscription-pool/follow-me/cancel`; Freeze `POST /routing-spend/freeze`; render a money plan `POST /routing-spend/plan`, `…/plan-money-layer`, `…/money-layer/restart-nonce` |
+  | (b) Operator session (held for its server lifetime) | Identity recovery: rotate, acknowledge, quarantine approval-token/approve/deny, establish (`src/server/routes.ts:23429`–`:23531`, header only); sign-in repair approve / retry / cancel ("Don't retry on its own" is this cancel) on a local card `POST /subscription-relogin/:id/{approve,retry,cancel}` and on any machine `POST /subscription-relogin/repair-cell` (`:34524`, `:34621`; header or body PIN, the console sends the header); unattended-repair settings `POST /subscription-relogin/configure` (`:34411`, header only) |
+  | (c) Body PIN, cleared after the one action | Set up / sign in / retry a cell `POST /subscription-pool/matrix/start-cell` (`checkMandatePin`, `:35824`); Repair identity `POST /subscription-pool/:id/repair-email` (`:34970`); Approve follow-me `POST /mandate/issue-for-machine` (`:13845`); money commits `POST /routing-spend/caps/adjust`, `/go-live`, `/unfreeze` (`:15756`–`:15793`, plus the server's `planId` and `nonce`), `POST /routing-spend/money-layer/commit` (`:15480`, PIN + `planId` + `nonce`) and `…/money-layer/restart` (PIN + nonce + hash of the shown text) |
+
+  No PIN for anything the bearer token already allows. Within one operator session, adapter (b)
+  actions do not ask twice; adapter (c) actions ask every time unless the optional server change
+  under Accounts › Data is made.
 - Every number says how old it is and where it came from; a failed source says "Can't tell"
   with the reason; part of the pool answering is "partial" and names the machines that did not.
 - No polling of write-classified routes; polls pause while the tab is hidden; a poll never
   rebuilds a control the operator is using (floor F9).
 - Nothing on these pages creates a notification. They are places to look, not things that ping.
 
-**Build order:** 1. Machines (needs the honest machine states from P1 of
-`trustworthy-machine-load-and-mesh-floor.md`; Home already links to it). 2. What thinking costs,
-read-only (no writes needed except Freeze; clarifies the most confusing tabs). 3. Accounts
-(largest: per-cell writes, F9, mixed PIN models). 4. Spending controls go native inside the cost
-view (PIN plan flows; lowest frequency of use, highest care).
+**Build order** (the one order in `README.md`; Capacity pages sit at these steps):
+step 2, **Machines** with This machine and the Health shortcut (uses the honest machine states
+from P1 of `trustworthy-machine-load-and-mesh-floor.md` when they ship, labelled "estimated"
+until then; Home already links to it). Step 3, **Accounts** sign-in repair (an operator
+intervention, so it comes before any read-only page). Step 5, **What thinking costs**, read-only
+(Freeze is its only write). Later: the native spending-control sheets (PIN plan flows; lowest
+frequency of use, highest care); until then they link to the legacy controls.
 
 ---
 
@@ -101,11 +122,16 @@ coping, and if not, how do I know?"*
 - Phone: 28 px padding and 18 px type with no media query (`index.html:4162`).
 
 **The new design.**
-- *Arrival (glance):* one sentence from the machine states, e.g. **"3 machines, all answering."**
-  / **"Mama PC is struggling: it answers slowly and sometimes not at all."** / **"I can't see the
-  Laptop right now; last heard 40 min ago."** Then up to four facts: *Answering* (n of m),
-  *Busiest* (name + load verdict), *Leading* (which machine routes conversations), *Needs a look*
-  (identity changes to review, blocked SSH pairs, deviant guards; hidden when zero).
+- *Arrival (glance):* one sentence from the machine states and this machine's own health, e.g.
+  **"3 machines, all answering."** / **"Mama PC is struggling: it answers slowly and sometimes
+  not at all."** / **"I can't see the Laptop right now; last heard 40 min ago."** / **"This
+  machine: the watchdog has stopped."** Then up to four facts: *Answering* (n of m), *Busiest*
+  (name + load verdict), *Leading* (which machine routes conversations), *Needs a look*
+  (failing parts on this machine, identity changes to review, blocked SSH pairs, deviant guards;
+  hidden when zero).
+- *Failures first:* when `/systems/status` names failing parts, or the overall state is not
+  healthy, the landing page shows a **Needs a look** block above the cards, one line each
+  ("This machine · Watchdog stopped ›"), so a failure is visible before any tap.
 - *Layout:* a list of machine cards, this machine first and marked "this one". Each card: name,
   state chip (live / struggling / refusing / silent / stale / unknown, per spec A2), the evidence
   line "last evidence 2 min ago, direct" (spec A5 wording; observer named for peer sightings, e.g.
@@ -114,7 +140,9 @@ coping, and if not, how do I know?"*
   - *How it's doing:* load signals with their ages; the outside view if it disagrees.
   - *What's using it* (this machine only, from Resource usage; see that section).
   - *My parts here* (this machine only, from Health; see that section).
-  - *Safety checks:* named checks needing a look first; "all N on" collapsed.
+  - *Safety checks:* a count ("2 off where they should be on") linking to the one guard list on
+    **What I'm allowed to do › Safety checks**, filtered to this machine (`people-settings.md`).
+    The list itself lives there, not here.
   - *Connections:* each rope by kind (Tailscale, local network, tunnel) with its state; SSH
     pair status beside it.
   - *Identity:* collapsed "Identity: nothing to review" unless a rotation or claim waits.
@@ -134,8 +162,14 @@ coping, and if not, how do I know?"*
 - *Multi-machine:* states come from the server's `liveness` field once spec P1 ships; until
   then the console's existing `machineState()` mapping (`home-model.js:255`) is used and labelled
   "estimated". An unreachable machine keeps its card, with the last direct evidence and its age;
-  the word "offline" appears only with positive evidence. Single-machine agents see one card and
-  no Identity/SSH sections.
+  the word "offline" appears only with positive evidence.
+- *Single machine (This machine view):* when `GET /pool` answers `enabled: false` with an empty
+  machine list (`src/server/routes.ts:21517`, `:21529`), the page does not
+  depend on it. It shows one **This machine** card built from this machine's own reads
+  (`/systems/status`, `/resources/summary`, `/guards`), named by its nickname when one is known,
+  else "This machine", with no Identity/SSH/Leading sections. The same This machine detail is
+  always reachable on multi-machine installs too, so Health and resource use are never behind a
+  pool read that can fail.
 - *Rough sketch:*
 ```
 ┌──────────────────────────────┐
@@ -162,12 +196,13 @@ machine is which). Nothing dropped.
 
 **Data.** Existing: `/pool`, `/guards` (and `?scope=pool` for peer guard counts),
 `/identity-recovery`, `/machines/ssh-health`, `/resources/summary`, `/systems/status`. Needs the
-P1 fields (`liveness`, evidence slots, load report). One small gap: `/resources/summary` and
+P1 fields (`liveness`, evidence slots, load report); the This machine view needs none of them.
+One small gap: `/resources/summary` and
 `/systems/status` are this-machine only, so a peer's detail shows "open on that machine to see its
 processes" until a pool form exists; no new route proposed now.
 
-**Effort and order.** M. First. Depends on spec P1 for honest states (can ship on the estimated
-mapping, labelled).
+**Effort and order.** M. README step 2. Depends on spec P1 for honest peer states (can ship on the
+estimated mapping, labelled); This machine depends on nothing new.
 
 **Open questions for the operator.** None.
 
@@ -192,9 +227,10 @@ poll). Glance: headline, tiles Subsystems / Need attention / Recent events; per-
 - The tab reads like an agent-wide verdict but only covers the machine serving the page.
 
 **The new design.**
-- *Arrival (glance):* becomes the **"My parts here"** section of a machine's detail. Its one line
-  also feeds the machine card: "All my parts are working" / "2 parts need a look: Watchdog,
-  Telegram relay" / "Something is off but no single part says why: <overall reason>".
+- *Arrival (glance):* becomes the **"My parts here"** section of This machine. Its one line also
+  feeds the Capacity page's Health shortcut, the machine card and the Machines landing page's
+  *Needs a look* block: "All my parts are working" / "2 parts need a look: Watchdog, Telegram
+  relay" / "Something is off but no single part says why: <overall reason>".
 - *Layout:* a short list of parts that need a look, each one sentence ("Watchdog: stopped"); the
   rest collapsed as "12 other parts working". A part opens to: what it does (one plain sentence,
   client-side copy keyed by id with the server text as fallback), processes with honest words
@@ -217,12 +253,14 @@ poll). Glance: headline, tiles Subsystems / Need attention / Recent events; per-
 │   What happened lately      ▾ │
 ```
 
-**Merge / split / cut.** Merged into Machines (machine detail). The Health tile leaves the group
-page. The Home headline already covers "is anything broken"; this is the drill-down.
+**Merge / split / cut.** Merged into Machines (This machine detail). The Health tile is replaced by
+the Health shortcut on the Capacity page, which keeps it one tap from the group and shows its one
+line there. Home does not read this source (see the group overview), so the shortcut and the
+Machines landing page are what keep a failing part visible.
 
 **Data.** `GET /systems/status` (existing). None new.
 
-**Effort and order.** S. With Machines.
+**Effort and order.** S. With Machines (README step 2).
 
 **Open questions for the operator.** None.
 
@@ -344,11 +382,15 @@ does any sign-in need me?"*
   4. **Sign-ins in progress**: the restored pending-logins list, one row per active sign-in with
      the link, the code box, time left (live countdown), Cancel.
 - *Primary action(s):* "Sign in" / "Repair sign-in" from the Needs-you card: one tap opens the
-  sheet; if the server needs operator proof and none is held, the shared PIN sheet appears first;
+  sheet; the PIN sheet appears first with that route's adapter (repair: operator session, so a
+  second repair inside the session does not ask again; setting up a new cell: body PIN each time);
   the flow (link → code → done) stays in the sheet and is never rebuilt by a poll (F9).
 - *Secondary / destructive actions:* Cancel a sign-in and "Don't retry on its own" live in the
-  cell sheet, styled quiet, with an in-sheet confirm (no native `confirm()`), Bearer as today.
-  Repair identity, Set up an empty cell and Approve follow-me use the PIN sheet. Unattended repair
+  cell sheet, styled quiet, with an in-sheet confirm (no native `confirm()`). Cancel a sign-in is
+  bearer only (adapter a). "Don't retry on its own" is the repair **cancel** action
+  (`dashboard/subscriptions.js:437`, `:1021`), which the server gates on operator proof
+  (`src/server/routes.ts:34626`, `:34748`), so it uses the operator session (adapter b). Repair
+  identity, Set up an empty cell and Approve follow-me take a body PIN (adapter c) each time. Unattended repair
   settings appear read-only in account detail ("Repairs itself without asking: yes/no") with a
   link to legacy until a native form exists.
 - *Honest states:* "Can't read accounts: <reason>"; "No reading yet" per account; reading age
@@ -382,19 +424,23 @@ does any sign-in need me?"*
 sign-ins"). Restores the orphaned pending-logins list. Nothing dropped.
 
 **Data.** Existing reads above, plus `login-history?summary=1&days=7` and `proactive-swap`
-(read-only). Two small server changes, both optional:
+(read-only). One server change the build needs, and one that is separate and optional:
 1. Run the follow-me scan on the server's own timer (or on view open) so the console never POSTs
-   on a poll.
-2. Let `start-cell`, `repair-email` and `issue-for-machine` accept the operator session header as
-   an alternative to a body `pin` (the `requireReloginOperatorPin` pattern, `routes.ts:34524`), so
-   one unlock covers the visit. Without it, the PIN sheet still asks for those three each time.
+   on a poll. Part of this plan.
+2. *Separate, optional, not part of this plan's default:* let `start-cell`, `repair-email` and
+   `issue-for-machine` accept the operator session header as an alternative to a body `pin` (the
+   `requireReloginOperatorPin` pattern, `src/server/routes.ts:34524`), so one unlock would cover
+   those too. It widens what one unlock proves, so it needs the operator's yes and its own
+   review. Without it the PIN sheet asks for those three each time, which is today's behaviour.
 
-**Effort and order.** L. Third. Ship read-only Allowance + Needs-you links first, then the native
-cell sheets with F9 tests carried over from `tests/unit/dashboard-refresh-interaction-hold.test.ts`.
+**Effort and order.** L. README step 3, because sign-in repair is an operator intervention from a
+phone. Ship Needs-you with native repair sheets and read-only Allowance first, reusing the
+legacy controller's flows where practical, with F9 tests carried over from
+`tests/unit/dashboard-refresh-interaction-hold.test.ts`; then the rest of the grid.
 
 **Open questions for the operator.**
-- Should one PIN unlock cover every account action for the visit (change 2 above), or do you want
-  the PIN typed for each new sign-in?
+- Should the separate server change 2 above be made, so one unlock also covers setting up a cell,
+  repairing identity and approving follow-me? Default: no; those ask for the PIN each time.
 
 ---
 
@@ -405,7 +451,8 @@ costing real money, or before turning on a paid route. *"Am I paying for anythin
 subscriptions, how much, and are limits in place?"*
 
 **What it does today (inventory).**
-- Grain selector (daily / hourly / monthly / total), **Refresh**.
+- Grain selector (daily / hourly (30 d) / monthly / total, `dashboard/index.html:3771`),
+  **Refresh**.
 - **Spending controls switch** (`money-layer-enable.js`, `GET /routing-spend/enable-status`):
   Turn on / Re-check and turn on / Also record it here / Turn off, each a plan
   (`POST /routing-spend/plan-money-layer`, Bearer) then **PIN commit**
@@ -434,21 +481,36 @@ subscriptions, how much, and are limits in place?"*
 - Purpose text says "controls below" while the switch sits above.
 
 **The new design.**
-- *Arrival (glance):* one sentence across the whole merged view: **"Your subscriptions covered
-  everything this week. Pay-per-use: $0."** / **"$4.20 in pay-per-use this week, all on OpenRouter;
-  limit $25 a day."** / **"Spending limits are off, and no paid route is open."** Facts: *Paid this
-  window*, *Covered by subscription* (link to Accounts), *Background checks* (calls, errors), *Limits*
-  (on / off / a route frozen).
+- *Arrival (glance):* one sentence, scoped to what the sources can prove: they are this machine's
+  reporting ledger, with each row's cost basis (estimated from tokens and a price list,
+  provider-reported, subscription (zero), or unpriced, `src/core/routingSpendView.ts:30`), kept
+  apart from the committed figure a limit enforces (`:104`). So the page is titled **Recorded AI
+  cost on this machine** and says, for example: **"Recorded on this machine this week: $0
+  pay-per-use; 41,000 tokens unpriced."** / **"Recorded on this machine this week: about $4.20
+  pay-per-use (estimated), all on OpenRouter."** / **"Spending limits are off, and no paid route
+  is open."** It never says "subscriptions covered everything" or "paid this window": a missing
+  price or a missing attribution is shown as unpriced or unattributed, not as covered. Facts:
+  *Recorded cost* (with its basis word), *Unpriced* (tokens with no price; hidden at zero),
+  *Background checks* (calls, errors), *Limits* (on / off / a route frozen; committed limits and
+  committed spend, from `/routing-spend/caps`, shown separately from the reporting figure).
 - *Layout:* one time control at the top for the whole view (Today / 7 days / 30 days), then
   sections, each with its source named in its header:
-  1. **Money** (this section): spend by model and route, per row "Model · route · $ · tokens";
-     paid routes with their limits as "$3 of $25 today · $40 of $60 total" and a status word used
-     everywhere (Not open / Open / Frozen).
-  2. **Background checks** (from LLM activity), 3. **Your conversations** (from Tokens),
-     4. **Which model does what** (from Routing map, collapsed). See those sections.
-  5. **Spending controls** (collapsed unless something needs you): state in one sentence
+  1. **Recorded cost** (this section): cost by model and route from this machine's ledger, per row
+     "Model · route · $ · basis · tokens", the basis as a word ("estimated", "provider-reported",
+     "subscription", "unpriced"); a row whose price list is old says "price may be out of date".
+     **More detail** holds the grain choice the legacy tab offers, By hour (30 days) / By day /
+     By month / All time, which maps to the route's `grain` (`hour|day|month|total`,
+     `src/core/routingSpendView.ts:27`). Paid routes are listed with their **committed** limits
+     and committed spend as "$3 of $25 today · $40 of $60 total (committed)" and a status word
+     used everywhere (Not open / Open / Frozen), visibly separate from the reporting rows.
+  2. **Background checks** (from LLM activity), 3. **Your conversations** (from Tokens). See those
+     sections.
+  4. **Spending controls** (collapsed unless something needs you): state in one sentence
      ("Limits are on and enforcing" / "Waiting for a restart to start enforcing"), then the
      actions. History from `caps/log` as "What changed" (time, change, by whom).
+  The static routing design (**Which model does what**) is not a section under the time control:
+  it is a sheet opened from a header link, "Model routing & fallbacks ›", because the time
+  control does not apply to it.
 - *Primary action(s):* reading. The urgent action, **Freeze**, is one tap on a paid route row,
   then an in-sheet "Freeze OpenRouter? Paid calls stop now. Reason (optional)" and Freeze. Bearer;
   no PIN (halting money must stay cheap).
@@ -460,21 +522,25 @@ subscriptions, how much, and are limits in place?"*
   conversations pause for about a minute." Expiry shown as local time. After success the sheet
   shows the committed change and closes. When the money layer is on through the config file, Turn
   off leads with "This won't stop spending. Freeze stops it now." (`money-layer-disable-store-only`).
-  First cut: these link to legacy; native sheets are build step 4.
+  All money commits are adapter (c): the PIN goes with the server's `planId` and `nonce` and is
+  cleared afterwards. First cut: these link to legacy; the native sheets are a later step.
 - *Honest states:* "Spend figures aren't available on this agent" (the `routingSpend.enabled`
   503), stated once and **separately** from the limits switch, so turning limits on is never
   expected to fix it; "Can't tell" for other failures; stale prices flagged per row ("price may be
   out of date"); unpriced tokens counted, not hidden; plain-http restart refusal explained.
 - *Multi-machine:* the controls belong to one machine (`machineNickname` from enable-status):
-  "These limits are held by Mac Studio." Figures are this machine's ledger, labelled so.
+  "These limits are held by Mac Studio." Figures are this machine's ledger, labelled "this
+  machine" in the title and in every section header.
 - *Rough sketch:*
 ```
 ┌──────────────────────────────┐
 │ What thinking costs  [7 days▾]│
-│ Subscriptions covered it all. │
-│ Paid $0 · 1,240 checks · Limits on│
+│ Recorded on this machine:     │
+│ $0 pay-per-use · 41k unpriced │
+│ 1,240 checks · Limits on      │
+│ Model routing & fallbacks   › │
 ├──────────────────────────────┤
-│ Money        (spending ledger)│
+│ Recorded cost (this machine)  │
 │ No paid route is open.        │
 ├──────────────────────────────┤
 │ Background checks  (AI calls) │
@@ -483,19 +549,19 @@ subscriptions, how much, and are limits in place?"*
 │ Your conversations (transcripts)│
 │ 14 conversations · 9.1M text ›│
 ├──────────────────────────────┤
-│ Which model does what       ▾ │
 │ Spending controls           ▾ │
 └──────────────────────────────┘
 ```
 
-**Merge / split / cut.** Host of the merged view; absorbs Tokens, LLM activity, Routing map. Adds
-the existing audit log. Disarm (go-live `enabled:false`) is added to the route sheet as "Close
+**Merge / split / cut.** Host of the merged view; absorbs Tokens, LLM activity, Routing map, and is
+the one destination for the retired Insights page's line (see Background checks). Adds the
+existing audit log. Keeps the legacy hourly / monthly / total choices under More detail. Disarm (go-live `enabled:false`) is added to the route sheet as "Close
 this route", since the route supports it and only arming exists today.
 
 **Data.** Existing: `/routing-spend/summary`, `/caps`, `/caps/log`, `/enable-status`, the plan and
 commit routes, `/freeze`. Freeze sends the reason field the route already accepts. None new.
 
-**Effort and order.** M read-only (step 2); M for native controls (step 4).
+**Effort and order.** M read-only (README step 5); M for native controls (later).
 
 **Open questions for the operator.** None.
 
@@ -517,16 +583,25 @@ has no tile. "Runs on" shows the framework, not the model. Jargon ("sentinels, g
 
 **The new design.**
 - *Arrival (glance):* section 2 of the cost view: "1,240 background checks; 3 failed; the
-  tone check skipped 40% to save limits."
+  tone check skipped 40% to save limits." Directly under it sits the one line the retired
+  Insights page produced, the plain read from `GET /insights/llm-activity`
+  (`src/server/routes.ts:16462`; the only registered page,
+  `src/monitoring/dashboardInsightCollectors.ts:118`), with its "written by AI / summary · age"
+  stamp. This is the single destination for Insights.
 - *Layout:* rows per check, named in plain words ("Message tone check"), each "calls · acted ·
   skipped · failed" as one small stacked bar plus numbers, the model it ran on, and tokens. A check
   with failures or mostly skipped sorts first. Row opens to latency and per-model split
-  (`byModel`). Cost shown per check only where a paid route served it (join of `byModel` with the
-  price list already applied in `/routing-spend/summary`); otherwise "covered by subscription".
+  (`byModel`). **No dollars per check.** Feature rows carry model and framework but no route
+  (`src/monitoring/FeatureMetricsLedger.ts:207`), while spend buckets carry route and model but no
+  feature (`:252`), and one model can be served through different routes, so a per-check dollar
+  figure cannot be derived. Each check shows calls and tokens only, with a quiet note "Cost per
+  check isn't recorded yet". Dollars per check wait for feature-to-route attribution in the
+  ledger, a separate server change.
 - *Primary action(s):* none.
 - *Secondary / destructive actions:* none.
 - *Honest states:* 503 → "Not tracked on this agent"; failure → Can't tell; empty → "No background
-  checks ran in this window".
+  checks ran in this window". Insights line: route dark (503) or timeout → line absent;
+  `source: paused` → "Plain read paused"; stale → its age.
 - *Multi-machine:* this machine's ledger, labelled.
 - *Rough sketch:*
 ```
@@ -538,9 +613,9 @@ has no tile. "Runs on" shows the framework, not the model. Jargon ("sentinels, g
 
 **Merge / split / cut.** Into What thinking costs. The Under the hood tile points to this section.
 
-**Data.** `/metrics/features` (existing, incl. `byModel`). None new.
+**Data.** `/metrics/features` (existing, incl. `byModel`), `/insights/llm-activity`. None new.
 
-**Effort and order.** S, with the cost view (step 2).
+**Effort and order.** S, with the cost view (README step 5).
 
 **Open questions for the operator.** None.
 
@@ -561,7 +636,11 @@ open the same list. Absolute paths and UUIDs as content. Window fixed while the 
 
 **The new design.**
 - *Arrival (glance):* section 3 of the cost view: "14 conversations processed 9.1M tokens of text
-  this week (Claude 8.2M, Codex 0.9M)." Counts from `summary.sessionCount`, not the list length.
+  this week (Claude 8.2M, Codex 0.9M)." Counts from the summary, not the list length: Claude's
+  count is `summary.sessionsActive` and Codex's is `codex.sessionCount`
+  (`src/monitoring/TokenLedger.ts:168`, `:231`; both returned by `GET /tokens/summary`,
+  `src/server/routes.ts:12710`–`:12711`). The two are shown separately and added only in the
+  headline.
 - *Layout:* top conversations by tokens, named by session/topic name, with the project's short
   name; "Idle with no activity for 30 min" as a collapsed count. Row links to the session.
 - *Primary action(s):* tap a row → the session.
@@ -581,7 +660,7 @@ open the same list. Absolute paths and UUIDs as content. Window fixed while the 
 **Data.** Existing routes with `since=` set from the shared time control (`parseSinceMs`,
 `routes.ts:12692`) and `limit=20`. None new.
 
-**Effort and order.** S, step 2.
+**Effort and order.** S, README step 5.
 
 **Open questions for the operator.** None.
 
@@ -601,11 +680,14 @@ headline reflects one chain only. Jargon ("lane", "door", "skippedInIncrementA" 
 for now"). It shows the static design, not which model actually served recently.
 
 **The new design.**
-- *Arrival (glance):* section 4 of the cost view, collapsed: "Quick checks run on GPT-6 Luna;
-  judging runs on Opus 5.5; Claude is the last fallback."
+- *Arrival (glance):* a sheet opened from the cost view's header link "Model routing & fallbacks
+  ›" (not a section under the time control, which does not apply to it): "Quick checks run on
+  GPT-6 Luna; judging runs on Opus 5.5; Claude is the last fallback."
 - *Layout:* four plain rows (Quick checks, Sorting, Judging, Writing), each "first choice → backup
-  → last resort", with a tag where a choice is pay-per-use. Beside each, "actually used lately"
-  from `/metrics/features` `byModel`, so plan and reality sit together. Job list collapsed.
+  → last resort", with a tag where a choice is pay-per-use. Below the rows, one aggregate line
+  "Models used by background checks lately: Luna 92%, Opus 6%" from `/metrics/features`
+  `byModel`, labelled as all background checks together: the ledger cannot say which routing lane
+  a call belonged to, so it is not shown per lane. Job list collapsed.
 - *Primary action(s):* none.
 - *Secondary / destructive actions:* none (routing is changed in Settings/config, not here).
 - *Honest states:* 503 → "No AI routing configured on this agent"; failure → Can't tell.
@@ -618,10 +700,10 @@ for now"). It shows the static design, not which model actually served recently.
 │ used lately: Luna 92%         │
 ```
 
-**Merge / split / cut.** Into What thinking costs (collapsed). Under the hood tile points here.
+**Merge / split / cut.** Into What thinking costs, as a sheet. Under the hood tile points here.
 
 **Data.** `/intelligence/routing/chains`, `/metrics/features`. None new.
 
-**Effort and order.** S, step 2.
+**Effort and order.** S, README step 5.
 
 **Open questions for the operator.** None.

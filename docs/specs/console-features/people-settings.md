@@ -23,11 +23,19 @@ Shared rules for all seven (from the makeover spec and the research synthesis):
 - **Deterministic UI for approvals and credentials** (Muse): approve, decline, issue,
   revoke, grant and secret links are fixed cards with server-authored text, never
   free-form chat or agent-written headlines.
-- **PIN only where the server demands operator proof.** Pairing approve/finish/not-them/
-  own-agent, mandate issue/revoke/grant, authorization approve/deny, and the message-origin
-  routes (operator session) need it. Nothing else asks. One shared **PIN sheet**: asked at
-  the moment of the action, held in page memory for the session like `pairing.js` does
-  (`dashboard/pairing.js:14`), forgotten on refusal, never stored.
+- **PIN only where the server demands operator proof, through the shared PIN sheet with
+  the adapter each route actually checks** (`00-patterns.md` §4a):
+
+  | Adapter | Routes in these two groups |
+  |---|---|
+  | (a) Bearer only | Pairing: make an invite, check an invite, decline, cancel an invite, dismiss a restart notice, turn pairing on (`POST /threadline/pairing/invites`, `…/invites/inspect`, `…/:iid/decline`, `DELETE …/invites/:iid`, `DELETE …/restart-notices/:id`, `POST /threadline/pairing/enable`); Telegram mirroring `PATCH /threadline/telegram-bridge/config`; secrets `POST /secrets/request`, `DELETE /secrets/pending/:token`; autonomy profile `POST /autonomy/profile`; feature switches `POST /features/:id/transition`; rubber-stamp dismiss; files `POST /api/files/save`, `PATCH /api/files/config` (with `X-Instar-Request: 1`); preference conflicts `POST /state/resolve-conflict` |
+  | (b) Operator session (held for its server lifetime) | Message origins: `GET /telegram/origins*`, `GET /telegram/origins/status` and `POST /telegram/origin-display` (header only, `src/server/telegramOriginRoutes.ts:24`, `src/server/originDisplayPreferences.ts:18`) |
+  | (c) Body PIN, cleared after the one action | Pairing approve / finish / not them / it's one of my agents (`checkMandatePin`, `src/server/routes.ts:19403`–`:19446`); mandate issue, revoke, grants (`:13804`, `:13926`, `:13995`); authorization approve and deny (`:14125`, `:14171`); accepting a dark-but-load-bearing guard's fallback, and revoking that (`:10622`, `:10643`) |
+
+  Adapter (c) actions ask every time. That is a deliberate change from the legacy pairing
+  card, which kept the raw PIN for the whole page (`dashboard/pairing.js:14`, `:225`); the
+  legacy mandates card already clears it after each use (`dashboard/mandates.js:451`), and
+  the native pages follow that.
 - **Background refresh never clobbers an open sheet or a typed field** (UX standard F9).
 - **Phone first at 390 px**, bottom-sheet detail views, 44 px targets, no sideways scroll.
 
@@ -39,9 +47,9 @@ Shared rules for all seven (from the makeover spec and the research synthesis):
 | Message origins | **Messages to you** | People | Its useful half is delivery ("were my replies held?"), which is the Home "Can I reach you" card's detail. Display settings become a sheet on that page, also linked from Settings. |
 | Mandates | **Permission slips** | People | Stays its own page: it is where agent-proposed approvals land, and the slips are what agent-to-agent work runs under. |
 | Secrets | **Passwords & keys** | People | Adds "ask someone for one" and "what I already hold (names only)". |
-| Features | **What I'm allowed to do** | Settings | Autonomy profile first, then the switches (fixed so they actually work), then earned suggestions. Home's "What I'm allowed to do" card links here. |
-| Preferences | **What I've learned about you** | Settings | Adds edit and forget. The two developer sections (class reviews, claim verification) move to Under the hood. |
-| Files | **Files** | Settings | Same name; a real phone editor. |
+| Features | **What I'm allowed to do** | Settings | Autonomy profile first, then the safety checks (the one home of the guard list), then the switches (fixed so they actually work), then earned suggestions. Home's "What I'm allowed to do" card links here. |
+| Preferences | **What I've learned about you** | Settings | A structured read first. Editing and forgetting are a separate, later backend change. The two developer sections (class reviews, claim verification) move to *How I'm doing inside*, as their own section. |
+| Files | **Files** | Settings | Same name; a simpler phone editor, plus search. |
 
 Nothing merges across groups except the display-settings link. Message origins was
 considered for living inside each conversation instead; there is no native conversation
@@ -50,15 +58,20 @@ now and moves to the conversation page when Sessions is rebuilt.
 
 ### Build order
 
-0. **Shared primitives** (S): PIN sheet, bottom-sheet detail, row/list, "can't tell"
-   block, confirm-with-consequence sheet. Unit-tested once.
-1. **Passwords & keys** (S) — smallest; proves the primitives on real write actions.
-2. **What I'm allowed to do** (M) — fixes a broken legacy write path (see its section).
-3. **What I've learned about you** (M) — needs two small routes.
-4. **Permission slips** (M) — first PIN-gated page.
-5. **Other agents** (L) — reuses the PIN sheet and the list/detail pattern.
-6. **Messages to you** (M) — needs the operator-session unlock.
-7. **Files** (L) — the editor; most phone-specific work.
+These pages follow the one order in `README.md`. The shared primitives (PIN sheet,
+bottom-sheet detail, row/list, "can't tell" block, confirm-with-consequence sheet) are
+proved by Promises at step 1, not built separately here.
+
+- **Messages to you** (M) — step 3, with Accounts: a missing reply is an operator
+  intervention. First real use of the adapter-(b) operator session.
+- **What I'm allowed to do** (M) — step 4: fixes a broken legacy write path (see its
+  section) and is the one home of the guard list.
+- Then, after Plans, Schedule and read-only costs (step 5), in this order:
+  **Permission slips** (M, first adapter-(c) page), **Passwords & keys** (S),
+  **Other agents** (L), **What I've learned about you** as a structured read (S/M),
+  **Files** with the simple editor and search (M).
+- Later: preference editing, forgetting and "Tell me directly" (a backend change first,
+  see that section); Files editor upgrades (diff review).
 
 Each ships behind its tile (the tile flips from legacy link to native page); the legacy
 tab stays reachable from the page footer until the inventory check for that tab passes.
@@ -89,8 +102,8 @@ inline JS `index.html:7107–7352`.
 - *Arrival:* headline — "PP is waiting for you to finish pairing." / "2 agents, both reachable." / "1 agent hasn't answered in 6 h." Facts: agents paired · waiting on you · not answering · my relay (only shown when not connected: "I'm not connected to the agent network — checking again").
 - *Layout:* (1) **Waiting on you** cards, only when any (restart notice, leak alarm, approve, finish). (2) **Agents** — one row per known agent (union of pairings and peer health): name, plain state ("Paired · answered 4 min ago", "Messages waiting since 09:12 — may be offline", "Pairing not finished"), chevron. (3) **Connect another agent** button. (4) collapsed **Mirroring to Telegram**.
 - *Agent detail (sheet → full page on desktop):* status line with evidence and age; its conversations newest first, each opening a chat-bubble view (in left, out right, out-of-turn arrival is normal — Muse); per-message footer only on tap (time, delivery outcome); "Mirror this agent to Telegram: always / never / default" (writes allow/deny list — no typing); short fingerprint under "For support".
-- *Primary actions:* Approve / Finish are one tap on the waiting card, then the PIN sheet if no PIN is held. "Connect another agent" opens a sheet: who it's for (Someone new / known agents), valid 1 h or 24 h, **Make invite** → the invite text with **Copy** and **Share** (Web Share API on phone) and the plain instruction "Send this privately to their person." A second tab in the same sheet: **I was sent one** → paste → **Check** → the approve card.
-- *Secondary / destructive:* Decline, Not them (red, confirm sheet: "That invite is used up"), Cancel invite, "It's one of my agents" (PIN), Dismiss notice — in a "…" menu on each card or row. Search lives behind a search icon in the Agents header and searches all messages. Bridge switches stay in the collapsed section; turning the master switch off shows the consequence ("No agent conversations will reach Telegram").
+- *Primary actions:* Approve / Finish are one tap on the waiting card, then the PIN sheet (adapter c: asked for this action, cleared after it). "Connect another agent" opens a sheet: who it's for (Someone new / known agents), valid 1 h or 24 h, **Make invite** → the invite text with **Copy** and **Share** (Web Share API on phone) and the plain instruction "Send this privately to their person." A second tab in the same sheet: **I was sent one** → paste → **Check** → the approve card.
+- *Secondary / destructive:* Decline (bearer), Not them (red, confirm sheet: "That invite is used up", then PIN), Cancel invite (bearer), "It's one of my agents" (PIN), Dismiss notice (bearer) — in a "…" menu on each card or row. Search lives behind a search icon in the Agents header and searches all messages. Bridge switches stay in the collapsed section; turning the master switch off shows the consequence ("No agent conversations will reach Telegram").
 - *Honest states:* pairing 503 "turned off" → card with **Turn on pairing** (`POST /threadline/pairing/enable`; shows the returned `sayToPerson`, polls `GET …/enable`; states "This restarts my server; this page reconnects"); 503 "runs on another machine" → names that machine from `GET /pool/placement` if known; peer health 503 → agent rows show "Can't tell if it's reachable"; thread read failure → can't-tell block in the detail, list kept; stale peer row past 15 min → age shown.
 - *Multi-machine:* `GET /threadline/peers/health?scope=pool` and `/threadline/conversations?scope=mesh` — each conversation names its holder machine when not this one ("This conversation lives on Mac Studio"). Unreachable peers named in a partial note.
 - *Rough sketch:*
@@ -122,7 +135,8 @@ per-agent grouping; nothing they returned is lost.
 `/threadline/observability/{threads,threads/:id,search}`, `/threadline/telegram-bridge/config`,
 `/threadline/pairing/enable`, `/pool/placement`. None new.
 
-**Effort and order.** L. Step 5; needs the PIN sheet (step 0) and the sheet pattern.
+**Effort and order.** L. README step 5 (after Permission slips and Passwords & keys); needs the
+PIN sheet and the sheet pattern from step 1.
 
 **Open questions for the operator.** None.
 
@@ -151,7 +165,7 @@ with the operator session (`X-Instar-Operator-Session`), **Unlock with PIN** on 
 - *Layout:* (1) **Held replies** list when any — conversation name, how long held, why in plain words (`hold_reason` mapped: "routed through Mac Studio", "outside the allowed chat"), tap for detail. (2) **Recent messages** — one line each: conversation, time, "Mac Studio · Claude Code · Opus 5.5", delivered/held/failed dot; tap opens the full record with plain labels ("Signature checks out", "Machine name came from this machine's settings"). (3) **Footer on messages** row → settings sheet.
 - *Primary action:* reading. The settings sheet: "Show who wrote each message" master switch, then machine / app / model switches, a "For one conversation" picker with "Same as everywhere" — one Save, conflict shown as "Changed elsewhere — reload to see it".
 - *Secondary:* Load more at the list end; a "Recording details" disclosure holds enrollment, counts and freshness verbatim for support.
-- *Honest states:* operator session missing → one unlock card ("Message records need your PIN once") using the shared PIN sheet against `POST /dashboard/unlock`, session token held in memory only; status unavailable → can't tell, held count never shown as zero; pool audit failing → local list with "Only this machine's messages — the others didn't answer"; `topicsMayBeIncomplete` → "Some conversations aren't listed".
+- *Honest states:* operator session missing → one unlock card ("Message records need your PIN") using the shared PIN sheet with adapter (b): `POST /dashboard/unlock`, the session token held in page memory only until its server expiry (15 minutes by default, `src/server/DashboardOperatorSessionStore.ts:18`), then asked again; the raw PIN is not kept; status unavailable → can't tell, held count never shown as zero; pool audit failing → local list with "Only this machine's messages — the others didn't answer"; `topicsMayBeIncomplete` → "Some conversations aren't listed".
 - *Multi-machine:* recent messages use `scope=pool`; coverage line always present ("All 3 machines" / "This machine only"). Held replies are per machine; each row names its machine.
 - *Rough sketch:*
 ```
@@ -180,7 +194,7 @@ Nothing cut; the support fields move under "Recording details".
 form is an optional `held[]` already present in `/telegram/origins/status` (per CLAUDE.md
 `held[].hold_reason`); confirm at build, else add it there.
 
-**Effort and order.** M. Step 6; needs the operator-session unlock in the console.
+**Effort and order.** M. README step 3; introduces the adapter-(b) operator session in the console.
 
 **Open questions for the operator.** None.
 
@@ -211,7 +225,7 @@ approval, and what have I already allowed?"*
 - *Arrival:* "Echo is asking you to approve 1 thing." / "2 slips active; nothing waiting." / "No slips — every agent-to-agent action is refused until you sign one." Facts: waiting · active slips · people with grants · audit chain ("intact" / red "broken — possible tampering").
 - *Layout:* (1) **Waiting for you** approval cards: the server headline large, "Echo's reason" small and secondary, Approve / Decline. (2) **Active slips** — one card each: plain summary ("Echo and PP may hand over read-only credentials and sign code reviews, until Nov 1"), who else it lets act, chevron. (3) **Ended** collapsed. (4) **Decision history** row with a 24 h count ("31 allowed, 2 refused today").
 - *Slip detail:* summary, grants as sentences, **Let a person act** (person · action · for how long → Grant), "For support" (ids, fingerprints, scope, action slugs, authorities JSON read-only), **Revoke** at the bottom in red.
-- *Primary action:* Approve: one tap → PIN sheet if no PIN held → done, card leaves with "Approved". The PIN sheet says once: "Approvals need your PIN so an agent can never approve for you."
+- *Primary action:* Approve: one tap → PIN sheet (adapter c, asked for each approval and cleared after it) → done, card leaves with "Approved". The PIN sheet says: "Approvals need your PIN so an agent can never approve for you." One sheet replaces the three PIN fields the legacy page can show at once.
 - *Secondary / destructive:* Revoke → confirm sheet naming consequences ("Ends this slip and the 1 grant it carries, now. Can't be undone.") + optional reason + PIN. Decline → sheet with optional reason. **Advanced: write a slip by hand** stays, at the bottom of the page, behind a disclosure, with Agent A prefilled and Agent B a picker of known agents (from `/threadline/pairing/invites` `knownPeers`) with a "paste fingerprint" fallback; authorities keep the JSON template.
 - *Decision history:* a list grouped by day, refusals first; each row "Refused · PP tried to sign a review outside the slip"; slug and fingerprint in the row detail.
 - *Honest states:* `/mandate` fails → can't tell, no "No slips" claim; authorization requests fail → "Can't tell if anything is waiting" in amber-dashed, slips still shown; `authorshipValid:false` → red row "This slip's signature doesn't check out"; chain broken → red banner at top with "Treat as an incident"; held-on-another-machine approvals show that machine's name and a link to its console when known.
@@ -242,7 +256,8 @@ you" when the attention item exists; no new Home field.
 **Data.** Existing routes only. The 24 h allowed/refused count is computed client-side
 from `/mandate/audit`.
 
-**Effort and order.** M. Step 4; introduces the PIN sheet in production use.
+**Effort and order.** M. README step 5 (first of the remaining People pages); first
+adapter-(c) page in production use.
 
 **Open questions for the operator.** None.
 
@@ -300,7 +315,7 @@ demoted inside the create sheet.
 "received, not yet collected" read; if so, show that honestly ("Once someone submits, it
 moves to the agent; it doesn't stay listed here").
 
-**Effort and order.** S. Step 1.
+**Effort and order.** S. README step 5, after Permission slips.
 
 **Open questions for the operator.** None.
 
@@ -323,9 +338,10 @@ may do alone. *"How independent is the agent right now, and what is switched on?
 - Earned trust suggestions (`/autonomy/elevation/opportunities`) and the rubber-stamp signal have no face.
 
 **The new design.**
-- *Arrival:* the profile as a sentence, large: "I handle routine work on my own and ask you before important decisions." (Supervised). Facts: profile · features on (n of 13) · suggestions waiting · guards (link to the Home card's summary: "38 on, 2 off where they should be on").
-- *Layout:* (1) **Profile** — four-step segmented control (Cautious … Autonomous) under the sentence, each step a one-line description; below it "What that means right now": updates install themselves (yes/no), I restart after updates (yes/no), I ask before raising my own trust (yes/no) from `resolved`. (2) **Suggestions** — only when any: "You've approved my last 12 config changes without edits. Let me make these on my own?" with **Yes, for this kind** / **Not now** (earn-the-grant, narrowest scope). (3) **Features** — grouped lists, each row name + one-liner + state word ("On", "Off", "Not tried") and a switch. (4) **History** collapsed.
-- *Turning a feature on:* tapping the switch on a network/self-governing feature opens a **consent sheet**: what it does, where data goes (each data implication in plain words), how to undo it, then **Turn on**. The console walks the valid transitions (`aware → interested → enabled`) and sends a consent record built from the shown data implications with mechanism `explicit-written`; for self-governing it takes the returned challenge and completes it in the same sheet ("Confirm: let the agent act without asking for this"). Local-tier features switch directly. Turning off is one tap with an undo toast.
+- *Arrival:* the profile as a sentence, large: "I handle routine work on my own and ask you before important decisions." (Supervised). Facts: profile · safety checks ("2 off where they should be on", amber; hidden when all are on) · features on (n of 13) · suggestions waiting.
+- *Layout:* (1) **Profile** — four-step segmented control (Cautious … Autonomous) under the sentence, each step a one-line description; below it "What that means right now": updates install themselves (yes/no), I restart after updates (yes/no), I ask before raising my own trust (yes/no) from `resolved`. (2) **Safety checks** — the one home of the guard list (from `GET /guards`, and `?scope=pool` on a multi-machine install, with a machine chip per row): checks that are off where they should be on, or on but unverified, are listed first as rows, each saying which machine and what the check protects; "all 38 others on" is collapsed below. Home's "What I'm allowed to do" card opens this page, so a deviant check is one tap from Home; Machines shows only a count that links here. A dark-but-load-bearing check offers **Accept the risk** and **Stop accepting it** (`POST`/`DELETE /guards/:key/accept-fallback`, adapter c, with the reason and owner the route requires). (3) **Suggestions** — only when any (see below). (4) **Features** — grouped lists, each row name + one-liner + state word and a switch. (5) **History** collapsed.
+- *Turning a feature on or off is driven by the server's own state machine.* The sheet reads the feature's current state and its `validTransitions` from `GET /features/:id` (`src/server/routes.ts:40029`, `:40044`) and offers only those, in words; it never assumes a path. The graph applies to every tier (`src/core/FeatureRegistry.ts:177`): a feature not yet discovered can only become *aware*; *aware* can become *interested*, *deferred* or *declined*; only *interested* can become *enabled*; *deferred* and *declined* go back through *aware*; *enabled* can become *disabled* and *disabled* can become *enabled* again directly. So "Turn on" for a feature that is not yet interested sends the steps one at a time (`POST /features/:id/transition`, `:40069`), re-reading `validTransitions` after each, and stops with the server's reason at the first refusal. For network and self-governing tiers the last step carries a consent record built from the data implications the sheet showed, with mechanism `explicit-written` (refused without one, `src/core/FeatureRegistry.ts:468`); for self-governing, the server answers the first enable with a challenge, which the sheet presents and completes ("Confirm: let the agent act without asking for this", `:480`). Turning off is one tap with an undo toast; re-enabling a disabled feature is one step.
+- *Suggestions:* earned trust opportunities (`/autonomy/elevation/opportunities`) are shown as information with **Not now** (`/autonomy/elevation/dismiss`). There is **no accept button**: `POST /autonomy/elevation/record` only records a decision event for tracking (`src/server/routes.ts:31674`) and changes no permission, so a "Yes" button would pretend to grant something. The suggestion instead says how to act on it today ("To allow this, move the profile to Collaborative, or tell me in chat"). An accept button arrives only with a real apply route.
 - *Profile change:* tapping a step opens a confirm sheet listing what changes ("Updates will install without asking. You'll get a summary instead of approvals."), an optional "why" line (sent as `reason`), **Switch**.
 - *Rubber stamp:* when the tracker reports approve-without-reading, one muted line in Suggestions: "You've approved 19 of the last 20 within a minute. If that's on purpose, I can stop asking for these." with Dismiss (`/autonomy/elevation/dismiss-rubber-stamp`).
 - *Honest states:* `/autonomy` 404 → "Autonomy isn't set up on this agent" (legacy silently pretended `supervised`, `index.html:9099`); `/features` 501/failure → can't tell; a transition refused → the server's reason in plain words beside the row, switch shows real state; elevation 404 → section hidden with no claim.
@@ -339,10 +355,14 @@ may do alone. *"How independent is the agent right now, and what is switched on?
 │ [Caut][Super●][Collab][Auton]   │
 │ updates self-install · yes      │
 │ restart after update · yes      │
+├ Safety checks · 2 need a look ──┤
+│ ▲ Watchdog off · Mac Mini     › │
+│ ▲ Reaper unverified · Studio  › │
+│   36 others on                ▾ │
 ├ Suggestion ─────────────────────┤
-│ ▌Make config tweaks without     │
-│ ▌asking? (12 approved, 0 edits) │
-│ ▌     [Yes, these] [Not now]    │
+│ ▌You approved my last 12 config │
+│ ▌changes without edits.         │
+│ ▌              [Not now]        │
 ├ Features · 6 of 13 on ──────────┤
 │ Telegram replies   On      (●)  │
 │ Slack              Not tried( ) │
@@ -351,18 +371,22 @@ may do alone. *"How independent is the agent right now, and what is switched on?
 ```
 
 **Merge / split / cut.** Renamed from Features. Home's "What I'm allowed to do" card
-links here instead of Machines; guard detail stays on Machines (linked). Mandates are not
-merged in: they are agent-to-agent grants, reached from People.
+links here instead of Machines, and the guard list lives here (Machines links to it with a
+count). Mandates are not merged in: they are agent-to-agent grants, reached from People.
 
 **Data.** Existing: `/autonomy`, `/autonomy/profile`, `/autonomy/history`,
 `/autonomy/elevation/opportunities`, `/autonomy/elevation/record`,
 `/autonomy/elevation/dismiss`, `/autonomy/elevation/dismiss-rubber-stamp`, `/features`,
-`/features/:id/transition`, `/guards` (summary). None new. The "Yes, for this kind" action
-needs confirming at build that an opportunity has an apply path; if acceptance is only
-recorded (`/autonomy/elevation/record`) and not applied, the button says what it does
-("Remember I said yes") until an apply route exists.
+`/features/:id`, `/features/:id/transition`, `/guards` (and `?scope=pool`),
+`/guards/:key/accept-fallback`. None new. No accept action for suggestions until an apply
+route exists (see above).
 
-**Effort and order.** M. Step 2 (it repairs a broken write path).
+**Tests that must pass before the tile switches.** Through the real routes: one fresh
+local-tier feature from undiscovered to enabled; one fresh network-tier feature, which
+must carry the consent record; one self-governing feature through its activation
+challenge; and one disabled feature re-enabled directly.
+
+**Effort and order.** M. README step 4 (it repairs a broken write path).
 
 **Open questions for the operator.** None.
 
@@ -384,14 +408,14 @@ polled, all read-only.
 - Friendly 503 "not turned on" state.
 
 **What is wrong with it today.**
-- No way to correct or remove a wrong preference — the research's "a standing decision you can watch being recorded is one you can correct before it hardens" (synthesis #4) has no lever.
+- No way to correct or remove a wrong preference — the research's "a standing decision you can watch being recorded is one you can correct before it hardens" (synthesis #4) has no lever. (Adding one is not small; see Data.)
 - Preferences are parsed back out of a formatted text block (`preferences-learning.js:161`), losing when each was learned, how often it was seen, and its confidence.
 - Two of four sections are developer audit (class review lifecycle, claim-verification observer) on a page meant for the operator.
 
 **The new design.**
 - *Arrival:* "I've picked up 7 things about how you like to work." / "Nothing yet — correct me the same way twice and it shows up here." Facts: preferences · new this week · corrections being watched · conflicts between machines (only when any).
-- *Layout:* (1) **How you like things** — each preference as a quoted sentence ("Lead with the short answer"), under it "learned Oct 12 · seen 4 times". Tap → sheet: the sentence, where it came from (linked corrections), **Edit wording**, **Forget this**. (2) **Two machines disagree** — only when `/state/conflicts` has preference conflicts: both versions side by side, **Keep this one** each (`POST /state/resolve-conflict`). (3) **Things I'm still watching** — corrections not yet a preference, plain status ("Seen twice, waiting for a third day"). (4) **Tell me directly** — a text field "Something I should always do or never do" → saved as an operator-stated preference.
-- *Primary action:* reading, then **Forget this** (one confirm: "I'll stop loading this at the start of conversations. If you correct me the same way again, I'll learn it again.") and **Edit wording** (inline, Save).
+- *Layout:* (1) **How you like things** — each preference as a quoted sentence ("Lead with the short answer"), under it "learned Oct 12 · seen 4 times". Tap → sheet: the sentence, where it came from (linked corrections), when it was learned, how often it was seen. Read only in this build. (2) **Two machines disagree** — only when `/state/conflicts` has preference conflicts: both versions side by side, **Keep this one** each (`POST /state/resolve-conflict`, which exists). (3) **Things I'm still watching** — corrections not yet a preference, plain status ("Seen twice, waiting for a third day"). (4) A quiet line: "To change one, tell me in chat." No edit, forget or "tell me directly" controls in this build.
+- *Primary action:* reading. Learned preferences stay advisory, as today; none is presented as something the operator said.
 - *Honest states:* 503 → "Learning from corrections is off on this agent" (no fake empty list); preferences read fails → can't tell, corrections still shown; stale → last good list with age; a replicated preference from another machine is marked "learned on Mac Mini".
 - *Multi-machine:* preferences union across machines when replication is on (`scope: mesh` in the session-context response); rows from other machines say so; forgetting propagates as a tombstone.
 - *Rough sketch:*
@@ -411,21 +435,43 @@ polled, all read-only.
 └─────────────────────────────────┘
 ```
 
-**Merge / split / cut.** Renamed. Class reviews and Claim Verification observations move
-to Under the hood (into Process health's native rebuild; until then the legacy tab keeps
-them, linked from the hood tile). Nothing is deleted.
+**Merge / split / cut.** Renamed. Class reviews (`GET /class-reviews?limit=20`) and Claim
+Verification observations (`GET /completion-claim/audit?limit=20`,
+`dashboard/preferences-learning.js:333`–`:334`) move to *How I'm doing inside* as its own
+section, **Checks on my own claims** (`under-the-hood.md`); until that section ships, the
+legacy tab keeps them, linked from the hood tile. Nothing is deleted.
 
 **Data.** Existing: `/preferences/session-context`, `/corrections`, `/state/conflicts`,
-`/state/resolve-conflict`. **New, smallest form:**
-- `GET /preferences` → `{ entries: [{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }] }` (the structured `PreferenceEntry`, `src/core/PreferencesManager.ts:40`; `violationPattern` omitted).
-- `POST /preferences/:dedupeKey/forget` → tombstone (replicated store already carries tombstones).
-- `PATCH /preferences/:dedupeKey` `{ learning }` and `POST /preferences` `{ learning }` with provenance `operator` (the type is `'correction-loop'` only today, `:37`, so it gains one value).
-All Bearer-authenticated; no PIN (the operator correcting his own preferences is not a floor action).
+`/state/resolve-conflict`. **New for this build, one read:**
+- `GET /preferences` → `{ entries: [{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }] }` (the structured `PreferenceEntry`, `src/core/PreferencesManager.ts:40`; `violationPattern` omitted). Read only; it replaces parsing the formatted text block.
 
-**Effort and order.** M. Step 3; the routes are a small, separate PR first.
+**Later, a separate backend change (not a small route wrapper).** Editing, forgetting and
+"tell me directly" need real persistence and identity work, specified and tested on their
+own before any button ships:
+- *Who said it.* A preference must not be attributed to the operator, or ranked above
+  learned ones, on the bearer token alone: agent sessions hold the same bearer (the server
+  says so itself, `src/server/routes.ts:35818`–`:35821`), so a bearer-only "operator"
+  write could be made by an agent. Attribution needs server-verified operator proof (for
+  example the operator session, adapter b). Today the only provenance is
+  `'correction-loop'` (`src/core/PreferencesManager.ts:37`).
+- *Deleting.* The manager's replication seam is put-only with no delete path
+  (`src/core/PreferencesManager.ts:184`–`:192`), so "forget" needs a delete and a
+  replicated tombstone designed in.
+- *Other machines.* The replicated store coerces every provenance back to
+  `'correction-loop'` (`src/core/PreferencesReplicatedStore.ts:149`–`:153`), so a new
+  provenance would be lost on other machines; and the session-context read can take the
+  union of machines' copies (`src/server/routes.ts:28098`), so "forget" must be shown to
+  remove every machine's copy and not return through that union.
+- *Concurrent edits and re-learning.* What happens when two machines edit the same
+  preference, and whether a forgotten preference may be learned again from new
+  corrections, must be decided before "I'll stop loading this" can be promised.
 
-**Open questions for the operator.** Should a preference you type yourself rank above
-learned ones when they conflict? (Recommended: yes.)
+**Effort and order.** S/M for the structured read (README step 5). The editing backend is
+L and later.
+
+**Open questions for the operator.** When the editing change is built: should a preference
+you state yourself, once proven to be from you, rank above learned ones? (Recommended: yes,
+only with that proof.)
 
 ---
 
@@ -455,8 +501,8 @@ change it safely."*
 **The new design.**
 - *Arrival:* a **search field** at the top ("Find a file"), then **Recent** (last 8 opened, per viewer in `localStorage`), **Pinned** (the agent's key files: CLAUDE.md, AGENT.md, MEMORY.md when present), then **Browse** folders. Headline only when something is wrong ("Can't read the file list").
 - *Viewer (full screen on phone):* sticky header with back, file name, folder path as one muted line (tap → that folder), and a "…" menu (Copy text, Copy link, Download, Open in new tab). Markdown rendered with a **Rendered / Source** toggle; code with line numbers and wrap toggle; large files open as source without highlighting and say so; read-only shows a lock and why ("Hooks and scripts are never editable here").
-- *Editing:* **Edit** is a floating button bottom-right (thumb reach). The editor is full height, monospace 15 px, line-wrapped, no autocorrect/autocapitalize; a **save bar pinned above the keyboard** (via `visualViewport`) holds **Review & save** and Cancel, plus "Unsaved" state. Review opens a compact line diff (computed in the page) → **Save**. ⌘S and Esc on desktop.
-- *Conflict:* "Someone changed this file while you were editing" → three choices: **See both** (their version vs yours as a diff), **Keep mine** (overwrite, after seeing the diff), **Use theirs** (discard yours). Your text is stashed first so no choice loses it.
+- *Editing (MVP, deliberately simple):* **Edit** is a floating button bottom-right (thumb reach). The editor is full height, monospace 16 px (so iOS does not zoom), line-wrapped, no autocorrect/autocapitalize. **Save** and **Cancel** sit in a sticky header at the top, which stays visible while iOS scrolls the page; no keyboard-tracking bar. "Unsaved" shows beside Save. ⌘S and Esc on desktop. No diff engine in this build.
+- *Conflict (on a 409):* "This file changed since you opened it (changed 10:42; you opened it at 10:31)." Two choices: **Reload theirs** and **Overwrite with mine**. Before either, your text is kept (the existing session-storage stash) and a **Copy my version** button is offered, so neither choice loses it.
 - *Session expiry:* the existing stash-and-restore is kept and made visible ("Your unsaved edit was kept — sign in to save it").
 - *Desktop:* tree left (280 px), viewer right; search above the tree.
 - *Folder access:* a "Which folders can be browsed and edited" row at the bottom of Browse opens a sheet listing allowed paths with add/remove (`PATCH /api/files/config`, `X-Instar-Request: 1`); never-editable and never-served paths are listed as fixed, with the reason.
@@ -481,10 +527,16 @@ change it safely."*
 replaced by sheets.
 
 **Data.** Existing: `/api/files/{list,read,save,config,download,link}`. **New, smallest:**
-`GET /api/files/search?q=` (name match over allowed paths, capped, returns `truncated`),
-and a `truncated: true` field on `/api/files/list` when the 500 cap applies. The deep-link
-`?path=` keeps working through the switch's URL adapter.
+`GET /api/files/search?q=` (name match, capped, returns `truncated`), and a `truncated: true`
+field on `/api/files/list` when the 500 cap applies. Search must apply the same path rules
+the other file routes do, not just a name scan of allowed paths: every candidate goes
+through the existing checks (`checkRelativePathAllowed` and `validatePath`,
+`src/server/fileRoutes.ts:246`; the never-served list re-checked after resolving symlinks,
+`:88`, `:152`, `:261`; the per-entry check used by the folder list, `:390`), so a symlink or
+a never-served file never appears in results. The deep-link `?path=` keeps working through
+the switch's URL adapter.
 
-**Effort and order.** L. Step 7; the diff view and keyboard-pinned save bar are the work.
+**Effort and order.** M. README step 5 (last of the remaining pages). Later upgrade, only if
+use shows a need: a review-before-save diff and a side-by-side conflict view.
 
 **Open questions for the operator.** None.

@@ -48,15 +48,20 @@ each native view ships, and to legacy until then.
 
 ## Build order within the group
 
-1. **Promises** (S/M). The largest existing capability with no face (research), Home
-   already carries its rules (`dashboard/console/home-model.js:179`), and the legacy tab
-   undercounts (it shows only beacon-watched promises). Read plus "Mark delivered".
-2. **Plans, including In the way** (M). Fixes two real defects (a hardcoded "Ack round 0"
-   button and silent failures on Halt) and removes three tabs.
-3. **Schedule** (M). Adds the honesty states the legacy tab lacks (overdue, skipped,
-   running long) and the pool view the server already offers.
-4. **Sessions, including Paste** (L). Most used, but the legacy tab works on a phone today
-   and carries the live terminal; rebuild it last, when the console's design system is
+This group follows the one build order in `README.md`; the Work pages sit at these
+steps of it:
+
+1. **Promises** (step 1, S/M). Proves the shared patterns. The largest existing
+   capability with no face (research), Home already carries its rules
+   (`dashboard/console/home-model.js`), and the legacy tab undercounts (it shows only
+   beacon-watched promises). Read, plus Mark delivered on every promise shown, plus
+   Drop and Resume reminders.
+2. **Plans, including In the way** (step 5, M). Fixes two real defects (a hardcoded
+   "Ack round 0" button and silent failures on Halt) and removes three tabs.
+3. **Schedule** (step 5, M). Adds the honesty states the legacy tab lacks (late,
+   skipped, running long) and the pool view the server already offers.
+4. **Sessions, including Paste** (step 6, later, L). Most used, but the legacy tab works
+   on a phone today and carries the live terminal; rebuilt once the patterns are
    proven on simpler views.
 
 All four share one list-and-detail pattern (a headline, at most four facts, a grouped
@@ -68,14 +73,18 @@ list, a full-screen detail sheet on phone), built once with Promises and reused.
   the headline has a fact you can tap to see exactly those records (the glance floors in
   `docs/specs/dashboard-ux-standard.md`).
 - **"Needs you" is always first and always small.** Items waiting on the operator lead;
-  routine items are a count you can open. Items untouched 14+ days go to "probably
-  already handled", listed but not counted (the same rule as Home).
+  routine items are a count you can open. Open items untouched 14+ days go to
+  **"Older, still open"** (`00-patterns.md` §2): shown with their count, not counted in
+  the headline, never described as handled. Missed, overdue, failed, late and
+  approval-waiting items keep a visible count in their own section whatever their age.
 - **Working, slow, stuck and failed are four different looks.** No list is only
   successes.
-- **Writes use the bearer token only.** None of the routes in this group needs operator
-  proof (checked: no PIN gate on any `/sessions`, `/jobs`, `/commitments`, `/projects`,
-  `/initiatives`, `/blockers` or `/pastes` route). No PIN is added. Destructive actions
-  get a plain confirmation sheet, not a PIN.
+- **Writes use the bearer token only: adapter (a) for every route in this group**
+  (`00-patterns.md` §4a). None of the routes needs operator proof (checked: no PIN gate on
+  any `/sessions`, `/jobs`, `/commitments`, `/projects`, `/initiatives`, `/blockers` or
+  `/pastes` route). No PIN is added. Destructive actions get a plain confirmation sheet,
+  not a PIN. (Development, the maintainer tile in this group, has PIN actions; their
+  adapters are listed in `under-the-hood.md`.)
 - **Ids, cron text, raw states and model ids live one tap down**, in a "Details" fold
   in mono type, never on the list.
 
@@ -194,8 +203,8 @@ turn ended on a question; it does not today, so in this build the fact is omitte
 guessed. Smallest addition, later: a `telemetry.lastStopAt` timestamp so "quiet after a
 finished turn" (done) can be told from "quiet mid-turn" (maybe stuck).
 
-**Effort and order.** L. Last in the group. Depends on the shared list/detail pattern and
-on loading the terminal library inside the console's CSP.
+**Effort and order.** L. README step 6 (later). Depends on the shared list/detail pattern
+and on loading the terminal library inside the console's CSP.
 
 **Open questions for the operator.** None.
 
@@ -224,6 +233,8 @@ on loading the terminal library inside the console's CSP.
 - The console's tile describes it as "Paste text or files", but it takes text only
   (`dashboard/console/nav-model.js`). Fix the copy.
 - Delete has no confirmation and no result.
+- Long text cannot reach a session on another machine at all, although the live
+  terminal's typed input already crosses machines.
 - "Auto (most recent session)" hides which session will get it until after sending.
 
 **The new design.**
@@ -241,8 +252,13 @@ on loading the terminal library inside the console's CSP.
   ready; it will be delivered when one starts", amber, stays in Recent until delivered);
   failed (the server's message, text kept in the box so nothing is lost); can't tell
   (history request failed). Recent shows only this machine's pastes and says so.
-- *Multi-machine:* the target picker lists only sessions on this machine, with one line
-  "Sessions on other machines can't receive pastes yet". Honest rather than hidden.
+- *Multi-machine:* a stored paste (`POST /pastes`) reaches only sessions on this machine.
+  For a session on another machine the sheet says so and offers **Type it into the
+  session** instead: the text is sent as terminal input over the live stream, which
+  already relays to the session's machine (`src/server/WebSocketManager.ts:420`). The
+  sheet states the difference in one line ("This is typed in like a message: it is not
+  kept as a paste"), and shows that machine's answer: sent, or refused
+  ("Mac Mini doesn't accept typing from other machines", its `input-not-allowed` reply).
 - *Rough sketch:*
 ```
 ┌──────────────────────────────┐
@@ -321,11 +337,13 @@ have run actually run?"
   duration), **Off**.
 - *Layout:* phone: facts, then groups *Needs a look* (late, failing, running long),
   *Coming up* (next three by next run, "in 12 min"), *Everything else* (collapsed, with a
-  search field). A row: name, then "Every 4 hours · last ran 2 h ago ✓". Detail sheet:
+  search field). Late and failing jobs stay in *Needs a look* however long ago they
+  started failing. A row: name, then "Every 4 hours · last ran 2 h ago ✓". Detail sheet:
   a sentence ("Runs every 4 hours. Last run 2 h ago took 3 min and succeeded. Next at
   16:00."), buttons Run now and an On/Off switch, then "Last 20 runs" as a strip of
-  marks with day separators; tapping a mark shows date, time, duration, and the error or
-  skip reason. "Details" fold: raw cron, model, priority, supervision, tags, machines,
+  marks with day separators, with **Show all 50** below it (the same 50 runs the legacy
+  table reads, `dashboard/index.html:8880`), as a dated list; tapping a mark or row
+  shows date, time, duration, and the error or skip reason. "Details" fold: raw cron, model, priority, supervision, tags, machines,
   origin (instar default / yours / your copy of a default).
 - *Primary actions:* Run now (one tap; the button becomes a live line "Running 1 min 20 s"
   and keeps following the run until it ends, however long). On/Off switch (one tap; asks
@@ -342,7 +360,10 @@ have run actually run?"
   paused" with age); per job *late*, *skipped (reason)*, *running long*, *failed*, *off*.
   Run now: already running, rate limited, refused (server text), still running.
 - *Multi-machine:* pool view by default (`?scope=pool`): each job names its machine; the
-  same job on two machines shows once with "on Mac Studio and Mac Mini". A machine that
+  same job on two machines shows once with "on Mac Studio and Mac Mini", and its status
+  is the worst of the two ("failed on Mac Mini"). The grouped row keeps each machine's
+  own last outcome, next run and Run now / On-Off target inside it, so a failure on one
+  machine is never hidden by a success on the other. A machine that
   did not answer: "Mac Mini did not answer; its jobs are not shown." Run now and the
   switch act on the machine that owns the row; if the route cannot target a peer, those
   buttons show only on this machine's rows with "Open on Mac Mini" otherwise.
@@ -376,7 +397,7 @@ computed from existing `state.nextScheduled`, `state.lastRun` and history durati
 Skip reasons come from history rows if they carry one; if not, a skip shows "skipped (no
 reason recorded)". No new route.
 
-**Effort and order.** M. Third.
+**Effort and order.** M. README step 5, after Plans.
 
 **Open questions for the operator.** None.
 
@@ -415,15 +436,22 @@ dropped, and is any of it waiting on me?"
   **I'm carrying** (agent-owned, on track).
 - *Layout:* phone: facts, then *Waiting on you* (each row: what was asked, in his words,
   then "you said: 'send me the summary' · 2 d ago · on your yes"), *Missed*, *Due soon*,
-  *I'm carrying* (collapsed to a count), *Probably already handled* (14+ days untouched,
-  collapsed, not counted), *Closed recently* (delivered, withdrawn, last 7 days). The
+  *I'm carrying* (collapsed to a count), *Older, still open* (agent-owned and on-track
+  promises untouched 14+ days: collapsed, shown with its count, not counted in the
+  headline, never called handled), *Closed recently* (delivered, withdrawn, last 7
+  days). *Waiting on you* and *Missed* are exempt from the age rule: their own count
+  always includes old ones, and old ones show as a counted line inside the section
+  ("+3 older, still open ›"). The
   detail sheet reads as a short story: "You asked: … I said: … Waiting on: your approval
   for a production deploy. Next check: Friday 09:00. Topic: Bug: login loop (open in
   Telegram)." Details fold: id, cadence, heartbeats, deadlines, origin machine.
 - *Primary actions:* for waiting-on-you rows, the action that unblocks it: "Open the
   conversation" (deep link to the topic) is the default; the reply happens in Telegram,
   where the agent hears it. For agent-owned rows: **Mark delivered** (one tap, confirm
-  inline "Mark as done?").
+  inline "Mark as done?"). **Mark delivered stays available on every promise shown**,
+  as the legacy tab offers it on every record including the waiting-on-you list
+  (`dashboard/glance.js:523`, `:555`): on waiting-on-you, missed and older rows it is a
+  secondary action in the detail sheet, beside the default.
 - *Secondary / destructive actions:* "Drop this promise" in "⋯", asking for a one-line
   reason (the server requires one) → `POST /commitments/:id/withdraw`. "Resume reminders"
   shows only on a paused beacon → `POST /commitments/:id/resume`. No PIN.
@@ -434,7 +462,10 @@ dropped, and is any of it waiting on me?"
   *waiting on you*. A failed write shows the server's message on the sheet, never an
   `alert()`.
 - *Multi-machine:* `?scope=mesh`; rows from another machine say "from Mac Mini, 3 min
-  old". Writes to a replica row go to the owner (the server forwards); a 409 "ambiguous
+  old".
+- *Not here:* commitments recorded in the shared conversation record (Integrated-Being)
+  are a different store with their own fields; they keep their own detail sheet in
+  *How I'm doing inside* and are not shown or counted here (see `under-the-hood.md`). Writes to a replica row go to the owner (the server forwards); a 409 "ambiguous
   across machines" is shown in words with a retry that names the origin.
 - *Rough sketch:*
 ```
@@ -451,7 +482,7 @@ dropped, and is any of it waiting on me?"
 │ ✕ Morning summary         › │
 │   due yesterday 08:00        │
 │ I'm carrying (9)           › │
-│ Probably handled (14)      › │
+│ Older, still open (14)     › │
 │ Closed this week (6)       › │
 └──────────────────────────────┘
 ```
@@ -462,7 +493,8 @@ detail). The legacy "Quiet" tile becomes the *paused reminders* state on rows.
 **Data.** Existing: `GET /commitments?scope=mesh`, `POST /commitments/:id/deliver`,
 `/withdraw`, `/resume`. No new route.
 
-**Effort and order.** S/M. First; reuses Home's model and builds the shared pattern.
+**Effort and order.** S/M. README step 1; reuses Home's model and proves the shared
+patterns.
 
 **Open questions for the operator.** Should "Drop this promise" be available to him at
 all, or should a promise only ever be closed by the agent (so a dropped promise is
@@ -510,15 +542,30 @@ multi-round plan. "Which round is it on, and does it need my go-ahead?"
 - *Primary action:* when the project is waiting for him (unacknowledged advance or first
   launch), one amber button: **OK, continue round 2** → `POST /projects/:id/ack` with the
   *current* round index.
-- *Secondary / destructive actions:* "⋯": **Pause this project** (was Halt; asks "Pause?
-  The current round stops at a safe point." and sends a reason he may type) and, when
-  halted, **Resume** → `POST /projects/:id/resume`. Abandon and accept-partial stay
-  agent-side, not offered. No PIN.
+- *Secondary / destructive actions:* "⋯": **Stop this round** (was Halt) opens a sheet
+  that says what really happens: "Stop round 2 now? The work it is running is
+  interrupted, not paused at a checkpoint; anything it had not saved is lost. You can
+  resume the round later." It sends a reason he may type. That wording is the honest
+  one: the round executor sees `haltedAt` and kills the round's whole process group,
+  escalating from SIGTERM to SIGKILL after its grace period
+  (`src/core/ProjectRoundExecution.ts:595`, `:615`). When a round is halted or failed,
+  **Resume this round** → `POST /projects/:id/resume` with `roundIndex` set to **that
+  round's index**; the route defaults to round 0 when the index is missing
+  (`src/server/routes.ts:23711`), so the console never omits it. Abandon and
+  accept-partial stay agent-side, not offered. No PIN.
+- *What each answer means:* the three writes are told apart by what the server returned
+  and what is observed next, never by the button pressed. **OK, continue** →
+  "Your OK is recorded" (the ack records permission only; it does not start a round,
+  `src/core/ProjectRoundRunner.ts:357`). **Resume** → "Scheduled to resume" (the route
+  answers `scheduledAt` and sets the round back to `pending`, `src/server/routes.ts:23745`, `:23759`).
+  Only when a later read shows the round `in-progress` does the page say "Running".
+  **Stop** → "Stop requested" until a read shows the round halted.
 - *Honest states:* loading; empty ("No multi-round plans running."); can't tell (`/projects`
   503: "Plan tracking is off on this agent", not "endpoint unavailable"); detail fetch
   failed for one project (that row shows "Couldn't load its rounds" with retry, others
-  render); version conflict ("Changed while you looked; refreshed"); refused halt shows
-  the server's reason; more than 25 projects says "showing 25 of N".
+  render); version conflict ("Changed while you looked; refreshed"); refused stop shows
+  the server's reason; refused resume (not halted, or at its retry cap) shows the
+  server's reason; more than 25 projects says "showing 25 of N".
 - *Multi-machine:* this machine's records; the Plans page states "This machine's plans".
 - *Rough sketch (project detail):*
 ```
@@ -543,7 +590,7 @@ to Details.
 **Data.** Existing `GET /projects`, `/projects/:id`, `/ack`, `/halt`, `/resume`. No new
 route.
 
-**Effort and order.** M, shipped with Plans (second).
+**Effort and order.** M, shipped with Plans (README step 5).
 
 **Open questions for the operator.** None.
 
@@ -576,11 +623,17 @@ route.
   Facts: **Needs you** (`needsUser`, `awaiting-user`, project waiting for an OK, blocker
   that asked for access), **In the way** (true blockers + blockers being worked),
   **Moving** (touched in 7 days), **Idle** (not touched in 7+ days).
-- *Layout:* phone: facts, then *Needs you* (each row says what: "Waiting for your OK on
-  round 2", or the record's `needsUserReason`), *In flight* (initiatives and projects
-  together; projects show their round line, initiatives "Step 3 of 5 · worked on 2 h
-  ago"; child items fold under their parent), *In the way* (see Blockers), *Idle*,
-  *Finished* (collapsed; filter chips Completed / Archived / Abandoned inside it).
+- *Layout:* phone, ordered by urgency: facts, then *Needs you* (each row says what:
+  "Waiting for your OK on round 2", or the record's `needsUserReason`), *In the way*
+  (see Blockers; shown only when non-empty, so stuck work is never below the fold of
+  healthy work), *In flight* (initiatives and projects together; projects show their
+  round line, initiatives "Step 3 of 5 · worked on 2 h ago"; child items fold under
+  their parent), *Idle*, *Finished* (collapsed). Status chips above *In flight* show
+  only the states that exist in the list, with counts: Paused, Halted, Waiting on you
+  (the record statuses `paused`, `halted`, `awaiting-user`,
+  `src/core/InitiativeTracker.ts:64`); inside *Finished*, chips Completed / Archived /
+  Abandoned. Together these cover every value of the legacy status filter
+  (`dashboard/index.html:3620`) plus the three it lacked.
   Detail for an initiative: title, its description, steps as a checklist with dates,
   links (spec, PR, topic) as tappable chips, and the digest reason in words.
 - *Primary action:* opening a plan. Where a plan needs him, the row's chevron becomes an
@@ -605,25 +658,26 @@ route.
 │ NEEDS YOU                    │
 │ ▸ Console makeover     Open ›│
 │   waiting for your OK, rnd 2 │
-│ IN FLIGHT                    │
-│ ● Telegram issues grp      › │
-│   step 3 of 5 · 2 h ago      │
-│ ● Feedback fixes (user)    › │
 │ IN THE WAY                   │
 │ ✕ Vercel token expired     › │
 │   truly stuck · recheck Mon  │
+│ IN FLIGHT   (Paused 1)       │
+│ ● Telegram issues grp      › │
+│   step 3 of 5 · 2 h ago      │
+│ ● Feedback fixes (user)    › │
 │ Idle (1) ›   Finished (23) › │
 └──────────────────────────────┘
 ```
 
 **Merge / split / cut.** Absorbs Projects and Blockers. The "Show projects + children"
 checkbox is cut (they are always shown, children folded). The status select becomes
-the chips inside Finished.
+the status chips (Paused / Halted / Waiting on you above *In flight*; Completed /
+Archived / Abandoned inside *Finished*).
 
 **Data.** Existing: `GET /initiatives` (no `excludeKind`), `/initiatives/digest`,
 `/projects/:id` for round detail, `/blockers`. No new route.
 
-**Effort and order.** M (with Projects and Blockers). Second.
+**Effort and order.** M (with Projects and Blockers). README step 5.
 
 **Open questions for the operator.** Is "Plans" the right word for him? Alternatives:
 "Projects", "Longer work". Default: Plans.
