@@ -458,6 +458,42 @@ dropped, and is any of it waiting on me?"
   promise waiting on you but untouched 14+ days sits in *Older, still open*, where its
   row still reads "waiting on your approval"; it is out of the headline count on purpose.
 
+- *Primary actions:* for waiting-on-you rows, the action that unblocks it: "Open the
+  conversation" (deep link to the topic) is the default; the reply happens in Telegram,
+  where the agent hears it. For agent-owned rows: **Mark delivered** (one tap, confirm
+  inline "Mark as done?").
+- *Secondary / destructive actions:* "Drop this promise" in "⋯", asking for a one-line
+  reason (the server requires one) → `POST /commitments/:id/withdraw`. "Resume reminders"
+  shows only on a paused beacon → `POST /commitments/:id/resume`. No PIN.
+- *Honest states:* loading; empty ("No open promises."); can't tell (request failed, or
+  `enabled:false`: "Promise tracking is off on this agent"); partial (no replica rows:
+  "Only this machine's promises are visible"; a replica over 15 min old: "Mac Mini's
+  promises are from 22 min ago"); per promise *missed*, *due soon*, *paused reminders*,
+  *waiting on you*. A failed write shows the server's message on the sheet, never an
+  `alert()`.
+- *Multi-machine:* `?scope=mesh`; rows from another machine say "from Mac Mini, 3 min
+  old". Writes to a replica row go to the owner (the server forwards); a 409 "ambiguous
+  across machines" is shown in words with a retry that names the origin.
+- *Rough sketch:*
+```
+┌──────────────────────────────┐
+│ Promises                     │
+│ 2 waiting on you. 9 more     │
+│ I'm carrying.                │
+│ [2 you][1 missed][0 soon][9] │
+│ WAITING ON YOU               │
+│ ▸ Approve the prod deploy  › │
+│   2 d ago · your yes         │
+│ ▸ Pick a name for the bot  › │
+│ MISSED                       │
+│ ✕ Morning summary         › │
+│   due yesterday 08:00        │
+│ I'm carrying (9)           › │
+│ Probably handled (14)      › │
+│ Closed this week (6)       › │
+└──────────────────────────────┘
+```
+
 **Merge / split / cut.** Stays its own view (it is Home's second-most important card's
 detail). The legacy "Quiet" tile becomes the *paused reminders* state on rows.
 

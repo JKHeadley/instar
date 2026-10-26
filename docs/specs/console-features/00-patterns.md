@@ -43,20 +43,11 @@ for all 29 tabs ahead of it. Existing legacy controllers are reused where practi
 - One row = one thing, in words: a title (two lines max, expandable), one muted line
   of context (machine, age, owner), and a status at the end.
 - **Grouping before scrolling.** Repeats collapse into one row with a count
-  ("27 copies"). A grouped row keeps what differs between its members: a job that
-  runs on two machines keeps each machine's own last outcome and its own Run now
-  target inside the group.
-- **Older, still open.** An item that is still open but untouched for 14+ days goes
-  into a visible group named **"Older, still open"**, shown with its count. It is not
-  counted in the page's "needs you" headline: the operator asked for this, because an
-  overloaded headline makes him ignore all of it. Nothing is ever described as
-  handled, resolved or done because of its age; age only moves it out of the
-  headline. Two kinds of item are exempt and keep a visible count in their own
-  section whatever their age: **missed, overdue or failed** items, and **items
-  waiting for the operator's approval**. For those, the section shows the fresh ones
-  as rows and the old ones as a counted line in the same section ("+3 older, still
-  open ›"), so the section's count is never smaller than the truth. Each feature plan
-  states how this rule applies to it.
+  ("27 copies"). Items untouched for 14+ days move to a visible "Older, still open"
+  group: listed with their count, out of the headline count, never called handled.
+  This includes items waiting on the operator (the operator's rule: an overloaded
+  list gets ignored; each older row still says what it waits on). Missed, overdue,
+  failed and late items stay in their own section at any age.
 - **Filters are chips**, at most four, with counts, above the list. No dropdowns of
   enum values.
 - Long lists load the first 20 and offer "Show more"; nothing silently truncates.

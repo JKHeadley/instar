@@ -22,8 +22,13 @@ async function opFetch(path, opts = {}) {
 
 export async function renderMessages(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.msg-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Messages to you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [status, health, display] = await Promise.all([opFetch('/telegram/origins/status'), get('/health'), opFetch('/telegram/origin-display')]);
+  const first = !main.querySelector('.msg-page');
+  if (first) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Messages to you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  // A locked page is not re-polled against the PIN-gated routes every 30 s: only the
+  // first render (and a render after an unlock) asks for the records.
+  const locked = !first && !operatorSession() && main.querySelector('.need-card');
+  const denied = { ok: false, status: 403, reason: 'needs your PIN', needsUnlock: true };
+  const [status, health, display] = await Promise.all([locked ? denied : opFetch('/telegram/origins/status'), get('/health'), locked ? denied : opFetch('/telegram/origin-display')]);
   const dm = displayModel(display);
   const names = dm.ok ? Object.fromEntries(dm.topics.map((t) => [String(t.id), t.name])) : {};
   const page = buildMessagesPage(status, health, Date.now(), names);
