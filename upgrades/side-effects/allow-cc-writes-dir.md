@@ -72,6 +72,10 @@ The breach detail now names what was found (`not empty`, `reappeared (<name>)`, 
 
 Machine-local: the executor runs only on the canonical owner.
 
+## Note on the silent-fallback ratchet
+
+The two catches in `claudeDirBreach` that can look like fallbacks to `tests/unit/no-silent-fallbacks.test.ts` (its 20-line window reaches a later `return null`) carry `@silent-fallback-ok` with the reason: ENOENT is the clean case and every other error returns a breach. Neither swallows a failure.
+
 ## 8. Rollback cost
 
 Revert. The executor then discards every attempt again on Claude Code ≥ 2.1.310.

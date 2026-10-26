@@ -104,13 +104,14 @@ export function claudeDirBreach(workspace: string): string | null {
   const dir = path.join(workspace, '.claude');
   let st: fs.Stats;
   try { st = fs.lstatSync(dir); } catch (error) {
+    // @silent-fallback-ok: not a fallback — ENOENT is the clean case and every other error returns a breach.
     // Only a genuinely absent .claude/ is clean. EACCES/EPERM/EIO mean it could not be inspected,
     // which is a breach (the later walk skips .claude/ unread, so nothing else would look).
     return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : '.claude/ in the session workspace could not be inspected';
   }
   if (!st.isDirectory()) return '.claude in the session workspace is not a directory';
   let names: string[];
-  try { names = fs.readdirSync(dir); } catch { return '.claude/ in the session workspace is unreadable'; }
+  try { names = fs.readdirSync(dir); } catch { return '.claude/ in the session workspace is unreadable'; } // @silent-fallback-ok: an unreadable .claude/ is reported as a breach, never skipped
   for (const name of names) {
     if (name !== CLAUDE_SANDBOX_BOOKKEEPING_DIR) return `.claude/ reappeared in the session workspace (${name.slice(0, 60)})`;
     const inner = path.join(dir, name);

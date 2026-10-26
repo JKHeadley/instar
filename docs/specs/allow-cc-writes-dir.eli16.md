@@ -17,7 +17,7 @@ The seal itself (the sandbox and the permission rules) is unchanged and still bl
 
 ## Safeguards
 
-Nothing the session may do is loosened. An empty folder holds no settings, so nothing in it can load or run. The tests cover both sides: the exact empty shape passes, and every variation of it (a file inside, a settings file beside it, a link in place of the folder) still fails. Undoing the change is a plain revert.
+Nothing the session may do is loosened. An empty folder holds no settings, so nothing in it can load or run. The tests cover both sides: the exact empty shape passes, and every variation of it (a file inside, a settings file beside it, a link in place of the folder) still fails. Undoing the change is a plain revert. If the folder can't be inspected at all, that counts as a breach too, never as "no folder".
 
 ## What you need to decide
 
