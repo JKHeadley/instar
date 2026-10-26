@@ -76,7 +76,7 @@ export const GROUPS = [
     tabs: [
       { id: 'features', label: 'What I’m allowed to do', icon: 'toggle', desc: 'How independent I am, the safety checks, and which features are on.' },
       { id: 'preferences-learning', label: 'What I’ve learned about you', icon: 'sparkle', desc: 'How you like things, picked up from your corrections, and the corrections I am still watching.' },
-      { id: 'files', label: 'Files', icon: 'folder', desc: 'Browse and edit project files.' },
+      { id: 'files', label: 'Files', icon: 'folder', desc: 'Find, read and fix a project file from your phone, and choose which folders can be browsed and edited.' },
     ],
     hood: [
       { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
@@ -116,6 +116,7 @@ export const NATIVE_PAGES = {
   secrets: '#/people/secrets',
   features: '#/settings/allowed',
   'preferences-learning': '#/settings/learned',
+  files: '#/settings/files',
   'pr-pipeline': '#/work/development?s=shipping',
   throughput: '#/work/development?s=pace',
   'feedback-drain': '#/work/development?s=feedback',

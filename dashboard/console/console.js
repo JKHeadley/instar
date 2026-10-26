@@ -22,6 +22,7 @@ import { renderAgents } from './agents.js';
 import { renderMandates } from './mandates.js';
 import { renderSecrets } from './secrets.js';
 import { renderLearned } from './learned.js';
+import { renderFiles } from './files.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -446,6 +447,7 @@ const NATIVE = {
   'people/secrets': renderSecrets,
   'settings/allowed': renderAllowed,
   'settings/learned': renderLearned,
+  'settings/files': renderFiles,
 };
 
 function route() {

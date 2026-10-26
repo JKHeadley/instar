@@ -40,6 +40,7 @@ import { buildPreferences, buildCorrections, buildConflicts, learnedHeadline, le
 import { PreferencesManager } from '../../src/core/PreferencesManager.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 import { buildRequests, buildKeys, buildSync, secretsHeadline, secretsFacts, requestBody, resultWords as secretResultWords } from '../../dashboard/console/secrets-model.js';
+import { buildListing, buildFile, saveBody, saveResult, buildConfig, configPatch, configResultWords, pinnedFrom, filesHeadline } from '../../dashboard/console/files-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -548,6 +549,63 @@ describe('Console Home E2E (feature is alive)', () => {
     const corrections = buildCorrections([c]);
     expect(prefs).toMatchObject({ ok: false, off: true });
     expect(learnedHeadline({ prefs, corrections })).toEqual({ text: 'Learning from corrections is off on this agent.', tone: 'muted' });
+  });
+  it('the Files page runs the real file routes through its model: browse, a key file refused in words, a save and a 409 conflict on the bearer token alone, and folder settings answered honestly', async () => {
+    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), '# e2e\n');
+    fs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'docs', 'note.md'), 'first\n');
+    fs.writeFileSync(path.join(tmp, '.instar', 'identity.json'), '{"privateKey":"NEVER-RENDER"}');
+    fs.mkdirSync(path.join(tmp, '.claude', 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.claude', 'hooks', 'guard.js'), '// hook\n');
+    const call = async (method: 'get' | 'post' | 'patch', p: string, body?: unknown) => {
+      let r = request(server.getApp())[method](p).set(auth);
+      if (body) r = r.set('X-Instar-Request', '1').send(body as object);
+      const res = await r;
+      return { status: res.status, data: res.body };
+    };
+    const root = buildListing(await call('get', '/api/files/list?path='), '');
+    expect(root.ok).toBe(true);
+    if (!root.ok) return;
+    expect(root.entries.map((e) => e.name)).toEqual(expect.arrayContaining(['docs', 'CLAUDE.md']));
+    expect(filesHeadline({ root, machine: '' }).tone).toBe('ok');
+    const instar = buildListing(await call('get', '/api/files/list?path=.instar'), '.instar');
+    expect(instar.ok && instar.entries.map((e) => e.name)).not.toContain('identity.json'); // never listed
+    expect(pinnedFrom({ '': root }).map((p) => p.path)).toEqual(['CLAUDE.md']);
+
+    // A key file is refused by the server, and the page says so in words.
+    const key = buildFile(await call('get', '/api/files/read?path=.instar/identity.json'), '.instar/identity.json');
+    expect(key).toMatchObject({ kind: 'refused', refusal: 'never-shown', title: 'Never shown, by design' });
+    expect(JSON.stringify(key)).not.toContain('NEVER-RENDER');
+    // The agent's settings file is never served at all: refused in words too.
+    expect(buildFile(await call('get', '/api/files/read?path=.instar/config.json'), '.instar/config.json')).toMatchObject({ kind: 'refused', refusal: 'never-shown' });
+
+    // Open, save with the opened version (bearer + safety header, no PIN), then a stale save is a conflict.
+    const cfg = buildConfig(await call('get', '/api/files/config'));
+    expect(cfg.ok).toBe(true);
+    const opened = buildFile(await call('get', '/api/files/read?path=docs/note.md'), 'docs/note.md', cfg.ok ? cfg : {});
+    expect(opened).toMatchObject({ kind: 'markdown', editable: true, content: 'first\n' });
+    const saved = await call('post', '/api/files/save', saveBody('docs/note.md', 'second\n', opened.modified));
+    expect(saveResult(saved.status, saved.data)).toMatchObject({ ok: true, text: 'Saved.' });
+    expect(fs.readFileSync(path.join(tmp, 'docs', 'note.md'), 'utf-8')).toBe('second\n');
+    const stale = await call('post', '/api/files/save', saveBody('docs/note.md', 'third\n', opened.modified));
+    expect(saveResult(stale.status, stale.data)).toMatchObject({ ok: false, conflict: true });
+    expect(fs.readFileSync(path.join(tmp, 'docs', 'note.md'), 'utf-8')).toBe('second\n');
+    const forced = await call('post', '/api/files/save', saveBody('docs/note.md', 'third\n', opened.modified, { force: true }));
+    expect(saveResult(forced.status, forced.data).ok).toBe(true);
+    // A hook reads but is never editable: read-only with its reason, and refused on save too.
+    expect(buildFile(await call('get', '/api/files/read?path=.claude/hooks/guard.js'), '.claude/hooks/guard.js')).toMatchObject({ editable: false, readOnlyWhy: 'Hooks and scripts are never editable here.' });
+    const hook = await call('post', '/api/files/save', saveBody('.claude/hooks/guard.js', '// changed', undefined as unknown as string));
+    expect(saveResult(hook.status, hook.data)).toMatchObject({ ok: false, text: 'This file is never editable here, by design.' });
+
+    // Folder settings: this server has no live config, so a change is refused in words, never faked.
+    if (!cfg.ok) return;
+    const patch = await call('patch', '/api/files/config', configPatch(cfg, 'allowed', 'add', 'docs/'));
+    const words = configResultWords(patch.status, patch.data);
+    if (patch.status === 501) expect(words.text).toMatch(/cannot be changed from here/); else expect(words.ok).toBe(true);
+    // Without the token, every file route refuses; without the safety header a save is refused.
+    expect((await request(server.getApp()).get('/api/files/list?path=')).status).toBe(401);
+    expect((await request(server.getApp()).post('/api/files/save').send({ path: 'docs/note.md', content: 'x' })).status).toBe(401);
+    expect((await request(server.getApp()).post('/api/files/save').set(auth).send({ path: 'docs/note.md', content: 'x' })).status).toBe(403);
   });
 });
 

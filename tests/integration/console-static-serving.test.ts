@@ -105,6 +105,8 @@ describe('console served beside the legacy dashboard', () => {
       ['/dashboard/console/secrets-model.js', 'javascript'],
       ['/dashboard/console/learned.js', 'javascript'],
       ['/dashboard/console/learned-model.js', 'javascript'],
+      ['/dashboard/console/files.js', 'javascript'],
+      ['/dashboard/console/files-model.js', 'javascript'],
       ['/dashboard/console/fonts/inter-latin-wght-normal.woff2', 'font/woff2'],
       ['/dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2', 'font/woff2'],
     ] as const) {
