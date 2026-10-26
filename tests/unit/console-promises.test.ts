@@ -46,7 +46,7 @@ describe('promises page model', () => {
 
   it('agrees with Home on what is waiting on the operator', () => {
     const rows = [c({ blockedOn: 'user-input' }), c({ owner: 'user', blockedOn: 'user-authorization', actionClass: 'deploy' }), c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 20) })];
-    expect(buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 }).counts.waiting).toBe(buildPromised(mesh(rows), NOW, 0).count);
+    expect(buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 }).counts.waiting).toBe(buildPromised(mesh(rows), NOW, 0).waitingCount);
   });
 
   it('says when other machines are not covered', () => {

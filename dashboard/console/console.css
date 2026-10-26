@@ -1025,3 +1025,10 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .paste-row .row-sub { overflow-wrap: anywhere; }
 .paste-row-actions { display: flex; flex-direction: column; gap: var(--s-2); padding: 0 var(--s-3); }
 .paste-row-actions > .btn-quiet { align-self: flex-end; min-height: 44px; }
+
+/* Card "Details" fold: housekeeping one tap deeper, never on the card face. */
+details.card-details { margin-top: var(--s-2); }
+details.card-details summary { font-size: 13px; min-height: 44px; }
+details.card-details .card-note { display: block; padding: 0; border: 0; margin: 0 0 6px; color: var(--text-muted); }
+details.card-details .card-note::before { content: none; }
+.card-line:empty { display: none; }

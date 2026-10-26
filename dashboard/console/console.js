@@ -6,7 +6,7 @@
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
+  failure, buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
@@ -315,7 +315,16 @@ function paintCard(def, model, repaint = false) {
     }
     body.append(rows);
   }
-  if (model.note) body.append(el('p', { class: 'card-note', text: model.note }));
+  // Housekeeping (routine counts, coverage notes, older items) stays one tap deeper.
+  if (model.details && model.details.length) {
+    const key = `${def.id}:details`;
+    const fold = el('details', { class: 'more card-details', 'data-focus-key': key },
+      el('summary', {}, el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }), document.createTextNode('Details')),
+      ...model.details.map((t) => el('p', { class: 'card-note', text: t })));
+    if (openRows.has(key)) fold.open = true;
+    fold.addEventListener('toggle', () => { if (fold.open) openRows.add(key); else openRows.delete(key); });
+    body.append(fold);
+  }
   const foot = card.querySelector('.card-foot');
   foot.replaceChildren();
   const extra = model.all ? model.all.length - model.rows.length : (model.more || 0);
@@ -343,10 +352,7 @@ function paintHeadline(models) {
     const words = h.text.split(' ');
     h1.append(document.createTextNode(words.slice(0, -1).join(' ') + (words.length > 1 ? ' ' : '')), el('span', { class: 'accent', text: words[words.length - 1] }));
   } else h1.textContent = h.text;
-  const parts = [];
-  if (models.needs && models.needs.count > 0) parts.push(`${models.needs.value} in the queue`);
-  if (models.promised && models.promised.count > 0) parts.push(`${models.promised.count} ${models.promised.count === 1 ? 'promise' : 'promises'} waiting on you`);
-  sub.textContent = h.tone === 'attn' && parts.length ? `${parts.join(' and ')}.${h.sub ? ' ' + h.sub : ''}` : (h.sub || '');
+  sub.textContent = h.sub || '';
   $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
@@ -363,7 +369,25 @@ function pooled(id, path, build, set) {
 
 async function loadHome() {
   const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
-  const set = (id, model) => { models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model; paintHeadline(models); };
+  // "What needs you" is one card over two sources (attention queue + promises
+  // waiting on the operator); the headline reads its count from that card only.
+  let attn = { state: 'loading' };
+  const paintNeeds = () => {
+    const model = combineNeeds(attn, models.promised);
+    if (model.state === 'loading') { models.needs = model; return; }   // keep the skeleton until a source answers
+    models.needs = paintCard(CARDS.find((c) => c.id === 'needs'), model) || model;
+  };
+  const set = (id, model) => {
+    if (id === 'needs') {
+      // Keep the last good queue reading, labelled, when a refresh of it fails.
+      if (model.state === 'unknown' && lastGood.attention) attn = { ...lastGood.attention.model, state: 'stale' };
+      else { attn = model; if (model.state !== 'unknown') lastGood.attention = { model, at: Date.now() }; }
+    } else {
+      models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model;
+    }
+    if (id === 'needs' || id === 'promised') paintNeeds();
+    paintHeadline(models);
+  };
   // Each card fetches and renders on its own (spec §1): one slow source never blocks the rest.
   pooled('needs', '/attention?scope=pool', buildNeeds, set);
   get('/health').then((r) => set('reach', buildReach(r)));

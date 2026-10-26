@@ -58,7 +58,7 @@ export function buildReach(res, now = Date.now()) {
   }
   if (expired > 0) return { state: 'bad', value: `${expired} lost`, line: 'Some replies expired before they reached you.', rows, age };
   if (count > 0) return { state: 'attn', value: `${count} held`, line: 'Replies are written but not delivered yet.', rows, age };
-  return { state: 'ok', value: 'No replies held', line: 'Nothing is waiting to reach you on this machine.', rows, age };
+  return { state: 'ok', value: 'No replies held', line: '', rows, age, details: ['Checked on this machine.'] };
 }
 
 // ── 2. What needs you ─────────────────────────────────────────────────────
@@ -120,21 +120,76 @@ export function buildNeeds(res, now = Date.now()) {
   const failed = (res.data.pool && Array.isArray(res.data.pool.failed)) ? res.data.pool.failed : [];
   const partial = failed.length > 0;
   const missing = failed.map((f) => f.nickname || f.machineNickname || f.machineId || 'a machine').join(', ');
-  const tail = [
-    stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days, listed separately.` : null,
+  // Housekeeping lives one tap deeper (Details), never on the card face.
+  const details = [
+    stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days (under See all).` : null,
     routine > 0 ? `${plural(routine, 'routine notice')} kept in the log.` : null,
-  ].filter(Boolean).join(' ');
-  const partialLine = partial ? `No answer from ${missing}.` : '';
+  ].filter(Boolean);
+  const partialLine = partial ? `No answer from ${missing}, so there may be more.` : '';
   if (current.length === 0) {
-    return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
+    return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, missing: partial ? missing : null, value: partial ? 'Nothing I can see' : 'Nothing needs you', line: partialLine, rows, all, details };
   }
   return {
     state: partial ? 'partial' : 'attn', count: current.length,
-    coverage: partial ? 'partial view' : null,
+    coverage: partial ? 'partial view' : null, missing: partial ? missing : null,
     value: plural(current.length, 'thing', 'things'), valueTone: 'attn',
-    line: [partialLine, tail].filter(Boolean).join(' ') || 'Waiting on you.',
-    rows, all,
+    line: partialLine,
+    rows, all, details,
   };
+}
+
+/**
+ * The "What needs you" card: ONE list of everything the headline counts as
+ * needing the operator — the attention items AND the promises waiting on the
+ * operator. The headline reads its count from this card, so the two can never
+ * disagree. `attn` is buildNeeds' model, `prom` is buildPromised's; either may
+ * be { state: 'loading' } while its source has not answered.
+ */
+export function combineNeeds(attn, prom) {
+  attn = attn || { state: 'loading' };
+  prom = prom || { state: 'loading' };
+  const loading = (m) => m.state === 'loading';
+  const readable = (m) => !loading(m) && m.state !== 'unknown' && Number.isFinite(m.count ?? m.waitingCount);
+  const attnOk = readable(attn) && Array.isArray(attn.all);
+  const promOk = !loading(prom) && prom.state !== 'unknown' && Array.isArray(prom.waiting);
+  const attnCurrent = attnOk ? attn.all.filter((r) => !r.stale) : [];
+  const attnStale = attnOk ? attn.all.filter((r) => r.stale) : [];
+  const waiting = promOk ? prom.waiting : [];
+  const waitingStale = promOk ? (prom.waitingStale || []) : [];
+  const current = [...attnCurrent, ...waiting];
+  const count = current.length;
+  const pending = loading(attn) || loading(prom);
+  const failedSources = [
+    !loading(attn) && !attnOk ? { what: 'the attention queue', why: attn.line } : null,
+    !loading(prom) && !promOk ? { what: 'your promises', why: prom.line } : null,
+  ].filter(Boolean);
+  // A source that answered from old data (kept last-good) or with partial coverage.
+  const dated = (attnOk && attn.state === 'stale') || (promOk && prom.state === 'stale');
+  const partialCoverage = (attnOk && attn.coverage) || (promOk && prom.coverage);
+  const incomplete = pending || failedSources.length > 0 || dated || Boolean(partialCoverage);
+  const details = [
+    ...(attnOk && attn.details ? attn.details : []),
+    waitingStale.length ? `${plural(waitingStale.length, 'older promise')} waiting on you untouched for ${STALE_DAYS}+ days (under See all).` : null,
+    ...failedSources.map((f) => `Couldn't read ${f.what}: ${String(f.why || '').replace(/^Couldn't read [^:]*: /, '')}`),
+    attnOk && attn.missing ? `The attention queue had no answer from ${attn.missing}.` : null,
+    promOk && prom.coverage && prom.note ? `Promises: ${prom.note}` : null,
+    dated ? 'Some of this is from an earlier reading.' : null,
+  ].filter(Boolean);
+  const all = [...current, ...attnStale, ...waitingStale];
+  const base = { count, pending, rows: current.slice(0, MAX_ROWS), all, details, fromQueue: attnCurrent.length, fromPromises: waiting.length };
+  // Face line: only what changes what the operator should conclude.
+  const faceLine = pending ? (loading(attn) ? 'Still checking the attention queue…' : 'Still checking your promises…')
+    : failedSources.length ? `Couldn't read ${failedSources.map((f) => f.what).join(' or ')}, so there may be more.`
+    : (attnOk && attn.line) ? attn.line
+    : (dated || partialCoverage) ? 'Some machines may not be shown, so there may be more.' : '';
+  if (count > 0) {
+    return { ...base, state: incomplete ? 'partial' : 'attn', coverage: incomplete ? 'partial view' : null,
+      value: plural(count, 'thing', 'things'), valueTone: 'attn', line: faceLine };
+  }
+  if (pending) return { ...base, state: 'loading', value: 'Still checking', line: faceLine };
+  if (failedSources.length === 2) return { ...base, state: 'unknown', value: "Can't tell", line: "Couldn't read the attention queue or your promises." };
+  if (incomplete) return { ...base, state: failedSources.length ? 'unknown' : 'partial', coverage: 'partial view', value: failedSources.length ? "Can't tell" : 'Nothing I can see', line: faceLine };
+  return { ...base, state: 'ok', coverage: null, value: 'Nothing needs you', line: '' };
 }
 
 // ── 3. What I'm doing ─────────────────────────────────────────────────────
@@ -163,7 +218,8 @@ export function buildDoing(res, now = Date.now()) {
   });
   const partialLine = failed.length ? `No answer from ${failed.map((f) => f.nickname || f.machineNickname || f.machineId).join(', ')}.` : '';
   if (live.length === 0) {
-    return { state: failed.length ? 'partial' : 'ok', value: 'Idle', line: partialLine || 'No sessions are running.', rows };
+    // "Idle" is only claimed when every machine answered.
+    return { state: failed.length ? 'partial' : 'ok', coverage: failed.length ? 'partial view' : null, value: failed.length ? 'Nothing running that I can see' : 'Idle', line: partialLine, rows };
   }
   return {
     state: failed.length ? 'partial' : 'ok',
@@ -225,7 +281,25 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     end: ago(c.createdAt, now) || '',
     tone,
   });
-  const all = [...yours.map((c) => toRow(c, 'attn')), ...violated.map((c) => toRow(c, 'bad')), ...yoursAll.filter((c) => !fresh(c)).map((c) => ({ ...toRow(c, 'unknown'), sub: `${toRow(c).sub ? toRow(c).sub + ' · ' : ''}untouched ${STALE_DAYS}+ days` }))];
+  // Promises waiting on the operator are listed under "What needs you" (combineNeeds),
+  // never counted a second time here.
+  const waitLabel = (c) => (c.blockedOn === 'user-authorization' ? 'An approval I’m waiting on you for' : 'A decision I’m waiting on you for');
+  const replicaNote = (c) => (c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : '');
+  const waitRow = (c, stale) => ({
+    key: `promise:${c.originMachineId || 'own'}:${c.id}`, stale,
+    main: c.agentResponse || c.userRequest || c.id,
+    sub: [waitLabel(c), replicaNote(c), stale ? `untouched ${STALE_DAYS}+ days` : ''].filter(Boolean).join(' · '),
+    end: ago(c.createdAt, now) || '',
+    tone: stale ? 'unknown' : 'attn',
+    detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
+    expandable: true,
+  });
+  const waiting = yours.map((c) => waitRow(c, false));
+  const waitingStale = yoursAll.filter((c) => !fresh(c)).map((c) => waitRow(c, true));
+  const carried = open.filter((c) => !waitsOnOperator(c) && !isMissed(c, now))
+    .sort((a, b) => Number(!fresh(a)) - Number(!fresh(b)) || Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .map((c) => ({ ...toRow(c, fresh(c) ? undefined : 'unknown'), ...(fresh(c) ? {} : { sub: [toRow(c).sub, `untouched ${STALE_DAYS}+ days`].filter(Boolean).join(' · ') }) }));
+  const all = [...violated.map((c) => toRow(c, 'bad')), ...carried];
   // Coverage honesty: a mesh read that carries no replica rows has not shown other machines.
   const replicas = list.filter((c) => c && c.viewSource === 'replica');
   const origins = new Set(replicas.map((c) => c.originMachineId));
@@ -240,17 +314,23 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
       : missingPeers > 0 ? `Includes ${plural(origins.size, 'other machine')}; ${plural(missingPeers, 'machine')} not represented.`
       : `Includes all ${plural(origins.size, 'other machine')}.`)
     : "Only this machine's promises are visible.";
+  // The face points at "What needs you" for the waiting ones; it never competes with its count.
   const line = [
-    yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
+    yours.length ? `${yours.length === 1 ? 'One is' : `${yours.length} of them are`} waiting on you, listed under What needs you.` : null,
     violated.length ? `${violated.length} missed.` : null,
+  ].filter(Boolean).join(' ');
+  const details = [
     rest > 0 ? `${plural(rest, 'other')} I'm carrying.` : null,
-    olderCarried + yoursStale > 0 ? `${olderCarried + yoursStale} older ones untouched for ${STALE_DAYS}+ days, listed separately.` : null,
-  ].filter(Boolean).join(' ') || 'Nothing open.';
+    olderCarried + yoursStale > 0 ? `${olderCarried + yoursStale} older ones untouched for ${STALE_DAYS}+ days.` : null,
+    coverage,
+  ].filter(Boolean);
   const incomplete = origins.size === 0 || staleReplica || missingPeers === null || missingPeers > 0;
-  const state = yours.length ? 'attn' : violated.length ? 'bad' : (incomplete ? 'partial' : 'ok');
+  const state = violated.length ? 'bad' : (incomplete ? 'partial' : 'ok');
   return {
-    state, count: yours.length, coverage: incomplete ? 'partial view' : null, value: yours.length ? `${yours.length} need you` : plural(open.length, 'open promise'),
-    line, note: coverage, rows: all.slice(0, MAX_ROWS), all,
+    state, waitingCount: yours.length, waiting, waitingStale,
+    coverage: incomplete ? 'partial view' : null,
+    value: open.length ? plural(open.length, 'open promise') : (incomplete ? 'None I can see' : 'Nothing open'),
+    line, note: coverage, details, rows: all.slice(0, MAX_ROWS), all,
   };
 }
 
@@ -290,6 +370,7 @@ export function buildRunning(res, now = Date.now()) {
     if (res.data && res.data.enabled === false) return { state: 'ok', value: 'One machine', line: 'This agent runs on a single machine.', machines: [] };
     return unknownCard('The pool answered without a machine list.');
   }
+  if (machines.length === 0) return unknownCard('The pool lists no machines.');
   const ms = machines.map((m) => ({ name: m.nickname || m.machineId, ...machineState(m, now) }));
   const counts = { ok: 0, attn: 0, stale: 0, bad: 0, unknown: 0 };
   for (const m of ms) counts[m.state] = (counts[m.state] || 0) + 1;
@@ -303,7 +384,7 @@ export function buildRunning(res, now = Date.now()) {
   return {
     state: worst,
     value: `${counts.ok} of ${ms.length} live`,
-    line: counts.ok === ms.length ? 'Every machine is answering.' : parts.join(' · ') + '.',
+    line: counts.ok === ms.length ? '' : parts.join(' · ') + '.',
     machines: ms,
   };
 }
@@ -337,7 +418,8 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
   const rows = [];
   if (offWrong) rows.push({ main: `${plural(offWrong, 'safety check')} off that should be on`, tone: 'attn' });
   if (gaps) rows.push({ main: `${plural(gaps, 'critical path')} without its guard`, tone: 'attn' });
-  rows.push({ main: mandates === null ? "Can't tell which permission slips are active" : `${plural(mandates, 'permission slip')} active`, tone: mandates === null ? 'unknown' : undefined });
+  // Permission slips are reference, not action: one tap deeper unless unreadable.
+  if (mandates === null) rows.push({ main: "Can't tell which permission slips are active", tone: 'unknown' });
   const guards = Array.isArray(guardsRes.data.guards) ? guardsRes.data.guards : [];
   const isOn = (e) => e === 'on-confirmed' || e === 'on-unverified' || e === 'on-stale' || e === 'on-blind';
   const byDesign = (g) => g.effective === 'off' && g.offClass === 'dark-default';
@@ -354,34 +436,42 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
     state: offWrong || gaps ? 'attn' : (mandates === null ? 'partial' : 'ok'),
     coverage: mandates === null ? 'partial view' : null,
     value: `${on} of ${total} on`, all,
-    line: `${dry} watching only, ${offDark} off by design.`,
+    line: '',
+    details: [`${dry} watching only, ${offDark} off by design.`, mandates === null ? null : `${plural(mandates, 'permission slip')} active.`].filter(Boolean),
     rows: rows.slice(0, MAX_ROWS),
     meter: { ok: on, dry, warn: offWrong, off: offDark },
   };
 }
 
 // ── The headline ──────────────────────────────────────────────────────────
-/** One sentence over all six cards. Never says "all quiet" while a card can't tell. */
+/**
+ * One sentence over all six cards. The count is read from the "What needs you"
+ * card (combineNeeds) and nowhere else, so the two always agree. Never says
+ * "all quiet" while a card can't tell. The sub-line carries only what the
+ * operator should act on, never coverage housekeeping.
+ */
 export function headline(cards) {
   const list = Object.values(cards).filter(Boolean);
-  const known = (c) => (c && Number.isFinite(c.count) ? c.count : 0);
+  const needs = cards.needs;
   const bad = list.filter((c) => c.state === 'bad').length;
   const blind = list.filter((c) => c.state === 'unknown' || c.state === 'partial' || c.state === 'stale' || c.coverage).length;
-  const otherAttn = Object.entries(cards).filter(([k, c]) => c && c.state === 'attn' && k !== 'needs' && k !== 'promised').length;
+  const otherAttn = Object.entries(cards).filter(([k, c]) => c && c.state === 'attn' && k !== 'needs').length;
   const loading = list.filter((c) => c.state === 'loading').length;
-  // Never announce a count, or "all quiet", before both counting cards answered.
-  if (loading === list.length || (cards.needs && cards.needs.state === 'loading') || (cards.promised && cards.promised.state === 'loading')) return { text: 'Checking in…', tone: 'muted' };
-  // A known action count survives incomplete coverage; the coverage qualification rides beside it.
-  const count = known(cards.needs) + known(cards.promised);
+  // Never announce a count, or "all quiet", before the counting card has heard from every source.
+  if (!needs || loading === list.length || needs.state === 'loading' || needs.pending) return { text: 'Checking in…', tone: 'muted' };
+  const count = Number.isFinite(needs.count) ? needs.count : 0;
   const quals = [];
   if (bad) quals.push(`${plural(bad, 'area')} failing`);
   if (otherAttn) quals.push(`${plural(otherAttn, 'other area')} to look at`);
-  if (blind) quals.push(`${plural(blind, 'area')} I can't see fully`);
   const qual = quals.length ? quals.join(', ').replace(/^./, (c) => c.toUpperCase()) + '.' : null;
-  if (count > 0) return { text: count === 1 ? 'One thing needs you.' : `${count} things need you.`, tone: 'attn', sub: qual };
+  if (count > 0) {
+    // A known count may be an undercount when its own card is incomplete: say so in four words.
+    const maybeMore = needs.state === 'partial' || needs.coverage ? 'There may be more.' : null;
+    return { text: count === 1 ? 'One thing needs you.' : `${count} things need you.`, tone: 'attn', sub: [qual, maybeMore].filter(Boolean).join(' ') || null };
+  }
   if (bad) return { text: bad === 1 ? 'Something is failing.' : `${bad} areas are failing.`, tone: 'bad', sub: qual };
   if (otherAttn) return { text: otherAttn === 1 ? 'One area needs a look.' : `${otherAttn} areas need a look.`, tone: 'attn', sub: qual };
   // "Quiet" is only claimed, and only painted teal, when every card is observed and settled.
-  if (blind) return { text: 'Nothing urgent that I can see.', tone: 'muted', sub: qual };
-  return { text: 'All quiet.', tone: 'ok', sub: 'Nothing needs you right now.' };
+  if (blind) return { text: 'Nothing urgent that I can see.', tone: 'muted', sub: null };
+  return { text: 'All quiet.', tone: 'ok', sub: null };
 }

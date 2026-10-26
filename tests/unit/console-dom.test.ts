@@ -56,6 +56,29 @@ describe('console shell (jsdom)', () => {
     expect(doc.querySelector('#heroTitle')!.textContent).toBe('5 things need you.');
   });
 
+  it('promises waiting on you are listed in What needs you, and the headline agrees with it', async () => {
+    const saved = { a: ROUTES['/attention?scope=pool'], c: ROUTES['/commitments?scope=mesh'] };
+    ROUTES['/attention?scope=pool'] = { items: [{ id: 'r', title: 'Routine', status: 'OPEN', priority: 'LOW', category: 'worktree', createdAt: NOW }], pool: { failed: [] } };
+    ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [
+      { id: 'CMT-1', status: 'pending', owner: 'user', blockedOn: 'user-input', createdAt: NOW, agentResponse: 'Pick a name' },
+      { id: 'CMT-2', status: 'pending', owner: 'user', blockedOn: 'user-authorization', createdAt: NOW, agentResponse: 'Approve the spend' },
+    ] };
+    try {
+      const doc = await boot('t');
+      expect(doc.querySelector('#heroTitle')!.textContent).toBe('2 things need you.');
+      const card = doc.querySelector('#card-needs')!;
+      expect(card.querySelector('.card-value')!.textContent).toBe('2 things');
+      expect(card.textContent).not.toMatch(/Nothing needs you/);
+      expect(card.querySelectorAll('button.row')).toHaveLength(2);
+      // Housekeeping sits behind the Details fold, not on the face.
+      expect(card.querySelector('.card-line')!.textContent).not.toContain('routine');
+      expect(card.querySelector('details.card-details')!.textContent).toContain('1 routine notice kept in the log');
+      expect(doc.querySelector('#card-promised .card-line')!.textContent).toBe('2 of them are waiting on you, listed under What needs you.');
+    } finally {
+      ROUTES['/attention?scope=pool'] = saved.a; ROUTES['/commitments?scope=mesh'] = saved.c;
+    }
+  });
+
   it('a failing source says "Can\'t tell" on its own card; the others render', async () => {
     const doc = await boot('t');
     const allowed = doc.querySelector('#card-allowed')!;

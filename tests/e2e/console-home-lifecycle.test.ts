@@ -19,7 +19,7 @@ import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
-  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
+  buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
 } from '../../dashboard/console/home-model.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
@@ -127,11 +127,12 @@ describe('Console Home E2E (feature is alive)', () => {
       const r = await request(server.getApp()).get(p).set(auth);
       return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: `the server answered ${r.status}` };
     };
+    const promised = buildPromised(await read('/commitments?scope=mesh'));
     const cards = {
       reach: buildReach(await read('/health')),
-      needs: buildNeeds(await read('/attention?scope=pool')),
+      needs: combineNeeds(buildNeeds(await read('/attention?scope=pool')), promised),
       doing: buildDoing(await read('/sessions?scope=pool')),
-      promised: buildPromised(await read('/commitments?scope=mesh')),
+      promised,
       running: buildRunning(await read('/pool')),
       allowed: buildAllowed(await read('/guards'), await read('/mandate')),
     };
@@ -143,9 +144,12 @@ describe('Console Home E2E (feature is alive)', () => {
       if (c.state === 'unknown') expect(c.line.length, id).toBeGreaterThan(5);
     }
     // The real commitment that waits on the operator surfaces.
-    expect(cards.promised.state).toBe('attn');
-    expect(cards.promised.value).toBe('1 need you');
-    expect(headline(cards).text).not.toBe('All quiet.');
+    // ...listed under What needs you, and the headline counts exactly that card.
+    expect(cards.promised.waitingCount).toBe(1);
+    expect(cards.needs.all.some((r: { main: string }) => r.main === 'waiting for your yes')).toBe(true);
+    expect(cards.needs.count).toBeGreaterThanOrEqual(1);
+    const h = headline(cards);
+    expect(h.text).toBe(cards.needs.count === 1 ? 'One thing needs you.' : `${cards.needs.count} things need you.`);
   });
 
   it('the Promises page reads the real mesh view and its Mark-as-done reaches the real tracker', async () => {
