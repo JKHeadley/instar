@@ -235,10 +235,13 @@ describe('What I am allowed to do', () => {
     expect(m.value).toBe('70 of 97 on');
     expect(m.state).toBe('attn');
   });
-  it('lists the guards that are not on, deviants before by-design', () => {
+  it('lists only the guards that need a look (the shared rule): off-by-design is not a finding', () => {
     const m = buildAllowed(ok({ summary, guards }), ok({ mandates: [] }), NOW);
-    expect(m.all.map((r: { sub?: string; main: string }) => r.main)).toEqual(['a.enabled', 'b.enabled']);
-    expect(m.all[1].end).toBe('off by design');
+    expect(m.all.map((r: { sub?: string; main: string }) => r.main)).toEqual(['A']);
+    expect(m.all[0].end).toBe('off, should be on');
+    expect(m.needLook).toBe(1);
+    expect(m.rows[0].main).toBe('1 safety check needs a look on this machine');
+    expect(m.details[0]).toBe('7 watching only, 12 off by design.');
   });
   it('a failed mandate read is partial, not zero', () => {
     const m = buildAllowed(ok({ summary, guards }), failure('x'), NOW);

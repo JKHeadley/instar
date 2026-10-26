@@ -26,13 +26,28 @@ describe('accounts page model', () => {
     expect(p.accounts[0].cells.map((c: { machine: string }) => c.machine)).toEqual(['Mac Studio', 'Mac Mini']);
     expect(p.accounts[0].tight.pct).toBe(80);
   });
-  it('a cell needing sign-in is one needs-you item with the right action', () => {
+  it('an expired sign-in is the agent’s chore (never "needs you"); only a repair waiting on a tap is', () => {
+    // A repair that stopped: expired, mine to restart — listed under expired with a Try-again, not counted as needing the operator.
     const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })] }), NOW, {
       episodes: [{ id: 'e1', accountId: 'luna', machineId: 'm2', state: 'failed', updatedAt: iso(-10) }] });
-    expect(p.headline).toBe('1 sign-in needs you.');
-    expect(p.needs[0]).toMatchObject({ machine: 'Mac Mini', action: 'retry', episodeId: 'e1' });
+    expect(p.headline).toBe('1 sign-in expired on Mac Mini — mine to repair; none needs your tap.');
+    expect(p.needs).toEqual([]);
+    expect(p.expired[0]).toMatchObject({ machine: 'Mac Mini', action: 'retry', episodeId: 'e1' });
+    expect(p.facts.map((f) => f.label)).toContain('expired, mine to repair');
+    // A repair offered for approval (approval mode, `suggested`) is the one tap that is the operator's.
+    const t = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })] }), NOW, {
+      episodes: [{ id: 'e2', accountId: 'luna', machineId: 'm2', state: 'suggested', mode: 'approval', updatedAt: iso(-1) }] });
+    expect(t.headline).toBe('1 sign-in needs you.');
+    expect(t.needs[0]).toMatchObject({ machine: 'Mac Mini', action: 'approve', episodeId: 'e2' });
+    expect(t.expired).toEqual([]);
+    // No repair at all: expired, mine to fix; a Sign-in button is still offered.
     const q = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW);
-    expect(q.needs[0].action).toBe('start');
+    expect(q.needs).toEqual([]);
+    expect(q.expired[0].action).toBe('start');
+    // A promise of the agent's about a sign-in that waits on the operator shows here too.
+    const s = buildAccountsPage(ok({ accounts: [row({})] }), NOW, { promises: [{ id: 'CMT-1', status: 'pending', owner: 'user', blockedOn: 'user-authorization', createdAt: iso(-60), agentResponse: 'Sign the Claude login luna@x.io back in on the Laptop once you say go' }] });
+    expect(s.headline).toBe('1 sign-in needs you.');
+    expect(s.needs[0]).toMatchObject({ kind: 'promise', action: 'promise' });
   });
   it('names a machine that did not answer, never by its id', () => {
     const p = buildAccountsPage(ok({ accounts: [row({})], pool: { failed: [{ machineId: 'm9' }] } }), NOW, { names: { m9: 'Laptop' } });
@@ -86,8 +101,10 @@ describe('accounts page in a DOM', () => {
     const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
     await tick(15);
     const doc = dom.window.document;
-    expect(doc.querySelector('.page-title')!.textContent).toBe('1 sign-in needs you.');
-    (doc.querySelector('#sec-needs button.btn-quiet') as HTMLButtonElement).click();
+    // An expired login is the agent's chore: it sits under the expired fold (with its button), never under "Needs you".
+    expect(doc.querySelector('.page-title')!.textContent).toBe('1 sign-in expired on Mac Mini — mine to repair; none needs your tap.');
+    expect(doc.querySelector('#sec-needs')).toBeNull();
+    (doc.querySelector('#sec-expired button.btn-quiet') as HTMLButtonElement).click();
     await tick(3);
     const pin = doc.querySelector('.pin-input') as HTMLInputElement;
     pin.value = '123456';

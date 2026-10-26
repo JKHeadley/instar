@@ -34,8 +34,10 @@ describe('promises page model', () => {
       c({ status: 'delivered', resolvedAt: minsAgo(60 * 24 * 10) }),
     ];
     const p = buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 });
-    expect(p.counts).toEqual({ waiting: 1, missed: 2, dueSoon: 1, carrying: 1, handled: 1, closed: 1 });
+    // `open` is THE open total (waiting + missed + dueSoon + carrying); the 14-day-old one is `older`, out of it.
+    expect(p.counts).toEqual({ waiting: 1, missed: 2, dueSoon: 1, carrying: 1, handled: 1, closed: 1, open: 5, older: 1, olderWaiting: 0 });
     expect(p.headline).toBe('1 promise is waiting on you.');
+    expect(p.sub).toBe("5 open in all: 1 waiting on you, 2 missed, 2 I'm carrying (1 due within a day).");
   });
 
   it('a missed promise stays in Missed at any age (age is not evidence it was handled)', () => {

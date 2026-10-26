@@ -93,13 +93,14 @@ export async function renderDevelopment(main, ctx) {
   if (!main.querySelector('.dev-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading development' })));
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want && !view.open) view.open = want;
-  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace] = await Promise.all([
+  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace, promises] = await Promise.all([
     read('/green-pr-automerge'), read('/local-verify'), read('/release-readiness'),
     read('/feedback-factory/readiness-authorities/proposal'), read('/feedback-factory/triage/summary'), read('/feedback-factory/triage/authority/proposal'),
     read('/feedback-factory/execute/status'), read('/feedback-factory/triage/queue'), read('/feedback-factory/drain/status'),
     read(`/throughput/series?days=${view.days}`, 15000),
+    read('/commitments?scope=mesh', 8000),   // a promise about a PR that waits on the operator is a Needs-you row here too
   ]);
-  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace }, main, ctx };
+  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace, promises }, main, ctx };
   paint();
 }
 
@@ -107,7 +108,8 @@ function paint() {
   const { res, main, ctx } = last;
   const now = Date.now();
   const pace = buildPace(res.pace, { days: view.days, person: view.person }, now);
-  const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || null });
+  const promised = res.promises && res.promises.ok && Array.isArray(res.promises.data && res.promises.data.commitments) ? res.promises.data.commitments : null;
+  const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || null, promises: promised });
   const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain }, now);
   const h = developmentHeadline({ shipping, feedback, pace });
   const refresh = () => renderDevelopment(main, ctx);

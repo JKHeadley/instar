@@ -3,6 +3,7 @@
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
 import { buildMachinesPage, ropesFor, healthOf, usageOf } from './machines-model.js';
+import { guardsNeedingLook } from './shared-counts.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
@@ -16,9 +17,8 @@ export async function renderMachines(main, ctx) {
   const byMachine = {};
   const names = {};
   for (const s of live) { byMachine[s.machineId] = (byMachine[s.machineId] || 0) + 1; if (s.id) names[s.id] = s.name; }
-  const gs = guards.ok && guards.data && guards.data.summary;
-  const needsLook = gs ? (Number(gs.offDeviant) || 0) + (Array.isArray(gs.loadBearingGapKeys) ? gs.loadBearingGapKeys.length : 0) : 0;
-  const page = buildMachinesPage(pool, health, Date.now(), { sessionsByMachine: sessions.ok ? byMachine : undefined, needsLook });
+  // The "need a look" fact is the shared safety-check count (this machine's list, scope stated).
+  const page = buildMachinesPage(pool, health, Date.now(), { sessionsByMachine: sessions.ok ? byMachine : undefined, guards });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Machines', headline: 'Machines', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
 
   const cards = el('div', { class: 'machine-cards' }, page.machines.map((m) => {
@@ -29,7 +29,7 @@ export async function renderMachines(main, ctx) {
         m.isSelf ? el('span', { class: 'mc-tag', text: 'this one' }) : null,
         m.leading ? el('span', { class: 'mc-tag', text: 'leading' }) : null,
         el('span', { class: 'mc-state', text: m.label })),
-      el('span', { class: 'mc-line', text: [m.verdict ? `${m.verdict}${typeof m.perCore === 'number' ? ` · load ${m.perCore.toFixed(1)} per core` : ''}` : 'no load reading', typeof m.sessions === 'number' ? `${m.sessions} ${m.sessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean).join(' · ') }),
+      el('span', { class: 'mc-line', text: [m.loadWords, typeof m.sessions === 'number' ? `${m.sessions} ${m.sessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean).join(' · ') }),
       el('span', { class: 'mc-evidence', text: m.age ? `last evidence ${m.age}${m.estimated && !page.single ? ' (estimated)' : ''}` : 'no evidence since this server started' }),
     );
     card.addEventListener('click', () => openMachine(m, { get, health, guards, names }));
@@ -70,7 +70,7 @@ async function openMachine(m, { get, health, guards, names }) {
   const lines = [
     { label: 'State', text: `${m.label}${m.estimated ? ' (estimated from heartbeat age and load)' : ''}` },
     { label: 'Last evidence', text: m.age || 'none since this server started' },
-    { label: 'Load', text: typeof m.perCore === 'number' ? `${m.perCore.toFixed(2)} per core (${m.verdict})` : 'no reading' },
+    { label: 'Load', text: typeof m.perCore === 'number' ? `${m.perCore.toFixed(2)} per core (${m.verdict}${m.load && m.load.estimated ? ', estimated from the load average' : ''})` : 'no reading' },
   ];
   if (hw.cpuModel) lines.push({ label: 'Hardware', text: `${hw.cpuModel}, ${hw.cpuCores} cores, ${Math.round((hw.totalMemBytes || 0) / 2 ** 30)} GB` });
   if (hw.instarVersion) lines.push({ label: 'Instar', text: hw.instarVersion });
@@ -84,15 +84,16 @@ async function openMachine(m, { get, health, guards, names }) {
   if (m.isSelf) {
     const sb = panel.querySelector('.sheet-body');
     const [sys, res] = await Promise.all([get('/systems/status'), get('/resources/summary?sinceHours=1')]);
-    const h = healthOf(sys);
-    const u = usageOf(res, names);
-    const g = guards.ok && guards.data && Array.isArray(guards.data.guards) ? guards.data.guards : null;
-    const isOn = (e) => e === 'on-confirmed' || e === 'on-unverified' || e === 'on-stale' || e === 'on-blind';
-    const wrong = g ? g.filter((x) => x.effective && !isOn(x.effective) && !(x.effective === 'off' && x.offClass === 'dark-default') && x.effective !== 'on-dry-run') : null;
+    // The parts list names a failing probe (from /health) and reads the safety-check count
+    // from the same shared source as the page's own fact; usage names its CPU basis and
+    // never shows an ended session's last sample as "now".
+    const h = healthOf(sys, { health, guards });
+    const u = usageOf(res, names, { running: new Set(Object.keys(names)), cores: hw.cpuCores });
+    const look = guardsNeedingLook(guards, { scope: 'local' });
     const after = sb.querySelector('.raw');
     sb.insertBefore(block('My parts here', h.ok ? el('p', { class: 'card-line', text: h.summary }) : note(`Can’t tell: ${h.reason}.`), h.ok ? rowsList(h.rows.slice(0, 12)) : null), after);
     sb.insertBefore(block('What’s using it', u.ok ? el('p', { class: 'card-line', text: u.summary }) : note(`Can’t tell: ${u.reason}.`), u.ok ? rowsList(u.rows) : null), after);
-    sb.insertBefore(block('Safety checks', wrong === null ? note('Can’t tell: the safety checks did not answer.') : wrong.length ? rowsList(wrong.map((x) => ({ main: x.criticalPath || x.key, sub: x.criticalPath ? x.key : '', end: 'off', tone: 'attn' }))) : el('p', { class: 'card-line', text: 'Every safety check that should be on is on.' })), after);
+    sb.insertBefore(block('Safety checks', !look.ok ? note(`Can’t tell: ${look.reason}`) : look.count ? el('p', { class: 'card-line', text: `${look.count} need a look ${look.scopeWords}: ${look.breakdownWords}.` }) : el('p', { class: 'card-line', text: `Every safety check that should be on is on ${look.scopeWords}.` }), look.ok && look.count ? rowsList(look.rows.map((x) => ({ main: x.main, sub: x.record.criticalPath ? x.guardKey : '', end: x.word, tone: 'attn' }))) : null), after);
   }
   if (m.id !== 'self') panel.querySelector('.sheet-body').append(renameBlock(m, get));
 }

@@ -55,10 +55,29 @@ describe('machines page model', () => {
   });
   it('this machine’s parts and usage, honest on failure', () => {
     expect(healthOf(ok({ activeCapabilities: [{ label: 'A', status: 'active' }], issues: [] })).summary).toBe('All 1 parts working.');
-    expect(healthOf(ok({ activeCapabilities: [], issues: [{ title: 'Broken' }] })).summary).toBe('1 part needs a look.');
+    expect(healthOf(ok({ activeCapabilities: [], issues: [{ title: 'Broken' }] })).summary).toBe('1 part needs a look: Broken.');
+    // A part whose own status says degraded is named with the failing probe from /health; "Safety & Trust" reads the shared safety-check count, never "All gates active".
+    const sys = ok({ issues: [], activeCapabilities: [
+      { label: 'Health Monitoring', status: 'active', metric: '15/16 probes passed', processes: [{ name: 'SystemReviewer', status: 'running', details: { status: 'degraded', message: '15/16 probes passed' } }] },
+      { label: 'Safety & Trust', status: 'active', metric: 'All gates active', processes: [] },
+      { label: 'Telegram', status: 'active', metric: '67 topics', processes: [] },
+    ] });
+    const health = ok({ systemReview: { failedProbes: [{ probeId: 'instar.guard-posture.anomalies', name: 'Guard Posture Anomalies' }] } });
+    const guards = ok({ nickname: 'Mac Studio', guards: [{ key: 'monitoring.a.enabled', effective: 'off', offClass: 'diverged-from-default' }, { key: 'monitoring.b.enabled', effective: 'on-confirmed' }] });
+    const h2 = healthOf(sys, { health, guards });
+    expect(h2.summary).toBe('2 parts need a look: Health Monitoring, Safety & Trust. 1 of 3 working.');
+    expect(h2.rows.find((r) => r.main === 'Health Monitoring')!.sub).toContain('failing: Guard Posture Anomalies');
+    expect(h2.rows.find((r) => r.main === 'Safety & Trust')!.sub).toBe('1 safety check needs a look on Mac Studio');
+    expect(JSON.stringify(h2)).not.toContain('All gates active');
+    // Usage: every figure is of one core, and an ended session's last sample is never shown as "now".
+    const u2 = usageOf(ok({ sources: [{ source: 'aggregate', currentCpuPercent: 50, currentRssBytes: 12e9, peakCpuPercent: 110 }, { source: 'session:live', currentCpuPercent: 7, currentRssBytes: 5e8 }, { source: 'session:gone', currentCpuPercent: 77, currentRssBytes: 3e8 }] }), { live: 'Fix it' }, { running: new Set(['live']), cores: 16 });
+    expect(u2.summary).toContain('50% of one core');
+    expect(u2.summary).toContain('this machine has 16');
+    expect(u2.rows.map((r) => r.main)).toEqual(['Fix it', '1 session that ended in the last hour']);
+    expect(JSON.stringify(u2.rows)).not.toContain('77%');
     expect(healthOf(ok({ activeCapabilities: [] })).ok).toBe(false);
     const u = usageOf(ok({ sources: [{ source: 'aggregate', currentCpuPercent: 55, currentRssBytes: 12e9, peakCpuPercent: 61 }, { source: 'session:abc', currentCpuPercent: 3, currentRssBytes: 5e8 }] }), { abc: 'Fix it' });
-    expect(u.summary).toContain('55% CPU');
+    expect(u.summary).toContain('55% of one core');
     expect(u.rows[0].main).toBe('Fix it');
   });
 });

@@ -7,6 +7,7 @@
 
 import {
   failure, buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
+  buildAccountNeeds, buildPrNeeds,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
@@ -356,7 +357,7 @@ function paintHeadline(models) {
   $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-function pooled(id, path, build, set) {
+function pooled(id, path, build, set, namesP = Promise.resolve(null)) {
   const slow = setTimeout(() => {
     const card = $(`#card-${id}`);
     if (card && card.getAttribute('data-state') === 'loading') {
@@ -364,16 +365,25 @@ function pooled(id, path, build, set) {
       line.textContent = 'Still checking the other machines…';
     }
   }, TIMEOUT_MS);
-  get(path, POOL_TIMEOUT_MS).then((r) => { clearTimeout(slow); set(id, build(r)); });
+  Promise.all([get(path, POOL_TIMEOUT_MS), namesP]).then(([r, names]) => { clearTimeout(slow); set(id, build(r, names)); });
+}
+
+/** machineId → nickname from /pool, so a machine that did not answer is named, never shown by its id. */
+function poolNames(pool) {
+  const ms = pool && pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines : [];
+  return Object.fromEntries(ms.filter((m) => m && m.machineId && m.nickname).map((m) => [m.machineId, m.nickname]));
 }
 
 async function loadHome() {
   const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
-  // "What needs you" is one card over two sources (attention queue + promises
-  // waiting on the operator); the headline reads its count from that card only.
+  // "What needs you" is ONE card over four sources (attention queue, promises
+  // waiting on the operator, sign-in repairs waiting on a tap, PRs waiting for the
+  // operator's review), deduplicated by shared-counts; the headline reads its count
+  // from that card only.
   let attn = { state: 'loading' };
+  const extra = { accounts: { state: 'loading', items: [] }, prs: { state: 'loading', items: [] } };
   const paintNeeds = () => {
-    const model = combineNeeds(attn, models.promised);
+    const model = combineNeeds(attn, models.promised, extra);
     if (model.state === 'loading') { models.needs = model; return; }   // keep the skeleton until a source answers
     models.needs = paintCard(CARDS.find((c) => c.id === 'needs'), model) || model;
   };
@@ -389,16 +399,21 @@ async function loadHome() {
     paintHeadline(models);
   };
   // Each card fetches and renders on its own (spec §1): one slow source never blocks the rest.
-  pooled('needs', '/attention?scope=pool', buildNeeds, set);
-  get('/health').then((r) => set('reach', buildReach(r)));
   const poolP = get('/pool');
+  const namesP = poolP.then(poolNames);
+  pooled('needs', '/attention?scope=pool', (r, names) => buildNeeds(r, Date.now(), names), set, namesP);
+  get('/health').then((r) => set('reach', buildReach(r)));
   Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
     const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
     set('promised', buildPromised(r, Date.now(), peers));
   });
-  pooled('doing', '/sessions?scope=pool', buildDoing, set);
+  pooled('doing', '/sessions?scope=pool', (r, names) => buildDoing(r, Date.now(), names), set, namesP);
   poolP.then((r) => set('running', buildRunning(r)));
   Promise.all([get('/guards'), get('/mandate')]).then(([g, m]) => set('allowed', buildAllowed(g, m)));
+  // The two other needs-you sources (a 503 reads as "not on this agent", never as a failure).
+  Promise.all([get('/subscription-pool?scope=pool', POOL_TIMEOUT_MS), get('/subscription-relogin?scope=pool', POOL_TIMEOUT_MS)])
+    .then(([p, r]) => { extra.accounts = buildAccountNeeds(p, r); paintNeeds(); paintHeadline(models); });
+  get('/green-pr-automerge').then((r) => { extra.prs = buildPrNeeds(r); paintNeeds(); paintHeadline(models); });
 }
 
 function renderHome(main) {

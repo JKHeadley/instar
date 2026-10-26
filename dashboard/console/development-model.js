@@ -18,6 +18,7 @@
 //     it is never a release inventory.
 
 import { ago } from './home-model.js';
+import { prsNeedingYou, promisesAbout } from './shared-counts.js';
 
 export const DEV_TOOLS_KEY = 'instar_console_dev_tools';   // per-browser "show developer tools" switch
 export const WATCHER_CADENCE_MS = 600000;                  // GreenPrAutoMerger tickIntervalMs default (10 min)
@@ -101,8 +102,11 @@ export function releaseLine(res, now = Date.now()) {
 /**
  * Shipping from /green-pr-automerge (watcher), /local-verify (verify) and /release-readiness
  * (release). Each tile comes from its own source; a failed source dashes its tile only.
+ * `promises` (the /commitments?scope=mesh list, optional): a promise of the agent's about a
+ * pull request that waits on the operator is the same "needs you" Home counts, so it is a
+ * Needs-you row here too — folded into the PR's own row when the PR is already listed.
  */
-export function buildShipping({ watcher, verify, release } = {}, now = Date.now(), { repo = null } = {}) {
+export function buildShipping({ watcher, verify, release } = {}, now = Date.now(), { repo = null, promises = null } = {}) {
   const ws = sourceState(watcher), vs = sourceState(verify);
   const vStatus = verify && verify.status;
   if (ws === 'off' && vs === 'off') {
@@ -114,14 +118,20 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   const tile = (key, label, n, tone, reason) => ({ key, label, n, tone, reason: reason || null });
   const tiles = [];
 
-  // Needs you: code-owner review entries + approval-required episodes (watcher).
+  // Needs you: the shared rule (shared-counts.prsNeedingYou) + promises about a PR waiting on the operator.
+  const promised = Array.isArray(promises) ? promisesAbout(promises, 'pr', now) : [];
   if (w) {
-    const entries = Array.isArray(w.snapshot && w.snapshot.entries) ? w.snapshot.entries : [];
     const episodes = Array.isArray(w.episodes) ? w.episodes : [];
     const seen = new Set();
-    for (const e of entries) if (e && e.kind === 'code-owner-review' && !seen.has(e.pr)) { seen.add(e.pr); rows.push(shippingRow('needs', e.pr, 'waiting for your code-owner review on GitHub', w.snapshot.at ? ago(w.snapshot.at, now) : '', 'attn', e, repo, 'passed')); }
-    for (const ep of episodes) if (ep && ep.lastOutcome === 'refused:approval-required' && !seen.has(ep.pr)) { seen.add(ep.pr); rows.push(shippingRow('needs', ep.pr, 'waiting for your approval on GitHub', ep.lastAttemptAt ? ago(ep.lastAttemptAt, now) : '', 'attn', ep, repo, 'passed')); }
-    tiles.push(tile('needs', 'Needs you', seen.size, seen.size ? 'attn' : null));
+    for (const p of prsNeedingYou(w, now)) { seen.add(p.pr); rows.push(shippingRow('needs', p.pr, p.why, p.at ? ago(p.at, now) : '', 'attn', p.record, repo, 'passed')); }
+    for (const p of promised) {
+      const pr = p.refs.prs.find((n) => seen.has(n));
+      if (pr) { const r = rows.find((x) => x.group === 'needs' && x.pr === pr); r.sub = `${r.sub} · also a promise of mine: ${p.main.slice(0, 80)}`; continue; }
+      const n = p.refs.prs[0] || null;
+      rows.push({ key: `needs:${p.key}`, pr: n, group: 'needs', main: n ? `#${n}` : 'A pull request', sub: `${p.main} · ${p.subKind === 'approval' ? 'waiting on your approval' : 'waiting on your answer'}`, end: p.end, tone: 'attn', record: p.record, href: n ? prHref(repo, n) : null, stage: 'passed', stages: STAGES, promise: true });
+    }
+    const needsN = rows.filter((r) => r.group === 'needs').length;
+    tiles.push(tile('needs', 'Needs you', needsN, needsN ? 'attn' : null));
     // Stuck: stuck-red PRs + episodes that gave up.
     const stuck = new Set();
     for (const s of Array.isArray(w.stuckRed) ? w.stuckRed : []) { stuck.add(s.pr); rows.push(shippingRow('stuck', s.pr, `checks have been red for ${String(ago(now - (s.redForMs || 0), now)).replace(' ago', '')}${s.failingChecks && s.failingChecks.length ? ` (${s.failingChecks.slice(0, 3).join(', ')})` : ''}`, '', 'bad', s, repo, 'queued')); }
@@ -165,10 +175,10 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   }
 
   const order = { needs: 0, stuck: 1, testing: 2, armed: 3, held: 4 };
-  rows.sort((a, b) => order[a.group] - order[b.group] || a.pr - b.pr);
+  rows.sort((a, b) => order[a.group] - order[b.group] || (a.pr || 0) - (b.pr || 0));
   const needs = rows.filter((r) => r.group === 'needs').length;
   const stuck = rows.filter((r) => r.group === 'stuck').length;
-  const moving = new Set(rows.filter((r) => r.group !== 'held').map((r) => r.pr)).size;
+  const moving = new Set(rows.filter((r) => r.group !== 'held' && r.pr).map((r) => r.pr)).size;
   const wl = w ? watcherLine(w, now) : null;
   const listFresh = Boolean(w && w.lastSuccessfulListAt && now - w.lastSuccessfulListAt <= 2 * WATCHER_CADENCE_MS);
 

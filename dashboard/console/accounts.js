@@ -22,24 +22,35 @@ async function postJson(path, body, headers = {}) {
 export async function renderAccounts(main, ctx) {
   const { get } = ctx;
   if (!main.querySelector('.acct-list')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
-  const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool', 8000), get('/subscription-pool/in-use'), get('/pool')]);
+  const [pool, relogin, inUse, machines, promises] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool', 8000), get('/subscription-pool/in-use'), get('/pool'), get('/commitments?scope=mesh', 8000)]);
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
-  const page = buildAccountsPage(pool, Date.now(), { episodes, inUse: inUse.ok ? inUse.data : null, names });
+  const unavailable = relogin.ok && relogin.data && relogin.data.pool && Array.isArray(relogin.data.pool.unavailable) ? relogin.data.pool.unavailable.map((u) => u.machineId) : [];
+  const page = buildAccountsPage(pool, Date.now(), { episodes, inUse: inUse.ok ? inUse.data : null, names, unavailable, promises: promises.ok && Array.isArray(promises.data && promises.data.commitments) ? promises.data.commitments : null });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
   const refresh = () => renderAccounts(main, ctx);
 
-  // One card per machine: "Mac Mini — 5 accounts need signing in", one row and button each.
-  const byMachine = new Map();
-  for (const n of page.needs) { if (!byMachine.has(n.machine)) byMachine.set(n.machine, []); byMachine.get(n.machine).push(n); }
+  // One card per machine ("Mac Mini: 2 sign-ins"), one row and button each. The same markup
+  // serves "Needs you" (taps + promises) and "Expired sign-ins — mine to repair" (the agent's chore).
+  const cellCards = (items, title) => {
+    const byMachine = new Map();
+    for (const n of items) { if (!byMachine.has(n.machine)) byMachine.set(n.machine, []); byMachine.get(n.machine).push(n); }
+    return [...byMachine.entries()].map(([machine, rows]) => el('div', { class: 'need-card' },
+      el('span', { class: 'need-title', text: title(machine, rows.length) }),
+      el('div', { class: 'rows' }, rows.map((n) => el('div', { class: 'row' },
+        el('span', { class: n.kind === 'promise' || (n.repair && n.repair.needsTap) ? 'dot attn' : 'dot unknown' }),
+        el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
+        el('span', { class: 'row-end' }, n.kind === 'promise'
+          ? el('a', { class: 'btn-quiet btn-small', href: '#/work/promises?s=waiting', text: 'Open' })
+          : el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) })))))));
+  };
   const needs = page.needs.length ? el('section', { class: 'page-sections', id: 'sec-needs' },
     el('h2', { class: 'eyebrow', text: 'Needs you' }),
-    [...byMachine.entries()].map(([machine, items]) => el('div', { class: 'need-card' },
-      el('span', { class: 'need-title', text: items.length === 1 ? `${machine}: 1 account needs signing in` : `${machine}: ${items.length} accounts need signing in` }),
-      el('div', { class: 'rows' }, items.map((n) => el('div', { class: 'row' },
-        el('span', { class: 'dot attn' }),
-        el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
-        el('span', { class: 'row-end' }, el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) })))))))) : null;
+    cellCards(page.needs, (machine, n) => machine === 'A promise' ? (n === 1 ? 'A promise of mine, waiting on you' : `${n} promises of mine, waiting on you`) : `${machine}: ${n === 1 ? '1 sign-in needs your tap' : `${n} sign-ins need your tap`}`)) : null;
+  const expired = page.expired.length ? el('section', { class: 'page-sections', id: 'sec-expired' },
+    el('details', { class: 'more card-details' },
+      el('summary', {}, el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }), document.createTextNode(`${page.expired.length === 1 ? '1 expired sign-in' : `${page.expired.length} expired sign-ins`} — mine to repair, not yours`)),
+      ...cellCards(page.expired, (machine, n) => `${machine}: ${n === 1 ? '1 sign-in expired' : `${n} sign-ins expired`}`))) : null;
 
   const groups = new Map();
   for (const a of page.accounts) { const k = frameworkName(a.framework); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); }
@@ -63,9 +74,10 @@ export async function renderAccounts(main, ctx) {
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    needs, list, legacyLink());
+    needs, expired, list, legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs' && needs) needs.scrollIntoView({ block: 'start' });
+  if (want === 'expired' && expired) { expired.querySelector('details').open = true; expired.scrollIntoView({ block: 'start' }); }
 }
 
 function legacyLink() {

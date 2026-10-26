@@ -3,32 +3,23 @@
 // Machine states use Home's machineState() (the "estimated" mapping) until the
 // server's liveness field ships; when a row carries `liveness`, it wins. The
 // word "offline" is never used: only positive evidence earns a hard state.
+// The load reading and the safety-check count come from shared-counts.js, the
+// same source Home reads, so the two pages never disagree on either.
 
-import { machineState, ago } from './home-model.js';
+import { ago } from './home-model.js';
+import { liveState, loadVerdictOf, guardsNeedingLook, plural } from './shared-counts.js';
 
 const STATE_ORDER = { bad: 0, attn: 1, stale: 2, unknown: 3, ok: 4 };
 
-export function loadVerdict(perCore) {
-  if (typeof perCore !== 'number' || !Number.isFinite(perCore)) return null;
-  if (perCore > 2) return 'overloaded';
-  if (perCore > 1) return 'busy';
-  return 'ok';
-}
+export function loadVerdict(perCore) { return loadVerdictOf(perCore); }
 
-/** The state from the server's liveness block when present, else the estimate. */
-export function stateOf(m, now = Date.now()) {
-  const lv = m && m.liveness;
-  if (lv && typeof lv.state === 'string') {
-    const map = { live: 'ok', struggling: 'attn', refusing: 'attn', silent: 'bad', stale: 'stale', unknown: 'unknown' };
-    const age = lv.evidenceAt ? ago(lv.evidenceAt, now) : null;
-    return { state: map[lv.state] || 'unknown', label: lv.state, age, estimated: false, source: lv.source || null };
-  }
-  return { ...machineState(m, now), estimated: true };
-}
+/** The state from the server's liveness block when present, else the estimate — shared-counts.liveState, the same Home reads. */
+export function stateOf(m, now = Date.now()) { return liveState(m, now); }
 
 /**
  * Build the page from /pool (+ optional /health for single-machine installs).
- * Returns { ok, machines:[...], headline, sub, facts, single }.
+ * extras.guards is GET /guards (local scope): the "need a look" fact is the shared count.
+ * Returns { ok, machines:[...], headline, sub, facts, single, look }.
  */
 export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras = {}) {
   if (!poolRes.ok) return { ok: false, reason: `Couldn't read the machine pool: ${poolRes.reason}.` };
@@ -44,10 +35,11 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
   const rows = machines.map((m) => {
     const st = stateOf(m, now);
     const isSelf = Boolean(m.isSelf || (selfId && m.machineId === selfId));
-    const verdict = loadVerdict(st.perCore);
+    const verdict = st.load ? st.load.verdict : loadVerdict(st.perCore);
     const sessions = extras.sessionsByMachine ? extras.sessionsByMachine[m.machineId] : undefined;
     return {
       id: m.machineId, name: m.nickname || m.machineId, isSelf, ...st, verdict,
+      loadWords: st.load ? st.load.words : 'no load reading',
       leading: Boolean(routerId && routerId === m.machineId),
       sessions,
       hardware: m.hardware || null,
@@ -69,17 +61,19 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
   else headline = total === 2 ? 'Both machines are answering.' : `All ${total} machines are answering.`;
   const subParts = [];
   if (dark.length) subParts.push(dark.map((r) => `${r.name}: last heard ${r.age || 'never since this server started'}`).join('; ') + '.');
-  if (struggling.length) subParts.push(struggling.map((r) => `${r.name} is ${r.verdict === 'overloaded' ? 'overloaded' : 'slow to answer'}`).join('; ') + '.');
+  if (struggling.length) subParts.push(struggling.map((r) => `${r.name} is ${r.verdict === 'overloaded' || r.verdict === 'impaired' ? r.verdict : 'slow to answer'}`).join('; ') + '.');
   if (rows.some((r) => r.estimated) && !single) subParts.push('States are estimated from heartbeat age and load until the new live checks ship.');
   const busiest = rows.filter((r) => typeof r.perCore === 'number').sort((a, b) => b.perCore - a.perCore)[0];
   const leader = rows.find((r) => r.leading);
+  // The safety-check count: the shared rule, this machine's list, scope stated.
+  const look = extras.guards ? guardsNeedingLook(extras.guards, { scope: 'local' }) : (typeof extras.needsLook === 'number' ? { ok: true, count: extras.needsLook, scopeWords: 'on this machine' } : null);
   const facts = [
     { n: `${answering}/${total}`, label: 'answering', tone: answering < total ? 'attn' : null },
-    busiest ? { n: busiest.name, label: `busiest · ${busiest.verdict}`, tone: busiest.verdict === 'overloaded' ? 'attn' : null } : null,
+    busiest ? { n: busiest.name, label: `busiest · ${busiest.verdict}`, tone: busiest.verdict === 'overloaded' || busiest.verdict === 'impaired' ? 'attn' : null } : null,
     leader ? { n: leader.name, label: 'leading' } : null,
-    extras.needsLook ? { n: extras.needsLook, label: 'need a look', tone: 'attn' } : null,
+    look && look.ok && look.count ? { n: look.count, label: `need a look ${look.scopeWords}`, tone: 'attn', href: '#/settings/allowed?s=guards' } : null,
   ].filter(Boolean);
-  return { ok: true, single, machines: rows, headline, sub: subParts.join(' '), facts, tone: dark.length ? 'bad' : struggling.length || unclear.length ? 'attn' : 'ok' };
+  return { ok: true, single, machines: rows, headline, sub: subParts.join(' '), facts, look, tone: dark.length ? 'bad' : struggling.length || unclear.length ? 'attn' : 'ok' };
 }
 
 /** Ropes (connections) to one peer, from /health multiMachine.syncStatus.ropeHealth. */
@@ -95,40 +89,85 @@ export function ropesFor(peerId, healthRes, now = Date.now()) {
   }));
 }
 
-/** This machine's subsystems from /systems/status, in words. */
-export function healthOf(res) {
+const DEGRADED = new Set(['degraded', 'error', 'failed', 'failing']);
+
+/**
+ * This machine's subsystems from /systems/status, in words. A part whose own
+ * status report says degraded is named with its reason (the failing probe comes
+ * from /health systemReview.failedProbes); the "Safety & Trust" part reports the
+ * shared safety-check count (never the server's blanket "All gates active").
+ * opts: { health: GET /health, guards: GET /guards }.
+ */
+export function healthOf(res, opts = {}) {
   if (!res || !res.ok) return { ok: false, reason: res ? res.reason : 'not read' };
   const d = res.data || {};
   const caps = Array.isArray(d.activeCapabilities) ? d.activeCapabilities : [];
   const issues = Array.isArray(d.issues) ? d.issues : null;
   if (!issues) return { ok: false, reason: 'the health check answered without its issue list' };
-  const notActive = caps.filter((c) => c && c.status && c.status !== 'active');
+  const hd = opts.health && opts.health.ok && opts.health.data ? opts.health.data : null;
+  const failedProbes = hd && hd.systemReview && Array.isArray(hd.systemReview.failedProbes) ? hd.systemReview.failedProbes : [];
+  const look = opts.guards ? guardsNeedingLook(opts.guards, { scope: 'local' }) : null;
+  const partRows = caps.filter((c) => c && c.label).map((c) => {
+    const procs = Array.isArray(c.processes) ? c.processes : [];
+    const degradedProcs = procs.filter((p) => p && p.details && typeof p.details === 'object' && DEGRADED.has(String(p.details.status || '').toLowerCase()));
+    const reasons = degradedProcs.map((p) => p.details.message || p.details.status).filter(Boolean);
+    const probes = degradedProcs.some((p) => p.name === 'SystemReviewer') && failedProbes.length ? `failing: ${failedProbes.map((p) => p.name || p.probeId).join(', ')}` : null;
+    if (c.label === 'Safety & Trust' && look && look.ok) {
+      return look.count
+        ? { main: c.label, sub: `${plural(look.count, 'safety check')} need${look.count === 1 ? 's' : ''} a look ${look.scopeWords}`, tone: 'attn', bad: true }
+        : { main: c.label, sub: `every safety check that should be on is on ${look.scopeWords}` };
+    }
+    if (c.status && c.status !== 'active') return { main: c.label, sub: c.status, tone: 'attn', bad: true };
+    if (degradedProcs.length) return { main: c.label, sub: [c.metric, ...reasons.filter((r) => !String(c.metric || '').includes(r)), probes].filter(Boolean).join(' · '), tone: 'attn', bad: true };
+    return { main: c.label, sub: c.metric || '' };
+  });
+  const bad = partRows.filter((r) => r.bad);
+  const working = partRows.length - bad.length;
+  const n = issues.length + bad.length;
+  const names = [...issues.map((i) => i.title || i.message || i.label || 'an issue'), ...bad.map((r) => r.main)];
+  const summary = n
+    ? `${plural(n, 'part needs', 'parts need')} a look: ${names.join(', ')}.${partRows.length ? ` ${working} of ${partRows.length} working.` : ''}`
+    : `All ${partRows.length} parts working.`;
   return {
-    ok: true,
-    summary: issues.length || notActive.length ? `${issues.length + notActive.length} ${issues.length + notActive.length === 1 ? 'part needs' : 'parts need'} a look.` : `All ${caps.length} parts working.`,
+    ok: true, summary, working, total: partRows.length,
+    failingProbes: failedProbes.map((p) => ({ name: p.name || p.probeId, error: p.error || '' })),
     rows: [
       ...issues.map((i) => ({ main: i.title || i.message || i.label || 'An issue', sub: i.detail || i.description || '', tone: 'attn' })),
-      ...notActive.map((c) => ({ main: c.label, sub: c.status, tone: 'attn' })),
-      ...caps.filter((c) => c && c.status === 'active').map((c) => ({ main: c.label, sub: c.metric || '' })),
+      ...bad.map(({ bad: _b, ...r }) => r),
+      ...partRows.filter((r) => !r.bad),
     ],
   };
 }
 
-/** What is using this machine, from /resources/summary. */
-export function usageOf(res, sessionNames = {}) {
+/**
+ * What is using this machine, from /resources/summary. Every percentage is of ONE
+ * core (a process can exceed 100%); the summary says so and names the core count.
+ * opts.running: the ids of sessions running now — a session no longer running is
+ * folded into one line, its last sample never shown as "now".
+ */
+export function usageOf(res, sessionNames = {}, opts = {}) {
   if (!res || !res.ok) return { ok: false, reason: res ? res.reason : 'not read' };
   const src = Array.isArray(res.data && res.data.sources) ? res.data.sources : null;
   if (!src) return { ok: false, reason: 'the resource summary answered without sources' };
   const gb = (b) => (Number.isFinite(b) ? `${(b / 1e9).toFixed(1)} GB` : '—');
   const agg = src.find((s) => s.source === 'aggregate');
   const server = src.find((s) => s.source === 'agent-server');
-  const sessions = src.filter((s) => String(s.source).startsWith('session:')).sort((a, b) => (b.currentCpuPercent || 0) - (a.currentCpuPercent || 0));
+  const running = opts.running instanceof Set ? opts.running : null;
+  const sessionsAll = src.filter((s) => String(s.source).startsWith('session:'));
+  const idOf = (s) => String(s.source).slice(8);
+  const live = running ? sessionsAll.filter((s) => running.has(idOf(s))) : sessionsAll;
+  const ended = running ? sessionsAll.filter((s) => !running.has(idOf(s))) : [];
+  live.sort((a, b) => (b.currentCpuPercent || 0) - (a.currentCpuPercent || 0));
+  const cores = Number(opts.cores);
+  const basis = `Percentages are of one core${cores > 0 ? ` (this machine has ${cores})` : ''}.`;
   return {
     ok: true,
-    summary: agg ? `Instar is using ${Math.round(agg.currentCpuPercent || 0)}% CPU and ${gb(agg.currentRssBytes)} of memory now (peak ${Math.round(agg.peakCpuPercent || 0)}% in the last hour).` : 'No total reading yet.',
+    basis,
+    summary: agg ? `Instar is using ${Math.round(agg.currentCpuPercent || 0)}% of one core and ${gb(agg.currentRssBytes)} of memory now (peak ${Math.round(agg.peakCpuPercent || 0)}% in the last hour). ${basis}` : `No total reading yet. ${basis}`,
     rows: [
-      server ? { main: 'The agent server', sub: `${Math.round(server.currentCpuPercent || 0)}% CPU · ${gb(server.currentRssBytes)}` } : null,
-      ...sessions.slice(0, 5).map((s) => ({ main: sessionNames[String(s.source).slice(8)] || 'A session', sub: `${Math.round(s.currentCpuPercent || 0)}% CPU · ${gb(s.currentRssBytes)}` })),
+      server ? { main: 'The agent server', sub: `${Math.round(server.currentCpuPercent || 0)}% of a core · ${gb(server.currentRssBytes)}` } : null,
+      ...live.slice(0, 5).map((s) => ({ main: sessionNames[idOf(s)] || 'A session', sub: `${Math.round(s.currentCpuPercent || 0)}% of a core · ${gb(s.currentRssBytes)}` })),
+      ended.length ? { main: `${plural(ended.length, 'session')} that ended in the last hour`, sub: 'no longer using anything', tone: 'unknown' } : null,
     ].filter(Boolean),
   };
 }

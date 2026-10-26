@@ -165,20 +165,28 @@ export function vaultBroken(keys, sync) {
 }
 export const VAULT_BROKEN_WORDS = 'I can’t open my saved keys on this machine — don’t change anything; tell me.';
 
-export function secretsHeadline({ requests, keys, sync }) {
+/**
+ * `promised`: the agent's promises about a password that wait on the operator
+ * (shared-counts.promisesAbout(list, 'password')) — the same items Home counts
+ * under "What needs you", so this page never says "Nothing is waiting" over one.
+ */
+export function secretsHeadline({ requests, keys, sync, promised = [] }) {
   if (vaultBroken(keys, sync)) return { text: VAULT_BROKEN_WORDS, tone: 'bad' };
-  if (!requests || !requests.ok) return { text: 'Can’t tell whether the agent is waiting on a password.', tone: 'muted' };
+  const p = Array.isArray(promised) ? promised.length : 0;
+  if (!requests || !requests.ok) return { text: p ? `${p === 1 ? 'A promise of mine waits' : `${p} promises of mine wait`} on a password from you; can’t tell about open requests.` : 'Can’t tell whether the agent is waiting on a password.', tone: p ? 'attn' : 'muted' };
   const n = requests.counts.waiting;
-  if (n === 0) return { text: 'Nothing is waiting.', tone: 'ok' };
-  return { text: `The agent is waiting on ${n === 1 ? '1 password' : `${n} passwords`}.`, tone: 'attn' };
+  if (n === 0 && p === 0) return { text: 'Nothing is waiting.', tone: 'ok' };
+  if (n === 0) return { text: `No request is open, but ${p === 1 ? 'a promise of mine waits' : `${p} promises of mine wait`} on a password from you.`, tone: 'attn' };
+  return { text: `The agent is waiting on ${n === 1 ? '1 password' : `${n} passwords`}${p ? `, and ${p === 1 ? 'a promise waits' : `${p} promises wait`} on one from you` : ''}.`, tone: 'attn' };
 }
 
-export function secretsFacts({ requests, keys, sync }) {
+export function secretsFacts({ requests, keys, sync, promised = [] }) {
   const facts = [];
   if (requests && requests.ok) {
     facts.push({ n: requests.counts.waiting, label: 'waiting', tone: requests.counts.waiting ? 'attn' : null });
     if (requests.counts.soon) facts.push({ n: requests.counts.soon, label: 'expiring within 5 min', tone: 'attn' });
   } else facts.push({ n: '?', label: 'waiting' });
+  if (Array.isArray(promised) && promised.length) facts.push({ n: promised.length, label: 'promised, waiting on you', tone: 'attn', href: '#/work/promises?s=waiting' });
   if (keys && keys.ok) facts.push({ n: keys.names.length, label: keys.names.length === 1 ? 'key held' : 'keys held' });
   else facts.push({ n: '?', label: 'keys held', tone: keys && keys.decryptFailed ? 'bad' : null });
   if (sync && sync.on) facts.push({ n: sync.count, label: sync.push ? (sync.count === 1 ? 'machine synced to' : 'machines synced to') : 'receiving from others' });

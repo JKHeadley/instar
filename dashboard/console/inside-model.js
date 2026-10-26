@@ -16,6 +16,7 @@
 // The page calls exactly one write route: revoking a session binding (bearer + intent header).
 
 import { ago } from './home-model.js';
+import { groupFailures } from './shared-counts.js';
 import { sanitizeForDisplay } from '../process-health.js';
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || `${one}s`)}`;
@@ -198,7 +199,16 @@ export function buildActivity(res, { chip = 'all', kind = null, counterparty = n
   const counts = { decision: count('decision'), agreement: count('agreement'), opened: count('thread-opened'), closed: count('thread-closed'), abandoned: count('thread-abandoned') };
   const chipCounts = Object.fromEntries(CHIPS.map((c) => [c.key, entries.filter((e) => chipMatches(c.key, e)).length]));
   const shown = entries.filter((e) => chipMatches(chip, e) && (!kind || e.kind === kind));
-  const rows = shown.map((e) => entryRow(e, entries, now));
+  // Identical thread events (same kind, subject and counterparty) fold into one line: "12 times", newest first.
+  const folded = new Map();
+  const rows = [];
+  for (const e of shown) {
+    const r = entryRow(e, entries, now);
+    const fk = /^thread-/.test(e.kind) ? `${e.kind}|${r.main.toLowerCase()}|${counterpartyWords(e.counterparty)}` : null;
+    if (fk && folded.has(fk)) { const f = folded.get(fk); f.times++; f.records.push(e); f.sub = `${f.baseSub} · ${f.times} times`; continue; }
+    if (fk) { r.times = 1; r.records = [e]; r.baseSub = r.sub; folded.set(fk, r); }
+    rows.push(r);
+  }
   const groups = [];
   for (const r of rows) {
     const label = dayLabel(r.record.t, now);
@@ -362,6 +372,14 @@ export function failureRow(f, now = Date.now()) {
     tone: f.status === 'reopened' ? 'attn' : failureOpen(f) ? null : 'unknown', record: f,
   };
 }
+/** One line for a group of identical problems: "seen N times across M records", open first. */
+export function groupedFailureRow(g, now = Date.now()) {
+  const f = g.top;
+  const r = failureRow(f, now);
+  const times = g.times === 1 ? 'seen once' : `seen ${g.times} times${g.records.length > 1 ? ` across ${plural(g.records.length, 'record')}` : ''}`;
+  const status = g.open && f.status !== 'open' && f.status !== 'reopened' ? 'Still looking into it' : (FAILURE_STATUS_WORDS[f.status] || 'Status not recorded');
+  return { ...r, key: `fail:${f.id}`, sub: `${status} · ${times}`, end: ago(g.newest, now) || '', tone: g.repeating && g.open ? 'attn' : r.tone, group: g, records: g.records };
+}
 export function patternRow(i, now = Date.now()) {
   const ds = Number(i.distinctSessions) || 0;
   const since = dt(i.discoveredAt);
@@ -399,7 +417,10 @@ export function buildProblems({ insights, pages, week, all }, { lastGood = null,
     lastPageSize = list.length;
     for (const f of list) if (f && typeof f.id === 'string' && !seen.has(f.id)) { seen.add(f.id); failures.push(f); }
   }
-  const rows = failures.map((f) => failureRow(f, now));
+  // Identical problems fold into one line each; "repeating" is the operator's ordinary
+  // meaning — seen more than once — from shared-counts.groupFailures. Open ones first.
+  const grouped = groupFailures(failures);
+  const rows = grouped.groups.map((g) => groupedFailureRow(g, now));
   const oldest = failures.length ? failures.reduce((a, f) => (Date.parse(f.detectedAt) < Date.parse(a.detectedAt) ? f : a), failures[0]).detectedAt : null;
   const openShown = failures.filter(failureOpen).length;
 
@@ -409,13 +430,25 @@ export function buildProblems({ insights, pages, week, all }, { lastGood = null,
     patterns = { ok: true, rows: list.map((i) => patternRow(i, now)), active: list.filter(insightActive), cameBack: list.filter(insightCameBack) };
   } else patterns = { ok: false, reason: `Can’t tell whether anything is repeating: ${sourceState(insights) === 'ok' ? 'the answer had no list' : reasonOf(insights)}.` };
 
+  // One count of what repeats: the folded problems seen more than once, plus any confirmed
+  // pattern whose problems are not already among them (never the same thing twice).
+  const repeatingIds = new Set(grouped.repeating.flatMap((g) => g.records.map((f) => f.id)));
+  const extraPatterns = patterns.ok ? patterns.active.filter((i) => !(Array.isArray(i.supportingFailureIds) && i.supportingFailureIds.some((id) => repeatingIds.has(id)))) : [];
+  const repeatingCount = grouped.repeating.length + extraPatterns.length;
+
   const weekTotal = sourceState(week) === 'ok' && Number.isFinite(week.data && week.data.total) ? week.data.total : null;
   const rollout = (sourceState(week) === 'ok' && week.data && week.data.rollout) || (sourceState(all) === 'ok' && all.data && all.data.rollout) || null;
   const stage = rollout && rollout.stage;
 
   let line;
-  if (!patterns.ok) line = `Can’t tell whether anything is repeating. ${weekTotal != null ? `${plural(weekTotal, 'problem')} recorded this week.` : ''}`.trim();
-  else if (patterns.active.length) {
+  if (!patterns.ok && grouped.repeating.length === 0) line = `Can’t tell whether anything is repeating. ${weekTotal != null ? `${plural(weekTotal, 'problem')} recorded this week.` : ''}`.trim();
+  else if (grouped.repeating.length) {
+    const top = grouped.repeating[0];
+    const first = `${clean(top.top.summary) || categoryWords(top.top.category)} (seen ${top.times} times)`;
+    line = repeatingCount === 1
+      ? `One problem keeps repeating: ${first}.`
+      : `${repeatingCount} problems keep repeating; the first: ${first}.`;
+  } else if (patterns.ok && patterns.active.length) {
     const top = patterns.cameBack[0] || patterns.active[0];
     const ds = Number(top.distinctSessions) || 0;
     line = patterns.active.length === 1
@@ -427,10 +460,10 @@ export function buildProblems({ insights, pages, week, all }, { lastGood = null,
   } else line = 'Nothing repeating.';
 
   return {
-    ok: true, off: false, stale: false, line, rows, patterns, openShown, weekTotal, oldest, moreFailed,
+    ok: true, off: false, stale: false, line, rows, patterns, openShown, weekTotal, oldest, moreFailed, repeatingCount, repeatingGroups: grouped.repeating,
     stageWords: stage ? STAGE_WORDS[stage] || 'Stage not recorded' : 'Stage not recorded', stage: stage || null,
     tiles: [
-      patterns.ok ? { n: patterns.active.length, label: 'repeating', tone: patterns.cameBack.length ? 'attn' : null } : { n: '?', label: 'repeating', tone: 'unknown' },
+      patterns.ok || grouped.repeating.length ? { n: repeatingCount, label: 'repeating', tone: (patterns.ok && patterns.cameBack.length) || grouped.repeating.some((g) => g.open) ? 'attn' : null } : { n: '?', label: 'repeating', tone: 'unknown' },
       weekTotal != null ? { n: weekTotal, label: 'this week' } : { n: '?', label: 'this week', tone: 'unknown' },
       { n: openShown, label: 'still open among those shown' },
     ],
@@ -660,10 +693,11 @@ export function insideHeadline({ activity, problems, claims, reviews }) {
   if (allDown && unread.length) return { text: 'Can’t tell how I’m doing inside.', tone: 'muted', sub: coverage };
   if (claims && claims.ok && claims.contradicted) return { text: `${claims.contradicted === 1 ? 'One of my recent claims was' : `${claims.contradicted} of my recent claims were`} contradicted by the evidence.`, tone: 'attn', sub: coverage };
   if (problems && problems.ok && problems.patterns.ok && problems.patterns.cameBack.length) return { text: 'A problem I thought was fixed came back.', tone: 'attn', sub: coverage };
-  if (problems && problems.ok && problems.patterns.ok && problems.patterns.active.length) return { text: problems.line, tone: 'attn', sub: coverage };
+  // "Repeating" is the one count the problems section shows (folded problems seen more than once + confirmed patterns).
+  if (problems && problems.ok && (problems.repeatingCount || 0) > 0) return { text: problems.line, tone: 'attn', sub: coverage };
   const offs = [problems && problems.off ? 'Failure watching is off on this agent.' : null].filter(Boolean);
   const bits = [];
-  if (problems && problems.ok && problems.patterns.ok) bits.push('nothing repeating');
+  if (problems && problems.ok && problems.patterns.ok && !(problems.repeatingCount || 0)) bits.push('nothing repeating');
   if (claims && claims.ok) bits.push(claims.n ? 'no recent claim contradicted' : null);
   const said = bits.filter(Boolean);
   const text = said.length ? `${said.join(', ').replace(/^./, (c) => c.toUpperCase())}.` : activity && activity.ok ? activity.line : 'Nothing to flag.';
@@ -674,7 +708,7 @@ export function insideFacts({ activity, problems, claims, reviews }) {
   const facts = [];
   if (activity && activity.ok) facts.push({ n: activity.n, label: 'recent records', href: '#/settings/inside?s=activity' });
   else if (!activity || !activity.off) facts.push({ n: '?', label: 'recent records', tone: 'unknown' });
-  if (problems && problems.ok && problems.patterns.ok) facts.push({ n: problems.patterns.active.length, label: 'repeating', tone: problems.patterns.active.length ? 'attn' : null, href: '#/settings/inside?s=problems' });
+  if (problems && problems.ok && (problems.patterns.ok || (problems.repeatingCount || 0) > 0)) facts.push({ n: problems.repeatingCount || 0, label: 'repeating', tone: problems.repeatingCount ? 'attn' : null, href: '#/settings/inside?s=problems' });
   else if (!problems || !problems.off) facts.push({ n: '?', label: 'repeating', tone: 'unknown' });
   if (claims && claims.ok) facts.push({ n: claims.contradicted, label: 'contradicted', tone: claims.contradicted ? 'bad' : null, href: '#/settings/inside?s=claims' });
   else if (!claims || !claims.off) facts.push({ n: '?', label: 'contradicted', tone: 'unknown' });

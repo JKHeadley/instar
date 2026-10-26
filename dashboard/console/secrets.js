@@ -11,6 +11,7 @@ import {
 } from './secrets-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { promisesAbout } from './shared-counts.js';
 
 const RECORD_KEYS = ['token', 'topicId', 'createdAt', 'expiresAt'];
 
@@ -56,10 +57,12 @@ async function share(url, title, status) {
 export async function renderSecrets(main, ctx) {
   const { get } = ctx;
   if (!main.querySelector('.secrets-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Passwords & keys' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [pendingRes, ctxRes, syncRes, topicsRes, poolRes] = await Promise.all([
+  const [pendingRes, ctxRes, syncRes, topicsRes, poolRes, promisesRes] = await Promise.all([
     get('/secrets/pending'), get('/self-knowledge/session-context?full=1'), get('/secrets/sync-status'), get('/telegram/topics'), get('/pool'),
+    get('/commitments?scope=mesh', 8000),   // a promise about a password that waits on the operator shows here too
   ]);
   const now = Date.now();
+  const promised = promisesRes.ok && Array.isArray(promisesRes.data && promisesRes.data.commitments) ? promisesAbout(promisesRes.data.commitments, 'password', now) : [];
   const names = topicNameMap(topicsRes);
   const origin = location.origin;
   const requests = buildRequests(pendingRes, { names, now, origin });
@@ -68,13 +71,14 @@ export async function renderSecrets(main, ctx) {
   const multi = poolRes.ok && poolRes.data && Array.isArray(poolRes.data.machines) && poolRes.data.machines.length > 1;
   const refresh = () => renderSecrets(main, ctx);
   const deps = { refresh, names, origin };
-  const h = secretsHeadline({ requests, keys, sync });
+  const h = secretsHeadline({ requests, keys, sync, promised });
 
-  const parts = [pageHead({ eyebrow: 'People · Passwords & keys', headline: h.text, tone: h.tone, facts: secretsFacts({ requests, keys, sync }) })];
+  const parts = [pageHead({ eyebrow: 'People · Passwords & keys', headline: h.text, tone: h.tone, facts: secretsFacts({ requests, keys, sync, promised }) })];
   // A vault that can't be opened leads the page: hands off, tell the agent (never repair or rotate).
   if (vaultBroken(keys, sync)) parts.push(el('section', { class: 'incident', role: 'alert' }, el('span', { class: 'incident-title', text: 'Saved keys can’t be opened' }), el('p', { class: 'incident-text', text: VAULT_BROKEN_WORDS })));
   const sections = [];
   sections.push(waitingBlock(requests, deps, multi));
+  if (promised.length) sections.push(section({ id: 'promised', title: 'Promised, waiting on you', tone: 'attn', rows: promised.map((p) => ({ key: p.key, main: p.main, sub: p.sub, end: p.end, tone: 'attn' })), onRow: () => { location.hash = '#/work/promises?s=waiting'; } }));
   sections.push(el('div', { class: 'page-primary' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: '+ Ask someone for one', 'data-ask': '1', onclick: () => askSheet(deps) })));
   sections.push(keysBlock(keys));
   if (requests.ok) sections.push(section({ id: 'expired', title: 'Expired', rows: requests.expired.map((c) => ({ key: c.key, main: c.label, sub: c.sub, tone: 'unknown', card: c })), collapsed: true, empty: 'No request has expired.', onRow: (r) => openRequest(r.card, deps) }));

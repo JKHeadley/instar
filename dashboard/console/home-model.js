@@ -9,6 +9,17 @@
 // are browser-native ESM with no DOM access so the unit tests exercise the
 // shipped code directly.
 
+// The counting rules live in shared-counts.js (one source for every page); this
+// file re-exports the ones other pages import from here so nothing breaks.
+import {
+  ago, plural, STALE_DAYS, readState,
+  needsOperator, groupKey, attentionNeeds,
+  waitsOnOperator, isActiveCommitment, lastTouched, isMissed, sortPromises, promiseNeed,
+  guardsNeedingLook, needsYou, accountNeeds as accountNeedsOf, prsNeedingYou,
+  machineState, liveState, machineLabel, LIVE_MS, STALE_MS,
+} from './shared-counts.js';
+export { ago, STALE_DAYS, needsOperator, groupKey, waitsOnOperator, isActiveCommitment, lastTouched, isMissed, machineState, LIVE_MS, STALE_MS };
+
 export const FRESH_MS = 5 * 60 * 1000;
 export const MAX_ROWS = 3;
 
@@ -19,25 +30,12 @@ export function unknownCard(reason, extra = {}) {
   return { state: 'unknown', value: "Can't tell", line: reason, rows: [], ...extra };
 }
 
-/** "3 min ago", "2 h ago", "4 d ago". Returns null for unusable input. */
-export function ago(ts, now = Date.now()) {
-  const t = typeof ts === 'number' ? ts : Date.parse(ts);
-  if (!Number.isFinite(t)) return null;
-  const s = Math.max(0, Math.round((now - t) / 1000));
-  if (s < 60) return 'just now';
-  const m = Math.round(s / 60); if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60); if (h < 48) return `${h} h ago`;
-  return `${Math.round(h / 24)} d ago`;
-}
-
 /** "for 12 min", "for 3 h". */
 export function duration(ts, now = Date.now()) {
   const a = ago(ts, now);
   if (!a || a === 'just now') return a === 'just now' ? 'just started' : null;
   return 'for ' + a.replace(' ago', '');
 }
-
-function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + 's')}`; }
 
 // ── 1. Can I reach you ────────────────────────────────────────────────────
 export function buildReach(res, now = Date.now()) {
@@ -62,64 +60,17 @@ export function buildReach(res, now = Date.now()) {
 }
 
 // ── 2. What needs you ─────────────────────────────────────────────────────
-const PRIORITY = { URGENT: 0, HIGH: 1, MEDIUM: 2, NORMAL: 3, LOW: 4 };
-
-/** Items the operator must act on, per the attention hub filter's own rule. */
-export function needsOperator(item) {
-  if (!item) return false;
-  if (item.priority === 'URGENT') return true;
-  if (item.source === 'agent') return true;
-  const cat = String(item.category || '');
-  return /decision|approval|review|security|sign-?in|relogin/i.test(cat);
-}
-
-export const STALE_DAYS = 14;
-const DAY = 86400000;
-
-/** Items that never age out of "needs you": security. Everything else, URGENT included, is marked stale after 14 untouched days. */
-function neverStale(i) { return /security/i.test(String(i.category || '')); }
-
-/** The same notice raised again (or on several machines) is one thing to do. */
-export function groupKey(i) {
-  return `${String(i.category || '')}|${String(i.title || i.summary || '').trim().toLowerCase().replace(/\s+/g, ' ')}`;
-}
-
-export function buildNeeds(res, now = Date.now()) {
+export function buildNeeds(res, now = Date.now(), names = null) {
   if (!res.ok) return unknownCard(`Couldn't read the attention queue: ${res.reason}.`);
   const items = Array.isArray(res.data && res.data.items) ? res.data.items : null;
   if (!items) return unknownCard('The attention queue answered without a list.');
-  const open = items.filter((i) => i && i.status === 'OPEN');
-  const mineRaw = open.filter(needsOperator);
-  const routine = open.length - mineRaw.length;
-  // Group repeats into one entry each.
-  const groups = new Map();
-  for (const i of mineRaw) {
-    const k = groupKey(i);
-    const g = groups.get(k) || { items: [], last: 0, machines: new Set() };
-    g.items.push(i);
-    g.last = Math.max(g.last, Date.parse(i.updatedAt || i.createdAt) || 0);
-    if (i.machineNickname) g.machines.add(i.machineNickname);
-    groups.set(k, g);
-  }
-  const all = [...groups.values()].map((g) => {
-    const top = g.items.slice().sort((a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9))[0];
-    const stale = !g.items.some(neverStale) && now - g.last > STALE_DAYS * DAY;
-    return {
-      key: groupKey(top), stale, last: g.last, prio: PRIORITY[top.priority] ?? 9,
-      main: top.title || top.summary || 'Untitled item',
-      sub: [g.items.length > 1 ? `${g.items.length} copies` : null, [...g.machines].join(', ') || null, String(top.priority || '').toLowerCase()].filter(Boolean).join(' · '),
-      end: (ago(g.last, now) || '').replace(' ago', '') ? `${ago(g.last, now)}` : '',
-      tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
-      detail: top.description || top.body || '',
-      expandable: true,
-    };
-  }).sort((a, b) => Number(a.stale) - Number(b.stale) || a.prio - b.prio || b.last - a.last);
-  const current = all.filter((g) => !g.stale);
+  // One rule for who needs the operator and how repeats fold (shared-counts.attentionNeeds).
+  const { all, current, routine } = attentionNeeds(items, now);
   const stale = all.length - current.length;
   const rows = current.slice(0, MAX_ROWS);
   const failed = (res.data.pool && Array.isArray(res.data.pool.failed)) ? res.data.pool.failed : [];
   const partial = failed.length > 0;
-  const missing = failed.map((f) => f.nickname || f.machineNickname || f.machineId || 'a machine').join(', ');
+  const missing = failed.map((f) => machineLabel(f, names)).join(', ');
   // Housekeeping lives one tap deeper (Details), never on the card face.
   const details = [
     stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days (under See all).` : null,
@@ -139,55 +90,94 @@ export function buildNeeds(res, now = Date.now()) {
 }
 
 /**
- * The "What needs you" card: ONE list of everything the headline counts as
- * needing the operator — the attention items AND the promises waiting on the
- * operator. The headline reads its count from this card, so the two can never
- * disagree. `attn` is buildNeeds' model, `prom` is buildPromised's; either may
- * be { state: 'loading' } while its source has not answered.
+ * Sign-in repairs waiting on the operator's TAP, as a needs-you source for Home.
+ * poolRes: /subscription-pool?scope=pool; reloginRes: /subscription-relogin?scope=pool.
+ * An expired login the agent is repairing is NOT counted (rule c); it is reported
+ * in `expired` for the card's details.
  */
-export function combineNeeds(attn, prom) {
+export function buildAccountNeeds(poolRes, reloginRes, now = Date.now()) {
+  const ps = readState(poolRes);
+  if (ps === 'loading') return { state: 'loading', items: [] };
+  if (ps === 'off' || (ps === 'ok' && poolRes.data && poolRes.data.enabled === false)) return { state: 'off', items: [], reason: 'the account pool is not set up on this agent' };
+  if (ps === 'failed') return { state: 'failed', items: [], reason: poolRes.reason };
+  const rows = Array.isArray(poolRes.data && poolRes.data.accounts) ? poolRes.data.accounts : null;
+  if (!rows) return { state: 'failed', items: [], reason: 'the account pool answered without accounts' };
+  const rs = readState(reloginRes);
+  if (rs === 'loading') return { state: 'loading', items: [] };
+  const episodes = rs === 'ok' && Array.isArray(reloginRes.data && reloginRes.data.episodes) ? reloginRes.data.episodes : [];
+  const unavailable = rs === 'ok' && reloginRes.data && reloginRes.data.pool && Array.isArray(reloginRes.data.pool.unavailable) ? reloginRes.data.pool.unavailable.map((u) => u.machineId) : [];
+  const needs = accountNeedsOf(rows, episodes, { unavailable, now });
+  // A failed relogin read means a tap could be waiting unseen: the count stands, the source is marked.
+  return { state: rs === 'failed' ? 'failed' : 'ok', items: needs.tap, expired: needs.expired, repairing: needs.repairing, machines: needs.machines, reason: rs === 'failed' ? `sign-in repairs: ${reloginRes.reason}` : undefined, partial: rs === 'failed' };
+}
+
+/** PRs waiting for the operator's review on GitHub, as a needs-you source for Home (/green-pr-automerge; 503 = not a maintainer agent). */
+export function buildPrNeeds(res, now = Date.now()) {
+  const st = readState(res);
+  if (st === 'loading') return { state: 'loading', items: [] };
+  if (st === 'off') return { state: 'off', items: [], reason: 'the merge watcher is off on this agent' };
+  if (st === 'failed') return { state: 'failed', items: [], reason: res.reason };
+  return { state: 'ok', items: prsNeedingYou(res.data || {}, now) };
+}
+
+/**
+ * The "What needs you" card: ONE list of everything the headline counts as
+ * needing the operator — attention items, promises waiting on the operator,
+ * sign-in repairs waiting on a tap, and PRs waiting for the operator's review —
+ * deduplicated by shared-counts.needsYou. The headline reads its count from this
+ * card, so the two can never disagree. `attn` is buildNeeds' model, `prom` is
+ * buildPromised's, `extra.accounts` / `extra.prs` are buildAccountNeeds' /
+ * buildPrNeeds'; any may be { state: 'loading' } while its source has not answered.
+ */
+export function combineNeeds(attn, prom, extra = {}) {
   attn = attn || { state: 'loading' };
   prom = prom || { state: 'loading' };
+  const accounts = extra.accounts || { state: 'off', items: [] };
+  const prs = extra.prs || { state: 'off', items: [] };
   const loading = (m) => m.state === 'loading';
   const readable = (m) => !loading(m) && m.state !== 'unknown' && Number.isFinite(m.count ?? m.waitingCount);
   const attnOk = readable(attn) && Array.isArray(attn.all);
   const promOk = !loading(prom) && prom.state !== 'unknown' && Array.isArray(prom.waiting);
-  const attnCurrent = attnOk ? attn.all.filter((r) => !r.stale) : [];
-  const attnStale = attnOk ? attn.all.filter((r) => r.stale) : [];
-  const waiting = promOk ? prom.waiting : [];
-  const waitingStale = promOk ? (prom.waitingStale || []) : [];
-  const current = [...attnCurrent, ...waiting];
-  const count = current.length;
-  const pending = loading(attn) || loading(prom);
-  const failedSources = [
-    !loading(attn) && !attnOk ? { what: 'the attention queue', why: attn.line } : null,
-    !loading(prom) && !promOk ? { what: 'your promises', why: prom.line } : null,
-  ].filter(Boolean);
+  const list = needsYou({
+    attention: loading(attn) ? { state: 'loading' } : attnOk ? { state: 'ok', items: attn.all } : { state: 'failed', reason: attn.line },
+    promises: loading(prom) ? { state: 'loading' } : promOk ? { state: 'ok', items: [...prom.waiting, ...(prom.waitingStale || [])] } : { state: 'failed', reason: prom.line },
+    accounts, prs,
+  });
+  const count = list.count;
+  const pending = list.pending.length > 0;
+  const failedSources = list.failed.map((f) => ({ what: f.what, why: f.why }));
   // A source that answered from old data (kept last-good) or with partial coverage.
   const dated = (attnOk && attn.state === 'stale') || (promOk && prom.state === 'stale');
-  const partialCoverage = (attnOk && attn.coverage) || (promOk && prom.coverage);
+  const partialCoverage = (attnOk && attn.coverage) || (promOk && prom.coverage) || accounts.partial;
   const incomplete = pending || failedSources.length > 0 || dated || Boolean(partialCoverage);
+  const waitingStale = list.stale.filter((r) => r.kind === 'promise');
+  const expired = Array.isArray(accounts.expired) ? accounts.expired : [];
   const details = [
     ...(attnOk && attn.details ? attn.details : []),
     waitingStale.length ? `${plural(waitingStale.length, 'older promise')} waiting on you untouched for ${STALE_DAYS}+ days (under See all).` : null,
+    expired.length ? `${plural(expired.length, 'sign-in')} expired on ${accounts.machines.join(' and ')} — mine to repair, not yours${accounts.repairing ? ` (${accounts.repairing} repairing)` : ''}.` : null,
     ...failedSources.map((f) => `Couldn't read ${f.what}: ${String(f.why || '').replace(/^Couldn't read [^:]*: /, '')}`),
     attnOk && attn.missing ? `The attention queue had no answer from ${attn.missing}.` : null,
     promOk && prom.coverage && prom.note ? `Promises: ${prom.note}` : null,
     dated ? 'Some of this is from an earlier reading.' : null,
   ].filter(Boolean);
-  const all = [...current, ...attnStale, ...waitingStale];
-  const base = { count, pending, rows: current.slice(0, MAX_ROWS), all, details, fromQueue: attnCurrent.length, fromPromises: waiting.length };
-  // Face line: only what changes what the operator should conclude.
-  const faceLine = pending ? (loading(attn) ? 'Still checking the attention queue…' : 'Still checking your promises…')
+  const all = [...list.items, ...list.stale];
+  const byKind = list.byKind;
+  const base = { count, pending, rows: list.items.slice(0, MAX_ROWS), all, details, byKind, label: list.label,
+    fromQueue: list.items.filter((r) => r.kind === 'attention').length, fromPromises: list.items.filter((r) => r.kind === 'promise').length,
+    fromAccounts: list.items.filter((r) => r.kind === 'account').length, fromPrs: list.items.filter((r) => r.kind === 'pr').length };
+  // Face line: only what changes what the operator should conclude. A mixed list says what kinds.
+  const kinds = Object.keys(byKind).length > 1 ? list.label.replace(/^[^:]*: /, '').replace(/^./, (c) => c.toUpperCase()) + '.' : '';
+  const faceLine = pending ? (list.pending[0] === 'attention' ? 'Still checking the attention queue…' : list.pending[0] === 'promises' ? 'Still checking your promises…' : 'Still checking…')
     : failedSources.length ? `Couldn't read ${failedSources.map((f) => f.what).join(' or ')}, so there may be more.`
     : (attnOk && attn.line) ? attn.line
-    : (dated || partialCoverage) ? 'Some machines may not be shown, so there may be more.' : '';
+    : (dated || partialCoverage) ? [kinds, 'Some machines may not be shown, so there may be more.'].filter(Boolean).join(' ') : kinds;
   if (count > 0) {
     return { ...base, state: incomplete ? 'partial' : 'attn', coverage: incomplete ? 'partial view' : null,
       value: plural(count, 'thing', 'things'), valueTone: 'attn', line: faceLine };
   }
   if (pending) return { ...base, state: 'loading', value: 'Still checking', line: faceLine };
-  if (failedSources.length === 2) return { ...base, state: 'unknown', value: "Can't tell", line: "Couldn't read the attention queue or your promises." };
+  if (failedSources.length >= 2 && !attnOk && !promOk) return { ...base, state: 'unknown', value: "Can't tell", line: "Couldn't read the attention queue or your promises." };
   if (incomplete) return { ...base, state: failedSources.length ? 'unknown' : 'partial', coverage: 'partial view', value: failedSources.length ? "Can't tell" : 'Nothing I can see', line: faceLine };
   return { ...base, state: 'ok', coverage: null, value: 'Nothing needs you', line: '' };
 }
@@ -199,7 +189,7 @@ export function sessionLabel(s) {
   return name.length > 80 ? name.slice(0, 77) + '…' : name;
 }
 
-export function buildDoing(res, now = Date.now()) {
+export function buildDoing(res, now = Date.now(), names = null) {
   if (!res.ok) return unknownCard(`Couldn't list sessions: ${res.reason}.`);
   const sessions = Array.isArray(res.data && res.data.sessions) ? res.data.sessions : null;
   if (!sessions) return unknownCard('The session list answered without sessions.');
@@ -216,7 +206,7 @@ export function buildDoing(res, now = Date.now()) {
       end: last || '',
     };
   });
-  const partialLine = failed.length ? `No answer from ${failed.map((f) => f.nickname || f.machineNickname || f.machineId).join(', ')}.` : '';
+  const partialLine = failed.length ? `No answer from ${failed.map((f) => machineLabel(f, names)).join(', ')}.` : '';
   if (live.length === 0) {
     // "Idle" is only claimed when every machine answered.
     return { state: failed.length ? 'partial' : 'ok', coverage: failed.length ? 'partial view' : null, value: failed.length ? 'Nothing running that I can see' : 'Idle', line: partialLine, rows };
@@ -231,75 +221,39 @@ export function buildDoing(res, now = Date.now()) {
 }
 
 // ── 4. What I've promised ─────────────────────────────────────────────────
-export function waitsOnOperator(c) {
-  return c && (c.owner === 'user' || c.blockedOn === 'user-input' || c.blockedOn === 'user-authorization');
-}
-
-/** The tracker's own active rule (CommitmentTracker.getActive), applied to every row. */
-export function isActiveCommitment(c, now = Date.now()) {
-  if (!c) return false;
-  if (c.expiresAt && Date.parse(c.expiresAt) < now) return false;
-  return c.status === 'pending' || c.status === 'verified' || c.status === 'violated';
-}
-
 export const REPLICA_FRESH_MS = 15 * 60 * 1000;
 
-/** When a promise was last touched (heartbeat, update or creation). */
-export function lastTouched(c) {
-  return Date.parse(c.lastHeartbeatAt || c.updatedAt || c.createdAt) || 0;
-}
-
-/** Missed: the tracker says violated, or a hard deadline passed while it was still open. */
-export function isMissed(c, now = Date.now()) {
-  if (!c) return false;
-  if (c.status === 'violated') return true;
-  const hard = Date.parse(c.hardDeadlineAt);
-  return Number.isFinite(hard) && hard < now && isActiveCommitment(c, now);
-}
-
+/**
+ * The card reads shared-counts.sortPromises: the SAME partition the Promises page
+ * renders, so "N open promises" here equals that page's headline total, and
+ * "See all N" lists exactly its missed + due-soon + carrying rows (newest first).
+ * Promises untouched for 14+ days are "older": counted in Details only.
+ */
 export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   if (!res.ok) return unknownCard(`Couldn't read commitments: ${res.reason}.`);
   if (res.data && res.data.enabled === false) return unknownCard('Commitment tracking is switched off on this agent.');
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments
     : (Array.isArray(res.data) ? res.data : null);
   if (!list) return unknownCard('Commitments answered without a list.');
-  const open = list.filter((c) => isActiveCommitment(c, now));
-  const fresh = (c) => now - lastTouched(c) <= STALE_DAYS * DAY;
-  const yoursAll = open.filter(waitsOnOperator).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const yours = yoursAll.filter(fresh);
-  const yoursStale = yoursAll.length - yours.length;
-  const violated = list.filter((c) => isMissed(c, now) && !waitsOnOperator(c));
-  const rest = open.filter((c) => fresh(c) && !waitsOnOperator(c) && !isMissed(c, now)).length;
-  const olderCarried = open.filter((c) => !fresh(c) && !waitsOnOperator(c) && !isMissed(c, now)).length;
+  const s = sortPromises(list, now);
+  const n = s.counts;
   const toRow = (c, tone) => ({
     key: `${c.originMachineId || 'own'}:${c.id}`,
     detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
     expandable: true,
     main: c.agentResponse || c.userRequest || c.id,
-    sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : (c.status === 'violated' ? 'missed' : ''),
+    sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : (isMissed(c, now) ? 'missed' : ''),
       c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : ''].filter(Boolean).join(' · '),
     end: ago(c.createdAt, now) || '',
     tone,
   });
   // Promises waiting on the operator are listed under "What needs you" (combineNeeds),
   // never counted a second time here.
-  const waitLabel = (c) => (c.blockedOn === 'user-authorization' ? 'An approval I’m waiting on you for' : 'A decision I’m waiting on you for');
-  const replicaNote = (c) => (c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : '');
-  const waitRow = (c, stale) => ({
-    key: `promise:${c.originMachineId || 'own'}:${c.id}`, stale,
-    main: c.agentResponse || c.userRequest || c.id,
-    sub: [waitLabel(c), replicaNote(c), stale ? `untouched ${STALE_DAYS}+ days` : ''].filter(Boolean).join(' · '),
-    end: ago(c.createdAt, now) || '',
-    tone: stale ? 'unknown' : 'attn',
-    detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
-    expandable: true,
-  });
-  const waiting = yours.map((c) => waitRow(c, false));
-  const waitingStale = yoursAll.filter((c) => !fresh(c)).map((c) => waitRow(c, true));
-  const carried = open.filter((c) => !waitsOnOperator(c) && !isMissed(c, now))
-    .sort((a, b) => Number(!fresh(a)) - Number(!fresh(b)) || Date.parse(b.createdAt) - Date.parse(a.createdAt))
-    .map((c) => ({ ...toRow(c, fresh(c) ? undefined : 'unknown'), ...(fresh(c) ? {} : { sub: [toRow(c).sub, `untouched ${STALE_DAYS}+ days`].filter(Boolean).join(' · ') }) }));
-  const all = [...violated.map((c) => toRow(c, 'bad')), ...carried];
+  const waiting = s.waiting.map((c) => promiseNeed(c, now));
+  const waitingStale = s.olderWaiting.map((c) => promiseNeed(c, now, { stale: true }));
+  const olderCarried = n.older - n.olderWaiting;
+  const all = [...s.missed.map((c) => toRow(c, 'bad')), ...s.dueSoon.map((c) => toRow(c)), ...s.carrying.map((c) => toRow(c))];
+  const open = all.length + waiting.length;   // = n.open: waiting + missed + dueSoon + carrying
   // Coverage honesty: a mesh read that carries no replica rows has not shown other machines.
   const replicas = list.filter((c) => c && c.viewSource === 'replica');
   const origins = new Set(replicas.map((c) => c.originMachineId));
@@ -316,53 +270,28 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     : "Only this machine's promises are visible.";
   // The face points at "What needs you" for the waiting ones; it never competes with its count.
   const line = [
-    yours.length ? `${yours.length === 1 ? 'One is' : `${yours.length} of them are`} waiting on you, listed under What needs you.` : null,
-    violated.length ? `${violated.length} missed.` : null,
+    n.waiting ? `${n.waiting === 1 ? 'One is' : `${n.waiting} of them are`} waiting on you, listed under What needs you.` : null,
+    n.missed ? `${n.missed} missed.` : null,
   ].filter(Boolean).join(' ');
   const details = [
-    rest > 0 ? `${plural(rest, 'other')} I'm carrying.` : null,
-    olderCarried + yoursStale > 0 ? `${olderCarried + yoursStale} older ones untouched for ${STALE_DAYS}+ days.` : null,
+    n.carrying + n.dueSoon > 0 ? `${plural(n.carrying + n.dueSoon, 'other')} I'm carrying${n.dueSoon ? `, ${n.dueSoon} due within a day` : ''}.` : null,
+    n.older > 0 ? `${n.older} older ones untouched for ${STALE_DAYS}+ days${n.olderWaiting ? ` (${n.olderWaiting} waiting on you)` : ''}, under Older, still open on the Promises page.` : null,
     coverage,
   ].filter(Boolean);
+  void olderCarried;
   const incomplete = origins.size === 0 || staleReplica || missingPeers === null || missingPeers > 0;
-  const state = violated.length ? 'bad' : (incomplete ? 'partial' : 'ok');
+  const state = n.missed ? 'bad' : (incomplete ? 'partial' : 'ok');
   return {
-    state, waitingCount: yours.length, waiting, waitingStale,
+    state, waitingCount: n.waiting, waiting, waitingStale, counts: n,
     coverage: incomplete ? 'partial view' : null,
-    value: open.length ? plural(open.length, 'open promise') : (incomplete ? 'None I can see' : 'Nothing open'),
+    value: open ? plural(open, 'open promise') : (incomplete ? 'None I can see' : 'Nothing open'),
     line, note: coverage, details, rows: all.slice(0, MAX_ROWS), all,
   };
 }
 
 // ── 5. Where I'm running ──────────────────────────────────────────────────
-export const LIVE_MS = 2 * 60 * 1000;
-export const STALE_MS = 15 * 60 * 1000;
-
-/**
- * Deterministic machine state from the evidence /pool exposes today
- * (online, routerReceivedAt/selfReportedLastSeen, loadAvg/cores, ropeCondition).
- * Precedence, first match wins: an explicit peer-offline rope signal; no
- * timestamp at all; silent over 15 min; silent over 2 min (stale evidence never
- * supports a present-tense load diagnosis); adverse live evidence (degraded or
- * urgent rope, load over 2 per core); otherwise live.
- */
-export function machineState(m, now = Date.now()) {
-  if (!m) return { state: 'unknown', label: 'unknown', age: null };
-  const heard = Date.parse(m.routerReceivedAt || m.selfReportedLastSeen || m.lastSeen);
-  const age = Number.isFinite(heard) ? ago(heard, now) : null;
-  const rope = m.ropeCondition;
-  if (rope === 'peer-offline') return { state: 'bad', label: 'unreachable', age };
-  if (!Number.isFinite(heard)) return { state: 'unknown', label: 'no reading', age: null };
-  const since = now - heard;
-  if (since > STALE_MS) return { state: 'bad', label: 'not answering', age };
-  if (since > LIVE_MS) return { state: 'stale', label: 'quiet', age };
-  const cores = m.hardware && Number(m.hardware.cpuCores);
-  const perCore = cores > 0 && Number.isFinite(Number(m.loadAvg)) ? Number(m.loadAvg) / cores : null;
-  if (rope === 'degraded' || rope === 'urgent' || (perCore !== null && perCore > 2)) return { state: 'attn', label: 'struggling', age, perCore };
-  if (m.online === false) return { state: 'unknown', label: 'no reading', age };
-  return { state: 'ok', label: 'live', age, perCore };
-}
-
+// machineState / liveState / the load reading live in shared-counts.js: the Machines
+// page reads the same functions, so the two can never disagree on a machine's state.
 export function buildRunning(res, now = Date.now()) {
   if (!res.ok) return unknownCard(`Couldn't read the machine pool: ${res.reason}.`);
   const machines = Array.isArray(res.data && res.data.machines) ? res.data.machines : null;
@@ -371,7 +300,7 @@ export function buildRunning(res, now = Date.now()) {
     return unknownCard('The pool answered without a machine list.');
   }
   if (machines.length === 0) return unknownCard('The pool lists no machines.');
-  const ms = machines.map((m) => ({ name: m.nickname || m.machineId, ...machineState(m, now) }));
+  const ms = machines.map((m) => ({ name: m.nickname || m.machineId, ...liveState(m, now) }));
   const counts = { ok: 0, attn: 0, stale: 0, bad: 0, unknown: 0 };
   for (const m of ms) counts[m.state] = (counts[m.state] || 0) + 1;
   const worst = counts.bad ? 'bad' : counts.attn ? 'attn' : (counts.stale || counts.unknown) ? 'partial' : 'ok';
@@ -390,8 +319,6 @@ export function buildRunning(res, now = Date.now()) {
 }
 
 // ── 6. What I'm allowed to do ─────────────────────────────────────────────
-const GUARD_WORD = { off: 'off', 'on-dry-run': 'watching only', errored: 'errored', missing: 'missing', 'off-runtime-divergent': 'off while running' };
-
 export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
   const mandateRow = () => {
     if (!(mandateRes && mandateRes.ok && Array.isArray(mandateRes.data && mandateRes.data.mandates))) return null;
@@ -415,31 +342,22 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
     const list = mandateRes.data.mandates;
     mandates = list.filter((m) => m && !m.revoked && (!m.expiresAt || Date.parse(m.expiresAt) > now)).length;
   }
+  // THE count of checks needing a look (shared-counts.guardsNeedingLook): the same
+  // rule and the same rows the Machines and Allowed pages show, scope stated.
+  const look = guardsNeedingLook(guardsRes, { scope: 'local' });
   const rows = [];
-  if (offWrong) rows.push({ main: `${plural(offWrong, 'safety check')} off that should be on`, tone: 'attn' });
-  if (gaps) rows.push({ main: `${plural(gaps, 'critical path')} without its guard`, tone: 'attn' });
+  if (look.ok && look.count) rows.push({ main: `${plural(look.count, 'safety check')} need${look.count === 1 ? 's' : ''} a look ${look.scopeWords}`, sub: look.breakdownWords, tone: 'attn' });
   // Permission slips are reference, not action: one tap deeper unless unreadable.
   if (mandates === null) rows.push({ main: "Can't tell which permission slips are active", tone: 'unknown' });
-  const guards = Array.isArray(guardsRes.data.guards) ? guardsRes.data.guards : [];
-  const isOn = (e) => e === 'on-confirmed' || e === 'on-unverified' || e === 'on-stale' || e === 'on-blind';
-  const byDesign = (g) => g.effective === 'off' && g.offClass === 'dark-default';
-  const notOn = guards.filter((g) => g && typeof g.effective === 'string' && !isOn(g.effective))
-    .sort((a, b) => Number(byDesign(a)) - Number(byDesign(b)) || Number(a.effective === 'on-dry-run') - Number(b.effective === 'on-dry-run'));
-  const all = notOn.map((g) => ({
-    main: g.criticalPath || g.key || 'A safety check',
-    sub: g.criticalPath ? g.key : '',
-    end: byDesign(g) ? 'off by design' : (GUARD_WORD[g.effective] || String(g.effective).replace(/-/g, ' ')),
-    tone: byDesign(g) || g.effective === 'on-dry-run' ? undefined : 'attn',
-    mono: true,
-  }));
+  const all = look.ok ? look.rows.map((r) => ({ main: r.main, sub: r.record.criticalPath ? r.guardKey : '', end: r.word, tone: 'attn', mono: true })) : [];
   return {
-    state: offWrong || gaps ? 'attn' : (mandates === null ? 'partial' : 'ok'),
+    state: look.ok && look.count ? 'attn' : (mandates === null ? 'partial' : 'ok'),
     coverage: mandates === null ? 'partial view' : null,
-    value: `${on} of ${total} on`, all,
+    value: `${on} of ${total} on`, all, needLook: look.ok ? look.count : null, scopeWords: look.ok ? look.scopeWords : null,
     line: '',
     details: [`${dry} watching only, ${offDark} off by design.`, mandates === null ? null : `${plural(mandates, 'permission slip')} active.`].filter(Boolean),
     rows: rows.slice(0, MAX_ROWS),
-    meter: { ok: on, dry, warn: offWrong, off: offDark },
+    meter: { ok: on, dry, warn: look.ok ? look.count : offWrong + gaps, off: offDark },
   };
 }
 

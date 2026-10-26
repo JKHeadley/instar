@@ -41,13 +41,15 @@ const errWords = (r) => {
 export async function renderAllowed(main, ctx) {
   const { get, post } = ctx;
   if (!main.querySelector('.allowed-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’m allowed to do' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [auto, hist, elev, guardsRes, featRes] = await Promise.all([
-    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'),
+  const [auto, hist, elev, guardsRes, featRes, poolRes] = await Promise.all([
+    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'), get('/pool'),
   ]);
   const profile = buildProfile(auto);
   const history = buildHistory(hist);
   const suggestions = buildSuggestions(elev);
-  const guards = buildGuards(guardsRes);
+  // A machine that could not answer is named from the pool, never shown by its id.
+  const names = Object.fromEntries((poolRes.ok && Array.isArray(poolRes.data && poolRes.data.machines) ? poolRes.data.machines : []).filter((m) => m && m.machineId && m.nickname).map((m) => [m.machineId, m.nickname]));
+  const guards = buildGuards(guardsRes, { names });
   const features = buildFeatures(featRes);
   const refresh = () => renderAllowed(main, ctx);
 
@@ -113,7 +115,10 @@ function guardsBlock(guards, refresh) {
   }
   const open = (r) => (r.record ? openGuard(r, refresh) : null);
   return el('div', { class: 'guard-block', id: 'sec-guards' },
-    section({ id: 'guards-look', title: guards.counts.look ? 'Safety checks · need a look' : 'Safety checks', rows: [...guards.look, ...guards.failed], empty: 'Every safety check is where it should be.', onRow: open, tone: guards.counts.look ? 'attn' : null }),
+    // The list's count is the shared count (the same number the hero fact shows); a machine
+    // that could not answer is named apart, never inside it.
+    section({ id: 'guards-look', title: guards.counts.look ? `Safety checks · need a look ${guards.scopeWords || ''}`.trim() : 'Safety checks', rows: guards.look, empty: `Every safety check is where it should be${guards.scopeWords ? ' ' + guards.scopeWords : ''}.`, onRow: open, tone: guards.counts.look ? 'attn' : null }),
+    guards.failed.length ? note(`Can’t tell for ${guards.failed.map((f) => `${f.main} (${f.sub.replace(/^Can’t tell: /, '')})`).join(', ')}; ${guards.failed.length === 1 ? 'it is' : 'they are'} not in the count.`) : null,
     section({ id: 'guards-others', title: `${guards.counts.others} others`, rows: guards.others, collapsed: true, onRow: open }));
 }
 
