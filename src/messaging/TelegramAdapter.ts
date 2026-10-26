@@ -49,6 +49,11 @@ import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorship
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
 import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
+import {
+  attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
+  planAttentionSupersessions, resolveAttentionLifecycleConfig,
+  type AttentionLifecycleClass, type AttentionLifecycleConfig, type ResolvedAttentionLifecycleConfig,
+} from '../core/AttentionLifecycle.js';
 const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {
@@ -184,6 +189,12 @@ export interface TelegramConfig {
    * post-everything behavior.
    */
   attentionHubFilter?: 'signal' | 'all';
+  /**
+   * attention-lifecycle-close-on-cause: one row per condition, close-on-cause,
+   * and bounded expiry of untouched automated items. Read live at every pass.
+   * `enabled:false` ⇒ exact pre-feature behavior.
+   */
+  attentionLifecycle?: AttentionLifecycleConfig;
   /**
    * Hot-reloadable accessor for the durable Attention hub topic id created at
    * boot (StateManager key 'agent-attention-topic'). server.ts injects
@@ -396,7 +407,61 @@ export interface AttentionItem {
   /** Display nickname of `machineId`, resolved from the pool registry at read
    *  time. */
   machineNickname?: string;
+  // ── Lifecycle (attention-lifecycle-close-on-cause §3.1) ──
+  /** Producer-supplied stable identity of the CONDITION this item describes
+   *  (no timestamps / episode counters). Observations with the same key land on
+   *  one row. Absent ⇒ a key is derived from source, category, title and the
+   *  id with its per-episode tokens blanked. */
+  conditionKey?: string;
+  /** Other ids that observed this same condition and were folded into this row. */
+  aliases?: string[];
+  /** How many observations landed on this row (1 at creation). */
+  occurrences?: number;
+  /** When the condition was last observed (an update or a repeat). */
+  lastSeenAt?: string;
+  /** Bumped each time a closed row is reopened by a new observation. */
+  episode?: number;
+  /** Who closed it. Absent on rows closed before this field existed. */
+  closedBy?: 'operator' | 'cause-cleared' | 'superseded' | 'expired';
+  /** Never closed by the system (expiry, supersession, cause-clear) — only the operator. */
+  sticky?: boolean;
 }
+
+/** Fields a writer may set on an observation (everything the store derives is excluded). */
+export type AttentionObservation = Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId' | 'aliases' | 'occurrences' | 'lastSeenAt' | 'episode' | 'closedBy'>;
+
+/** One row the reconciliation pass closed (or would close). */
+export interface AttentionLifecycleAction {
+  id: string;
+  title: string;
+  conditionKey: string;
+  cls: AttentionLifecycleClass;
+  ageDays: number;
+  closedBy: 'cause-cleared' | 'superseded' | 'expired';
+  resolution: string;
+  /** true when listed but not applied (expiry dry run). */
+  dryRun?: boolean;
+}
+
+export interface AttentionLifecyclePassReport {
+  at: string;
+  dryRun: boolean;
+  firstPass: boolean;
+  superseded: number;
+  causeCleared: number;
+  expired: number;
+  wouldExpire: number;
+  actions: AttentionLifecycleAction[];
+}
+
+/**
+ * A producer's authoritative answer about one of its open items: `cleared`
+ * (the condition is provably over → close it), `active` (still real), or
+ * `unknown` (not mine / cannot tell → leave it alone). Registered by server.ts
+ * for the producers that keep local state (sign-in repair episodes, the
+ * condition store, held replies).
+ */
+export type AttentionConditionResolver = (item: AttentionItem) => 'cleared' | 'active' | 'unknown';
 
 /**
  * Telegram General topic convention:
@@ -606,6 +671,17 @@ export class TelegramAdapter implements MessagingAdapter {
   private attentionHubFilterMode!: AttentionHubFilterMode;
   /** Last hub post time per item id — an upserted item is reposted at most every 6 h. */
   private attentionHubLastPost: Map<string, { at: number; priority: AttentionItem['priority'] }> = new Map();
+  // ── Lifecycle (attention-lifecycle-close-on-cause) ──
+  /** alias id → canonical row id, rebuilt on load. */
+  private attentionAliasIndex: Map<string, string> = new Map();
+  private attentionLifecyclePath!: string;
+  private attentionLifecycleLogPath!: string;
+  private attentionLifecycleState: { firstPassAt?: string; lastPassAt?: string; lastPass?: Omit<AttentionLifecyclePassReport, 'actions'> } = {};
+  private attentionLifecycleTimer: ReturnType<typeof setInterval> | null = null;
+  private attentionLifecycleBootTimer: ReturnType<typeof setTimeout> | null = null;
+  private attentionConditionResolvers: Array<{ name: string; resolve: AttentionConditionResolver }> = [];
+  /** Producer-registered "is this condition still active?" (AttentionConditionStore); blocks expiry of a once-per-episode voice. */
+  private attentionConditionActive: ((item: AttentionItem) => boolean) | null = null;
   /** Self-healed hub topic id (used when no injected boot-hub id resolves). */
   private attentionHubTopicId: number | null = null;
   /** In-flight single hub creation guard (no double-create race). */
@@ -989,6 +1065,8 @@ export class TelegramAdapter implements MessagingAdapter {
     this.offsetPath = path.join(this.botStateDir, 'telegram-poll-offset.json');
     this.attentionFilePath = path.join(this.botStateDir, 'state', 'attention-items.json');
     this.attentionSuppressedLogPath = path.join(this.botStateDir, 'state', 'attention-suppressed.jsonl');
+    this.attentionLifecyclePath = path.join(this.botStateDir, 'state', 'attention-lifecycle.json');
+    this.attentionLifecycleLogPath = path.join(this.botStateDir, 'logs', 'attention-lifecycle.jsonl');
     this.attentionTopicGuard = new AttentionTopicGuard(config.attentionTopicGuard ?? {});
     // Backstop ceiling: looser than the attention guard by design (the
     // attention guard SHAPES politely per-source; this is the absolute bound
@@ -1011,6 +1089,7 @@ export class TelegramAdapter implements MessagingAdapter {
     this.loadRegistry();
     this.loadOffset();
     this.loadAttentionItems();
+    this.loadAttentionLifecycleState();
 
     // Initialize Prompt Gate callback registry
     const relayTimeoutMs = (config.promptGate?.relayTimeoutSeconds ?? 300) * 1000;
@@ -1263,6 +1342,7 @@ export class TelegramAdapter implements MessagingAdapter {
     this.startedAt = new Date();
     this.consecutivePollErrors = 0;
     this.lastPollError = null;
+    this.startAttentionLifecycleTimers();
     this.fatalPollReason = null;
     this.pollStoppedAt = null;
     this.pending401Retry = false;
@@ -1317,6 +1397,7 @@ export class TelegramAdapter implements MessagingAdapter {
       clearInterval(this.stallCheckInterval);
       this.stallCheckInterval = null;
     }
+    this.stopAttentionLifecycleTimers();
     // Flush and stop the batcher on shutdown
     if (this.batcher) {
       try {
@@ -4204,19 +4285,21 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Create an attention item and its Telegram topic.
    */
-  async createAttentionItem(item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>, routing?: { hubOnly: true }): Promise<AttentionItem> {
-    // Check for existing
-    if (this.attentionItems.has(item.id)) {
-      return this.attentionItems.get(item.id)!;
+  async createAttentionItem(item: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+    // One row per condition (attention-lifecycle-close-on-cause §3.1): an
+    // observation that lands on an existing row refreshes/reopens it instead
+    // of creating a sibling. Only a genuinely new condition reaches the
+    // routing below.
+    const admitted = this.admitAttentionObservation(item);
+    if (admitted.kind === 'existing') {
+      if (admitted.repost && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic')) {
+        const hubTopicId = await this.routeToAttentionHub(admitted.item);
+        admitted.item.coalesced = true;
+        if (hubTopicId !== null) admitted.item.topicId = hubTopicId;
+      }
+      return admitted.item;
     }
-
-    const now = new Date().toISOString();
-    const attention: AttentionItem = {
-      ...item,
-      status: 'OPEN',
-      createdAt: now,
-      updatedAt: now,
-    };
+    const attention = admitted.item;
 
     // Durable acceptance precedes all Telegram/network work. If the provider
     // is stalled or the process restarts mid-send, the local attention item
@@ -4363,21 +4446,11 @@ export class TelegramAdapter implements MessagingAdapter {
    * per-item topic is never re-spawned by an upsert.
    */
   async upsertAttentionItem(
-    item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>,
+    item: AttentionObservation,
   ): Promise<AttentionItem> {
-    const existing = this.attentionItems.get(item.id);
-    if (!existing) return this.createAttentionItem(item, { hubOnly: true });
-    const unchanged = existing.status === 'OPEN' && existing.title === item.title && existing.description === item.description;
-    // A reopened item is a new episode: the repost throttle must not hide it.
-    if (existing.status !== 'OPEN') this.attentionHubLastPost.delete(item.id);
-    Object.assign(existing, item, { status: 'OPEN' as const, updatedAt: new Date().toISOString() });
-    this.saveAttentionItems();
-    if (!unchanged) {
-      const hubTopicId = await this.routeToAttentionHub(existing);
-      existing.coalesced = true;
-      if (hubTopicId !== null) existing.topicId = hubTopicId;
-    }
-    return existing;
+    // Refresh + reopen now live in the shared admission helper, so this is the
+    // hub-only spelling of createAttentionItem (an upsert never spawns a per-item topic).
+    return this.createAttentionItem(item, { hubOnly: true });
   }
 
   /**
@@ -4397,12 +4470,16 @@ export class TelegramAdapter implements MessagingAdapter {
       throw new Error('createOrReopenAgentHealthAttentionItem requires lane=agent-health');
     }
 
-    const existing = this.attentionItems.get(item.id);
+    const existing = this.resolveAttentionRow(item.id);
     if (!existing) return this.createAttentionItem(item);
 
+    const wasClosed = !isOpenAttentionStatus(existing.status);
     Object.assign(existing, item, {
       status: 'OPEN' as const,
       updatedAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      occurrences: (existing.occurrences ?? 1) + 1,
+      ...(wasClosed ? { episode: (existing.episode ?? 1) + 1, closedBy: undefined, resolution: undefined } : {}),
     });
     this.saveAttentionItems();
 
@@ -4809,12 +4886,16 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Update attention item status. Called by /ack, /done, /wontdo, /reopen commands.
    */
-  async updateAttentionStatus(itemId: string, status: AttentionItem['status'], opts?: { silent?: boolean; resolution?: string }): Promise<boolean> {
-    const item = this.attentionItems.get(itemId);
+  async updateAttentionStatus(itemId: string, status: AttentionItem['status'], opts?: { silent?: boolean; resolution?: string; closedBy?: AttentionItem['closedBy'] }): Promise<boolean> {
+    const item = this.resolveAttentionRow(itemId);
     if (!item) return false;
+    itemId = item.id;
 
     item.status = status;
     if (opts?.resolution !== undefined) item.resolution = opts.resolution;
+    // Who closed it: a producer/sweep names itself; a PATCH or /done is the operator.
+    if (status === 'DONE' || status === 'WONT_DO') item.closedBy = opts?.closedBy ?? 'operator';
+    else if (status === 'OPEN') { delete item.closedBy; }
     item.updatedAt = new Date().toISOString();
     this.saveAttentionItems();
 
@@ -4864,7 +4945,271 @@ export class TelegramAdapter implements MessagingAdapter {
    * Get a specific attention item.
    */
   getAttentionItem(itemId: string): AttentionItem | undefined {
-    return this.attentionItems.get(itemId);
+    return this.resolveAttentionRow(itemId);
+  }
+
+  // ── Attention lifecycle (attention-lifecycle-close-on-cause) ──────────
+
+  /** The row an id names: the row itself, or the row it was folded into as an alias. */
+  private resolveAttentionRow(itemId: string): AttentionItem | undefined {
+    return this.attentionItems.get(itemId) ?? (() => {
+      const canonical = this.attentionAliasIndex.get(itemId);
+      return canonical ? this.attentionItems.get(canonical) : undefined;
+    })();
+  }
+
+  private attentionLifecycleConfig(): ResolvedAttentionLifecycleConfig {
+    return resolveAttentionLifecycleConfig(this.config.attentionLifecycle);
+  }
+
+  /** The newest row (any status) that describes the same condition as `obs`, by id, alias, then condition key. */
+  private findAttentionRowForCondition(obs: AttentionObservation): AttentionItem | undefined {
+    const direct = this.resolveAttentionRow(obs.id);
+    if (direct) return direct;
+    const key = attentionConditionKeyOf(obs);
+    let best: AttentionItem | undefined;
+    for (const row of this.attentionItems.values()) {
+      if (attentionConditionKeyOf(row) !== key) continue;
+      if (!best || (Date.parse(row.updatedAt) || 0) > (Date.parse(best.updatedAt) || 0)) best = row;
+    }
+    return best;
+  }
+
+  /**
+   * The ONE writer rule (§3.1). Returns the row an observation landed on:
+   * `existing` (a repeat, a refresh, a reopen, or a WONT_DO-held repeat — with
+   * `repost` saying whether the hub should hear about it) or `new` (a row the
+   * caller must persist and route). With the feature off this is exactly the
+   * old behavior: exact-id dedupe, everything else new.
+   */
+  private admitAttentionObservation(obs: AttentionObservation):
+    { kind: 'existing'; item: AttentionItem; repost: boolean } | { kind: 'new'; item: AttentionItem } {
+    const nowIso = new Date().toISOString();
+    const cfg = this.attentionLifecycleConfig();
+    if (!cfg.enabled) {
+      const exact = this.attentionItems.get(obs.id);
+      if (exact) return { kind: 'existing', item: exact, repost: false };
+      return { kind: 'new', item: { ...obs, status: 'OPEN', createdAt: nowIso, updatedAt: nowIso } };
+    }
+    const row = this.findAttentionRowForCondition(obs);
+    if (!row) {
+      return { kind: 'new', item: { ...obs, status: 'OPEN', createdAt: nowIso, updatedAt: nowIso, occurrences: 1, lastSeenAt: nowIso, episode: 1 } };
+    }
+    const alias = row.id !== obs.id;
+    if (alias) {
+      row.aliases = Array.from(new Set([...(row.aliases ?? []), obs.id])).slice(-50);
+      this.attentionAliasIndex.set(obs.id, row.id);
+    }
+    row.occurrences = (row.occurrences ?? 1) + 1;
+    row.lastSeenAt = nowIso;
+    if (obs.conditionKey && !row.conditionKey) row.conditionKey = obs.conditionKey;
+    if (obs.sticky) row.sticky = true;
+
+    const changed = row.title !== obs.title || row.summary !== obs.summary
+      || (row.description ?? '') !== (obs.description ?? '') || row.priority !== obs.priority;
+    if (isOpenAttentionStatus(row.status)) {
+      if (changed) {
+        // The required action changed (approve → tap the phone prompt now):
+        // refresh the body, back to OPEN, and let the hub routing say so.
+        Object.assign(row, { title: obs.title, summary: obs.summary, description: obs.description, priority: obs.priority, status: 'OPEN' as const, updatedAt: nowIso });
+        this.saveAttentionItems();
+        return { kind: 'existing', item: row, repost: true };
+      }
+      // A mere repeat: the operator's ACKNOWLEDGED / IN_PROGRESS survives, no repost.
+      this.saveAttentionItems();
+      return { kind: 'existing', item: row, repost: false };
+    }
+    if (!mayReopenInPlace(row, cfg, Date.now())) {
+      // The operator said WONT_DO recently: the observation is recorded, the row stays closed and silent.
+      this.saveAttentionItems();
+      return { kind: 'existing', item: row, repost: false };
+    }
+    // A new episode of a condition that was closed: reopen in place, visibly.
+    Object.assign(row, {
+      title: obs.title, summary: obs.summary, description: obs.description, priority: obs.priority,
+      status: 'OPEN' as const, updatedAt: nowIso, episode: (row.episode ?? 1) + 1,
+    });
+    delete row.closedBy;
+    delete row.resolution;
+    this.attentionHubLastPost.delete(row.id);
+    this.saveAttentionItems();
+    this.appendAttentionLifecycleLog({ ts: nowIso, id: row.id, conditionKey: attentionConditionKeyOf(row), event: 'reopened', episode: row.episode, byId: obs.id });
+    return { kind: 'existing', item: row, repost: true };
+  }
+
+  /**
+   * Close every open row describing a condition that provably cleared (§3.2).
+   * Silent: no hub post. Sticky rows are refused (counted) — only the operator
+   * closes a security item. `idPrefix` must end in a delimiter so `:ep-1` can
+   * never match `:ep-10`.
+   */
+  clearAttentionCondition(match: { conditionKey?: string; id?: string; idPrefix?: string }, resolution: string): { closed: number; refusedSticky: number } {
+    const result = { closed: 0, refusedSticky: 0 };
+    if (!this.attentionLifecycleConfig().enabled) return result;
+    if (match.idPrefix !== undefined && !/[:\-_./|]$/.test(match.idPrefix)) {
+      throw new Error(`attention clear idPrefix must end in a delimiter (got "${match.idPrefix}")`);
+    }
+    const wantKey = match.conditionKey ? `k:${match.conditionKey.trim()}` : null;
+    const nowIso = new Date().toISOString();
+    for (const row of this.attentionItems.values()) {
+      if (!isOpenAttentionStatus(row.status)) continue;
+      const hit = (match.id !== undefined && (row.id === match.id || (row.aliases ?? []).includes(match.id)))
+        || (match.idPrefix !== undefined && (row.id.startsWith(match.idPrefix) || (row.aliases ?? []).some((a) => a.startsWith(match.idPrefix!))))
+        || (wantKey !== null && attentionConditionKeyOf(row) === wantKey);
+      if (!hit) continue;
+      if (row.sticky || classifyAttentionLifecycle(row) === 'security') { result.refusedSticky++; continue; }
+      row.status = 'DONE';
+      row.closedBy = 'cause-cleared';
+      row.resolution = resolution;
+      row.updatedAt = nowIso;
+      result.closed++;
+      this.appendAttentionLifecycleLog({ ts: nowIso, id: row.id, conditionKey: attentionConditionKeyOf(row), closedBy: 'cause-cleared', resolution, cls: classifyAttentionLifecycle(row) });
+    }
+    if (result.closed > 0) this.saveAttentionItems();
+    return result;
+  }
+
+  /** Register a producer's authoritative "is this item's condition over?" answer (used by the pass, §3.4 step 2). */
+  registerAttentionConditionResolver(name: string, resolve: AttentionConditionResolver): void {
+    this.attentionConditionResolvers = this.attentionConditionResolvers.filter((r) => r.name !== name);
+    this.attentionConditionResolvers.push({ name, resolve });
+  }
+
+  /** Register the "this once-per-episode condition is still active" check that blocks expiry. */
+  setAttentionConditionActiveCheck(fn: ((item: AttentionItem) => boolean) | null): void {
+    this.attentionConditionActive = fn;
+  }
+
+  getAttentionLifecycleStatus(): Record<string, unknown> {
+    const cfg = this.attentionLifecycleConfig();
+    const openByClass: Record<AttentionLifecycleClass, number> = { security: 0, 'operator-asked': 0, automated: 0 };
+    for (const row of this.attentionItems.values()) {
+      if (isOpenAttentionStatus(row.status)) openByClass[classifyAttentionLifecycle(row)]++;
+    }
+    return {
+      enabled: cfg.enabled,
+      dryRun: cfg.dryRun,
+      firstPassAt: this.attentionLifecycleState.firstPassAt ?? null,
+      lastSweepAt: this.attentionLifecycleState.lastPassAt ?? null,
+      lastPass: this.attentionLifecycleState.lastPass ?? null,
+      windows: { automatedDays: cfg.automatedDays, operatorAskedDays: cfg.operatorAskedDays, wontDoHoldDays: cfg.wontDoHoldDays },
+      resolvers: this.attentionConditionResolvers.map((r) => r.name),
+      openByClass,
+      logPath: this.attentionLifecycleLogPath,
+    };
+  }
+
+  /**
+   * One idempotent reconciliation pass (§3.4): supersede duplicates → verified
+   * clears → expiry. The first pass on a machine runs expiry as a dry run so
+   * there is a reviewable list before anything ages out; `dryRun` forces it.
+   */
+  runAttentionLifecyclePass(opts: { dryRun?: boolean } = {}): AttentionLifecyclePassReport {
+    const cfg = this.attentionLifecycleConfig();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const firstPass = !this.attentionLifecycleState.firstPassAt;
+    const expiryDry = opts.dryRun === true || cfg.dryRun || firstPass;
+    const report: AttentionLifecyclePassReport = { at: nowIso, dryRun: expiryDry, firstPass, superseded: 0, causeCleared: 0, expired: 0, wouldExpire: 0, actions: [] };
+    if (!cfg.enabled) return report;
+    const closeRow = (row: AttentionItem, closedBy: AttentionLifecycleAction['closedBy'], resolution: string, apply: boolean) => {
+      const action: AttentionLifecycleAction = {
+        id: row.id, title: row.title, conditionKey: attentionConditionKeyOf(row), cls: classifyAttentionLifecycle(row),
+        ageDays: Math.round(((nowMs - (Date.parse(row.updatedAt) || nowMs)) / 86_400_000) * 10) / 10,
+        closedBy, resolution, ...(apply ? {} : { dryRun: true }),
+      };
+      if (apply) {
+        row.status = 'DONE'; row.closedBy = closedBy; row.resolution = resolution; row.updatedAt = nowIso;
+      }
+      report.actions.push(action);
+      this.appendAttentionLifecycleLog({ ts: nowIso, ...action });
+    };
+    const sticky = (row: AttentionItem) => row.sticky === true || classifyAttentionLifecycle(row) === 'security';
+
+    // 1. Supersede duplicates: one open row per condition.
+    const rows = Array.from(this.attentionItems.values());
+    for (const plan of planAttentionSupersessions(rows)) {
+      const keep = plan.keep as AttentionItem;
+      for (const dupItem of plan.close) {
+        const dup = dupItem as AttentionItem;
+        if (sticky(dup)) continue;
+        keep.occurrences = (keep.occurrences ?? 1) + (dup.occurrences ?? 1);
+        keep.aliases = Array.from(new Set([...(keep.aliases ?? []), dup.id, ...(dup.aliases ?? [])])).filter((a) => a !== keep.id).slice(-50);
+        this.attentionAliasIndex.set(dup.id, keep.id);
+        closeRow(dup, 'superseded', `superseded by ${keep.id}`, true);
+        report.superseded++;
+      }
+    }
+
+    // 2. Verified clears: a producer that KNOWS says the condition is over.
+    for (const row of this.attentionItems.values()) {
+      if (!isOpenAttentionStatus(row.status) || sticky(row)) continue;
+      for (const r of this.attentionConditionResolvers) {
+        let verdict: 'cleared' | 'active' | 'unknown' = 'unknown';
+        try { verdict = r.resolve(row); } catch { verdict = 'unknown'; }
+        if (verdict === 'cleared') { closeRow(row, 'cause-cleared', `cleared: ${r.name} reports the condition is over`, true); report.causeCleared++; break; }
+        if (verdict === 'active') break;
+      }
+    }
+
+    // 3. Expiry: bounded silence for the long tail.
+    for (const row of this.attentionItems.values()) {
+      if (!isOpenAttentionStatus(row.status)) continue;
+      let conditionActive = false;
+      try { conditionActive = this.attentionConditionActive?.(row) === true; } catch { conditionActive = false; }
+      const d = decideAttentionExpiry(row, cfg, nowMs, { conditionActive });
+      if (!d.expire || !d.resolution) continue;
+      closeRow(row, 'expired', d.resolution, !expiryDry);
+      if (expiryDry) report.wouldExpire++; else report.expired++;
+    }
+
+    if (report.superseded + report.causeCleared + report.expired > 0) this.saveAttentionItems();
+    if (firstPass) this.attentionLifecycleState.firstPassAt = nowIso;
+    this.attentionLifecycleState.lastPassAt = nowIso;
+    const { actions: _a, ...summary } = report;
+    this.attentionLifecycleState.lastPass = summary;
+    this.saveAttentionLifecycleState();
+    console.log(`[telegram] Attention lifecycle pass: superseded=${report.superseded} causeCleared=${report.causeCleared} expired=${report.expired} wouldExpire=${report.wouldExpire}${expiryDry ? ' (expiry dry run)' : ''}`);
+    return report;
+  }
+
+  private startAttentionLifecycleTimers(): void {
+    if (this.attentionLifecycleTimer) return;
+    const tick = () => { try { this.runAttentionLifecyclePass(); } catch (err) { console.error(`[telegram] Attention lifecycle pass failed: ${err instanceof Error ? err.message : String(err)}`); } };
+    this.attentionLifecycleBootTimer = setTimeout(tick, 2 * 60 * 1000);
+    this.attentionLifecycleBootTimer.unref?.();
+    this.attentionLifecycleTimer = setInterval(tick, 60 * 60 * 1000);
+    this.attentionLifecycleTimer.unref?.();
+  }
+
+  private stopAttentionLifecycleTimers(): void {
+    if (this.attentionLifecycleBootTimer) { clearTimeout(this.attentionLifecycleBootTimer); this.attentionLifecycleBootTimer = null; }
+    if (this.attentionLifecycleTimer) { clearInterval(this.attentionLifecycleTimer); this.attentionLifecycleTimer = null; }
+  }
+
+  private loadAttentionLifecycleState(): void {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.attentionLifecyclePath, 'utf-8'));
+      if (raw && typeof raw === 'object') this.attentionLifecycleState = raw;
+    } catch { /* first run */ }
+  }
+
+  private saveAttentionLifecycleState(): void {
+    try {
+      fs.mkdirSync(path.dirname(this.attentionLifecyclePath), { recursive: true });
+      const tmp = `${this.attentionLifecyclePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.attentionLifecycleState, null, 2));
+      fs.renameSync(tmp, this.attentionLifecyclePath);
+    } catch (err) {
+      console.error(`[telegram] Failed to save attention lifecycle state: ${err}`);
+    }
+  }
+
+  private appendAttentionLifecycleLog(entry: Record<string, unknown>): void {
+    try {
+      fs.mkdirSync(path.dirname(this.attentionLifecycleLogPath), { recursive: true });
+      fs.appendFileSync(this.attentionLifecycleLogPath, `${JSON.stringify(entry)}\n`);
+    } catch { /* @silent-fallback-ok — the audit line is best-effort; the row change itself is persisted */ }
   }
 
   /**
@@ -4906,6 +5251,9 @@ export class TelegramAdapter implements MessagingAdapter {
       if (data.items) {
         for (const item of data.items) {
           this.attentionItems.set(item.id, item);
+          for (const alias of (Array.isArray(item.aliases) ? item.aliases : [])) {
+            if (typeof alias === 'string') this.attentionAliasIndex.set(alias, item.id);
+          }
           // Coalesced items share ONE notice topic; registering them in the
           // per-item maps would last-writer-win-corrupt the reverse map and make
           // resolving one close the shared topic. They are managed via /attention.

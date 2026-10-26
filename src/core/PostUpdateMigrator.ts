@@ -11236,6 +11236,20 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
     }
 
+    // Attention lifecycle (attention-lifecycle-close-on-cause, operator report
+    // 2026-10-25: ~1,140 open items nobody could act on). Deployed agents learn
+    // that items are one-per-condition, how to pass a conditionKey, how to
+    // close a cleared condition, and that untouched rows expire with an honest
+    // label. Sniff: '/attention/lifecycle'.
+    if (content.includes('**Attention Queue**') && !content.includes('/attention/lifecycle')) {
+      const lifecycleBullet = `- **Items close themselves (attention lifecycle, default on).** One row per CONDITION, not per observation: give a recurring item a stable \`"conditionKey"\` (no timestamps or episode counters, e.g. \`"sign-in:acct:machine"\`) and every later raise lands on the same row (its body refreshes when the ask changes; a closed row reopens for a new episode). When the cause is gone, CLOSE it yourself: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"sign-in:acct:machine","resolution":"signed in again and verified"}'\` (or \`"id"\` / a delimiter-terminated \`"idPrefix"\`). An hourly pass merges duplicate open rows for one condition, closes rows whose producer reports the condition over, and EXPIRES untouched rows with an honest label (\`closedBy: "expired"\`, resolution "never confirmed cleared"): automated notices after 14 days, items you raised or that ask for a decision after 30 days, acknowledged/in-progress rows and security items never. The first pass on a machine only LISTS what expiry would close. Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/lifecycle\`; run a pass: \`POST /attention/lifecycle/sweep\` with \`{"dryRun":true}\` to list, \`{}\` to apply. Audit: \`logs/attention-lifecycle.jsonl\`. Rollback: \`messaging[].config.attentionLifecycle.enabled: false\`. Promises waiting on the operator (\`owner: "user"\`, blocked on user-input / user-authorization) expire after 14 days too (\`commitments.operatorWait\`). **When to use** (PROACTIVE): the user asks "why is the attention list full of old items?" / "why did my item disappear?" → read \`GET /attention/lifecycle\` and the audit log, don't guess; when you raise a recurring item, pass a \`conditionKey\` and clear it when the cause ends.\n`;
+      const proactive = /^- \*\*Proactive use\*\*: queue an item only[^\n]*\n/m;
+      if (proactive.test(content)) content = content.replace(proactive, (m) => `${m}${lifecycleBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${lifecycleBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added attention lifecycle (close-on-cause + expiry) bullet');
+    }
+
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
     // A deployed agent whose CLAUDE.md already carries the Job Scheduler
     // section gets the ?scope=pool bullet inserted after the /jobs View line.

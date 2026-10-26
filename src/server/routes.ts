@@ -20259,6 +20259,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // attention-lifecycle-close-on-cause §3.1: a producer may name the CONDITION
+    // (stable, no timestamps) so repeats land on one row, and may mark a row
+    // sticky (never closed by the system). Both optional; both bounded.
+    const conditionKey = typeof req.body.conditionKey === 'string' && req.body.conditionKey.trim()
+      ? req.body.conditionKey.trim().slice(0, 200) : undefined; // bounded-input-reviewed: identity string, never fed to a model
+    if (req.body.conditionKey !== undefined && conditionKey === undefined) {
+      res.status(400).json({ error: '"conditionKey" must be a non-empty string under 200 characters' });
+      return;
+    }
+    if (req.body.sticky !== undefined && typeof req.body.sticky !== 'boolean') {
+      res.status(400).json({ error: '"sticky" must be a boolean' });
+      return;
+    }
+    const sticky = req.body.sticky === true ? true : undefined;
+
     try {
       const create = ctx.telegram.createAttentionItem({
         id,
@@ -20270,6 +20285,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         sourceContext: sourceContext || undefined,
         lane,
         healthKey,
+        conditionKey,
+        sticky,
       });
       // Acceptance of an attention item must not inherit Telegram latency.
       // The adapter persists/idempotently owns the item before its network
@@ -20517,6 +20534,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     const items = limit === undefined ? localItems : localItems.slice(0, limit);
     res.json({ items, count: items.length });
+  });
+
+  // ── Attention lifecycle (attention-lifecycle-close-on-cause §3.2 / §3.4) ──
+  // Registered BEFORE /attention/:id so "lifecycle" / "clear" are never read as ids.
+
+  /** Status of the one-row-per-condition + close-on-cause + bounded-expiry layer. */
+  router.get('/attention/lifecycle', (_req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    res.json(ctx.telegram.getAttentionLifecycleStatus());
+  });
+
+  /** Run one reconciliation pass now. `dryRun:true` lists what expiry would close without closing it. */
+  router.post('/attention/lifecycle/sweep', (req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['dryRun'])) return;
+    if (req.body?.dryRun !== undefined && typeof req.body.dryRun !== 'boolean') {
+      res.status(400).json({ error: '"dryRun" must be a boolean' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    res.json(ctx.telegram.runAttentionLifecyclePass({ dryRun: req.body?.dryRun === true }));
+  });
+
+  /** A producer (job, script, agent) reports that a condition cleared: close its open rows, silently. */
+  router.post('/attention/clear', (req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['conditionKey', 'id', 'idPrefix', 'resolution'])) return;
+    const { conditionKey, id, idPrefix, resolution } = req.body ?? {};
+    const given = [conditionKey, id, idPrefix].filter((v) => typeof v === 'string' && v.trim());
+    if (given.length !== 1) {
+      res.status(400).json({ error: 'give exactly one of "conditionKey", "id", "idPrefix" (a non-empty string)' });
+      return;
+    }
+    if (typeof idPrefix === 'string' && !/[:\-_./|]$/.test(idPrefix)) {
+      res.status(400).json({ error: '"idPrefix" must end in a delimiter (e.g. "my-producer:topic-123:") so it cannot match a longer id by accident' });
+      return;
+    }
+    if (typeof resolution !== 'string' || !resolution.trim()) {
+      res.status(400).json({ error: '"resolution" must be a non-empty string saying why the condition is over' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    const result = ctx.telegram.clearAttentionCondition(
+      { conditionKey: conditionKey?.trim(), id: id?.trim(), idPrefix: idPrefix?.trim() },
+      resolution.trim().slice(0, 2000), // bounded-input-reviewed: stored display text, never fed to a model
+    );
+    res.json(result);
   });
 
   router.get('/attention/:id', (req, res) => {

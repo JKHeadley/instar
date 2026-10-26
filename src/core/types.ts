@@ -3570,6 +3570,17 @@ export interface InstarConfig {
       sweepIntervalMs?: number;
       dryRun?: boolean;
     };
+    /**
+     * attention-lifecycle-close-on-cause §3.5: a commitment waiting on the
+     * operator (owner:user / blocked on user-input or user-authorization)
+     * expires after `maxAgeDays` (default 14) instead of waiting forever.
+     * Own `dryRun`, default false. Rides the auto-expiry sweep cadence.
+     */
+    operatorWait?: {
+      enabled?: boolean;
+      maxAgeDays?: number;
+      dryRun?: boolean;
+    };
     agentOwnedFollowthrough?: {
       enabled?: boolean;
       dryRun?: boolean;

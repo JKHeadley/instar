@@ -210,6 +210,9 @@ export interface StandDownRegistryDeps {
   now?: () => number;
   /** Structured audit sink. The registry never writes user-facing text. */
   audit?: (row: Record<string, unknown>) => void;
+  /** attention-lifecycle-close-on-cause §3.3 — a latch was pruned (its epoch was
+   *  superseded or it aged out): the `standdown:latched:<topic>` row can close. */
+  onLatchPruned?: (topicId: number) => void;
   log?: (msg: string) => void;
 }
 
@@ -624,7 +627,10 @@ export class StandDownRegistry {
     for (const [id, l] of [...this.#latches.entries()]) {
       const currentEpoch = currentEpochByTopic.get(l.topicId);
       const superseded = currentEpoch != null && currentEpoch > l.ownershipEpoch;
-      if (superseded || l.latchedAt < cutoff) { this.#latches.delete(id); pruned++; }
+      if (superseded || l.latchedAt < cutoff) {
+        this.#latches.delete(id); pruned++;
+        if (l.attentionRaised) { try { this.#deps.onLatchPruned?.(l.topicId); } catch { /* @silent-fallback-ok — observability only */ } }
+      }
     }
     if (pruned > 0) this.#persist();
     return pruned;
