@@ -838,3 +838,11 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .author-fold .card-note { margin: var(--s-2) 0; }
 .change-list li.muted { color: var(--text-faint); }
 .reason-input.mono { font-family: var(--font-mono); font-size: 13px; }
+
+/* ── What I've learned about you (people-settings.md: Preferences → What I've learned) ─── */
+.pref-cards { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.pref-card { display: flex; flex-direction: column; gap: 6px; width: 100%; min-height: 44px; padding: var(--s-3) var(--s-4); text-align: left; cursor: pointer;
+  border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-raised); color: inherit; font: inherit; }
+.pref-card:hover { border-color: var(--accent); }
+.pref-quote { font-size: 15.5px; font-weight: 600; line-height: 1.4; color: var(--text-strong); text-wrap: pretty; overflow-wrap: anywhere; }
+.learned-change { margin-top: var(--s-2); }

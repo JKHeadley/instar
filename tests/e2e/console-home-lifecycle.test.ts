@@ -36,6 +36,9 @@ import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { buildShipping, buildFeedback, buildPace, developmentHeadline, maintainerMode } from '../../dashboard/console/development-model.js';
 import { buildAgentsPage, threadModel, pairingModel, relayModel } from '../../dashboard/console/agents-model.js';
 import { buildSlips, buildAudit, buildApprovals, mandatesHeadline, mandatesFacts } from '../../dashboard/console/mandates-model.js';
+import { buildPreferences, buildCorrections, buildConflicts, learnedHeadline, learnedFacts, correctionsUrl } from '../../dashboard/console/learned-model.js';
+import { PreferencesManager } from '../../src/core/PreferencesManager.js';
+import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -488,5 +491,79 @@ describe('Console Home E2E (feature is alive)', () => {
     }
     // Nothing was issued by those refusals.
     expect((await read('/mandate')).data.mandates).toEqual([]);
+  });
+
+  it('the What-I\'ve-learned page reads honestly when correction learning is off: both sources say switched off, never an empty list', async () => {
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const [p, c] = await Promise.all([read('/preferences/session-context'), read(correctionsUrl())]);
+    expect(p.status).toBe(503);
+    expect(c.status).toBe(503);
+    const prefs = buildPreferences(p);
+    const corrections = buildCorrections([c]);
+    expect(prefs).toMatchObject({ ok: false, off: true });
+    expect(learnedHeadline({ prefs, corrections })).toEqual({ text: 'Learning from corrections is off on this agent.', tone: 'muted' });
+  });
+});
+
+describe('Console "What I\'ve learned about you" E2E (feature is alive)', () => {
+  const AUTH = 'console-learned-e2e';
+  const auth = { Authorization: `Bearer ${AUTH}` };
+  let tmp = '';
+  let server: AgentServer;
+
+  beforeAll(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-learned-e2e-'));
+    const stateDir = path.join(tmp, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+    // Real records on disk before the server starts: one learned preference, one watched correction.
+    new PreferencesManager(stateDir).recordPreference({ learning: 'Lead with the short answer.', dedupeKey: CorrectionLedger.dedupeKey('user-preference', 'lead with the short answer'), confidence: 0.9 });
+    const seed = new CorrectionLedger({ dbPath: path.join(stateDir, 'correction-ledger.db') });
+    seed.record({ kind: 'user-preference', learning: 'RAW-LEARNING-NEVER-SERVED', scrubbedSummary: 'Plainer wording', deterministicWeight: 3, topicId: 7 });
+    seed.close();
+    const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10_000, version: '0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: path.join(stateDir, 'jobs.json'), maxParallelJobs: 1 }, messaging: [], updates: {},
+      monitoring: { correctionLearning: { enabled: true } } } as unknown as InstarConfig;
+    const sessionManager = { listRunningSessions: () => [], getSession: () => null } as never;
+    server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir) } as never);
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts' });
+  });
+
+  it('runs the real preference and correction routes through the page model: 200, the preference is quoted, the correction is watched, the raw lesson never crosses', async () => {
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const [p, c, conflictsRes] = await Promise.all([read('/preferences/session-context'), read(correctionsUrl()), read('/state/conflicts')]);
+    expect(p.status).toBe(200);
+    expect(c.status).toBe(200);
+    expect([200, 503]).toContain(conflictsRes.status); // the replicated-store ledger ships dark: on or honestly off
+    expect(JSON.stringify(c.data)).not.toContain('RAW-LEARNING-NEVER-SERVED');
+    const prefs = buildPreferences(p);
+    const corrections = buildCorrections([c]);
+    const conflicts = buildConflicts(conflictsRes);
+    expect(prefs).toMatchObject({ ok: true, total: 1, notLoaded: 0 });
+    expect(prefs.ok && prefs.rows.map((r) => r.text)).toEqual(['Lead with the short answer.']);
+    expect(prefs.ok && prefs.rows[0].sub).toBe('seen once · sure');
+    expect(corrections.ok && corrections.watching.map((r) => r.main)).toEqual(['Plainer wording']);
+    expect(conflicts.hidden).toBe(true);
+    expect(learnedHeadline({ prefs, corrections })).toEqual({ text: 'I’ve picked up 1 thing about how you like to work.', tone: 'ok' });
+    expect(learnedFacts({ prefs, corrections, conflicts })).toEqual([{ n: 1, label: 'preference kept' }, { n: 1, label: 'correction being watched' }]);
+    // The cursor the "Show older" button sends is accepted by the real route.
+    const older = await read(correctionsUrl(new Date().toISOString()));
+    expect(older.status).toBe(200);
+    expect(buildCorrections([c, older])).toMatchObject({ ok: true, shown: 1, moreFailed: null });
+    // The page is read only: the bearer token alone writes nothing through it (POST /corrections needs the intent header).
+    expect((await request(server.getApp()).post('/corrections').set(auth).send({})).status).not.toBe(200);
   });
 });

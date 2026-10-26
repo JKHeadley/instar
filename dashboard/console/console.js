@@ -20,6 +20,7 @@ import { renderSchedule } from './schedule.js';
 import { renderDevelopment, groupExtras } from './development.js';
 import { renderAgents } from './agents.js';
 import { renderMandates } from './mandates.js';
+import { renderLearned } from './learned.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -442,6 +443,7 @@ const NATIVE = {
   'people/agents': renderAgents,
   'people/mandates': renderMandates,
   'settings/allowed': renderAllowed,
+  'settings/learned': renderLearned,
 };
 
 function route() {
