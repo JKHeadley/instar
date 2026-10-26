@@ -1092,8 +1092,9 @@ export class LocalVerifyService {
 
     if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
       // A queue full of HELD entries must not refuse the repair that would release them: a
-      // repair candidate is admitted past the cap while the hold is active (bounded: held
-      // entries number at most the cap, so the queue stays under twice it).
+      // repair candidate is admitted past the cap while the hold is active. There is no
+      // second cap: candidates past it are bounded only by the open PRs that touch, name
+      // or revert the failing check, and each one is audited below.
       const hold = this.holdDecision();
       const repair = hold.active && repairVerdict({ files: prFiles, text: prText }, hold.failingFiles).candidate;
       if (!repair) {
@@ -1858,7 +1859,7 @@ export class LocalVerifyService {
       : `Already fixing it: ${prs.map((pr) => `PR #${pr}`).join(', ')}. Check ${prs.length === 1 ? 'it' : 'them'} before writing another fix.`;
     const detail = {
       // `note` first: the attention summary reads it as the plain-words body.
-      note: `main is red on ${d.failingFiles.join(', ')}. ${fixing} ${d.heldPrs.length} other PR${d.heldPrs.length === 1 ? '' : 's'} held until main is green. A fix runs first when its diff touches the failing file or its title or body names it.`,
+      note: `main is red on ${d.failingFiles.join(', ')}. ${fixing} ${d.heldPrs.length} other PR${d.heldPrs.length === 1 ? '' : 's'} held until main is green. A fix runs first when its diff touches the failing file or its title or body names it; a revert of the breaking change also runs first.`,
       redHead: d.redHead, failingFiles: d.failingFiles,
       repairPrs: [...d.repairPrs].sort((a, b) => a.pr - b.pr).map((r) => ({ pr: r.pr, by: r.by, file: r.file })), heldPrs: d.heldPrs.map((h) => h.pr),
     };

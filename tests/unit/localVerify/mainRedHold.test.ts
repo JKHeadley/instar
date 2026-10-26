@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  MAIN_RED_HOLD_LIMITS, decideMainRedHold, failingFileNames, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict,
+  MAIN_RED_HOLD_LIMITS, decideMainRedHold, failingFileNames, holdReasonText, isRevertText, mainFailureFromRunDetail, prMatchText, repairVerdict,
 } from '../../../src/localVerify/mainRedHold.js';
 
 const RED = 'e'.repeat(40);
@@ -65,6 +65,18 @@ describe('repairVerdict — is this PR a candidate repair?', () => {
   it('an unreadable file list with no mention is files-unknown (held); with a mention it is still a candidate', () => {
     expect(repairVerdict({ files: null, text: 'chore: something else' }, [FILE])).toEqual({ candidate: false, reason: 'files-unknown' });
     expect(repairVerdict({ files: null, text: prMatchText('fix no-silent-fallbacks', null) }, [FILE])).toEqual({ candidate: true, by: 'names-file', file: FILE });
+  });
+
+  it('a revert is a candidate: GitHub revert title or "Reverts owner/repo#N" body, even touching and naming no test file', () => {
+    // The commonest repair undoes the breaking source change; holding it could keep main red with nothing able to clear it.
+    expect(repairVerdict({ files: ['src/core/Foo.ts'], text: prMatchText('Revert "feat: add Foo"', 'Reverts JKHeadley/instar#2367') }, [FILE]))
+      .toEqual({ candidate: true, by: 'reverts', file: FILE });
+    expect(repairVerdict({ files: ['src/core/Foo.ts'], text: prMatchText('fix: back out Foo', 'Reverts JKHeadley/instar#2367\n\nbroke main') }, [FILE]).candidate).toBe(true);
+    expect(repairVerdict({ files: null, text: prMatchText('Revert the Foo change', '') }, [FILE]).candidate).toBe(true);
+    // Mentioning a revert elsewhere does not count, and "reverts" in prose is not the GitHub line.
+    expect(isRevertText(prMatchText('feat: add undo; can revert later', 'this reverts nothing'))).toBe(false);
+    expect(isRevertText(prMatchText('Reverting is hard', ''))).toBe(false);
+    expect(repairVerdict({ files: ['src/core/Foo.ts'], text: prMatchText('feat: unrelated', '') }, [FILE])).toEqual({ candidate: false, reason: 'no-overlap' });
   });
 
   it('matching is case-insensitive and bounded to the first 8000 characters of title + body', () => {

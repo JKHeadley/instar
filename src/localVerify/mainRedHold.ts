@@ -9,13 +9,18 @@
  * The rule, all deterministic and all over data the server already holds:
  *   - The hold is ACTIVE while `main` has a failed head (`main-suspect` after a first
  *     failure, or `main-red`) AND the failing files of that head are known from its
- *     run-detail. An unknown-state suspect (boot, lease move, unverified-too-long) and
- *     a failure that named no file hold nothing: there is nothing to match a repair
- *     against, so the queue behaves as before.
+ *     run-detail. A failure that named no file holds nothing: there is nothing to
+ *     match a repair against, so the queue behaves as before. An unknown-origin
+ *     suspect (boot, lease move) keeps the watermark's red head, so the hold stays
+ *     active there only when the recorded failure is for that same head.
  *   - A queued PR is a REPAIR CANDIDATE when its diff touches a failing file, or its
  *     title/body names one (the path, the file name, or the file's stem — the 2026-10-26
  *     repairs touched `src/` files and named `no-silent-fallbacks` in their text; a
- *     rule on the diff alone would have held both real repairs).
+ *     rule on the diff alone would have held both real repairs). A REVERT is also a
+ *     candidate (title starting "Revert", or GitHub's "Reverts owner/repo#N" body
+ *     line): the commonest repair undoes the breaking source change, touching and
+ *     naming no test file, and holding it could keep `main` red with nothing able
+ *     to turn it green.
  *   - Candidates run first (in queue order, with the usual main/PR fair share); every
  *     other PR entry is HELD — it keeps its place and starts once `main` is green or
  *     it becomes a candidate (a head push that names the check). A `main` verify is
@@ -94,7 +99,7 @@ export interface RepairInput {
 }
 
 export type RepairVerdict =
-  | { candidate: true; by: 'touches-file' | 'names-file'; file: string }
+  | { candidate: true; by: 'touches-file' | 'names-file' | 'reverts'; file: string }
   | { candidate: false; reason: 'no-overlap' | 'files-unknown' };
 
 /**
@@ -110,7 +115,17 @@ export function repairVerdict(pr: RepairInput, failingFiles: readonly string[]):
   for (const f of failingFiles) {
     for (const name of failingFileNames(f)) if (name.length > 0 && pr.text.includes(name)) return { candidate: true, by: 'names-file', file: f };
   }
+  if (failingFiles.length > 0 && isRevertText(pr.text)) return { candidate: true, by: 'reverts', file: failingFiles[0] };
   return { candidate: false, reason: pr.files ? 'no-overlap' : 'files-unknown' };
+}
+
+/**
+ * A revert PR, from its `prMatchText`: the title starts with "revert" (GitHub's
+ * button writes `Revert "<title>"`), or the body carries GitHub's
+ * `Reverts owner/repo#N` line. Pure.
+ */
+export function isRevertText(text: string): boolean {
+  return /^revert\b/.test(text) || /^reverts [\w.-]+\/[\w.-]+#\d+/m.test(text);
 }
 
 export interface HoldEntryInput extends RepairInput {
@@ -118,7 +133,7 @@ export interface HoldEntryInput extends RepairInput {
   kind?: 'main';
 }
 
-export interface RepairCandidate { pr: number; by: 'touches-file' | 'names-file'; file: string }
+export interface RepairCandidate { pr: number; by: 'touches-file' | 'names-file' | 'reverts'; file: string }
 
 export type MainRedHoldDecision =
   | { active: false; reason: 'disabled' | 'main-healthy' | 'no-red-head' | 'failing-files-unknown' }
@@ -178,5 +193,5 @@ export function decideMainRedHold(i: {
 export function holdReasonText(d: Extract<MainRedHoldDecision, { active: true }>): string {
   const files = d.failingFiles.join(', ');
   const fixing = d.repairPrs.length > 0 ? `PR${d.repairPrs.length > 1 ? 's' : ''} ${d.repairPrs.map((r) => `#${r.pr}`).join(', ')} ${d.repairPrs.length > 1 ? 'are' : 'is'} already fixing it` : 'no queued PR is fixing it yet';
-  return `main is ${d.state === 'main-red' ? 'red' : 'failing (re-run pending)'} on ${files}; ${fixing}. A PR that does not touch or name that file would fail the same check, so it waits until main is green. To run first, make the PR fix the check and name the failing file in its title or body.`;
+  return `main is ${d.state === 'main-red' ? 'red' : 'failing (re-run pending)'} on ${files}; ${fixing}. A PR that does not touch or name that file would fail the same check, so it waits until main is green. To run first, make the PR fix the check and name the failing file in its title or body. A revert of the breaking change also runs first.`;
 }

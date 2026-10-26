@@ -162,3 +162,14 @@ Checked sound by the reviewer: the `main` verify is never aged and stays above e
 ## Release-note wording (pre-push gate)
 
 The pre-push gate refused the first push. The fragment's user-facing paragraph used inline code and a camelCase config key. That paragraph is now plain words ("I can turn the waiting rule off for you"). This is a wording change only, with no runtime effect, and the review above still holds.
+
+---
+
+## Second-pass review (round 3: the five merge-path files on the verified head)
+
+**Reviewer:** independent reviewer subagent (Claude, fresh context), two passes on scripts/safe-merge.mjs, src/localVerify/LocalVerifyService.ts, src/localVerify/localVerifyWiring.ts, src/localVerify/mainRedHold.ts and src/localVerify/serviceSeams.ts
+**Outcome: concern raised on the first pass, fixed, concur on the second pass.**
+
+First pass (head b056067): no path to a wrong merge. The hold only narrows which queued entry `pump()` may start; records, pass/fail and the merge line are untouched, and the `safe-merge.mjs` change only adds text to the existing `refused:verify-pending` refusal. One real liveness defect: a plain revert of the breaking change neither touches nor names the failing test file, so it was held, and with no other fix queued `main` could stay red with nothing able to turn it green. Fixed: a PR whose title starts with "Revert" or whose body carries GitHub's `Reverts owner/repo#N` line is a repair candidate (`isRevertText`), and the hold reason and the attention-item note say so. Two comments corrected: an unknown-origin suspect keeps the watermark's red head (the hold can stay active there), and past-cap admission of candidates has no second cap. Accepted, recoverable: a repair PR restored at boot with an unreadable PR view stays held until its verify is requested again (the already-queued path re-reads it).
+
+Second pass (the fix): concur. The revert match was checked against real GitHub revert titles and bodies, and rejects prose "reverts", "reverting" and quoted lines. A false positive costs one verify run and can still merge only on a full pass. No consumer of the `by` union breaks; type check clean. Its one wording suggestion (the attention-item note) was applied. Targeted tests: tests/unit/localVerify/ and tests/integration/local-verify-routes.test.ts, 436 passed.
