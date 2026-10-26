@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-10-25T00:28:51.000Z",
-      "auditRef": "docs/audits/standards-building-tcc-protected-directories-2026-10-24.json",
-      "auditSha256": "f8bd546a7e616214258e02dd5b075574dae54dc4a0a0fda453ede8b54c4bff97",
-      "areaSha256": "91a7fc1537a3060e83fd64b7827cd8812596578be4336affd5318cca69673e5c",
+      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
+      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
+      "auditSha256": "faaadbcff56b83bd4abef435df7061ef44a8b9baf6ece29ec46b50ae69356e8e",
+      "areaSha256": "165b9387ff1a026e6d03bbeae8b6f674fd3182182ad3b901d5e6bdc43a12032f",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-09-23T02:56:09.000Z",
-      "auditRef": "docs/audits/standards-deadline-family-review-2026-09-22b.json",
-      "auditSha256": "0c7bea1a10b5dfb5145d3a9d572f0ea5ac209b7e778225b7d00d8a34c1ac3414",
-      "areaSha256": "9b36c471fe967bcd2b07c03c875343b91cfeaba836abcaffb63b5f0a9e7a7e9b",
+      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
+      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
+      "auditSha256": "faaadbcff56b83bd4abef435df7061ef44a8b9baf6ece29ec46b50ae69356e8e",
+      "areaSha256": "d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

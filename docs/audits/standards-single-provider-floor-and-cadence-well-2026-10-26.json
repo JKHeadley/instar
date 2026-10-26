@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-26T18:24:09.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 1
+  },
+  "convergenceReport": "docs/specs/reports/standards-single-provider-floor-and-cadence-well-2026-10-26.md",
+  "convergenceSha256": "c931cb83a28060546020e3b6f36d460d5bdf5bdc026cb7aacdfc357b0d278a32",
+  "areas": {
+    "Building": {
+      "areaSha256": "165b9387ff1a026e6d03bbeae8b6f674fd3182182ad3b901d5e6bdc43a12032f",
+      "verdict": "accepted"
+    },
+    "The Substrate": {
+      "areaSha256": "d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76",
+      "verdict": "accepted"
+    }
+  }
+}
