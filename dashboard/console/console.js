@@ -14,6 +14,7 @@ import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
 import { renderAllowed } from './allowed.js';
+import { renderPlans } from './plans.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -424,6 +425,8 @@ function footNote() {
 // Native feature pages, by hash path. A feature not listed here still opens its legacy tab.
 const NATIVE = {
   'work/promises': renderPromises,
+  'work/plans': renderPlans,
+  'work/plans/in-the-way': renderPlans,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,
   'people/messages': renderMessages,

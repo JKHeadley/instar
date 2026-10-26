@@ -42,9 +42,9 @@ export const GROUPS = [
       { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'Live sessions on every machine, with a terminal you can watch and type into.' },
       { id: 'jobs', label: 'Jobs', icon: 'clock', desc: 'Scheduled work: what runs when, and what happened last time.' },
       { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
-      { id: 'projects', label: 'Projects', icon: 'layers', desc: 'Multi-step plans and whether each round passed its checks.' },
-      { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Longer efforts in flight, and the items that need you.' },
-      { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'What looked like it stopped progress, and how sure that still is.' },
+      { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
+      { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Now inside Plans: longer efforts in flight, and the items that need you.' },
+      { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'Now inside Plans, under “In the way”: what looked stuck, and how sure that still is.' },
       { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Paste text or files straight into a session.' },
     ],
   },
@@ -100,6 +100,9 @@ export function allTabIds() {
 /** Features rebuilt natively in the console, by legacy tab id. */
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
+  projects: '#/work/plans',
+  initiatives: '#/work/plans',
+  blockers: '#/work/plans?s=in-the-way',
   machines: '#/capacity/machines',
   subscriptions: '#/capacity/accounts',
   origins: '#/people/messages',
