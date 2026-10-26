@@ -18,10 +18,6 @@ One more argument in that fixed list: `--no-chrome`. It is a documented Claude C
 
 Nothing about what the session may do is loosened: the permission mode, the allowed-tool list and the sandbox are unchanged, and the rehearsal still has to pass before any fix attempt starts. The tests that pin the exact start-up argument list now include the new argument. Undoing the change is a plain revert.
 
-## Carried alongside
-
-The repository's own commit check started refusing every change at midnight UTC because its list of approved AI models was last reviewed 45 days ago. That review is done in this same change: the Claude and Codex models on the list were each asked to answer live and did (the Gemini one could not be checked from this machine and is carried as is); two newer Claude ids are added to the approved list; nothing about which model is used changes.
-
 Two tests about re-signing-in to subscriptions also kept failing in the full check, and only there. They were using the machine's real "who has the browser" lock file, which another of my sessions genuinely held at the time, so they waited and timed out. They now use their own private lock file, like their neighbouring tests already did. I reproduced the failure on purpose and confirmed the fix against it.
 
 ## What you need to decide

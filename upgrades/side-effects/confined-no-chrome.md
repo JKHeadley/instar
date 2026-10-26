@@ -93,18 +93,9 @@ gets the change with the release.
 
 Revert the commit. No persisted state.
 
-## Carried alongside: model-registry review (a found problem that blocked this commit)
+## Model-registry review
 
-`scripts/model-registry-freshness.manifest.json`: the 45-day review window expired at 00:00 UTC
-2026-10-26 (last reviewed 2026-09-10) and the strict pre-commit lint began refusing every commit
-in the repo — including this PR's follow-up. Fix now (it blocks the current work): the review is
-done and recorded in `$lastReviewNote`. Pins re-checked live on 2026-10-25: codex `gpt-6-astra`
-answered three independent review runs that day; `claude-fable-5` (and the current Claude 5.5 ids
-`claude-fable-5-1`, `claude-opus-5-5`) answered `claude -p --model` probes on CLI 2.1.303 — the two
-5.5 ids are ADDED as frontier rows (verifiedAt 2026-10-25) and no pin moved, so routing is
-unchanged; `gemini-3.1-pro-preview` could not be re-probed (no gemini auth on the reviewing machine)
-and is carried unchanged. Rollback: revert the manifest hunk; the lint then fails again on
-staleness, which is the honest state.
+An earlier commit on this branch carried the overdue 45-day model-registry review; the same review landed on main independently (6a61272ca), so this branch takes main's manifest and carries none of its own.
 
 ## Carried alongside (2): two relogin tests stop using the machine-wide browser-seat lease
 
