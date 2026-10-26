@@ -15,6 +15,7 @@ import {
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { openPasteSheet, pasteOnMessage } from './send.js';
 
 const XTERM_JS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js';
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -79,6 +80,14 @@ function paint() {
   const key = wantKey();
   page.classList.toggle('has-open', Boolean(key));
   paintList(page.querySelector('.sess-list'), m, key);
+  // ?paste=1 (the old ?tab=dropzone link) opens the paste sheet once, then drops the flag.
+  const q = new URLSearchParams((location.hash.split('?')[1] || ''));
+  if (q.get('paste') === '1') {
+    q.delete('paste');
+    const rest = q.toString();
+    history.replaceState(null, '', `#/work/sessions${rest ? `?${rest}` : ''}`);
+    pasteSheet(key || null);
+  }
   const v = page.querySelector('.sess-view');
   if (!key) { if (st.view) leaveView(); setKids(v, el('p', { class: 'empty-line sess-pick', text: 'Pick a session to watch it and type to it.' })); return; }
   const row = m.ok ? m.rows.find((r) => r.key === key) : null;
@@ -116,7 +125,8 @@ function paintList(box, m, openKey) {
         m.idleMachines.map((i) => el('p', { class: `machine-line${i.ok ? '' : ' dashed'}`, text: `${i.name}: ${i.words}` }))));
     }
   }
-  parts.push(el('p', { class: 'foot-note' }, el('a', { href: legacyHref('dropzone'), text: 'Paste long text to a session' }), document.createTextNode(' · '), el('a', { href: legacyHref('sessions'), text: 'Open sessions in the legacy dashboard' })));
+  parts.push(el('div', { class: 'page-primary sess-paste' }, el('button', { class: 'btn-quiet', type: 'button', text: 'Paste to a session', 'data-paste': '1', onclick: () => pasteSheet(null) })));
+  parts.push(el('p', { class: 'foot-note' }, el('a', { href: legacyHref('sessions'), text: 'Open sessions in the legacy dashboard' })));
   setKids(box, parts);
   if (focused) {
     const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focused) : focused.replace(/["\\]/g, '\\$&');
@@ -169,6 +179,7 @@ function wsSend(msg) { if (st.ws && st.ws.readyState === 1) { st.ws.send(JSON.st
 
 function onMessage(msg) {
   if (!onPage()) { leaveView(); closeWs(); return; }
+  pasteOnMessage(msg);
   const v = st.view;
   switch (msg.type) {
     case 'sessions': st.wsList = Array.isArray(msg.sessions) ? msg.sessions : []; paint(); break;
@@ -367,9 +378,7 @@ function moreSheet(view) {
   ])];
   const actions = el('div', { class: 'sheet-actions sess-actions' });
   if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Switch door and model', 'data-door': '1', onclick: () => doorSheet(view) }));
-  actions.append(s.remote
-    ? note(`Long text can only be stored for sessions on this machine; type it into the composer instead, or open ${s.machineNickname}’s own console.`)
-    : el('a', { class: 'btn-quiet', href: legacyHref('dropzone'), text: 'Paste long text' }));
+  actions.append(el('button', { class: 'btn-quiet', type: 'button', text: 'Paste long text', 'data-paste-here': '1', onclick: () => pasteSheet(view.key) }));
   blocks.push(actions, closeBlock(view));
   const t = s.telemetry || {};
   blocks.push(details({
@@ -379,6 +388,12 @@ function moreSheet(view) {
     eventCount: t.eventCount ?? null, lastActivity: t.lastActivity || null,
   }, ['tmuxSession', 'id', 'machineId', 'model', 'startedAt', 'lastActivity', 'toolsUsed', 'backgroundTasks', 'eventCount']));
   sheet({ title: view.titleSub.closest('.sess-open').querySelector('.sess-title').textContent }, ...blocks);
+}
+
+/** The paste sheet (send.js): the target asked (most recent preselected), or fixed to one session. */
+function pasteSheet(fixedKey) {
+  const rows = st.model && st.model.ok ? st.model.rows : [];
+  openPasteSheet({ ctx: st.ctx, rows, fixedKey, wsSend, isViewing: (k) => Boolean(st.view && st.view.key === k) });
 }
 
 function closeBlock(view) {

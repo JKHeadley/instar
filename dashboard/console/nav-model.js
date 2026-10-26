@@ -45,7 +45,7 @@ export const GROUPS = [
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
       { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Now inside Plans: longer efforts in flight, and the items that need you.' },
       { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'Now inside Plans, under “In the way”: what looked stuck, and how sure that still is.' },
-      { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Paste text or files straight into a session.' },
+      { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Now inside Sessions: paste a long text (a log, a document, a big prompt) into a session, and see whether it arrived.' },
     ],
   },
   {
@@ -102,6 +102,7 @@ export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
   sessions: '#/work/sessions',
+  dropzone: '#/work/sessions?paste=1',
   projects: '#/work/plans',
   initiatives: '#/work/plans',
   blockers: '#/work/plans?s=in-the-way',
