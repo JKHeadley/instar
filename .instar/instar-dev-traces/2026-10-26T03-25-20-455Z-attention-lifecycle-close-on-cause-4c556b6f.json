@@ -13,5 +13,10 @@
   "tier": 2,
   "tierReasoning": "Test update for the one-row-per-condition contract (same id + changed body refreshes in place), part of the converged attention-lifecycle spec.",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "test-only commit: updates an assertion to the new refresh-in-place contract; adds no self-triggered action"
+  }
 }

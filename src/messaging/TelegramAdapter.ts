@@ -5175,7 +5175,21 @@ export class TelegramAdapter implements MessagingAdapter {
 
   private startAttentionLifecycleTimers(): void {
     if (this.attentionLifecycleTimer) return;
-    const tick = () => { try { this.runAttentionLifecyclePass(); } catch (err) { console.error(`[telegram] Attention lifecycle pass failed: ${err instanceof Error ? err.message : String(err)}`); } };
+    const tick = () => {
+      try {
+        this.runAttentionLifecyclePass();
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error(`[telegram] Attention lifecycle pass failed: ${reason}`);
+        DegradationReporter.getInstance().report({
+          feature: 'Telegram.AttentionLifecycle',
+          primary: 'Hourly pass merges duplicate attention rows, closes cleared conditions and expires untouched ones',
+          fallback: 'This pass skipped; rows stay as they are until the next hourly pass',
+          reason: `Attention lifecycle pass failed: ${reason}`,
+          impact: 'Attention list may keep stale or duplicate items until a pass succeeds.',
+        });
+      }
+    };
     this.attentionLifecycleBootTimer = setTimeout(tick, 2 * 60 * 1000);
     this.attentionLifecycleBootTimer.unref?.();
     this.attentionLifecycleTimer = setInterval(tick, 60 * 60 * 1000);

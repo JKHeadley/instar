@@ -121,6 +121,11 @@ Astra's verdict was "not ready" on the first draft; every finding is answered in
 
 ---
 
+
+## Verify-run fix (2026-10-26)
+
+The first local verify on the rebased head found one real regression: the hourly pass's catch only console-logged a failure, which `tests/unit/no-silent-fallbacks.test.ts` counts as a new silent fallback (495 over a 494 baseline). The catch now also reports `Telegram.AttentionLifecycle` to `DegradationReporter`; a failed pass is skipped and rows stay as they are until the next hour. No baseline change, no new authority, no new self-action. The relogin integration/e2e failures in the same run also fail on unrelated PRs (2350, 2356, 2357) and pass on main and in isolation; they are not caused by this change.
+
 ## Evidence pointers
 
 - `tests/unit/AttentionLifecycle.test.ts`, `tests/unit/attention-lifecycle-store.test.ts`, `tests/unit/commitment-operator-wait-expiry.test.ts`, `tests/unit/attention-producer-hooks.test.ts`
