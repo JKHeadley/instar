@@ -1715,6 +1715,9 @@ export interface RouteContext {
   /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
    *  Powers GET /processes/mcp-reaper observability. */
   mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
+  /** CodexArmSessionSweeper — closes orphaned `instar-codex-arm-*` tmux sessions.
+   *  Null when not wired. Powers GET /codex-arm-sweeper observability. */
+  codexArmSessionSweeper?: import('../monitoring/CodexArmSessionSweeper.js').CodexArmSessionSweeper | null;
   /** GeminiLoopRunner — multi-turn gemini loop-driver (need-gem-002). Null when not
    *  wired / dark. Powers POST + GET /gemini-loop/runs. */
   geminiLoopRunner?: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null;
@@ -10296,6 +10299,19 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.mcpProcessReaper.snapshot());
+  });
+
+  // CodexArmSessionSweeper (spec codex-arm-session-leak-and-sweeper.md) — the
+  // read-only answer to "are the codex arm sessions still leaking?": the posture
+  // (enabled, dryRun, the clamped age threshold) plus cumulative killed/kept/error
+  // counts and the last kills. Read-only, Bearer-auth. 503 ONLY when not wired; a
+  // disabled sweeper answers 200 with `enabled: false` (read the field, not the code).
+  router.get('/codex-arm-sweeper', (_req, res) => {
+    if (!ctx.codexArmSessionSweeper) {
+      res.status(503).json({ error: 'codex arm session sweeper unavailable' });
+      return;
+    }
+    res.json(ctx.codexArmSessionSweeper.getStatus());
   });
 
   // GeminiLoopRunner (need-gem-002) — the multi-turn gemini loop-driver. Lets a

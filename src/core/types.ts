@@ -7123,6 +7123,37 @@ export interface MonitoringConfig {
     maxAncestorHops?: number;
   };
   /**
+   * CodexArmSessionSweeper (spec docs/specs/codex-arm-session-leak-and-sweeper.md).
+   * Closes the detached `instar-codex-arm-*` tmux sessions codexHookArm leaks when
+   * the process that created them is killed before its `finally` runs — which is
+   * PostUpdateMigrator on every update, during which the server restarts (~8
+   * orphans/day measured on one laptop; 41 retired by hand across two sweeps).
+   * Reads the MACHINE (`tmux ls`), never instar's own session registry, because an
+   * arm session is never registered there — the exact reason the leak was invisible
+   * (`GET /sessions` said 11 while the machine held 112). Ships enabled in DRY-RUN:
+   * the source fix stops new orphans, so the sweeper reports the backlog and kills
+   * nothing until `dryRun: false`. GET /codex-arm-sweeper.
+   */
+  codexArmSessionSweeper?: {
+    enabled?: boolean;
+    /** Default true: report would-kills (`wouldKillDistinct`), kill nothing. */
+    dryRun?: boolean;
+    /** Default 900_000; clamped to a 300_000 floor (~2x the ~150 s modeled arming budget). */
+    maxAgeMs?: number;
+    sweepIntervalMs?: number;
+    initialPassDelayMs?: number;
+    /** Kill ATTEMPTS per pass (dry-run and failures count). Default 50. */
+    maxKillsPerPass?: number;
+    /** Wall-clock budget per pass for the synchronous kill path. Default 3000. */
+    maxPassMs?: number;
+    /** Consecutive unreadable passes before the breaker opens. Default 5. */
+    maxConsecutiveListFailures?: number;
+    /** While open, one probe is let through every this many passes. Default 6. */
+    breakerProbeEveryPasses?: number;
+    /** Failed kills of one name before it is never retried. Default 3. */
+    maxKillFailuresPerSession?: number;
+  };
+  /**
    * Agent hard-sleep — SleepController decision foundation (RESPONSIBLE-RESOURCE-
    * USAGE, Stage B; docs/specs/agent-hard-sleep-controller.md). Decides whether a
    * deeply-idle agent may drop its server to near-zero footprint, with safety

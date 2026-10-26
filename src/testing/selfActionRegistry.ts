@@ -229,6 +229,48 @@ const ageKillBackoff: SelfActionController = {
  * once-per-interval liveness line is the SEPARATE eternal-sentinel controller
  * below — a rate-floored constant-cost heartbeat, not a bounded action.)
  */
+/**
+ * codex-arm-session-sweep — CodexArmSessionSweeper's kill path (spec
+ * codex-arm-session-leak-and-sweeper §3.6-3.7). Under the worst case (every kill is
+ * refused, the orphan population never shrinks) each candidate is attempted at most
+ * maxKillFailuresPerSession (3) times and then never again, and a pass is capped at
+ * maxKillsPerPass attempts — so the total over ANY horizon is 3 × candidates: horizon-
+ * independent, which is the convergence this registry proves rather than the prose
+ * arithmetic the spec also carries. Modelled with 10 standing candidates.
+ */
+const codexArmSessionSweep: SelfActionController = {
+  id: 'codex-arm-session-sweep',
+  actionVerb: 'sweep-kill',
+  models: 'src/monitoring/CodexArmSessionSweeper.ts (killSession — per-session kill-failure brake + per-pass attempt cap)',
+  modelsPath: 'src/monitoring/CodexArmSessionSweeper.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart forgets the per-session failure counts; the next pass re-reads tmux and re-corroborates every candidate before any kill, and the per-pass cap bounds the first pass regardless.' },
+  boundK: 30,         // 10 candidates × 3 attempts each, then never again
+  perTargetBoundK: 3, // maxKillFailuresPerSession
+  ticks: 40,          // 40 passes; N=40 and 2N=80 both settle at 30
+  tickMs: 10 * 60_000, // one pass every 10 min (sweepIntervalMs)
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    const MAX_FAILURES = 3;
+    const MAX_ATTEMPTS_PER_PASS = 50;
+    const candidates = Array.from({ length: 10 }, (_, i) => `instar-codex-arm-${i}`);
+    const failures = new Map<string, number>();
+    return {
+      tick() {
+        sink.considered += 1; // one PASS considered per tick (the fixture's contract)
+        let attempted = 0;
+        for (const name of candidates) {
+          if ((failures.get(name) ?? 0) >= MAX_FAILURES) continue; // kill-failures-exhausted → kept
+          if (attempted >= MAX_ATTEMPTS_PER_PASS) continue;         // per-pass-cap → kept
+          attempted += 1;
+          sink.emit({ verb: 'killSession', target: name });
+          if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
+          else failures.delete(name);
+        }
+      },
+    };
+  },
+};
+
 const promiseBeaconNotify: SelfActionController = {
   id: 'promise-beacon-notify',
   actionVerb: 'beacon-notify',
@@ -2629,6 +2671,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   spendCapApproach,
   proactiveSwapMonitor,
   ageKillBackoff,
+  codexArmSessionSweep,
   promiseBeaconNotify,
   livenessHeartbeat,
   promiseBeaconInternalCadence,

@@ -3836,7 +3836,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
         const codexArmModel = 'gpt-5.2';
         armCodexHooks({
           projectDir,
-          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel }),
+          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel, log: (m) => console.warn(m) }),
         });
       } catch {
         // fail-soft — the post-update migrator re-arms on the next update.
