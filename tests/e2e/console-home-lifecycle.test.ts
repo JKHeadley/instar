@@ -30,6 +30,8 @@ import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
 import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js';
 import { buildPlansPage, projectActions, refusalWords } from '../../dashboard/console/plans-model.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { buildSchedulePage, buildHistory as buildRunHistory, runStartWords } from '../../dashboard/console/schedule-model.js';
+import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -39,6 +41,9 @@ describe('Console Home E2E (feature is alive)', () => {
   let tracker: CommitmentTracker;
   let features: FeatureRegistry;
   let initiatives: InitiativeTracker;
+  let state: StateManager;
+  let scheduler: JobScheduler;
+  let jobsFile = '';
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-home-e2e-'));
@@ -47,25 +52,37 @@ describe('Console Home E2E (feature is alive)', () => {
     fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
     tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir), originMachineId: 'e2e' });
     initiatives = new InitiativeTracker(stateDir);
+    state = new StateManager(stateDir);
+    // Three real jobs for the Schedule page: one with a recorded next-run time in the past
+    // (late), one switched off (never late), one whose state says it is running.
+    jobsFile = path.join(stateDir, 'jobs.json');
+    const jobDef = (slug: string, over: Record<string, unknown>) => ({ slug, name: slug, description: 'e2e', schedule: '0 0 1 1 *', priority: 'low', expectedDurationMinutes: 1, model: 'haiku', enabled: true, execute: { type: 'prompt', value: 'e2e' }, ...over });
+    fs.writeFileSync(jobsFile, JSON.stringify([jobDef('e2e-late', {}), jobDef('e2e-off', { enabled: false }), jobDef('e2e-busy', { priority: 'high', expectedDurationMinutes: 5 })], null, 2));
+    const nowMs = Date.now();
+    state.saveJobState({ slug: 'e2e-late', lastRun: new Date(nowMs - 5 * 3600_000).toISOString(), lastResult: 'success', nextScheduled: new Date(nowMs - 40 * 60_000).toISOString(), consecutiveFailures: 0 });
+    state.saveJobState({ slug: 'e2e-off', lastRun: new Date(nowMs - 5 * 3600_000).toISOString(), lastResult: 'failure', lastError: 'old', nextScheduled: new Date(nowMs - 40 * 60_000).toISOString(), consecutiveFailures: 2 });
+    state.saveJobState({ slug: 'e2e-busy', lastRun: new Date(nowMs - 2 * 60_000).toISOString(), lastResult: 'pending', consecutiveFailures: 0 });
     const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
       requestTimeoutMs: 10_000, version: '0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, monitoring: {} } as unknown as InstarConfig;
+      scheduler: { enabled: false, jobsFile, maxParallelJobs: 1 }, messaging: [], updates: {},
+      // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
+      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
     features = new FeatureRegistry(stateDir, { hmacKey: AUTH });
     await features.open();
     for (const def of BUILTIN_FEATURES) features.register(def);
     const autonomyManager = new AutonomyProfileManager({ stateDir, config });
-    server = new AgentServer({ config, commitmentTracker: tracker, featureRegistry: features, autonomyManager,
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
-      // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
-      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
-    server = new AgentServer({ config, commitmentTracker: tracker, initiativeTracker: initiatives,
-      sessionManager: { listRunningSessions: () => [], getSession: () => null } as never,
-      state: new StateManager(stateDir) });
+    const sessionManager = { listRunningSessions: () => [], getSession: () => null } as never;
+    // A real JobScheduler over the real jobs file (loaded, not started: no cron tasks, no
+    // missed-job sweep — the routes read exactly what the file and the saved state say).
+    scheduler = new JobScheduler({ jobsFile, enabled: true, maxParallelJobs: 1 } as never, sessionManager, state, stateDir);
+    scheduler.refreshJobs();
+    server = new AgentServer({ config, commitmentTracker: tracker, initiativeTracker: initiatives, featureRegistry: features, autonomyManager, sessionManager, state, scheduler });
     await server.start();
   });
 
   afterAll(async () => {
+    scheduler.stop();
     await server.stop();
     features.close();
     SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts' });
@@ -207,6 +224,8 @@ describe('Console Home E2E (feature is alive)', () => {
     // The guard list maps to rows or an honest reason.
     const g = buildGuards(await read('/guards'));
     if (g.ok) expect(g.counts.total).toBeGreaterThan(0); else expect(g.reason.length).toBeGreaterThan(10);
+  });
+
   it('the Plans page reads the real /projects, /initiatives and /blockers routes and its writes meet the real gates', async () => {
     await initiatives.create({ id: 'e2e-plan', title: 'Pick the launch name', description: 'd', phases: [{ id: 'a', name: 'Draft' }], needsUser: true, needsUserReason: 'choose between two names' } as never);
     await initiatives.create({ id: 'e2e-project', title: 'Console makeover', description: 'd', kind: 'project', phases: [{ id: 'a', name: 'Rounds' }],
@@ -249,5 +268,51 @@ describe('Console Home E2E (feature is alive)', () => {
     expect([200, 409, 503]).toContain(halt.status);
     // No PIN on any of these routes: the bearer token alone reached the gate (never a 401/403).
     for (const r of [resume, ack, halt]) expect([401, 403]).not.toContain(r.status);
+  });
+
+  it('the Schedule page reads the real /jobs routes through the model: late only when on and local, Run now and the switch meet the real gates', async () => {
+    const app = server.getApp();
+    const read = async (p: string) => {
+      const r = await request(app).get(p).set(auth);
+      return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const readAll = async () => ({ local: await read('/jobs'), pool: await read('/jobs?scope=pool'), history: await read('/jobs/history?limit=500'), migration: await read('/jobs/migration-status'), reconcile: await read('/jobs/reconcile') });
+    const page = buildSchedulePage(await readAll(), Date.now());
+    expect(page.ok).toBe(true);
+    expect(page.counts).toMatchObject({ total: 3, late: 1, failing: 0, running: 1, off: 1 });
+    const bySlug = (s: string) => [...page.sections.needs, ...page.sections.coming, ...page.sections.everything].find((r: { slug: string }) => r.slug === s)!;
+    // The past next-run time makes the enabled job late, in the plan's words; the same time on the off job does not.
+    expect(bySlug('e2e-late')).toMatchObject({ kind: 'late', end: 'late' });
+    expect(bySlug('e2e-late').sub).toMatch(/^past its recorded next-run time by \d+ min, not running · last ran 5 h ago ✓$/);
+    expect(bySlug('e2e-off')).toMatchObject({ kind: 'off', tone: null });
+    expect(bySlug('e2e-busy').kind).toBe('running');
+    expect(page.headline).toBe('3 scheduled jobs. 1 is late.');
+    expect(JSON.stringify(page)).not.toMatch(/missed|handled/i);
+    // Run now meets the real gates: a running job is refused as already running; a switched-off
+    // job is not admitted by the live scheduler (it records a skip with its reason).
+    const busy = await request(app).post('/jobs/e2e-busy/run').set(auth).send({});
+    expect(busy.status).toBe(409);
+    expect(runStartWords(busy.status, busy.body).text).toBe('Already running.');
+    const off = await request(app).post('/jobs/e2e-off/run').set(auth).send({});
+    expect(off.status).toBe(409);
+    expect(runStartWords(off.status, off.body).text).toContain('did not admit it');
+    const skips = await read('/skip-ledger?slug=e2e-off&sinceHours=1');
+    const hist = buildRunHistory(await read('/jobs/e2e-off/history?limit=50'), skips, Date.now());
+    expect(hist.ok).toBe(true);
+    expect(hist.marks.map((m: { word: string }) => m.word)).toContain('skipped (switched off)');
+    // The switch is the bearer-only PATCH; once off, the late job is "off", never late.
+    const patched = await request(app).patch('/jobs/e2e-late').set(auth).send({ enabled: false });
+    expect(patched.status).toBe(200);
+    expect(patched.body.enabled).toBe(false);
+    const after = buildSchedulePage(await readAll(), Date.now());
+    expect(after.counts).toMatchObject({ late: 0, off: 2 });
+    expect(bySlug('e2e-late').slug).toBe('e2e-late');
+    expect(after.sections.needs.map((r: { slug: string }) => r.slug)).toEqual([]);
+    const back = await request(app).patch('/jobs/e2e-late').set(auth).send({ enabled: true });
+    expect(back.status).toBe(200);
+    // Setup issues read the real migration + reconcile routes (an honest empty or items, never a crash).
+    expect(Array.isArray(after.setup.items)).toBe(true);
+    expect(after.setup.notes).toEqual([]);
+    for (const r of [busy, off, patched, back]) expect([401, 403]).not.toContain(r.status);
   });
 });
