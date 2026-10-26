@@ -28175,6 +28175,54 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // GET /preferences — the STRUCTURED learned preferences (console "What I've
+  // learned about you", docs/specs/console-features/people-settings.md). Read only.
+  // Same gate (503 when correction-learning is off) and the SAME source precedence
+  // as /preferences/session-context above (foundation union → WS2.1 merged view →
+  // own store), so the page and the injected block never disagree about what is
+  // kept. Every `learning` is credential-scrubbed at serve time (redactForLiveTail,
+  // the replication serve path's scrubber) on every source; `violationPattern` and
+  // replication bookkeeping are never served.
+  router.get('/preferences', async (_req, res) => {
+    try {
+      const cfg = ctx.config.monitoring?.correctionLearning;
+      if (cfg?.enabled !== true) {
+        res.status(503).json({ error: 'correction-learning disabled' });
+        return;
+      }
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+      const { buildPreferenceList, unionToPreferenceRows } = await import('../core/PreferencesListView.js');
+      const selfId = typeof ctx.meshSelfId === 'string' && ctx.meshSelfId.length > 0 ? ctx.meshSelfId : null;
+      const stateSyncPrefEnabled = resolveDevAgentGate(
+        (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
+          ?.stateSync?.preferences?.enabled,
+        ctx.config as { developmentAgent?: boolean },
+      );
+      if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
+        const { PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
+        const list = buildPreferenceList(unionToPreferenceRows(ctx.preferencesUnionReader.readAll(PREF_STORE_KEY)));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const manager = new PreferencesManager(ctx.config.stateDir);
+      const ws21Enabled =
+        (ctx.config.multiMachine as { seamlessness?: { ws21PreferencesPool?: boolean } } | undefined)
+          ?.seamlessness?.ws21PreferencesPool === true;
+      const replicas = ws21Enabled && selfId ? (ctx.preferenceReplicaStore?.allReplicas() ?? []) : [];
+      if (ws21Enabled && selfId && replicas.length > 0) {
+        const { mergePreferenceViews } = await import('../core/PreferencesSync.js');
+        const merged = mergePreferenceViews({ ownMachineId: selfId, own: manager.getAllForSync(), replicas });
+        const list = buildPreferenceList(merged.map((m) => ({ entry: m, origin: m.winningMachineId, redacted: m.textRedacted === true })));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const list = buildPreferenceList(manager.read().preferences.map((entry) => ({ entry, origin: selfId })));
+      res.json({ ...list, scope: 'local' });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read preferences' });
+    }
+  });
+
   // ── Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md) ──
   //
   // The "what I already have" block the session-start hook injects at boot:

@@ -998,3 +998,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .inside-fold .list-rows > .card-note:first-child { margin-top: var(--s-2); }
 .inside-lookup-out, .inside-chain-out, .inside-history { margin-top: var(--s-2); }
 .list-section .inside-fold { border: 0; border-top: 1px solid var(--hairline); border-radius: 0; background: none; padding: var(--s-1) 0 0; margin-top: var(--s-2); }
+
+/* Files: image preview (follow-up) */
+.files-image { margin: 0 0 12px; }
+.files-image img { display: block; max-width: 100%; max-height: 70vh; height: auto; margin: 0 auto; border-radius: 8px; background: var(--surface-raised); }
