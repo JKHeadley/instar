@@ -1,6 +1,6 @@
 # Attention-noise cleanup: what was closed (2026-10-25 to 2026-10-26)
 
-The operator reported on 2026-10-25 at 17:08 PDT (topic 127504) that the attention list was overwhelming and that most of it should not need them. The cause and the fix are in `docs/issues/attention-noise-items-never-close.md` and `docs/specs/attention-lifecycle-close-on-cause.md` (PR #2361, released in v1.3.1445). This report lists what the one-time cleanup closed, in the order it happened, with every security item checked by hand first.
+The operator reported on 2026-10-25 at 17:08 PDT (topic 127504) that the attention list was overwhelming and that most of it should not need them. The cause and the fix are in `docs/specs/attention-lifecycle-close-on-cause.md` (PR #2361, released in v1.3.1445). This report lists what the one-time cleanup closed, in the order it happened, with every security item checked by hand first.
 
 ## Result
 
