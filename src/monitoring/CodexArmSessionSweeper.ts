@@ -368,6 +368,11 @@ export class CodexArmSessionSweeper extends EventEmitter {
     // server down; a sweep must never be able to do that.
     const guarded = (): void => {
       try { this.sweep(); } catch (err) {
+        // @silent-fallback-ok — NOT a swallow: the throw is counted in `errorsTotal` (served on
+        // GET /codex-arm-sweeper, so a repeatedly-throwing sweep is visible) and logged with its
+        // message. Rethrowing is the thing that must not happen: an escaping setInterval throw is
+        // an uncaughtException that takes the whole server down, which is a far worse outcome than
+        // a missed sweep of a watch-only reporter.
         this.errorsTotal += 1;
         this.deps.log?.(`[codex-arm-sweeper] pass threw: ${(err as Error)?.message ?? err}`);
       }
