@@ -687,3 +687,50 @@ span.lchip { color: var(--text-muted); border-style: dashed; }
 .lane-tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px dashed var(--attn-line); color: var(--attn); }
 .page-hero .time-control { margin: var(--s-4) 0 0; }
 .page-hero .time-control + .facts { margin-top: var(--s-3); }
+/* ── Schedule (work.md: Jobs → Schedule) ──────────────────────────────── */
+.list-controls { display: flex; flex-direction: column; gap: var(--s-2); margin: var(--s-1) var(--s-2) var(--s-3); }
+.search-input { height: 44px; resize: none; }
+.sort-row { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+.sort-label { font-size: 13px; color: var(--text-muted); font-weight: 600; }
+.sort-row .filter-chips { margin: 0; }
+.sheet-summary { font-size: 15px; color: var(--text); line-height: 1.5; }
+.job-desc { margin: 0; font-size: 13.5px; color: var(--text-muted); line-height: 1.45; }
+.run-action { align-items: flex-start; }
+.run-live { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; border-radius: var(--r-md); border: 1px solid var(--accent); background: var(--accent-wash); color: var(--accent-strong); font-weight: 600; font-variant-numeric: tabular-nums; }
+.switch-action .switch-row { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.switch-word { font-size: 14px; font-weight: 600; color: var(--text-muted); }
+.switch.on + .switch-word { color: var(--accent); }
+.more-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-2); }
+.history { display: flex; flex-direction: column; gap: var(--s-2); }
+.run-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.run-day { font-size: 11.5px; font-weight: 600; color: var(--text-faint); margin: 0 4px 0 6px; }
+.run-day:first-child { margin-left: 0; }
+.run-mark { width: 14px; height: 22px; border-radius: 4px; border: 1px solid var(--hairline-strong); background: var(--surface-raised); padding: 0; cursor: pointer; flex: none; }
+.run-mark.success { background: var(--ok); border-color: var(--ok); opacity: .85; }
+.run-mark.failure, .run-mark.spawn-error { background: var(--bad); border-color: var(--bad); }
+.run-mark.timeout { background: var(--attn); border-color: var(--attn); }
+.run-mark.pending { background: var(--accent-wash); border-color: var(--accent); }
+.run-mark.skipped { background: transparent; border-style: dashed; border-color: var(--unknown-line); }
+button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mark-detail { margin: 0; min-height: 18px; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.run-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.run-list-day { font-size: 12px; font-weight: 700; color: var(--text-faint); padding: var(--s-2) 0 2px; text-transform: uppercase; letter-spacing: .04em; }
+.run-row { display: grid; grid-template-columns: 14px 1fr; gap: 10px; align-items: start; padding: 6px 0; border-top: 1px solid var(--hairline); font-size: 13.5px; }
+.run-row .run-mark { height: 16px; width: 10px; margin-top: 2px; cursor: default; }
+.run-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.run-row-title { color: var(--text); font-variant-numeric: tabular-nums; }
+.run-row-err { color: var(--bad); font-size: 12.5px; overflow-wrap: anywhere; }
+.setup-rows { display: flex; flex-direction: column; }
+.setup-item { display: grid; grid-template-columns: auto 1fr auto; gap: var(--s-3); align-items: start; padding: 10px var(--s-2); }
+.setup-item + .setup-item { border-top: 1px solid var(--hairline); }
+.setup-item > .dot { margin-top: 7px; }
+.setup-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 14px; color: var(--text); }
+.setup-main .row-sub { white-space: normal; color: var(--text-muted); font-size: 13px; }
+.setup-item .icon-btn { height: 36px; min-width: 36px; }
+.edit-form { display: flex; flex-direction: column; gap: var(--s-3); }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.field-stack { display: flex; flex-direction: column; gap: 4px; }
+.field-hint { font-size: 12.5px; color: var(--text-faint); }
+.edit-form .reason-input { margin: 0; }
+.list-section.bad .row-end { color: var(--bad); font-weight: 600; }

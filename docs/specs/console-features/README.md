@@ -179,6 +179,25 @@ honest interruption sheet, with an optional reason) and **Resume this round** (t
 own `roundIndex`). The three answers are told apart by what the server returned. The
 Projects, Initiatives and Blockers tiles open it (`blockers` lands on In the way).
 
+On branch `feat/console-native-schedule`, **Schedule** (`schedule.js`, `schedule-model.js`)
+is built natively: the pool view by default (`/jobs?scope=pool`, this machine's `/jobs`
+beside it so an absent scheduler is said, never shown as an empty list), *Needs a look*
+(late, failing, running long) then *Coming up* (the next three) then *Everything else*
+(collapsed, with search, the Instar defaults / Your jobs chips and the four legacy sort
+orders inside). *Late* is claimed only for a job that is on and runs on that machine, worded
+"past its recorded next-run time"; a disabled or out-of-scope job is "off" / "runs on …";
+no recorded time is "next run unknown". *Running long* needs a baseline (the median of
+measured runs, else the declared expected duration). A job on several machines is one row
+with the worst status named by machine, and each machine keeps its own outcome, next run
+and Run now / On-Off target inside the sheet. The sheet has the sentence, Run now (a live
+line that follows the run to its end, however long), the On/Off switch (asks only when
+switching off a high/critical job), the last 20 runs as marks with day separators plus
+**Show all 50** as a dated list (skips carry their recorded reason from the skip ledger),
+"⋯ More" with Edit / Make my own copy / Go back to the default, and a Details fold. The
+migration banner and the file-issues card are one collapsed **Setup issues** line at the
+bottom, each explained in a sentence. Live updates ride `/jobs/events`; a dropped stream
+says "live updates paused" with its age. The Jobs tile opens it.
+
 Where the build was the more honest choice, the plan was changed to match it:
 
 - **Plans:** when `/initiatives/digest` fails, *Needs you* is still read from each plan's

@@ -16,6 +16,7 @@ import { renderMessages } from './messages.js';
 import { renderAllowed } from './allowed.js';
 import { renderPlans } from './plans.js';
 import { renderCosts } from './costs.js';
+import { renderSchedule } from './schedule.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -428,6 +429,7 @@ const NATIVE = {
   'work/promises': renderPromises,
   'work/plans': renderPlans,
   'work/plans/in-the-way': renderPlans,
+  'work/schedule': renderSchedule,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
