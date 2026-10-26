@@ -274,6 +274,23 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
 }
 
+/**
+ * Feature switches apply their setting (spec feature-transition-applies-action).
+ * SHARED by `generateClaudeMd` and `migrateClaudeMd` (Agent Awareness + Migration
+ * Parity). Content-sniff marker: the heading below.
+ */
+export function FEATURE_SWITCH_CLAUDEMD_SECTION(port: number): string {
+  return `
+
+### Feature switches apply their setting (read \`effective\` before saying a feature is on)
+
+\`POST /features/:id/transition\` to \`enabled\`/\`disabled\` now ALSO sends the feature's own setting change (its \`enableAction\`/\`disableAction\`, e.g. \`PATCH /config\`) server-side, one switch per feature at a time, and answers with \`apply\` — \`{ outcome: applied | refused | failed | not-applied, httpStatus, detail }\`. The recorded choice is kept even when the setting change is refused; \`apply.detail\` carries the route's reason.
+- **Registry First — is feature X actually on?** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/features/X\` → \`effective\`: \`recorded\` (the switch), \`configured\` (the config key now), \`atBoot\` (the key when this process started; null = unknown), \`status\` (\`on\` · \`off\` · \`on-after-restart\` · \`off-after-restart\` · \`recorded-only\` · \`not-recorded\`) and a plain \`summary\`. Quote the summary; never tell the user a feature is "on" from \`state.enabled\` alone, and never say "running" — \`on\` means the setting was on at start, not a verified process.
+- The operator's own switch (the dashboard Features tab, with a fresh PIN unlock as \`X-Instar-Operator-Session\`) may set any feature on/off from any state and is itself the consent record. An agent call without that proof still walks the discovery graph (consent record, activation challenge) exactly as before.
+- **When to use** (PROACTIVE): user asks "I switched X on, why isn't it working?" → read \`effective.status\` + \`lastAttempt\`; \`recorded-only\` with a reason means the setting change was refused (fix the cause, then switch again); \`on-after-restart\` means it needs a restart (offer \`POST /sessions/restart-all\` or a server restart as appropriate).
+`;
+}
+
 export function CODEX_CONNECT_CLAUDEMD_SECTION(): string {
   return `
 
@@ -7652,6 +7669,16 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Hand-started Codex connect section');
     }
 
+    // Feature switches apply their setting (spec feature-transition-applies-action) —
+    // Agent Awareness + Migration Parity: existing agents learn `apply` + `effective`
+    // and stop reporting a feature as on from state.enabled alone. Same text as
+    // generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('### Feature switches apply their setting')) {
+      content += FEATURE_SWITCH_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feature switches apply their setting section');
+    }
+
     // Normal-Chrome browser (spec normal-chrome-builtin-skill) — Agent Awareness +
     // Migration Parity: existing agents learn when to reach for /normal-chrome-browser
     // and its helper scripts. Same text as generateClaudeMd. Content-sniff on the heading.
@@ -10406,6 +10433,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
 
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/green-pr-automerge\` — last tick, breaker, episodes, the dual-latch gate, the Layer-2 snapshot, plus \`armedCount\` + \`armed[]\` (PRs whose GitHub native auto-merge is armed and waiting on CI).
 - **How the merge happens (\`mergeStrategy\`).** Default \`auto\`: the watcher ARMS GitHub native auto-merge (\`safe-merge … --auto\`) and hands the wait off to GitHub — GitHub merges the instant every required check passes (enforcing branch protection, never bypassing it), so a server-restart-mid-merge can't strand it. The eventual merge is confirmed on a later reconciliation tick. \`mergeStrategy:'admin'\` restores the legacy synchronous poll-then-\`--admin\` behavior — the rollback lever and the escape hatch for a repo with "Allow auto-merge" disabled. An \`armed\`/\`armed-overdue\` (>24h, surfaced) episode means "GitHub owns the merge, waiting on CI" — not a failure.
+- **Which PRs count as mine:** a branch starting with my namespace (\`echo/\`) OR a same-repository PR opened by my \`expectedGhLogin\`, whatever its prefix (\`fix/\`, \`chore/\`, …). A fork is never mine. A listed PR still refused as not mine is in \`notAgentOwned[]\` with \`notAgentOwnedCount\` on GET /green-pr-automerge (and one \`skipped:not-agent-owned\` audit line per head), never silent.
 - **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
 - **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
 - **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
@@ -10417,7 +10445,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
       content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
-    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review')) {
+    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review') || !content.includes('notAgentOwnedCount')) {
       // OLD section present (route string yes, the updated-copy marker no) →
       // replace the section body with the updated content. Match from the
       // section heading up to (but not including) the next top-level heading.
@@ -10430,7 +10458,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
         content += '\n' + GREEN_PR_SECTION;
       }
       patched = true;
-      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review)');
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review + author ownership)');
     } else {
       result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }
@@ -12273,6 +12301,7 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // peer-credential-guard-tailscale-coherence: a pool read's failure reasons
       // are server-side and framework-neutral — a Codex/Gemini agent runs the

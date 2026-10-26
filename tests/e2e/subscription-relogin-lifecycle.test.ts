@@ -9,6 +9,7 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SubscriptionReloginStore } from '../../src/core/SubscriptionReloginStore.js';
 import { createSubscriptionReloginRuntime } from '../../src/core/SubscriptionReloginRuntime.js';
+import { PlaywrightSeatLease } from '../../src/core/PlaywrightSeatLease.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { getInitDefaults } from '../../src/config/ConfigDefaults.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -267,6 +268,8 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
       fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(), readPasteCode: vi.fn(),
       wait: vi.fn(), close: vi.fn(async () => {}) };
     const runtime = createSubscriptionReloginRuntime({ stateDir: cfg.stateDir, projectDir: root,
+      // A private seat lease, never the machine-wide file under HOME (see the integration test).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(root, 'seat-lease.json') }),
       machineId: 'machine-1', mode: 'approval', pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-api', measuredAt: new Date().toISOString() })) } as any,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as any,
@@ -338,6 +341,8 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
         controls: [{ n: 1, text: 'Continue', identities: [] }] })),
       clickControl: vi.fn(async () => { crossed = true; }) };
     const runtime = createSubscriptionReloginRuntime({ stateDir: cfg.stateDir, projectDir: root,
+      // A private seat lease, never the machine-wide file under HOME (see the integration test).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(root, 'seat-lease.json') }),
       machineId: 'machine-1', mode: 'approval', pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-api', measuredAt: new Date().toISOString() })) } as any,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as any,

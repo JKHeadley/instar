@@ -48,6 +48,7 @@ import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
+import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
@@ -241,7 +242,7 @@ import { CanonicalState } from '../core/CanonicalState.js';
 import { ExternalOperationGate, AUTONOMY_PROFILES } from '../core/ExternalOperationGate.js';
 import { MessageSentinel } from '../core/MessageSentinel.js';
 import { AdaptiveTrust } from '../core/AdaptiveTrust.js';
-import { AutonomyProfileManager } from '../core/AutonomyProfileManager.js';
+import { AutonomyProfileManager, PROFILE_DEFAULTS } from '../core/AutonomyProfileManager.js';
 import { TrustElevationTracker } from '../core/TrustElevationTracker.js';
 import { AutonomousEvolution } from '../core/AutonomousEvolution.js';
 import { DispatchScopeEnforcer } from '../core/DispatchScopeEnforcer.js';
@@ -623,6 +624,12 @@ let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+// merge-line-author-eligibility-and-handoff-resume (D2): the topic's open
+// commitments for a no-message respawn's continuation instruction. Late-bound to
+// the real CommitmentTracker once it is constructed; null ⇒ 'unavailable'.
+let _activeCommitmentsForTopic:
+  | ((topicId: number) => Array<HandoffCommitment & { createdAt?: string }>)
+  | null = null;
 
 /** Narrow, testable ownership of the stale-generation recovery side effect. */
 export function clearGenerationlessCodexResumeBinding(
@@ -1418,9 +1425,21 @@ export async function spawnSessionForTopic(
         `[telegram:${topicId}] ${msg}`,
       );
     } else {
-      parts.push(
-        `HANDOFF ONLY: No new user message accompanies this framework switch. Load the context above, do not narrate or re-scope it, and wait silently for the next user message.`,
-      );
+      // D2: resume in-flight work (after a stop/already-done check); wait silently
+      // only when nothing is in flight. Unreadable commitments are 'unavailable', never "none".
+      let openCommitments: HandoffCommitment[] | 'unavailable' = 'unavailable';
+      if (_activeCommitmentsForTopic) {
+        try {
+          openCommitments = [..._activeCommitmentsForTopic(topicId)]
+            .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+        } catch (err) {
+          console.warn(`[telegram→session] Open commitments for topic ${topicId} could not be read for the handoff instruction: ${err instanceof Error ? err.message : String(err)}`);
+          openCommitments = 'unavailable';
+        }
+      } else {
+        console.warn(`[telegram→session] Open commitments for topic ${topicId} unavailable for the handoff instruction (tracker not wired)`);
+      }
+      parts.push(buildHandoffContinuationInstruction(openCommitments));
     }
 
     bootstrapMessage = parts.join('\n');
@@ -14497,6 +14516,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the §3.5.2 bind-pin and denormalizes boundTuple onto the commitment.
     commitmentTracker.setConversationBinder(conversationBinder);
     commitmentTracker.start();
+    _activeCommitmentsForTopic = (topicId) => commitmentTracker.getActiveByTopicId(topicId);
     console.log(pc.green('  Commitment tracker enabled'));
 
     // SubscriptionPool — multi-account subscription registry (P1.1 of the
@@ -19876,6 +19896,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     for (const def of BUILTIN_FEATURES) {
       featureRegistry.register(def);
     }
+    // Autonomous evolution is on iff the RESOLVED approval mode is 'autonomous' — an explicit
+    // evolution.approvalMode, else the autonomy profile's default — exactly as the consumer
+    // above decides. Shared with the shown state so bootstrap and `effective` agree
+    // (spec feature-transition-applies-action §2.7, review r2).
+    featureRegistry.setConfiguredResolver('autonomous-evolution', (cfg) => {
+      const explicit = (cfg.evolution as { approvalMode?: unknown } | undefined)?.approvalMode;
+      const mode = explicit === 'autonomous' || explicit === 'ai-assisted'
+        ? explicit
+        : PROFILE_DEFAULTS[autonomyManager.getProfile()].evolutionApprovalMode;
+      return mode === 'autonomous';
+    });
     if (featureRegistryReady) {
       featureRegistry.bootstrap(config as unknown as Record<string, unknown>);
     }
@@ -22443,6 +22474,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const wiringOpts = {
             repoPath, safeMergePath, stateDir: config.stateDir, machineId: gpMachineId,
             repo: 'JKHeadley/instar', agentNamespace,
+            expectedGhLogin: typeof (gpCfg as { expectedGhLogin?: unknown }).expectedGhLogin === 'string' ? (gpCfg as { expectedGhLogin: string }).expectedGhLogin : undefined,
             mergeTimeoutMs: Number(gpCfg.mergeTimeoutMs) || 1_500_000,
             mergeKillGraceMs: Number(gpCfg.mergeKillGraceMs) || 60_000,
             // mergerunner-auto-arm-handoff M2: thread the two runner-path fields so

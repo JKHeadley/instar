@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "merge-line-author-eligibility-and-handoff-resume",
+  "sessionId": "fe3b6771-cae2-4772-a409-5c421bd20f5d",
+  "timestamp": "2026-10-26T03:16:40.835Z",
+  "artifactPath": "upgrades/side-effects/merge-line-author-eligibility-and-handoff-resume.md",
+  "artifactSha256": "431e2e63c75bf9b45b90cc4254a2eff50bf902eb82a90b1c1c3cf039dda10d0d",
+  "coveredFiles": [
+    "docs/specs/merge-line-author-eligibility-and-handoff-resume.eli16.md",
+    "docs/specs/merge-line-author-eligibility-and-handoff-resume.md",
+    "docs/specs/reports/merge-line-author-eligibility-and-handoff-resume-convergence.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/handoffContinuation.ts",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/greenPrAutomergeWiring.ts",
+    "src/monitoring/greenPrLogic.ts",
+    "src/server/routes.ts",
+    "tests/e2e/merge-line-author-eligibility-lifecycle.test.ts",
+    "tests/integration/green-pr-automerge-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-mergeRunnerAutoArm.test.ts",
+    "tests/unit/handoff-continuation.test.ts",
+    "tests/unit/merge-line-author-eligibility.test.ts",
+    "tests/unit/topic-profile-server-wiring.test.ts",
+    "upgrades/next/merge-line-author-eligibility-and-handoff-resume.md",
+    "upgrades/side-effects/merge-line-author-eligibility-and-handoff-resume.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A filter widening plus an injected-instruction change; both fully undone by a revert, no state migration, no new authority.",
+  "eli16Path": "docs/specs/merge-line-author-eligibility-and-handoff-resume.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/merge-line-author-eligibility-and-handoff-resume.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered controller is added or modified: D1 widens a candidacy filter on the existing watcher (cadence, breaker, single-flight unchanged); D2 changes the text of a respawn existing callers already trigger, adding no new restart/respawn/spawn/notify/retry emit"
+  }
+}
