@@ -29,6 +29,7 @@ import { FeatureRegistry } from '../../src/core/FeatureRegistry.js';
 import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
 import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js';
 import { buildPlansPage, projectActions, refusalWords } from '../../dashboard/console/plans-model.js';
+import { buildCostsPage, windowParams, spendQuery } from '../../dashboard/console/costs-model.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 
 describe('Console Home E2E (feature is alive)', () => {
@@ -249,5 +250,45 @@ describe('Console Home E2E (feature is alive)', () => {
     expect([200, 409, 503]).toContain(halt.status);
     // No PIN on any of these routes: the bearer token alone reached the gate (never a 401/403).
     for (const r of [resume, ack, halt]) expect([401, 403]).not.toContain(r.status);
+  });
+
+  it('the costs page runs the real spend, token, metrics, insights and routing routes through its model and maps every answer to honest words', async () => {
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const w = windowParams('week');
+    const res = {
+      spend: await read(`/routing-spend/summary?${spendQuery('day', w.sinceHours)}`), caps: await read('/routing-spend/caps'), status: await read('/routing-spend/enable-status'),
+      metrics: await read(`/metrics/features?sinceHours=${w.sinceHours}`), insights: await read('/insights/llm-activity'),
+      tokens: await read(`/tokens/summary?since=${w.sinceMs}`), claude: await read(`/tokens/sessions?since=${w.sinceMs}&limit=20`), codex: await read(`/tokens/codex-sessions?since=${w.sinceMs}&limit=20`), orphans: await read('/tokens/orphans?idleMs=1800000'),
+      chains: await read('/intelligence/routing/chains'), names: {},
+    };
+    // Every read answered through the real auth + routing stack (never a 401/403/404/500).
+    for (const [k, r] of Object.entries(res)) if (k !== 'names') expect((r as { ok: boolean; reason?: string }).ok || /switched off/.test((r as { reason: string }).reason), k).toBe(true);
+    const page = buildCostsPage(res, Date.now(), { window: 'week' });
+    expect(typeof page.headline).toBe('string');
+    expect(page.headline.length).toBeGreaterThan(10);
+    // A 503 maps to "switched off" words, a 200 to a real reading — never a fabricated figure.
+    const off = (s: string) => s === 'off';
+    if (off(page.recorded.state)) expect(page.headline).toBe('Spend figures aren’t available on this agent.');
+    else { expect(page.recorded.state).toBe('ok'); expect(page.headline).toMatch(/^Recorded on this machine this week: /); }
+    if (off(page.checks.state)) expect(page.checks.reason).toBe('Background checks aren’t tracked on this agent.');
+    else { expect(page.checks.state).toBe('ok'); expect(typeof page.checks.real).toBe('number'); }
+    if (off(page.conversations.state)) expect(page.conversations.reason).toBe('Conversation token use isn’t tracked here.');
+    else {
+      expect(page.conversations.state).toBe('ok');
+      // The two lines come from the real summary fields and are never one total.
+      expect(page.conversations.claude.line).toMatch(/^Claude: \d+ conversations? processed /);
+      if (page.conversations.codex) expect(page.conversations.codex.line).toMatch(/^Codex: .* over (its|their) whole life\.$/);
+    }
+    if (off(page.routing.state)) expect(page.routing.reason).toBe('No AI routing is configured on this agent.');
+    else expect(page.routing.state).toBe('ok');
+    expect(['off', 'ok', 'failed']).toContain(page.limits.controls.state);
+    expect(page.limits.controls.state).not.toBe('failed');
+    for (const f of page.facts) { expect(typeof f.label).toBe('string'); expect(String(f.n).length).toBeGreaterThan(0); }
+    // The console sends no write to any money route; the only write-shaped routes refuse or are dark.
+    const freeze = await request(server.getApp()).post('/routing-spend/freeze').set(auth).send({ keyRef: 'x' });
+    expect([400, 404, 409, 503]).toContain(freeze.status);
   });
 });

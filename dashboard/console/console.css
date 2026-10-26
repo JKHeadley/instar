@@ -655,3 +655,33 @@ span.lchip { color: var(--text-muted); border-style: dashed; }
 .step.blocked .step-mark, .step.blocked .step-when { color: var(--bad); }
 .step-when { font-size: 12.5px; color: var(--text-faint); }
 .sheet-danger .reason-input { margin-top: 0; }
+/* ── What thinking costs (capacity.md: Spend + Tokens + LLM activity + Routing map) ── */
+.page-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-4); }
+.page-controls .filter-chips { margin: 0; }
+.head-link { min-height: 40px; font-size: 14px; }
+.list-source { font-size: 12.5px; color: var(--text-faint); }
+.list-section.committed { border-style: dashed; border-color: var(--hairline-strong); }
+.more-detail { margin-top: var(--s-3); }
+.more-detail .filter-chips { margin: var(--s-2) 0; }
+.check-row .row-main { display: flex; flex-direction: column; gap: 5px; }
+.check-bar { width: min(100%, 260px); height: 5px; margin-top: 2px; }
+.meter .m-acted { background: var(--ok); }
+.meter .m-quiet { background: var(--hairline-strong); }
+.meter .m-other { background: var(--slate-500); }
+.meter .m-skipped { background: repeating-linear-gradient(45deg, var(--unknown-line) 0 4px, transparent 4px 8px); }
+.meter .m-failed { background: var(--bad); }
+.insight-line { display: flex; flex-direction: column; gap: 3px; margin: var(--s-2) 0 0; padding: 10px 12px; border-left: 3px solid var(--accent); border-radius: var(--r-sm); background: var(--accent-wash); color: var(--text); font-size: 14px; }
+.insight-stamp { font-size: 12px; color: var(--text-faint); }
+.conv-group { padding: var(--s-2) 0; }
+.conv-group + .conv-group { border-top: 1px dashed var(--hairline-strong); }
+.conv-group .list-section { border: 0; background: none; padding: 0; }
+.conv-line { margin: 0 0 var(--s-1); color: var(--text-strong); font-size: 15px; font-weight: 600; }
+.controls-body { padding: var(--s-2) 0 0; }
+.lanes { display: flex; flex-direction: column; gap: var(--s-3); }
+.lane { display: grid; grid-template-columns: 96px 1fr; gap: 8px; align-items: baseline; font-size: 14px; }
+.lane-name { font-weight: 600; color: var(--text-strong); }
+.lane-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text); }
+.lane-arrow { color: var(--text-faint); }
+.lane-pos { display: inline-flex; align-items: center; gap: 6px; }
+.lane-pos.paid { color: var(--text-muted); }
+.lane-tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px dashed var(--attn-line); color: var(--attn); }
