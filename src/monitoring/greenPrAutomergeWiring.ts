@@ -47,7 +47,7 @@ import {
   type IndependentReviewVerdict,
   freshState,
 } from './GreenPrAutoMerger.js';
-import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, NO_CHECKS_ROLLUP, type PrSummary } from './greenPrLogic.js';
+import { latestRunPerCheck, failingChecksFromRollup, FAILING_CONCLUSIONS, NO_CHECKS_ROLLUP, agentOwnership, type PrSummary } from './greenPrLogic.js';
 
 /**
  * The verifier's protected list (local-verify `protectedList`): a PR touching these
@@ -113,6 +113,8 @@ export const REFETCH_PR_JSON_FIELDS: readonly string[] = [
 export const LIST_PR_JSON_FIELDS: readonly string[] = [
   'number', 'title', 'labels', 'isDraft', 'headRefName', 'headRefOid', 'baseRefName', 'mergeable',
   'statusCheckRollup', 'autoMergeRequest', 'reviewDecision', 'createdAt',
+  // merge-line-author-eligibility: ownership by author on a same-repo head.
+  'author', 'isCrossRepository',
 ];
 
 const UNKNOWN_JSON_FIELD_RE = /Unknown JSON field:\s*"([^"]+)"/i;
@@ -190,6 +192,8 @@ export interface GreenPrWiringOpts {
   machineId: string;
   repo: string;
   agentNamespace: string;
+  /** merge-line-author-eligibility: the agent's GitHub login (ownership by author for holds). */
+  expectedGhLogin?: string;
   mergeTimeoutMs: number;
   mergeKillGraceMs: number;
   /**
@@ -443,13 +447,19 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       return login || null;
     },
     holdEligible: async (pr: number) => {
-      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'state,headRefName']);
+      const r = await exec(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'state,headRefName,author,isCrossRepository']);
       if (r.code !== 0) return { ok: false, status: 404, detail: 'PR not found' };
       try {
         const j = JSON.parse(r.stdout);
         if (j.state !== 'OPEN') return { ok: false, status: 409, detail: `PR is ${j.state}` };
-        const ns = opts.agentNamespace.endsWith('/') ? opts.agentNamespace : `${opts.agentNamespace}/`;
-        if (!String(j.headRefName ?? '').startsWith(ns)) return { ok: false, status: 403, detail: 'PR is not in this agent\'s namespace' };
+        // merge-line-author-eligibility: a hold covers every PR the watcher can merge
+        // (namespace OR same-repo author), using the SAME ownership read.
+        const own = agentOwnership({
+          headRefName: String(j.headRefName ?? ''),
+          ...(typeof j.author?.login === 'string' ? { authorLogin: j.author.login } : {}),
+          ...(typeof j.isCrossRepository === 'boolean' ? { isCrossRepository: j.isCrossRepository } : {}),
+        }, opts.agentNamespace, opts.expectedGhLogin);
+        if (!own.owned) return { ok: false, status: 403, detail: `PR is not this agent's own (${own.reason})` };
         return { ok: true };
       } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return { ok: false, status: 502, detail: 'unparseable gh response' }; }
     },
@@ -498,6 +508,10 @@ export function mapPr(row: Record<string, unknown>): PrSummary {
     // red-pr-watchdog: the latest-run-per-check FAILING checks (no new gh call —
     // derived from the same rollup the list projection already fetched).
     failingChecks: failingChecksFromRollup(rollup),
+    // merge-line-author-eligibility: absent fields stay absent (only the namespace rule admits then).
+    ...(row.author && typeof (row.author as { login?: unknown }).login === 'string'
+      ? { authorLogin: (row.author as { login: string }).login } : {}),
+    ...(typeof row.isCrossRepository === 'boolean' ? { isCrossRepository: row.isCrossRepository } : {}),
   };
 }
 

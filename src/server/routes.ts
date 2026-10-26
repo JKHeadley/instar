@@ -16017,6 +16017,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       redPrWatchdog: wd.config,
       snapshot: state.snapshot,
       namespaceMismatch: state.namespaceMismatch ?? null,
+      // merge-line-author-eligibility: listed PRs refused as not the agent's own. NON-OPTIONAL.
+      notAgentOwnedCount: (state.notAgentOwned ?? []).length,
+      notAgentOwned: state.notAgentOwned ?? [],
       configuration,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,

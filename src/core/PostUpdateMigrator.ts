@@ -10365,6 +10365,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
 
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/green-pr-automerge\` — last tick, breaker, episodes, the dual-latch gate, the Layer-2 snapshot, plus \`armedCount\` + \`armed[]\` (PRs whose GitHub native auto-merge is armed and waiting on CI).
 - **How the merge happens (\`mergeStrategy\`).** Default \`auto\`: the watcher ARMS GitHub native auto-merge (\`safe-merge … --auto\`) and hands the wait off to GitHub — GitHub merges the instant every required check passes (enforcing branch protection, never bypassing it), so a server-restart-mid-merge can't strand it. The eventual merge is confirmed on a later reconciliation tick. \`mergeStrategy:'admin'\` restores the legacy synchronous poll-then-\`--admin\` behavior — the rollback lever and the escape hatch for a repo with "Allow auto-merge" disabled. An \`armed\`/\`armed-overdue\` (>24h, surfaced) episode means "GitHub owns the merge, waiting on CI" — not a failure.
+- **Which PRs count as mine:** a branch starting with my namespace (\`echo/\`) OR a same-repository PR opened by my \`expectedGhLogin\`, whatever its prefix (\`fix/\`, \`chore/\`, …). A fork is never mine. A listed PR still refused as not mine is in \`notAgentOwned[]\` with \`notAgentOwnedCount\` on GET /green-pr-automerge (and one \`skipped:not-agent-owned\` audit line per head), never silent.
 - **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
 - **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
 - **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
@@ -10376,7 +10377,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
       content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
-    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review')) {
+    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review') || !content.includes('notAgentOwnedCount')) {
       // OLD section present (route string yes, the updated-copy marker no) →
       // replace the section body with the updated content. Match from the
       // section heading up to (but not including) the next top-level heading.
@@ -10389,7 +10390,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
         content += '\n' + GREEN_PR_SECTION;
       }
       patched = true;
-      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review)');
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review + author ownership)');
     } else {
       result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }
