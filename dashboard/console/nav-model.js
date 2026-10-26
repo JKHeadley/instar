@@ -39,7 +39,7 @@ export const GROUPS = [
     id: 'work', label: 'Work', icon: 'work',
     question: 'What is being done, and what was promised?',
     tabs: [
-      { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'Live sessions on every machine, with a terminal you can watch and type into.' },
+      { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'What is running on every machine, which one has gone quiet, and a live terminal you can watch and type into.' },
       { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
       { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
@@ -101,6 +101,7 @@ export function allTabIds() {
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
+  sessions: '#/work/sessions',
   projects: '#/work/plans',
   initiatives: '#/work/plans',
   blockers: '#/work/plans?s=in-the-way',
