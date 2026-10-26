@@ -40,7 +40,7 @@ interface ProfileDefaults {
   discoveryAggressiveness: DiscoveryAggressiveness;
 }
 
-const PROFILE_DEFAULTS: Record<AutonomyProfileLevel, ProfileDefaults> = {
+export const PROFILE_DEFAULTS: Record<AutonomyProfileLevel, ProfileDefaults> = {
   cautious: {
     evolutionApprovalMode: 'ai-assisted',
     safetyLevel: 1,

@@ -21,11 +21,13 @@ function createTmpState(): { stateDir: string; cleanup: () => void } {
   };
 }
 
-function tracker(stateDir: string, dryRun = false): CommitmentTracker {
+function tracker(stateDir: string, extra: boolean | { operatorWait?: { enabled?: boolean; maxAgeDays?: number; dryRun?: boolean } } = false): CommitmentTracker {
+  const dryRun = typeof extra === 'boolean' ? extra : false;
   return new CommitmentTracker({
     stateDir,
     liveConfig: new LiveConfig(stateDir),
     autoExpiry: { enabled: true, maxAgeDays: 21, sweepIntervalMs: 21_600_000, dryRun },
+    ...(typeof extra === 'object' ? extra : {}),
   });
 }
 
@@ -70,7 +72,7 @@ describe('CommitmentTracker auto-expiry sweep', () => {
     });
   });
 
-  it('never expires user-owned old commitments', async () => {
+  it('the agent branch never touches user-owned rows; the operator-wait branch owns them (attention-lifecycle-close-on-cause §3.5)', async () => {
     const t = tracker(stateDir);
     const c = t.record({
       type: 'one-time-action',
@@ -82,7 +84,21 @@ describe('CommitmentTracker auto-expiry sweep', () => {
 
     const report = t.sweepAutoExpiry(now);
 
+    // Not "presumed completed": the agent rule's eligible count stays 0 …
     expect(report.eligible).toBe(0);
+    // … the bounded operator-wait rule is what closes it, with its own wording.
+    expect(report.operatorWait).toMatchObject({ enabled: true, eligible: 1, expired: 1 });
+    expect(t.get(c.id)?.status).toBe('expired');
+    expect(t.get(c.id)?.resolution).toMatch(/^expired: waited 30 days for you/);
+  });
+
+  it('with the operator-wait rule off, user-owned old commitments are left pending as before', async () => {
+    const t = tracker(stateDir, { operatorWait: { enabled: false } });
+    const c = t.record({ type: 'one-time-action', userRequest: 'user owes input', agentResponse: 'waiting', owner: 'user' });
+    await ageCommitment(t, c.id, daysBefore(now, 30));
+    const report = t.sweepAutoExpiry(now);
+    expect(report.eligible).toBe(0);
+    expect(report.operatorWait.eligible).toBe(0);
     expect(t.get(c.id)?.status).toBe('pending');
   });
 

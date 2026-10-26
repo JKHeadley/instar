@@ -1716,6 +1716,9 @@ export interface RouteContext {
   /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
    *  Powers GET /processes/mcp-reaper observability. */
   mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
+  /** CodexArmSessionSweeper — closes orphaned `instar-codex-arm-*` tmux sessions.
+   *  Null when not wired. Powers GET /codex-arm-sweeper observability. */
+  codexArmSessionSweeper?: import('../monitoring/CodexArmSessionSweeper.js').CodexArmSessionSweeper | null;
   /** GeminiLoopRunner — multi-turn gemini loop-driver (need-gem-002). Null when not
    *  wired / dark. Powers POST + GET /gemini-loop/runs. */
   geminiLoopRunner?: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null;
@@ -10299,6 +10302,19 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.mcpProcessReaper.snapshot());
   });
 
+  // CodexArmSessionSweeper (spec codex-arm-session-leak-and-sweeper.md) — the
+  // read-only answer to "are the codex arm sessions still leaking?": the posture
+  // (enabled, dryRun, the clamped age threshold) plus cumulative killed/kept/error
+  // counts and the last kills. Read-only, Bearer-auth. 503 ONLY when not wired; a
+  // disabled sweeper answers 200 with `enabled: false` (read the field, not the code).
+  router.get('/codex-arm-sweeper', (_req, res) => {
+    if (!ctx.codexArmSessionSweeper) {
+      res.status(503).json({ error: 'codex arm session sweeper unavailable' });
+      return;
+    }
+    res.json(ctx.codexArmSessionSweeper.getStatus());
+  });
+
   // GeminiLoopRunner (need-gem-002) — the multi-turn gemini loop-driver. Lets a
   // caller hand the gemini mentee a goal it works across turns (turn 1 one-shot →
   // resume by handle, no transcript re-send). A run can take minutes, so POST
@@ -16022,6 +16038,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       redPrWatchdog: wd.config,
       snapshot: state.snapshot,
       namespaceMismatch: state.namespaceMismatch ?? null,
+      // merge-line-author-eligibility: listed PRs refused as not the agent's own. NON-OPTIONAL.
+      notAgentOwnedCount: (state.notAgentOwned ?? []).length,
+      notAgentOwned: state.notAgentOwned ?? [],
       configuration,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,
@@ -20256,6 +20275,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // attention-lifecycle-close-on-cause §3.1: a producer may name the CONDITION
+    // (stable, no timestamps) so repeats land on one row, and may mark a row
+    // sticky (never closed by the system). Both optional; both bounded.
+    const conditionKey = typeof req.body.conditionKey === 'string' && req.body.conditionKey.trim()
+      ? req.body.conditionKey.trim().slice(0, 200) : undefined; // bounded-input-reviewed: identity string, never fed to a model
+    if (req.body.conditionKey !== undefined && conditionKey === undefined) {
+      res.status(400).json({ error: '"conditionKey" must be a non-empty string under 200 characters' });
+      return;
+    }
+    if (req.body.sticky !== undefined && typeof req.body.sticky !== 'boolean') {
+      res.status(400).json({ error: '"sticky" must be a boolean' });
+      return;
+    }
+    const sticky = req.body.sticky === true ? true : undefined;
+
     try {
       const create = ctx.telegram.createAttentionItem({
         id,
@@ -20267,6 +20301,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         sourceContext: sourceContext || undefined,
         lane,
         healthKey,
+        conditionKey,
+        sticky,
       });
       // Acceptance of an attention item must not inherit Telegram latency.
       // The adapter persists/idempotently owns the item before its network
@@ -20514,6 +20550,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     const items = limit === undefined ? localItems : localItems.slice(0, limit);
     res.json({ items, count: items.length });
+  });
+
+  // ── Attention lifecycle (attention-lifecycle-close-on-cause §3.2 / §3.4) ──
+  // Registered BEFORE /attention/:id so "lifecycle" / "clear" are never read as ids.
+
+  /** Status of the one-row-per-condition + close-on-cause + bounded-expiry layer. */
+  router.get('/attention/lifecycle', (_req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    res.json(ctx.telegram.getAttentionLifecycleStatus());
+  });
+
+  /** Run one reconciliation pass now. `dryRun:true` lists what expiry would close without closing it. */
+  router.post('/attention/lifecycle/sweep', (req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['dryRun'])) return;
+    if (req.body?.dryRun !== undefined && typeof req.body.dryRun !== 'boolean') {
+      res.status(400).json({ error: '"dryRun" must be a boolean' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    res.json(ctx.telegram.runAttentionLifecyclePass({ dryRun: req.body?.dryRun === true }));
+  });
+
+  /** A producer (job, script, agent) reports that a condition cleared: close its open rows, silently. */
+  router.post('/attention/clear', (req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['conditionKey', 'id', 'idPrefix', 'resolution'])) return;
+    const { conditionKey, id, idPrefix, resolution } = req.body ?? {};
+    const given = [conditionKey, id, idPrefix].filter((v) => typeof v === 'string' && v.trim());
+    if (given.length !== 1) {
+      res.status(400).json({ error: 'give exactly one of "conditionKey", "id", "idPrefix" (a non-empty string)' });
+      return;
+    }
+    if (typeof idPrefix === 'string' && !/[:\-_./|]$/.test(idPrefix)) {
+      res.status(400).json({ error: '"idPrefix" must end in a delimiter (e.g. "my-producer:topic-123:") so it cannot match a longer id by accident' });
+      return;
+    }
+    if (typeof resolution !== 'string' || !resolution.trim()) {
+      res.status(400).json({ error: '"resolution" must be a non-empty string saying why the condition is over' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    const result = ctx.telegram.clearAttentionCondition(
+      { conditionKey: conditionKey?.trim(), id: id?.trim(), idPrefix: idPrefix?.trim() },
+      resolution.trim().slice(0, 2000), // bounded-input-reviewed: stored display text, never fed to a model
+    );
+    res.json(result);
   });
 
   router.get('/attention/:id', (req, res) => {
@@ -32381,6 +32473,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         note: 'Restart the server for the submission cycle to begin.',
       });
     } catch (err) {
+      // @silent-fallback-ok — not silent: the failure is answered to the caller as a 500 naming the error.
       res.status(500).json({ error: `Failed to enable telemetry: ${err instanceof Error ? err.message : err}` });
     }
   });
@@ -32395,46 +32488,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const auth = ctx.telemetryHeartbeat.getAuth();
       const installationId = auth.getInstallationId();
 
-      // Attempt remote deletion if provisioned
-      let remoteDeletion = 'not_attempted';
+      // Capture what the remote deletion needs BEFORE the local mutations, then finish
+      // every local change (deprovision, log, config) before the awaited remote call —
+      // so a slow remote cleanup can never land the local "disabled" write after a
+      // later enable (feature-transition-applies-action review r2 §4).
+      let deletion: { timestamp: string; payload: Buffer; headers: Record<string, string> } | null = null;
       if (installationId) {
         try {
           const timestamp = Math.floor(Date.now() / 1000).toString();
-          const deletePayload = Buffer.from(JSON.stringify({ installationId }));
-          const signature = auth.sign(installationId, timestamp, deletePayload);
-
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 5000);
-
-          const deleteHeaders: Record<string, string> = {
+          const payload = Buffer.from(JSON.stringify({ installationId }));
+          const signature = auth.sign(installationId, timestamp, payload);
+          const headers: Record<string, string> = {
             'X-Instar-Signature': `hmac-sha256=${signature}`,
             'X-Instar-Timestamp': timestamp,
           };
           const fingerprint = auth.getKeyFingerprint();
-          if (fingerprint) {
-            deleteHeaders['X-Instar-Key-Fingerprint'] = fingerprint;
-          }
-
-          const resp = await fetch(`https://instar-telemetry.sagemind-ai.workers.dev/v1/telemetry/${installationId}`, {
-            method: 'DELETE',
-            headers: deleteHeaders,
-            signal: controller.signal,
-          });
-
-          clearTimeout(timeout);
-          remoteDeletion = resp.ok ? 'success' : `failed_${resp.status}`;
-        } catch {
-          remoteDeletion = 'network_error';
-          // Write pending-deletion for retry on next startup
-          try {
-            const pendingPath = path.join(ctx.config.stateDir, 'telemetry', 'pending-deletion.json');
-            fs.writeFileSync(pendingPath, JSON.stringify({
-              installationId,
-              timestamp: new Date().toISOString(),
-              retryCount: 0,
-            }) + '\n');
-          } catch { /* best-effort */ }
-        }
+          if (fingerprint) headers['X-Instar-Key-Fingerprint'] = fingerprint;
+          deletion = { timestamp, payload, headers };
+        } catch { /* @silent-fallback-ok — signing unavailable; remoteDeletion stays 'not_attempted' and is reported in the response */ }
       }
 
       // Delete local identity files
@@ -32454,6 +32525,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!fileConfig.monitoring.telemetry) fileConfig.monitoring.telemetry = {};
       fileConfig.monitoring.telemetry.enabled = false;
       fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
+
+      // Attempt remote deletion if provisioned (after the local state is final)
+      let remoteDeletion = 'not_attempted';
+      if (installationId && deletion) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const resp = await fetch(`https://instar-telemetry.sagemind-ai.workers.dev/v1/telemetry/${installationId}`, {
+            method: 'DELETE',
+            headers: deletion.headers,
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          remoteDeletion = resp.ok ? 'success' : `failed_${resp.status}`;
+        } catch {
+          remoteDeletion = 'network_error';
+          // Write pending-deletion for retry on next startup
+          try {
+            const pendingPath = path.join(ctx.config.stateDir, 'telemetry', 'pending-deletion.json');
+            fs.writeFileSync(pendingPath, JSON.stringify({
+              installationId,
+              timestamp: new Date().toISOString(),
+              retryCount: 0,
+            }) + '\n');
+          } catch { /* best-effort */ }
+        }
+      }
 
       res.json({
         success: true,
@@ -39949,6 +40047,52 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //
   // Phase 1: Feature Registry — definitions, state, and summaries.
 
+  // ── Feature switches apply their setting (spec feature-transition-applies-action) ──
+  const featureEffective = (featureId: string, userId: string) => {
+    const reg = ctx.featureRegistry!;
+    return reg.getEffectiveState(featureId, userId, reg.readMergedConfig(ctx.config as unknown as Record<string, unknown>));
+  };
+  const withEffective = <T extends { definition: { id: string }; state: { userId: string } }>(infos: T[]) => {
+    const reg = ctx.featureRegistry!;
+    const merged = reg.readMergedConfig(ctx.config as unknown as Record<string, unknown>);
+    return infos.map((f) => ({ ...f, effective: reg.getEffectiveState(f.definition.id, f.state.userId, merged) }));
+  };
+  /**
+   * Send the feature's own enable/disable request to this server's route, over
+   * the socket the triggering request arrived on, and record the result.
+   * Applied only for the default user: config is agent-wide (spec §2.5).
+   */
+  // One switch at a time per feature: an earlier disable must not finish after a
+  // later enable and overwrite config + the recorded result (review r1 §4).
+  const featureSwitchChain = new Map<string, Promise<unknown>>();
+  const serializeFeatureSwitch = <T>(featureId: string, work: () => Promise<T>): Promise<T> => {
+    const prev = featureSwitchChain.get(featureId) ?? Promise.resolve();
+    const next = prev.then(work, work);
+    featureSwitchChain.set(featureId, next.catch(() => { /* @silent-fallback-ok — the chain tail only sequences; the failing request already answered its own caller */ }));
+    return next;
+  };
+  const applyFeatureSetting = async (
+    req: import('express').Request,
+    featureId: string,
+    userId: string,
+    newState: string,
+  ): Promise<import('../core/FeatureActionApplier.js').FeatureApplyResult | null> => {
+    const reg = ctx.featureRegistry!;
+    if (newState !== 'enabled' && newState !== 'disabled') return null;
+    const direction = newState === 'enabled' ? 'enable' : 'disable';
+    const { applyFeatureAction, loopbackHost, notApplied } = await import('../core/FeatureActionApplier.js');
+    const def = reg.getDefinition(featureId);
+    const result = userId !== 'default'
+      ? notApplied(direction, 'per-user state; the setting is agent-wide')
+      : await applyFeatureAction(direction === 'enable' ? def?.enableAction : def?.disableAction, direction, {
+          host: loopbackHost(req.socket.localAddress),
+          port: req.socket.localPort ?? ctx.config.port,
+          authToken: ctx.config.authToken ?? '',
+        });
+    reg.recordApply(featureId, userId, result);
+    return result;
+  };
+
   router.get('/features', (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
@@ -39959,9 +40103,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     if (stateFilter) {
       const states = stateFilter.split(',').map(s => s.trim()) as import('../core/FeatureRegistry.js').DiscoveryState[];
-      res.json({ features: ctx.featureRegistry.getFeaturesByState(states, userId) });
+      res.json({ features: withEffective(ctx.featureRegistry.getFeaturesByState(states, userId)) });
     } else {
-      res.json({ features: ctx.featureRegistry.getAllFeatures(userId) });
+      res.json({ features: withEffective(ctx.featureRegistry.getAllFeatures(userId)) });
     }
   });
 
@@ -39971,7 +40115,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const userId = (req.query.userId as string) || 'default';
-    res.json({ features: ctx.featureRegistry.getSummaries(userId) });
+    res.json({
+      features: ctx.featureRegistry.getSummaries(userId).map((f) => ({ ...f, effective: featureEffective(f.id, userId) ?? undefined })),
+    });
   });
 
   router.get('/features/events', (req, res) => {
@@ -40052,6 +40198,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     res.json({
       ...info,
+      effective: featureEffective(req.params.id, userId),
       validTransitions: ctx.featureRegistry.getValidTransitions(req.params.id, userId),
     });
   });
@@ -40077,7 +40224,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(result);
   });
 
-  router.post('/features/:id/transition', (req, res) => {
+  router.post('/features/:id/transition', async (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
       return;
@@ -40088,21 +40235,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const userId = (bodyUserId as string) || 'default';
-    const result = ctx.featureRegistry.transition(req.params.id, userId, to, {
-      trigger,
-      consentRecord,
-      context,
-      activationChallenge,
-    });
-    if (!result.success) {
-      const status = result.error?.code === 'FEATURE_NOT_FOUND' ? 404
-        : result.error?.code === 'INVALID_TRANSITION' ? 422
-        : result.error?.code === 'CONSENT_REQUIRED' ? 422
-        : 400;
-      res.status(status).json({ error: result.error });
+    const isSwitch = to === 'enabled' || to === 'disabled';
+    const switchDef = ctx.featureRegistry.getDefinition(req.params.id);
+    if (isSwitch && switchDef?.switchable === false) {
+      // A key the runtime ignores: a working-looking switch would be the original bug again.
+      res.status(409).json({ error: { code: 'FEATURE_NOT_SWITCHABLE', message: switchDef.honestyNote ?? `Feature '${req.params.id}' cannot be switched in this version.` } });
       return;
     }
-    res.json(result);
+    // The operator's switch (spec §2.4): a fresh dashboard PIN unlock is a person
+    // setting the switch, which is itself the consent the discovery graph collects.
+    // A proof that is PRESENT but invalid (expired, forged) is answered as such, never
+    // silently downgraded to the agent path (review r2: an expired proof must re-unlock,
+    // not strand the switch behind consent errors).
+    const proofPresent = req.headers['x-instar-operator-session'] !== undefined; // an EMPTY header is present, not omitted
+    const proofHeader = req.get('X-Instar-Operator-Session') ?? '';
+    const operatorSwitch = isSwitch && proofPresent && ctx.verifyDashboardOperatorSession?.(proofHeader) === true;
+    if (isSwitch && proofPresent && !operatorSwitch) {
+      res.status(401).json({ error: { code: 'OPERATOR_PROOF_INVALID', message: 'Your dashboard unlock has expired or is not valid here. Unlock with your PIN again and retry.' } });
+      return;
+    }
+    const outcome = await serializeFeatureSwitch(req.params.id, async () => {
+      const result = operatorSwitch
+        ? ctx.featureRegistry!.operatorSet(req.params.id, userId, to, { context })
+        : ctx.featureRegistry!.transition(req.params.id, userId, to, {
+            trigger,
+            consentRecord,
+            context,
+            activationChallenge,
+          });
+      if (!result.success) return { result, apply: null };
+      // The transition landed; now make the setting follow it. The recorded choice
+      // stays even if the setting change is refused — `apply` and `effective` say so.
+      const apply = await applyFeatureSetting(req, req.params.id, userId, result.newState ?? '');
+      return { result, apply };
+    });
+    if (!outcome.result.success) {
+      const code = outcome.result.error?.code;
+      const status = code === 'FEATURE_NOT_FOUND' ? 404
+        : code === 'INVALID_TRANSITION' ? 422
+        : code === 'CONSENT_REQUIRED' ? 422
+        : 400;
+      res.status(status).json({ error: outcome.result.error });
+      return;
+    }
+    res.json({
+      ...outcome.result,
+      viaOperatorSwitch: operatorSwitch,
+      apply: outcome.apply,
+      effective: featureEffective(req.params.id, userId),
+    });
   });
 
   router.delete('/features/discovery-data', (req, res) => {

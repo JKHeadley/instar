@@ -1,0 +1,43 @@
+## What Changed
+
+**The silent-fallback ratchet is back at its baseline, so the merge queue moves again.**
+
+`origin/main` measured 495 flagged catch blocks against the `BASELINE = 494` in
+`tests/unit/no-silent-fallbacks.test.ts`, a ratchet whose own comments say the number only
+ever decreases. Main was failing its own test.
+
+That does not stay on main. Local Verify tests each PR as the MERGE of the PR and main, so
+every queued PR inherited the failure — PR #2371 reported
+`file-failed:tests/unit/no-silent-fallbacks.test.ts:1`, and PR #2350 reached
+`state: gave-up, lastOutcome: refused:verify-failed` after three attempts.
+
+The flagged catch is `sampleOnce()` in `src/core/machineLoadReport.ts`. It is NOT a swallow:
+it logs the error with its message, and a missed sample surfaces downstream as
+`loadVerdict: 'unknown'` (a report older than 60 s reads unknown) rather than as a fabricated
+healthy reading. It was missing the canonical in-window `@silent-fallback-ok` justification
+the scanner reads. This adds it: one comment, no behaviour change, count back to 494.
+
+The baseline was deliberately NOT raised to 495 — the number is the mechanism.
+
+## What to Tell Your User
+
+Nothing changes in how I behave. One of my internal safety checks had drifted one step past
+its own limit, and because every pending change is tested as if it were already merged, that
+quietly stopped all of them from being able to land. The code it flagged was already
+reporting its errors properly and just needed to say so in the form the check reads. Fixed,
+and the queue moves again.
+
+## Summary of New Capabilities
+
+- None. One source comment; no new route, config key, behaviour or user-visible surface.
+
+## Evidence
+
+- Same scanner, three trees: `c7feb1573` (v1.3.1438) 493 · `origin/main` (`ebb9366f5`,
+  v1.3.1443) 495 · this branch 494.
+- `.instar/state/local-verify/journal.jsonl`: PR 2371 `lane-failed:unit:1`; PR 2350 `gave-up`.
+- `tests/unit/no-silent-fallbacks.test.ts` passes 5/5 on this branch.
+- Honest residue: the other file that moved between 493 and 495 is `src/server/routes.ts`
+  (27 → 28), and its new `/* may not exist */` catch is NOT the counted one — marking it
+  changed the count by zero, so that edit was reverted rather than left as churn. The tree
+  sits at exactly 494 with no headroom.

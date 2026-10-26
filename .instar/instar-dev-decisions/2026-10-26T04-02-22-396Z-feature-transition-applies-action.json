@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-26T04:02:22.396Z",
+  "slug": "feature-transition-applies-action",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 775,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/commands/server.ts",
+      "src/core/AutonomyProfileManager.ts",
+      "src/core/FeatureActionApplier.ts",
+      "src/core/FeatureDefinitions.ts",
+      "src/core/FeatureRegistry.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 684,
+    "deletedLines": 91
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

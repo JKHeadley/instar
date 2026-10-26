@@ -1,0 +1,52 @@
+{
+  "ts": "2026-10-26T01:15:52.138Z",
+  "slug": "attention-lifecycle-close-on-cause",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 25,
+  "loc": 1287,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/AccountFollowMeEmailGate.ts",
+      "src/core/AttentionConditionStore.ts",
+      "src/core/AttentionLifecycle.ts",
+      "src/core/EnrollmentWizard.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QuotaPoller.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StandDownRegistry.ts",
+      "src/core/SubscriptionReloginAttention.ts",
+      "src/core/SwapAntiThrash.ts",
+      "src/core/types.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/monitoring/CommitmentTracker.ts",
+      "src/monitoring/DuplicateSessionReconciler.ts",
+      "src/monitoring/OrphanedWorkSentinel.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/evolution-overdue-check.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1224,
+    "deletedLines": 63
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
