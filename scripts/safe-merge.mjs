@@ -631,8 +631,17 @@ export async function checkLocalFloor({ repo, pr, pinnedHead, status, agent, ser
 // gh invocation layer (sync is fine — this is a standalone CLI, not server code)
 // ---------------------------------------------------------------------------
 
-function gh(args, { allowFail = false } = {}) {
-  const r = spawnSync('gh', args, { encoding: 'utf-8' });
+/**
+ * Output ceiling for every gh spawn. Node's spawnSync default is 1 MiB, and a
+ * large PR's `pulls/N/files --paginate --slurp` answer carries every file's
+ * patch: 94 files / a 1.6 MB diff overflowed it, so gh died with ENOBUFS and
+ * the merge was refused as contexts-unverifiable. 256 MiB is far above any PR.
+ */
+export const GH_MAX_BUFFER = 256 * 1024 * 1024;
+export const GH_SPAWN_OPTIONS = Object.freeze({ encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER });
+
+export function gh(args, { allowFail = false, spawn = spawnSync } = {}) {
+  const r = spawn('gh', args, GH_SPAWN_OPTIONS);
   if (r.error) throw new Error(`gh spawn failed: ${r.error.message}`);
   if (r.status !== 0 && !allowFail) {
     throw new Error(`gh ${args.slice(0, 3).join(' ')} exited ${r.status}: ${(r.stderr || '').slice(0, 400)}`);
@@ -1052,7 +1061,7 @@ function mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin }) {
   const mergeArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--match-head-commit', pinnedHead];
   if (admin) mergeArgs.push('--admin');
   if (args.deleteBranch) mergeArgs.push('--delete-branch');
-  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8' });
+  const m = spawnSync('gh', mergeArgs, GH_SPAWN_OPTIONS);
   process.stdout.write(m.stdout ?? '');
   process.stderr.write(m.stderr ?? '');
 
@@ -1162,7 +1171,7 @@ async function main() {
     if (args.matchHeadCommit) autoArgs.push('--match-head-commit', pinnedHead);
     if (args.deleteBranch) autoArgs.push('--delete-branch');
     console.log(`safe-merge: arming native auto-merge for PR #${pr} (${args.method}, head ${pinnedHead.slice(0, 12)}) — GitHub will merge when all required checks pass...`);
-    const a = spawnSync('gh', autoArgs, { encoding: 'utf-8' });
+    const a = spawnSync('gh', autoArgs, GH_SPAWN_OPTIONS);
     process.stdout.write(a.stdout ?? '');
     process.stderr.write(a.stderr ?? '');
     if (a.status !== 0 || a.signal) {
