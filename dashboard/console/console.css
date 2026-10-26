@@ -425,3 +425,20 @@ button.row.open .row-title { -webkit-line-clamp: unset; display: block; }
 /* nothing may scroll the page sideways (MVP 3) */
 html, body { overflow-x: clip; }
 .row-detail:empty { display: none; }
+
+/* round-4 fixes */
+.card-value .n.attn { color: var(--attn); }
+.meter .m-dry { background: rgb(251 191 36 / 0.45); }
+.meter .m-off { background: var(--slate-600); }
+:root[data-theme="light"] .meter .m-off { background: var(--slate-300); }
+.machine .m-state { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; line-height: 1.3; }
+.machine .m-age, .machine .m-load { color: var(--text-muted); font-size: 12.5px; }
+.machine .m-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.card-foot a, .card-foot .link-btn { min-width: 44px; justify-content: center; }
+.topbar .chip { height: 44px; }
+.card-foot { border-top: 1px solid var(--hairline); padding-top: var(--s-2); margin-top: var(--s-1); }
+.row-detail { margin: 2px var(--s-2) var(--s-3) 20px; padding: 6px 0 6px 12px; border-left: 2px solid var(--hairline-strong); color: var(--text); }
+.card-note { align-items: flex-start; }
+.card-note::before { margin-top: 5px; }
+.tiles-hood .t-icon { display: none; }
+.tiles-hood .tile { min-height: 64px; }

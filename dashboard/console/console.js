@@ -208,6 +208,14 @@ function paintCard(def, model, repaint = false) {
   } else if (!repaint && model.state !== 'unknown') {
     lastGood[def.id] = { model, at: Date.now() };
   }
+  // Keep keyboard focus across a repaint (refresh or See all): remember which
+  // control inside this card had it, and give it back to its replacement.
+  const focused = card.contains(document.activeElement) ? document.activeElement.getAttribute('data-focus-key') : null;
+  queueMicrotask(() => {
+    if (!focused) return;
+    const next = card.querySelector(`[data-focus-key="${CSS.escape(focused)}"]`);
+    if (next) next.focus({ preventScroll: true });
+  });
   const visual = model.state === 'partial' || model.state === 'stale' ? 'unknown' : model.state;
   card.setAttribute('data-state', visual);
   card.removeAttribute('aria-busy');
@@ -221,7 +229,7 @@ function paintCard(def, model, repaint = false) {
   const value = card.querySelector('.card-value');
   value.replaceChildren();
   const m = /^(\d+)(.*)$/.exec(model.value || '');
-  if (m && (model.state === 'attn' || model.state === 'bad')) value.append(el('span', { class: 'n', text: m[1] }), document.createTextNode(m[2]));
+  if (m && (model.state === 'attn' || model.state === 'bad' || model.valueTone)) value.append(el('span', { class: `n${model.valueTone ? ' ' + model.valueTone : ''}`, text: m[1] }), document.createTextNode(m[2]));
   else value.textContent = model.value || '';
   card.querySelector('.card-line').textContent = model.line || '';
 
@@ -233,17 +241,18 @@ function paintCard(def, model, repaint = false) {
       strip.append(el('div', { class: 'machine', 'data-state': mc.state === 'stale' ? 'unknown' : mc.state },
         el('span', { class: dotClass(mc.state === 'ok' ? 'ok' : mc.state) }),
         el('span', { class: 'm-name', text: mc.name }),
-        el('span', { class: 'm-state' }, document.createTextNode(mc.label),
-          typeof mc.perCore === 'number' ? el('span', { class: 'm-load mono', text: ` · ${mc.perCore.toFixed(1)}/core` }) : null,
-          el('span', { class: 'm-age', text: ` · ${mc.age || 'no reading'}` })),
+        el('span', { class: 'm-state' },
+          el('span', { class: 'm-label' }, document.createTextNode(mc.label),
+            typeof mc.perCore === 'number' ? el('span', { class: 'm-load mono', text: ` · ${mc.perCore.toFixed(1)}/core` }) : null),
+          el('span', { class: 'm-age', text: mc.age || 'no reading' })),
       ));
     }
     body.append(strip);
   }
   if (model.meter) {
     const t = Object.values(model.meter).reduce((a, b) => a + b, 0) || 1;
-    const meter = el('div', { class: 'meter', role: 'img', 'aria-label': `${model.meter.ok} on, ${model.meter.attn} watching only, ${model.meter.bad} off that should be on, ${model.meter.unknown} off by design` });
-    for (const [k, cls] of [['ok', 'm-ok'], ['attn', 'm-attn'], ['bad', 'm-bad'], ['unknown', 'm-unknown']]) {
+    const meter = el('div', { class: 'meter', role: 'img', 'aria-label': `${model.meter.ok} on, ${model.meter.dry} watching only, ${model.meter.warn} off that should be on, ${model.meter.off} off by design` });
+    for (const [k, cls] of [['ok', 'm-ok'], ['dry', 'm-dry'], ['warn', 'm-attn'], ['off', 'm-off']]) {
       if (model.meter[k] > 0) { const s = el('span', { class: cls }); s.style.width = `${(model.meter[k] / t) * 100}%`; meter.append(s); }
     }
     body.append(meter);
@@ -261,6 +270,7 @@ function paintCard(def, model, repaint = false) {
       if (r.expandable || r.detail) {
         const id = `row-${++rowSeq}`;
         const key = `${def.id}:${r.key || r.main}`;
+        row.setAttribute('data-focus-key', key);
         const isOpen = openRows.has(key);
         const d = el('p', { class: 'row-detail', id, text: r.detail || '', hidden: !isOpen });
         row.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
@@ -282,7 +292,7 @@ function paintCard(def, model, repaint = false) {
   foot.replaceChildren();
   const extra = model.all ? model.all.length - model.rows.length : (model.more || 0);
   if (model.all && extra > 0) {
-    const b = el('button', { class: 'link-btn', type: 'button', 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${model.all.length}` });
+    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${model.all.length}` });
     b.addEventListener('click', () => { if (expanded.has(def.id)) expanded.delete(def.id); else expanded.add(def.id); paintCard(def, model, true); });
     foot.append(b);
   } else foot.append(el('span', { class: 'card-age', text: extra > 0 ? `and ${extra} more` : '' }));
@@ -306,8 +316,8 @@ function paintHeadline(models) {
     h1.append(document.createTextNode(words.slice(0, -1).join(' ') + (words.length > 1 ? ' ' : '')), el('span', { class: 'accent', text: words[words.length - 1] }));
   } else h1.textContent = h.text;
   const parts = [];
-  if (models.needs && models.needs.state === 'attn') parts.push(`${models.needs.value} in the queue`);
-  if (models.promised && models.promised.state === 'attn') parts.push(`${parseInt(models.promised.value, 10)} promises waiting on you`);
+  if (models.needs && models.needs.count > 0) parts.push(`${models.needs.value} in the queue`);
+  if (models.promised && models.promised.count > 0) parts.push(`${models.promised.count} ${models.promised.count === 1 ? 'promise' : 'promises'} waiting on you`);
   sub.textContent = h.tone === 'attn' && parts.length ? `${parts.join(' and ')}.${h.sub ? ' ' + h.sub : ''}` : (h.sub || '');
   $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
@@ -329,9 +339,13 @@ async function loadHome() {
   // Each card fetches and renders on its own (spec §1): one slow source never blocks the rest.
   pooled('needs', '/attention?scope=pool', buildNeeds, set);
   get('/health').then((r) => set('reach', buildReach(r)));
-  get('/commitments?scope=mesh').then((r) => set('promised', buildPromised(r)));
+  const poolP = get('/pool');
+  Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
+    const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
+    set('promised', buildPromised(r, Date.now(), peers));
+  });
   pooled('doing', '/sessions?scope=pool', buildDoing, set);
-  get('/pool').then((r) => set('running', buildRunning(r)));
+  poolP.then((r) => set('running', buildRunning(r)));
   Promise.all([get('/guards'), get('/mandate')]).then(([g, m]) => set('allowed', buildAllowed(g, m)));
 }
 
@@ -374,7 +388,7 @@ function renderGroup(main, g) {
   if (g.hood && g.hood.length) {
     parts.push(
       el('h2', { class: 'eyebrow section-label', text: 'Under the hood' }),
-      el('div', { class: 'tiles' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
+      el('div', { class: 'tiles tiles-hood' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
     );
   }
   parts.push(footNote());

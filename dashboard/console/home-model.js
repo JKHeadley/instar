@@ -73,36 +73,66 @@ export function needsOperator(item) {
   return /decision|approval|review|security|sign-?in|relogin/i.test(cat);
 }
 
+export const STALE_DAYS = 14;
+const DAY = 86400000;
+
+/** Items that never age out of "needs you": security. Everything else, URGENT included, is marked stale after 14 untouched days. */
+function neverStale(i) { return /security/i.test(String(i.category || '')); }
+
+/** The same notice raised again (or on several machines) is one thing to do. */
+export function groupKey(i) {
+  return `${String(i.category || '')}|${String(i.title || i.summary || '').trim().toLowerCase().replace(/\s+/g, ' ')}`;
+}
+
 export function buildNeeds(res, now = Date.now()) {
   if (!res.ok) return unknownCard(`Couldn't read the attention queue: ${res.reason}.`);
   const items = Array.isArray(res.data && res.data.items) ? res.data.items : null;
   if (!items) return unknownCard('The attention queue answered without a list.');
   const open = items.filter((i) => i && i.status === 'OPEN');
-  const mine = open.filter(needsOperator)
-    .sort((a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const routine = open.length - mine.length;
+  const mineRaw = open.filter(needsOperator);
+  const routine = open.length - mineRaw.length;
+  // Group repeats into one entry each.
+  const groups = new Map();
+  for (const i of mineRaw) {
+    const k = groupKey(i);
+    const g = groups.get(k) || { items: [], last: 0, machines: new Set() };
+    g.items.push(i);
+    g.last = Math.max(g.last, Date.parse(i.updatedAt || i.createdAt) || 0);
+    if (i.machineNickname) g.machines.add(i.machineNickname);
+    groups.set(k, g);
+  }
+  const all = [...groups.values()].map((g) => {
+    const top = g.items.slice().sort((a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9))[0];
+    const stale = !g.items.some(neverStale) && now - g.last > STALE_DAYS * DAY;
+    return {
+      key: groupKey(top), stale, last: g.last, prio: PRIORITY[top.priority] ?? 9,
+      main: top.title || top.summary || 'Untitled item',
+      sub: [g.items.length > 1 ? `${g.items.length} copies` : null, [...g.machines].join(', ') || null, String(top.priority || '').toLowerCase()].filter(Boolean).join(' · '),
+      end: (ago(g.last, now) || '').replace(' ago', '') ? `${ago(g.last, now)}` : '',
+      tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
+      detail: top.description || top.body || '',
+      expandable: true,
+    };
+  }).sort((a, b) => Number(a.stale) - Number(b.stale) || a.prio - b.prio || b.last - a.last);
+  const current = all.filter((g) => !g.stale);
+  const stale = all.length - current.length;
+  const rows = current.slice(0, MAX_ROWS);
   const failed = (res.data.pool && Array.isArray(res.data.pool.failed)) ? res.data.pool.failed : [];
-  const all = mine.map((i) => ({
-    main: i.title || i.summary || 'Untitled item',
-    sub: i.machineNickname ? `${i.machineNickname} · ${String(i.priority || '').toLowerCase()}` : String(i.priority || '').toLowerCase(),
-    end: ago(i.createdAt, now) || '',
-    tone: i.priority === 'URGENT' ? 'bad' : 'attn',
-    detail: i.description || i.body || '',
-    expandable: true,
-    key: i.id,
-  }));
-  const rows = all.slice(0, MAX_ROWS);
   const partial = failed.length > 0;
   const missing = failed.map((f) => f.nickname || f.machineNickname || f.machineId || 'a machine').join(', ');
-  const routineLine = routine > 0 ? `${plural(routine, 'routine notice')} kept in the log.` : '';
+  const tail = [
+    stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days, probably already handled.` : null,
+    routine > 0 ? `${plural(routine, 'routine notice')} kept in the log.` : null,
+  ].filter(Boolean).join(' ');
   const partialLine = partial ? `No answer from ${missing}.` : '';
-  if (mine.length === 0) {
-    return { state: partial ? 'partial' : 'ok', value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, routineLine].filter(Boolean).join(' ') || 'The queue is clear.', rows };
+  if (current.length === 0) {
+    return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
   }
   return {
-    state: partial ? 'partial' : 'attn',
-    value: plural(mine.length, 'thing', 'things'), valueTone: 'attn',
-    line: [partialLine, routineLine].filter(Boolean).join(' ') || 'Waiting on you.',
+    state: partial ? 'partial' : 'attn', count: current.length,
+    coverage: partial ? 'partial view' : null,
+    value: plural(current.length, 'thing', 'things'), valueTone: 'attn',
+    line: [partialLine, tail].filter(Boolean).join(' ') || 'Waiting on you.',
     rows, all,
   };
 }
@@ -158,43 +188,54 @@ export function isActiveCommitment(c, now = Date.now()) {
 
 export const REPLICA_FRESH_MS = 15 * 60 * 1000;
 
-export function buildPromised(res, now = Date.now()) {
+export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   if (!res.ok) return unknownCard(`Couldn't read commitments: ${res.reason}.`);
   if (res.data && res.data.enabled === false) return unknownCard('Commitment tracking is switched off on this agent.');
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments
     : (Array.isArray(res.data) ? res.data : null);
   if (!list) return unknownCard('Commitments answered without a list.');
   const open = list.filter((c) => isActiveCommitment(c, now));
-  const yours = open.filter(waitsOnOperator).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const fresh = (c) => now - (Date.parse(c.updatedAt || c.lastProbeAt || c.createdAt) || 0) <= STALE_DAYS * DAY;
+  const yoursAll = open.filter(waitsOnOperator).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const yours = yoursAll.filter(fresh);
+  const yoursStale = yoursAll.length - yours.length;
   const violated = open.filter((c) => c.status === 'violated' && !waitsOnOperator(c));
-  const rest = open.length - yours.length - violated.length;
+  const rest = open.length - yoursAll.length - violated.length;
   const toRow = (c, tone) => ({
     key: `${c.originMachineId || 'own'}:${c.id}`,
     detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
     expandable: true,
     main: c.agentResponse || c.userRequest || c.id,
     sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : (c.status === 'violated' ? 'missed' : ''),
-      c.viewSource === 'replica' && c.originMachineId ? `from another machine${Number.isFinite(c.stalenessMs) ? `, as of ${ago(now - c.stalenessMs, now)}` : ''}` : ''].filter(Boolean).join(' · '),
+      c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : ''].filter(Boolean).join(' · '),
     end: ago(c.createdAt, now) || '',
     tone,
   });
-  const all = [...yours.map((c) => toRow(c, 'attn')), ...violated.map((c) => toRow(c, 'bad'))];
+  const all = [...yours.map((c) => toRow(c, 'attn')), ...violated.map((c) => toRow(c, 'bad')), ...yoursAll.filter((c) => !fresh(c)).map((c) => ({ ...toRow(c, 'unknown'), sub: `${toRow(c).sub ? toRow(c).sub + ' · ' : ''}untouched ${STALE_DAYS}+ days` }))];
   // Coverage honesty: a mesh read that carries no replica rows has not shown other machines.
   const replicas = list.filter((c) => c && c.viewSource === 'replica');
   const origins = new Set(replicas.map((c) => c.originMachineId));
-  const staleReplica = replicas.some((c) => Number(c.stalenessMs) > REPLICA_FRESH_MS);
+  // A replica with no usable age is of unknown freshness, never assumed fresh.
+  const staleReplica = replicas.some((c) => !Number.isFinite(Number(c.stalenessMs)) || c.stalenessMs === null || Number(c.stalenessMs) > REPLICA_FRESH_MS);
+  // Coverage is only verified when every other machine in the pool is represented.
+  const missingPeers = Number.isFinite(expectedPeers) ? Math.max(0, expectedPeers - origins.size) : null;
   const coverage = res.data && res.data.scope === 'mesh'
-    ? (origins.size === 0 ? "Only this machine's promises are visible." : staleReplica ? `Includes ${plural(origins.size, 'other machine')}; some of it is out of date.` : `Includes ${plural(origins.size, 'other machine')}.`)
+    ? (origins.size === 0 ? "Only this machine's promises are visible."
+      : staleReplica ? `Includes ${plural(origins.size, 'other machine')}; some of it is out of date.`
+      : missingPeers === null ? `Includes ${plural(origins.size, 'other machine')}; other-machine coverage unverified.`
+      : missingPeers > 0 ? `Includes ${plural(origins.size, 'other machine')}; ${plural(missingPeers, 'machine')} not represented.`
+      : `Includes all ${plural(origins.size, 'other machine')}.`)
     : "Only this machine's promises are visible.";
   const line = [
     yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
     violated.length ? `${violated.length} missed.` : null,
+    yoursStale ? `${plural(yoursStale, 'older one')} untouched for ${STALE_DAYS}+ days.` : null,
     rest > 0 ? `${plural(rest, 'other')} I'm carrying.` : null,
   ].filter(Boolean).join(' ') || 'Nothing open.';
-  const incomplete = origins.size === 0 || staleReplica;
+  const incomplete = origins.size === 0 || staleReplica || missingPeers === null || missingPeers > 0;
   const state = yours.length ? 'attn' : violated.length ? 'bad' : (incomplete ? 'partial' : 'ok');
   return {
-    state, coverage: incomplete ? 'partial view' : null, value: yours.length ? `${yours.length} need you` : plural(open.length, 'open promise'),
+    state, count: yours.length, coverage: incomplete ? 'partial view' : null, value: yours.length ? `${yours.length} need you` : plural(open.length, 'open promise'),
     line, note: coverage, rows: all.slice(0, MAX_ROWS), all,
   };
 }
@@ -257,10 +298,15 @@ export function buildRunning(res, now = Date.now()) {
 const GUARD_WORD = { off: 'off', 'on-dry-run': 'watching only', errored: 'errored', missing: 'missing', 'off-runtime-divergent': 'off while running' };
 
 export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
-  if (!guardsRes.ok) return unknownCard(`Couldn't read the safety checks: ${guardsRes.reason}.`);
+  const mandateRow = () => {
+    if (!(mandateRes && mandateRes.ok && Array.isArray(mandateRes.data && mandateRes.data.mandates))) return null;
+    const n = mandateRes.data.mandates.filter((m) => m && !m.revoked && (!m.expiresAt || Date.parse(m.expiresAt) > now)).length;
+    return { main: `${plural(n, 'permission slip')} active` };
+  };
+  if (!guardsRes.ok) { const r = mandateRow(); return unknownCard(`Couldn't read the safety checks: ${guardsRes.reason}.`, { rows: r ? [r] : [] }); }
   const s = guardsRes.data && guardsRes.data.summary;
   if (!s || typeof s !== 'object') return unknownCard('The safety checks answered without a summary.');
-  const KEYS = ['onConfirmed', 'onUnverified', 'onDryRun', 'offDeviant', 'offDarkDefault'];
+  const KEYS = ['onConfirmed', 'onUnverified', 'onStale', 'onBlind', 'onDryRun', 'offDeviant', 'offDarkDefault', 'offRuntimeDivergent', 'errored', 'missing'];
   if (!KEYS.every((k) => Number.isFinite(Number(s[k])) && s[k] !== null && s[k] !== '')) return unknownCard('The safety-check summary is missing its counts.');
   const n = (k) => (Number.isFinite(Number(s[k])) ? Number(s[k]) : 0);
   const on = n('onConfirmed') + n('onUnverified') + n('onStale') + n('onBlind');
@@ -296,7 +342,7 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
     value: `${on} of ${total} on`, all,
     line: `${dry} watching only, ${offDark} off by design.`,
     rows: rows.slice(0, MAX_ROWS),
-    meter: { ok: on, attn: dry, bad: offWrong, unknown: offDark },
+    meter: { ok: on, dry, warn: offWrong, off: offDark },
   };
 }
 
@@ -304,15 +350,15 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
 /** One sentence over all six cards. Never says "all quiet" while a card can't tell. */
 export function headline(cards) {
   const list = Object.values(cards).filter(Boolean);
-  const needs = cards.needs && cards.needs.state === 'attn' ? cards.needs : null;
-  const promised = cards.promised && cards.promised.state === 'attn' ? cards.promised : null;
+  const known = (c) => (c && Number.isFinite(c.count) ? c.count : 0);
   const bad = list.filter((c) => c.state === 'bad').length;
   const blind = list.filter((c) => c.state === 'unknown' || c.state === 'partial' || c.state === 'stale' || c.coverage).length;
   const otherAttn = Object.entries(cards).filter(([k, c]) => c && c.state === 'attn' && k !== 'needs' && k !== 'promised').length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
   if (loading === list.length || (cards.needs && cards.needs.state === 'loading') || (cards.promised && cards.promised.state === 'loading')) return { text: 'Checking in…', tone: 'muted' };
-  const count = (needs ? parseInt(needs.value, 10) || 0 : 0) + (promised ? parseInt(promised.value, 10) || 0 : 0);
+  // A known action count survives incomplete coverage; the coverage qualification rides beside it.
+  const count = known(cards.needs) + known(cards.promised);
   const quals = [];
   if (bad) quals.push(`${plural(bad, 'area')} failing`);
   if (otherAttn) quals.push(`${plural(otherAttn, 'other area')} to look at`);

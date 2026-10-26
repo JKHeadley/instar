@@ -85,6 +85,23 @@ describe('What needs you', () => {
     expect(m.state).toBe('partial');
     expect(m.line).toContain('Mama PC');
   });
+  it('the same notice raised many times, on several machines, is one thing to do', () => {
+    const items = [1, 2, 3].map((n) => item({ title: 'Claude Code sign-in repair', category: 'subscription-relogin', source: 'agent', machineNickname: n === 1 ? 'Mac Mini' : 'Mac Studio' }));
+    const m = buildNeeds(ok({ items, pool: { failed: [] } }), NOW);
+    expect(m.count).toBe(1);
+    expect(m.rows[0].sub).toContain('3 copies');
+  });
+  it('an item untouched for 14+ days is not counted as needing you, but stays listed', () => {
+    const m = buildNeeds(ok({ items: [item({ priority: 'URGENT', title: 'old', createdAt: minsAgo(60 * 24 * 20) }), item({ priority: 'URGENT', title: 'new' })], pool: { failed: [] } }), NOW);
+    expect(m.count).toBe(1);
+    expect(m.all).toHaveLength(2);
+    expect(m.all[1].main).toBe('old');
+    expect(m.line).toContain('probably already handled');
+  });
+  it('a security item never ages out', () => {
+    const m = buildNeeds(ok({ items: [item({ category: 'security', source: 'agent', title: 'Rotate token', createdAt: minsAgo(60 * 24 * 40) })], pool: { failed: [] } }), NOW);
+    expect(m.count).toBe(1);
+  });
   it('an empty, complete queue is fine', () => {
     expect(buildNeeds(ok({ items: [], pool: { failed: [] } }), NOW).state).toBe('ok');
   });
@@ -134,6 +151,11 @@ describe('What I have promised', () => {
     expect(m.state).toBe('bad');
     expect(m.rows[0].sub).toContain('another machine');
   });
+  it('a promise waiting on the operator but untouched for 14+ days is not counted', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
+    expect(m.count).toBe(0);
+    expect(m.line).toContain('untouched for 14+ days');
+  });
   it('promises waiting on the operator lead', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);
     expect(m.state).toBe('attn');
@@ -143,6 +165,19 @@ describe('What I have promised', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'own' })] }), NOW);
     expect(m.state).toBe('partial');
     expect(m.note).toContain('Only this machine');
+  });
+  it('a replica with no age is unknown freshness, never "All quiet" (round-4 blocker)', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'replica', originMachineId: 'm2' })] }), NOW, 1);
+    expect(m.coverage).toBe('partial view');
+    expect(headline({ needs: { state: 'ok', value: '', count: 0 }, promised: m }).text).not.toBe('All quiet.');
+  });
+  it('coverage is verified only when every other machine is represented', () => {
+    const rows = [c({ viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 })];
+    expect(buildPromised(ok({ enabled: true, scope: 'mesh', commitments: rows }), NOW, 3).note).toContain('2 machines not represented');
+    expect(buildPromised(ok({ enabled: true, scope: 'mesh', commitments: rows }), NOW, null).note).toContain('unverified');
+    const full = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: rows }), NOW, 1);
+    expect(full.coverage).toBeNull();
+    expect(full.state).toBe('ok');
   });
   it('an old replica is flagged out of date', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60 * 60_000 })] }), NOW);
@@ -182,7 +217,7 @@ describe('Where I am running: machineState precedence', () => {
 });
 
 describe('What I am allowed to do', () => {
-  const summary = { onConfirmed: 20, onUnverified: 50, onDryRun: 7, off: 19, offDeviant: 7, offDarkDefault: 12, missing: 1, loadBearingGapKeys: ['a', 'b'] };
+  const summary = { onConfirmed: 20, onUnverified: 50, onStale: 0, onBlind: 0, onDryRun: 7, off: 19, offDeviant: 7, offDarkDefault: 12, offRuntimeDivergent: 0, errored: 0, missing: 1, loadBearingGapKeys: ['a', 'b'] };
   const guards = [
     { key: 'a.enabled', effective: 'off', offClass: 'diverged-from-default' },
     { key: 'b.enabled', effective: 'off', offClass: 'dark-default' },
@@ -207,10 +242,20 @@ describe('What I am allowed to do', () => {
     expect(buildAllowed(ok({ summary: {} }), ok({}), NOW).state).toBe('unknown');
   });
   it('a failed mandate read makes the card a partial view when nothing else needs you', () => {
-    const calm = { onConfirmed: 9, onUnverified: 0, onDryRun: 0, offDeviant: 0, offDarkDefault: 1 };
+    const calm = { onConfirmed: 9, onUnverified: 0, onStale: 0, onBlind: 0, onDryRun: 0, offDeviant: 0, offDarkDefault: 1, offRuntimeDivergent: 0, errored: 0, missing: 0 };
     const m = buildAllowed(ok({ summary: calm, guards: [] }), failure('x'), NOW);
     expect(m.state).toBe('partial');
     expect(m.coverage).toBe('partial view');
+  });
+  it('every field used in the total is required', () => {
+    const { onStale, ...partialSummary } = summary;
+    void onStale;
+    expect(buildAllowed(ok({ summary: partialSummary, guards }), ok({ mandates: [] }), NOW).state).toBe('unknown');
+  });
+  it('a failed guard read keeps the mandate reading', () => {
+    const m = buildAllowed(failure('x'), ok({ mandates: [] }), NOW);
+    expect(m.state).toBe('unknown');
+    expect(m.rows[0].main).toBe('0 permission slips active');
   });
   it('fails honestly without a summary', () => {
     expect(buildAllowed(failure('x'), ok({}), NOW).state).toBe('unknown');
@@ -219,13 +264,13 @@ describe('What I am allowed to do', () => {
 });
 
 describe('headline()', () => {
-  const card = (state: string, value = '') => ({ state, value });
+  const card = (state: string, value = '', count?: number) => ({ state, value, count });
 
   it('waits for both counting cards before announcing anything', () => {
-    expect(headline({ needs: card('loading'), promised: card('attn', '3 need you'), reach: card('ok') }).text).toBe('Checking in…');
+    expect(headline({ needs: card('loading'), promised: card('attn', '3 need you', 3), reach: card('ok') }).text).toBe('Checking in…');
   });
   it('sums what needs the operator', () => {
-    expect(headline({ needs: card('attn', '2 things'), promised: card('attn', '1 need you'), reach: card('ok') }).text).toBe('3 things need you.');
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), reach: card('ok') }).text).toBe('3 things need you.');
   });
   it('never says all quiet while a card cannot tell', () => {
     const h = headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') });
@@ -240,7 +285,14 @@ describe('headline()', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), allowed: card('attn', '70 of 99 on') }).text).toBe('One area needs a look.');
   });
   it('a known total keeps its coverage qualification', () => {
-    expect(headline({ needs: card('attn', '2 things'), promised: card('unknown') }).sub).toContain("can't see fully");
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).toContain("can't see fully");
+  });
+  it('a partial queue keeps its known urgency in the headline (round-4 blocker)', () => {
+    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
+    expect(n.state).toBe('partial');
+    const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
+    expect(h.text).toBe('One thing needs you.');
+    expect(h.sub).toContain("can't see fully");
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');

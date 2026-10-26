@@ -110,16 +110,25 @@ Block specifics:
 
 - **What needs you** splits the open items: *waiting on you* (URGENT, items raised
   by the agent, and decision/approval/review/security/sign-in categories) first,
-  then a count of routine automated items. Highest priority first, newest first
-  within it (a live run showed the oldest open items are months old, which buries
-  what just happened). Unreachable peers are named.
+  then a count of routine automated items. The same notice raised again or on
+  several machines (same category and title) is **one** entry ("27 copies ·
+  Mac Studio, Mac Mini, Laptop"). An entry untouched for 14+ days moves to a
+  visible "probably already handled" group that is listed but not counted;
+  security items never age out. Highest priority first, newest first within it.
+  Unreachable peers are named. (Operator, 2026-10-25: "If the user is overloaded
+  with notification/required actions/attention items they will simply ignore all
+  of them." On live data this took the count from 32 to 4. The root cause, items
+  that never close when their cause clears, is its own issue:
+  `docs/issues/attention-noise-items-never-close.md` in the agent home, topic
+  10000000850.)
 - **What I'm doing** names each live session with its machine and how long it has
   run. A session's initial prompt is never shown as its latest action;
   `telemetry.lastActivity` (the last hook event of any kind) is shown as
   "active N min ago". Topic focus is not used in MVP.
 - **What I've promised** leads with promises *waiting on you* (owner user, or
-  blocked on your input or authorization), then missed ones, then a count of the
-  rest. Replica rows say they come from another machine and how old they are.
+  blocked on your input or authorization) touched in the last 14 days, then
+  missed ones; older waiting promises are listed as "untouched 14+ days" but not
+  counted (47 → 11 on live data); then a count of the rest. Replica rows say they come from another machine and how old they are.
   Coverage is stated beside the value: no replica rows means "only this machine's
   promises are visible", a replica over 15 min old means "some of it is out of
   date"; either marks the card a partial view even when it also needs you.
