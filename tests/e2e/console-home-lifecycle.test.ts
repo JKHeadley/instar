@@ -24,6 +24,8 @@ import {
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
 import { buildAccountsPage } from '../../dashboard/console/accounts-model.js';
+import { buildPlansPage, projectActions, refusalWords } from '../../dashboard/console/plans-model.js';
+import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -31,6 +33,7 @@ describe('Console Home E2E (feature is alive)', () => {
   let tmp = '';
   let server: AgentServer;
   let tracker: CommitmentTracker;
+  let initiatives: InitiativeTracker;
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-home-e2e-'));
@@ -38,11 +41,14 @@ describe('Console Home E2E (feature is alive)', () => {
     fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
     tracker = new CommitmentTracker({ stateDir, liveConfig: new LiveConfig(stateDir), originMachineId: 'e2e' });
+    initiatives = new InitiativeTracker(stateDir);
     const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
       requestTimeoutMs: 10_000, version: '0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, monitoring: {} } as unknown as InstarConfig;
-    server = new AgentServer({ config, commitmentTracker: tracker,
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
+      // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
+      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
+    server = new AgentServer({ config, commitmentTracker: tracker, initiativeTracker: initiatives,
       sessionManager: { listRunningSessions: () => [], getSession: () => null } as never,
       state: new StateManager(stateDir) });
     await server.start();
@@ -137,5 +143,47 @@ describe('Console Home E2E (feature is alive)', () => {
     const s = await request(server.getApp()).post('/subscription-pool/matrix/start-cell').set(auth).send({ accountId: 'a', machineId: 'm' });
     expect([400, 401, 403, 404, 503]).toContain(s.status);
   });
+  it('the Plans page reads the real /projects, /initiatives and /blockers routes and its writes meet the real gates', async () => {
+    await initiatives.create({ id: 'e2e-plan', title: 'Pick the launch name', description: 'd', phases: [{ id: 'a', name: 'Draft' }], needsUser: true, needsUserReason: 'choose between two names' } as never);
+    await initiatives.create({ id: 'e2e-project', title: 'Console makeover', description: 'd', kind: 'project', phases: [{ id: 'a', name: 'Rounds' }],
+      rounds: [{ name: 'Home', itemIds: ['e2e-piece'], status: 'pending' }, { name: 'Work', itemIds: [], status: 'pending' }] } as never);
+    await initiatives.create({ id: 'e2e-piece', title: 'Home screen', description: 'd', phases: [{ id: 'a', name: 'Build' }], parentProjectId: 'e2e-project', pipelineStage: 'building' } as never);
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const projects = await read('/projects');
+    expect(projects.ok).toBe(true);
+    const page = buildPlansPage({
+      initiatives: await read('/initiatives'), digest: await read('/initiatives/digest'), projects,
+      details: { 'e2e-project': await read('/projects/e2e-project?reconcile=false') },
+      blockers: await read('/blockers'), floor: await read('/autonomous/throughput-floor'),
+    }, Date.now());
+    expect(page.ok).toBe(true);
+    // The real needs-you initiative leads; the project waits for its first OK; the child folds under it.
+    const needs = page.sections.needsYou.map((r: { id: string; needs: string }) => [r.id, r.needs]);
+    expect(needs).toEqual(expect.arrayContaining([['e2e-plan', 'Waiting on you: choose between two names'], ['e2e-project', 'Waiting for your OK on round 1']]));
+    expect(page.sections.needsYou.find((r: { id: string }) => r.id === 'e2e-project')!.sub).toContain('round 1 of 2 · 0 of 1 piece merged');
+    expect([...page.sections.inFlight, ...page.sections.needsYou].some((r: { id: string }) => r.id === 'e2e-piece')).toBe(false);
+    // Blockers answered through the real ledger: an honest empty, never a fabricated "stuck".
+    expect(page.inTheWay.state).toBe('ok');
+    expect(page.counts.stuck + page.counts.working).toBe(0);
+    // Autonomous runs are not observed on this bare server, and the page says exactly that.
+    expect(page.runs.state).toBe('off');
+    expect(page.runs.reason).toBe('Autonomous runs aren’t observed on this agent.');
+    // Writes meet the real gates: Resume on a round that is not halted is refused with the server's reason;
+    // the OK and Stop routes need the round runner, which this server does not carry.
+    const acts = projectActions(page.sections.needsYou.find((r: { id: string }) => r.id === 'e2e-project')!.record);
+    expect(acts.ack).toBe(0);
+    const resume = await request(server.getApp()).post('/projects/e2e-project/resume').set(auth).send({ roundIndex: 1 });
+    expect(resume.status).toBe(409);
+    expect(refusalWords(resume.body.error).text).toContain('nothing to resume');
+    const ack = await request(server.getApp()).post('/projects/e2e-project/ack').set(auth).send({ forRoundIndex: acts.ack });
+    expect([200, 503]).toContain(ack.status);
+    if (ack.status === 503) expect(refusalWords(ack.body.error).text).toContain('off on this agent');
+    const halt = await request(server.getApp()).post('/projects/e2e-project/halt').set(auth).send({ reason: 'e2e' });
+    expect([200, 409, 503]).toContain(halt.status);
+    // No PIN on any of these routes: the bearer token alone reached the gate (never a 401/403).
+    for (const r of [resume, ack, halt]) expect([401, 403]).not.toContain(r.status);
+  });
 });
-

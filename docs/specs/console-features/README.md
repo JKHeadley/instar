@@ -145,7 +145,24 @@ console is not yet the default, so
 the checklist below still gates the switch-over; the rows these pages have not met are
 named here.
 
+On branch `feat/console-native-plans`, **Plans** (`plans.js`, `plans-model.js`) is built
+natively: projects and initiatives in one list, *In the way* (blockers) above *In flight*,
+*Older, still open* for anything untouched 14+ days (never "handled"), status chips Paused /
+Halted / Waiting on you above In flight and Completed / Archived / Abandoned inside Finished,
+*Autonomous runs* under In flight, and the project sheet with the rounds track, the drift
+sentence, **OK, continue round N** (the current round's index), **Stop this round** (the
+honest interruption sheet, with an optional reason) and **Resume this round** (that round's
+own `roundIndex`). The three answers are told apart by what the server returned. The
+Projects, Initiatives and Blockers tiles open it (`blockers` lands on In the way).
+
 Where the build was the more honest choice, the plan was changed to match it:
+
+- **Plans:** when `/initiatives/digest` fails, *Needs you* is still read from each plan's
+  own record (`needsUser`, `awaiting-user`, a project's unacknowledged advance or un-acked
+  first launch), with a dashed note that the digest could not be read, rather than showing
+  Can't tell for a value the records do answer. A blocker that asked for access is counted
+  as needing you but not as a plan in the headline. The autonomous-run rows name a topic
+  by number ("Topic 13481"); no topic-name source is read on this page yet.
 
 - **Promises:** a promise the tracker has marked `violated` offers no Mark delivered,
   because the server refuses it (`src/monitoring/CommitmentTracker.ts:910`;
