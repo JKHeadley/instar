@@ -771,6 +771,17 @@ export class OriginStoreBackend {
       recovery: row.recovery_attempts === null ? null : { attempts: row.recovery_attempts, nextAttemptAt: row.recovery_next! },
       expiryReportedAt: row.hold_expiry_reported_at ?? null, producerKind: row.producer_kind ?? null }));
   }
+  /** attention-lifecycle-close-on-cause §3.3 — how many of this topic's ordinary
+   * operations are still HELD for `lease-not-held`. The clear signal for the
+   * `telegram-origin-held:<topic>` attention condition: independent of retry
+   * due-time and of the held-listing page limit (both exist for other readers
+   * and must not be the signal). Read-only. */
+  unresolvedHeldOperationCount(topicId: string): number {
+    const row = this.db.prepare(`SELECT COUNT(*) n FROM telegram_origin_operations o
+      JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
+      WHERE o.kind='ordinary' AND o.state='held' AND o.hold_reason='lease-not-held' AND CAST(d.topic_id AS TEXT)=?`).get(String(topicId)) as { n: number };
+    return Number(row?.n ?? 0);
+  }
   markHoldExpiryReported(input: { operationId: string; now?: number }): boolean {
     id(input.operationId);
     return this.db.prepare("UPDATE telegram_origin_operations SET hold_expiry_reported_at=? WHERE operation_id=? AND state='expired' AND hold_expiry_reported_at IS NULL")

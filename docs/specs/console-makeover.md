@@ -113,7 +113,7 @@ Block specifics:
   then a count of routine automated items. The same notice raised again or on
   several machines (same category and title) is **one** entry ("27 copies ·
   Mac Studio, Mac Mini, Laptop"). An entry untouched for 14+ days moves to a
-  visible "probably already handled" group that is listed but not counted;
+  visible "Older, still open" group that is listed but not counted (age is not evidence it was handled);
   security items never age out. Highest priority first, newest first within it.
   Unreachable peers are named. (Operator, 2026-10-25: "If the user is overloaded
   with notification/required actions/attention items they will simply ignore all

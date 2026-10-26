@@ -39,12 +39,12 @@ export const GROUPS = [
     id: 'work', label: 'Work', icon: 'work',
     question: 'What is being done, and what was promised?',
     tabs: [
-      { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'Live sessions on every machine, with a terminal you can watch and type into.' },
-      { id: 'jobs', label: 'Jobs', icon: 'clock', desc: 'Scheduled work: what runs when, and what happened last time.' },
-      { id: 'commitments', label: 'Commitments', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
-      { id: 'projects', label: 'Projects', icon: 'layers', desc: 'Multi-step plans and whether each round passed its checks.' },
-      { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Longer efforts in flight, and the items that need you.' },
-      { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'What looked like it stopped progress, and how sure that still is.' },
+      { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'What is running on every machine, which one has gone quiet, and a live terminal you can watch and type into.' },
+      { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
+      { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
+      { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
+      { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Now inside Plans: longer efforts in flight, and the items that need you.' },
+      { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'Now inside Plans, under “In the way”: what looked stuck, and how sure that still is.' },
       { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Paste text or files straight into a session.' },
     ],
   },
@@ -54,40 +54,40 @@ export const GROUPS = [
     tabs: [
       { id: 'machines', label: 'Machines', icon: 'server', desc: 'Each machine’s health, which one leads, and how they reach each other.' },
       { id: 'systems', label: 'Health', icon: 'heart', desc: 'Whether each of my subsystems is working.' },
-      { id: 'subscriptions', label: 'Subscriptions', icon: 'key', desc: 'Accounts, usage left before reset, and sign-in repair.' },
+      { id: 'subscriptions', label: 'Accounts', icon: 'key', desc: 'Subscriptions and sign-ins: usage left before reset, and fixing a sign-in from your phone.' },
       { id: 'resources', label: 'Resource usage', icon: 'cpu', desc: 'CPU and memory for the server and every session.' },
-      { id: 'tokens', label: 'Tokens', icon: 'coins', desc: 'Token use across sessions in the last day.' },
-      { id: 'spend', label: 'Spend', icon: 'wallet', desc: 'What background AI calls cost, and the spending limits.' },
+      { id: 'spend', label: 'What thinking costs', icon: 'wallet', desc: 'Recorded AI cost on this machine: pay-per-use by model, background checks, what your conversations process, and the spending limits.' },
+      { id: 'tokens', label: 'Tokens', icon: 'coins', desc: 'Now inside What thinking costs: how much text your conversations process, Claude and Codex kept apart.' },
     ],
   },
   {
     id: 'people', label: 'People', icon: 'people',
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
-      { id: 'threadline', label: 'Threadline', icon: 'chat', desc: 'Conversations with other agents, and pairing new ones.' },
-      { id: 'origins', label: 'Message origins', icon: 'stamp', desc: 'Which machine and model wrote each message.' },
-      { id: 'mandates', label: 'Mandates', icon: 'stamp', desc: 'Permission slips you signed for agent-to-agent work.' },
-      { id: 'secrets', label: 'Secrets', icon: 'lock', desc: 'One-time links for handing over passwords and keys safely.' },
+      { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
+      { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Replies held back from you, and the who-wrote-this footer.' },
+      { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
+      { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },
   {
     id: 'settings', label: 'Settings', icon: 'settings',
     question: 'How is it set up, and what has it learned?',
     tabs: [
-      { id: 'features', label: 'Features', icon: 'toggle', desc: 'Switch features on and off, and set how independent I am.' },
-      { id: 'preferences-learning', label: 'Preferences', icon: 'sparkle', desc: 'What I have learned from your corrections.' },
-      { id: 'files', label: 'Files', icon: 'folder', desc: 'Browse and edit project files.' },
+      { id: 'features', label: 'What I’m allowed to do', icon: 'toggle', desc: 'How independent I am, the safety checks, and which features are on.' },
+      { id: 'preferences-learning', label: 'What I’ve learned about you', icon: 'sparkle', desc: 'How you like things, picked up from your corrections, and the corrections I am still watching.' },
+      { id: 'files', label: 'Files', icon: 'folder', desc: 'Find, read and fix a project file from your phone, and choose which folders can be browsed and edited.' },
     ],
     hood: [
       { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
-      { id: 'pr-pipeline', label: 'PR pipeline', desc: 'Pull requests moving through review to merge.' },
-      { id: 'evidence', label: 'Evidence', desc: 'The sources behind a memory.' },
-      { id: 'routing-map', label: 'Routing map', desc: 'Which model each background job uses.' },
-      { id: 'llm-activity', label: 'LLM activity', desc: 'How often each automated AI check acted.' },
-      { id: 'throughput', label: 'Throughput', desc: 'Delivery and quality over time.' },
-      { id: 'integrated-being', label: 'Integrated-Being', desc: 'What other parts of me have been doing.' },
-      { id: 'process-health', label: 'Process health', desc: 'Failures caught and patterns found.' },
-      { id: 'feedback-drain', label: 'Feedback drain', desc: 'User feedback being turned into fixes.' },
+      { id: 'pr-pipeline', label: 'PR pipeline', desc: 'Now inside Development (Shipping): pull requests on their way to merge, and which need you.' },
+      { id: 'evidence', label: 'Evidence', desc: 'Now inside How I’m doing inside: look up why I believe something, and what else relies on the same source.' },
+      { id: 'routing-map', label: 'Routing map', desc: 'Now inside What thinking costs: which model handles each kind of background work, and the backups.' },
+      { id: 'llm-activity', label: 'LLM activity', desc: 'Now inside What thinking costs: what the automatic AI checks did, failed or skipped.' },
+      { id: 'throughput', label: 'Throughput', desc: 'Now inside Development (Pace): how much merged, how fast, and how much was redone.' },
+      { id: 'integrated-being', label: 'How I’m doing inside', desc: 'Conversation history, recurring problems, checks on my claims.' },
+      { id: 'process-health', label: 'Process health', desc: 'Now inside How I’m doing inside: problems I caught in my own work, and what keeps coming back.' },
+      { id: 'feedback-drain', label: 'Feedback drain', desc: 'Now inside Development (Feedback): the approvals it needs from you, and feedback being turned into fixes.' },
     ],
   },
 ];
@@ -95,6 +95,40 @@ export const GROUPS = [
 /** Every legacy tab id the console links to. */
 export function allTabIds() {
   return GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id));
+}
+
+/** Features rebuilt natively in the console, by legacy tab id. */
+export const NATIVE_PAGES = {
+  commitments: '#/work/promises',
+  jobs: '#/work/schedule',
+  sessions: '#/work/sessions',
+  projects: '#/work/plans',
+  initiatives: '#/work/plans',
+  blockers: '#/work/plans?s=in-the-way',
+  machines: '#/capacity/machines',
+  subscriptions: '#/capacity/accounts',
+  spend: '#/capacity/costs',
+  tokens: '#/capacity/costs',
+  'llm-activity': '#/capacity/costs',
+  'routing-map': '#/capacity/costs',
+  origins: '#/people/messages',
+  threadline: '#/people/agents',
+  mandates: '#/people/mandates',
+  secrets: '#/people/secrets',
+  features: '#/settings/allowed',
+  'preferences-learning': '#/settings/learned',
+  files: '#/settings/files',
+  'pr-pipeline': '#/work/development?s=shipping',
+  throughput: '#/work/development?s=pace',
+  'feedback-drain': '#/work/development?s=feedback',
+  'integrated-being': '#/settings/inside',
+  'process-health': '#/settings/inside?s=problems',
+  evidence: '#/settings/inside?s=lookup',
+};
+
+/** Where a tile goes: the native page when it exists, else the legacy tab. */
+export function tabHref(tabId) {
+  return NATIVE_PAGES[tabId] || legacyHref(tabId);
 }
 
 /** The legacy URL for a tab. Ordinary link; nothing is embedded. */

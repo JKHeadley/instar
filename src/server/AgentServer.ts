@@ -1154,6 +1154,9 @@ export class AgentServer {
     /** McpProcessReaper — reclaims leaked MCP-server children of dead/stale
      *  sessions. Powers GET /processes/mcp-reaper. */
     mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper;
+    /** CodexArmSessionSweeper — closes orphaned `instar-codex-arm-*` tmux
+     *  sessions. Powers GET /codex-arm-sweeper. */
+    codexArmSessionSweeper?: import('../monitoring/CodexArmSessionSweeper.js').CodexArmSessionSweeper;
     /** GeminiLoopRunner — multi-turn gemini loop-driver (need-gem-002). Powers
      *  POST + GET /gemini-loop/runs. */
     geminiLoopRunner?: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null;
@@ -4802,6 +4805,7 @@ export class AgentServer {
       externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
+      codexArmSessionSweeper: options.codexArmSessionSweeper ?? null,
       geminiLoopRunner: options.geminiLoopRunner ?? null,
       sleepController: options.sleepController ?? null,
       agentActivityState: options.agentActivityState ?? null,
