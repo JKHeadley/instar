@@ -149,9 +149,13 @@ describe('What I have promised', () => {
     expect(isActiveCommitment(c({ expiresAt: minsAgo(1) }), NOW)).toBe(false);
   });
   it('a remote violated promise is not hidden', () => {
-    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', agentResponse: 'I’ll do X and report back.', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
     expect(m.state).toBe('bad');
     expect(m.rows[0].sub).toContain('another machine');
+    // A missed fragment with no promise wording ("Do X") is still listed, never hidden; it does not turn the card red.
+    const u = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
+    expect(u.rows[0].main).toBe('Do X');
+    expect(u.value).toBe('1 open promise');
   });
   it('a promise waiting on the operator but untouched for 14+ days is not counted', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
