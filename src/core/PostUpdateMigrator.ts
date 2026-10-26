@@ -73,6 +73,8 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
+  CONSOLE_BULLET,
+  CONSOLE_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
   THREADLINE_PAIR_TOOL_MARKER,
 } from '../scaffold/templates.js';
@@ -270,6 +272,23 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **Scope honesty:** the verdict is CPU-capacity only — it does NOT assess memory/swap/thermal/disk-IO, so \`OK\` means "CPU has headroom," not "everything is fine."
 - **NEVER** judge load from \`uptime\` 1-min load average alone — quote the script's verdict + real idle%, never the load average. (This rule exists because that exact misread caused a false "heavy load" deferral on 2026-06-19.)
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
+}
+
+/**
+ * Feature switches apply their setting (spec feature-transition-applies-action).
+ * SHARED by `generateClaudeMd` and `migrateClaudeMd` (Agent Awareness + Migration
+ * Parity). Content-sniff marker: the heading below.
+ */
+export function FEATURE_SWITCH_CLAUDEMD_SECTION(port: number): string {
+  return `
+
+### Feature switches apply their setting (read \`effective\` before saying a feature is on)
+
+\`POST /features/:id/transition\` to \`enabled\`/\`disabled\` now ALSO sends the feature's own setting change (its \`enableAction\`/\`disableAction\`, e.g. \`PATCH /config\`) server-side, one switch per feature at a time, and answers with \`apply\` — \`{ outcome: applied | refused | failed | not-applied, httpStatus, detail }\`. The recorded choice is kept even when the setting change is refused; \`apply.detail\` carries the route's reason.
+- **Registry First — is feature X actually on?** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/features/X\` → \`effective\`: \`recorded\` (the switch), \`configured\` (the config key now), \`atBoot\` (the key when this process started; null = unknown), \`status\` (\`on\` · \`off\` · \`on-after-restart\` · \`off-after-restart\` · \`recorded-only\` · \`not-recorded\`) and a plain \`summary\`. Quote the summary; never tell the user a feature is "on" from \`state.enabled\` alone, and never say "running" — \`on\` means the setting was on at start, not a verified process.
+- The operator's own switch (the dashboard Features tab, with a fresh PIN unlock as \`X-Instar-Operator-Session\`) may set any feature on/off from any state and is itself the consent record. An agent call without that proof still walks the discovery graph (consent record, activation challenge) exactly as before.
+- **When to use** (PROACTIVE): user asks "I switched X on, why isn't it working?" → read \`effective.status\` + \`lastAttempt\`; \`recorded-only\` with a reason means the setting change was refused (fix the cause, then switch again); \`on-after-restart\` means it needs a restart (offer \`POST /sessions/restart-all\` or a server restart as appropriate).
+`;
 }
 
 export function CODEX_CONNECT_CLAUDEMD_SECTION(): string {
@@ -7070,6 +7089,18 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    if (!content.includes(CONSOLE_MARKER)) {
+      // Console makeover (docs/specs/console-makeover.md): one bullet under the Dashboard entry.
+      const anchor = '- Features: Real-time terminal streaming';
+      const at = content.indexOf(anchor);
+      const eol = at >= 0 ? content.indexOf('\n', at) : -1;
+      content = eol >= 0
+        ? content.slice(0, eol + 1) + CONSOLE_BULLET + '\n' + content.slice(eol + 1)
+        : content + '\n' + CONSOLE_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the new console (beside the dashboard) awareness');
+    }
+
     if (!content.includes('### Telegram message origin')) {
       content += telegramOriginAwareness(port);
       patched = true;
@@ -7660,6 +7691,16 @@ setTimeout(() => process.exit(0), 2000);
       content += CODEX_CONNECT_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Hand-started Codex connect section');
+    }
+
+    // Feature switches apply their setting (spec feature-transition-applies-action) —
+    // Agent Awareness + Migration Parity: existing agents learn `apply` + `effective`
+    // and stop reporting a feature as on from state.enabled alone. Same text as
+    // generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('### Feature switches apply their setting')) {
+      content += FEATURE_SWITCH_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feature switches apply their setting section');
     }
 
     // Normal-Chrome browser (spec normal-chrome-builtin-skill) — Agent Awareness +
@@ -9861,6 +9902,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 - **See the pool:** the **Machines tab** in the dashboard, or \`GET /pool\` (Bearer-auth) → which machine is the router ("dispatcher") + every machine's nickname, hardware, online status, load, and clock-skew status.
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Idle vs broken machine (WS4.2):** the same \`pool.machines[]\` carries an explicit per-machine state so an idle machine never reads as broken. A machine with ZERO sessions gets \`pool.machines[].emptyState\` = \`online — no active sessions\` (heartbeat-fresh, just idle) / \`offline since <t>\` (known offline) / \`unreachable (last seen <t>)\` (was online, now not answering — the \`failed\` case). Honest derivation from the registry online flag + last-seen + the live fan-out — never a fabricated "looks fine". The dashboard sessions view renders these per-machine; a machine WITH sessions gets no empty-state (its tiles already name it). Single-machine install = just the lone self row.
+- **Honest machine state (trustworthy-machine-load, P1):** every \`pool.machines[]\` row now carries \`liveness\` = \`live\` / \`unreachable\` (shape \`struggling\` | \`refusing\` | \`silent\`) / \`stale\` / \`unknown\`, each with the evidence age and source, plus a ready-made \`livenessLine\` (\`<liveness>, last evidence <age> ago from <source>\`) and the freshest other-machine sighting ("Mac Mini reached it 3 min ago"). The last DIRECT contact is saved to disk, so a server restart renders \`stale, last evidence 20 min ago\` instead of "offline". **Never say a machine is "offline" without positive evidence** (a shutdown announcement or the sleep gate): quote the liveness, its age and its source — an overloaded machine looks exactly like a dead one to a plain timeout. Each row also carries a multi-signal \`loadReport\` (cores, CPU idle, available memory, native memory pressure, server event-loop lag, sessions in use) and \`loadVerdict\` = \`ok\` / \`elevated\` / \`saturated\` / \`impaired\` / \`unknown\` — a report older than 60 s reads \`unknown\`, and a peer on older code reads \`unknown\`, never \`ok\`. Reporting only: the \`online\` flag, placement and ownership keep their existing semantics in this phase.
 - **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
@@ -9979,6 +10021,19 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       content += '\n' + ws42line + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added WS4.2 per-machine empty-state line');
+    }
+
+    // trustworthy-machine-load-and-mesh-floor P1 (2026-10-25): agents that
+    // already carry the pool section must learn the honest liveness field and
+    // the "never say offline without positive evidence" rule — the 2026-10-25
+    // "offline since Oct 23" misreport came from exactly the old wording.
+    // Idempotent via the unique 'Honest machine state (trustworthy-machine-load' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Honest machine state (trustworthy-machine-load')) {
+      const livenessLine = `
+- **Honest machine state (trustworthy-machine-load, P1):** every \`pool.machines[]\` row now carries \`liveness\` = \`live\` / \`unreachable\` (shape \`struggling\` | \`refusing\` | \`silent\`) / \`stale\` / \`unknown\`, each with the evidence age and source, plus a ready-made \`livenessLine\` (\`<liveness>, last evidence <age> ago from <source>\`) and the freshest other-machine sighting ("Mac Mini reached it 3 min ago"). The last DIRECT contact is saved to disk, so a server restart renders \`stale, last evidence 20 min ago\` instead of "offline". **Never say a machine is "offline" without positive evidence** (a shutdown announcement or the sleep gate): quote the liveness, its age and its source — an overloaded machine looks exactly like a dead one to a plain timeout. Each row also carries a multi-signal \`loadReport\` (cores, CPU idle, available memory, native memory pressure, server event-loop lag, sessions in use) and \`loadVerdict\` = \`ok\` / \`elevated\` / \`saturated\` / \`impaired\` / \`unknown\` — a report older than 60 s reads \`unknown\`, and a peer on older code reads \`unknown\`, never \`ok\`. Reporting only: the \`online\` flag, placement and ownership keep their existing semantics in this phase.`;
+      content += '\n' + livenessLine + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added honest machine liveness + load report line');
     }
 
     // Post-transfer closeout awareness (2026-06-05): agents that already carry
@@ -10403,6 +10458,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
 
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/green-pr-automerge\` — last tick, breaker, episodes, the dual-latch gate, the Layer-2 snapshot, plus \`armedCount\` + \`armed[]\` (PRs whose GitHub native auto-merge is armed and waiting on CI).
 - **How the merge happens (\`mergeStrategy\`).** Default \`auto\`: the watcher ARMS GitHub native auto-merge (\`safe-merge … --auto\`) and hands the wait off to GitHub — GitHub merges the instant every required check passes (enforcing branch protection, never bypassing it), so a server-restart-mid-merge can't strand it. The eventual merge is confirmed on a later reconciliation tick. \`mergeStrategy:'admin'\` restores the legacy synchronous poll-then-\`--admin\` behavior — the rollback lever and the escape hatch for a repo with "Allow auto-merge" disabled. An \`armed\`/\`armed-overdue\` (>24h, surfaced) episode means "GitHub owns the merge, waiting on CI" — not a failure.
+- **Which PRs count as mine:** a branch starting with my namespace (\`echo/\`) OR a same-repository PR opened by my \`expectedGhLogin\`, whatever its prefix (\`fix/\`, \`chore/\`, …). A fork is never mine. A listed PR still refused as not mine is in \`notAgentOwned[]\` with \`notAgentOwnedCount\` on GET /green-pr-automerge (and one \`skipped:not-agent-owned\` audit line per head), never silent.
 - **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
 - **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
 - **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
@@ -10414,7 +10470,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
       content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
-    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review')) {
+    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review') || !content.includes('notAgentOwnedCount')) {
       // OLD section present (route string yes, the updated-copy marker no) →
       // replace the section body with the updated content. Match from the
       // section heading up to (but not including) the next top-level heading.
@@ -10427,7 +10483,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
         content += '\n' + GREEN_PR_SECTION;
       }
       patched = true;
-      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review)');
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review + author ownership)');
     } else {
       result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }
@@ -12270,6 +12326,7 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // peer-credential-guard-tailscale-coherence: a pool read's failure reasons
       // are server-side and framework-neutral — a Codex/Gemini agent runs the

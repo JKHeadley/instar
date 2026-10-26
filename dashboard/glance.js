@@ -905,8 +905,27 @@ const MACHINE_STATUS_WORD = {
   offline: 'Offline',
   'suspect-clock-removed': 'Clock out of sync — paused for new conversations',
 };
+const LOAD_VERDICT_WORD = {
+  ok: 'ok', elevated: 'busy', saturated: 'overloaded', impaired: 'struggling to respond', unknown: 'unknown',
+};
+/** Plain words for the evidence-derived liveness (trustworthy-machine-load A5):
+ *  never "Offline" without positive evidence — the server's livenessLine carries
+ *  the age + source; this is the short status word. */
+function livenessWord(m) {
+  const l = m.liveness;
+  if (!l || !l.state) return null;
+  if (l.state === 'live') return null; // the online wording below applies
+  if (l.state === 'unreachable') {
+    const shape = l.shape === 'refusing' ? 'refusing connections' : l.shape === 'silent' ? 'not answering' : 'struggling to answer';
+    return 'Unreachable — ' + shape + (m.livenessLine ? ' (' + m.livenessLine.replace(/^[^,]*,\s*/, '') + ')' : '');
+  }
+  if (l.state === 'stale') return 'Not checked recently' + (m.livenessLine ? ' — ' + m.livenessLine.replace(/^[^,]*,\s*/, '') : '');
+  return 'Unknown — no contact yet' + (m.livenessLine && m.livenessLine.indexOf(';') >= 0 ? m.livenessLine.slice(m.livenessLine.indexOf(';')) : '');
+}
 function machineStatusWord(m) {
-  if (!m.online) return 'Offline';
+  const lw = livenessWord(m);
+  if (lw) return lw;
+  if (!m.online && !(m.liveness && m.liveness.state === 'live')) return 'Offline';
   if (m.clockSkewStatus === 'suspect-clock-removed') return MACHINE_STATUS_WORD['suspect-clock-removed'];
   if (machineNeedsAttention(m)) return 'Online — needs a look';
   return 'Online and healthy';
@@ -962,6 +981,16 @@ export function machineRecordNode(doc, m, opts = {}) {
     ['Specs', machineSpecLine(m.hardware)],
     ['Conversations', online ? sessions : '—'],
   ];
+  if (m.livenessLine) rows.push(['Evidence', m.livenessLine]);
+  if (m.loadVerdict) {
+    const lr = m.loadReport;
+    const bits = [];
+    if (lr && lr.cpuIdlePct != null) bits.push(Math.round(100 - lr.cpuIdlePct) + '% CPU busy');
+    if (lr && lr.memAvailablePct != null) bits.push(Math.round(lr.memAvailablePct) + '% memory free');
+    if (lr && lr.eventLoopLagP99Ms != null) bits.push('server lag ' + Math.round(lr.eventLoopLagP99Ms) + ' ms');
+    const age = (typeof m.loadReportAgeMs === 'number') ? ' (as of ' + Math.round(m.loadReportAgeMs / 1000) + ' s ago)' : '';
+    rows.push(['Load', (LOAD_VERDICT_WORD[m.loadVerdict] || m.loadVerdict) + (bits.length ? ' — ' + bits.join(', ') : '') + (m.loadVerdict === 'unknown' ? '' : age)]);
+  }
   const p = m.guardPosture;
   if (p) {
     const on = (p.onConfirmed || 0) + (p.onUnverified || 0) + (p.onDryRun || 0);

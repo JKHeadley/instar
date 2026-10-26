@@ -249,6 +249,7 @@ import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrl
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
@@ -11081,6 +11082,10 @@ export function createRoutes(ctx: RouteContext): Router {
               failedReason: isSelf ? null : (peerFetchReason.get(machineId) ?? (capacity?.online ? null : 'offline')),
               routerReceivedAt: capacity?.routerReceivedAt,
               selfReportedLastSeen: capacity?.selfReportedLastSeen,
+              // trustworthy-machine-load A5: the evidence-derived state decides the
+              // wording; "offline" is never said without positive evidence.
+              liveness: capacity?.liveness,
+              nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id,
             },
             nowMs,
           );
@@ -16033,6 +16038,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       redPrWatchdog: wd.config,
       snapshot: state.snapshot,
       namespaceMismatch: state.namespaceMismatch ?? null,
+      // merge-line-author-eligibility: listed PRs refused as not the agent's own. NON-OPTIONAL.
+      notAgentOwnedCount: (state.notAgentOwned ?? []).length,
+      notAgentOwned: state.notAgentOwned ?? [],
       configuration,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,
@@ -21537,10 +21545,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the rope-health monitor knows a peer's transports are down within one
     // evaluation. Attach the live classification so reachability renders
     // honestly without touching placement semantics. Monitor dark → absent.
+    const nickOf = (id: string): string => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id;
     const machines = decorateWithRopeCondition(
       ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
       ctx.ropeHealthMonitor?.status().peers,
-    );
+    ).map((m) => ({
+      ...m,
+      // trustworthy-machine-load A5: the one wording template, rendered server-side
+      // so every consumer (dashboard, digests, peers) says the same honest thing.
+      ...(m.liveness ? { livenessLine: formatLivenessLine(m.liveness, nickOf) } : {}),
+    }));
     const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
@@ -32400,46 +32414,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const auth = ctx.telemetryHeartbeat.getAuth();
       const installationId = auth.getInstallationId();
 
-      // Attempt remote deletion if provisioned
-      let remoteDeletion = 'not_attempted';
+      // Capture what the remote deletion needs BEFORE the local mutations, then finish
+      // every local change (deprovision, log, config) before the awaited remote call —
+      // so a slow remote cleanup can never land the local "disabled" write after a
+      // later enable (feature-transition-applies-action review r2 §4).
+      let deletion: { timestamp: string; payload: Buffer; headers: Record<string, string> } | null = null;
       if (installationId) {
         try {
           const timestamp = Math.floor(Date.now() / 1000).toString();
-          const deletePayload = Buffer.from(JSON.stringify({ installationId }));
-          const signature = auth.sign(installationId, timestamp, deletePayload);
-
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 5000);
-
-          const deleteHeaders: Record<string, string> = {
+          const payload = Buffer.from(JSON.stringify({ installationId }));
+          const signature = auth.sign(installationId, timestamp, payload);
+          const headers: Record<string, string> = {
             'X-Instar-Signature': `hmac-sha256=${signature}`,
             'X-Instar-Timestamp': timestamp,
           };
           const fingerprint = auth.getKeyFingerprint();
-          if (fingerprint) {
-            deleteHeaders['X-Instar-Key-Fingerprint'] = fingerprint;
-          }
-
-          const resp = await fetch(`https://instar-telemetry.sagemind-ai.workers.dev/v1/telemetry/${installationId}`, {
-            method: 'DELETE',
-            headers: deleteHeaders,
-            signal: controller.signal,
-          });
-
-          clearTimeout(timeout);
-          remoteDeletion = resp.ok ? 'success' : `failed_${resp.status}`;
-        } catch {
-          remoteDeletion = 'network_error';
-          // Write pending-deletion for retry on next startup
-          try {
-            const pendingPath = path.join(ctx.config.stateDir, 'telemetry', 'pending-deletion.json');
-            fs.writeFileSync(pendingPath, JSON.stringify({
-              installationId,
-              timestamp: new Date().toISOString(),
-              retryCount: 0,
-            }) + '\n');
-          } catch { /* best-effort */ }
-        }
+          if (fingerprint) headers['X-Instar-Key-Fingerprint'] = fingerprint;
+          deletion = { timestamp, payload, headers };
+        } catch { /* @silent-fallback-ok — signing unavailable; remoteDeletion stays 'not_attempted' and is reported in the response */ }
       }
 
       // Delete local identity files
@@ -32459,6 +32451,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!fileConfig.monitoring.telemetry) fileConfig.monitoring.telemetry = {};
       fileConfig.monitoring.telemetry.enabled = false;
       fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
+
+      // Attempt remote deletion if provisioned (after the local state is final)
+      let remoteDeletion = 'not_attempted';
+      if (installationId && deletion) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const resp = await fetch(`https://instar-telemetry.sagemind-ai.workers.dev/v1/telemetry/${installationId}`, {
+            method: 'DELETE',
+            headers: deletion.headers,
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          remoteDeletion = resp.ok ? 'success' : `failed_${resp.status}`;
+        } catch {
+          remoteDeletion = 'network_error';
+          // Write pending-deletion for retry on next startup
+          try {
+            const pendingPath = path.join(ctx.config.stateDir, 'telemetry', 'pending-deletion.json');
+            fs.writeFileSync(pendingPath, JSON.stringify({
+              installationId,
+              timestamp: new Date().toISOString(),
+              retryCount: 0,
+            }) + '\n');
+          } catch { /* best-effort */ }
+        }
+      }
 
       res.json({
         success: true,
@@ -39954,6 +39973,52 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //
   // Phase 1: Feature Registry — definitions, state, and summaries.
 
+  // ── Feature switches apply their setting (spec feature-transition-applies-action) ──
+  const featureEffective = (featureId: string, userId: string) => {
+    const reg = ctx.featureRegistry!;
+    return reg.getEffectiveState(featureId, userId, reg.readMergedConfig(ctx.config as unknown as Record<string, unknown>));
+  };
+  const withEffective = <T extends { definition: { id: string }; state: { userId: string } }>(infos: T[]) => {
+    const reg = ctx.featureRegistry!;
+    const merged = reg.readMergedConfig(ctx.config as unknown as Record<string, unknown>);
+    return infos.map((f) => ({ ...f, effective: reg.getEffectiveState(f.definition.id, f.state.userId, merged) }));
+  };
+  /**
+   * Send the feature's own enable/disable request to this server's route, over
+   * the socket the triggering request arrived on, and record the result.
+   * Applied only for the default user: config is agent-wide (spec §2.5).
+   */
+  // One switch at a time per feature: an earlier disable must not finish after a
+  // later enable and overwrite config + the recorded result (review r1 §4).
+  const featureSwitchChain = new Map<string, Promise<unknown>>();
+  const serializeFeatureSwitch = <T>(featureId: string, work: () => Promise<T>): Promise<T> => {
+    const prev = featureSwitchChain.get(featureId) ?? Promise.resolve();
+    const next = prev.then(work, work);
+    featureSwitchChain.set(featureId, next.catch(() => { /* @silent-fallback-ok — the chain tail only sequences; the failing request already answered its own caller */ }));
+    return next;
+  };
+  const applyFeatureSetting = async (
+    req: import('express').Request,
+    featureId: string,
+    userId: string,
+    newState: string,
+  ): Promise<import('../core/FeatureActionApplier.js').FeatureApplyResult | null> => {
+    const reg = ctx.featureRegistry!;
+    if (newState !== 'enabled' && newState !== 'disabled') return null;
+    const direction = newState === 'enabled' ? 'enable' : 'disable';
+    const { applyFeatureAction, loopbackHost, notApplied } = await import('../core/FeatureActionApplier.js');
+    const def = reg.getDefinition(featureId);
+    const result = userId !== 'default'
+      ? notApplied(direction, 'per-user state; the setting is agent-wide')
+      : await applyFeatureAction(direction === 'enable' ? def?.enableAction : def?.disableAction, direction, {
+          host: loopbackHost(req.socket.localAddress),
+          port: req.socket.localPort ?? ctx.config.port,
+          authToken: ctx.config.authToken ?? '',
+        });
+    reg.recordApply(featureId, userId, result);
+    return result;
+  };
+
   router.get('/features', (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
@@ -39964,9 +40029,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     if (stateFilter) {
       const states = stateFilter.split(',').map(s => s.trim()) as import('../core/FeatureRegistry.js').DiscoveryState[];
-      res.json({ features: ctx.featureRegistry.getFeaturesByState(states, userId) });
+      res.json({ features: withEffective(ctx.featureRegistry.getFeaturesByState(states, userId)) });
     } else {
-      res.json({ features: ctx.featureRegistry.getAllFeatures(userId) });
+      res.json({ features: withEffective(ctx.featureRegistry.getAllFeatures(userId)) });
     }
   });
 
@@ -39976,7 +40041,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const userId = (req.query.userId as string) || 'default';
-    res.json({ features: ctx.featureRegistry.getSummaries(userId) });
+    res.json({
+      features: ctx.featureRegistry.getSummaries(userId).map((f) => ({ ...f, effective: featureEffective(f.id, userId) ?? undefined })),
+    });
   });
 
   router.get('/features/events', (req, res) => {
@@ -40057,6 +40124,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     res.json({
       ...info,
+      effective: featureEffective(req.params.id, userId),
       validTransitions: ctx.featureRegistry.getValidTransitions(req.params.id, userId),
     });
   });
@@ -40082,7 +40150,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(result);
   });
 
-  router.post('/features/:id/transition', (req, res) => {
+  router.post('/features/:id/transition', async (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
       return;
@@ -40093,21 +40161,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const userId = (bodyUserId as string) || 'default';
-    const result = ctx.featureRegistry.transition(req.params.id, userId, to, {
-      trigger,
-      consentRecord,
-      context,
-      activationChallenge,
-    });
-    if (!result.success) {
-      const status = result.error?.code === 'FEATURE_NOT_FOUND' ? 404
-        : result.error?.code === 'INVALID_TRANSITION' ? 422
-        : result.error?.code === 'CONSENT_REQUIRED' ? 422
-        : 400;
-      res.status(status).json({ error: result.error });
+    const isSwitch = to === 'enabled' || to === 'disabled';
+    const switchDef = ctx.featureRegistry.getDefinition(req.params.id);
+    if (isSwitch && switchDef?.switchable === false) {
+      // A key the runtime ignores: a working-looking switch would be the original bug again.
+      res.status(409).json({ error: { code: 'FEATURE_NOT_SWITCHABLE', message: switchDef.honestyNote ?? `Feature '${req.params.id}' cannot be switched in this version.` } });
       return;
     }
-    res.json(result);
+    // The operator's switch (spec §2.4): a fresh dashboard PIN unlock is a person
+    // setting the switch, which is itself the consent the discovery graph collects.
+    // A proof that is PRESENT but invalid (expired, forged) is answered as such, never
+    // silently downgraded to the agent path (review r2: an expired proof must re-unlock,
+    // not strand the switch behind consent errors).
+    const proofPresent = req.headers['x-instar-operator-session'] !== undefined; // an EMPTY header is present, not omitted
+    const proofHeader = req.get('X-Instar-Operator-Session') ?? '';
+    const operatorSwitch = isSwitch && proofPresent && ctx.verifyDashboardOperatorSession?.(proofHeader) === true;
+    if (isSwitch && proofPresent && !operatorSwitch) {
+      res.status(401).json({ error: { code: 'OPERATOR_PROOF_INVALID', message: 'Your dashboard unlock has expired or is not valid here. Unlock with your PIN again and retry.' } });
+      return;
+    }
+    const outcome = await serializeFeatureSwitch(req.params.id, async () => {
+      const result = operatorSwitch
+        ? ctx.featureRegistry!.operatorSet(req.params.id, userId, to, { context })
+        : ctx.featureRegistry!.transition(req.params.id, userId, to, {
+            trigger,
+            consentRecord,
+            context,
+            activationChallenge,
+          });
+      if (!result.success) return { result, apply: null };
+      // The transition landed; now make the setting follow it. The recorded choice
+      // stays even if the setting change is refused — `apply` and `effective` say so.
+      const apply = await applyFeatureSetting(req, req.params.id, userId, result.newState ?? '');
+      return { result, apply };
+    });
+    if (!outcome.result.success) {
+      const code = outcome.result.error?.code;
+      const status = code === 'FEATURE_NOT_FOUND' ? 404
+        : code === 'INVALID_TRANSITION' ? 422
+        : code === 'CONSENT_REQUIRED' ? 422
+        : 400;
+      res.status(status).json({ error: outcome.result.error });
+      return;
+    }
+    res.json({
+      ...outcome.result,
+      viaOperatorSwitch: operatorSwitch,
+      apply: outcome.apply,
+      effective: featureEffective(req.params.id, userId),
+    });
   });
 
   router.delete('/features/discovery-data', (req, res) => {

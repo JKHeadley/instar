@@ -146,6 +146,23 @@ describe('migrateClaudeMd — Green-PR section REPLACE for already-armed agents 
     expect(second.upgraded.some((u) => /Green-PR Auto-Merge/.test(u))).toBe(false);
   });
 
+  it('RE-SYNCS an up-to-date-before-this section that predates author ownership (2026-10-25) — idempotent after', () => {
+    // merge-line-author-eligibility: an agent whose section has every earlier marker
+    // still believes only echo/ branches are its own.
+    const PRE = OLD_SECTION.replace('## Green-PR Auto-Merge (Phase 7 becomes machinery)',
+      '## Green-PR Auto-Merge (Phase 7 becomes machinery)\n\n- mergeStrategy auto; refused:approval-required; needs-independent-review.');
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + PRE + '\n## Next Section\n\nAfter.\n');
+    const result = runClaudeMdMigration(projectDir);
+    expect(result.upgraded.some((u) => /updated Green-PR Auto-Merge.*author ownership/.test(u))).toBe(true);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('notAgentOwnedCount');
+    expect(after).toContain('A fork is never mine.');
+    expect(after).toContain('## Next Section');
+    expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
+    const second = runClaudeMdMigration(projectDir);
+    expect(second.upgraded.some((u) => /Green-PR Auto-Merge/.test(u))).toBe(false);
+  });
+
   it('is IDEMPOTENT for the Green-PR section — once the new marker is present, a second run skips and does not duplicate', () => {
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + OLD_SECTION);
     runClaudeMdMigration(projectDir);
