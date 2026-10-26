@@ -849,6 +849,26 @@ Onboarding a framework REQUIRES a stall-coverage matrix (\`docs/frameworks/<fram
  * "flag not heal" framing). The unique heading substring
  * `Duplicate-Session Prevention` is the content-sniff marker.
  */
+/**
+ * The ONE awareness section for the codex-arm session sweeper, shared by generateClaudeMd
+ * (new agents) and migrateClaudeMd (existing agents) so the two can never drift — the
+ * integration review found the first draft shipping "Ships ON" to fresh agents and
+ * "dry-run" to updated ones. Sniff key for the migrator: `/codex-arm-sweeper`.
+ * Spec: docs/specs/codex-arm-session-leak-and-sweeper.md
+ */
+export function CODEX_ARM_SWEEPER_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Orphaned codex-arm sessions
+
+instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to answer Codex's hook-trust prompt, and its teardown runs in the process that opened it. That process is PostUpdateMigrator, which arms on EVERY update — during which the server restarts — so the race is scheduled, not accidental, and a lost race orphans an interactive \`codex\` forever (measured: ~8/day on one machine, 41 retired by hand across two sweeps; the laptop they accumulated on reached 115 of 128 GB resident and starved a co-resident agent until its event loop drifted 8-19 s). Two layers close it: the session is now created WITH its own \`kill-session\` already scheduled in the tmux server, in the same request, so it dies on a timer regardless of what happens to its creator; and a sweeper closes whatever still leaks.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/codex-arm-sweeper\` → \`{ enabled, dryRun, maxAgeMs, passes, killed, wouldKill, wouldKillDistinct, alreadyGone, kept, errors, lastPassAt, lastKills, breakerOpen, breakerProbes, keptReasons }\`. **503 only when not wired**; a disabled sweeper still answers 200 with \`enabled: false\`, so read the field, not the status code. Audit: \`logs/codex-arm-sweeper.jsonl\`.
+- **It reads the MACHINE, not instar's session list** — an arm session is never registered with SessionManager, which is exactly why the leak was invisible: \`GET /sessions\` reported 11 while \`tmux ls\` held 112. A count from \`/sessions\` cannot answer "is anything piling up on this machine?".
+- **Ships enabled in DRY-RUN**: it reports what it WOULD close and kills nothing. Read \`wouldKillDistinct\` for the backlog (\`wouldKill\` re-counts the same orphan every pass). Arm it with \`monitoring.codexArmSessionSweeper.dryRun: false\` — read live at each pass, no restart. \`enabled: false\` turns it off (next restart; it then grades \`diverged-from-default\` on \`/guards\`, deliberately).
+- Safety: a session is a candidate only if its name's embedded birth time agrees with tmux's own creation record; the age threshold is clamped to a 5-minute floor (~2x the ~150 s modeled arming budget); an attached or recently-active session is kept whatever its age; a future-dated session is kept; an unreadable session list, or an unreadable protected-name list, ends the pass with zero kills; a pass is capped at 50 attempts and ~3 s of wall clock.
+- Proactive: user asks "why is this machine so full / what are all these terminal sessions?" → read this status AND run a real \`tmux ls\` count; the two together are the honest answer. Spec: \`docs/specs/codex-arm-session-leak-and-sweeper.md\`.
+`;
+}
+
 export function DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port: number): string {
   return `\n### Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)
 
@@ -6128,6 +6148,10 @@ if [[ "$ACTIVE" != "true" ]]; then`;
                 tmuxPath: detectTmuxPath() || 'tmux',
                 codexBinary,
                 model: 'gpt-5.2',
+                // The driver reports whether the arm session was created WITH its
+                // self-destruct (or refused) — without a logger that line is dropped
+                // and "is the source fix working?" is unanswerable from the update log.
+                log: (m) => console.warn(m),
               }),
             });
             result.upgraded.push(`.codex hook auto-arm: ${outcome.status}`);
@@ -10354,6 +10378,20 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: Reap-Log section already present');
     }
 
+    // Orphaned codex-arm tmux sessions (spec codex-arm-session-leak-and-sweeper.md).
+    // An agent that doesn't know this surface exists answers "why is this machine
+    // full of terminal sessions?" from `GET /sessions` — which structurally cannot
+    // see an arm session, and reported 11 while the machine held 112 (Agent
+    // Awareness standard). Idempotent via content-sniffing on the route path.
+    if (!content.includes('/codex-arm-sweeper')) {
+      const section = CODEX_ARM_SWEEPER_CLAUDEMD_SECTION(4040);
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
+    } else {
+      result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
     // Mid-Work Resume Queue + per-topic reap notices (reap-notify spec).
     // Existing agents only learn the new surfaces through this block — an
     // agent that doesn't know /sessions/resume-queue exists will tell the
@@ -11247,6 +11285,20 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
+    }
+
+    // Attention lifecycle (attention-lifecycle-close-on-cause, operator report
+    // 2026-10-25: ~1,140 open items nobody could act on). Deployed agents learn
+    // that items are one-per-condition, how to pass a conditionKey, how to
+    // close a cleared condition, and that untouched rows expire with an honest
+    // label. Sniff: '/attention/lifecycle'.
+    if (content.includes('**Attention Queue**') && !content.includes('/attention/lifecycle')) {
+      const lifecycleBullet = `- **Items close themselves (attention lifecycle, default on).** One row per CONDITION, not per observation: give a recurring item a stable \`"conditionKey"\` (no timestamps or episode counters, e.g. \`"sign-in:acct:machine"\`) and every later raise lands on the same row (its body refreshes when the ask changes; a closed row reopens for a new episode). When the cause is gone, CLOSE it yourself: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"sign-in:acct:machine","resolution":"signed in again and verified"}'\` (or \`"id"\` / a delimiter-terminated \`"idPrefix"\`). An hourly pass merges duplicate open rows for one condition, closes rows whose producer reports the condition over, and EXPIRES untouched rows with an honest label (\`closedBy: "expired"\`, resolution "never confirmed cleared"): automated notices after 14 days, items you raised or that ask for a decision after 30 days, acknowledged/in-progress rows and security items never. The first pass on a machine only LISTS what expiry would close. Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/lifecycle\`; run a pass: \`POST /attention/lifecycle/sweep\` with \`{"dryRun":true}\` to list, \`{}\` to apply. Audit: \`logs/attention-lifecycle.jsonl\`. Rollback: \`messaging[].config.attentionLifecycle.enabled: false\`. Promises waiting on the operator (\`owner: "user"\`, blocked on user-input / user-authorization) expire after 14 days too (\`commitments.operatorWait\`). **When to use** (PROACTIVE): the user asks "why is the attention list full of old items?" / "why did my item disappear?" → read \`GET /attention/lifecycle\` and the audit log, don't guess; when you raise a recurring item, pass a \`conditionKey\` and clear it when the cause ends.\n`;
+      const proactive = /^- \*\*Proactive use\*\*: queue an item only[^\n]*\n/m;
+      if (proactive.test(content)) content = content.replace(proactive, (m) => `${m}${lifecycleBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${lifecycleBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added attention lifecycle (close-on-cause + expiry) bullet');
     }
 
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.

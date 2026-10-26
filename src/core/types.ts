@@ -3571,6 +3571,17 @@ export interface InstarConfig {
       sweepIntervalMs?: number;
       dryRun?: boolean;
     };
+    /**
+     * attention-lifecycle-close-on-cause §3.5: a commitment waiting on the
+     * operator (owner:user / blocked on user-input or user-authorization)
+     * expires after `maxAgeDays` (default 14) instead of waiting forever.
+     * Own `dryRun`, default false. Rides the auto-expiry sweep cadence.
+     */
+    operatorWait?: {
+      enabled?: boolean;
+      maxAgeDays?: number;
+      dryRun?: boolean;
+    };
     agentOwnedFollowthrough?: {
       enabled?: boolean;
       dryRun?: boolean;
@@ -7154,6 +7165,37 @@ export interface MonitoringConfig {
     reapIntervalMs?: number;
     maxReapsPerPass?: number;
     maxAncestorHops?: number;
+  };
+  /**
+   * CodexArmSessionSweeper (spec docs/specs/codex-arm-session-leak-and-sweeper.md).
+   * Closes the detached `instar-codex-arm-*` tmux sessions codexHookArm leaks when
+   * the process that created them is killed before its `finally` runs — which is
+   * PostUpdateMigrator on every update, during which the server restarts (~8
+   * orphans/day measured on one laptop; 41 retired by hand across two sweeps).
+   * Reads the MACHINE (`tmux ls`), never instar's own session registry, because an
+   * arm session is never registered there — the exact reason the leak was invisible
+   * (`GET /sessions` said 11 while the machine held 112). Ships enabled in DRY-RUN:
+   * the source fix stops new orphans, so the sweeper reports the backlog and kills
+   * nothing until `dryRun: false`. GET /codex-arm-sweeper.
+   */
+  codexArmSessionSweeper?: {
+    enabled?: boolean;
+    /** Default true: report would-kills (`wouldKillDistinct`), kill nothing. */
+    dryRun?: boolean;
+    /** Default 900_000; clamped to a 300_000 floor (~2x the ~150 s modeled arming budget). */
+    maxAgeMs?: number;
+    sweepIntervalMs?: number;
+    initialPassDelayMs?: number;
+    /** Kill ATTEMPTS per pass (dry-run and failures count). Default 50. */
+    maxKillsPerPass?: number;
+    /** Wall-clock budget per pass for the synchronous kill path. Default 3000. */
+    maxPassMs?: number;
+    /** Consecutive unreadable passes before the breaker opens. Default 5. */
+    maxConsecutiveListFailures?: number;
+    /** While open, one probe is let through every this many passes. Default 6. */
+    breakerProbeEveryPasses?: number;
+    /** Failed kills of one name before it is never retried. Default 3. */
+    maxKillFailuresPerSession?: number;
   };
   /**
    * Agent hard-sleep — SleepController decision foundation (RESPONSIBLE-RESOURCE-

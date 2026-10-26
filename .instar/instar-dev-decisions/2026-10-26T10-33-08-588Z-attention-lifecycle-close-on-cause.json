@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-26T10:33:08.588Z",
+  "slug": "attention-lifecycle-close-on-cause",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/TelegramAdapter.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "fix-only commit: a failed hourly lifecycle pass is now reported to DegradationReporter; adds no self-triggered action"
+  },
+  "verdict": "blocked"
+}

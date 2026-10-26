@@ -442,6 +442,14 @@ export interface CommitmentTrackerConfig {
   checkIntervalMs?: number;
   /** Auto-expire old agent-owned open commitments. Defaults: enabled, 21d, 6h, dry-run. */
   autoExpiry?: CommitmentAutoExpiryConfig;
+  /**
+   * attention-lifecycle-close-on-cause §3.5: a commitment WAITING ON THE
+   * OPERATOR (owner:'user', or blocked on user-input / user-authorization)
+   * expires after `maxAgeDays` (default 14) with a per-row resolution instead
+   * of waiting forever. Own `dryRun` (default FALSE — `autoExpiry.dryRun`
+   * defaults true and would make this inert). Rides the auto-expiry sweep.
+   */
+  operatorWait?: CommitmentOperatorWaitConfig;
   /** Callback when a violation is detected */
   onViolation?: (commitment: Commitment, detail: string) => void;
   /** Callback when a commitment is verified for the first time */
@@ -461,6 +469,12 @@ export interface CommitmentAutoExpiryConfig {
   dryRun?: boolean;
 }
 
+export interface CommitmentOperatorWaitConfig {
+  enabled?: boolean;
+  maxAgeDays?: number;
+  dryRun?: boolean;
+}
+
 export interface CommitmentAutoExpirySweepReport {
   timestamp: string;
   dryRun: boolean;
@@ -470,6 +484,10 @@ export interface CommitmentAutoExpirySweepReport {
   eligible: number;
   expired: number;
   capped: boolean;
+  /** §3.5 operator-wait branch: its own switches and counts. */
+  operatorWait: { enabled: boolean; dryRun: boolean; maxAgeDays: number; eligible: number; expired: number };
+  /** Per-row disposition for every row the sweep touched (or would touch). */
+  dispositions: Array<{ id: string; branch: 'agent' | 'operator-wait'; waitedDays: number; reason: string; applied: boolean }>;
 }
 
 // ── Implementation ────────────────────────────────────────────────
@@ -479,6 +497,7 @@ const MUTATE_QUEUE_MAX_DEPTH = 256;
 /** Max CAS retries when the version drifts under an apply. */
 const MUTATE_CAS_MAX_RETRIES = 5;
 const DEFAULT_AUTO_EXPIRY_MAX_AGE_DAYS = 21;
+const DEFAULT_OPERATOR_WAIT_MAX_AGE_DAYS = 14;
 const DEFAULT_AUTO_EXPIRY_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const AUTO_EXPIRY_SWEEP_CAP = 500;
 
@@ -1788,42 +1807,103 @@ export class CommitmentTracker extends EventEmitter {
       eligible: 0,
       expired: 0,
       capped: false,
+      operatorWait: { enabled: false, dryRun: false, maxAgeDays: DEFAULT_OPERATOR_WAIT_MAX_AGE_DAYS, eligible: 0, expired: 0 },
+      dispositions: [],
     };
 
-    if (!config.enabled) return report;
+    const ow = this.resolveOperatorWaitConfig();
+    report.operatorWait = { enabled: ow.enabled, dryRun: ow.dryRun, maxAgeDays: ow.maxAgeDays, eligible: 0, expired: 0 };
+    if (!config.enabled && !ow.enabled) return report;
 
-    const targets: string[] = [];
+    const targets: Array<{ id: string; reason: string; apply: boolean; branch: 'agent' | 'operator-wait' }> = [];
+    const agentReason = `auto-expired: aged out >${config.maxAgeDays}d, presumed completed-but-unclosed`;
     for (const commitment of this.store.commitments) {
       report.scanned++;
-      if (!this.isAutoExpiryEligible(commitment, now, config.maxAgeDays)) continue;
+      // §3.5 — the operator-wait branch is judged FIRST so a user-owned row
+      // never falls through to the agent rule's "presumed completed" wording.
+      const wait = ow.enabled ? this.operatorWaitDisposition(commitment, now, ow.maxAgeDays) : null;
+      if (wait) {
+        report.operatorWait.eligible++;
+        report.dispositions.push({ id: commitment.id, branch: 'operator-wait', waitedDays: wait.waitedDays, reason: wait.reason, applied: !ow.dryRun });
+        if (targets.length < AUTO_EXPIRY_SWEEP_CAP) targets.push({ id: commitment.id, reason: wait.reason, apply: !ow.dryRun, branch: 'operator-wait' });
+        else report.capped = true;
+        continue;
+      }
+      if (!config.enabled || !this.isAutoExpiryEligible(commitment, now, config.maxAgeDays)) continue;
       report.eligible++;
+      const waitedDays = Math.floor((now.getTime() - Date.parse(commitment.createdAt)) / 86_400_000);
+      report.dispositions.push({ id: commitment.id, branch: 'agent', waitedDays, reason: agentReason, applied: !config.dryRun });
       if (targets.length < AUTO_EXPIRY_SWEEP_CAP) {
-        targets.push(commitment.id);
+        targets.push({ id: commitment.id, reason: agentReason, apply: !config.dryRun, branch: 'agent' });
       } else {
         report.capped = true;
       }
     }
 
-    if (!config.dryRun && targets.length > 0) {
-      const reason = `auto-expired: aged out >${config.maxAgeDays}d, presumed completed-but-unclosed`;
+    const applicable = targets.filter((t) => t.apply);
+    if (applicable.length > 0) {
       this.beginSaveBatch();
       try {
-        for (const id of targets) {
-          const updated = this.expireSync(id, reason, timestamp);
+        for (const t of applicable) {
+          const updated = this.expireSync(t.id, t.reason, timestamp);
           this.refreshThreadIdIndex(updated);
           this.emit('expired', updated);
-          report.expired++;
+          if (t.branch === 'operator-wait') report.operatorWait.expired++; else report.expired++;
         }
-        if (report.expired > 0) this.writeBehavioralRules();
+        if (report.expired + report.operatorWait.expired > 0) this.writeBehavioralRules();
       } finally {
         this.finishSaveBatch();
       }
     }
 
     console.log(
-      `[CommitmentTracker] Auto-expiry sweep: scanned=${report.scanned} eligible=${report.eligible} expired=${report.expired} dryRun=${report.dryRun} maxAgeDays=${report.maxAgeDays} capped=${report.capped}`,
+      `[CommitmentTracker] Auto-expiry sweep: scanned=${report.scanned} eligible=${report.eligible} expired=${report.expired} dryRun=${report.dryRun} maxAgeDays=${report.maxAgeDays} capped=${report.capped}` +
+      ` operatorWait(eligible=${report.operatorWait.eligible} expired=${report.operatorWait.expired} dryRun=${ow.dryRun} maxAgeDays=${ow.maxAgeDays})`,
     );
     return report;
+  }
+
+  /**
+   * §3.5 — is this a commitment waiting on the operator that has waited past
+   * the bound? Only `owner:'user'` rows, or rows blocked on user-input /
+   * user-authorization, qualify; the wait starts at the later of creation and
+   * the current blocker episode's start. Replicas (another machine's rows) are
+   * the origin machine's to expire. Never expires a row with a future hard
+   * deadline. Returns the per-row reason, or null.
+   */
+  private operatorWaitDisposition(commitment: Commitment, now: Date, maxAgeDays: number): { waitedDays: number; reason: string } | null {
+    const owner = commitment.owner ?? 'agent';
+    const blockedOn = commitment.blockedOn ?? 'none';
+    const waitsOnOperator = owner === 'user' || blockedOn === 'user-input' || blockedOn === 'user-authorization';
+    if (!waitsOnOperator) return null;
+    if (commitment.status !== 'pending' && commitment.status !== 'violated') return null;
+    if (this.config.originMachineId && commitment.originMachineId && commitment.originMachineId !== this.config.originMachineId) return null;
+    const createdMs = Date.parse(commitment.createdAt);
+    if (!Number.isFinite(createdMs)) return null;
+    let waitStartMs = createdMs;
+    const episode = (commitment.blockerEpisodes ?? []).at(-1);
+    if (episode && typeof episode.startedAtMs === 'number' && Number.isFinite(episode.startedAtMs) && episode.startedAtMs > waitStartMs) {
+      waitStartMs = episode.startedAtMs;
+    }
+    const waitedDays = (now.getTime() - waitStartMs) / 86_400_000;
+    if (waitedDays <= maxAgeDays) return null;
+    if (commitment.hardDeadlineAt) {
+      const hardDeadlineMs = Date.parse(commitment.hardDeadlineAt);
+      if (Number.isFinite(hardDeadlineMs) && hardDeadlineMs > now.getTime()) return null;
+    }
+    const what = blockedOn === 'user-authorization' ? 'your authorization' : blockedOn === 'user-input' ? 'your answer' : 'you';
+    return {
+      waitedDays: Math.floor(waitedDays),
+      reason: `expired: waited ${Math.floor(waitedDays)} days for ${what} (${owner === 'user' ? 'owner: user' : `blocked on ${blockedOn}`}); ask again if still needed`,
+    };
+  }
+
+  private resolveOperatorWaitConfig(): { enabled: boolean; maxAgeDays: number; dryRun: boolean } {
+    return {
+      enabled: this.config.operatorWait?.enabled ?? true,
+      maxAgeDays: this.positiveNumberOrDefault(this.config.operatorWait?.maxAgeDays, DEFAULT_OPERATOR_WAIT_MAX_AGE_DAYS),
+      dryRun: this.config.operatorWait?.dryRun === true,
+    };
   }
 
   private expireCommitments(): void {

@@ -1660,6 +1660,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   private maybeEscalateIdleZombieVeto(session: Session, topicId: number | null, reasonKey: string): void {
     const incidentKey = 'idle-zombie-veto:' + (topicId ?? 'none') + ':' + reasonKey;
     if (this.incidentDedupe?.shouldEmit(incidentKey, 24 * 60 * 60 * 1000)) {
+      this.idleZombieVetoEscalated.set(session.id, topicId);
       this.emit('idleZombieVetoEscalation', {
         session,
         topicId,
@@ -1681,6 +1682,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
    *
    * @returns whether a kill was actually performed (for the caller's WARN wording).
    */
+  /**
+   * attention-lifecycle-close-on-cause §3.3 — sessions whose idle-zombie veto was
+   * escalated to the attention queue, by topic. When the veto ends (the session
+   * was finally killed, or its backoff state is dropped because it is gone) the
+   * server closes that row via `idleZombieVetoCleared`.
+   */
+  private readonly idleZombieVetoEscalated = new Map<string, number | null>();
+
+  private noteIdleZombieVetoEnded(sessionId: string): void {
+    if (!this.idleZombieVetoEscalated.has(sessionId)) return;
+    const topicId = this.idleZombieVetoEscalated.get(sessionId) ?? null;
+    this.idleZombieVetoEscalated.delete(sessionId);
+    this.emit('idleZombieVetoCleared', { sessionId, topicId });
+  }
+
   private async handleIdleZombie(
     session: Session,
     idleMs: number,
@@ -1710,6 +1726,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (result.terminated) {
         console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
         this.idleKillBackoff.recordKilled(session.id);
+        this.noteIdleZombieVetoEnded(session.id);
       } else {
         const vetoKey = normalizeReasonKey(result.skipped ? { reason: result.skipped } : null)
           ?? verdict.reasonKey ?? 'unknown';
@@ -4835,6 +4852,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // the CAS guard + endedReason are the only additions here.
       this.idlePromptSince.delete(session.id);
       this.idleKillBackoff?.clear(session.id); // session gone → drop veto-backoff state (map-leak eviction)
+      this.noteIdleZombieVetoEnded(session.id);
       this.reapingSessions.delete(session.id);
       // G3 (MESH-SELF-HEAL-SPEC §3.3, FD7): "a topic→session binding exists IFF a
       // live session exists." killSession historically did NOT clear the binding,
@@ -6462,6 +6480,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (this.state.removeSession(session.id)) {
           cleaned.push(session.id);
           this.idleKillBackoff?.clear(session.id); // map-leak eviction (Fix A finding 1)
+          this.noteIdleZombieVetoEnded(session.id);
         }
       } else {
         retained.push({ id: session.id, endedAt: Number.isNaN(endedAt) ? 0 : endedAt });
@@ -6476,6 +6495,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (this.state.removeSession(s.id)) {
           cleaned.push(s.id);
           this.idleKillBackoff?.clear(s.id); // map-leak eviction (Fix A finding 1)
+          this.noteIdleZombieVetoEnded(s.id);
         }
       }
     }

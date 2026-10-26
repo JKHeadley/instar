@@ -702,6 +702,21 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Reaps orphaned MCP server processes.',
   },
   {
+    key: 'monitoring.codexArmSessionSweeper.enabled',
+    kind: 'config',
+    configPath: 'monitoring.codexArmSessionSweeper.enabled',
+    defaultEnabled: true,
+    dryRunConfigPath: 'monitoring.codexArmSessionSweeper.dryRun',
+    expectedTickMs: 600_000,
+    process: 'server',
+    // TRUE because server.ts registers a live getter (enabled/dryRun/lastTickAt), so the
+    // declared cadence is actually evaluated — a declared-but-inert expectedTickMs was
+    // the review's finding #5.
+    expectRuntime: true,
+    component: 'CodexArmSessionSweeper',
+    description: 'Closes orphaned instar-codex-arm-* tmux sessions codexHookArm leaks when its creator dies before teardown (an update restart). Reads tmux, not instar\'s session registry.',
+  },
+  {
     key: 'monitoring.staleBackstop.enabled',
     kind: 'config',
     configPath: 'monitoring.staleBackstop.enabled',

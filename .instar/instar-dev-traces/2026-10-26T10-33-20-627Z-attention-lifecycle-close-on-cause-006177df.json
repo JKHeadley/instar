@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "attention-lifecycle-close-on-cause",
+  "sessionId": "56f304c0-397c-48b5-a063-a29a48e9f94a",
+  "timestamp": "2026-10-26T10:33:20.627Z",
+  "artifactPath": "upgrades/side-effects/attention-lifecycle-close-on-cause.md",
+  "artifactSha256": "5186b5bfefb0b1536c56bd0b23e07e677b12e383b415a2f9b24240e914eb78a3",
+  "specPath": "docs/specs/attention-lifecycle-close-on-cause.md",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "upgrades/side-effects/attention-lifecycle-close-on-cause.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -355,6 +355,9 @@ export class MachineLoadSampler {
   sampleOnce(): Promise<void> {
     if (this.inFlight) return this.inFlight;
     this.inFlight = this.doSample().catch((err) => {
+      // @silent-fallback-ok — NOT a swallow: the failure is logged with its message, and a
+      // missed load sample is reported honestly downstream as `loadVerdict: 'unknown'`
+      // (a report older than 60 s reads unknown) rather than as a fabricated healthy reading.
       this.d.log?.(`load sample failed: ${err instanceof Error ? err.message : String(err)}`);
     }).finally(() => { this.inFlight = null; });
     return this.inFlight;

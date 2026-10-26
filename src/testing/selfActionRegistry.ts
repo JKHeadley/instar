@@ -30,6 +30,7 @@ import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/E
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
+import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
@@ -233,6 +234,48 @@ const ageKillBackoff: SelfActionController = {
  * once-per-interval liveness line is the SEPARATE eternal-sentinel controller
  * below — a rate-floored constant-cost heartbeat, not a bounded action.)
  */
+/**
+ * codex-arm-session-sweep — CodexArmSessionSweeper's kill path (spec
+ * codex-arm-session-leak-and-sweeper §3.6-3.7). Under the worst case (every kill is
+ * refused, the orphan population never shrinks) each candidate is attempted at most
+ * maxKillFailuresPerSession (3) times and then never again, and a pass is capped at
+ * maxKillsPerPass attempts — so the total over ANY horizon is 3 × candidates: horizon-
+ * independent, which is the convergence this registry proves rather than the prose
+ * arithmetic the spec also carries. Modelled with 10 standing candidates.
+ */
+const codexArmSessionSweep: SelfActionController = {
+  id: 'codex-arm-session-sweep',
+  actionVerb: 'sweep-kill',
+  models: 'src/monitoring/CodexArmSessionSweeper.ts (killSession — per-session kill-failure brake + per-pass attempt cap)',
+  modelsPath: 'src/monitoring/CodexArmSessionSweeper.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart forgets the per-session failure counts; the next pass re-reads tmux and re-corroborates every candidate before any kill, and the per-pass cap bounds the first pass regardless.' },
+  boundK: 30,         // 10 candidates × 3 attempts each, then never again
+  perTargetBoundK: 3, // maxKillFailuresPerSession
+  ticks: 40,          // 40 passes; N=40 and 2N=80 both settle at 30
+  tickMs: 10 * 60_000, // one pass every 10 min (sweepIntervalMs)
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    const MAX_FAILURES = 3;
+    const MAX_ATTEMPTS_PER_PASS = 50;
+    const candidates = Array.from({ length: 10 }, (_, i) => `instar-codex-arm-${i}`);
+    const failures = new Map<string, number>();
+    return {
+      tick() {
+        sink.considered += 1; // one PASS considered per tick (the fixture's contract)
+        let attempted = 0;
+        for (const name of candidates) {
+          if ((failures.get(name) ?? 0) >= MAX_FAILURES) continue; // kill-failures-exhausted → kept
+          if (attempted >= MAX_ATTEMPTS_PER_PASS) continue;         // per-pass-cap → kept
+          attempted += 1;
+          sink.emit({ verb: 'killSession', target: name });
+          if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
+          else failures.delete(name);
+        }
+      },
+    };
+  },
+};
+
 const promiseBeaconNotify: SelfActionController = {
   id: 'promise-beacon-notify',
   actionVerb: 'beacon-notify',
@@ -2641,7 +2684,103 @@ const overloadAdmissionSelfHelp: SelfActionController = {
   },
 };
 
+/**
+ * attention-lifecycle-pass — the hourly attention reconciliation pass
+ * (src/messaging/TelegramAdapter.ts runAttentionLifecyclePass; spec
+ * docs/specs/attention-lifecycle-close-on-cause.md §3.4): supersede duplicate
+ * open rows → producer-verified clears → bounded expiry. Convergence shape:
+ * every action moves a row to a TERMINAL state (DONE) the pass itself never
+ * reopens, so under the pinned worst case — a backlog of duplicate and stale
+ * rows nobody ever touches again — the total action count is exactly one
+ * close per row that qualifies and the per-row count is 1; from the second
+ * pass on, with no new rows, it closes zero. The brake is structural
+ * (terminal state + idempotent re-read), not a counter. Drives the SAME pure
+ * decision functions the adapter calls (planAttentionSupersessions,
+ * decideAttentionExpiry), not a re-implementation.
+ */
+const attentionLifecyclePass: SelfActionController = {
+  id: 'attention-lifecycle-pass',
+  actionVerb: 'reap-stale-attention-row', // 'reap' detector token: a row is retired to DONE
+  models: 'src/messaging/TelegramAdapter.ts (runAttentionLifecyclePass — supersede → verified clears → expiry; startAttentionLifecycleTimers hourly)',
+  modelsPath: 'src/messaging/TelegramAdapter.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      // The rows are durable (state/attention-items.json); a restart re-reads
+      // them with their terminal statuses, so a closed row stays closed and the
+      // pass finds nothing new. Modelled by rebuilding the controller over the
+      // SAME durable row map.
+      return makeAttentionLifecyclePassModel(f, sink, f.durableState);
+    },
+  },
+  // 10 duplicate conditions × 3 rows: 2 superseded each (20) and the 10 keepers then expire as
+  // stale automated rows (10); + 20 stale automated + 5 stale operator-asked = 55 closes, ever.
+  boundK: 10 * 2 + 10 + 20 + 5,
+  perTargetBoundK: 1,
+  ticks: 72, // three days of hourly passes
+  tickMs: 60 * 60 * 1000,
+  makeUnderPressure(f, sink) {
+    return makeAttentionLifecyclePassModel(f, sink, f.durableState);
+  },
+};
+
+function makeAttentionLifecyclePassModel(f: PressureFixture, sink: ActionSink, durable: Map<string, unknown>): { tick(): void } {
+  type Row = AttentionLifecycleItem & { status: string };
+  const KEY = 'attention-lifecycle-pass:rows';
+  const DAY = 86_400_000;
+  // Virtual "now" starts far enough along that the seeded rows are already stale.
+  const base = f.clock.nowMs() + 400 * DAY;
+  if (!durable.has(KEY)) {
+    const rows = new Map<string, Row>();
+    const at = (daysAgo: number) => new Date(base - daysAgo * DAY).toISOString();
+    for (let c = 0; c < 10; c++) {
+      // Three timestamped duplicates of one condition (a legacy producer without a conditionKey).
+      for (let d = 0; d < 3; d++) {
+        const id = `held:${c}:${1_700_000_000_000 + c * 1000 + d}`;
+        rows.set(id, { id, title: 'A reply is held', category: 'telegram-origin', sourceContext: 'origin', priority: 'NORMAL', status: 'OPEN', createdAt: at(30 - d), updatedAt: at(30 - d) });
+      }
+    }
+    for (let i = 0; i < 20; i++) {
+      const id = `rope-health-urgent:${i}:ep-1`;
+      rows.set(id, { id, title: `rope ${i} down`, category: 'mesh', sourceContext: 'rope-health', priority: 'NORMAL', status: 'OPEN', createdAt: at(40), updatedAt: at(40) });
+    }
+    for (let i = 0; i < 5; i++) {
+      const id = `agent:ask-${i}`;
+      rows.set(id, { id, title: `Your call on thing ${i}?`, category: 'decision', sourceContext: 'agent', priority: 'NORMAL', status: 'OPEN', createdAt: at(60), updatedAt: at(60) });
+    }
+    // The floors: never acted on, however long the horizon.
+    rows.set('sec-1', { id: 'sec-1', title: 'Rotate exposed GitHub access token', category: 'security', priority: 'HIGH', status: 'OPEN', createdAt: at(90), updatedAt: at(90) });
+    rows.set('ack-1', { id: 'ack-1', title: 'operator is on it', category: 'general', sourceContext: 'x', priority: 'NORMAL', status: 'ACKNOWLEDGED', createdAt: at(90), updatedAt: at(90) });
+    durable.set(KEY, rows);
+  }
+  const rows = durable.get(KEY) as Map<string, Row>;
+  const cfg = resolveAttentionLifecycleConfig(undefined);
+  const close = (row: Row) => {
+    row.status = 'DONE';
+    row.updatedAt = new Date(base + f.clock.nowMs()).toISOString();
+    sink.emit({ verb: 'reap-stale-attention-row', target: row.id });
+  };
+  return {
+    tick() {
+      sink.considered += 1;
+      const nowMs = base + f.clock.nowMs();
+      // 1. supersede duplicates (the same pure planner the adapter uses)
+      for (const plan of planAttentionSupersessions([...rows.values()])) {
+        for (const dup of plan.close) close(rows.get(dup.id)!);
+      }
+      // 2. verified clears: the pinned worst case has NO producer that ever answers 'cleared'.
+      // 3. expiry (the same pure decision the adapter uses); the fixture's first pass is live.
+      for (const row of rows.values()) {
+        if (row.status !== 'OPEN') continue;
+        const d = decideAttentionExpiry(row, cfg, nowMs);
+        if (d.expire) close(row);
+      }
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  attentionLifecyclePass,
   localVerifyFlakeRerun,
   localVerifyMergeHandoff,
   localVerifyMainFairShare,
@@ -2677,6 +2816,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   spendCapApproach,
   proactiveSwapMonitor,
   ageKillBackoff,
+  codexArmSessionSweep,
   promiseBeaconNotify,
   livenessHeartbeat,
   promiseBeaconInternalCadence,
