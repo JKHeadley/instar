@@ -67,9 +67,12 @@ describe('promises page model', () => {
   });
 
   it('offers deliver and drop on open promises, resume on paused ones, nothing on closed', () => {
-    expect(actionsFor(c({}), NOW)).toEqual(['deliver', 'withdraw']);
-    expect(actionsFor(c({ beaconPaused: true }), NOW)).toContain('resume');
-    expect(actionsFor(c({ status: 'delivered' }), NOW)).toEqual([]);
+    expect(actionsFor(c({}))).toEqual(['deliver', 'withdraw']);
+    expect(actionsFor(c({ beaconPaused: true }))).toContain('resume');
+    expect(actionsFor(c({ status: 'delivered' }))).toEqual([]);
+    // The server refuses delivery of a verified promise and accepts dropping a missed one.
+    expect(actionsFor(c({ status: 'verified' }))).toEqual(['withdraw']);
+    expect(actionsFor(c({ status: 'violated' }))).toEqual(['withdraw']);
   });
 
   it('formats due times and picks the soonest real date', () => {

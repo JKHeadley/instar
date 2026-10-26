@@ -373,7 +373,20 @@ does any sign-in need me?"*
   1. **Needs you** (only when non-empty): one card per machine ("Mac Mini: 3 accounts need
      signing in"), one row and one button per account inside it ("Sign in", "Repair", "Try
      again"), plus one card per follow-me approval ("Approve Laptop using your Codex account
-     (expires 3:40pm)"). Grouping by machine is how it was built
+     (expires 3:40pm)"). The approval cards read the server's **latest scan result**, not a
+     scan the page runs: today the offers exist only in the response to
+     `POST /subscription-pool/follow-me/scan` (the legacy page keeps that body in memory,
+     `dashboard/subscriptions.js:1206`, `:1225`; the route builds each offer, including the
+     server-resolved agent pair, and returns it, `src/server/routes.ts:35290`–`:35306`), so a
+     scan moved to a server timer must also leave its result readable. The contract (one, used
+     here and in `README.md`): the timer keeps the last result and `GET /subscription-pool`
+     (plain and `?scope=pool`) returns it as `followMe: { offered, scannedAt, error }` with the
+     same enriched offer shape the scan returns now. The card shows "checked 4 min ago"; with
+     `error` set it reads "Couldn't check which machines could use an account: <reason>", and
+     with no scan yet "Not checked yet" — never an empty Needs-you that implies nothing is
+     waiting. Approve stays `POST /mandate/issue-for-machine` with a body PIN each time (adapter
+     c; the payload comes from the offer, as the legacy card builds it, `subscriptions.js:496`).
+     Grouping by machine is how it was built
      (`dashboard/console/accounts.js:32`–`:41`): when a machine loses its sign-ins, they all go
      at once, and five cards for one cause read as five problems.
   2. **Allowance**: one row per account, grouped Claude / Codex / other: name, a single bar for
@@ -432,8 +445,13 @@ sign-ins"). Restores the orphaned pending-logins list. Nothing dropped.
 
 **Data.** Existing reads above, plus `login-history?summary=1&days=7` and `proactive-swap`
 (read-only). One server change the build needs, and one that is separate and optional:
-1. Run the follow-me scan on the server's own timer (or on view open) so the console never POSTs
-   on a poll. Part of this plan.
+1. Run the follow-me scan on the server's own timer and keep its latest result readable:
+   `GET /subscription-pool` gains `followMe: { offered, scannedAt, error }` (the enriched offers
+   the scan builds today, `src/server/routes.ts:35299`–`:35306`; the scan also raises its
+   aggregated attention item, `src/core/AccountFollowMeService.ts` `scanAndOffer`, which is why
+   it must not run on a view open or a poll). The console only reads; it never POSTs the scan.
+   Part of this plan. (The "or on view open" option is dropped: it would keep a write on every
+   open of the page.)
 2. *Separate, optional, not part of this plan's default:* let `start-cell`, `repair-email` and
    `issue-for-machine` accept the operator session header as an alternative to a body `pin` (the
    `requireReloginOperatorPin` pattern, `src/server/routes.ts:34524`), so one unlock would cover
@@ -554,7 +572,8 @@ subscriptions, how much, and are limits in place?"*
 │ 1,240 calls · 3 errors      › │
 ├──────────────────────────────┤
 │ Your conversations (transcripts)│
-│ 14 conversations · 9.1M text ›│
+│ Claude 8.2M this week        ›│
+│ Codex 0.9M lifetime, 3 active │
 ├──────────────────────────────┤
 │ Spending controls           ▾ │
 └──────────────────────────────┘
@@ -642,14 +661,25 @@ total covers everything, so the headline undercounts. Codex usage is fetched and
 open the same list. Absolute paths and UUIDs as content. Window fixed while the neighbours differ.
 
 **The new design.**
-- *Arrival (glance):* section 3 of the cost view: "14 conversations processed 9.1M tokens of text
-  this week (Claude 8.2M, Codex 0.9M)." Counts from the summary, not the list length: Claude's
-  count is `summary.sessionsActive` and Codex's is `codex.sessionCount`
-  (`src/monitoring/TokenLedger.ts:168`, `:231`; both returned by `GET /tokens/summary`,
-  `src/server/routes.ts:12710`–`:12711`). The two are shown separately and added only in the
-  headline.
-- *Layout:* top conversations by tokens, named by session/topic name, with the project's short
-  name; "Idle with no activity for 30 min" as a collapsed count. Row links to the session.
+- *Arrival (glance):* section 3 of the cost view, two lines that are never added together:
+  "Claude: 11 conversations processed 8.2M tokens this week." and "Codex: 3 conversations
+  active this week have used 0.9M tokens over their whole life." The two figures measure
+  different things. Claude's summary sums the events that fall inside the selected window
+  (`src/monitoring/TokenLedger.ts:1100`). Codex's sums each session's **lifetime** total for
+  sessions whose last activity falls inside the window (`:1360`), because a Codex rollout
+  reports one cumulative total per session and ingestion replaces it rather than adding events
+  (`:633`) — a session used last month and today brings last month's tokens into "Today". So
+  there is no combined window headline; a true one needs a ledger change, not client
+  arithmetic. Counts from the summary, not the list length: Claude's is `summary.sessionsActive`
+  and Codex's is `codex.sessionCount` (`TokenLedger.ts:168`, `:231`; both returned by
+  `GET /tokens/summary`, `src/server/routes.ts:12710`–`:12711`).
+- *Layout:* two lists. **Claude**: top conversations by tokens in the window from
+  `/tokens/sessions` (Claude rows only, `routes.ts:16129`), named by session/topic name with the
+  project's short name. **Codex**: rows from `/tokens/codex-sessions` (`routes.ts:16115`; each
+  row carries `sessionId`, `projectPath`, `model`, `totalTokens`, `firstTs`, `lastTs`, ordered by
+  lifetime total, `TokenLedger.ts:1394`), labelled "lifetime total · last active <age>". "Idle
+  with no activity for 30 min" as a collapsed count under the Claude list. Row links to the
+  session.
 - *Primary action(s):* tap a row → the session.
 - *Secondary / destructive actions:* none.
 - *Honest states:* 503 → "Not tracked here"; "Last scanned <age>" if available, else not claimed.
@@ -657,15 +687,19 @@ open the same list. Absolute paths and UUIDs as content. Window fixed while the 
 - *Rough sketch:*
 ```
 │ Your conversations (transcripts)│
-│ 14 · 9.1M tokens              │
+│ Claude · 11 · 8.2M this week  │
 │ Console plan      2.3M      › │
 │ Mama PC fix       1.1M      › │
+│ Codex · 3 active · 0.9M over  │
+│ their whole life              │
+│ Astra review      0.6M      › │
 ```
 
 **Merge / split / cut.** Into What thinking costs. Tile removed from the group page.
 
 **Data.** Existing routes with `since=` set from the shared time control (`parseSinceMs`,
-`routes.ts:12692`) and `limit=20`. None new.
+`routes.ts:12692`) and `limit=20`: `/tokens/summary`, `/tokens/sessions` (Claude),
+`/tokens/codex-sessions` (Codex), `/tokens/orphans`. None new.
 
 **Effort and order.** S, README step 5.
 

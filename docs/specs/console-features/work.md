@@ -54,8 +54,9 @@ steps of it:
 1. **Promises** (step 1, S/M). Proves the shared patterns. The largest existing
    capability with no face (research), Home already carries its rules
    (`dashboard/console/home-model.js`), and the legacy tab undercounts (it shows only
-   beacon-watched promises). Read, plus Mark delivered on every promise shown, plus
-   Drop and Resume reminders.
+   beacon-watched promises). Read, plus Mark delivered on every promise the server can
+   still deliver (the action table in the Promises section), plus Drop and Resume
+   reminders.
 2. **Plans, including In the way** (step 5, M). Fixes two real defects (a hardcoded
    "Ack round 0" button and silent failures on Halt) and removes three tabs.
 3. **Schedule** (step 5, M). Adds the honesty states the legacy tab lacks (late,
@@ -458,13 +459,23 @@ dropped, and is any of it waiting on me?"
   promise waiting on you but untouched 14+ days sits in *Older, still open*, where its
   row still reads "waiting on your approval"; it is out of the headline count on purpose.
 
-- *Primary actions:* for waiting-on-you rows, the action that unblocks it: "Open the
-  conversation" (deep link to the topic) is the default; the reply happens in Telegram,
-  where the agent hears it. For agent-owned rows: **Mark delivered** (one tap, confirm
-  inline "Mark as done?").
-- *Secondary / destructive actions:* "Drop this promise" in "⋯", asking for a one-line
-  reason (the server requires one) → `POST /commitments/:id/withdraw`. "Resume reminders"
-  shows only on a paused beacon → `POST /commitments/:id/resume`. No PIN.
+- *Actions (the detail sheet; all bearer, no PIN).* For a waiting-on-you row the first
+  button is **Open the conversation** (deep link to the topic; the reply happens in
+  Telegram, where the agent hears it; `dashboard/console/promises.js:74`). The three
+  writes follow the server's eligibility rules, which are the authority; the page shows
+  a button only when the server would accept it, so a tap never ends in a refusal the
+  page could have predicted:
+
+  | Action | Shown when (and the server accepts when) | Confirm / reason | Machine target | Refusal |
+  |---|---|---|---|---|
+  | **Mark as done** → `POST /commitments/:id/deliver` | The promise is open and its status is `pending`. The server refuses `verified`, `violated`, `expired`, `withdrawn` and `delivered` (`src/monitoring/CommitmentTracker.ts:910`), so none of those rows gets the button — not a missed promise, not a closed one, and not a `verified` one, which is an observation state the server will not deliver from. Shown on waiting-on-you, due-soon, carrying and older rows alike (secondary on a waiting-on-you row, where Open the conversation leads). | Inline confirm "Mark this promise as done?" (`promises.js:82`). | A row from another machine posts with `?origin=<machineId>` (`promises.js:75`); the server forwards the write to the owning machine (`src/server/routes.ts:33939`–`:33942`). | 404 "not found or already in terminal status" (`routes.ts:33947`) and any other error land as the server's words on the sheet (`promises.js:80`), never an `alert()`. 409 "ambiguous across machines" (`:33936`) is shown in words with a retry that names the origin. |
+  | **Drop this promise** → `POST /commitments/:id/withdraw` | The promise is open, including a `violated` one: the server refuses only `withdrawn` and `expired` (`CommitmentTracker.ts:850`). Styled quiet and red, at the bottom of the sheet (`promises.js:85`–`:89`). | Confirm text "Drop this promise? It closes without being done, and the reason is kept with it." plus a required one-line reason, "Why it no longer matters" — the route answers 400 without one (`routes.ts:34031`–`:34034`). | Same `?origin=` forwarding (`routes.ts:34043`–`:34045`). | 404 "not found or already resolved" (`routes.ts:34049`); 409 ambiguous as above. |
+  | **Resume reminders** → `POST /commitments/:id/resume` | `beaconPaused` is true (`promises-model.js:157`) and the status is not `expired`, `withdrawn` or `delivered` (`CommitmentTracker.ts:880`–`:886`). | One tap, no confirm (`promises.js:83`). | Same forwarding (`routes.ts:34075`–`:34077`). | 404 "not found, not paused, or in terminal status" (`routes.ts:34081`). |
+
+  The page's `actionsFor` (`promises-model.js:152`–`:158`) is the one place these rules
+  live; two build fixes make it match the table — it still offers Mark as done on a
+  `verified` promise, which the server refuses, and it withholds Drop from a `violated`
+  one, which the server accepts (listed under Built so far in `README.md`).
 - *Honest states:* loading; empty ("No open promises."); can't tell (request failed, or
   `enabled:false`: "Promise tracking is off on this agent"); partial (no replica rows:
   "Only this machine's promises are visible"; a replica over 15 min old: "Mac Mini's
@@ -489,7 +500,7 @@ dropped, and is any of it waiting on me?"
 │ ✕ Morning summary         › │
 │   due yesterday 08:00        │
 │ I'm carrying (9)           › │
-│ Probably handled (14)      › │
+│ Older, still open (14)     › │
 │ Closed this week (6)       › │
 └──────────────────────────────┘
 ```

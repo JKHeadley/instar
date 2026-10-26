@@ -149,11 +149,16 @@ export function storyOf(c, now = Date.now(), names = {}) {
 }
 
 /** Which actions a promise offers, per the plan. */
-export function actionsFor(c, now = Date.now()) {
-  const open = isActiveCommitment(c, now) || c.status === 'violated';
+/**
+ * Which actions a promise offers — exactly what the server accepts
+ * (src/monitoring/CommitmentTracker.ts: deliver refuses every status but pending;
+ * withdraw refuses only withdrawn and expired; resume needs a paused beacon).
+ */
+export function actionsFor(c) {
+  if (!c) return [];
   const a = [];
-  if (open && c.status !== 'violated') a.push('deliver');
-  if (open && c.status !== 'violated') a.push('withdraw');
-  if (c.beaconPaused) a.push('resume');
+  if (c.status === 'pending') a.push('deliver');
+  if (c.status === 'pending' || c.status === 'verified' || c.status === 'violated') a.push('withdraw');
+  if (c.beaconPaused && c.status === 'pending') a.push('resume');
   return a;
 }

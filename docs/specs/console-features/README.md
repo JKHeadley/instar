@@ -17,11 +17,13 @@ inventories every control and write action the legacy tab has (nothing is lost),
 names what is wrong today with the code that causes it, and describes the new page
 with a phone sketch.
 
-These plans were revised after two rounds of review by GPT-6 Astra and Gemini 4 Argon
+These plans were revised after three rounds of review by GPT-6 Astra and Gemini 4 Argon
 (`../reports/console-features-review-r1-astra.md`,
 `../reports/console-features-review-r1-argon.md`,
 `../reports/console-features-review-r2-astra.md`,
-`../reports/console-features-review-r2-argon.md`). What changed is in **Review
+`../reports/console-features-review-r2-argon.md`,
+`../reports/console-features-review-r3-astra.md`,
+`../reports/console-features-review-r3-argon.md`). What changed is in **Review
 changes** at the end; what is already built, and where it differs, is in **Built so
 far**.
 
@@ -91,8 +93,14 @@ Most pages need no new route. Part of this plan:
 3. Files: a search route (under the same path rules as the other file routes), and the
    `truncated` / `totalEntries` fields on the project-root list that nested folders
    already return.
-4. Accounts: run the follow-me scan on the server's own timer, so the console never
-   writes on a poll.
+4. Accounts: run the follow-me scan on the server's own timer and keep its latest result
+   readable — `GET /subscription-pool` (plain and `?scope=pool`) gains
+   `followMe: { offered, scannedAt, error }`, carrying the same enriched offers the scan
+   returns today (`src/server/routes.ts:35299`–`:35306`). Today those offers exist only in
+   the POST's response, which the legacy page keeps in memory
+   (`dashboard/subscriptions.js:1206`, `:1225`); moving the scan to a timer without this
+   read would make the approval cards disappear. The console only reads, so no write
+   happens on a poll or on a view open; Approve keeps its body PIN each time.
 
 **Separate changes, not part of this plan's default** (each needs its own spec and
 review, and the first needs the operator's yes):
@@ -135,17 +143,33 @@ legacy controllers are reused where practical.
 
 ## Built so far
 
-On branch `feat/console-native-1`, four pages are built natively in `dashboard/console/`:
+On branch `feat/console-native-1`, six pages are built natively in `dashboard/console/`:
 **Promises** (`promises.js`), **Machines** (`machines.js`), **Accounts**
-(`accounts.js`) and **Messages to you** (`messages.js`), each with a pure model file
-beside it. Their tiles inside the console open the native page
-(`dashboard/console/nav-model.js:101`–`:105`). (A native *What I'm allowed to do* page
-was being written, uncommitted, while this was revised; it is not covered here.) The
-console is not yet the default, so
-the checklist below still gates the switch-over; the rows these pages have not met are
-named here.
+(`accounts.js`), **Messages to you** (`messages.js`), **What I'm allowed to do**
+(`allowed.js`) and **Plans** (`plans.js`), each with a pure model file beside it. Their
+tiles inside the console open the native page (`dashboard/console/nav-model.js:101`–`:110`;
+the Projects, Initiatives and Blockers tiles all open Plans, and the Features tile opens
+What I'm allowed to do). The console is not yet the default, so the checklist below still
+gates the switch-over; the rows these pages have not met are named here.
 
-On branch `feat/console-native-plans`, **Plans** (`plans.js`, `plans-model.js`) is built
+**What I'm allowed to do** (`allowed.js`, `allowed-model.js`): the profile as a sentence
+with the four-step control and "what that means right now"; the safety-check list with
+deviant checks first, **Accept the risk** / **Stop accepting it** on this machine's rows
+and **Open on <machine>** for the others; suggestions with **Not now**; the feature list
+with switches that walk the server's state machine one step at a time, re-reading
+`validTransitions` after each (`allowed-model.js:278`–`:303`), carry the consent record on
+the last step and present the self-governing challenge in the sheet. **One open bug,
+tracked in the Bugs topic 10000000857:** turning a feature on or off changes the
+feature's *state* only — the page posts `/features/:id/transition` (`allowed.js:200`,
+`:204`; `allowed-model.js:289`) and never runs the feature's own enable or disable action,
+the config patch each definition carries (for example `PATCH /config
+{ threadline: { enabled: true } }`, `src/core/FeatureDefinitions.ts:24`; the registry only
+types the field, `src/core/FeatureRegistry.ts:82`–`:83`, and the transition route does not
+run it). So a feature can read "On" while the thing it switches stays off. The fix is to
+run the enable action after the final transition succeeds (and the disable action on turn
+off), and to show the state as on only once both succeeded.
+
+**Plans** (`plans.js`, `plans-model.js`), merged in from `feat/console-native-plans`, is built
 natively: projects and initiatives in one list, *In the way* (blockers) above *In flight*,
 *Older, still open* for anything untouched 14+ days (never "handled"), status chips Paused /
 Halted / Waiting on you above In flight and Completed / Archived / Abandoned inside Finished,
@@ -166,7 +190,12 @@ Where the build was the more honest choice, the plan was changed to match it:
 
 - **Promises:** a promise the tracker has marked `violated` offers no Mark delivered,
   because the server refuses it (`src/monitoring/CommitmentTracker.ts:910`;
-  `dashboard/console/promises-model.js:155`). `work.md` now says so.
+  `dashboard/console/promises-model.js:155`). `work.md` now carries the whole eligibility
+  rule as an action table. A waiting-on-you promise untouched for 14+ days moves to *Older,
+  still open* and leaves Waiting on you's count (`promises-model.js:91`–`:92`; Home the same
+  at `home-model.js:213`): `00-patterns.md` §2 and `work.md` were aligned to this in round
+  3, so the build and the plan now agree. Missed promises stay counted at any age on both
+  screens (`home-model.js:215`, `promises-model.js:91`).
 - **Accounts:** Needs you is one card per machine with a row per account
   (`dashboard/console/accounts.js:32`–`:41`), not one card per sign-in. `capacity.md`
   now says so.
@@ -179,13 +208,15 @@ Where the build was the more honest choice, the plan was changed to match it:
 
 Where the build differs and the plan stands (to fix in the build):
 
-- **Promises:** a waiting-on-you promise untouched for 14+ days moves to *Older, still
-  open* and leaves Waiting on you's count (`dashboard/console/promises-model.js:91`–`:92`,
-  and Home the same at `home-model.js:213`). `00-patterns.md` §2 keeps it counted in its
-  own section. Missed promises already stay counted at any age on both screens
-  (`home-model.js:215`, `promises-model.js:91`). A violated promise is not offered
-  **Drop**, though `withdraw` accepts it (`CommitmentTracker.ts:850`). Drop sits at the
-  bottom of the sheet rather than in a "⋯" menu (a cosmetic difference).
+- **Promises:** two places where `actionsFor` (`promises-model.js:152`–`:158`) disagrees
+  with the server's rules in the `work.md` action table: it offers **Mark as done** on a
+  `verified` promise (`isActiveCommitment` counts `verified` as open, `home-model.js:183`–`:187`)
+  although `deliver` refuses `verified` (`CommitmentTracker.ts:910`), so that tap ends in a
+  404; and it withholds **Drop** from a `violated` promise although `withdraw` accepts it
+  (`:850`). Drop sits at the bottom of the sheet rather than in a "⋯" menu (a cosmetic
+  difference; the plan now describes the built placement).
+- **What I'm allowed to do:** the enable/disable action bug above (Bugs topic
+  10000000857). Until it is fixed the Features rows of the checklist are not met.
 - **Machines:** no *Needs a look* block above the cards; a failing part shows only
   inside This machine's detail. Deviant safety checks are listed in that detail
   (`dashboard/console/machines.js:88`) instead of as a count linking to *What I'm allowed
@@ -229,7 +260,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Jobs | Migration banner: confirm / roll back | "Setup issues" line → each explained, same two actions | work.md |
 | Jobs | Issues card (kind filter, refresh, dismiss) | "Setup issues (n)" list, kinds in Details | work.md |
 | Commitments | Tiles Open / Due soon / Overdue / Waiting on you / Quiet, rows, full record | Promises: facts, sections, detail sheet; Quiet → "paused reminders" state | work.md |
-| Commitments | **Mark delivered** on every displayed promise, incl. waiting on you | Mark delivered on every promise shown (secondary on waiting-on-you, missed and older rows), except one the server already closed as `violated` | work.md |
+| Commitments | **Mark delivered** on every displayed promise, incl. waiting on you | Mark as done on every promise shown whose status the server can still deliver — `pending` only; never `verified`, `violated`, `expired`, `withdrawn` or `delivered` (`src/monitoring/CommitmentTracker.ts:910`) — secondary on waiting-on-you and older rows. Drop on every promise but `withdrawn` / `expired` (`:850`), with a required reason. Resume reminders only on a paused beacon that is not `expired` / `withdrawn` / `delivered` (`:880`). Closed records in *Closed recently* get no write. Replica rows post with `?origin=` and show a 409 "ambiguous" in words. | work.md |
 | Projects | Card: rounds, progress, stages, drift, id/version | Plans row + project detail sheet (rounds track, drift sentence, Details) | work.md |
 | Projects | Halt | "Stop this round" with the honest interruption sheet | work.md |
 | Projects | Ack round 0 | "OK, continue round N" with the current round | work.md |
@@ -248,7 +279,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Resource usage | CPU / memory per source, Refresh | This machine › What's using it | capacity.md |
 | Subscriptions | Account cards with quota bars | Allowance rows + account detail | capacity.md |
 | Subscriptions | Account × machine grid | On each machine: chips per account (phone), compact table (desktop) | capacity.md |
-| Subscriptions | Follow-me cards, Approve follow-me | Needs you card, PIN each time | capacity.md |
+| Subscriptions | Follow-me cards, Approve follow-me (offers from the scan POST's response) | Needs you card from the server's latest scan result (`followMe.offered` on the Accounts read, with "checked <age>" and a failure state), Approve with PIN each time | capacity.md |
 | Subscriptions | Set up / Sign in / Retry a cell; Repair identity | Cell sheet, PIN each time | capacity.md |
 | Subscriptions | Submit code; Cancel a sign-in | Sign-ins in progress / cell sheet, bearer | capacity.md |
 | Subscriptions | Repair sign-in / Try again / Cancel repair / Don't retry on its own (local and any machine) | Cell sheet, operator session | capacity.md |
@@ -259,7 +290,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Spend | Money-layer switch: Turn on / Re-check / Also record it here / Turn off; Restart | Spending controls sheets with exact plan text + nonce (later; legacy link until then) | capacity.md |
 | Spend | Paid doors: picker, limits, Preview cap / go live / Unfreeze, Approve with PIN | Route sheets with prefilled limits and exact plan text (later; legacy link until then) | capacity.md |
 | Spend | Freeze this door | Freeze on the route row, with optional reason | capacity.md |
-| Tokens | Summary, recent conversations, idle, Refresh | Your conversations section (`sessionsActive` / `codex.sessionCount`) | capacity.md |
+| Tokens | Summary, recent conversations, idle, Refresh | Your conversations section: Claude's window usage (`sessionsActive`, `/tokens/sessions`) and Codex's lifetime usage of sessions active in the window (`codex.sessionCount`, `/tokens/codex-sessions`) shown separately, never added | capacity.md |
 | LLM activity | Window, per-feature records | Background checks section (calls and tokens, no per-check dollars) | capacity.md |
 | Routing map | Chains, lane and job records | "Model routing & fallbacks" sheet | capacity.md |
 | Insights | Plain-read strip | One line at the top of Background checks | capacity.md, under-the-hood.md |
@@ -271,6 +302,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Threadline | Telegram bridge: master, auto-create, mirror; allow/deny lists | Mirroring to Telegram section; per-agent always / never / default | people-settings.md |
 | Threadline | Allow/deny: add any typed name or fingerprint, remove any entry | Advanced: edit the rules (rows with Remove, one add field) | people-settings.md |
 | Threadline | Thread list (filters), thread view, message search, Refresh | Agent detail conversations, search icon | people-settings.md |
+| Threadline | Thread filter: all / with Telegram topic / without Telegram topic | More filters sheet with the same three values, on the Agents list and each agent's conversations | people-settings.md |
 | Message origins | Display settings (picker, agent defaults, four checkboxes, Save) | Footer on messages sheet | people-settings.md |
 | Message origins | Recording status | Facts + Recording details disclosure | people-settings.md |
 | Message origins | Recent messages, Load more, Refresh | Held replies list natively; the message log stays a legacy link until `/telegram/origins` can return newest first (fb-bd38d155-5ea) | people-settings.md |
@@ -279,7 +311,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Mandates | Grant a person an action | "Let a person act" in slip detail | people-settings.md |
 | Mandates | Revoke | Revoke at the bottom of slip detail | people-settings.md |
 | Mandates | Advanced: author a mandate by hand | Same, behind a disclosure, with an agent picker | people-settings.md |
-| Mandates | Decision audit (200 rows, chain verified) | Decision history, chain line at the top | people-settings.md |
+| Mandates | Decision audit (200 rows, chain verified) | Decision history, counts labelled "Among the latest N decisions" (a 24 h claim only when the returned data covers it), chain line at the top | people-settings.md |
 | Secrets | Requests (waiting / expired), Open, Copy link, Cancel | Waiting cards: Open, Share link, Cancel in "…"; Expired collapsed | people-settings.md |
 | Secrets | Create test request | "Try it with a test link" inside Ask someone for one | people-settings.md |
 | Features | Autonomy profile Change / Apply, profile history | Profile control + confirm sheet with reason; History | people-settings.md |
@@ -298,11 +330,12 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Evidence | Viewer scope; by-entity lookup; What cites this (kind, source id); Inspect evidence | Look up a memory's sources (one field, kind picker when ambiguous, scope picker) | under-the-hood.md |
 | Throughput | Author select, window select | Person picker, window picker | under-the-hood.md |
 | Throughput | Charts: merges, latency, rework, reverts, **median push iterations**, changed lines, index | Four plain numbers + charts incl. Push iterations and Index | under-the-hood.md |
-| Integrated-Being | Kind / counterparty / limit filters; entries table; stats cards | Timeline with chips (incl. Commitments); Show more; tiles; counters under Technical | under-the-hood.md |
+| Integrated-Being | Kind / counterparty / limit filters; entries table; stats cards | Timeline with chips (incl. Commitments); Show more (to the route's 200); tiles counted within the displayed records; counters (incl. the TTL counter) under Technical | under-the-hood.md |
+| Integrated-Being | Kind select: commitment, agreement, thread-opened, thread-closed, thread-abandoned, decision, note; Counterparty select: user, agent, self, system | More filters sheet with every one of those values | under-the-hood.md |
 | Integrated-Being | Commitment entries with their status | Their own detail sheet with full status (unknown when later history isn't loaded) | under-the-hood.md |
 | Integrated-Being | **Chain explorer: ledger-ID lookup** | Technical → Look up an entry by its id | under-the-hood.md |
 | Integrated-Being | Session bindings, Revoke | Technical → Session bindings, Revoke with confirm | under-the-hood.md |
-| Process health | Patterns, problems (last 10), rollout track, More detail | Problems I caught: patterns, Show older, one-line stage, Technical | under-the-hood.md |
+| Process health | Patterns, problems (last 10), rollout track, More detail | Problems I caught: patterns, Show older by the route's `before` timestamp, week total from `/failures/analysis?sinceDays=7`, "N still open among the records shown", one-line stage, Technical | under-the-hood.md |
 | Feedback drain | Decision headline with its button | Headline + the to-do card open under it | under-the-hood.md |
 | Feedback drain | Readiness authority: Adjust limits, Approve / Restore / Save limits / Revoke | Approval card and Settings (PIN each time) | under-the-hood.md |
 | Feedback drain | Triage authority: Approve / Restore / Revoke | Same | under-the-hood.md |
@@ -383,3 +416,22 @@ Argon (verdict: ready, three minor cleanups, R1–R3).
 | Argon R2 — two stale wireframes | Fixed: Preferences ends with "To change one, tell me in chat."; the Files editor sketch has Save / Cancel in the top header. |
 | Argon R3 — checklist misses guard acceptance and suggestion dismissals | Added both rows under Features. |
 | Built-page alignment (not a review finding) | Plans changed to match the build where it was more honest (violated promises, Accounts grouped by machine, the message log kept in legacy); other differences listed under Built so far. |
+
+### Round 3
+
+"Astra" = GPT-6 Astra (verdict: ready with changes, 7 findings; reviewed HEAD `12fc2a3b8`,
+before the round-2 Argon cleanups landed in `dcd2cd0c1`). "Argon" = Gemini 4 Argon
+(verdict: ready, two text points). Every code claim below was re-read at the cited line.
+
+| Finding | Handled |
+|---|---|
+| Astra 1 — a timer-run follow-me scan leaves the approval cards with no data source | Accepted. One contract in `README.md` (server needs, item 4) and `capacity.md` (Needs you, and Data item 1): the server runs the scan on its own timer and keeps the latest result readable as `followMe: { offered, scannedAt, error }` on `GET /subscription-pool` (plain and `?scope=pool`), the same enriched offers the scan returns today (`src/server/routes.ts:35299`–`:35306`; the legacy page keeps that POST body in memory, `dashboard/subscriptions.js:1206`, `:1225`). The card shows the scan age and a failure state. The "or on view open" option is dropped because `scanAndOffer` also raises the aggregated attention item (`src/core/AccountFollowMeService.ts`), so an open would still be a write. Polling stays free of writes; Approve keeps its body PIN. |
+| Astra 2 — the token headline adds two time windows | Accepted. No combined headline. Claude's window usage (`src/monitoring/TokenLedger.ts:1100`) and Codex's lifetime usage of sessions active in the window (`:1360`; ingestion replaces each session's cumulative total, `:633`) are two lines with honest labels. Codex rows come from `/tokens/codex-sessions` (`src/server/routes.ts:16115`; `TokenLedger.ts:1394`), Claude rows from `/tokens/sessions` (`:16129`). A true combined window total is named as a later ledger change. |
+| Astra 3 — the conversation-ledger headline claims live state it cannot measure | Accepted. The section leads with "Recent recorded activity"; decisions, agreements and thread events are counted only within the displayed records ("of the last 40"); thread-opened / closed / abandoned are shown as recorded events; no open-thread or quiet-thread total. Confirmed: stats hold accumulated counts, not an inventory (`src/core/SharedStateLedger.ts:108`–`:116`, `:605`–`:612`); the TTL counter's increment has no production caller (`:632`) and the sweep emits `thread-abandoned` events instead (`src/threadline/ThreadlineRouter.ts:521`–`:539`); `/shared-state/recent` caps at 200 and `since` does not lift it (`src/server/routes.ts:40191`, `SharedStateLedger.ts:479`–`:495`). The counter sits under Technical as a raw number. |
+| Astra 4 — two merges drop useful filters | Accepted. A compact **More filters** sheet on each page: Other agents keeps all / with Telegram topic / without (`dashboard/index.html:4340`–`:4344`); the conversation ledger keeps every Kind value (commitment, agreement, thread-opened, thread-closed, thread-abandoned, decision, note; `:3500`–`:3510`) and every Counterparty value (user, agent, self, system; `:3513`–`:3519`). Both added to the checklist as their own rows. The main phone view keeps its few chips. |
+| Astra 5 — Process health ignores `before` paging and underspecifies its totals | Accepted. Show older pages with the existing `before` timestamp (`src/server/routes.ts:16476`–`:16484`; `src/monitoring/FailureLedger.ts:527`); no offset API. "This week" is `total` from `/failures/analysis?sinceDays=7` (`routes.ts:16492`–`:16494`). "Still open" is worded "N still open among the records shown" because the analysis response has no open-status total (`FailureLedger.ts:613`–`:619`). |
+| Astra 6 — Permission slips cannot count a whole day from the audit tail | Accepted. The history row reads "Among the latest N decisions: 31 allowed, 2 refused". A 24 h claim appears only when the returned data demonstrably covers the window (the response's `total` equals the entries returned, or the oldest returned entry is older than 24 h); `/mandate/audit` returns the newest `limit` only, 100 by default and at most 1,000, with no time filter (`src/server/routes.ts:13727`–`:13737`). The chain line stays the server's own fact. |
+| Astra 7 — the Promises action design is gone and the checklist rule is too broad | Accepted. `work.md` now carries an action table (shown when / server accepts when, confirm or reason, machine target, refusal) matching the built page (`dashboard/console/promises.js:74`–`:89`, `promises-model.js:152`–`:158`) and the server: deliver refuses `verified`, `violated`, `expired`, `withdrawn`, `delivered` (`src/monitoring/CommitmentTracker.ts:910`); withdraw refuses only `withdrawn` and `expired` (`:850`) and needs a reason (`routes.ts:34031`); resume needs a paused beacon outside `expired` / `withdrawn` / `delivered` (`:880`–`:886`); replica rows post `?origin=` and the server forwards (`routes.ts:33939`); refusals are 404s shown in the sheet, 409 ambiguous shown in words. The checklist's single-status exception is replaced by that complete rule. Two build gaps found while writing it are listed under Built so far: Mark as done is offered on `verified` (refused by the server), and Drop is withheld from `violated` (accepted by the server). |
+| Argon R1 — `work.md` disagreed with `00-patterns.md` §2 on 14-day-old waiting-on-you promises | Already fixed in `dcd2cd0c1` (after Astra's review HEAD): §2 now says items waiting on the operator also move to Older, still open, which is what the build does (`promises-model.js:91`–`:92`, `home-model.js:213`). The stale Built so far bullet that called this a build fix is corrected here. |
+| Argon R2 — the Promises action bullets were missing | Already restored in `dcd2cd0c1`; replaced in this round by the action table (Astra 7). |
+| Built-page alignment (not a review finding) | Built so far now lists **What I'm allowed to do** (`allowed.js`) with its open enable-action bug (Bugs topic 10000000857) and **Plans** (`plans.js`, merged from `feat/console-native-plans`); the native-page map is `nav-model.js:101`–`:110`. The stale "Probably handled" label in the Promises sketch is renamed. |

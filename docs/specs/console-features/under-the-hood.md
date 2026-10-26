@@ -558,14 +558,28 @@ other conversations been doing, agreeing and leaving open?"
 
 **The new design.** Section 1 of **How I'm doing inside**, titled **What my other
 conversations have been doing**.
-- *Arrival (glance):* "In the last day: 4 decisions, 2 agreements, 3 open
-  threads. 1 thread has gone quiet." Tiles: **Decisions**, **Agreements**, **Open
-  threads**, **Gone quiet** (unclosed past their limit; amber only when non-zero).
+- *Arrival (glance):* the section is headed **Recent recorded activity**, and its line
+  counts only what is on the screen: "Among the 40 most recent records: 4 decisions,
+  2 agreements, 3 threads opened, 1 marked abandoned." Tiles: **Decisions**,
+  **Agreements**, **Thread events** (opened / closed / abandoned, as recorded) — each a
+  count within the displayed records, with "of the last 40" under them. No live
+  open-thread or quiet-thread total: the stats read has accumulated counts by kind,
+  classifier fires and rotations (`src/core/SharedStateLedger.ts:108`–`:116`, `:605`–`:612`),
+  not a current inventory of open threads, and `/shared-state/recent` returns at most 200
+  records (`src/server/routes.ts:40191`; a `since` filter narrows within that tail and does
+  not lift the cap, `SharedStateLedger.ts:479`–`:495`). A recorded `thread-abandoned` event
+  is shown as the event it is ("Thread with PP marked abandoned · 1 d"), never summed into
+  "N threads are quiet now". A live count waits for an authoritative read.
 - *Layout:* phone: a day-grouped timeline, newest first, each entry one plain
   sentence plus who it was with and when: "Agreed with Dawn to hand off the
   review · 2 h ago". Kind is an icon, not a badge wall. Filter chips above the
   timeline (All · Decisions · Agreements · Threads · Commitments · With people · With
-  agents). **Commitment entries keep their own detail sheet with their full status**:
+  agents), then a compact **More filters** sheet that keeps every legacy value: Kind as
+  the seven values the legacy select offers — commitment, agreement, thread-opened,
+  thread-closed, thread-abandoned, decision, note (`dashboard/index.html:3500`–`:3510`) —
+  and Counterparty as user, agent, self, system (`:3513`–`:3519`), so Notes, Self and
+  System can be isolated and opened, closed and abandoned threads told apart; "Show
+  more" extends the window up to the route's 200. **Commitment entries keep their own detail sheet with their full status**:
   what was committed, the mechanism in plain words, the deadline (and "overdue" when
   past it), the derived status (open / resolved / expired / stranded / cancelled),
   disputes ("disputed twice"), and the resolution when one is loaded. A link to the
@@ -587,7 +601,7 @@ conversations have been doing**.
   history cannot be established (no resolving or superseding entry is in the loaded
   window, and the backwards chain cannot show one) → **"Status unknown: later history
   isn't loaded"**, never "open" and never inferred from the chain. Empty → "Nothing
-  recorded in the last day."
+  recorded recently."
 - *Multi-machine:* per machine only today. The section head says "This machine
   only: other machines keep their own record" whenever the pool has more than
   one machine (partial, not fine).
@@ -596,16 +610,18 @@ conversations have been doing**.
 ```
 ┌──────────────────────────────────┐
 │ HOW I'M DOING INSIDE             │
-│ What my other conversations      │
-│ have been doing                  │
-│ 4 decisions, 2 agreements, 3 open│
-│ threads. 1 has gone quiet.       │
+│ Recent recorded activity         │
+│ Of the last 40 records: 4        │
+│ decisions, 2 agreements, 3       │
+│ threads opened, 1 abandoned.     │
 │ (All)(Decisions)(Agreements)(…)  │
+│ More filters ›                   │
 │ TODAY                            │
 │ ◆ Decided to retry on Codex · 2h │
 │ ⇄ Agreed with Dawn: hand off   › │
 │   review · 3h                    │
-│ ○ Thread with PP gone quiet · 1d │
+│ ○ Thread with PP marked          │
+│   abandoned · 1d                 │
 │ This machine only                │
 └──────────────────────────────────┘
 ```
@@ -614,11 +630,16 @@ conversations have been doing**.
 entries stay here with their own detail sheet; they are not shown or counted on the
 Promises page. "Integrated-Being" stays a search alias.
 
-**Data.** Existing `GET /shared-state/recent`, `/stats`, `/chain/:id`,
-`/sessions`, `POST /shared-state/sessions/:sid/revoke`. The "Gone quiet" count is
-`stats.unclosedThreadsOverTtl`. The windowed-status gap is shown as unknown, not
-solved: a forward lookup ("what superseded this entry?") would need a new ledger read
-and is not proposed now.
+**Data.** Existing `GET /shared-state/recent` (`limit` up to 200, `since`,
+`counterpartyType`), `/stats`, `/chain/:id`, `/sessions`,
+`POST /shared-state/sessions/:sid/revoke`. The stats counter
+`unclosedThreadsOverTtl` appears only under Technical, as the raw number it is: it has
+an increment method with no production caller (`src/core/SharedStateLedger.ts:632`; the
+abandonment sweep emits `thread-abandoned` ledger events instead,
+`src/threadline/ThreadlineRouter.ts:521`–`:539`), so a zero there proves nothing about
+quiet threads and it is never shown as a health signal. The windowed-status gap is shown
+as unknown, not solved: a forward lookup ("what superseded this entry?") would need a new
+ledger read and is not proposed now; so would a live open/quiet-thread count.
 
 **Effort and order.** M. First section of *How I'm doing inside* (README step 5).
 
@@ -665,10 +686,19 @@ caught in my own work**.
 - *Arrival (glance):* "One kind of problem keeps coming back: timing clashes,
   across 4 changes." or "Nothing repeating. 3 one-off problems this week, all
   explained." Tiles: **Repeating** (patterns, amber when any is *reopened*),
-  **Still open** (not yet explained), **This week** (captured in 7 days).
+  **This week** (the `total` from `GET /failures/analysis?sinceDays=7`, a whole-ledger
+  count, `src/server/routes.ts:16492`–`:16494`, `src/monitoring/FailureLedger.ts:613`–`:624`),
+  and **Still open**, worded "N still open among the records shown": the analysis
+  response carries no open-status total (`FailureLedger.ts:613`–`:619` returns total,
+  attributed, byCategory, byBuildSkill, unknown-toolchain and no-feature-link counts
+  only), so the open count is taken from the problem rows on screen and says so. A
+  whole-agent open count waits for a server read that has one.
 - *Layout:* patterns first (each a card: plain category sentence, "seen in 4
   changes since 2 Oct", status word), then recent problems as one-line rows that
-  expand to the same fact sheet as today, with "Show older" paging past 10. The
+  expand to the same fact sheet as today, with **Show older** paging past 10 by the
+  route's existing `before` parameter (an ISO timestamp; the next page asks for records
+  detected before the oldest one shown, `src/server/routes.ts:16476`–`:16484`,
+  `FailureLedger.ts:527`). The "Still open among shown" tile re-counts as pages load. The
   rollout stage becomes a single line in the section head: "Watching quietly (no
   alerts)" with an info tap for the four stages.
 - *Primary action(s):* tap a pattern to see the problems behind it.
@@ -691,7 +721,8 @@ caught in my own work**.
 │ Nothing repeating. 3 one-offs    │
 │ this week, all explained.        │
 │ ┌────────┐┌────────┐┌────────┐   │
-│ │Repeat 0││Open 0  ││Week 3  │   │
+│ │Repeat 0││Week 3  ││Open 0  │   │
+│ │        ││        ││of shown│   │
 │ └────────┘└────────┘└────────┘   │
 │ ● A settings problem · 2d      › │
 │ ● A timing clash · 4d          › │
@@ -702,9 +733,10 @@ caught in my own work**.
 **Merge / split / cut.** Merge into *How I'm doing inside*. Keep the ETag polling
 module's behavior (visibility-gated, abort-safe) and its sanitizer.
 
-**Data.** Existing `/failures`, `/failures/insights`, `/failures/analysis`. "Show
-older" uses `limit` on `/failures`; if the route has no offset, cap at 50 rather
-than add one.
+**Data.** Existing `/failures?limit=10` with `before=<oldest shown detectedAt>` for
+each older page (the route already pages by timestamp; no offset API is added),
+`/failures/insights`, `/failures/analysis?sinceDays=7` for the week's total (and
+without `sinceDays` for the Technical drawer's all-time counts). None new.
 
 **Effort and order.** S–M. Second section of *How I'm doing inside*.
 

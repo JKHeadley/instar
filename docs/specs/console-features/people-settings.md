@@ -100,7 +100,7 @@ inline JS `index.html:7107–7352`.
 
 **The new design.**
 - *Arrival:* headline — "PP is waiting for you to finish pairing." / "2 agents, both reachable." / "1 agent hasn't answered in 6 h." Facts: agents paired · waiting on you · not answering · my relay (only shown when not connected: "I'm not connected to the agent network — checking again").
-- *Layout:* (1) **Waiting on you** cards, only when any (restart notice, leak alarm, approve, finish). (2) **Agents** — one row per agent from four sources: pairings, peer health, the counterparties in this machine's thread history (the legacy conversation list reads inbox and outbox directly, so it includes agents with no pairing or health row, `src/threadline/ThreadlineObservability.ts:118`, `:145`), and every name or fingerprint already in a mirroring rule. Each row: name, plain state ("Paired · answered 4 min ago", "Messages waiting since 09:12 — may be offline", "Pairing not finished", or **"History only"** for an agent we have conversations with but no pairing), chevron. A history-only row is never shown as paired, and its conversations stay reachable even when pairing or peer health is off. (3) **Connect another agent** button. (4) collapsed **Mirroring to Telegram**, ending with a small **Advanced: edit the rules** disclosure: the allow and deny lists as plain rows with Remove, and one field to add a name or fingerprint (the same `PATCH /threadline/telegram-bridge/config` the legacy card sends).
+- *Layout:* (1) **Waiting on you** cards, only when any (restart notice, leak alarm, approve, finish). (2) **Agents** — one row per agent from four sources: pairings, peer health, the counterparties in this machine's thread history (the legacy conversation list reads inbox and outbox directly, so it includes agents with no pairing or health row, `src/threadline/ThreadlineObservability.ts:118`, `:145`), and every name or fingerprint already in a mirroring rule. Each row: name, plain state ("Paired · answered 4 min ago", "Messages waiting since 09:12 — may be offline", "Pairing not finished", or **"History only"** for an agent we have conversations with but no pairing), chevron. A history-only row is never shown as paired, and its conversations stay reachable even when pairing or peer health is off. A small **More filters** link beside the search icon opens a sheet with the Telegram-topic filter (all / with a Telegram topic / without), applied to the conversations under every agent (see Merge below). (3) **Connect another agent** button. (4) collapsed **Mirroring to Telegram**, ending with a small **Advanced: edit the rules** disclosure: the allow and deny lists as plain rows with Remove, and one field to add a name or fingerprint (the same `PATCH /threadline/telegram-bridge/config` the legacy card sends).
 - *Agent detail (sheet → full page on desktop):* status line with evidence and age; its conversations newest first, each opening a chat-bubble view (in left, out right, out-of-turn arrival is normal — Muse); per-message footer only on tap (time, delivery outcome); "Mirror this agent to Telegram: always / never / default" (writes allow/deny list — no typing); short fingerprint under "For support".
 - *Primary actions:* Approve / Finish are one tap on the waiting card, then the PIN sheet (adapter c: asked for this action, cleared after it). "Connect another agent" opens a sheet: who it's for (Someone new / known agents), valid 1 h or 24 h, **Make invite** → the invite text with **Copy** and **Share** (Web Share API on phone) and the plain instruction "Send this privately to their person." A second tab in the same sheet: **I was sent one** → paste → **Check** → the approve card.
 - *Secondary / destructive:* Decline (bearer), Not them (red, confirm sheet: "That invite is used up", then PIN), Cancel invite (bearer), "It's one of my agents" (PIN), Dismiss notice (bearer) — in a "…" menu on each card or row. Search lives behind a search icon in the Agents header and searches all messages. Bridge switches stay in the collapsed section; turning the master switch off shows the consequence ("No agent conversations will reach Telegram").
@@ -128,10 +128,14 @@ inline JS `index.html:7107–7352`.
 
 **Merge / split / cut.** Pairing, peer health and conversations merge into per-agent
 records. Bridge allow/deny lists become a per-agent choice (the lists remain the storage),
-with the small advanced rule editor kept for names not in the agent list. Free-text "agent
-filter" and "has Telegram topic" filter are cut in favour of search plus per-agent grouping;
-nothing they returned is lost, because agents known only from thread history, and agents
-named only in a rule, still get a row.
+with the small advanced rule editor kept for names not in the agent list. The free-text
+"agent filter" is replaced by per-agent grouping (every agent gets a row, so a typed name
+is a tap instead). The "has Telegram topic" filter is **kept**, in a compact **More
+filters** sheet on the Agents list and in each agent's conversation list: the legacy
+select's three values, all threads / with Telegram topic / without Telegram topic
+(`dashboard/index.html:4340`–`:4344`), because per-agent grouping and message search
+cannot answer "which conversations are not mirrored to Telegram?". The main phone view
+shows only the few useful chips; the sheet holds the rest.
 
 **Data.** Existing: `/threadline/pairing*`, `/threadline/peers/health?scope=pool`,
 `/threadline/health`, `/threadline/conversations?scope=mesh`,
@@ -227,7 +231,7 @@ approval, and what have I already allowed?"*
 
 **The new design.**
 - *Arrival:* "Echo is asking you to approve 1 thing." / "2 slips active; nothing waiting." / "No slips — every agent-to-agent action is refused until you sign one." Facts: waiting · active slips · people with grants · audit chain ("intact" / red "broken — possible tampering").
-- *Layout:* (1) **Waiting for you** approval cards: the server headline large, "Echo's reason" small and secondary, Approve / Decline. (2) **Active slips** — one card each: plain summary ("Echo and PP may hand over read-only credentials and sign code reviews, until Nov 1"), who else it lets act, chevron. (3) **Ended** collapsed. (4) **Decision history** row with a 24 h count ("31 allowed, 2 refused today").
+- *Layout:* (1) **Waiting for you** approval cards: the server headline large, "Echo's reason" small and secondary, Approve / Decline. (2) **Active slips** — one card each: plain summary ("Echo and PP may hand over read-only credentials and sign code reviews, until Nov 1"), who else it lets act, chevron. (3) **Ended** collapsed. (4) **Decision history** row with a count labelled by what it was counted over: "Among the latest 200 decisions: 31 allowed, 2 refused." The route returns only the newest `limit` entries — 100 by default, at most 1,000 — with no time filter or paging (`src/server/routes.ts:13727`–`:13737`), so a day's count cannot be promised from that tail. The row says "today" only when the window is demonstrably covered: the response's `total` equals the entries returned, or the oldest returned entry is older than 24 h; then it reads "31 allowed, 2 refused in the last 24 h". Otherwise it keeps the "latest N" label. The chain line ("intact" / "broken") is the server's own `chain` field, kept separate from the count.
 - *Slip detail:* summary, grants as sentences, **Let a person act** (person · action · for how long → Grant), "For support" (ids, fingerprints, scope, action slugs, authorities JSON read-only), **Revoke** at the bottom in red.
 - *Primary action:* Approve: one tap → PIN sheet (adapter c, asked for each approval and cleared after it) → done, card leaves with "Approved". The PIN sheet says: "Approvals need your PIN so an agent can never approve for you." One sheet replaces the three PIN fields the legacy page can show at once.
 - *Secondary / destructive:* Revoke → confirm sheet naming consequences ("Ends this slip and the 1 grant it carries, now. Can't be undone.") + optional reason + PIN. Decline → sheet with optional reason. **Advanced: write a slip by hand** stays, at the bottom of the page, behind a disclosure, with Agent A prefilled and Agent B a picker of known agents (from `/threadline/pairing/invites` `knownPeers`) with a "paste fingerprint" fallback; authorities keep the JSON template.
@@ -257,8 +261,10 @@ approval, and what have I already allowed?"*
 "What I'm allowed to do" card. Approvals waiting should also count on Home's "What needs
 you" when the attention item exists; no new Home field.
 
-**Data.** Existing routes only. The 24 h allowed/refused count is computed client-side
-from `/mandate/audit`.
+**Data.** Existing routes only. The allowed/refused count is computed client-side from
+`/mandate/audit?limit=200` (the legacy request, `dashboard/mandates.js:332`) over the
+entries returned, and labelled "Among the latest N decisions" unless the returned data
+covers the last 24 h (rule above).
 
 **Effort and order.** M. README step 5 (first of the remaining People pages); first
 adapter-(c) page in production use.
