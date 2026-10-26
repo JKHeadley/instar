@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "model-registry-cadence-review-2026-10-25",
+  "sessionId": "be9effda-b36f-4a49-9e04-a47f6c7fb2b0",
+  "timestamp": "2026-10-26T01:39:46.499Z",
+  "artifactPath": "upgrades/side-effects/model-registry-cadence-review-2026-10-25.md",
+  "artifactSha256": "cdc265ed87b5e877aa1e947b7cde3aa9f8e621a6b935f8218284e1f1b19c79f8",
+  "coveredFiles": [
+    "docs/specs/model-registry-cadence-review-2026-10-25.eli16.md",
+    "scripts/model-registry-freshness.manifest.json",
+    "upgrades/next/model-registry-cadence-review-2026-10-25.md",
+    "upgrades/side-effects/model-registry-cadence-review-2026-10-25.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One data-file edit (the model registry's review date + two recognized ids); no routing or code change; a revert restores the prior state exactly.",
+  "eli16Path": "docs/specs/model-registry-cadence-review-2026-10-25.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/model-registry-cadence-review-2026-10-25.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
