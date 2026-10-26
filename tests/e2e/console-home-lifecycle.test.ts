@@ -21,6 +21,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
 } from '../../dashboard/console/home-model.js';
+import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -92,4 +93,21 @@ describe('Console Home E2E (feature is alive)', () => {
     expect(cards.promised.value).toBe('1 need you');
     expect(headline(cards).text).not.toBe('All quiet.');
   });
+
+  it('the Promises page reads the real mesh view and its Mark-as-done reaches the real tracker', async () => {
+    const rec = tracker.record({ userRequest: 'send the summary', agentResponse: 'I will send it tonight', type: 'one-time-action', verificationMethod: 'manual' } as never);
+    const r = await request(server.getApp()).get('/commitments?scope=mesh').set(auth);
+    expect(r.status).toBe(200);
+    const page = buildPromisesPage({ ok: true, data: r.body }, Date.now(), { expectedPeers: 0 });
+    expect(page.ok).toBe(true);
+    const row = [...page.sections.carrying, ...page.sections.dueSoon].find((x) => x.id === rec.id)!;
+    expect(row).toBeTruthy();
+    expect(actionsFor(row.record)).toContain('deliver');
+    const d = await request(server.getApp()).post(`/commitments/${rec.id}/deliver`).set(auth).send({});
+    expect(d.status).toBe(200);
+    const after = await request(server.getApp()).get('/commitments?scope=mesh').set(auth);
+    const page2 = buildPromisesPage({ ok: true, data: after.body }, Date.now(), { expectedPeers: 0 });
+    expect(page2.sections.closed.map((x) => x.id)).toContain(rec.id);
+  });
 });
+

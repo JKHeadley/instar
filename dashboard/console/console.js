@@ -8,7 +8,9 @@
 import {
   failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { renderPromises } from './promises.js';
+import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -69,6 +71,16 @@ async function get(path, timeoutMs = TIMEOUT_MS) {
   } catch (e) {
     return failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached');
   } finally { clearTimeout(t); }
+}
+
+/** POST with the bearer token; returns { ok, data } or { ok:false, reason } with the server's own words. */
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) return { ok: true, data };
+    return { ok: false, reason: (data && (data.error || data.message)) ? String(data.error || data.message) : `The server answered ${r.status}.` };
+  } catch { return { ok: false, reason: 'The server could not be reached.' }; }
 }
 
 // ── auth ──────────────────────────────────────────────────────────────────
@@ -168,7 +180,7 @@ async function fillAgentName() {
 // col: which desktop column the card sits in. On a phone both columns stack.
 const CARDS = [
   { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
-  { id: 'promised', title: 'What I’ve promised', href: legacyHref('commitments'), col: 'main' },
+  { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
   { id: 'doing', title: 'What I’m doing', href: legacyHref('sessions'), col: 'main' },
   { id: 'reach', title: 'Can I reach you', href: legacyHref('origins'), col: 'side' },
   { id: 'running', title: 'Where I’m running', href: legacyHref('machines'), col: 'side' },
@@ -370,7 +382,7 @@ function renderHome(main) {
 
 // ── Group pages (static directories) ──────────────────────────────────────
 function tile(t, withIcon = true) {
-  const a = el('a', { class: 'tile', href: legacyHref(t.id) });
+  const a = el('a', { class: 'tile', href: tabHref(t.id) });
   if (withIcon) a.append(el('span', { class: 't-icon', icon: t.icon || 'arrow' }));
   a.append(el('span', {}, el('span', { class: 't-name', text: t.label }), el('span', { class: 't-desc', text: t.desc })));
   return a;
@@ -405,12 +417,26 @@ function footNote() {
 }
 
 // ── routing ───────────────────────────────────────────────────────────────
+// Native feature pages, by hash path. A feature not listed here still opens its legacy tab.
+const NATIVE = {
+  'work/promises': renderPromises,
+};
+
 function route() {
-  const id = (location.hash.replace(/^#\/?/, '') || 'home').split('/')[0];
+  closeSheet();
+  const path = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
+  const id = path.split('/')[0];
   const group = GROUPS.find((g) => g.id === id);
   const active = group ? group.id : 'home';
   const main = renderShell(active);
-  if (group) renderGroup(main, group); else renderHome(main);
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (NATIVE[path]) {
+    NATIVE[path](main, { get, post });
+    // Pages refresh in place every 30 s while visible, never over an open sheet.
+    refreshTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && !sheetIsOpen() && (location.hash.replace(/^#\/?/, '').split('?')[0]) === path) NATIVE[path](main, { get, post });
+    }, REFRESH_MS);
+  } else if (group) renderGroup(main, group); else renderHome(main);
   window.scrollTo(0, 0);
 }
 

@@ -41,7 +41,7 @@ export const GROUPS = [
     tabs: [
       { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'Live sessions on every machine, with a terminal you can watch and type into.' },
       { id: 'jobs', label: 'Jobs', icon: 'clock', desc: 'Scheduled work: what runs when, and what happened last time.' },
-      { id: 'commitments', label: 'Commitments', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
+      { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
       { id: 'projects', label: 'Projects', icon: 'layers', desc: 'Multi-step plans and whether each round passed its checks.' },
       { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Longer efforts in flight, and the items that need you.' },
       { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'What looked like it stopped progress, and how sure that still is.' },
@@ -95,6 +95,16 @@ export const GROUPS = [
 /** Every legacy tab id the console links to. */
 export function allTabIds() {
   return GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id));
+}
+
+/** Features rebuilt natively in the console, by legacy tab id. */
+export const NATIVE_PAGES = {
+  commitments: '#/work/promises',
+};
+
+/** Where a tile goes: the native page when it exists, else the legacy tab. */
+export function tabHref(tabId) {
+  return NATIVE_PAGES[tabId] || legacyHref(tabId);
 }
 
 /** The legacy URL for a tab. Ordinary link; nothing is embedded. */

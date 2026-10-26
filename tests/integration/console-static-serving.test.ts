@@ -78,6 +78,9 @@ describe('console served beside the legacy dashboard', () => {
       ['/dashboard/console/console.js', 'javascript'],
       ['/dashboard/console/home-model.js', 'javascript'],
       ['/dashboard/console/nav-model.js', 'javascript'],
+      ['/dashboard/console/ui.js', 'javascript'],
+      ['/dashboard/console/promises.js', 'javascript'],
+      ['/dashboard/console/promises-model.js', 'javascript'],
       ['/dashboard/console/fonts/inter-latin-wght-normal.woff2', 'font/woff2'],
       ['/dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2', 'font/woff2'],
     ] as const) {
