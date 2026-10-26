@@ -213,7 +213,8 @@ function paintCard(def, model, repaint = false) {
   const focused = card.contains(document.activeElement) ? document.activeElement.getAttribute('data-focus-key') : null;
   queueMicrotask(() => {
     if (!focused) return;
-    const next = card.querySelector(`[data-focus-key="${CSS.escape(focused)}"]`);
+    const esc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(focused) : focused.replace(/["\\]/g, '\\$&');
+    const next = card.querySelector(`[data-focus-key="${esc}"]`);
     if (next) next.focus({ preventScroll: true });
   });
   const visual = model.state === 'partial' || model.state === 'stale' ? 'unknown' : model.state;
