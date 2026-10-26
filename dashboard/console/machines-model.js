@@ -139,11 +139,18 @@ export function healthOf(res, opts = {}) {
   };
 }
 
+/** The sampler keys a row `session:<id>` with the id cut short; match the whole id or its start. */
+export function nameOf(shortId, names = {}) {
+  if (names[shortId]) return names[shortId];
+  if (shortId.length >= 8) { const k = Object.keys(names).find((key) => key.startsWith(shortId)); if (k) return names[k]; }
+  return 'A session';
+}
+
 /**
  * What is using this machine, from /resources/summary. Every percentage is of ONE
  * core (a process can exceed 100%); the summary says so and names the core count.
- * opts.running: the ids of sessions running now — a session no longer running is
- * folded into one line, its last sample never shown as "now".
+ * opts.running: the ids of sessions running now (whole or cut-short ids) — a session no
+ * longer running is folded into one line, its last sample never shown as "now".
  */
 export function usageOf(res, sessionNames = {}, opts = {}) {
   if (!res || !res.ok) return { ok: false, reason: res ? res.reason : 'not read' };
@@ -155,8 +162,10 @@ export function usageOf(res, sessionNames = {}, opts = {}) {
   const running = opts.running instanceof Set ? opts.running : null;
   const sessionsAll = src.filter((s) => String(s.source).startsWith('session:'));
   const idOf = (s) => String(s.source).slice(8);
-  const live = running ? sessionsAll.filter((s) => running.has(idOf(s))) : sessionsAll;
-  const ended = running ? sessionsAll.filter((s) => !running.has(idOf(s))) : [];
+  // The sampler cuts ids short; a running session matches by its whole id or its start (as nameOf does).
+  const isRunning = (id) => running.has(id) || (id.length >= 8 && [...running].some((k) => k.startsWith(id)));
+  const live = running ? sessionsAll.filter((s) => isRunning(idOf(s))) : sessionsAll;
+  const ended = running ? sessionsAll.filter((s) => !isRunning(idOf(s))) : [];
   live.sort((a, b) => (b.currentCpuPercent || 0) - (a.currentCpuPercent || 0));
   const cores = Number(opts.cores);
   const basis = `Percentages are of one core${cores > 0 ? ` (this machine has ${cores})` : ''}.`;
@@ -166,7 +175,7 @@ export function usageOf(res, sessionNames = {}, opts = {}) {
     summary: agg ? `Instar is using ${Math.round(agg.currentCpuPercent || 0)}% of one core and ${gb(agg.currentRssBytes)} of memory now (peak ${Math.round(agg.peakCpuPercent || 0)}% in the last hour). ${basis}` : `No total reading yet. ${basis}`,
     rows: [
       server ? { main: 'The agent server', sub: `${Math.round(server.currentCpuPercent || 0)}% of a core · ${gb(server.currentRssBytes)}` } : null,
-      ...live.slice(0, 5).map((s) => ({ main: sessionNames[idOf(s)] || 'A session', sub: `${Math.round(s.currentCpuPercent || 0)}% of a core · ${gb(s.currentRssBytes)}` })),
+      ...live.slice(0, 5).map((s) => ({ main: nameOf(idOf(s), sessionNames), sub: `${Math.round(s.currentCpuPercent || 0)}% of a core · ${gb(s.currentRssBytes)}` })),
       ended.length ? { main: `${plural(ended.length, 'session')} that ended in the last hour`, sub: 'no longer using anything', tone: 'unknown' } : null,
     ].filter(Boolean),
   };

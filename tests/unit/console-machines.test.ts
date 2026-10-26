@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildMachinesPage, stateOf, loadVerdict, ropesFor, healthOf, usageOf } from '../../dashboard/console/machines-model.js';
+import { buildMachinesPage, stateOf, loadVerdict, ropesFor, healthOf, usageOf, nameOf } from '../../dashboard/console/machines-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
@@ -79,6 +79,16 @@ describe('machines page model', () => {
     const u = usageOf(ok({ sources: [{ source: 'aggregate', currentCpuPercent: 55, currentRssBytes: 12e9, peakCpuPercent: 61 }, { source: 'session:abc', currentCpuPercent: 3, currentRssBytes: 5e8 }] }), { abc: 'Fix it' });
     expect(u.summary).toContain('55% of one core');
     expect(u.rows[0].main).toBe('Fix it');
+  });
+});
+
+describe('resource rows are named', () => {
+  it('matches the sampler\'s shortened session id to the full one, and never invents a name', () => {
+    const names = { '07db2faf-c630-4da6-84d6-7cdcf17b3f76': 'Bug: login loop' };
+    expect(nameOf('07db2faf-c630-4da6-84d6-7cdcf17b', names)).toBe('Bug: login loop');
+    expect(nameOf('07db2faf-c630-4da6-84d6-7cdcf17b3f76', names)).toBe('Bug: login loop');
+    expect(nameOf('zzzz', names)).toBe('A session');
+    expect(usageOf(ok({ sources: [{ source: 'session:07db2faf-c630-4da6-84d6-7cdcf17b', currentCpuPercent: 7, currentRssBytes: 3e8 }] }), names).rows[0].main).toBe('Bug: login loop');
   });
 });
 

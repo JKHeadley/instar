@@ -93,7 +93,8 @@ async function openMachine(m, { get, health, guards, names }) {
     const h = healthOf(sys, { health, guards });
     // Name the resource rows from this machine's own session list too (the pool read may have timed out).
     const named = { ...names };
-    if (local.ok && Array.isArray(local.data && local.data.sessions)) for (const x of local.data.sessions) for (const k of [x.id, x.tmuxSession, x.sessionId]) if (k && !named[k]) named[k] = x.name || x.tmuxSession || k;
+    const localList = local.ok ? (Array.isArray(local.data) ? local.data : Array.isArray(local.data && local.data.sessions) ? local.data.sessions : []) : [];
+    for (const x of localList) for (const k of [x.id, x.tmuxSession, x.sessionId]) if (k && !named[k]) named[k] = x.name || x.tmuxSession || k;
     const u = usageOf(res, named, { running: new Set(Object.keys(named)), cores: hw.cpuCores });
     const look = guardsNeedingLook(guards, { scope: 'local' });
     const after = sb.querySelector('.raw');
