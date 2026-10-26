@@ -65,7 +65,7 @@ export const GROUPS = [
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
       { id: 'threadline', label: 'Threadline', icon: 'chat', desc: 'Conversations with other agents, and pairing new ones.' },
-      { id: 'origins', label: 'Message origins', icon: 'stamp', desc: 'Which machine and model wrote each message.' },
+      { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Replies held back from you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Mandates', icon: 'stamp', desc: 'Permission slips you signed for agent-to-agent work.' },
       { id: 'secrets', label: 'Secrets', icon: 'lock', desc: 'One-time links for handing over passwords and keys safely.' },
     ],
@@ -102,6 +102,7 @@ export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   machines: '#/capacity/machines',
   subscriptions: '#/capacity/accounts',
+  origins: '#/people/messages',
 };
 
 /** Where a tile goes: the native page when it exists, else the legacy tab. */

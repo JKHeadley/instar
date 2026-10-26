@@ -563,3 +563,10 @@ a.btn-inline { color: #062022; }
 .signin-link { word-break: break-all; }
 .btn-small { height: 36px; padding: 0 12px; font-size: 13px; }
 .need-card .rows { margin: 0 calc(var(--s-2) * -1); }
+.switch-row { display: flex; align-items: center; gap: 12px; min-height: 44px; font-size: 15px; color: var(--text); cursor: pointer; }
+.switch-row input { width: 20px; height: 20px; accent-color: var(--teal-400); }
+.switch-group { padding-left: 20px; border-left: 2px solid var(--hairline); }
+select.reason-input { height: 44px; }
+
+/* short pages: rows hug their content instead of stretching to fill the screen */
+.app { align-content: start; }

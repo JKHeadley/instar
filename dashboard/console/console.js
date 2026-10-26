@@ -12,6 +12,7 @@ import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
+import { renderMessages } from './messages.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -184,7 +185,7 @@ const CARDS = [
   { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
   { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
   { id: 'doing', title: 'What I’m doing', href: legacyHref('sessions'), col: 'main' },
-  { id: 'reach', title: 'Can I reach you', href: legacyHref('origins'), col: 'side' },
+  { id: 'reach', title: 'Can I reach you', href: '#/people/messages', col: 'side' },
   { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
   { id: 'allowed', title: 'What I’m allowed to do', href: legacyHref('machines'), col: 'side' },
 ];
@@ -424,6 +425,7 @@ const NATIVE = {
   'work/promises': renderPromises,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,
+  'people/messages': renderMessages,
 };
 
 function route() {
