@@ -38,10 +38,14 @@ export async function renderCosts(main, ctx) {
   }, el('span', { text: c.label }))));
   const timeControl = chipRow(Object.entries(WINDOWS).map(([key, v]) => ({ key, label: v.label })), page.window.key, (k) => { view.window = k; }, 'Time window');
   const routingLink = el('button', { class: 'link-btn head-link', type: 'button', text: 'Model routing & fallbacks ›', onclick: () => openRouting(page.routing, page.checks) });
+  // The one time control sits directly under the headline, before the facts.
+  const hero = pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts });
+  timeControl.classList.add('time-control');
+  hero.insertBefore(timeControl, hero.querySelector('.facts'));
 
   setKids(main, el('div', { class: 'costs-page' },
-    pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
-    el('div', { class: 'page-controls' }, timeControl, routingLink),
+    hero,
+    el('div', { class: 'page-controls' }, routingLink),
     el('div', { class: 'page-sections' },
       recordedSection(page, repaint),
       checksSection(page.checks),
@@ -123,7 +127,7 @@ function checksSection(c) {
   else if (c.insight.state === 'paused') wrap.append(el('p', { class: 'card-note', text: c.insight.text }));
   if (!c.rows.length) return wrap;
   const body = el('div', { class: 'rows list-rows' });
-  const limit = 8;
+  const limit = 5;
   let shown = 0;
   const more = el('button', { class: 'link-btn show-more', type: 'button' });
   const renderMore = () => {
@@ -169,17 +173,17 @@ function conversationsSection(c) {
   const openSession = (row) => sheet({ title: row.main }, story([{ label: 'Tokens', text: row.end }, row.type === 'codex' ? { label: 'Counted as', text: 'this session’s whole-life total, because a Codex session reports one running total' } : { label: 'Counted as', text: 'the events inside the selected window' }, row.record.projectPath ? { label: 'Project', text: String(row.record.projectPath) } : null].filter(Boolean)), details(row.record, SESSION_KEYS));
   const claude = el('div', { class: 'conv-group', 'data-kind': 'claude' }, el('p', { class: 'conv-line', text: c.claude.line }));
   if (c.claude.listReason) claude.append(note(c.claude.listReason));
-  else if (c.claude.rows.length) claude.append(section({ id: 'claude-rows', title: 'Heaviest Claude conversations', rows: c.claude.rows, onRow: openSession }));
+  else if (c.claude.rows.length) claude.append(section({ id: 'claude-rows', title: 'Heaviest Claude conversations', rows: c.claude.rows, limit: 5, onRow: openSession }));
   wrap.append(claude);
   if (c.codex) {
     const codex = el('div', { class: 'conv-group', 'data-kind': 'codex' }, el('p', { class: 'conv-line', text: c.codex.line }));
     if (c.codex.listReason) codex.append(note(c.codex.listReason));
-    else if (c.codex.rows.length) codex.append(section({ id: 'codex-rows', title: 'Heaviest Codex conversations (lifetime totals)', rows: c.codex.rows, onRow: openSession }));
+    else if (c.codex.rows.length) codex.append(section({ id: 'codex-rows', title: 'Heaviest Codex conversations (lifetime totals)', rows: c.codex.rows, limit: 5, onRow: openSession }));
     wrap.append(codex);
   }
   wrap.append(el('p', { class: 'card-note', text: c.note }));
   if (c.idle.count === null) { if (c.idle.reason) wrap.append(note(c.idle.reason)); }
-  else if (c.idle.count > 0) wrap.append(section({ id: 'idle-rows', title: 'Idle for 30 min or more', rows: c.idle.rows, collapsed: true, onRow: openSession }));
+  else if (c.idle.count > 0) wrap.append(section({ id: 'idle-rows', title: 'Idle for 30 min or more', rows: c.idle.rows, collapsed: true, limit: 5, onRow: openSession }));
   if (c.newestEvent) wrap.append(el('p', { class: 'card-age', text: c.newestEvent }));
   return wrap;
 }

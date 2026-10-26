@@ -272,7 +272,7 @@ describe('Console Home E2E (feature is alive)', () => {
     // A 503 maps to "switched off" words, a 200 to a real reading — never a fabricated figure.
     const off = (s: string) => s === 'off';
     if (off(page.recorded.state)) expect(page.headline).toBe('Spend figures aren’t available on this agent.');
-    else { expect(page.recorded.state).toBe('ok'); expect(page.headline).toMatch(/^Recorded on this machine this week: /); }
+    else { expect(page.recorded.state).toBe('ok'); expect(page.headline).toMatch(/^(No pay-per-use cost|About \$[\d.]+ of pay-per-use cost) this week on this machine\.$/); }
     if (off(page.checks.state)) expect(page.checks.reason).toBe('Background checks aren’t tracked on this agent.');
     else { expect(page.checks.state).toBe('ok'); expect(typeof page.checks.real).toBe('number'); }
     if (off(page.conversations.state)) expect(page.conversations.reason).toBe('Conversation token use isn’t tracked here.');

@@ -157,14 +157,19 @@ export function buildRecordedCost(res) {
   // The bases that carry dollars (subscription and unpriced rows contribute none).
   const bases = [...new Set(rows.filter((r) => r.usd !== null && r.usd > 0).map((r) => r.basis))];
   const doors = [...new Set(rows.filter((r) => r.usd !== null && r.usd > 0).map((r) => doorWord(r.record.door)))];
-  let costWords = `${fmtUsd(netUsd)} pay-per-use`;
+  const subscriptionTokens = rows.filter((r) => r.basis === 'subscription').reduce((a, r) => a + r.tokens, 0);
+  // The plain sentence: dollars first, the basis spelled out in words, never a label in the headline.
+  const BASIS_PLAIN = { estimated: 'estimated from token counts and a price list', 'provider-reported': 'reported by the provider', 'basis not stated': 'basis not stated' };
+  let costWords = 'No pay-per-use cost';
+  let howWords = null;
   if (netUsd > 0) {
-    costWords = `about ${fmtUsd(netUsd)} pay-per-use (${bases.join(' and ') || 'basis not stated'})`;
-    if (doors.length === 1) costWords += `, all on ${doors[0]}`;
+    costWords = `About ${fmtUsd(netUsd)} of pay-per-use cost`;
+    howWords = `${bases.map((b) => BASIS_PLAIN[b] || b).join(' and ') || 'basis not stated'}${doors.length === 1 ? `, all on ${doors[0]}` : ''}.`;
+    howWords = howWords.charAt(0).toUpperCase() + howWords.slice(1);
   }
   const rb = d.reportingBasis && typeof d.reportingBasis === 'object' ? d.reportingBasis : {};
   return {
-    state: 'ok', reason: null, rows, netUsd, grossUsd: Number(t.grossUsd) || 0, creditUsd: Number(t.creditUsd) || 0, unpricedTokens, tokens, bases, costWords,
+    state: 'ok', reason: null, rows, netUsd, grossUsd: Number(t.grossUsd) || 0, creditUsd: Number(t.creditUsd) || 0, unpricedTokens, tokens, bases, costWords, howWords, subscriptionTokens,
     grain: d.grain || 'day', horizonNote: typeof d.horizonNote === 'string' ? d.horizonNote : null,
     lastReconcileAt: rb.lastReconcileAt || null, rollupMaintained: rb.rollupMaintained === true, source: rb.source || null,
     amortized: typeof t.amortizedSubscriptionUsd === 'number' ? t.amortizedSubscriptionUsd : null,
@@ -238,7 +243,8 @@ export function checkRow(f) {
     key: `check:${f.feature}`, type: 'check', feature: f.feature, main: checkWord(f.feature), sub: bits.join(' · '), end: tokens ? `${fmtTokens(tokens)} tokens` : 'no tokens recorded',
     tone: errors > 0 ? 'bad' : skipShare >= 0.5 ? 'unknown' : null, real, calls, errors, shed, fired, noop, unclassified, tokens, skipShare,
     segments: [['acted', fired], ['quiet', noop], ['other', unclassified], ['skipped', shed], ['failed', errors]].filter(([, n]) => n > 0),
-    sortKey: (errors > 0 ? 2e9 : 0) + (skipShare >= 0.5 ? 1e9 : 0) + calls,
+    // Order: anything that failed first (most failures first), then the checks that acted most, then volume.
+    sortKey: (errors > 0 ? 1e12 : 0) + Math.min(errors, 999) * 1e9 + Math.min(fired, 999999) * 1e3 + Math.min(calls, 999),
     latency: { p50: Number(f.p50LatencyMs) || 0, p95: Number(f.p95LatencyMs) || 0 },
     byModel: Array.isArray(f.byModel) ? f.byModel.map((m) => ({ model: modelWord(m.model), framework: doorWord(m.framework), calls: Number(m.realCalls) || 0, tokens: (Number(m.tokensIn) || 0) + (Number(m.tokensOut) || 0), errors: Number(m.errors) || 0 })) : [],
     record: f,
@@ -291,17 +297,26 @@ export function buildChecks(res, insightsRes, now = Date.now()) {
 // ── 3. Your conversations (transcripts) ────────────────────────────────────
 function shortProject(p) { if (!p) return null; const s = String(p).replace(/\/+$/, '').split('/').pop(); return s || null; }
 
+/** The title line when no session name resolves: "In echo, last active 2 h ago" — the project and the age, never a repeated placeholder. */
+function unnamedTitle(project, lastTs, now) {
+  const age = lastTs ? ago(lastTs, now) : null;
+  if (project && age) return `In ${project}, last active ${age}`;
+  if (project) return `In ${project}`;
+  return age ? `Last active ${age}` : 'A conversation';
+}
 /** A Claude conversation row from /tokens/sessions (window total). */
 export function claudeRow(s, names = {}, now = Date.now()) {
   const name = names[s.sessionId] || null;
   const project = shortProject(s.projectPath);
-  return { key: `claude:${s.sessionId}`, type: 'claude', main: name || (project ? `A conversation in ${project}` : 'A conversation'), sub: [project && name ? project : null, s.lastTs ? `last active ${ago(s.lastTs, now)}` : null].filter(Boolean).join(' · '), end: `${fmtTokens(s.totalTokens)} tokens`, tokens: Number(s.totalTokens) || 0, record: s };
+  const age = s.lastTs ? ago(s.lastTs, now) : null;
+  return { key: `claude:${s.sessionId}`, type: 'claude', main: name || unnamedTitle(project, s.lastTs, now), sub: name ? [project, age ? `last active ${age}` : null].filter(Boolean).join(' · ') : '', end: `${fmtTokens(s.totalTokens)} tokens`, tokens: Number(s.totalTokens) || 0, record: s };
 }
 /** A Codex row from /tokens/codex-sessions: the figure is the session's LIFETIME total. */
 export function codexRow(s, names = {}, now = Date.now()) {
   const name = names[s.sessionId] || null;
   const project = shortProject(s.projectPath);
-  return { key: `codex:${s.sessionId}`, type: 'codex', main: name || (project ? `A Codex conversation in ${project}` : 'A Codex conversation'), sub: [`lifetime total`, s.lastTs ? `last active ${ago(s.lastTs, now)}` : null, s.model ? modelWord(s.model) : null].filter(Boolean).join(' · '), end: `${fmtTokens(s.totalTokens)} tokens`, tokens: Number(s.totalTokens) || 0, record: s };
+  const age = s.lastTs ? ago(s.lastTs, now) : null;
+  return { key: `codex:${s.sessionId}`, type: 'codex', main: name || unnamedTitle(project, s.lastTs, now), sub: ['lifetime total', name && age ? `last active ${age}` : null, s.model ? modelWord(s.model) : null].filter(Boolean).join(' · '), end: `${fmtTokens(s.totalTokens)} tokens`, tokens: Number(s.totalTokens) || 0, record: s };
 }
 
 /**
@@ -330,7 +345,7 @@ export function buildConversations(res, phrase, { claude, codex, orphans, names 
     cx.listReason = codex && !codex.ok ? `Couldn’t list Codex conversations: ${codex.reason}.` : null;
   }
   const idle = orphans && orphans.ok && Array.isArray(orphans.data && orphans.data.orphans)
-    ? { count: orphans.data.orphans.length, rows: orphans.data.orphans.filter(Boolean).map((o) => ({ key: `idle:${o.sessionId}`, type: 'claude', main: names[o.sessionId] || (shortProject(o.projectPath) ? `A conversation in ${shortProject(o.projectPath)}` : 'A conversation'), sub: `idle for ${ago(o.lastTs, now) ? ago(o.lastTs, now).replace(' ago', '') : 'a while'}`, end: `${fmtTokens(o.totalTokens)} tokens`, record: o })) }
+    ? { count: orphans.data.orphans.length, rows: orphans.data.orphans.filter(Boolean).map((o) => ({ key: `idle:${o.sessionId}`, type: 'claude', main: names[o.sessionId] || (shortProject(o.projectPath) ? `In ${shortProject(o.projectPath)}, idle for ${ago(o.lastTs, now) ? ago(o.lastTs, now).replace(' ago', '') : 'a while'}` : `Idle for ${ago(o.lastTs, now) ? ago(o.lastTs, now).replace(' ago', '') : 'a while'}`), sub: names[o.sessionId] ? `idle for ${ago(o.lastTs, now) ? ago(o.lastTs, now).replace(' ago', '') : 'a while'}` : '', end: `${fmtTokens(o.totalTokens)} tokens`, record: o })) }
     : { count: null, reason: orphans ? `Couldn’t count idle conversations: ${orphans.reason}.` : null };
   return {
     state: 'ok', reason: null, claude: cl, codex: cx, idle,
@@ -382,11 +397,15 @@ export function buildCostsPage(res, now = Date.now(), { window = DEFAULT_WINDOW 
   const routing = buildRouting(r.chains);
 
   let headline;
-  if (recorded.state === 'ok') headline = `Recorded on this machine ${w.phrase}: ${recorded.costWords}${recorded.unpricedTokens > 0 ? `; ${fmtTokens(recorded.unpricedTokens)} tokens unpriced` : ''}.`;
+  if (recorded.state === 'ok') headline = `${recorded.costWords} ${w.phrase} on this machine.`;
   else if (recorded.state === 'off') headline = 'Spend figures aren’t available on this agent.';
   else headline = 'Can’t tell what AI use cost on this machine.';
   const subParts = [];
-  if (recorded.state !== 'ok') subParts.push(recorded.reason);
+  if (recorded.state === 'ok') {
+    if (recorded.howWords) subParts.push(recorded.howWords);
+    if (recorded.unpricedTokens > 0) subParts.push(`${fmtTokens(recorded.unpricedTokens)} tokens went through with no price on file for their route, so they are counted but not priced.`);
+    if (recorded.subscriptionTokens > 0) subParts.push(`${fmtTokens(recorded.subscriptionTokens)} tokens ran on subscriptions, which are not billed per token.`);
+  } else subParts.push(recorded.reason);
   if (limits.controls.sentence && limits.routesSentence) subParts.push(`${limits.controls.sentence.replace(/\.$/, '')}, and ${limits.routesSentence.charAt(0).toLowerCase()}${limits.routesSentence.slice(1)}`);
   else if (limits.controls.sentence) subParts.push(limits.controls.sentence);
   else if (limits.routesSentence) subParts.push(limits.routesSentence);

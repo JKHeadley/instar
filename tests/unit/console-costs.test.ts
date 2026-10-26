@@ -84,14 +84,21 @@ describe('recorded cost — basis labels and unpriced tokens', () => {
 
   it('totals: $0 with unpriced tokens is said as unpriced, never as covered; dollars name their basis and door', () => {
     const zero = buildRecordedCost(spend([spendRow({ costBasis: 'unpriced', netUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 })], { netUsd: 0, grossUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 }));
-    expect(zero.costWords).toBe('$0 pay-per-use');
+    expect(zero.costWords).toBe('No pay-per-use cost');
+    expect(zero.howWords).toBeNull();
     expect(zero.unpricedTokens).toBe(41000);
     expect(JSON.stringify(zero)).not.toMatch(/covered/i);
     const paid = buildRecordedCost(spend([spendRow()]));
-    expect(paid.costWords).toBe('about $4.20 pay-per-use (estimated), all on OpenRouter');
+    expect(paid.costWords).toBe('About $4.20 of pay-per-use cost');
+    expect(paid.howWords).toBe('Estimated from token counts and a price list, all on OpenRouter.');
     expect(paid.bases).toEqual(['estimated']);
     const mixed = buildRecordedCost(spend([spendRow(), spendRow({ door: 'groq', modelId: 'llama-4', costBasis: 'provider-reported', providerReportedUsd: 1, netUsd: 1 })], { netUsd: 5.2 }));
-    expect(mixed.costWords).toBe('about $5.20 pay-per-use (estimated and provider-reported)');
+    expect(mixed.costWords).toBe('About $5.20 of pay-per-use cost');
+    expect(mixed.howWords).toBe('Estimated from token counts and a price list and reported by the provider.');
+    // Subscription tokens are counted apart from unpriced ones: the ledger reports them as $0 with no unpriced tokens.
+    const sub = buildRecordedCost(spend([spendRow({ door: 'claude-code', doorClass: 'cli', costBasis: 'subscription-zero', netUsd: 0, grossUsd: 0, tokensIn: 300000000, tokensOut: 34000000 })], { netUsd: 0, grossUsd: 0 }));
+    expect(sub.subscriptionTokens).toBe(334000000);
+    expect(sub.unpricedTokens).toBe(0);
   });
 
   it('tells switched-off from failed from a malformed answer', () => {
@@ -152,11 +159,13 @@ describe('background checks — calls and tokens, never dollars', () => {
     expect(checkRow(feat({ errors: 0, llmErrors: 0, shed: 0, tokensIn: 0, tokensOut: 0 }))).toMatchObject({ tone: null, end: 'no tokens recorded' });
   });
 
-  it('sorts failing first, then mostly-skipped, then by volume; the sentence names the skipper', () => {
-    const c = buildChecks(metrics([feat({ feature: 'TopicIntentExtractor', errors: 0, llmErrors: 0, shed: 0, calls: 900, realCalls: 900 }), feat({ feature: 'CoherenceReviewer', errors: 0, llmErrors: 0, shed: 60, calls: 100, realCalls: 40 }), feat()], { realCalls: 1350, errors: 2, shed: 150 }), OFF, NOW);
+  it('sorts failed first, then the checks that acted most, then by volume; the sentence names the skipper', () => {
+    const c = buildChecks(metrics([feat({ feature: 'CoherenceReviewer', errors: 0, llmErrors: 0, shed: 60, calls: 100, realCalls: 40, fired: 10 }), feat({ feature: 'TopicIntentExtractor', errors: 0, llmErrors: 0, shed: 0, calls: 900, realCalls: 900, fired: 200 }), feat({ feature: 'PromptGate', errors: 0, llmErrors: 0, shed: 0, calls: 950, realCalls: 950, fired: 10 }), feat()], { realCalls: 2300, errors: 2, shed: 150 }), OFF, NOW);
     expect(c.state).toBe('ok');
-    expect(c.rows.map((r) => r.feature)).toEqual(['MessagingToneGate', 'CoherenceReviewer', 'TopicIntentExtractor']);
-    expect(c.sentence).toBe('1,350 background checks; 2 failed; the coherence review check skipped 60% to save limits.');
+    expect(c.rows.map((r) => r.feature)).toEqual(['MessagingToneGate', 'TopicIntentExtractor', 'PromptGate', 'CoherenceReviewer']);
+    expect(c.rows[0].errors).toBe(2);                 // failed first
+    expect(c.rows[1].fired).toBeGreaterThan(c.rows[2].fired); // then most acted
+    expect(c.sentence).toBe('2,300 background checks; 2 failed; the coherence review check skipped 60% to save limits.');
     expect(c.note).toContain('Cost per check isn’t recorded yet');
     expect(c.usedLately.map((m) => [m.model, m.pct])).toEqual([['GPT-6 Luna', 93], ['Claude Opus 5.5', 7]]);
     expect(c.insight.state).toBe('absent');
@@ -188,8 +197,9 @@ describe('your conversations — Claude and Codex are kept apart', () => {
     expect(c.claude.count).toBe(11);   // summary.sessionsActive, not the list length (1)
     expect(c.codex.count).toBe(3);     // codex.sessionCount, not the list length (1)
     expect(c.claude.rows[0]).toMatchObject({ main: 'Console plan', end: '2.3M tokens' });
-    expect(c.codex.rows[0].sub).toContain('lifetime total');
-    expect(c.codex.rows[0].main).toBe('A Codex conversation in proj');
+    expect(c.codex.rows[0].sub).toBe('lifetime total · GPT-6 Astra');
+    expect(c.codex.rows[0].main).toBe('In proj, last active 2 h ago'); // unnamed: project + age, never a repeated placeholder
+    expect(c.claude.rows[0].sub).toBe('echo · last active 1 h ago');   // named: the project and age move to the sub-line
     expect(c.note).toContain('not added together');
     const json = JSON.stringify(c);
     expect(json).not.toContain(String(8200000 + 900000));
@@ -211,8 +221,12 @@ describe('your conversations — Claude and Codex are kept apart', () => {
     expect(buildConversations(OFF, 'today', {}, NOW)).toMatchObject({ state: 'off', reason: 'Conversation token use isn’t tracked here.' });
     expect(buildConversations(FAIL, 'today', {}, NOW).state).toBe('failed');
     expect(buildConversations(ok({ codex: {} }), 'today', {}, NOW).state).toBe('failed');
-    expect(claudeRow({ sessionId: 'z', projectPath: null, totalTokens: 5, lastTs: hoursAgo(1) }, {}, NOW).main).toBe('A conversation');
-    expect(codexRow({ sessionId: 'z', projectPath: '/a/b', model: 'gpt-6-astra', totalTokens: 5, lastTs: hoursAgo(3) }, {}, NOW).sub).toBe('lifetime total · last active 3 h ago · GPT-6 Astra');
+    expect(claudeRow({ sessionId: 'z', projectPath: null, totalTokens: 5, lastTs: hoursAgo(1) }, {}, NOW).main).toBe('Last active 1 h ago');
+    expect(claudeRow({ sessionId: 'z', projectPath: null, totalTokens: 5 }, {}, NOW).main).toBe('A conversation');
+    expect(claudeRow({ sessionId: 'z', projectPath: '/x/echo', totalTokens: 5, lastTs: hoursAgo(2) }, {}, NOW)).toMatchObject({ main: 'In echo, last active 2 h ago', sub: '' });
+    const cx = codexRow({ sessionId: 'z', projectPath: '/a/b', model: 'gpt-6-astra', totalTokens: 5, lastTs: hoursAgo(3) }, {}, NOW);
+    expect(cx).toMatchObject({ main: 'In b, last active 3 h ago', sub: 'lifetime total · GPT-6 Astra' });
+    expect(codexRow({ sessionId: 'z', projectPath: '/a/b', model: null, totalTokens: 5, lastTs: hoursAgo(3) }, { z: 'Astra review' }, NOW)).toMatchObject({ main: 'Astra review', sub: 'lifetime total · last active 3 h ago' });
   });
 });
 
@@ -233,8 +247,9 @@ describe('which model does what', () => {
 describe('the whole page', () => {
   it('headline from the ledger with the window phrase; facts; the limits sentence apart', () => {
     const p = buildCostsPage(full(), NOW, { window: 'week' });
-    expect(p.headline).toBe('Recorded on this machine this week: about $4.20 pay-per-use (estimated), all on OpenRouter.');
-    expect(p.sub).toBe('Spending limits are off (held by Mac Studio), and no paid route is open. Figures are this machine’s own ledger.');
+    expect(p.headline).toBe('About $4.20 of pay-per-use cost this week on this machine.');
+    expect(p.sub).toBe('Estimated from token counts and a price list, all on OpenRouter. Spending limits are off (held by Mac Studio), and no paid route is open. Figures are this machine’s own ledger.');
+    expect(p.headline).not.toMatch(/estimated|unpriced|provider-reported|recorded/i); // the labels live in the sub-line
     expect(p.facts.map((f) => [String(f.n), f.label])).toEqual([['$4.20', 'recorded cost · estimated'], ['410', 'background checks · 2 failed'], ['off', 'limits']]);
     expect(p.tone).toBe('attn');
     expect(p.window.key).toBe('week');
@@ -242,9 +257,14 @@ describe('the whole page', () => {
 
   it('unpriced tokens reach the headline and a fact; a quiet page is ok', () => {
     const p = buildCostsPage(full({ spend: spend([spendRow({ costBasis: 'unpriced', netUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 })], { netUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 }), metrics: metrics([feat({ errors: 0, llmErrors: 0 })], { errors: 0 }) }), NOW, { window: 'today' });
-    expect(p.headline).toBe('Recorded on this machine today: $0 pay-per-use; 41k tokens unpriced.');
+    expect(p.headline).toBe('No pay-per-use cost today on this machine.');
+    expect(p.sub).toContain('41k tokens went through with no price on file for their route, so they are counted but not priced.');
     expect(p.facts[1]).toMatchObject({ n: '41k', label: 'tokens unpriced', tone: 'unknown' });
     expect(p.tone).toBe('ok');
+    const subs = buildCostsPage(full({ spend: spend([spendRow({ door: 'claude-code', doorClass: 'cli', costBasis: 'subscription-zero', netUsd: 0, grossUsd: 0, tokensIn: 300000000, tokensOut: 34000000 })], { netUsd: 0, grossUsd: 0 }) }), NOW, { window: 'week' });
+    expect(subs.headline).toBe('No pay-per-use cost this week on this machine.');
+    expect(subs.sub).toContain('334M tokens ran on subscriptions, which are not billed per token.');
+    expect(subs.sub).not.toContain('no price on file');
   });
 
   it('503 on the spend view is said once, separately from the limits switch; the other sections still render', () => {
@@ -287,8 +307,13 @@ describe('costs page in a DOM', () => {
   let dom: JSDOM;
   afterEach(() => dom?.window.close());
 
-  it('boots the shipped console, keeps the Claude and Codex lines separate, shows committed limits apart, and opens the routing sheet', async () => {
-    const f = full();
+  it('boots the shipped console, keeps the Claude and Codex lines separate, shows committed limits apart, caps lists at 5, and opens the routing sheet', async () => {
+    // Seven Claude conversations, seven Codex ones and seven checks: each list shows 5 and offers the rest.
+    const claudeSessions = [{ sessionId: 's1', projectPath: '/Users/x/.instar/agents/echo', totalTokens: 2300000, eventCount: 10, firstTs: hoursAgo(5), lastTs: hoursAgo(1) },
+      ...Array.from({ length: 6 }, (_, i) => ({ sessionId: `u${i}`, projectPath: '/Users/x/.instar/agents/echo', totalTokens: 1000000 - i, eventCount: 3, firstTs: hoursAgo(9), lastTs: hoursAgo(2 + i) }))];
+    const codexSessions = Array.from({ length: 7 }, (_, i) => ({ sessionId: `c${i}`, projectPath: '/Users/x/proj', model: 'gpt-6-astra', totalTokens: 600000 - i, firstTs: hoursAgo(400), lastTs: hoursAgo(2 + i) }));
+    const feats = [feat(), ...Array.from({ length: 6 }, (_, i) => feat({ feature: `Check${i}`, errors: 0, llmErrors: 0, fired: 30 - i }))];
+    const f = full({ claude: ok({ sessions: claudeSessions }), codex: ok({ sessions: codexSessions }), metrics: metrics(feats) });
     const got: string[] = [];
     dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/costs' });
     const g = globalThis as Record<string, unknown>;
@@ -317,9 +342,12 @@ describe('costs page in a DOM', () => {
     await import('../../dashboard/console/console.js');
     for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 20));
     const doc = dom.window.document;
-    expect(doc.querySelector('.page-title')!.textContent).toBe('Recorded on this machine this week: about $4.20 pay-per-use (estimated), all on OpenRouter.');
-    // One time control; the window it selected drove every read (7 days = 168 h).
-    expect([...doc.querySelectorAll('.page-controls .fchip')].map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([['Today', 'false'], ['7 days', 'true'], ['30 days', 'false']]);
+    expect(doc.querySelector('.page-title')!.textContent).toBe('About $4.20 of pay-per-use cost this week on this machine.');
+    // One time control, directly under the headline and before the facts; the window it selected drove every read (7 days = 168 h).
+    const control = doc.querySelector('.page-hero .time-control')!;
+    expect(control.previousElementSibling!.tagName).toBe('P');
+    expect(control.nextElementSibling!.classList.contains('facts')).toBe(true);
+    expect([...control.querySelectorAll('.fchip')].map((b) => [b.textContent, b.getAttribute('aria-pressed')])).toEqual([['Today', 'false'], ['7 days', 'true'], ['30 days', 'false']]);
     expect(got).toContain('/metrics/features?sinceHours=168');
     expect(got.some((u) => /^\/routing-spend\/summary\?grain=day&sinceHours=168$/.test(u))).toBe(true);
     expect(got.some((u) => /^\/tokens\/sessions\?since=\d+&limit=20$/.test(u))).toBe(true);
@@ -329,13 +357,24 @@ describe('costs page in a DOM', () => {
     expect(lines).toEqual(['Claude: 11 conversations processed 8.2M tokens this week.', 'Codex: 3 conversations active this week have used 900k tokens over their whole life.']);
     expect(doc.querySelector('#sec-conversations')!.textContent).not.toContain('9.1M');
     expect(doc.querySelector('#sec-claude-rows .row-title')!.textContent).toBe('Console plan');
+    // Lists are capped at 5 with Show more; unnamed rows say where and when, not "A conversation in echo" seven times.
+    expect(doc.querySelectorAll('#sec-claude-rows button.row')).toHaveLength(5);
+    expect(doc.querySelector('#sec-claude-rows .show-more')!.textContent).toBe('Show 2 more');
+    expect(doc.querySelectorAll('#sec-codex-rows button.row')).toHaveLength(5);
+    expect(doc.querySelectorAll('#sec-codex-rows .row-title')[0].textContent).toMatch(/^In proj, last active \d+ h ago$/); // the page renders against the real clock
+    expect(doc.querySelector('#sec-conversations')!.textContent).not.toContain('A conversation in');
+    expect(doc.querySelectorAll('#sec-checks .check-row')).toHaveLength(5);
+    expect(doc.querySelector('#sec-checks .show-more')!.textContent).toBe('Show 2 more');
+    (doc.querySelector('#sec-checks .show-more') as HTMLButtonElement).click();
+    expect(doc.querySelectorAll('#sec-checks .check-row')).toHaveLength(7);
+    expect((doc.querySelector('#sec-checks .show-more') as HTMLButtonElement).hidden).toBe(true);
     // Reporting rows and committed limits are different sections.
     expect(doc.querySelector('#sec-recorded .row-end')!.textContent).toBe('$4.20›');
     expect(doc.querySelector('#sec-paid .row-sub')!.textContent).toBe('$0 of $25.00 today · $0 of $60.00 total (committed)');
     expect(doc.querySelector('#sec-paid .row-end')!.textContent).toBe('Not open›');
     // Checks: a bar and numbers, the Insights line, and no dollars.
     expect(doc.querySelector('#sec-checks .check-row .row-title')!.textContent).toBe('Message tone check');
-    expect(doc.querySelectorAll('#sec-checks .check-bar span')).toHaveLength(5);
+    expect(doc.querySelectorAll('#sec-checks .check-row')[0].querySelectorAll('.check-bar span')).toHaveLength(5);
     expect(doc.querySelector('#sec-checks .insight-line')!.textContent).toContain('written by AI');
     expect(doc.querySelector('#sec-checks')!.textContent).not.toContain('$');
     // Spending controls are collapsed and read-only, pointing at the legacy tab.
@@ -350,7 +389,7 @@ describe('costs page in a DOM', () => {
     expect(doc.querySelector('.lane-tag')!.textContent).toBe('pay-per-use · not open');
     // Pressing Today refetches with the 24 h window.
     (doc.querySelector('.sheet-close') as HTMLButtonElement).click();
-    ([...doc.querySelectorAll('.page-controls .fchip')].find((b) => b.textContent === 'Today') as HTMLButtonElement).click();
+    ([...doc.querySelectorAll('.page-hero .time-control .fchip')].find((b) => b.textContent === 'Today') as HTMLButtonElement).click();
     for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 20));
     expect(got).toContain('/metrics/features?sinceHours=24');
     expect(doc.querySelector('.page-title')!.textContent).toContain('today');

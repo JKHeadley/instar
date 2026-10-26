@@ -685,3 +685,5 @@ span.lchip { color: var(--text-muted); border-style: dashed; }
 .lane-pos { display: inline-flex; align-items: center; gap: 6px; }
 .lane-pos.paid { color: var(--text-muted); }
 .lane-tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px dashed var(--attn-line); color: var(--attn); }
+.page-hero .time-control { margin: var(--s-4) 0 0; }
+.page-hero .time-control + .facts { margin-top: var(--s-3); }
