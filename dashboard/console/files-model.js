@@ -326,3 +326,77 @@ export function filesHeadline({ root, machine }) {
   if (root && !root.ok) return { text: root.kind === 'off' ? 'The file viewer is switched off.' : 'Can’t read the file list.', tone: root.kind === 'off' ? 'unknown' : 'bad', sub: root.text };
   return { text: 'Open a file, or find one by name.', tone: 'ok', sub: machine ? `Files on ${machine}. Each machine has its own.` : null };
 }
+
+// ── finding a file across the whole project (GET /api/files/search) ──────
+
+export const SEARCH_LIMIT = 50;
+/** The search route's address for a query. */
+export function searchUrl(q, limit = SEARCH_LIMIT) {
+  return `/api/files/search?q=${encodeURIComponent(String(q || '').trim())}&limit=${limit}`;
+}
+
+/**
+ * GET /api/files/search → rows like searchLoaded's, or `{ unsupported: true }` when this
+ * server is older and has no search route (a 404 that is not "the file viewer is off"),
+ * so the page falls back to searching the folders it already opened.
+ */
+export function buildSearch(res, q) {
+  const query = String(q || '').trim().toLowerCase();
+  if (!res || res.status !== 200 || !res.data || !Array.isArray(res.data.results)) {
+    const status = res ? res.status : 0;
+    const err = res && res.data && typeof res.data.error === 'string' ? res.data.error : '';
+    if (status === 404 && !/disabled/i.test(err)) return { ok: false, unsupported: true, query };
+    return { ok: false, unsupported: false, query, ...refusalWords(status, res && res.data) };
+  }
+  const rows = res.data.results
+    .filter((e) => e && typeof e.path === 'string' && typeof e.name === 'string' && (e.type === 'file' || e.type === 'directory'))
+    .map((e) => {
+      const p = normPath(e.path);
+      return { key: `find:${p}`, main: e.name, sub: e.type === 'directory' ? `folder · ${folderWords(p)}` : folderWords(p), path: p, type: e.type };
+    });
+  const truncated = res.data.truncated === true;
+  return {
+    ok: true, query, rows, truncated, more: 0,
+    note: truncated ? `Showing the first ${rows.length} matches; type more of the name to narrow it.` : rows.length ? 'Searched every folder you allow this page to browse.' : null,
+    empty: rows.length ? null : 'No file or folder by that name in the folders you allow.',
+  };
+}
+
+// ── image preview ─────────────────────────────────────────────────────────
+
+/** Largest image this page previews (the server's own read limit may be lower). */
+export const IMAGE_PREVIEW_MAX = 5 * 1_048_576;
+
+/**
+ * Should an opened binary file be previewed? Only the raster types the page knows
+ * (PNG, JPEG, GIF, WebP — never SVG), and only up to 5 MB and the server's own limit.
+ */
+export function previewPlan(f, config = {}) {
+  if (!f || f.kind !== 'binary' || !f.image) return { preview: false, why: null };
+  const serverMax = Number.isFinite(config.maxFileSize) ? config.maxFileSize : Infinity;
+  const max = Math.min(IMAGE_PREVIEW_MAX, serverMax);
+  if (!Number.isFinite(f.size) || f.size <= 0) return { preview: false, why: 'This image is empty, so there is nothing to preview.' };
+  if (f.size > max) return { preview: false, why: `This image is ${sizeWords(f.size)}; images over ${sizeWords(max)} are not previewed here. Download it to look at it.` };
+  return { preview: true, why: null };
+}
+
+/** The real image type from the file's first bytes, or null (a renamed non-image is never shown). */
+export function sniffImage(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const at = (i, ...v) => v.every((x, k) => b[i + k] === x);
+  if (b.length >= 8 && at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (b.length >= 3 && at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (b.length >= 6 && (at(0, 0x47, 0x49, 0x46, 0x38, 0x37, 0x61) || at(0, 0x47, 0x49, 0x46, 0x38, 0x39, 0x61))) return 'image/gif';
+  if (b.length >= 12 && at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp';
+  return null;
+}
+
+/** The downloaded bytes → what to show: an image of the sniffed type, or why not. */
+export function previewResult(status, bytes) {
+  if (status !== 200) return { ok: false, text: refusalWords(status, {}).text };
+  const len = bytes ? bytes.byteLength : 0;
+  if (len > IMAGE_PREVIEW_MAX) return { ok: false, text: `This image is ${sizeWords(len)}; images over ${sizeWords(IMAGE_PREVIEW_MAX)} are not previewed here.` };
+  const mime = sniffImage(bytes);
+  if (!mime) return { ok: false, text: 'This file is named like an image but is not one, so it is not shown.' };
+  return { ok: true, mime };
+}

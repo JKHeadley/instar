@@ -86,6 +86,73 @@ export function buildPreferences(res, { lastGood = null, now = Date.now() } = {}
   };
 }
 
+// ── Preferences, structured (GET /preferences) ────────────────────────────
+// The newer read: one entry per preference with when it was last seen, how often, how
+// sure, and which machine learned it. An older server has no such route (404); the page
+// then falls back to the session-context block above.
+
+export const WEEK_MS = 7 * 24 * 3600_000;
+
+/** Did the server answer that it has no /preferences route (an older server)? */
+export function isMissingRoute(res) {
+  return Boolean(res && !res.ok && /answered 404/.test(res.reason || ''));
+}
+
+export function dateWords(iso) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t) || t <= 0) return null;
+  return new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/** "New this week" (first seen in the last 7 days) vs "seen again this week" (an older one that came back). */
+export function recencyWords(recordedAt, seen, now = Date.now()) {
+  const t = Date.parse(recordedAt);
+  if (!Number.isFinite(t) || t <= 0 || now - t > WEEK_MS || t - now > WEEK_MS) return null;
+  return seen > 1 ? 'seen again this week' : 'new this week';
+}
+
+/**
+ * GET /preferences → the same list shape buildPreferences gives, plus when, which machine
+ * and the "this week" mark. `machines` (machineId → nickname) names the origin; the
+ * machine is shown only when there is more than one machine to tell apart.
+ */
+export function buildPreferenceEntries(res, { lastGood = null, now = Date.now(), machines = {} } = {}) {
+  if (!res || !res.ok) return buildPreferences(res, { lastGood, now });
+  const d = res.data || {};
+  if (!Array.isArray(d.entries)) return { ok: false, off: false, reason: 'Can’t tell what I’ve learned: the answer had no preference list.' };
+  const many = Object.keys(machines).length > 1;
+  const rows = [];
+  for (const e of d.entries) {
+    if (!e || typeof e.learning !== 'string') continue;
+    const text = clean(e.learning);
+    if (!text) continue;
+    const confidence = Number.isFinite(e.confidence) ? e.confidence : null;
+    const seen = Number.isFinite(e.dedupeCount) && e.dedupeCount >= 1 ? Math.floor(e.dedupeCount) : 1;
+    const origin = typeof e.origin === 'string' && e.origin ? e.origin : null;
+    const machine = origin ? clean(machines[origin] || origin, 60) : null;
+    const when = dateWords(e.recordedAt);
+    const fresh = recencyWords(e.recordedAt, seen, now);
+    rows.push({
+      key: `pref:${typeof e.dedupeKey === 'string' ? e.dedupeKey : rows.length}`,
+      text, confidence, seen, recordedAt: typeof e.recordedAt === 'string' ? e.recordedAt : null, origin, machine, fresh,
+      redacted: e.textRedacted === true,
+      sub: [fresh, when, seenWords(seen), confidenceWords(confidence), many && machine ? machine : null].filter(Boolean).join(' · '),
+      raw: JSON.stringify({ dedupeKey: e.dedupeKey, recordedAt: e.recordedAt, confidence: e.confidence, dedupeCount: e.dedupeCount, origin: e.origin }),
+    });
+  }
+  const total = Number.isFinite(d.total) ? Math.max(d.total, rows.length) : rows.length;
+  const freshCount = rows.filter((r) => r.fresh === 'new this week').length;
+  return {
+    ok: true, off: false, stale: false, structured: true,
+    rows, total,
+    notLoaded: 0, notLoadedWords: d.truncated === true ? `Showing the newest ${rows.length} of ${total}.` : null,
+    newThisWeek: freshCount,
+    mesh: d.scope === 'mesh',
+    meshWords: d.scope === 'mesh' ? 'Includes what my other machines learned about you.' : null,
+    showMachine: many,
+  };
+}
+
 // ── Corrections (GET /corrections?limit&before) ───────────────────────────
 const KIND_WORDS = {
   'user-preference': 'How you like things',
@@ -204,6 +271,7 @@ export function learnedHeadline({ prefs, corrections }) {
 export function learnedFacts({ prefs, corrections, conflicts }) {
   const facts = [];
   facts.push(prefs && prefs.ok ? { n: prefs.total, label: prefs.total === 1 ? 'preference kept' : 'preferences kept' } : { n: '?', label: 'preferences kept' });
+  if (prefs && prefs.ok && prefs.newThisWeek) facts.push({ n: prefs.newThisWeek, label: 'new this week' });
   if (corrections && corrections.ok) facts.push({ n: corrections.watching.length, label: corrections.watching.length === 1 ? 'correction being watched' : 'corrections being watched' });
   else if (!corrections || !corrections.off) facts.push({ n: '?', label: 'corrections being watched' });
   if (conflicts && conflicts.ok && conflicts.rows.length) facts.push({ n: conflicts.rows.length, label: conflicts.rows.length === 1 ? 'disagreement between machines' : 'disagreements between machines', tone: 'attn' });

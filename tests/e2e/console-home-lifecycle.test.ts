@@ -37,6 +37,8 @@ import { buildShipping, buildFeedback, buildPace, developmentHeadline, maintaine
 import { buildAgentsPage, threadModel, pairingModel, relayModel } from '../../dashboard/console/agents-model.js';
 import { buildSlips, buildAudit, buildApprovals, mandatesHeadline, mandatesFacts } from '../../dashboard/console/mandates-model.js';
 import { buildPreferences, buildCorrections, buildConflicts, learnedHeadline, learnedFacts, correctionsUrl } from '../../dashboard/console/learned-model.js';
+import { buildPreferenceEntries } from '../../dashboard/console/learned-model.js';
+import { buildSearch, searchUrl, previewResult } from '../../dashboard/console/files-model.js';
 import { PreferencesManager } from '../../src/core/PreferencesManager.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 import { buildRequests, buildKeys, buildSync, secretsHeadline, secretsFacts, requestBody, resultWords as secretResultWords } from '../../dashboard/console/secrets-model.js';
@@ -858,5 +860,84 @@ describe('Console "How I\'m doing inside" E2E (feature is alive)', () => {
     for (const path of [recentUrl(), '/shared-state/stats', failuresUrl(), '/failures/insights?limit=50', claimsUrl(), '/class-reviews?limit=20']) {
       expect((await request(server.getApp()).get(path)).status, path).toBe(401);
     }
+  });
+});
+
+// ── Console follow-up reads (feature is alive) ────────────────────────────
+// Kept in its own describe with its own server so it never collides with other
+// additions to this file.
+describe('Console follow-up reads E2E: /preferences, /api/files/search, image preview (feature is alive)', () => {
+  const AUTH = 'console-followup-e2e';
+  const auth = { Authorization: `Bearer ${AUTH}` };
+  let tmp = '';
+  let server: AgentServer;
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+
+  beforeAll(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-followup-e2e-'));
+    const stateDir = path.join(tmp, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+    fs.writeFileSync(path.join(stateDir, 'identity.json'), '{"privateKey":"NEVER-RENDER"}');
+    fs.mkdirSync(path.join(tmp, 'docs', 'img'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'docs', 'img', 'logo.png'), PNG);
+    fs.writeFileSync(path.join(tmp, 'docs', 'img', 'fake.png'), '<svg onload="x">');
+    fs.writeFileSync(path.join(tmp, 'docs', 'identity-notes.md'), 'ok to show');
+    new PreferencesManager(stateDir).recordPreference({ learning: 'No approvals at night.', dedupeKey: 'user-preference:night', confidence: 0.9, violationPattern: 'regex:LOCAL-ONLY-PATTERN' });
+    const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10_000, version: '0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: path.join(stateDir, 'jobs.json'), maxParallelJobs: 1 }, messaging: [], updates: {},
+      monitoring: { correctionLearning: { enabled: true } } } as unknown as InstarConfig;
+    const sessionManager = { listRunningSessions: () => [], getSession: () => null } as never;
+    server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir) } as never);
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts:followup' });
+  });
+
+  const read = async (p: string) => {
+    const r = await request(server.getApp()).get(p).set(auth);
+    return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+  };
+
+  it('GET /preferences is alive (200, not 503) and the page model reads it; the local-only pattern never crosses', async () => {
+    const res = await read('/preferences');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.data)).not.toContain('LOCAL-ONLY-PATTERN');
+    const prefs = buildPreferenceEntries(res, { now: Date.now(), machines: {} });
+    expect(prefs).toMatchObject({ ok: true, structured: true, total: 1, newThisWeek: 1 });
+    expect(prefs.ok && prefs.rows[0].text).toBe('No approvals at night.');
+    expect(prefs.ok && prefs.rows[0].sub).toMatch(/^new this week · .+ · seen once · sure$/);
+    expect((await request(server.getApp()).get('/preferences')).status).toBe(401);
+  });
+
+  it('GET /api/files/search is alive and never returns key material; the page model maps it', async () => {
+    const call = async (p: string) => { const r = await request(server.getApp()).get(p).set(auth); return { status: r.status, data: r.body }; };
+    const found = buildSearch(await call(searchUrl('identity')), 'identity');
+    expect(found.ok).toBe(true);
+    expect(found.ok && found.rows.map((r: { path: string }) => r.path)).toEqual(['docs/identity-notes.md']);
+    const logo = buildSearch(await call(searchUrl('logo')), 'logo');
+    expect(logo.ok && logo.rows.map((r: { path: string }) => r.path)).toEqual(['docs/img/logo.png']);
+    expect((await request(server.getApp()).get(searchUrl('logo'))).status).toBe(401);
+  });
+
+  it('an image previews from the real download route; a file only named like one does not; the console page carries the narrow CSP', async () => {
+    const dl = async (p: string) => {
+      const r = await request(server.getApp()).get(`/api/files/download?path=${encodeURIComponent(p)}`).set(auth).buffer(true).parse((res, cb) => { const chunks: Buffer[] = []; res.on('data', (c: Buffer) => chunks.push(c)); res.on('end', () => cb(null, Buffer.concat(chunks))); });
+      return { status: r.status, bytes: new Uint8Array(r.body as Buffer) };
+    };
+    const real = await dl('docs/img/logo.png');
+    expect(previewResult(real.status, real.bytes)).toEqual({ ok: true, mime: 'image/png' });
+    const fake = await dl('docs/img/fake.png');
+    expect(previewResult(fake.status, fake.bytes).ok).toBe(false);
+    const page = await request(server.getApp()).get('/dashboard/console/');
+    expect(page.status).toBe(200);
+    expect(page.headers['content-security-policy']).toContain("img-src 'self' blob:");
+    const legacy = await request(server.getApp()).get('/dashboard');
+    expect(legacy.headers['content-security-policy'] || '').not.toContain('blob:');
   });
 });

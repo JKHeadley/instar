@@ -1615,6 +1615,16 @@ export function migrateConfigAccountFollowMeRevocationDeadline(config: Record<st
   return true;
 }
 
+/**
+ * Console follow-up reads (docs/specs/console-features/people-settings.md): one line each,
+ * shared by generateClaudeMd (new agents) and migrateClaudeMd (existing agents) so the two
+ * never drift.
+ */
+export const PREFERENCES_LIST_CLAUDEMD_LINE = (port: number): string =>
+  `- See every learned preference as structured entries (when each was learned, how often, how sure, which machine): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences\` → \`{ entries: [{ dedupeKey, learning, recordedAt, confidence, dedupeCount, origin? }], total, truncated, scope }\` (read only; the learning text is credential-scrubbed; 503 when disabled). Use it when the user asks "what have you learned about me, and when?" — it is what the console's "What I've learned about you" page reads.`;
+export const FILES_SEARCH_CLAUDEMD_LINE = (port: number): string =>
+  `- **Find a file by name**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/api/files/search?q=MEMORY"\` → \`{ query, results: [{ path, name, type, size?, modified? }], truncated, scanned }\` — name match across every allowed folder, under the same never-served / blocked-name rules as the list route; capped, \`truncated: true\` when it stopped early. Use it when the user asks "where is the file called X?" instead of walking folders.`;
+
 export class PostUpdateMigrator {
   private config: MigratorConfig;
   /**
@@ -12236,6 +12246,36 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added TCC-protected path guard section');
+    }
+
+    // Console follow-up reads (people-settings.md): GET /preferences (structured
+    // learned preferences) and GET /api/files/search (find a file by name). Agent
+    // Awareness + Migration Parity: an existing agent learns both routes. Each line
+    // is placed right after its sibling line when that line exists (so it lands in
+    // the right section), else appended. Content-sniffed on the route for idempotency.
+    {
+      const insertAfterLine = (anchorSubstr: string, line: string): void => {
+        const at = content.indexOf(anchorSubstr);
+        if (at >= 0) {
+          const eol = content.indexOf('\n', at);
+          const cut = eol >= 0 ? eol + 1 : content.length;
+          content = content.slice(0, cut) + (eol >= 0 ? '' : '\n') + line + '\n' + content.slice(cut);
+        } else {
+          content += '\n' + line + '\n';
+        }
+      };
+      if (!content.includes(`localhost:${port}/preferences\``)) {
+        insertAfterLine(`localhost:${port}/preferences/session-context\``,
+          PREFERENCES_LIST_CLAUDEMD_LINE(port));
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added GET /preferences (structured learned preferences) awareness');
+      }
+      if (!content.includes('/api/files/search')) {
+        insertAfterLine('/api/files/link?path=',
+          FILES_SEARCH_CLAUDEMD_LINE(port));
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added GET /api/files/search awareness');
+      }
     }
 
     if (patched) {

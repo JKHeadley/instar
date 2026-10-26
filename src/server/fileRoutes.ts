@@ -418,6 +418,112 @@ function checkBlockedFilename(filePath: string, config: FileViewerConfig): strin
   return null;
 }
 
+// ── Name search (GET /api/files/search) ─────────────────────────────
+
+export const SEARCH_MAX_QUERY = 200;
+export const SEARCH_DEFAULT_RESULTS = 50;
+export const SEARCH_MAX_RESULTS = 200;
+export const SEARCH_MAX_SCANNED = 20_000;
+export const SEARCH_MAX_DEPTH = 12;
+export const SEARCH_MAX_MS = 2_000;
+/** Folders the walk never descends into (still matchable by name where they sit). */
+const SEARCH_SKIP_DESCENT = new Set(['.git', 'node_modules']);
+
+export interface FileSearchResult {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modified?: string;
+}
+
+/** The allowed roots to walk, as project-relative paths ('' = the project root). */
+function searchRoots(config: FileViewerConfig): string[] {
+  const roots = new Set<string>();
+  for (const ap of config.allowedPaths) {
+    const n = path.normalize(ap).replace(/\/$/, '');
+    if (n === '.' || n === '') return [''];
+    if (path.isAbsolute(n) || n.includes('..')) continue;
+    roots.add(n);
+  }
+  // Drop a root nested under another root (it is walked through its parent).
+  return [...roots].filter((r) => ![...roots].some((o) => o !== r && r.startsWith(o + '/'))).sort();
+}
+
+/**
+ * Breadth-first name match over the allowed folders. Every entry is admitted by
+ * resolveListEntry plus the allowed-path pre-check on its requested AND resolved
+ * spelling; each matching entry is re-checked through validatePath (and blocked
+ * names on both spellings) before it is returned. Real directories are visited once
+ * (a symlink loop cannot recurse). Exported for the unit test.
+ */
+export async function searchByName(
+  query: string,
+  limit: number,
+  projectDir: string,
+  config: FileViewerConfig,
+  budget: { maxScanned?: number; maxDepth?: number; maxMs?: number; now?: () => number } = {},
+): Promise<{ results: FileSearchResult[]; truncated: boolean; scanned: number }> {
+  const needle = query.toLowerCase();
+  const maxScanned = budget.maxScanned ?? SEARCH_MAX_SCANNED;
+  const maxDepth = budget.maxDepth ?? SEARCH_MAX_DEPTH;
+  const maxMs = budget.maxMs ?? SEARCH_MAX_MS;
+  const now = budget.now ?? Date.now;
+  const started = now();
+  const realProjectDir = await fs.promises.realpath(projectDir);
+  const visited = new Set<string>();
+  const matches: FileSearchResult[] = [];
+  let scanned = 0;
+  let truncated = false;
+
+  const queue: Array<{ rel: string; depth: number }> = [];
+  for (const root of searchRoots(config)) {
+    if (root === '') { queue.push({ rel: '', depth: 0 }); continue; }
+    const v = await validatePath(root, projectDir, config);
+    if (v.valid && v.resolvedStat?.isDirectory()) queue.push({ rel: root, depth: 0 });
+  }
+
+  outer: while (queue.length) {
+    const { rel, depth } = queue.shift()!;
+    const dirAbs = rel ? path.resolve(projectDir, rel) : projectDir;
+    let realDir: string;
+    try { realDir = await fs.promises.realpath(dirAbs); } catch { continue; } // @silent-fallback-ok — a folder that vanished mid-walk has nothing to match; the walk goes on
+    if (visited.has(realDir)) continue;
+    visited.add(realDir);
+    let names: fs.Dirent[];
+    try { names = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { continue; } // @silent-fallback-ok — an unreadable folder is skipped exactly as the list route would refuse it
+    names.sort((a, b) => a.name.localeCompare(b.name));
+    for (const d of names) {
+      if (scanned >= maxScanned || now() - started > maxMs) { truncated = true; break outer; }
+      scanned++;
+      const entryRel = rel ? path.join(rel, d.name) : d.name;
+      if (!checkRelativePathAllowed(entryRel, config).ok) continue;
+      const resolved = await resolveListEntry(dirAbs, d.name, entryRel, realProjectDir, config);
+      if (!resolved) continue;
+      const resolvedRel = path.relative(realProjectDir, resolved.realPath);
+      if (resolvedRel && !checkRelativePathAllowed(resolvedRel, config).ok) continue;
+      const isDir = resolved.stat.isDirectory();
+      if (!isDir && !resolved.stat.isFile()) continue;
+      if (d.name.toLowerCase().includes(needle)) {
+        const v = await validatePath(entryRel, projectDir, config);
+        const blocked = !isDir && (checkBlockedFilename(entryRel, config) ?? (v.resolvedPath ? checkBlockedFilename(v.resolvedPath, config) : null));
+        if (v.valid && !blocked) {
+          matches.push(isDir
+            ? { path: entryRel.split(path.sep).join('/'), name: d.name, type: 'directory' }
+            : { path: entryRel.split(path.sep).join('/'), name: d.name, type: 'file', size: resolved.stat.size, modified: resolved.stat.mtime.toISOString() });
+          if (matches.length > limit) { truncated = true; break outer; }
+        }
+      }
+      if (isDir && depth + 1 <= maxDepth && !SEARCH_SKIP_DESCENT.has(d.name)) queue.push({ rel: entryRel, depth: depth + 1 });
+      else if (isDir && depth + 1 > maxDepth) truncated = true;
+    }
+  }
+
+  const depthOf = (p: string) => p.split('/').length;
+  matches.sort((a, b) => (a.type === b.type ? 0 : a.type === 'file' ? -1 : 1) || depthOf(a.path) - depthOf(b.path) || a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+  return { results: matches.slice(0, limit), truncated, scanned };
+}
+
 // ── Check if a path is editable ──────────────────────────────────────
 
 function isEditable(relativePath: string, config: FileViewerConfig): boolean {
@@ -558,7 +664,13 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
               entries.push({ name: entry.name, type: 'file', size: resolved.stat.size, modified: resolved.stat.mtime.toISOString() });
             }
           }
-          res.json({ path: '', entries });
+          const rootResult: Record<string, unknown> = { path: '', entries };
+          // Same cut signal the nested-folder branch already gives (people-settings.md, Files).
+          if (sorted.length > 500) {
+            rootResult.truncated = true;
+            rootResult.totalEntries = sorted.length;
+          }
+          res.json(rootResult);
         } catch {
           res.status(500).json({ error: 'Failed to list project root' });
         }
@@ -653,6 +765,37 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: 'Failed to list directory' });
+    }
+  });
+
+  // ── GET /api/files/search ──────────────────────────────────────
+  // Find a file by name across every allowed folder (people-settings.md, Files).
+  // Every directory descended into and every result goes through the same rules as
+  // the other file routes: resolveListEntry (never-served on the requested AND the
+  // resolved path, blocked names on both, realpath inside the project), the shared
+  // allowed-path pre-check on both spellings, and validatePath on each result — so a
+  // symlink or a never-served file never appears. Bounded: results, entries scanned,
+  // depth and wall time are capped; `truncated: true` says the walk stopped early.
+
+  router.get('/api/files/search', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!q) {
+      res.status(400).json({ error: 'Missing q parameter' });
+      return;
+    }
+    if (q.length > SEARCH_MAX_QUERY) {
+      res.status(400).json({ error: `q is longer than ${SEARCH_MAX_QUERY} characters` });
+      return;
+    }
+    const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : NaN;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, SEARCH_MAX_RESULTS) : SEARCH_DEFAULT_RESULTS;
+    try {
+      const out = await searchByName(q, limit, projectDir, config);
+      res.json({ query: q, ...out });
+    } catch {
+      // The caller gets an explicit 500 (nothing is hidden).
+      res.status(500).json({ error: 'Failed to search files' });
     }
   });
 
