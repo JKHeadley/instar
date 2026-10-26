@@ -44,6 +44,8 @@ export interface LocalVerifyHooks {
   onRecord?(record: LocalVerifyRecord): void;
   onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
   signal?(key: string, detail: Record<string, unknown>): void;
+  /** Close a deduped attention item whose condition ended. */
+  clearSignal?(key: string, resolution: string): void;
 }
 
 export interface LocalVerifyWiringOpts {
@@ -114,6 +116,7 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       onRecord: (r) => opts.hooks?.onRecord?.(r),
       onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
       signal: (k, d) => opts.hooks?.signal?.(k, d),
+      clearSignal: (k, r) => opts.hooks?.clearSignal?.(k, r),
       isAncestor: (a, d) => isAncestorInBareClone(opts.agentHome, a, d),
       // The same computation, over the files as they are NOW: an update that replaced the dist
       // under this still-running server holds the queue for the restart instead of burning it.

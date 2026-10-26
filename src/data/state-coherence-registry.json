@@ -1705,6 +1705,23 @@
       }
     },
     {
+      "category": "local-verify-main-failure",
+      "description": "local-verify main-failure detail: the failing test files, bounded reasons and clipped first messages of the last failed `main` verify, keyed by its head. Read at boot so the main-red hold (CMT-1033: doomed PR verifies wait while `main` is red; a PR that touches or names a failing file runs first) survives a server restart; it is consulted only while its head is the main-health watermark's red head, and removed when `main` goes green. Machine-local: the verify queue it gates is this machine's.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/main-failure.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file, overwritten atomically on every failed main verify and removed on green."
+      }
+    },
+    {
       "category": "local-verify-audit",
       "description": "local-verify metadata-only audit log (queue, start, cancel, overlap, record, orphan-reap events). No test output or PR content.",
       "scope": "machine-local",

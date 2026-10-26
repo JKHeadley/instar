@@ -275,6 +275,18 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 }
 
 /**
+ * Local Verify main-red hold (CMT-1033) — the one awareness line appended to an existing
+ * CLAUDE.md's Local Verify section (`migrateClaudeMd`, content-sniffed on the config key).
+ */
+export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red hold: while `main` fails a known check, only a repair candidate (a PR whose diff touches a failing file, or whose title or body names it) or a `main` verify takes the slot; every other PR keeps its place and waits for green instead of running a doomed verify. `GET /local-verify` → `mainRedHold` (failing files, `repairPrs`, `heldPrs`, a plain `detail`; held entries carry `held`); a `POST /local-verify` answer for a held PR carries `hold`. Once `main` is red, ONE deduped attention item for the episode (`local-verify:main-red-hold`) names the failing check and every PR already fixing it, refreshes when that list changes and closes on green — before writing a fix for a red `main`, read `repairPrs`; if yours is the fix, name the failing file in its title or body. Off switch: `monitoring.localVerify.mainRedHold: false` (read live).';
+
+/**
+ * Local Verify merge-throughput label — the awareness line appended to an existing CLAUDE.md's
+ * Local Verify section (`migrateClaudeMd`, content-sniffed on the label name).
+ */
+export const LOCAL_VERIFY_MERGE_THROUGHPUT_CLAUDEMD_LINE = '- Local Verify merge-throughput label: a queued PR carrying the GitHub label `merge-throughput` runs ahead of ordinary PRs (the `main` verify still first; while the main-red hold is active only PRs fixing the red `main` start). Bounded: an ordinary PR that has waited 90 minutes ranks with labelled PRs, and the 3-hour `local-verify:starved` alarm is unchanged. `GET /local-verify` shows each entry\'s `priority` (100 main, 10 labelled, 0 ordinary). When a PR safely raises merge throughput, add the label (`gh pr edit <n> --add-label merge-throughput`) and re-request the verify; never label ordinary work to jump the line.';
+
+/**
  * Feature switches apply their setting (spec feature-transition-applies-action).
  * SHARED by `generateClaudeMd` and `migrateClaudeMd` (Agent Awareness + Migration
  * Parity). Content-sniff marker: the heading below.
@@ -9348,6 +9360,19 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n- Local Verify merge line: a queued PR keeps its place when `main` moves or its head is pushed again; each verify starts against `main`\'s current head; a passing PR is merged at once through the green-PR watcher with the queue held until that attempt settles (≤30 min), so the next PR is tested on top of it. `GET /local-verify` → `mergeLine`; off switch `monitoring.localVerify.mergeLine: false` (read live).\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge line awareness (CMT-980)');
+    }
+    // local-verify main-red hold (CMT-1033): agents that already have the Local Verify
+    // section learn the hold, the repair rule and its kill switch. Content-sniff on the key.
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.mainRedHold')) {
+      content += '\n' + LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify main-red hold awareness (CMT-1033)');
+    }
+    // local-verify merge-throughput label: the queue lever for work that speeds up merging.
+    if (content.includes('/local-verify') && !content.includes('merge-throughput')) {
+      content += '\n' + LOCAL_VERIFY_MERGE_THROUGHPUT_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput label awareness');
     }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';

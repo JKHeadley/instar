@@ -1,0 +1,32 @@
+# Upgrade Guide — vNEXT
+
+## What Changed
+
+- `src/localVerify/mainRedHold.ts` (new, pure): `mainFailureFromRunDetail`, `repairVerdict` (a PR is a repair candidate when its diff touches a failing file or its title/body names it — path, file name, or stem), `decideMainRedHold` (active while `main` has a failed head whose failing files are known; splits the queue into candidates and held PRs; lists the running candidate and the episode's earlier candidates as "fixing it"), `holdReasonText`.
+- `src/localVerify/LocalVerifyService.ts`: keeps the last failed `main` run's failing files (`state/local-verify/main-failure.json`, read at boot, removed on green); `pump()` starts only a `main` verify or a repair candidate while the hold is active — every other PR entry keeps its place and waits; `request()` reads `title`, `body`, `files` from the PR view, admits a candidate past a full queue (`queue-full-repair-admitted`), answers `hold` on a held PR, and re-reads the view on `already-queued` (a PR renamed to name the check becomes a candidate in place); `snapshot()` carries `mainRedHold` and per-entry `held`; audit `main-red-held` (once per PR per episode) and `main-red-hold-idle`; once `main` is RED, ONE deduped signal for the episode `local-verify:main-red-hold` naming the failing check, every PR fixing it and the held PRs, re-raised under the same id only when the fixing list changes and closed through the new `clearSignal` seam on green; `local-verify:main-red`'s detail carries the repair/held split. Live switch `setMainRedHoldEnabled` (`monitoring.localVerify.mainRedHold`, absent ⇒ on).
+- `src/localVerify/serviceSeams.ts`: `prView` asks gh for `title,body,files,labels` too (one call; the first 100 files).
+- Merge-throughput label (`LocalVerifyService.ts`): `MERGE_THROUGHPUT_LABEL`, `QUEUE_PRIORITY` (main 100, labelled 10, ordinary 0), `prPriority` (from the view's labels, at request, re-request and boot restore), `effectivePriority` (an ordinary PR that waited `THROUGHPUT_AGING_MS` = 90 min ranks at 10); `pump()` sorts by it. The starved alarm is unchanged.
+- `src/localVerify/localVerifyWiring.ts` + `server.ts`: a `clearSignal` hook closes the hold item (`clearAttentionCondition({ id })`); a signal carrying a plain `note` uses it as the attention summary.
+- `scripts/safe-merge.mjs` `verifyRequestOutcome`: a held answer reads `queued (held: main is red on <file>; PR #N is already fixing it …)`.
+- `src/commands/server.ts`: wires the switch. `src/data/state-coherence-registry.json`: `local-verify-main-failure`.
+- CLAUDE.md template (Local Verify section) + `migrateClaudeMd` (`LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE`, content-sniffed on `monitoring.localVerify.mainRedHold`; `LOCAL_VERIFY_MERGE_THROUGHPUT_CLAUDEMD_LINE`, content-sniffed on `merge-throughput`; both idempotent).
+- `docs/specs/local-verify-merge-authority.md`: a "built 2026-10-26" paragraph for the hold under "Post-merge verify of `main`".
+
+## What to Tell Your User
+
+When the main branch itself is failing a test, every pull request tested on top of it fails the same test, so running those checks only burns the machine for nothing. On 2026-10-26 that was eight 18-minute runs, and three sessions wrote the same fix. Now, while the main branch is failing a known test, the queue runs only the pull request that fixes it: one that changes the failing test file, or says in its title or description which test it fixes. Every other pull request simply waits its turn until the main branch is green again. The queue page says in one sentence what is being waited on and which pull request is already fixing it, and the same sentence comes back when a session asks for a check. Once the main branch is confirmed red, one notice lands in the Attention topic naming the failing test and every pull request already fixing it, so nobody writes the same fix twice. It updates itself when another fix appears and closes itself when the main branch is green again. Separately, a pull request labelled "merge-throughput" (work that makes merging faster) is now checked ahead of ordinary pull requests, after the main branch check. An ordinary pull request that has waited 90 minutes can no longer be passed by a labelled one. If you ever want the old queue behaviour back, I can turn the waiting rule off for you without a restart.
+
+## Summary of New Capabilities
+
+- Doomed PR verifies wait while `main` fails a known check; repair candidates run first.
+- `GET /local-verify` → `mainRedHold` (failing files, `repairPrs`, `heldPrs`, plain `detail`) and per-entry `held`; `POST /local-verify` → `hold` on a held PR.
+- One deduped attention item per red episode once `main` is red: `local-verify:main-red-hold`, refreshed when the fixing PRs change, closed on green.
+- A `merge-throughput` label ranks a PR ahead of ordinary PRs (below the `main` verify and the red-main repair), bounded by 90-minute aging.
+- A repair candidate is admitted past a full queue; the hold survives a server restart; kill switch `monitoring.localVerify.mainRedHold`.
+
+## Evidence
+
+- Unit: `tests/unit/localVerify/mainRedHold.test.ts` (9: the detail, the names, the verdict over the real 2026-10-26 PRs, the decision, the text), `tests/unit/localVerify/mainRedHoldService.test.ts` (6: hold + order + read surface + POST answer, the one episode item refreshed on change + a renamed PR + closed on green, cap admission + green release, restart survival + stale file, kill switch, a failure naming no file), `tests/unit/safe-merge-local-floor.test.ts` (+1), `tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts` (6), `tests/unit/localVerify/LocalVerifyService.test.ts` (+5: priority levels, aging bound, labelled PR starts next, aged PR not passed, label added/removed in place).
+- Integration: `tests/integration/local-verify-routes.test.ts` (+1: the hold over the real HTTP pipeline — held entry, POST `hold`, a repair candidate takes the slot).
+- E2E: `tests/e2e/local-verify-lifecycle.test.ts` (unchanged; the route stays alive with the additive fields).
+- Incident evidence: the agent's `logs/local-verify.jsonl` 2026-10-26 13:36Z–14:47Z; PRs 2372/2373 (repairs touching `src/`, naming the check in text).

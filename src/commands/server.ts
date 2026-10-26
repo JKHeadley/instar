@@ -22696,10 +22696,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         void telegram.createAttentionItem({
           id,
           title: `local-verify: ${key.replace(/^local-verify:/, '')}`,
-          summary: JSON.stringify(detail).slice(0, 900),
+          // A signal that carries a plain-words `note` (the main-red hold item) reads as that note.
+          summary: (typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
           category: 'degradation',
           priority: ['local-verify:no-required-checks', 'local-verify:main-red', 'local-verify:required-but-not-posting'].includes(key) ? 'HIGH' : 'MEDIUM',
         } as never).catch(() => { /* attention delivery is non-fatal */ });
+      };
+      // The main-red hold item closes itself when `main` is green again.
+      lvHooks.clearSignal = (key, resolution) => {
+        try { telegram?.clearAttentionCondition({ id: key }, resolution); } catch { /* @silent-fallback-ok — observability only; the lifecycle still expires the row */ }
       };
       const wiring = await import('../localVerify/localVerifyWiring.js');
       if (lvCfg?.enabled) {
@@ -22781,6 +22786,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (localVerifyService) {
         const svc = localVerifyService;
         const rec = localVerifyStatus;
+        // Main-red hold (CMT-1033): while `main` fails a known check, only a repair candidate
+        // takes the verify slot. Kill switch: monitoring.localVerify.mainRedHold (read live).
+        svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
         greenPrAutoMerger?.attachLocalVerify({
           effectiveFloor: () => (rec ? rec.effectiveFloor() : null),
           mainHealth: () => svc.mainHealth().state,
