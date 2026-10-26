@@ -381,7 +381,7 @@ describe('Console Home E2E (feature is alive)', () => {
     const bySlug = (s: string) => [...page.sections.needs, ...page.sections.coming, ...page.sections.everything].find((r: { slug: string }) => r.slug === s)!;
     // The past next-run time makes the enabled job late, in the plan's words; the same time on the off job does not.
     expect(bySlug('e2e-late')).toMatchObject({ kind: 'late', end: 'late' });
-    expect(bySlug('e2e-late').sub).toMatch(/^past its recorded next-run time by \d+ min, not running · last ran 5 h ago ✓$/);
+    expect(bySlug('e2e-late').sub).toMatch(/^\d+ min overdue · last ran 5 h ago ✓$/);
     expect(bySlug('e2e-off')).toMatchObject({ kind: 'off', tone: null });
     expect(bySlug('e2e-busy').kind).toBe('running');
     expect(page.headline).toBe('3 scheduled jobs. 1 is late.');

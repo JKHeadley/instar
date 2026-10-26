@@ -73,7 +73,10 @@ const normText = (t) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim(
 export function dedupeRows(rows) {
   const by = new Map();
   for (const r of rows) {
-    const k = normText(r.main);
+    // Key on the FULL wording (the title is a one-sentence brief), so two promises that
+    // share only a first sentence are never merged.
+    const rec = r.record || {};
+    const k = normText(rec.agentResponse || rec.userRequest || r.main);
     const kept = by.get(k);
     if (!kept) by.set(k, { ...r, dupes: [] });
     else kept.dupes.push(r);

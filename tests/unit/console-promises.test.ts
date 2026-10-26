@@ -150,6 +150,12 @@ describe('QA content fixes — Promises › Missed', () => {
     expect(dup.dupes.map((d: { id: string }) => d.id)).toEqual(['CMT-2', 'CMT-3']);
     expect(p.sections.missed[0].dupes).toEqual([]);
     expect(dedupeRows([{ key: 'a', main: 'x', sub: 'missed' }, { key: 'b', main: 'y', sub: 'missed' }])).toHaveLength(2);
+    // Same first sentence, different promise: kept apart (the title is only a brief).
+    const twins = buildPromisesPage(mesh([
+      c({ status: 'violated', agentResponse: 'On it. I will merge PR 1 and report back.' }),
+      c({ status: 'violated', agentResponse: 'On it. I will rewrite the spec and report back.' }),
+    ]), NOW, { expectedPeers: 0 });
+    expect(twins.counts.missed).toBe(2);
   });
   it('a missed record with no promise language is set apart as "maybe not a promise", never dropped and never counted as missed', () => {
     const rows = [
@@ -160,7 +166,7 @@ describe('QA content fixes — Promises › Missed', () => {
     const p = buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 });
     expect(p.counts.missed).toBe(1);
     expect(p.counts.missedUnclear).toBe(2);
-    expect(p.sections.missed[0].main).toMatch(/Back shortly/);
+    expect(p.sections.missed[0].record.agentResponse).toMatch(/Back shortly/);
     expect(looksLikePromise({ agentResponse: 'Changing the schedule now' })).toBe(false);
     expect(looksLikePromise({ agentResponse: 'I will send the summary tonight.' })).toBe(true);
     expect(looksLikePromise({ agentResponse: 'Got it — checking the live state now. Back shortly with the real list.' })).toBe(true);
