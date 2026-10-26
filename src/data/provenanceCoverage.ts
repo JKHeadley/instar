@@ -267,14 +267,8 @@ export const DP_INPUT_GUARD = 'input-guard';
 /** Ambiguous inbound user message → interrupt category. */
 export const DP_MESSAGE_SENTINEL_CLASSIFY = 'message-sentinel-classify';
 
-/** Inbound message + bounded conversation → machine relocation intent. */
-export const DP_MOVE_INTENT_CLASSIFY = 'move-intent-classify';
-
 /** Hub message + bounded conversation/topic enum → bind intent. */
 export const DP_HUB_INTENT_CLASSIFY = 'hub-intent-classify';
-
-/** Inbound message + bounded conversation/profile enums → topic profile intent. */
-export const DP_PROFILE_INTENT_CLASSIFY = 'profile-intent-classify';
 
 /** Ambiguous interactive terminal prompt → approve or relay. */
 export const DP_INPUT_CLASSIFY = 'input-classify';
@@ -726,20 +720,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Outbound coherence review — THE measured high-volume point (3,641 of 4,098 llm calls/24h on the dev agent, spec §5.6); MUST declare sampled:<rate> or budget:<rows/day> at enrollment, never full.',
   },
   {
-    decisionPoint: DP_MOVE_INTENT_CLASSIFY,
-    component: 'MoveIntentClassifier',
-    status: 'wired',
-    volumeClass: 'budget:250',
-    contentClass: 'content-bearing',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'A transfer or pin may succeed even when the classifier misunderstood the user, while pass-through has no ' +
-      'independent correctness label. Until downstream command disposition and authenticated review carry this ' +
-      'correlation, identity-only cases are recorded for later grading.',
-    reason:
-      'Move or pin command-versus-discussion intent over an inbound message and bounded conversation context; provenance stores identity and shape only.',
-  },
-  {
     decisionPoint: DP_HUB_INTENT_CLASSIFY,
     component: 'HubIntentClassifier',
     status: 'wired',
@@ -752,20 +732,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'identity-only rows are collected for later grading.',
     reason:
       'Hub open or tie intent over an inbound message, bounded conversation, and bindable-topic enum; provenance stores identity and shape only.',
-  },
-  {
-    decisionPoint: DP_PROFILE_INTENT_CLASSIFY,
-    component: 'ProfileIntentClassifier',
-    status: 'wired',
-    volumeClass: 'budget:250',
-    contentClass: 'content-bearing',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'A profile write applying successfully proves enum validity, not that the user intended the change, while ' +
-      'pass-through has no independent label. Identity-only cases are collected until profile-write disposition ' +
-      'and authenticated correction evidence carry this correlation.',
-    reason:
-      'Topic framework, model, or thinking-mode intent over an inbound message, bounded context, and allowed enums; provenance stores identity and shape only.',
   },
   {
     decisionPoint: 'llm-sanitize',
@@ -924,14 +890,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'operator-reviewed labels can grade real committed-source summaries without a cold start.',
     reason:
       'Doc-tree summary authoring over untrusted committed code; identity-only context records node and input shape, never source or child-summary bodies.',
-  },
-  {
-    decisionPoint: 'standards-coverage-enrich',
-    component: 'StandardsCoverageEnrichment',
-    status: 'pending:backlog:decision-quality-enrolment',
-    contentClass: 'content-bearing',
-    reason:
-      'Standards-coverage row enrichment over repo content (dark LLM path); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
 
   // — Previously-uncategorized callsites (LLM Routing Registry audit set) —

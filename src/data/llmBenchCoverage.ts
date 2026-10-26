@@ -60,13 +60,9 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
     exempt:
       'judges a FIXED known-answer canary probe — the canary is its own benchmark; a bench task would re-test the same constant',
   },
-  MoveIntentClassifier: {
-    exempt:
-      'ships its OWN dedicated discrimination benchmark — tests/unit/move-intent-discrimination.test.ts, a committed command-vs-discussion corpus run deterministically in CI PLUS an opt-in INSTAR_LIVE_MOVE_INTENT=1 real-model accuracy benchmark (the graduation gate before dryRun:false). A generic bench-harness task would re-test the same judgment less precisely (same rationale as InteractivePoolCanaryJudge: the co-located benchmark IS the benchmark). Spec: docs/specs/nickname-move-intent-llm-rebuild.md §Tests.',
-  },
   HubIntentClassifier: {
     exempt:
-      'ships its OWN dedicated discrimination benchmark — tests/unit/hub-intent-discrimination.test.ts, a committed command-vs-discussion corpus (open/tie vs question/mention + unknown-target guardrail + fail-open) run deterministically in CI PLUS an opt-in INSTAR_LIVE_HUB_INTENT=1 real-model accuracy benchmark (the graduation gate before dryRun:false). Same rationale as MoveIntentClassifier: the co-located benchmark IS the benchmark; a generic harness task would re-test the same judgment less precisely. Spec: docs/specs/keyword-intent-conversions-1-and-3.md §Tests.',
+      'ships its OWN dedicated discrimination benchmark — tests/unit/hub-intent-discrimination.test.ts, a committed command-vs-discussion corpus (open/tie vs question/mention + unknown-target guardrail + fail-open) run deterministically in CI PLUS an opt-in INSTAR_LIVE_HUB_INTENT=1 real-model accuracy benchmark (the graduation gate before dryRun:false). The co-located benchmark IS the benchmark; a generic harness task would re-test the same judgment less precisely. Spec: docs/specs/keyword-intent-conversions-1-and-3.md §Tests.',
   },
 
   // ── Covered by Wave 2 (authored 2026-07-02; tasks-wave2/ in the bench harness) ──
@@ -120,12 +116,6 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   },
 
   // ── Wave 3 (reflectors + background/job tasks) ──
-  // ProfileIntentClassifier — the offender #1 LLM conversion
-  // (docs/specs/keyword-intent-conversions-1-and-3.md). Its discrimination
-  // corpus (tests/unit/profile-intent-discrimination.test.ts) is already the
-  // de-facto benchmark (deterministic pipeline + opt-in LIVE model-accuracy
-  // harness); the formal INSTAR-Bench v2 task is queued for wave-3 authoring.
-  ProfileIntentClassifier: { pending: 'wave-3' },
   JobReflector: { pending: 'wave-3' },
   crossModelReviewer: { pending: 'wave-3' },
   SelfKnowledgeTree: { pending: 'wave-3' },
@@ -137,7 +127,6 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   DiscoveryEvaluator: { pending: 'wave-3' },
   PipeSessionSpawner: { pending: 'wave-3' },
   CartographerSweep: { pending: 'wave-3' },
-  StandardsCoverageEnrichment: { pending: 'wave-3' },
   PreCompactionFlush: { pending: 'wave-3' },
   TreeSynthesis: { pending: 'wave-3' },
   LLMConflictResolver: { pending: 'wave-3' },
@@ -216,10 +205,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   WarrantsReplyGate: true,
   UnjustifiedStopGate: true,
   MessagingToneGate: true, // reviews a draft that routinely quotes untrusted user/tool content
-  MoveIntentClassifier: true, // classifies an untrusted inbound user message + recent conversation context
   CoherenceReviewer: true,
   LLMSanitizer: true, // definitionally judges untrusted inbound content
-  ProfileIntentClassifier: true, // classifies an untrusted inbound user message (+ recent conversation) — the message is delimited untrusted data in the prompt
   OverrideDetector: true,
   TaskClassifier: true,
   ResumeValidator: true, // matches a resume UUID against the topic — judges session/resume state
@@ -250,7 +237,6 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   // ── Jobs authoring over untrusted file/code content → true ──
   PipeSessionSpawner: true, // spawns from task descriptions that may be user-authored
   CartographerSweep: true, // authors summaries over untrusted CODE (the cartographer-summary precedent quotes+neutralizes)
-  StandardsCoverageEnrichment: true,
 
   // ── Argued false (pinned shrink-only) — no live LLM callsite judging external content ──
   PromiseBeacon: {
@@ -392,9 +378,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   IntegrationGate: false, // delegates to JobReflector.reflect(), no own callsite
   ExternalOperationGate: false, // classifies operation mutability/reversibility, not a completion claim
   WarrantsReplyGate: false, // "should I reply?" — not a completion/health claim
-  MoveIntentClassifier: false, // classifies a USER's move/pin intent over a message, not an agent/session claim of completion/health/credit
   HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
-  ProfileIntentClassifier: false, // classifies a user's profile-change intent, not an agent/session claim of completion/progress/health
   CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
   MessagingToneGate: false, // reviews outbound tone/leaks
   CoherenceReviewer: false, // reviews outbound coherence
@@ -429,7 +413,6 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   'completion-claim-verify': { claimKind: 'completionClaim' },
   PipeSessionSpawner: false, // spawns from task descriptions
   CartographerSweep: false, // authors doc-tree summaries over code
-  StandardsCoverageEnrichment: false, // enriches standards-coverage rows
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -502,11 +485,9 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   InputClassifier: { pending: 'contract-wave-1' }, // parses a closed auto-approve vs relay decision
 
   // ── WAVE-2: every other enumerated-verdict / decision callsite (rollout §2) ──
-  ProfileIntentClassifier: { pending: 'contract-wave-2' }, // parses a closed {intent∈framework|model|thinking|null, value∈enum} verdict — the value is validated against the closed framework/model/thinking enums, never string-matched
   MessageSentinel: { pending: 'contract-wave-2' }, // closed intent set (pause / emergency / normal)
   LLMSanitizer: { pending: 'contract-wave-2' }, // parses a closed sanitize verdict/decision
   WarrantsReplyGate: { pending: 'contract-wave-2' }, // closed should-reply yes/no verdict
-  MoveIntentClassifier: { pending: 'contract-wave-2' }, // parses a closed move-intent verdict (isCommand + intent enum + targetNickname enum + confidence)
   HubIntentClassifier: { pending: 'contract-wave-2' }, // parses a closed hub-intent verdict (intent enum open/tie/null + targetTopicId enum + confidence)
   InputGuard: { pending: 'contract-wave-2' }, // closed input-coherence verdict
   StallTriageNurse: { pending: 'contract-wave-2' }, // closed stall-triage diagnosis label
@@ -650,10 +631,6 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   CartographerSweep: {
     false:
       'authors doc-tree summaries over code as free text — the prose is the product, no closed taught output vocabulary a parser gates on',
-  },
-  StandardsCoverageEnrichment: {
-    false:
-      'enriches standards-coverage rows with content — no closed taught verdict vocabulary a prompt promises and a parser accepts',
   },
 };
 
@@ -847,9 +824,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   WarrantsReplyGate: exposed(EXPOSED_USER),
   UnjustifiedStopGate: exposed(EXPOSED_MODEL), // stop justification over session state
   MessagingToneGate: exposed(EXPOSED_ALL), // reviews an outbound draft quoting user/tool content
-  MoveIntentClassifier: exposed(EXPOSED_USER), // inbound user message + conversation
   HubIntentClassifier: exposed(EXPOSED_USER), // inbound hub message
-  ProfileIntentClassifier: exposed(EXPOSED_USER), // inbound user message + conversation
   CoherenceReviewer: exposed(EXPOSED_ALL), // reviews outbound coherence (draft + context)
   LLMSanitizer: exposed(EXPOSED_USER_TOOL), // definitionally judges untrusted inbound content
   OverrideDetector: exposed(EXPOSED_USER),
@@ -888,7 +863,6 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   // ── Jobs ──
   PipeSessionSpawner: exposed(EXPOSED_USER_TOOL), // spawns from (possibly user-authored) task descriptions
   CartographerSweep: exposed(EXPOSED_TOOL), // authors summaries over untrusted CODE
-  StandardsCoverageEnrichment: exposed(EXPOSED_TOOL),
 
   // ── Argued NOT-EXPOSED (pinned shrink-only) — no live LLM callsite carrying untrusted content.
   //    This set mirrors LLM_UNTRUSTED_INPUT's argued-false set exactly (cross-checked by the ratchet). ──

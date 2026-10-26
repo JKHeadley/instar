@@ -41,16 +41,15 @@ the pin, reverts to the last-known-good profile, and tells you.
 - **`TopicProfileTransferCarrier`** carries a topic's profile across machines: when another machine
   acquires the topic, it pulls the profile so the pin follows you everywhere.
 
-## How you set it — the conversational intent classifier
+## How you set it — the agent proposes, you confirm
 
 "Use codex here" is a command; "should we use codex here?" is a question; "codex here keeps
-failing" is commentary. A fixed regex cannot tell those apart, so the ingress decision belongs to
-**`ProfileIntentClassifier`** — an LLM-with-context recognizer that reads the message plus a bounded
-window of recent conversation and infers whether the operator actually asked for a profile change.
-The known frameworks, models, and thinking modes are used purely as a guardrail on the *output*
-(nothing outside the closed sets can be proposed), never as keyword triggers on the input. Below its
-confidence floor, nothing happens — a misread can propose, but only the operator's confirmation
-writes.
+failing" is commentary. A fixed regex cannot tell those apart, so the server does not try: the
+message reaches the agent, which reads the conversation and, when you asked for a change, proposes
+it through the explicit propose route (`POST /topic-profile/:id/propose`). The server renders the
+proposal into the topic; your "yes" is the explicit confirm trigger that converts it into the
+operator-attributed write. Every proposed value is validated against the closed framework, model
+and thinking-mode sets — nothing outside them can be proposed — and only your confirmation writes.
 
 ## Escalation and the pin
 

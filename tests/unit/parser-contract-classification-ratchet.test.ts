@@ -64,12 +64,10 @@ const PENDING_BASELINE = [
   'CompletionEvaluator',
   'InputClassifier',
   // wave-2
-  'ProfileIntentClassifier',
   'MessageSentinel',
   'ExternalHogClassifier',
   'LLMSanitizer',
   'WarrantsReplyGate',
-  'MoveIntentClassifier', // parses a closed move-intent verdict (isCommand + intent/target enums + confidence); 2026-07-04
   'HubIntentClassifier', // parses a closed hub-intent verdict (intent open/tie/null + targetTopicId enum + confidence); 2026-07-04
 
   'InputGuard',
@@ -128,7 +126,6 @@ const ARGUED_FALSE_BASELINE = [
   'mentor-stage-b',
   'PipeSessionSpawner',
   'CartographerSweep',
-  'StandardsCoverageEnrichment',
 ].sort();
 
 // ── Pinned REVIEWED-false gate/sentinel allowlist. A gate or sentinel marked

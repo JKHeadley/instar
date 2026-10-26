@@ -166,22 +166,10 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (the dry-run canary): a recorded green PROMOTES the agent\'s sessionPool stage (real authority), so while dryRun holds the runner points at a SIDE result store the promotion path NEVER reads — the check runs live and the would-record verdict is captured for the soak, but nothing StageAdvancer promotes on is written until a deliberate dryRun:false. A throwing check still records NOTHING in either mode (an infra/availability error is not a failover verdict — never a fabricated green promotion or red demotion). Doubly inert on the fleet: enabled OMITTED → resolveDevAgentGate resolves it dark, and the whole session-pool layer is itself dark unless the stage advances past "dark". The heavy two-server E2E runs on a slow cadence (default 1h, floored at 60s — never a hot loop) behind an in-flight re-entrancy guard, and a deployed agent with no source/vitest yields ranToCompletion:false → the check throws → the runner records nothing (honest degrade). Bounded subprocess timeout; no LLM call, no spend, no egress beyond the local vitest run.',
   },
   {
-    name: 'sessionPoolMoveIntent',
-    configPath: 'multiMachine.sessionPool.moveIntent.enabled',
-    description: 'LLM-with-context move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md) — replaces the keyword verb-list that hijacked "keep the work on the laptop" (2026-07-03). Decides "move/run/pin this on <nickname>?" via MoveIntentClassifier over the message + recent conversation, guardrailed by structured enum output; the downstream TransferByNickname planner is unchanged.',
-    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the classifier RUNS the full LLM decision loop and LOGS would-hijack vs would-pass to logs/move-intent.jsonl, but _tryNicknameRelocation ALWAYS returns handled:false (the message passes through, never hijacked) while dryRun holds — real hijacking needs a deliberate dryRun:false. The whole session-pool layer is itself dark unless stage advances past "dark", so this is doubly inert on the fleet. Fail-OPEN: every uncertainty (no provider, breaker open, timeout, unparseable output, target not in enum, low confidence) passes the message through. One bounded fast-tier LLM call per candidate message (gated behind a cheap no-nickname pre-filter); no destructive action, no egress beyond the shared IntelligenceProvider. Same dogfooding posture as topicProfiles.',
-  },
-  {
     name: 'hubIntent',
     configPath: 'threadline.hubIntent.enabled',
     description: 'LLM-with-context hub-intent recognizer (docs/specs/keyword-intent-conversions-1-and-3.md, Conversion #3) — replaces the anchored "open this"/"tie this to <topic>" regexes that SWALLOWED the message before the agent saw it (a misread silently EATS a real message — the highest-care conversion). Decides "is this hub message a bind command?" via HubIntentClassifier over the message + recent conversation, guardrailed by a structured topic-id enum for the tie target; the downstream bindHubConversation binder is unchanged.',
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the classifier RUNS the full LLM decision loop and LOGS would-swallow vs would-pass to logs/hub-intent.jsonl, but the onTopicMessage hub intercept ALWAYS falls through (the message passes to the agent, never swallowed) while dryRun holds — real swallowing needs a deliberate dryRun:false. Fail-OPEN: every uncertainty (no provider, breaker open, timeout, unparseable/schema-violating output, tie target not in enum, low confidence) passes the message through. One bounded fast-tier LLM call per candidate hub message (gated behind a cheap no-hub-signal pre-filter); no destructive action, no egress beyond the shared IntelligenceProvider. Same dogfooding posture as topicProfiles / the move-intent exemplar (PR #1367).',
-  },
-  {
-    name: 'topicProfileIntentClassifier',
-    configPath: 'topicProfiles.intentClassifier.enabled',
-    description: 'LLM-with-context framework/model/thinking intent recognizer (docs/specs/keyword-intent-conversions-1-and-3.md, conversion #1) — replaces the keyword/regex write decision removed from parseProfileTrigger (the 2026-07-03 keyword-intent audit\'s offender #1). Decides "change this topic\'s framework/model/thinking?" via ProfileIntentClassifier over the message + recent conversation, guardrailed by structured-enum output; the downstream TopicProfileWriteSurface is unchanged. Enforces "Intelligence Infers, Keywords Only Guard".',
-    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the classifier RUNS the full LLM decision loop and LOGS would-actuate vs would-pass to logs/profile-intent.jsonl, but handleTopicProfileIngress ALWAYS returns pass-through (the message reaches the agent, never actuates a respawn) while dryRun holds — real actuation needs a deliberate dryRun:false. The whole topic-profile WRITE layer is itself dev-gated + dryRun (topicProfiles.enabled/dryRun), so this is doubly inert on the fleet. Fail-OPEN: every uncertainty (no provider, breaker open, timeout, unparseable output, value not in enum, low confidence) passes the message through. One bounded fast-tier LLM call per candidate message (gated behind a cheap no-signal pre-filter); no destructive action, no egress beyond the shared IntelligenceProvider. Same dogfooding posture as topicProfiles.',
   },
   {
     name: 'agentOwnedFollowthrough',
@@ -704,12 +692,6 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the session\'s own transcript (path shape-checked), secret-scrubs the window before egress, bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
   },
   {
-    name: 'jevReviewFlagShadow',
-    configPath: 'intelligence.jevReviewFlagShadow.enabled',
-    description: 'Jev review-flag shadow (jev-review-flag-shadow.md): once a minute, asks Jev whether each new agent Telegram reply needs the operator\'s review and logs a content-free would-flag row.',
-    justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the agent\'s own Telegram history tail (512 KB), secret-scrubs reply and request before egress, one call at a time under a fetch timeout and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
-  },
-  {
     name: 'degradationLadderBackoff',
     configPath: 'intelligence.degradationLadder.backoff.enabled',
     description: 'Resilient Degradation Ladder v1 (resilient-degradation-ladder.md) — the DEFERRABLE backoff rung (slow down + retry the same provider on a rate-limit via options.rateLimitWaitMs before swapping) + the GATING-call responsiveness budget (gatingLadderBudgetMs, default 6s).',
@@ -943,16 +925,6 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'authors summaries via off-Claude codex; ongoing third-party spend; explicit opt-in even on dev',
   },
   // ── structural-stub — no runtime consumer wired; a gate would assert dead behavior ──
-  {
-    configPath: 'cartographer.conformanceAudit.llmEnrichment.enabled',
-    category: 'structural-stub',
-    reason: 'no LLM pipeline wired; dark stub',
-  },
-  {
-    configPath: 'cartographer.subtreeNav.llmRerank.enabled',
-    category: 'structural-stub',
-    reason: 'no LLM pipeline wired; dark stub',
-  },
   {
     configPath: 'monitoring.agentSleep.enabled',
     category: 'structural-stub',

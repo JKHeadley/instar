@@ -29,9 +29,9 @@ const PENDING_BASELINE = [
   // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
   'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
-  'PreCompactionFlush', 'ProfileIntentClassifier', 'RelationshipManager',
+  'PreCompactionFlush', 'RelationshipManager',
   'SelfKnowledgeTree', 'GoalPriorityExtractor',
-  'StandardsConformanceReviewer', 'StandardsCoverageEnrichment',
+  'StandardsConformanceReviewer',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
   'completion-claim-verify', 'correction-class-review', 'crossModelReviewer',
   'mentor-stage-b', 'openConversationBrief',
@@ -43,18 +43,12 @@ const PENDING_BASELINE = [
 const EXEMPT_BASELINE = [
   'telegram-origin-recovery', // advisory-only, no parsed decision or routing-nature claim; same posture as DashboardInsightEngine
   'InteractivePoolCanaryJudge',
-  // MoveIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
-  // benchmark (tests/unit/move-intent-discrimination.test.ts — deterministic
-  // corpus + opt-in INSTAR_LIVE_MOVE_INTENT real-model accuracy, the graduation
-  // gate). Same rationale as InteractivePoolCanaryJudge: the co-located
-  // benchmark IS the benchmark; a generic harness task would re-test it less
-  // precisely. Argued in src/data/llmBenchCoverage.ts.
-  'MoveIntentClassifier',
   // HubIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
   // benchmark (tests/unit/hub-intent-discrimination.test.ts — deterministic
   // corpus + opt-in INSTAR_LIVE_HUB_INTENT real-model accuracy, the graduation
-  // gate). Same rationale as MoveIntentClassifier; argued in
-  // src/data/llmBenchCoverage.ts.
+  // gate). Same rationale as InteractivePoolCanaryJudge: the co-located
+  // benchmark IS the benchmark; a generic harness task would re-test it less
+  // precisely. Argued in src/data/llmBenchCoverage.ts.
   'HubIntentClassifier',
   // Wave-2 argued exemptions (2026-07-02) — each argues a real reason in
   // src/data/llmBenchCoverage.ts; evidence trail in the bench harness's

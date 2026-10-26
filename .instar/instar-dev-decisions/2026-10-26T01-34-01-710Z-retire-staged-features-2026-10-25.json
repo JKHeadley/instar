@@ -1,0 +1,42 @@
+{
+  "ts": "2026-10-26T01:34:01.710Z",
+  "slug": "retire-staged-features-2026-10-25",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1100,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/NicknameCommand.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/componentCategories.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/core/topicProfileIngress.ts",
+      "src/core/types.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/threadline/HubIntentClassifier.ts"
+    ],
+    "addedLines": 352,
+    "deletedLines": 748
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

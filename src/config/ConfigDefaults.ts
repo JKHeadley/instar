@@ -88,12 +88,6 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       timeoutMs: 1500,
       maxChecksPerDay: 2000,
     },
-    // Jev review-flag shadow (docs/specs/jev-review-flag-shadow.md) — log-only,
-    // dev-gated: `enabled` DELIBERATELY OMITTED (live on a dev agent, dark on the fleet).
-    jevReviewFlagShadow: {
-      timeoutMs: 1500,
-      maxChecksPerDay: 3000,
-    },
     spawnCap: {
       maxConcurrent: 8,
       acquireMs: 5000,
@@ -1567,24 +1561,6 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       transferOutputCutoffMs: 1000,
       placementCooldownMs: 300000,
       topicPlacementUpdateMinIntervalMs: 10000,
-      // §L4 move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md).
-      // The "move/run/pin this on <nickname>" decision is inferred by an LLM over
-      // the message + recent conversation (MoveIntentClassifier), NOT a keyword
-      // verb list (the 2026-07-03 hijack). `enabled` is DELIBERATELY OMITTED (not
-      // hardcoded false) so resolveDevAgentGate decides — DARK on the fleet, LIVE
-      // on a development agent (registered in DEV_GATED_FEATURES, configPath
-      // multiMachine.sessionPool.moveIntent.enabled). Ships dry-run FIRST: on a
-      // dev agent the classifier RUNS and LOGS would-hijack vs would-pass to
-      // logs/move-intent.jsonl, but the message ALWAYS passes through (never
-      // hijacked) until a deliberate dryRun:false — proving the false-positive
-      // rate collapsed before it can eat a message. Fail-OPEN on any uncertainty.
-      moveIntent: {
-        dryRun: true,
-        minConfidence: 0.85,
-        timeoutMs: 4000,
-        contextWindowTurns: 6,
-        modelTier: 'fast',
-      },
       // G3 — lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3, FD6). "Spawn iff I hold
       // the fenced awake-lease, else forward to the holder" — stops the
       // duplicate-session harm (the 2026-06-27 incident). Ships DARK (enabled:
@@ -2128,16 +2104,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // (`enabled ?? !!developmentAgent`, standard_development_agent_dark_feature_gate):
     // LIVE on a dev agent (zero-egress deterministic core dogfoods there), DARK fleet-wide.
     // Registered in DEV_GATED_FEATURES. The deterministic core reads local files only
-    // (zero egress); the OPTIONAL llmEnrichment path is the only egress and ships OFF
-    // (an unwired structural stub — see DARK_GATE_EXCLUSIONS). The value shipped today
-    // is the deterministic coverage map — the LLM path is dark.
+    // (zero egress) — the value shipped is the deterministic coverage map.
     conformanceAudit: {
-      llmEnrichment: {
-        enabled: false,
-        egressAcknowledged: false,
-        framework: 'codex-cli',
-        allowClaudeFallback: false,
-      },
       // CI ratchet floor on the enforced ratio (ratchet+gate+lint / total). The
       // committed floor lives in scripts/standards-coverage.mjs; this config mirror
       // is advisory (the script's hardcoded constant is the read baseline).
@@ -2147,9 +2115,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // cartographer so the deep-merge add-missing path backfills it to existing
     // agents (no migrateConfig block needed). The deterministic navigator is the
     // shipped value (zero egress — reads the local index/summaries only) and is
-    // available whenever cartographer.enabled. The OPTIONAL llmRerank path is the
-    // only egress and ships OFF (it additionally requires egressAcknowledged:true);
-    // it is a dark structural stub — no real LLM pipeline is wired here.
+    // available whenever cartographer.enabled.
     subtreeNav: {
       maxDepth: 6,
       branchingFactor: 4,
@@ -2157,12 +2123,6 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxResults: 25,
       minScore: 0.1,
       collapseFraction: 0.6,
-      llmRerank: {
-        enabled: false,
-        egressAcknowledged: false,
-        framework: 'codex-cli',
-        allowClaudeFallback: false,
-      },
     },
   },
   // Topic Profile (TOPIC-PROFILE-SPEC §12.5) — per-topic model/thinking/framework
@@ -2187,26 +2147,6 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     spawnFailureBreakerThreshold: 3,      // §10.4 N (attributable failures)
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
-    // Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md).
-    // The "change this topic's framework/model/thinking" decision is inferred by an
-    // LLM over the message + recent conversation (ProfileIntentClassifier), NOT the
-    // keyword regexes that used to live in parseProfileTrigger (the 2026-07-03
-    // keyword-intent audit's offender #1). `enabled` is DELIBERATELY OMITTED (not
-    // hardcoded false) so resolveDevAgentGate decides — DARK on the fleet, LIVE on a
-    // development agent (registered in DEV_GATED_FEATURES, configPath
-    // topicProfiles.intentClassifier.enabled). Ships dry-run FIRST: on a dev agent
-    // the classifier RUNS and LOGS would-actuate vs would-pass to
-    // logs/profile-intent.jsonl, but the message ALWAYS passes through (never
-    // actuated) until a deliberate dryRun:false — proving the false-positive rate
-    // collapsed before it can wrongly respawn a session. Fail-OPEN on any
-    // uncertainty. Enforces "Intelligence Infers, Keywords Only Guard".
-    intentClassifier: {
-      dryRun: true,
-      minConfidence: 0.85,
-      timeoutMs: 4000,
-      contextWindowTurns: 6,
-      modelTier: 'fast',
-    },
   },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
   // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is

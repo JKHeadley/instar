@@ -174,9 +174,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | FeedbackTriageArbiter | src/feedback-factory/triage/FeedbackTriageArbiter.ts | is this feedback work item worth work now, worth holding, or not worth work — with severity, priority and reason? | B·gating | OC(capable) | ✅ registered frontier-model authority (operator PIN); closed schema, untrusted-evidence envelope, prompt/schema/model canaries, deterministic floors 1–10, ignore shadowed until evidenced |
 | FeedbackTriageSecondOpinion | src/feedback-factory/triage/FeedbackTriageArbiter.ts | does a model of a DIFFERENT family agree this serious or security-shaped item can be ignored? | B·gating | dedicated per-framework provider (≠ triage family) | ✅ never-ignore floor: disagreement, failure or no second family → hold; sub-capped at 30 calls/day |
 | WarrantsReplyGate | src/threadline/WarrantsReplyGate.ts:295 | does A2A msg need a reply? | A | OC(fast) | ⚠ small fits |
-| MoveIntentClassifier | src/core/MoveIntentClassifier.ts:303 | is inbound a "move/pin this on <nickname>" command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never hijacks, so a small fast model fits (replaces a keyword verb-list — the 2026-07-03 hijack) |
 | HubIntentClassifier | src/threadline/HubIntentClassifier.ts:classifyHubIntent | is a hub message an "open this"/"tie this to <topic>" bind command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never swallows, so a small fast model fits (replaces the anchored regexes that ate the message before the agent saw it) |
-| ProfileIntentClassifier | src/core/ProfileIntentClassifier.ts:301 | is inbound a "change this topic's framework/model/thinking" command vs discussion? | A·gating (fail-open) | OC(fast) | ✅ nature-A strict-JSON enum verdict; fail-open never actuates, so a small fast model fits (replaces a keyword regex set — the 2026-07-03 offender #1) |
 | TaskClassifier / OverrideDetector / AutoApprover / IntegrationGate / PromptGate | src/providers/uxConfirm/* | classification / approval verdicts | A | OC(fast) | ⚠ mostly nature A |
 | DiscoveryEvaluator | src/core/DiscoveryEvaluator.ts:467 | surface a feature discovery? | A | OC(fast) | ⚠ |
 | IntentLlmJudge / LlmIntentClassifier / AmbientContributionGate | src/core/IntentTestHarness.ts:246; src/permissions/* | intent-vs-org / permission intent / speak? | B·gating (explicit category) | OC(fast) | ✅ explicit-category, correct |
@@ -214,7 +212,6 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | Component | file:line | Decision | Route | Note |
 |---|---|---|---|---|
 | CartographerSweepEngine | src/core/CartographerSweepEngine.ts:670 | author stale doc-tree summary | codex-cli (job) | `probeRouting()` REFUSES Claude — off-Claude REQUIRED so it never spends Anthropic quota |
-| StandardsCoverageEnrichment | (dark) | optional conformance enrichment | job | inert unless dark flag on |
 | PipeSessionSpawner ×2 | src/threadline/PipeSessionSpawner.ts:158/229 | pipe-spawn intent / history summary | AD (job→Claude) | job category stays on Claude by design |
 
 ### Session/model selection (which model a SPAWNED session runs)

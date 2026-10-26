@@ -68,22 +68,12 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
   CoherenceReviewer: 'gate',
-  // Move-intent recognizer — infers "move/run/pin this on <nickname>?" over the
-  // message + recent conversation, replacing the keyword verb-list that hijacked
-  // discussion (docs/specs/nickname-move-intent-llm-rebuild.md). It gates whether
-  // the inbound message is a relocation command vs passed through to the agent.
-  MoveIntentClassifier: 'gate',
   // Hub-intent recognizer — infers "open this"/"tie this to <topic>?" over the
   // message + recent conversation, replacing the anchored regexes that swallowed
   // the message before the agent saw it (docs/specs/keyword-intent-conversions-1-and-3.md,
   // Conversion #3). It gates whether an inbound hub message is a bind command vs
   // passed through to the agent.
   HubIntentClassifier: 'gate',
-  // Profile-intent recognizer — infers "change this topic's framework/model/thinking?"
-  // over the message + recent conversation, replacing the keyword regexes removed from
-  // parseProfileTrigger (docs/specs/keyword-intent-conversions-1-and-3.md). It gates
-  // whether the inbound message actuates a topic-profile write vs passing to the agent.
-  ProfileIntentClassifier: 'gate',
   // Inbound-content sanitizer (token-audit-completeness baseline-zero pass).
   LLMSanitizer: 'gate',
   // uxConfirm pre-routing judgment calls (same pass).
@@ -120,12 +110,6 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // this registration guards the categoryForComponent path so a missing entry
   // fails the wiring test rather than silently routing to the default framework.
   CartographerSweep: 'job',
-  // The OPTIONAL dark LLM-enrichment path of the standards enforcement-coverage
-  // audit (cartographer-conformance-audit spec #3). Category 'job' so an operator
-  // can route it OFF Claude via sessions.componentFrameworks.categories.job — the
-  // enrichment then never spends Anthropic quota. Only used by the dark
-  // llmEnrichment path; the shipped deterministic auditor makes no LLM calls.
-  StandardsCoverageEnrichment: 'job',
 
   // ── Previously-uncategorized LLM callsites (LLM Routing Registry audit,
   //    2026-07-01). Each calls an intelligence provider's .evaluate() but was

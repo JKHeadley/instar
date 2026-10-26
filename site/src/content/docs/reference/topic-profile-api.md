@@ -46,10 +46,6 @@ curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" \
   none-loss (the symmetric counterpart to the Claude resume map).
 - **`TopicProfileTransferCarrier`** — carries a topic's profile across machines via the mesh
   `topic-profile-pull` verb, so when another machine acquires the topic, the pin follows.
-- **`ProfileIntentClassifier`** — the conversational ingress: an LLM-with-context recognizer that
-  decides whether a message like "use codex here" is genuinely a profile-change command (vs a
-  question or commentary), with the closed framework/model/thinking sets used only as an output
-  guardrail, never as input keyword triggers.
 
 ## Resolution & swap
 

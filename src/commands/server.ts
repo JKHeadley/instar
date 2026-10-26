@@ -79,12 +79,6 @@ import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
 import { parseDashboardCreatePayload, safeMachineLabel, createDashboardCreateStartRunner, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
-import {
-  classifyProfileIntent,
-  toProfilePatch,
-  type ProfileIntentResult,
-  type ConversationTurn as ProfileIntentTurn,
-} from '../core/ProfileIntentClassifier.js';
 import { slugifyChannelName } from '../messaging/slack/sanitize.js';
 import {
   TopicProfileOrchestrator,
@@ -924,8 +918,6 @@ let _poolLink: import('../server/routes.js').RouteContext['poolLink'] | null = n
  *  block ONLY when the dark `ws44PoolCache` flag resolves on; null on
  *  single-machine / dark (surfaces keep their direct per-peer fetch). */
 let _poolPollCache: import('../server/PoolPollCache.js').PoolPollCache | null = null;
-/** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
-let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handled: boolean }>) | null = null;
 /** Per-topic framework override (claude-code | codex-cli). Populated from
  *  `config.topicFrameworks` at server boot. Boot-immutable; runtime
  *  mutations go through `_topicFrameworksStore` instead so they persist
@@ -1062,20 +1054,6 @@ function appendTopicProfileAudit(stateDir: string, event: Record<string, unknown
 
 let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
-// Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md): the
-// framework/model/thinking WRITE decision is inferred by the ProfileIntentClassifier
-// (LLM + recent conversation), replacing the removed keyword regexes in
-// parseProfileTrigger. Dev-gated dark (resolveDevAgentGate) + dry-run FIRST: while
-// dark or dry-run the message ALWAYS passes through (never actuated); the classifier
-// still runs on a dev agent and LOGS would-actuate vs would-pass to
-// logs/profile-intent.jsonl for the soak. Resolved once in startServer.
-let _profileIntentEnabled = false;
-let _profileIntentDryRun = true;
-let _profileIntentMinConfidence = 0.85;
-let _profileIntentTimeoutMs = 15_000;
-let _profileIntentContextTurns = 6;
-let _profileIntentModelTier: 'fast' | 'balanced' | 'capable' = 'fast';
-let _profileIntentStateDir = '';
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
 let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
 // WS1.1 dispatch-to-owner (Slack arm): the owner-side bridge reconstructs a Slack
@@ -2259,45 +2237,6 @@ function messageToPipeline(msg: Message, topicName?: string): PipelineMessage {
  * a message carrying platform forward metadata falls through as normal
  * conversation regardless of sender.
  */
-/**
- * Offender #1 conversion soak log: one JSONL line per LLM-engaged
- * ProfileIntentClassifier decision (docs/specs/keyword-intent-conversions-1-and-3.md).
- * A prefilter-skip is always a would-pass and the bulk of traffic — skipping it
- * cuts volume AND the privacy surface to messages that named a profile signal and
- * actually reached the classifier. Observability only — never gates the message.
- */
-function logProfileIntent(
-  topicId: number,
-  text: string,
-  result: ProfileIntentResult,
-  acted: boolean,
-): void {
-  try {
-    if (result.source === 'prefilter-skip') return;
-    if (!_profileIntentStateDir) return;
-    const logDir = path.join(_profileIntentStateDir, 'logs');
-    fs.mkdirSync(logDir, { recursive: true });
-    const decision = result.isChange ? (acted ? 'actuate' : 'would-actuate') : 'pass';
-    const line = JSON.stringify({
-      ts: new Date().toISOString(),
-      topicId,
-      decision,
-      dryRun: _profileIntentDryRun,
-      source: result.source,
-      intent: result.intent,
-      value: result.value,
-      confidence: result.confidence,
-      reason: result.reason,
-      // NO raw message content: the enum-bounded fields above are what the FP-rate
-      // soak needs, and the resolved `value` is already a closed-enum member. We
-      // record only the message LENGTH (non-content) — mirroring the codebase's
-      // dev-soak convention of never persisting a raw operator quote.
-      textLen: typeof text === 'string' ? text.length : 0,
-    });
-    fs.appendFileSync(path.join(logDir, 'profile-intent.jsonl'), line + '\n');
-  } catch { /* @silent-fallback-ok: the soak audit is observability-only — a log write fault must never gate or throw out of the message path (the classifier decision already stands) */ }
-}
-
 async function handleTopicProfileIngress(
   telegram: TelegramAdapter,
   topicId: number,
@@ -2316,55 +2255,9 @@ async function handleTopicProfileIngress(
 
   const forwarded = (msg.metadata?.forwarded as boolean | undefined) === true;
   const trigger = parseProfileTrigger(text);
-  if (!trigger) {
-    // Offender #1 conversion (docs/specs/keyword-intent-conversions-1-and-3.md):
-    // the framework/model/thinking WRITE decision moved OUT of parseProfileTrigger
-    // (keyword regexes) into the ProfileIntentClassifier — an LLM reasoning over
-    // the message + recent conversation with structured-enum output, per the
-    // constitutional standard "Intelligence Infers, Keywords Only Guard".
-    // Dev-gated dark + dry-run FIRST; fail-OPEN on every uncertainty.
-    if (forwarded) return false;             // forwarded content is never a command
-    if (!_profileIntentEnabled) return false; // fleet-dark → pass to the agent
-    let conversationContext: ProfileIntentTurn[] = [];
-    try {
-      // Fetch one extra turn, then drop a trailing turn equal to THIS message —
-      // getTopicHistory (oldest→newest) usually already contains the just-logged
-      // inbound row, so without this the model would see the message twice (once
-      // as MESSAGE, once as the newest CONTEXT turn).
-      const hist = telegram.getTopicHistory?.(topicId, _profileIntentContextTurns + 1) ?? [];
-      conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
-      const trimmed = text.trim();
-      while (conversationContext.length > 0
-        && conversationContext[conversationContext.length - 1].fromUser
-        && conversationContext[conversationContext.length - 1].text.trim() === trimmed) {
-        conversationContext.pop();
-      }
-      conversationContext = conversationContext.slice(-_profileIntentContextTurns);
-    } catch { /* @silent-fallback-ok — context is best-effort; classify on the message alone */ }
-    const result = await classifyProfileIntent({
-      text,
-      conversationContext,
-      intelligence: _sharedIntelligence,
-      minConfidence: _profileIntentMinConfidence,
-      timeoutMs: _profileIntentTimeoutMs,
-      maxContextTurns: _profileIntentContextTurns,
-      modelTier: _profileIntentModelTier,
-    });
-    const willAct = result.isChange && !_profileIntentDryRun;
-    logProfileIntent(topicId, text, result, willAct);
-    // Dry-run (the soak) / fail-open / pass-through: log would-actuate vs
-    // would-pass, but pass the message through untouched. Real actuation needs a
-    // deliberate dryRun:false, AND fail-open means uncertainty never actuates.
-    if (!willAct) return false;
-    const patch = toProfilePatch(result);
-    if (!patch) return false;
-    const applyPrincipal = { kind: 'operator' as const, platform: 'telegram', uid: String(telegramUserId) };
-    const applyResult = await surface.applyWrite({
-      topicKey: String(topicId), patch, principal: applyPrincipal, origin: 'conversational', discloseInReply: true,
-    });
-    try { await telegram.sendToTopic(topicId, applyResult.reply); } catch { /* @silent-fallback-ok: best-effort disclosure send (TOPIC-PROFILE-SPEC §10.1) */ }
-    return true;
-  }
+  // A message that is not an explicit profile trigger passes to the agent
+  // untouched; the agent drives the explicit propose/write routes itself.
+  if (!trigger) return false;
   if (forwarded) return false;
 
   const topicKey = String(topicId);
@@ -2872,20 +2765,6 @@ export function wireTelegramRouting(
     // entirely → byte-identical to single-machine dispatch. Any error falls back
     // to the local path below (fail-safe). The live-transfer behavior is gated by
     // the staged rollout (StageAdvancer); shadow records ownership but stays local.
-    //
-    // §L4 transfer-by-nickname: FIRST, intercept an explicit "move/run this on
-    // <nickname>" relocation command. If recognized, it sets the topic's
-    // placement pin (+ releases local ownership) and is fully handled here — the
-    // command message itself is NOT dispatched to a session. Subsequent messages
-    // for the topic then re-place onto the pinned machine via route() below.
-    if (_tryNicknameRelocation && _sessionPoolStage() !== 'dark') {
-      try {
-        const relo = await _tryNicknameRelocation(topicId, text);
-        if (relo.handled) return;
-      } catch (err) {
-        console.warn(`[session-pool] nickname relocation error for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
     // SpawnAdmission TOCTOU guard (ownership-gated-spawn §3.1 item 2): stash the
     // router's verdict for THIS message so the seam at the spawn callsites below
     // CONSUMES it instead of re-resolving — the admission decision and the
@@ -6911,35 +6790,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             dryRun?: boolean;
             switchNowConfirmTtlMs?: number;
             defaults?: Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
-            intentClassifier?: {
-              enabled?: boolean;
-              dryRun?: boolean;
-              minConfidence?: number;
-              timeoutMs?: number;
-              contextWindowTurns?: number;
-              modelTier?: 'fast' | 'balanced' | 'capable';
-            };
           };
         }).topicProfiles;
-        // Offender #1 conversion: resolve the ProfileIntentClassifier settings ONCE
-        // (the module-level ingress handler has no config in scope). `enabled` rides
-        // resolveDevAgentGate (dark on the fleet, live on a dev agent — registered in
-        // DEV_GATED_FEATURES, configPath topicProfiles.intentClassifier.enabled);
-        // dryRun ships true (the dry-run canary — actuates only on a deliberate flip).
-        const _intentCfg = topicProfilesCfg?.intentClassifier;
-        _profileIntentEnabled = resolveDevAgentGate(
-          _intentCfg?.enabled,
-          config as { developmentAgent?: boolean },
-        );
-        _profileIntentDryRun = _intentCfg?.dryRun ?? true;
-        _profileIntentMinConfidence = _intentCfg?.minConfidence ?? 0.85;
-        // Overall classifier budget. The classifier keeps the primary attempt
-        // at 4s by default, leaving the remainder for the router's configured
-        // failure-swap instead of cutting the whole chain off at attempt one.
-        _profileIntentTimeoutMs = _intentCfg?.timeoutMs ?? 15_000;
-        _profileIntentContextTurns = _intentCfg?.contextWindowTurns ?? 6;
-        _profileIntentModelTier = _intentCfg?.modelTier ?? 'fast';
-        _profileIntentStateDir = config.stateDir;
         _topicProfileStore = new TopicProfileStore({
           stateFilePath: path.join(config.stateDir, 'state', 'topic-profiles.json'),
           legacyFrameworksPath: path.join(config.stateDir, 'state', 'topic-frameworks.json'),
@@ -13906,73 +13758,6 @@ export async function startServer(options: StartOptions): Promise<void> {
     }
     console.log(pc.green('  CompactionSentinel enabled (verified recovery lifecycle)'));
 
-    // ── Proactive autonomous compaction ───────────────────────────────
-    // Explicit opt-in, dry-run first. Claude already exposes a grounded
-    // percentage in its live pane ("Context left until auto-compact: N%").
-    // At >=85% used, ask for /compact only when the canonical async work-state
-    // probe says IDLE. Working and indeterminate sessions are never touched.
-    const proactiveCompactionCfg = config.monitoring?.proactiveAutonomousCompaction;
-    if (proactiveCompactionCfg?.enabled === true) {
-      const { ProactiveCompactionSentinel } = await import(
-        '../monitoring/ProactiveCompactionSentinel.js'
-      );
-      const parseContextRemaining = (pane: string | null): number | null => {
-        const match = pane?.match(/Context left until auto-compact:\s*([0-9]+)%/i);
-        if (!match) return null;
-        const value = Number(match[1]);
-        return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
-      };
-      const proactiveCompaction = new ProactiveCompactionSentinel(
-        {
-          listCandidates: async () => Promise.all(sessionManager.listRunningSessions().map(async (session) => {
-            const topic = telegram?.getTopicForSession(session.tmuxSession);
-            let autonomous = false;
-            if (topic != null) {
-              try {
-                autonomous = fs.existsSync(
-                  path.join(config.stateDir, 'autonomous', `${topic}.local.md`),
-                );
-              } catch {
-                // Fail closed: an unreadable registration never grants actuation.
-                autonomous = false;
-              }
-            }
-            return {
-              sessionName: session.tmuxSession,
-              autonomous,
-              framework: session.framework,
-              contextRemainingPercent: parseContextRemaining(
-                sessionManager.captureOutput(session.tmuxSession, 30),
-              ),
-              workState: await sessionManager.checkSessionWorkState(session.tmuxSession),
-            };
-          })),
-          triggerCompact: (sessionName) =>
-            sessionManager.injectInternalMessage(
-              sessionName,
-              '/compact',
-              'proactive-autonomous-compaction',
-            ),
-          audit: (event) => {
-            console.log(
-              `[ProactiveCompaction] ${event.kind} "${event.sessionName}" ` +
-              `at ${event.usedPercent}% used (threshold ${event.thresholdUsedPercent}%)`,
-            );
-          },
-        },
-        proactiveCompactionCfg,
-      );
-      const proactiveCompactionTimer = setInterval(
-        () => { void proactiveCompaction.tick(); },
-        Math.max(10_000, proactiveCompactionCfg.tickIntervalMs ?? 60_000),
-      );
-      proactiveCompactionTimer.unref?.();
-      void proactiveCompaction.tick();
-      console.log(pc.green(
-        `  Proactive autonomous compaction enabled (${proactiveCompactionCfg.dryRun === false ? 'live' : 'dry-run'})`,
-      ));
-    }
-
     // ── Silently-stopped trio: SocketDisconnectSentinel + ActiveWorkSilenceSentinel ──
     // Wire-up post-2026-05-22 incident. Every transition (detect/nudge/recover)
     // lands in the audit log (server logs + JSONL) — the user never sees it.
@@ -19552,28 +19337,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       }));
     } catch (err) {
       console.log(pc.yellow(`  Jev circles shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
-    }
-
-    // Jev review-flag shadow (docs/specs/jev-review-flag-shadow.md) — log-only,
-    // delivers nothing. A 60 s unref'd timer tails the Telegram history; dev-gated
-    // (live on a development agent, dark on the fleet), read live per tick, inert
-    // without the vault typesafe_api_key.
-    try {
-      const { buildJevReviewFlagShadow, installJevReviewFlagShadow } = await import('../core/JevReviewFlagShadow.js');
-      const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
-      const { SecretStore } = await import('../core/SecretStore.js');
-      const shadow = buildJevReviewFlagShadow({
-        readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
-        bootBlock: config.intelligence?.jevReviewFlagShadow,
-        developmentAgent: config.developmentAgent === true,
-        readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
-        stateDir: config.stateDir,
-        metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
-      });
-      installJevReviewFlagShadow(shadow);
-      shadow.start();
-    } catch (err) {
-      console.log(pc.yellow(`  Jev review-flag shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
     }
 
     // Outbound dedup gate — deterministic near-duplicate detection on every
@@ -27737,64 +27500,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             };
           }
 
-          // ── L4 transfer-by-nickname activation: the "move/run this on <nickname>"
-          // trigger. The recognizer + planner are pure units; this wires them to the
-          // pin store + ownership so a recognized command pins the topic to the named
-          // machine and (if we currently own it) releases it, so the topic's next
-          // routed message re-places onto the pinned machine via the already-wired
-          // placeAndClaim → spawnOnMachine → owner-side onAccepted resume path.
-          // Inert unless the rollout stage is past 'dark' (gated at the call site).
-          const transferMod = await import('../core/TransferByNickname.js');
-          const moveIntentMod = await import('../core/MoveIntentClassifier.js');
-          const autonomousSessionsModule = await import('../core/AutonomousSessions.js');
+          // ── Topic placement pin store (U4.1): the authoritative local record of
+          // which machine each topic is pinned to. Written by POST /pool/transfer
+          // (the explicit, operator-driven move lever) and read by placeAndClaim.
           const pinMod = await import('../core/TopicPlacementPinStore.js');
-          const pinMutationMod = await import('../core/TopicPinMutation.js');
-          const relocSetMod = await import('../core/RelocationNicknameSet.js');
-          const nickAssignMod = await import('../core/NicknameAssigner.js');
-          // §L4 move-intent recognizer (docs/specs/nickname-move-intent-llm-rebuild.md):
-          // the "move/run/pin this on <nickname>" decision is inferred by an LLM
-          // over the message + recent conversation (MoveIntentClassifier), NOT a
-          // keyword verb list (the 2026-07-03 hijack of "keep the work on the
-          // laptop"). Dev-gated dark (resolveDevAgentGate) + dry-run FIRST: while
-          // dark or dry-run, the message ALWAYS passes through (never hijacked);
-          // the classifier still runs on a dev agent and LOGS would-hijack vs
-          // would-pass for the soak. Fail-OPEN on any uncertainty.
-          const _moveIntentCfg = (config.multiMachine?.sessionPool as
-            | { moveIntent?: { enabled?: boolean; dryRun?: boolean; minConfidence?: number; timeoutMs?: number; contextWindowTurns?: number; modelTier?: 'fast' | 'balanced' | 'capable' } }
-            | undefined)?.moveIntent;
-          const _moveIntentEnabled = resolveDevAgentGate(_moveIntentCfg?.enabled, config);
-          const _moveIntentDryRun = _moveIntentCfg?.dryRun ?? true;
-          const _moveIntentMinConfidence = _moveIntentCfg?.minConfidence ?? 0.85;
-          const _moveIntentTimeoutMs = _moveIntentCfg?.timeoutMs ?? 4000;
-          const _moveIntentContextTurns = _moveIntentCfg?.contextWindowTurns ?? 6;
-          const _moveIntentModelTier = _moveIntentCfg?.modelTier ?? 'fast';
-          const _logMoveIntent = (topicId: number, text: string, result: import('../core/MoveIntentClassifier.js').RelocationIntentResult, acted: boolean): void => {
-            try {
-              // Log ONLY LLM-engaged decisions (the soak signal). A prefilter-skip
-              // is always a would-pass and is the bulk of inbound traffic — logging
-              // it would over-collect a message preview for every message. Skipping
-              // it cuts volume AND the privacy surface to messages that named a
-              // machine and actually reached the classifier.
-              if (result.source === 'prefilter-skip') return;
-              const logDir = path.join(config.stateDir, 'logs');
-              fs.mkdirSync(logDir, { recursive: true });
-              const decision = result.isCommand ? (acted ? 'hijack' : 'would-hijack') : 'pass';
-              const line = JSON.stringify({
-                ts: new Date().toISOString(),
-                topicId,
-                decision,
-                dryRun: _moveIntentDryRun,
-                source: result.source,
-                intent: result.intent,
-                target: result.targetNickname,
-                confidence: result.confidence,
-                reason: result.reason,
-                // Truncated, whitespace-collapsed preview for soak inspection.
-                textPreview: String(text).replace(/\s+/g, ' ').trim().slice(0, 80),
-              });
-              fs.appendFileSync(path.join(logDir, 'move-intent.jsonl'), line + '\n');
-            } catch { /* audit is observability — never gates the message path */ }
-          };
           _topicPinStore = new pinMod.TopicPlacementPinStore({
             filePath: path.join(config.stateDir, 'session-pool', 'topic-pins.json'),
             // U4.1 §2C (fixes defect 3): a corrupt pin file quarantines ASIDE +
@@ -27812,182 +27521,6 @@ export async function startServer(options: StartOptions): Promise<void> {
               } catch { /* escalation is observability — never gates the load */ }
             },
           });
-          // Authoritative resolver for THIS machine's OWN nickname. Guarantees a topic
-          // can always be moved BACK to the machine currently handling it, even when the
-          // capacities view omits the self nickname (the back-transfer bug: the lifeline
-          // forwards inbound to the holder, so the relocation check runs on the very
-          // machine the user is moving back to). Priority: capacities self-entry →
-          // identity registry self-entry → deterministic derive (reconstructs the
-          // auto-assigned nickname; a manual rename is persisted on the identity entry).
-          const resolveSelfNickname = (
-            caps: readonly { machineId: string; nickname?: string }[],
-          ): string | undefined => {
-            const fromCaps = caps.find((c) => c.machineId === meshSelfId)?.nickname;
-            if (fromCaps) return fromCaps;
-            try {
-              const selfEntry = meshIdMgr
-                .getActiveMachines()
-                .find((m) => m.machineId === meshSelfId)?.entry as
-                | { nickname?: string; hardware?: { platform?: string } }
-                | undefined;
-              if (selfEntry?.nickname) return selfEntry.nickname;
-              const id = meshIdMgr.hasIdentity()
-                ? (meshIdMgr.loadIdentity() as { name?: string })
-                : null;
-              const derived = nickAssignMod.deriveBaseNickname(id?.name, selfEntry?.hardware?.platform);
-              if (derived) return derived;
-            } catch {
-              /* @silent-fallback-ok — best-effort self-nickname resolution; on any failure we
-                 return undefined and the recognizer simply falls back to the capacities-derived
-                 set (the pre-existing behavior), so this can only ever ADD a nickname, never break. */
-            }
-            return undefined;
-          };
-          _tryNicknameRelocation = async (topicId, text) => {
-            const sessionKey = String(topicId);
-            const caps = machinePoolRegistry?.getCapacities() ?? [];
-            const { knownNicknames, nickToMachine } = relocSetMod.buildRelocationNicknameSet({
-              capacities: caps,
-              selfMachineId: meshSelfId,
-              selfNickname: resolveSelfNickname(caps),
-            });
-            // Dark gate: when the recognizer isn't enabled (fleet default), never
-            // hijack — pass the message through to the agent.
-            if (!_moveIntentEnabled) return { handled: false };
-            // Bounded window of recent turns so context-dependent commands ("yes,
-            // move it") can resolve their target. Best-effort — the classifier
-            // works on the message alone if history is unavailable.
-            let conversationContext: import('../core/MoveIntentClassifier.js').ConversationTurn[] = [];
-            try {
-              const hist = telegram?.getTopicHistory(topicId, _moveIntentContextTurns) ?? [];
-              conversationContext = hist.map((h) => ({ fromUser: !!h.fromUser, text: String(h.text ?? '') }));
-            } catch { /* @silent-fallback-ok — context is best-effort; classify on the message alone */ }
-            const moveResult = await moveIntentMod.classifyRelocationIntent({
-              text,
-              knownNicknames,
-              conversationContext,
-              intelligence: _sharedIntelligence,
-              minConfidence: _moveIntentMinConfidence,
-              timeoutMs: _moveIntentTimeoutMs,
-              maxContextTurns: _moveIntentContextTurns,
-              modelTier: _moveIntentModelTier,
-            });
-            const _willAct = moveResult.isCommand && !_moveIntentDryRun;
-            _logMoveIntent(topicId, text, moveResult, _willAct);
-            // Dry-run (the soak): log would-hijack vs would-pass, but pass the
-            // message through untouched. Real hijacking needs a deliberate
-            // dryRun:false, AND fail-open means uncertainty never hijacks.
-            if (!_willAct) return { handled: false };
-            const cmd = moveIntentMod.toNicknameCommand(moveResult);
-            if (!cmd) return { handled: false };
-            const plan = transferMod.planTransferByNickname(
-              cmd,
-              {
-                resolveNickname: (n) => nickToMachine.get(n.toLowerCase()) ?? null,
-                validNicknames: () => knownNicknames,
-                isOnline: (m) => machinePoolRegistry?.getCapacity(m)?.online ?? false,
-                currentOwnerOf: (sk) => ownReg.ownerOf(sk),
-                isMidReply: () => false, // best-effort; the pin takes effect on the next routed message
-                // Pin-aware idempotency: a duplicate "move to X" while already pinned
-                // to X (e.g. a lifeline retry / post-restart replay of the same
-                // message) no-ops as "already there" instead of burning the rate limit.
-                currentPinOf: (sk) => _topicPinStore?.get(sk)?.preferredMachine ?? null,
-                lastPlacementUpdateAt: (sk) => _topicPinStore?.lastUpdatedAtMs(sk) ?? null,
-                now: () => Date.now(),
-                // WS1.4 consent gate: a LIVE local autonomous run on this topic
-                // requires explicit confirmation before a move. The confirmed
-                // move goes through POST /pool/transfer with confirm:true
-                // (which performs the turn-boundary suspend); this NL arm only
-                // ever needs to ASK. Local-registry evidence only — a run on a
-                // remote owner is covered when the WS1.2 drain verb lands.
-                autonomousRunActive: (sk) => {
-                  try {
-                    const autoMod = autonomousSessionsModule;
-                    const job = autoMod?.listAutonomousJobs(config.stateDir).find((j) => j.topic === sk && j.active && !j.paused);
-                    if (!job) return null;
-                    let remainingMinutes: number | null = null;
-                    if (job.startedAt && job.durationSeconds != null) {
-                      const endMs = Date.parse(job.startedAt) + job.durationSeconds * 1000;
-                      if (Number.isFinite(endMs)) remainingMinutes = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
-                    }
-                    return { goal: job.goal, remainingMinutes };
-                  } catch { return null; /* @silent-fallback-ok — unreadable run registry → veto not applied; the NL move behaves as before WS1.4 */ }
-                },
-              },
-              sessionKey,
-            );
-            if (plan.action === 'transfer' || plan.action === 'noop') {
-              const target = plan.targetMachine!;
-              // U4.1 §2B one-HLC funnel + §2F pinnedBy: this arm executes the
-              // OPERATOR's direct authed Telegram command — provenance resolves
-              // from the topic's auto-bound VERIFIED operator when one exists
-              // (never a content name), else the agent surface. The funnel mints
-              // ONE HLC stamping both the replicated PUT and the local set().
-              const nlBoundOperator = (() => {
-                try {
-                  const op = _agentServerRef?.getTopicOperatorStore()?.getOperator(sessionKey) ?? null;
-                  return op && op.uid
-                    ? { kind: 'operator' as const, platform: String(op.platform || 'telegram'), uid: op.uid }
-                    : null;
-                } catch { return null; /* @silent-fallback-ok — an unreadable binding degrades to agent provenance, never a blocked pin */ }
-              })();
-              pinMutationMod.setPinWithOneHlc(
-                { pinStore: _topicPinStore!, emitter: replicatedRecordEmitter ?? null },
-                sessionKey, target, plan.setPin ?? true,
-                nlBoundOperator ?? { kind: 'agent', sessionRef: 'nickname-relocation' },
-              );
-              // If THIS machine actively owns the topic, release so the next message re-places to the pin.
-              try {
-                if (ownReg.ownerOf(sessionKey) === meshSelfId) {
-                  const prevOwner = ownReg.read(sessionKey)?.ownerMachineId;
-                  const r = ownReg.cas({ type: 'release', machineId: meshSelfId }, { sessionKey, sender: meshSelfId, nonce: `${meshSelfId}:rel:${sessionKey}:${Math.round(performance.now())}` });
-                  emitPlacement(sessionKey, r, 'user-move', prevOwner); // the explicit move's release half
-                }
-              } catch { /* best-effort; route() re-places regardless once the owner is cleared */ }
-              // ── Post-transfer closeout, immediate half (2026-06-05) ───────
-              // The user's explicit move means this machine's topic session is
-              // now a leftover — left running it does duplicate work alongside
-              // the target machine's session. Close it NOW (origin 'operator':
-              // this executes the user's direct command, arrived through the
-              // authed Telegram pipeline; disposition 'recovery-bounce' keeps
-              // the §P3 notifier silent — the user already got the "Moving…"
-              // reply, and the conversation continues on the target). Protected
-              // sessions are never auto-closed (skipped here AND vetoed in the
-              // reaper sweeper that backstops non-explicit move paths).
-              if (plan.action === 'transfer' && target !== meshSelfId) {
-                try {
-                  const tmuxName = telegram?.getSessionForTopic(topicId);
-                  const rec = tmuxName ? sessionManager.listRunningSessions().find((s) => s.tmuxSession === tmuxName) : undefined;
-                  if (rec && !sessionManager.getProtectedSessions().includes(rec.tmuxSession)) {
-                    void terminateWithAuthority(
-                      rec.id,
-                      `topic ${topicId} moved to ${cmd.nickname} (user-commanded transfer) — closing the leftover local session`,
-                      { origin: 'operator', disposition: 'recovery-bounce' },
-                    ).then((r) => {
-                      console.log(pc.dim(`  [session-pool] post-transfer closeout: ${rec.tmuxSession} → ${r.terminated ? 'closed' : `skipped (${r.skipped})`}`));
-                    });
-                  }
-                } catch { /* @silent-fallback-ok — the reaper's topic-moved sweeper backstops this */ }
-              }
-              await telegram?.sendToTopic(topicId, plan.action === 'noop'
-                ? (plan.detail === 'already-on-target'
-                  ? `This conversation is already running on ${cmd.nickname} — nothing to move.`
-                  : `This conversation is already pinned to ${cmd.nickname} — it'll keep running there.`)
-                : `Moving this conversation to ${cmd.nickname} — it'll pick up there on your next message.`).catch(() => {});
-              console.log(pc.green(`  [session-pool] topic ${topicId} pinned to ${target} (${plan.action}) via "${cmd.matchedVerb}"`));
-              return { handled: true };
-            }
-            if (plan.action === 'confirm-required') {
-              await telegram?.sendToTopic(topicId, plan.confirmationPrompt ?? `That machine isn't reachable right now — say "yes, move it" to confirm.`).catch(() => {});
-              return { handled: true };
-            }
-            // reject
-            const validList = (plan.validNicknames ?? []).join(', ');
-            await telegram?.sendToTopic(topicId, plan.rejectReason === 'unknown-machine-nickname'
-              ? `I don't know a machine called "${plan.detail}". I can move this to: ${validList || '(no other machines available)'}.`
-              : `I can't move this right now (${plan.rejectReason}).`).catch(() => {});
-            return { handled: true };
-          };
         } catch (err) {
           console.log(pc.dim(`  [session-router] not wired: ${err instanceof Error ? err.message : String(err)}`));
         }

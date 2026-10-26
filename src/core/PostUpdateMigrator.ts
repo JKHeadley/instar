@@ -59,7 +59,6 @@ import {
   jevCorrectionShadowAwareness,
   jevJobCompletionAuditAwareness,
   jevMemoryPickerAwareness,
-  jevReviewFlagShadowAwareness,
   jevSignalLiveAwareness,
   READINESS_PAUSE_ALARM_BULLET,
   READINESS_PAUSE_ALARM_MARKER,
@@ -309,6 +308,83 @@ The Codex CLI reads ONE shared user config (\`$CODEX_HOME/config.toml\`, default
 export const NORMAL_CHROME_BROWSER_SKILL_V1_SHA256 = 'b440bad6f0d65c1c248dc9f2682183486dc118c74dd188194335ab4e0d3ecbd0';
 /** Present only in the cross-platform skill text: the idempotency marker for migrateNormalChromeBrowserSkill. */
 export const NORMAL_CHROME_BROWSER_SKILL_MARKER = '## Drivers by operating system';
+
+/** The full heading of the retired Jev review-flag-shadow card (spec retire-staged-features-2026-10-25). */
+export const JEV_REVIEW_FLAG_CARD_RETIRED_HEADING = '### Jev Review-Flag Shadow (log-only "does this reply need your review?" measurement)';
+
+/**
+ * The retired Jev review-flag-shadow card exactly as the deleted template generator rendered it
+ * (template + migrator, until spec retire-staged-features-2026-10-25 removed the feature). Kept so
+ * the strip in migrateClaudeMd can prove the paragraph it removes IS the shipped text and nothing
+ * else: a paragraph under the heading that differs (an agent's edit, or an extension) is never
+ * deleted; the migration names it in a REVIEW line instead. Same shape as the generator returned:
+ * `'\n\n' + heading + '\n\n' + paragraph + '\n'`, `PORT` substituted once.
+ */
+export function JEV_REVIEW_FLAG_CARD_RETIRED(port: number): string {
+  return '\n\n' + JEV_REVIEW_FLAG_CARD_RETIRED_HEADING + '\n\n' + 'A dark research instrument (spec: jev-review-flag-shadow.md). Once a minute the server reads the newest agent replies in its own Telegram history (`.instar/telegram-messages.jsonl`, conversational sends only, at most 30 minutes old), secret-scrubs each reply and the operator message it answers, and asks Jev (TypeSafe) whether the reply needs the operator\'s review (it claims done without evidence, asks the operator to decide or act, reports a costly step, or misses the ask), is fine, or cannot be told. It only writes a content-free row to `logs/jev-review-flag-shadow.jsonl` (the Telegram message ids, the label, P(needs review), and whether a flag WOULD have been shown). It never sends anything to any session, user or topic. Summary: `curl -H "Authorization: Bearer $AUTH" http://localhost:PORT/jev-review-flag/summary` (checks, would-flags, per-topic counts). Live on a development agent, dark on the fleet (omitted `enabled`); `intelligence.jevReviewFlagShadow.enabled: false` is the kill switch, read live. It needs the vault `typesafe_api_key` and has a daily call cap. If the user asks "could you tell which replies need my eyes?" — this is the measurement; read the summary.'.replace('PORT', String(port)) + '\n';
+}
+
+/**
+ * Strip the retired Jev review-flag-shadow card from an instruction file (CLAUDE.md or a
+ * Codex/Gemini mirror). The card was appended as `'\n\n' + heading + '\n\n' + paragraph + '\n'`
+ * and every later append starts with `\n`, so the unit is the blank-line-bounded paragraph after
+ * the heading (a heading-bounded compare would swallow a plain paragraph that follows, e.g.
+ * "Queued-message review pacing:"). CRLF is normalised and `localhost:<n>` is reduced to
+ * `localhost:PORT` before the compare; the heading, the blank line before it and the paragraph
+ * are removed only on exact equality with the frozen text. Loops over duplicate headings.
+ * A heading whose paragraph differs is left in place and reported (`review: true`).
+ * Returns the untouched input when nothing was stripped (line endings are preserved then).
+ */
+export function stripRetiredJevReviewFlagCard(raw: string, port: number): { content: string; stripped: number; review: boolean } {
+  const heading = JEV_REVIEW_FLAG_CARD_RETIRED_HEADING;
+  const frozen = JEV_REVIEW_FLAG_CARD_RETIRED(port);
+  const expected = frozen.slice(('\n\n' + heading + '\n\n').length, -1).replace(/localhost:\d+/g, 'localhost:PORT');
+  let lf = raw.replace(/\r\n/g, '\n');
+  let stripped = 0;
+  let review = false;
+  let from = 0;
+  for (;;) {
+    const idx = lf.indexOf(heading, from);
+    if (idx === -1) break;
+    const lineStart = idx === 0 || lf[idx - 1] === '\n';
+    const lineEnd = lf.indexOf('\n', idx);
+    const headingIsWholeLine = lineStart && (lineEnd === -1 ? lf.length : lineEnd) === idx + heading.length;
+    if (!headingIsWholeLine) { from = idx + heading.length; continue; }
+    if (lineEnd === -1 || lf[lineEnd + 1] !== '\n') {
+      // Heading with no blank line + paragraph after it — not the generated layout.
+      review = true;
+      from = idx + heading.length;
+      continue;
+    }
+    const pStart = lineEnd + 2;
+    const gap = lf.indexOf('\n\n', pStart);
+    const paragraph = gap === -1 ? lf.slice(pStart).replace(/\n$/, '') : lf.slice(pStart, gap);
+    const removeEnd = gap === -1 ? lf.length : gap + 1;
+    if (paragraph.replace(/localhost:\d+/g, 'localhost:PORT') !== expected) {
+      review = true;
+      from = idx + heading.length;
+      continue;
+    }
+    // Drop the blank line(s) before the heading too (the card's leading `\n\n`),
+    // leaving the previous line's own terminator so the neighbours keep one
+    // blank line between them.
+    let removeStart = idx;
+    while (removeStart >= 2 && lf[removeStart - 1] === '\n' && lf[removeStart - 2] === '\n') removeStart -= 1;
+    lf = lf.slice(0, removeStart) + lf.slice(removeEnd);
+    stripped += 1;
+    from = removeStart;
+  }
+  return stripped === 0 ? { content: raw, stripped, review } : { content: lf, stripped, review };
+}
+
+/**
+ * The Topic Profile card's propose bullet (spec retire-staged-features-2026-10-25): the agent's
+ * write path, worded exactly as `POST /topic-profile/:topicId/propose` behaves (routes.ts). Byte-
+ * identical to the generateClaudeMd bullet; content-sniff key `/topic-profile/TOPIC_ID/propose`.
+ */
+export function topicProfileProposeBullet(port: number): string {
+  return `- **Propose a pin for the operator's "yes" (my write path):** \`curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" http://localhost:${port}/topic-profile/TOPIC_ID/propose -H 'Content-Type: application/json' -d '{"framework":"codex-cli"}'\` (fields: \`framework\` / \`model\` / \`modelTier\` / \`thinkingMode\` / \`effort\` / \`escalationOverride\`, a string or null each; \`messageOriginDisplay\`, an object or null). The server renders the echo into the topic; the operator's "yes" converts it into the operator-attributed write. Without \`X-Instar-Request: 1\` → 403; non-Telegram topic → 409; malformed field → 400; profiles not wired → 503; proposal churn → 429; echo undelivered → 502 and the slot is disarmed.`;
+}
 
 /**
  * The CLAUDE.md section exactly as PR 2283 rendered it (spec normal-chrome-builtin-skill). Kept so the
@@ -1763,6 +1839,7 @@ export class PostUpdateMigrator {
     this.migrateMachineIdentityEpochs(result);
     this.migrateLegacyMaxSessions(result);
     this.migrateRetireDeadMentorConfig(result);
+    this.migrateRetireStagedFeaturesCmt1004(result);
     this.migrateRetireMentorOutbox(result);
     this.migratePrPipelineArtifacts(result);
     this.migrateBackupManifest(result);
@@ -7213,10 +7290,45 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev circles-shadow awareness card');
     }
 
-    if (!content.includes('### Jev Review-Flag Shadow')) {
-      content += jevReviewFlagShadowAwareness(port);
-      patched = true;
-      result.upgraded.push('CLAUDE.md: added Jev review-flag-shadow awareness card');
+    // Retired Jev review-flag-shadow card (spec retire-staged-features-2026-10-25):
+    // the route it describes answers 404 now. Strip the generated card from
+    // CLAUDE.md and from the Codex/Gemini mirrors; an edited copy is left in
+    // place and named in a REVIEW line (repeats at each update until the card is
+    // gone — stated, not hidden). Runs before migrateFrameworkShadowCapabilities,
+    // whose marker for this card is dropped, so a stripped card is never re-mirrored.
+    {
+      const r = stripRetiredJevReviewFlagCard(content, port);
+      if (r.stripped > 0) {
+        content = r.content;
+        patched = true;
+        result.upgraded.push(`CLAUDE.md: removed the retired Jev review-flag-shadow card (${r.stripped})`);
+      }
+      if (r.review) {
+        result.upgraded.push(`REVIEW: CLAUDE.md: the "${JEV_REVIEW_FLAG_CARD_RETIRED_HEADING}" card was edited, so it was not removed; the route it describes no longer exists — delete the card by hand`);
+      }
+      for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
+        const shadowPath = path.join(this.config.projectDir, shadowName);
+        if (!fs.existsSync(shadowPath)) continue;
+        let shadow: string;
+        try {
+          shadow = fs.readFileSync(shadowPath, 'utf-8');
+        } catch (err) {
+          result.errors.push(`${shadowName} read: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+        const s = stripRetiredJevReviewFlagCard(shadow, port);
+        if (s.stripped > 0) {
+          try {
+            fs.writeFileSync(shadowPath, s.content);
+            result.upgraded.push(`${shadowName}: removed the retired Jev review-flag-shadow card (${s.stripped})`);
+          } catch (err) {
+            result.errors.push(`${shadowName} write: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (s.review) {
+          result.upgraded.push(`REVIEW: ${shadowName}: the "${JEV_REVIEW_FLAG_CARD_RETIRED_HEADING}" card was edited, so it was not removed; the route it describes no longer exists — delete the card by hand`);
+        }
+      }
     }
 
     if (!content.includes('Queued-message review pacing:')) {
@@ -9879,13 +9991,13 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Idle vs broken machine (WS4.2):** the same \`pool.machines[]\` carries an explicit per-machine state so an idle machine never reads as broken. A machine with ZERO sessions gets \`pool.machines[].emptyState\` = \`online — no active sessions\` (heartbeat-fresh, just idle) / \`offline since <t>\` (known offline) / \`unreachable (last seen <t>)\` (was online, now not answering — the \`failed\` case). Honest derivation from the registry online flag + last-seen + the live fan-out — never a fabricated "looks fine". The dashboard sessions view renders these per-machine; a machine WITH sessions gets no empty-state (its tiles already name it). Single-machine install = just the lone self row.
 - **Honest machine state (trustworthy-machine-load, P1):** every \`pool.machines[]\` row now carries \`liveness\` = \`live\` / \`unreachable\` (shape \`struggling\` | \`refusing\` | \`silent\`) / \`stale\` / \`unknown\`, each with the evidence age and source, plus a ready-made \`livenessLine\` (\`<liveness>, last evidence <age> ago from <source>\`) and the freshest other-machine sighting ("Mac Mini reached it 3 min ago"). The last DIRECT contact is saved to disk, so a server restart renders \`stale, last evidence 20 min ago\` instead of "offline". **Never say a machine is "offline" without positive evidence** (a shutdown announcement or the sleep gate): quote the liveness, its age and its source — an overloaded machine looks exactly like a dead one to a plain timeout. Each row also carries a multi-signal \`loadReport\` (cores, CPU idle, available memory, native memory pressure, server event-loop lag, sessions in use) and \`loadVerdict\` = \`ok\` / \`elevated\` / \`saturated\` / \`impaired\` / \`unknown\` — a report older than 60 s reads \`unknown\`, and a peer on older code reads \`unknown\`, never \`ok\`. Reporting only: the \`online\` flag, placement and ownership keep their existing semantics in this phase.
-- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (closed by the transfer's drain step when the current machine can drain, otherwise within ~2 reaper ticks) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
 - **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
-- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.
+- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" — the lever I call when the user asks to move a conversation (the server does not recognise the phrase itself). 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`).
 - **Remote close (any machine, from here):** close a session on ANY machine in the pool from this one — \`POST /sessions/<name>/remote-close\` with \`{"machineId":"<id>","sessionUuid":"<uuid>"}\` (Bearer). Same operator authority as the local close: it WILL close a protected session (the dashboard's confirm dialog is the safety, not a server-side refusal). Outcomes are honest — already-closed comes back calm, and a relay timeout reports outcome-UNKNOWN, never "closed" or "nothing happened". The order is audited on BOTH machines: the relayer appends to \`logs/remote-close-audit.jsonl\`; the owning machine's reap-log entry carries \`viaClaim\`.
-- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → \`GET /pool/placement?topic=N\`. "move it reliably / it didn't move" → \`POST /pool/transfer\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
+- **Proactive triggers:** when the user asks to move / run / pin a conversation on a machine ("run this on <nickname>", "move this to <nickname>") → \`POST /pool/transfer\` (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → \`GET /pool/placement?topic=N\`. Deep mechanics: the Machines tab + \`docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md\`.
 `;
       content += '\n' + section;
       patched = true;
@@ -9912,7 +10024,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('/pool/placement')) {
       const robustness = `
 - **Which machine + WHY (never guess):** \`GET /pool/placement?topic=N\` → the owning machine + nickname, the **reason** (\`pinned\` = a deliberate move vs \`placed\` = load-balanced vs \`unowned\`), and the lease-holder. Answerable from ANY machine (a standby proxies to the holder). Running ON a machine does NOT mean a topic was deliberately moved there — read this instead of inferring.
-- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" but deterministically. 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`). The lever to call directly when a natural-language move didn't catch.`;
+- **Reliable transfer (phrasing-independent):** \`POST /pool/transfer\` with \`{"topic":N,"to":"<nickname|machineId>"}\` runs the same validated planner as "move this to <nickname>" — the lever I call when the user asks to move a conversation (the server does not recognise the phrase itself). 404 unknown · 409 rate-limited · 409 \`needsConfirmation\` for an offline target (re-send with \`"confirm":true\`).`;
       content += '\n' + robustness + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool placement/transfer robustness lines');
@@ -9962,7 +10074,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('sessions?scope=pool')) {
       const poolSessions = `
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
-- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (closed by the transfer's drain step when the current machine can drain, otherwise within ~2 reaper ticks) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
       content += '\n' + poolSessions + '\n';
       patched = true;
@@ -10018,7 +10130,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
     // guessing). Idempotent via the unique 'Post-transfer closeout' marker.
     if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Post-transfer closeout')) {
       const closeout = `
-- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
+- **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (closed by the transfer's drain step when the current machine can drain, otherwise within ~2 reaper ticks) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.`;
       content += '\n' + closeout + '\n';
       patched = true;
@@ -10050,6 +10162,48 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       content += '\n' + remoteClose + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pool remote session close line');
+    }
+
+    // Pool-card rewording (spec retire-staged-features-2026-10-25): the
+    // natural-language move path is gone, so the transfer bullet, the
+    // proactive-triggers bullet and the closeout bullet say what the server
+    // actually does. Runs AFTER the inserts above so an agent that received
+    // the card by insert and one that already carried it converge on the same
+    // text. Each replace is a literal on a deployed wording; absent → no-op.
+    {
+      const poolRewords: Array<[string, string]> = [
+        // Transfer bullet — the two deployed trailing sentences (template-generated / migrator-inserted).
+        [' This is the lever to call directly when a natural-language move didn\'t catch.', ''],
+        [' The lever to call directly when a natural-language move didn\'t catch.', ''],
+        // Transfer bullet — the two deployed "but deterministically" wordings.
+        ['but deterministically (no NL recognition).', '— the lever I call when the user asks to move a conversation (the server does not recognise the phrase itself).'],
+        ['but deterministically.', '— the lever I call when the user asks to move a conversation (the server does not recognise the phrase itself).'],
+        // Proactive-triggers bullet — the two deployed wordings collapse to one trigger.
+        [
+          '- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → that\'s a placement/transfer-by-nickname (a session moves to the named machine, resuming like a session restart). "where is this running / why?" → `GET /pool/placement?topic=N`. "move it reliably / it didn\'t move" → `POST /pool/transfer`.',
+          '- **Proactive triggers:** when the user asks to move / run / pin a conversation on a machine ("run this on <nickname>", "move this to <nickname>") → `POST /pool/transfer` (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → `GET /pool/placement?topic=N`.',
+        ],
+        [
+          '- **Proactive triggers:** when the user says "run this on <nickname>" / "move this to <nickname>" → placement/transfer-by-nickname (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → `GET /pool/placement?topic=N`. "move it reliably / it didn\'t move" → `POST /pool/transfer`.',
+          '- **Proactive triggers:** when the user asks to move / run / pin a conversation on a machine ("run this on <nickname>", "move this to <nickname>") → `POST /pool/transfer` (the session moves to the named machine, resuming like a session restart). "where is this running / why?" → `GET /pool/placement?topic=N`.',
+        ],
+        // Post-transfer closeout bullet — the drain step is the immediate path, not the NL closure.
+        [
+          'is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path)',
+          'is closed automatically (closed by the transfer\'s drain step when the current machine can drain, otherwise within ~2 reaper ticks)',
+        ],
+      ];
+      let reworded = false;
+      for (const [oldText, newText] of poolRewords) {
+        if (content.includes(oldText)) {
+          content = content.split(oldText).join(newText);
+          reworded = true;
+        }
+      }
+      if (reworded) {
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reworded the Multi-Machine Session Pool transfer / triggers / closeout bullets (the natural-language move path is retired; POST /pool/transfer is the lever)');
+      }
     }
 
     // Cross-Machine Secret Sync (spec Phase 4, 2026-06-04): deployed agents don't know
@@ -11987,6 +12141,7 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       const section = `
 **Topic Profile (per-topic model, thinking, framework pins)** — Every conversation topic can carry a durable profile pinning its BASELINE model (an explicit id OR a tier — never both), thinking depth (\`off\`/\`low\`/\`medium\`/\`high\`/\`max\`), and framework (\`claude-code\`/\`codex-cli\`/…). Pins survive restarts and follow the topic. **The conversational surface is PRIMARY** (PROACTIVE — these are the triggers): when the user says "use codex here", "pin this topic to Fable", or "set high thinking on this topic", that IS the request — propose the change back in plain words, confirm, and the pin is durable from then on. NEVER instruct the user to type \`/topic\`; the \`/topic\` command exists only as a power-user convenience.
 - What is this topic pinned to? \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic-profile/TOPIC_ID\` — Registry First: read it, never guess (no entry = the topic runs on defaults).
+${topicProfileProposeBullet(port)}
 - Why/when did a pin change? Read \`logs/topic-profile-changes.jsonl\` — the per-change audit (who set what, when, old → new).
 - A pinned model/framework that is no longer available falls back to defaults with a once-per-transition notice — the session keeps working; a pin is never a block.
 - A baseline pin does NOT disable the heavy-work ultra escalation (\`escalationOverride: 'inherit'\` is the default); it steps aside only when the operator explicitly opts the topic out (\`'suppress'\`).
@@ -11995,6 +12150,21 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Topic Profile awareness section');
+    }
+
+    // Propose lane (spec retire-staged-features-2026-10-25): the agent's write
+    // path now that the profile-intent classifier is gone. Content-sniffed on the
+    // route; inserted right after the "What is this topic pinned to?" bullet when
+    // the card is present (precedent: the dashboard door + model line below).
+    if (content.includes('Topic Profile (per-topic model') && !content.includes('/topic-profile/TOPIC_ID/propose')) {
+      const pinnedBullet = content.indexOf('- What is this topic pinned to? `curl');
+      if (pinnedBullet !== -1) {
+        const eol = content.indexOf('\n', pinnedBullet);
+        const at = eol === -1 ? content.length : eol + 1;
+        content = content.slice(0, at) + (eol === -1 ? '\n' : '') + topicProfileProposeBullet(port) + '\n' + content.slice(at);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the topic-profile propose bullet (POST /topic-profile/TOPIC_ID/propose) to the Topic Profile section');
+      }
     }
 
     // Dashboard door + model controls (docs/specs/dashboard-door-model-controls.md
@@ -12323,9 +12493,6 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
       // Jev circles shadow: a server-side log-only instrument whose summary any
       // framework's agent can read; the card says it measures Claude Code sessions.
       '### Jev Circles Shadow',
-      // Jev review-flag shadow: a server-side log-only instrument over the
-      // Telegram history, framework-agnostic; any agent can read its summary.
-      '### Jev Review-Flag Shadow',
       '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Machine Identity Recovery',
       // A2A inbound message-id ledger: server-side dedup of agent-to-agent
@@ -14310,6 +14477,152 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
       }
     } catch (err) {
       result.errors.push(`mentor dailySpendCapUsd retirement write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Retire the config blocks of the five staged features removed by spec
+   * retire-staged-features-2026-10-25 (CMT-1004): the conformance-audit LLM
+   * enrichment, the subtree-nav LLM rerank, the Jev review-flag shadow, the
+   * proactive autonomous compaction sentinel, and the two natural-language intent
+   * classifiers (move / profile). Also the junk top-level `quotaLimits` key —
+   * Instar never defined it, so it is removed ONLY when it deep-equals the known
+   * junk value `{"enabled": false}`; any other shape is someone else's and is left
+   * alone, named in a REVIEW line without its value.
+   *
+   * Behavior (precedent: migrateRetireDeadMentorConfig):
+   *  - config.json absent → skip; unparseable → errors entry, file untouched
+   *  - `_instar_noMigrate` honored the way applyDefaults reads it (a full path, a
+   *    prefix path or a bare key segment opts out) → the path is skipped + reported
+   *  - every removed block is recorded in ONE `upgraded` line listing the key and
+   *    its schema scalars only (never free text — the line reaches the operator's
+   *    update notice); a block with `enabled: true` or `dryRun: false` gets its own
+   *    `REVIEW:` line naming the replacement lever
+   *  - parents are left in place (a parent emptied by the deletion stays `{}`)
+   * Idempotent via the `_instar_migrations` marker — NOT a perpetual scrubber, so a
+   * future legitimate feature reusing one of these names is never stripped.
+   */
+  private migrateRetireStagedFeaturesCmt1004(result: MigrationResult): void {
+    const label = 'retire staged features (CMT-1004)';
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push(`${label}: config.json not found`);
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      result.errors.push(`${label}: config.json is not a JSON object`);
+      return;
+    }
+    const migrations = (Array.isArray(config._instar_migrations) ? config._instar_migrations : []) as string[];
+    const marker = 'retire-staged-features-cmt1004-v1';
+    if (migrations.some(m => typeof m === 'string' && m.startsWith(marker))) {
+      result.skipped.push(`${label}: already migrated`);
+      return;
+    }
+    const noMigrate = new Set<string>(Array.isArray(config._instar_noMigrate) ? (config._instar_noMigrate as string[]) : []);
+    const optedOut = (dotted: string): boolean => {
+      const parts = dotted.split('.');
+      for (let i = 0; i < parts.length; i++) {
+        if (noMigrate.has(parts[i]) || noMigrate.has(parts.slice(0, i + 1).join('.'))) return true;
+      }
+      return false;
+    };
+
+    // Schema scalars that may be echoed (enumerations, numbers, booleans) — never free text.
+    const SCALARS = ['enabled', 'dryRun', 'timeoutMs', 'minConfidence', 'modelTier', 'contextWindowTurns', 'tickIntervalMs', 'maxChecksPerDay', 'framework', 'egressAcknowledged', 'allowClaudeFallback'];
+    const describe = (block: unknown): { text: string; review: boolean } => {
+      if (!block || typeof block !== 'object' || Array.isArray(block)) {
+        return { text: '(not an object; value not shown)', review: false };
+      }
+      const rec = block as Record<string, unknown>;
+      const parts: string[] = [];
+      for (const key of SCALARS) {
+        if (!(key in rec)) continue;
+        const v = rec[key];
+        if (typeof v === 'boolean' || typeof v === 'number' || v === null) parts.push(`${key}=${String(v)}`);
+        else if (typeof v === 'string' && /^[A-Za-z0-9._-]{1,40}$/.test(v)) parts.push(`${key}=${v}`);
+        else parts.push(`${key}=<${typeof v}>`);
+      }
+      const review = rec.enabled === true || rec.dryRun === false;
+      return { text: parts.length ? `(${parts.join(', ')})` : '(no schema scalars set)', review };
+    };
+
+    const targets: Array<{ dotted: string; lever: string }> = [
+      { dotted: 'cartographer.conformanceAudit.llmEnrichment', lever: 'GET /conformance/coverage stays deterministic; the LLM enrichment is gone' },
+      { dotted: 'cartographer.subtreeNav.llmRerank', lever: 'GET /cartographer/navigate stays deterministic; the LLM rerank is gone' },
+      { dotted: 'intelligence.jevReviewFlagShadow', lever: 'no replacement — the measurement and GET /jev-review-flag/summary are gone' },
+      { dotted: 'monitoring.proactiveAutonomousCompaction', lever: 'compaction recovery stays with the CompactionSentinel; the proactive sentinel is gone' },
+      { dotted: 'multiMachine.sessionPool.moveIntent', lever: 'POST /pool/transfer — the agent calls it when the user asks to move a conversation' },
+      { dotted: 'topicProfiles.intentClassifier', lever: 'POST /topic-profile/TOPIC_ID/propose — the agent proposes, the operator\'s yes confirms' },
+    ];
+
+    const removed: string[] = [];
+    const reviews: string[] = [];
+    const skippedPaths: string[] = [];
+    for (const { dotted, lever } of targets) {
+      const parts = dotted.split('.');
+      let parent: Record<string, unknown> = config;
+      let present = true;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const next = parent[parts[i]];
+        if (!next || typeof next !== 'object' || Array.isArray(next)) { present = false; break; }
+        parent = next as Record<string, unknown>;
+      }
+      const leaf = parts[parts.length - 1];
+      if (!present || !(leaf in parent)) continue;
+      if (optedOut(dotted)) {
+        skippedPaths.push(dotted);
+        continue;
+      }
+      const d = describe(parent[leaf]);
+      delete parent[leaf];
+      if (d.review) {
+        reviews.push(`REVIEW: ${dotted} ${d.text} was removed — it was switched on, and the feature is retired. Replacement: ${lever}.`);
+      } else {
+        removed.push(`${dotted} ${d.text}`);
+      }
+    }
+
+    // Top-level `quotaLimits`: never an Instar key. Removed only at the known junk value.
+    if ('quotaLimits' in config) {
+      if (optedOut('quotaLimits')) {
+        skippedPaths.push('quotaLimits');
+      } else {
+        const q = config.quotaLimits;
+        const isJunk = !!q && typeof q === 'object' && !Array.isArray(q)
+          && Object.keys(q as Record<string, unknown>).length === 1
+          && (q as Record<string, unknown>).enabled === false;
+        if (isJunk) {
+          delete config.quotaLimits;
+          removed.push('quotaLimits (unknown key; enabled=false)');
+        } else {
+          reviews.push('REVIEW: quotaLimits is not an Instar setting and was left in place (value not shown) — remove it by hand if nothing of yours reads it.');
+        }
+      }
+    }
+
+    migrations.push(`${marker}-${new Date().toISOString()}`);
+    config._instar_migrations = migrations;
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`${label} write: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    for (const p of skippedPaths) result.skipped.push(`${label}: ${p} (opted out via _instar_noMigrate)`);
+    if (removed.length > 0) {
+      result.upgraded.push(`${label}: removed retired config block(s) ${removed.join('; ')}`);
+    }
+    for (const line of reviews) result.upgraded.push(line);
+    if (removed.length === 0 && reviews.length === 0) {
+      result.skipped.push(`${label}: nothing to remove`);
     }
   }
 

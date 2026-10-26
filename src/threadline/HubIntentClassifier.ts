@@ -31,7 +31,7 @@
  * being removed. `isCommand:true` is returned ONLY on a high-confidence command
  * with a resolved intent (`open`, or `tie` with an enum-resolved target).
  *
- * Pattern: `MoveIntentClassifier` (the proven exemplar, PR #1367) + `CoherenceGate`
+ * Pattern: the LLM-with-context intent recognizer (PR #1367) + `CoherenceGate`
  * (LLM via the shared `IntelligenceProvider`) + the cheap-prefilter→LLM hybrid
  * (`TopicIntentCapture`) — the prefilter may ONLY skip toward pass-through (a
  * message with no bind-ish signal anywhere cannot be a bind command), NEVER decide

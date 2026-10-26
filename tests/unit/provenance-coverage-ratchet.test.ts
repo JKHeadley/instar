@@ -45,9 +45,7 @@ import {
   DP_PROJECT_DRIFT_CHECK,
   DP_INPUT_GUARD,
   DP_MESSAGE_SENTINEL_CLASSIFY,
-  DP_MOVE_INTENT_CLASSIFY,
   DP_HUB_INTENT_CLASSIFY,
-  DP_PROFILE_INTENT_CLASSIFY,
   DP_INPUT_CLASSIFY,
   DP_SESSION_SUMMARY_EXTRACT,
   DP_SLACK_STALL_CONFIRM,
@@ -123,7 +121,6 @@ const PENDING_BASELINE = [
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
-  'standards-coverage-enrich::StandardsCoverageEnrichment::backlog:decision-quality-enrolment',
   'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
   'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
@@ -426,35 +423,11 @@ describe('message-sentinel-classify — bounded interrupt-intent enrollment', ()
   });
 });
 
-describe('move-intent-classify — bounded relocation-intent enrollment', () => {
-  it('is wired with a bounded valve and explicit measurement-only posture', () => {
-    const entry = getCensusEntry(DP_MOVE_INTENT_CLASSIFY);
-    expect(entry?.status).toBe('wired');
-    expect(entry?.component).toBe('MoveIntentClassifier');
-    expect(entry?.volumeClass).toBe('budget:250');
-    expect(entry?.contentClass).toBe('content-bearing');
-    expect(entry?.gradingPosture).toBe('measurement-only');
-    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
-  });
-});
-
 describe('hub-intent-classify — bounded bind-intent enrollment', () => {
   it('is wired with a bounded valve and explicit measurement-only posture', () => {
     const entry = getCensusEntry(DP_HUB_INTENT_CLASSIFY);
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('HubIntentClassifier');
-    expect(entry?.volumeClass).toBe('budget:250');
-    expect(entry?.contentClass).toBe('content-bearing');
-    expect(entry?.gradingPosture).toBe('measurement-only');
-    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
-  });
-});
-
-describe('profile-intent-classify — bounded topic-profile enrollment', () => {
-  it('is wired with a bounded valve and explicit measurement-only posture', () => {
-    const entry = getCensusEntry(DP_PROFILE_INTENT_CLASSIFY);
-    expect(entry?.status).toBe('wired');
-    expect(entry?.component).toBe('ProfileIntentClassifier');
     expect(entry?.volumeClass).toBe('budget:250');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');

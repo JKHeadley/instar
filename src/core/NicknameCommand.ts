@@ -10,15 +10,14 @@
  * work on the laptop" (plain discussion) matched the `keep` verb and swallowed
  * the message before the agent saw it. Under the constitutional standard
  * "Intelligence Infers, Keywords Only Guard" the decision "is this a move
- * command?" — a judgment about what the human MEANT — is now inferred by an LLM
- * over the message + recent conversation context in `MoveIntentClassifier`
- * (`classifyRelocationIntent` → `toNicknameCommand`), NEVER a verb list. The
- * known-nickname set is retained purely as a structured-output guardrail.
+ * command?" — a judgment about what the human MEANT — is the AGENT's to make,
+ * reading the conversation; the server never recognises the phrase itself.
+ * The agent then calls the explicit lever (`POST /pool/transfer`), which
+ * builds this shape deterministically from the named nickname.
  *
  * This module keeps ONLY the command TYPE — the value object the downstream
  * planner (`TransferByNickname.planTransferByNickname`) and resolver
- * (`RelocationNicknameSet`) consume. Both are unchanged: only the recognizer's
- * DECISION moved from keyword→LLM.
+ * (`RelocationNicknameSet`) consume.
  */
 
 export interface NicknameCommand {

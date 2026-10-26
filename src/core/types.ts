@@ -4100,24 +4100,6 @@ export interface InstarConfig {
       maxChecksPerDay?: number;
     };
     /**
-     * Jev review-flag shadow (docs/specs/jev-review-flag-shadow.md). LOG-ONLY:
-     * once a minute, judges each new agent reply in the Telegram history with
-     * Jev ("does this need the operator's review?") and appends a content-free
-     * row. Delivers nothing. `enabled` is OMITTED by default so the
-     * development-agent gate decides (live on a dev agent, dark on the fleet);
-     * explicit false is the kill switch, read live. Needs the vault
-     * `typesafe_api_key`.
-     */
-    jevReviewFlagShadow?: {
-      enabled?: boolean;
-      /** Pinned model id — never an alias (default "jev-1.13.0"). */
-      model?: string;
-      /** Hard abort per call (default 1500, max 10000). */
-      timeoutMs?: number;
-      /** Daily bound on attempted calls (default 3000). */
-      maxChecksPerDay?: number;
-    };
-    /**
      * Jev job-completion audit (docs/specs/jev-job-supervision.md). DARK by
      * default. Observe-only: captures an evidence pack when a scheduled job
      * completes, and a batch job asks Jev whether the evidence shows the
@@ -6494,21 +6476,6 @@ export interface MonitoringConfig {
     checkInEveryMs?: number;
     /** Ignore repeat reports within this window (default: 60_000). */
     dedupeWindowMs?: number;
-  };
-  /**
-   * Proactive compaction for autonomous Claude sessions. Explicit opt-in only
-   * (dark when absent); dry-run defaults true. It reads Claude's own
-   * "Context left until auto-compact" status and acts only at an idle boundary.
-   */
-  proactiveAutonomousCompaction?: {
-    enabled?: boolean;
-    dryRun?: boolean;
-    /** Used-context threshold percentage (default 85). */
-    thresholdUsedPercent?: number;
-    /** Poll cadence in milliseconds (default 60_000). */
-    tickIntervalMs?: number;
-    /** Per-session action cooldown in milliseconds (default 30 minutes). */
-    cooldownMs?: number;
   };
   /**
    * SocketDisconnectSentinel — detects Claude Code's "socket connection closed

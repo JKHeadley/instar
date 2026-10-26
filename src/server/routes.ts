@@ -149,7 +149,6 @@ import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { getJevCorrectionShadow } from '../core/JevCorrectionShadow.js';
 import { getJevCirclesShadow } from '../core/JevCirclesShadow.js';
-import { getJevReviewFlagShadow } from '../core/JevReviewFlagShadow.js';
 import { PasskeyGrantStore, canonicalEmail as canonicalPasskeyEmail } from '../core/PasskeyGrantStore.js';
 import { PasskeyIssuerSet, type IssuerMachineStatus } from '../core/PasskeyIssuerSet.js';
 import { PasskeyNonceLedger } from '../core/PasskeyNonceLedger.js';
@@ -6320,18 +6319,6 @@ export function createRoutes(ctx: RouteContext): Router {
     const shadow = getJevCirclesShadow();
     if (!shadow) {
       res.status(503).json({ error: 'jev-circles shadow not constructed on this agent' });
-      return;
-    }
-    res.json(shadow.summary());
-  });
-
-  // GET /jev-review-flag/summary — the jev-review-flag-shadow log, summarised
-  // (docs/specs/jev-review-flag-shadow.md): checks, would-flags, per-topic
-  // counts. Read-only; content-free rows. 503 when the shadow is not constructed.
-  router.get('/jev-review-flag/summary', (_req, res) => {
-    const shadow = getJevReviewFlagShadow();
-    if (!shadow) {
-      res.status(503).json({ error: 'jev-review-flag shadow not constructed on this agent' });
       return;
     }
     res.json(shadow.summary());

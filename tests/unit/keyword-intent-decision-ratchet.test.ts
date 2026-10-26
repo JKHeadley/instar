@@ -139,10 +139,12 @@ function getSourceFiles(): string[] {
 // from) the inbound message path. These are the baseline; the number only DECREASES as
 // each is converted to LLM-with-context (the CoherenceGate / cheap-prefilter→LLM template).
 // #2 core/NicknameCommand.ts (recognizeNicknameCommand — TRANSFER_VERBS/PIN_VERBS,
-// the hijack) was CONVERTED to LLM-with-context (MoveIntentClassifier) on 2026-07-04
-// — the exemplar under this very standard (docs/specs/nickname-move-intent-llm-rebuild.md).
-// It no longer keyword-decides intent, so the detector no longer flags it: it is
-// removed from the baseline and BASELINE dropped 6→5 (this ratchet only ever DECREASES).
+// the hijack) was CONVERTED to LLM-with-context on 2026-07-04 (the exemplar under
+// this very standard, docs/specs/nickname-move-intent-llm-rebuild.md); that LLM
+// recognizer was itself retired on 2026-10-25 (docs/specs/retire-staged-features-2026-10-25.md)
+// — the agent now drives the explicit POST /pool/transfer lever. Either way it no
+// longer keyword-decides intent, so the detector no longer flags it: it is removed
+// from the baseline and BASELINE dropped 6→5 (this ratchet only ever DECREASES).
 // #3 threadline/hubCommands.ts (parseHubCommand — open/tie NL regexes that SWALLOWED
 // the message) was CONVERTED to LLM-with-context (HubIntentClassifier) on 2026-07-04
 // — Conversion #3 under this standard (docs/specs/keyword-intent-conversions-1-and-3.md).
@@ -200,7 +202,8 @@ const ALLOWLIST: Record<string, string> = {
 // RATCHET BASELINE — only DECREASE, never increase. The count of genuine offenders
 // (per file). Landed at 6 (the audit's six findings). When an offender is converted to
 // LLM-with-context (and thus stops matching), lower this number. 6→5 NicknameCommand
-// (MoveIntentClassifier, #1367); 5→4 hubCommands (HubIntentClassifier, Conversion #3);
+// (LLM move-intent conversion, #1367; the recognizer later retired, 2026-10-25); 5→4
+// hubCommands (HubIntentClassifier, Conversion #3);
 // 4→1 the three LATENT offenders resolved (CMT-1907): #4 TopicClassifier + #5 AutonomySkill
 // REMOVED as dead code, #6 AgentReadinessScorer ALLOWLISTED as a task-nature survivor. Only
 // #1 topicProfileIngress remains (its LLM conversion lands separately).
