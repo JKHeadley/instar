@@ -787,3 +787,26 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .pace-bar.today { background: transparent; border: 1.5px dashed var(--accent); }
 .pace-bar.picked { background: var(--teal-200); }
 .pace-bar.today.picked { background: var(--accent-wash); }
+/* ── Other agents (people-settings.md: Threadline → Other agents) ──────── */
+.agents-page .waiting-card { margin-bottom: var(--s-3); }
+.waiting-card.bad { border-color: var(--bad-line); background: var(--bad-wash); }
+.need-card.muted-card { border-color: var(--unknown-line); border-style: dashed; background: var(--surface); margin-top: var(--s-4); }
+.page-primary { position: sticky; bottom: calc(var(--nav-h) + 12px); display: flex; justify-content: center; margin-top: var(--s-4); z-index: 5; }
+@media (min-width: 900px) { .page-primary { position: static; justify-content: flex-start; } }
+.connect-btn { box-shadow: var(--accent-glow); }
+.select-input { height: 44px; appearance: auto; }
+.invite-out { display: flex; flex-direction: column; gap: var(--s-2); }
+.invite-out:empty { display: none; }
+.invite-text { font-family: var(--font-mono); font-size: 13px; }
+.bubbles { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-3); }
+.bubble { display: flex; flex-direction: column; gap: 3px; max-width: 88%; }
+.bubble.in { align-self: flex-start; }
+.bubble.out { align-self: flex-end; align-items: flex-end; }
+.bubble-who { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.peer-quote { margin: 0; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-raised); color: var(--text); font-size: 14.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble.in .peer-quote { border-left: 3px solid var(--unknown); border-top-left-radius: 4px; }
+.bubble.out .peer-quote { background: var(--accent-wash); border-color: var(--accent); border-top-right-radius: 4px; }
+.bubble-when { font-size: 11.5px; color: var(--text-faint); }
+.bind-row { display: flex; gap: var(--s-2); align-items: center; }
+.bind-row .reason-input { flex: 1; }
+.tone-line[data-tone="ok"] { border-color: var(--accent); background: var(--accent-wash); }

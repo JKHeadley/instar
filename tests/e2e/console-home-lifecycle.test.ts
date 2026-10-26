@@ -34,6 +34,7 @@ import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { buildSchedulePage, buildHistory as buildRunHistory, runStartWords } from '../../dashboard/console/schedule-model.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { buildShipping, buildFeedback, buildPace, developmentHeadline, maintainerMode } from '../../dashboard/console/development-model.js';
+import { buildAgentsPage, threadModel, pairingModel, relayModel } from '../../dashboard/console/agents-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -405,5 +406,49 @@ describe('Console Home E2E (feature is alive)', () => {
     // The bearer-only shipping writes are dark on this server (503), never a silent 200.
     expect((await request(server.getApp()).post('/green-pr-automerge/hold').set(auth).send({ pr: 1, reason: 'e2e' })).status).toBe(503);
     expect((await request(server.getApp()).post('/local-verify').set(auth).send({ pr: 1 })).status).toBe(503);
+  });
+
+  it('the Other-agents page runs the real Threadline routes through its model: every 503 maps to honest words, nothing is fabricated as paired or reachable, and the PIN and hub writes refuse without their gates', async () => {
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      const code = r.body && typeof r.body.error === 'string' ? r.body.error : null;
+      return r.status === 200 ? { ok: true, status: 200, data: r.body, code } : { ok: false, status: r.status, data: r.body, code, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const res = {
+      health: await read('/threadline/health'), pairingRes: await read('/threadline/pairing'), invitesRes: await read('/threadline/pairing/invites'),
+      peersRes: await read('/threadline/peers/health?scope=pool'), convRes: await read('/threadline/conversations?scope=mesh'), threadsRes: await read('/threadline/observability/threads'), poolRes: await read('/pool'),
+    };
+    // Every read answered through the real stack: a reading, a 503, or (the relay health, mounted only with the relay) a 404 — never a 401/403/500.
+    for (const [k, r] of Object.entries(res)) expect(r.ok || r.status === 503 || (k === 'health' && r.status === 404), `${k} answered ${r.status}`).toBe(true);
+    expect(res.poolRes.ok).toBe(true);
+    const page = buildAgentsPage(res, Date.now());
+    // Pairing is dev-gated dark on this bare server: the model says "turned off", never "no pairings".
+    const pairing = pairingModel(res.pairingRes, res.invitesRes, res.poolRes, Date.now());
+    expect(pairing.state).toBe('off');
+    expect(pairing.reason).toBe('Pairing is turned off on this agent.');
+    // The relay health route is not mounted without the relay: can't tell, never "connected".
+    const relay = relayModel(res.health, Date.now());
+    expect(['cant-tell', 'not-configured']).toContain(relay.state);
+    expect(relay.connected).toBe(false);
+    // The real delivery tracker answers with no peers; no agent is invented, and the page is the honest off page.
+    expect(res.peersRes.ok).toBe(true);
+    expect(page.agents).toEqual([]);
+    expect(page.waiting).toEqual([]);
+    expect(page.mode).toBe('off');
+    expect(page.headline).toMatch(/^The agent network (is|looks) off on this agent\.$/);
+    expect(page.sub).toContain('Turn on pairing');
+    expect(JSON.stringify(page)).not.toMatch(/reachable\.|Paired/);
+    // A conversation's history is dark here too: honest words, no empty history presented as real.
+    const t = threadModel(await read('/threadline/threads/thread-e2e-1?limit=200'), await read('/threadline/threads/thread-e2e-1/health'));
+    expect(t.ok).toBe(false);
+    expect(t.reason).toBe('The message history is switched off on this agent.');
+    // The body-PIN pairing routes and the hub binding refuse (or are dark) without their gates; the console never sends a PIN it did not just collect.
+    const iid = 'ab'.repeat(16);
+    for (const p of [`/threadline/pairing/invites/${iid}/approve`, `/threadline/pairing/invites/${iid}/finish`, `/threadline/pairing/invites/${iid}/not-them`, `/threadline/pairing/invites/${iid}/own-agent`, '/threadline/pairing/invites']) {
+      const r = await request(server.getApp()).post(p).set(auth).send({});
+      expect([403, 409, 503], p).toContain(r.status);
+    }
+    const bind = await request(server.getApp()).post('/threadline/hub/bind').set(auth).send({ action: 'open', threadId: 'thread-e2e-1' });
+    expect(bind.status).toBe(503);
   });
 });

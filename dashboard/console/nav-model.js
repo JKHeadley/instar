@@ -64,7 +64,7 @@ export const GROUPS = [
     id: 'people', label: 'People', icon: 'people',
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
-      { id: 'threadline', label: 'Threadline', icon: 'chat', desc: 'Conversations with other agents, and pairing new ones.' },
+      { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
       { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Replies held back from you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Mandates', icon: 'stamp', desc: 'Permission slips you signed for agent-to-agent work.' },
       { id: 'secrets', label: 'Secrets', icon: 'lock', desc: 'One-time links for handing over passwords and keys safely.' },
@@ -111,6 +111,7 @@ export const NATIVE_PAGES = {
   'llm-activity': '#/capacity/costs',
   'routing-map': '#/capacity/costs',
   origins: '#/people/messages',
+  threadline: '#/people/agents',
   features: '#/settings/allowed',
   'pr-pipeline': '#/work/development?s=shipping',
   throughput: '#/work/development?s=pace',
