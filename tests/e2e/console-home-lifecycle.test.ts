@@ -41,6 +41,7 @@ import { PreferencesManager } from '../../src/core/PreferencesManager.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 import { buildRequests, buildKeys, buildSync, secretsHeadline, secretsFacts, requestBody, resultWords as secretResultWords } from '../../dashboard/console/secrets-model.js';
 import { buildListing, buildFile, saveBody, saveResult, buildConfig, configPatch, configResultWords, pinnedFrom, filesHeadline } from '../../dashboard/console/files-model.js';
+import { buildSessions, sessionsHeadline, sessionsFacts, closeRequest, closeResultWords, createBody, createResultWords, doorChoices, machineChoices } from '../../dashboard/console/sessions-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -606,6 +607,57 @@ describe('Console Home E2E (feature is alive)', () => {
     expect((await request(server.getApp()).get('/api/files/list?path=')).status).toBe(401);
     expect((await request(server.getApp()).post('/api/files/save').send({ path: 'docs/note.md', content: 'x' })).status).toBe(401);
     expect((await request(server.getApp()).post('/api/files/save').set(auth).send({ path: 'docs/note.md', content: 'x' })).status).toBe(403);
+  });
+  it('the Sessions page runs the real session routes through its model: an empty list reads as nothing running, a recorded session is listed with its model in words, a close of a gone session reads as already closed, and every write refuses without the token', async () => {
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const empty = await read('/sessions?scope=pool');
+    expect(empty.status).toBe(200);
+    const m0 = buildSessions(empty, { now: Date.now() });
+    expect(m0).toMatchObject({ ok: true, rows: [], counts: { running: 0, quiet: 0 } });
+    expect(sessionsHeadline(m0).text).toBe('Nothing is running.');
+    expect(sessionsFacts(m0)[0]).toEqual({ n: 0, label: 'running', tone: null });
+
+    // A real running session record: listed, named, its model in words, protected flag present.
+    const startedAt = new Date(Date.now() - 30 * 60_000).toISOString();
+    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'running', startedAt, model: 'claude-opus-5-5' } as never);
+    const one = buildSessions(await read('/sessions?scope=pool'), { now: Date.now() });
+    expect(one.ok && one.rows.map((r) => [r.title, r.model, r.session.protected])).toEqual([['e2e-sess', 'Opus 5.5', false]]);
+    expect(one.ok && one.rows[0].sub.startsWith('This machine · 30 min')).toBe(true);
+    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'completed', startedAt, model: 'claude-opus-5-5' } as never);
+    expect((buildSessions(await read('/sessions?scope=pool'), { now: Date.now() }) as { rows: unknown[] }).rows).toEqual([]);
+
+    // Close a session that is not running: the page's own request, read as already closed.
+    const gone = { tmuxSession: 'no-such-session', id: 'x', remote: false };
+    const req = closeRequest(gone);
+    const del = await request(server.getApp()).delete(req.path).set(auth);
+    expect(del.status).toBe(404);
+    expect(closeResultWords(gone, del.status, del.body)).toEqual({ ok: true, gone: true, text: 'Already closed.' });
+    // A relay to a machine this agent does not know: refused before any request leaves.
+    const remote = { tmuxSession: 'r', id: 'u-1', remote: true, machineId: 'm-unknown', machineNickname: 'Mac Mini' };
+    const rreq = closeRequest(remote);
+    const rc = await request(server.getApp()).post(rreq.path).set(auth).send(rreq.body!);
+    expect(rc.status).toBe(404);
+    expect(closeResultWords(remote, rc.status, rc.body).ok).toBe(false);
+
+    // The new-session sheet's sources: doors (or honestly off) and the machine list (single machine: no choice).
+    const opts = await read('/topic-profile/options');
+    expect([200, 503]).toContain(opts.status);
+    if (opts.ok) expect(Array.isArray(doorChoices(opts.data))).toBe(true);
+    expect(machineChoices(await read('/pool'))).toBeNull();
+    // A create with an empty name never leaves the page; a refused create reads in the server's words.
+    expect(createBody({ name: ' ' }, null).ok).toBe(false);
+    const bad = await request(server.getApp()).post('/sessions/create').set(auth).set('X-Instar-Request', '1').send({});
+    expect(bad.status).toBeGreaterThanOrEqual(400);
+    expect(createResultWords(bad.status, bad.body, '').ok).toBe(false);
+
+    // Without the token, every one of these routes refuses.
+    expect((await request(server.getApp()).get('/sessions?scope=pool')).status).toBe(401);
+    expect((await request(server.getApp()).delete('/sessions/x')).status).toBe(401);
+    expect((await request(server.getApp()).post('/sessions/x/remote-close').send({ machineId: 'm', sessionUuid: 'u' })).status).toBe(401);
+    expect((await request(server.getApp()).post('/sessions/create').send({ name: 'x' })).status).toBe(401);
   });
 });
 

@@ -929,3 +929,51 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   .files-back { display: none; }
   .files-edit-fab { position: sticky; float: right; bottom: var(--s-4); }
 }
+/* ── Sessions (work.md: Sessions) ───────────────────────────────────────── */
+.sessions-page { display: block; }
+.sessions-page .sess-view { display: none; }
+.sessions-page.has-open .sess-list { display: none; }
+.sessions-page.has-open .sess-view { display: block; }
+@media (min-width: 900px) {
+  .sessions-page { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: var(--s-6); align-items: start; }
+  .sessions-page .sess-view, .sessions-page.has-open .sess-list { display: block; }
+  .sessions-page .sess-view { position: sticky; top: var(--s-4); }
+}
+.sess-new { margin: var(--s-2) 0 var(--s-4); }
+.sess-row { text-decoration: none; color: inherit; }
+.sess-row.open { background: var(--accent-wash); }
+.stale-banner { margin: var(--s-2) 0; padding: var(--s-2) var(--s-3); border: 1px dashed var(--unknown-line); border-radius: var(--r-md); color: var(--text-muted); font-size: 14px; }
+.machine-line { margin: var(--s-1) 0; padding: var(--s-2) var(--s-3); border: 1px solid var(--hairline); border-radius: var(--r-md); font-size: 14.5px; color: var(--text); overflow-wrap: anywhere; }
+.machine-line.dashed { border-style: dashed; border-color: var(--unknown-line); color: var(--text-muted); }
+.sess-pick { margin-top: var(--s-10); text-align: center; }
+.sess-open { display: flex; flex-direction: column; gap: var(--s-2); min-height: calc(100dvh - 140px); }
+.sess-bar { display: flex; align-items: center; gap: var(--s-2); }
+.sess-back { text-decoration: none; font-size: 22px; min-width: 44px; justify-content: center; }
+.sess-titles { flex: 1; min-width: 0; }
+.sess-title { margin: 0; font-size: 18px; line-height: 1.25; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-sub { margin: 2px 0 0; font-size: 13.5px; color: var(--text-muted); }
+.sess-more { min-width: 44px; padding: 0 12px; font-size: 20px; line-height: 1; }
+.sess-status { margin: 0; padding: var(--s-2) var(--s-3); border: 1px dashed var(--unknown-line); border-radius: var(--r-md); font-size: 14px; color: var(--text-muted); }
+.sess-term-wrap { position: relative; flex: 1; min-height: 320px; display: flex; }
+.sess-term { flex: 1; min-width: 0; min-height: 320px; height: 52dvh; background: #0a0e17; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: 6px; overflow: hidden; }
+.sess-term.plain { overflow: auto; }
+.sess-pre { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; color: #d6dbe4; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sess-resume { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; }
+.sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: 0; padding: var(--s-2) 0; background: var(--bg); }
+.sess-input { flex: 1; min-height: 44px; font-size: 16px; resize: none; }
+.sess-composer-btns { display: flex; gap: var(--s-2); }
+.keys-tray { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--hairline); border-radius: var(--r-md); }
+.keys-row { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.key-chip { min-width: 44px; min-height: 44px; justify-content: center; font-family: var(--font-mono); }
+.keys-stop { padding-top: var(--s-3); border-top: 1px solid var(--hairline); }
+.sess-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; margin: var(--s-3) 0; }
+.sess-actions a.btn-quiet { display: inline-flex; align-items: center; text-decoration: none; }
+.sess-default-row { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline; margin-top: var(--s-3); }
+.sess-default-row .card-note { margin: 0; }
+.sess-default-box:empty { display: none; }
+.sess-default-box { border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); margin: var(--s-2) 0; }
+.skeleton-row { pointer-events: none; }
+.sess-view, .sess-open, .sess-term-wrap, .sess-composer { min-width: 0; max-width: 100%; }
+.sess-view { overflow-x: hidden; }
+.sess-input { min-width: 0; }
+.sess-term .xterm { max-width: 100%; }

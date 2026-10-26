@@ -103,6 +103,8 @@ describe('console served beside the legacy dashboard', () => {
       ['/dashboard/console/mandates-model.js', 'javascript'],
       ['/dashboard/console/secrets.js', 'javascript'],
       ['/dashboard/console/secrets-model.js', 'javascript'],
+      ['/dashboard/console/sessions.js', 'javascript'],
+      ['/dashboard/console/sessions-model.js', 'javascript'],
       ['/dashboard/console/learned.js', 'javascript'],
       ['/dashboard/console/learned-model.js', 'javascript'],
       ['/dashboard/console/files.js', 'javascript'],

@@ -23,6 +23,7 @@ import { renderMandates } from './mandates.js';
 import { renderSecrets } from './secrets.js';
 import { renderLearned } from './learned.js';
 import { renderFiles } from './files.js';
+import { renderSessions } from './sessions.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -194,7 +195,7 @@ async function fillAgentName() {
 const CARDS = [
   { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
   { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
-  { id: 'doing', title: 'What I’m doing', href: legacyHref('sessions'), col: 'main' },
+  { id: 'doing', title: 'What I’m doing', href: '#/work/sessions', col: 'main' },
   { id: 'reach', title: 'Can I reach you', href: '#/people/messages', col: 'side' },
   { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
   { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
@@ -438,6 +439,7 @@ const NATIVE = {
   'work/plans/in-the-way': renderPlans,
   'work/schedule': renderSchedule,
   'work/development': renderDevelopment,
+  'work/sessions': renderSessions,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
