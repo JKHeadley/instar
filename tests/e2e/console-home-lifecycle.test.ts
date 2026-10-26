@@ -24,7 +24,7 @@ import {
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
 import { buildAccountsPage } from '../../dashboard/console/accounts-model.js';
-import { buildFeatures, buildProfile, buildHistory, buildGuards, walkToEnabled } from '../../dashboard/console/allowed-model.js';
+import { buildFeatures, buildProfile, buildHistory, buildGuards, walkToEnabled, flattenFeature, canTurnOff, refusalText } from '../../dashboard/console/allowed-model.js';
 import { FeatureRegistry } from '../../src/core/FeatureRegistry.js';
 import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
 import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js';
@@ -204,10 +204,40 @@ describe('Console Home E2E (feature is alive)', () => {
     expect(list.ok).toBe(true);
     const byId = (id: string) => list.groups.flatMap((g: { features: unknown[] }) => g.features).find((f: { id: string }) => f.id === id);
 
-    // A fresh local-tier feature: undiscovered → enabled, no consent record.
-    const local = byId('evolution-system');
+    // A read-only feature (the runtime ignores its key): the real route refuses the
+    // switch with 409 FEATURE_NOT_SWITCHABLE, and the page model offers no switch.
+    const ro = byId('evolution-system');
+    expect(ro.switchable).toBe(false);
+    expect(ro.readOnlyReason).toMatch(/read-only/);
+    expect(canTurnOff(ro)).toBe(false);
+    const roWalk = await walkToEnabled(ro, deps);
+    expect(roWalk).toMatchObject({ ok: false, readOnly: true });
+    expect(roWalk.steps).toEqual([]);
+    const roSet = await request(app).post('/features/evolution-system/transition').set(auth).send({ to: 'enabled' });
+    expect(roSet.status).toBe(409);
+    expect(roSet.body.error.code).toBe('FEATURE_NOT_SWITCHABLE');
+    // A model walk that skips its own pre-check still stops on the server's 409 as a plain sentence.
+    const roForced = await walkToEnabled({ ...ro, switchable: true }, {
+      ...deps,
+      getInfo: async (id: string) => { const r = await read(`/features/${id}`); return r.ok ? { ok: true, data: { ...r.data, definition: { ...r.data.definition, switchable: true }, validTransitions: ['enabled'] } } : r; },
+    });
+    expect(roForced).toMatchObject({ ok: false, readOnly: true });
+    expect(roForced.message).toMatch(/^This switch is read-only: /);
+
+    // A fresh switchable local-tier feature: undiscovered → enabled, no consent record,
+    // and the page shows the server's honest sentence, not just the discovery state.
+    const local = byId('external-operation-gate');
+    expect(local.switchable).toBe(true);
     expect(local.state).toBe('undiscovered');
-    expect((await walkToEnabled(local, deps)).steps).toEqual(['aware', 'interested', 'enabled']);
+    expect(typeof local.stateText).toBe('string');
+    const localWalk = await walkToEnabled(local, deps);
+    expect(localWalk.steps).toEqual(['aware', 'interested', 'enabled']);
+    expect(['applied', 'refused', 'failed', 'not-applied']).toContain(localWalk.apply.outcome);
+    // ok is true exactly when the setting followed the switch.
+    expect(localWalk.ok).toBe(localWalk.apply.outcome === 'applied');
+    const after = flattenFeature((await read('/features/external-operation-gate')).data);
+    expect(after.effective).not.toBeNull();
+    expect(after.stateText).toBe(after.effective.summary);
     // A fresh network-tier feature: the real registry refuses without consent, accepts with it.
     const net = byId('publishing-telegraph');
     const bare = await request(app).post('/features/publishing-telegraph/transition').set(auth).send({ to: 'aware' });
@@ -223,8 +253,15 @@ describe('Console Home E2E (feature is alive)', () => {
     expect(sg.ok).toBe(true);
     expect((await read('/features/autonomous-evolution')).data.state.discoveryState).toBe('enabled');
     // A disabled feature comes back in one direct step.
-    await request(app).post('/features/evolution-system/transition').set(auth).send({ to: 'disabled' });
+    const off = await request(app).post('/features/external-operation-gate/transition').set(auth).send({ to: 'disabled', trigger: 'explicit-ask' });
+    expect(off.status).toBe(200);
+    expect(off.body.apply).toBeTruthy();
+    expect(off.body.effective.status).toMatch(/^(off|off-after-restart|not-recorded)$/);
     expect((await walkToEnabled(local, deps)).steps).toEqual(['enabled']);
+    // A present-but-invalid dashboard unlock is refused (401), and the page says so plainly.
+    const bad = await request(app).post('/features/external-operation-gate/transition').set(auth).set('X-Instar-Operator-Session', 'not-a-real-proof').send({ to: 'disabled' });
+    expect(bad.status).toBe(401);
+    expect(refusalText({ status: bad.status, data: bad.body })).toMatch(/Unlock with your PIN again/);
 
     // The profile, its switch with a reason, and the history it writes.
     const profile = buildProfile(await read('/autonomy'));

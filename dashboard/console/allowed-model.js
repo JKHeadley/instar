@@ -218,15 +218,51 @@ const CATEGORY_ORDER = ['safety', 'communication', 'infrastructure', 'intelligen
 export const STATE_WORD = { enabled: 'On', disabled: 'Off', undiscovered: 'Not tried', aware: 'Seen', interested: 'Interested', deferred: 'Later', declined: 'Declined' };
 const CONSENT_TIERS = new Set(['network', 'self-governing']);
 
+// The server's honest state (GET /features* → `effective`, spec
+// feature-transition-applies-action §2.3): what the switch says vs what the setting
+// is vs what this process started with. The short word sits beside the row; the
+// server's own sentence (`effective.summary`) is the one shown in full.
+export const EFFECTIVE_WORD = {
+  on: 'On', off: 'Off', 'on-after-restart': 'On after a restart', 'off-after-restart': 'Off after a restart',
+  'recorded-only': 'Recorded, not applied', 'not-recorded': 'Setting on, switch off',
+};
+const NEEDS_NOTICE = new Set(['on-after-restart', 'off-after-restart', 'recorded-only', 'not-recorded']);
+const READ_ONLY_FALLBACK = 'This switch is read-only in this version.';
+
+function readEffective(e) {
+  if (!e || typeof e !== 'object' || typeof e.status !== 'string') return null;
+  return {
+    status: e.status,
+    summary: typeof e.summary === 'string' && e.summary ? e.summary : null,
+    detail: typeof e.detail === 'string' && e.detail ? e.detail : null,
+    recorded: e.recorded === true, configured: e.configured === true,
+    lastAttempt: e.lastAttempt && typeof e.lastAttempt === 'object' ? e.lastAttempt : null,
+  };
+}
+
 export function flattenFeature(f) {
   const def = (f && f.definition) || {};
   const st = (f && f.state) || {};
+  const effective = readEffective(f && f.effective);
+  const state = st.discoveryState || 'undiscovered';
+  const switchable = def.switchable !== false;
+  const readOnlyReason = switchable ? null : (def.honestyNote || (effective && effective.detail) || READ_ONLY_FALLBACK);
+  // The short word: the server's honest status when it sent one; the discovery state only from an older server.
+  const word = effective ? (EFFECTIVE_WORD[effective.status] || effective.status.replace(/-/g, ' ')) : (STATE_WORD[state] || state);
   return {
     id: def.id, name: def.name || def.id, oneLiner: def.oneLiner || '', fullDescription: def.fullDescription || '',
     category: def.category || 'other', tier: def.consentTier || 'informational',
     dataImplications: Array.isArray(def.dataImplications) ? def.dataImplications : [],
     reversibilityNote: def.reversibilityNote || '',
-    state: st.discoveryState || 'undiscovered', on: st.discoveryState === 'enabled',
+    state,
+    // `on` is the switch's own position (which action the switch offers); what is actually
+    // in force is `effective` and the sentence below.
+    on: switchable ? state === 'enabled' : !!(effective && effective.status === 'on'),
+    effectiveOn: effective ? effective.status === 'on' : state === 'enabled',
+    switchable, readOnlyReason, effective,
+    stateWord: word,
+    stateText: effective && effective.summary ? effective.summary : (STATE_WORD[state] || state),
+    notice: !!(effective && NEEDS_NOTICE.has(effective.status)),
     validTransitions: Array.isArray(f && f.validTransitions) ? f.validTransitions : null,
   };
 }
@@ -241,7 +277,7 @@ export function buildFeatures(res) {
   const flat = list.map(flattenFeature).filter((f) => f.id);
   const cats = [...CATEGORY_ORDER, ...new Set(flat.map((f) => f.category).filter((c) => !CATEGORY_ORDER.includes(c)))];
   const groups = cats.map((c) => ({ id: c, label: CATEGORY_LABEL[c] || String(c).replace(/^./, (x) => x.toUpperCase()), features: flat.filter((f) => f.category === c) })).filter((g) => g.features.length);
-  return { ok: true, groups, on: flat.filter((f) => f.on).length, total: flat.length };
+  return { ok: true, groups, on: flat.filter((f) => f.effectiveOn).length, total: flat.length };
 }
 
 export function needsConsent(tier) { return CONSENT_TIERS.has(tier); }
@@ -268,20 +304,67 @@ function errText(e, status) {
 }
 
 /**
+ * A refused transition in one plain sentence. A read-only feature (409
+ * FEATURE_NOT_SWITCHABLE) and an expired or invalid dashboard unlock (401
+ * OPERATOR_PROOF_INVALID) are named as what they are, never as success.
+ */
+export function refusalText(r) {
+  const e = r && r.data && r.data.error;
+  const code = e && typeof e === 'object' ? e.code : null;
+  const msg = e && typeof e === 'object' && typeof e.message === 'string' && e.message ? e.message : null;
+  if (code === 'FEATURE_NOT_SWITCHABLE' || (r && r.status === 409 && !code)) return `This switch is read-only: ${msg || READ_ONLY_FALLBACK}`;
+  if (code === 'OPERATOR_PROOF_INVALID' || (r && r.status === 401)) return msg || 'Your dashboard unlock has expired. Unlock with your PIN again and retry.';
+  if (r && r.status === 0) return msg || 'The server could not be reached.';
+  return errText(e, r ? r.status : 0);
+}
+
+/**
+ * What a successful enable/disable transition actually did to the setting
+ * (`apply` from POST /features/:id/transition). The switch recorded the choice;
+ * only `applied` means the setting followed it.
+ * Returns { applied, outcome, text } — `text` is the sentence to show.
+ */
+export function applyText(name, direction, data) {
+  const on = direction === 'enable';
+  const apply = data && data.apply && typeof data.apply === 'object' ? data.apply : null;
+  const eff = readEffective(data && data.effective);
+  const tail = eff && eff.summary ? ` ${eff.summary}` : '';
+  if (!apply) {
+    // An older server sends no `apply`: it recorded the choice and said nothing about the setting.
+    return { applied: null, outcome: null, text: `${name} is recorded as ${on ? 'on' : 'off'}; the server did not say whether the setting changed.${tail}` };
+  }
+  const detail = apply.detail ? `: ${String(apply.detail).replace(/\.$/, '')}` : '';
+  if (apply.outcome === 'applied') {
+    // The setting followed; the server's sentence still says whether a restart is needed.
+    return { applied: true, outcome: 'applied', text: eff && eff.summary ? `${name}: ${eff.summary}` : `${name} is ${on ? 'on' : 'off'}.` };
+  }
+  const how = apply.outcome === 'refused' ? 'was refused' : apply.outcome === 'failed' ? 'failed' : 'was not made';
+  return { applied: false, outcome: apply.outcome, text: `${name} is recorded as ${on ? 'on' : 'off'}, but the setting change ${how}${detail}.${tail}` };
+}
+
+/**
  * Walk a feature to "enabled" one server step at a time.
  * deps: getInfo(id) → { ok, data } (GET /features/:id),
  *       transition(id, body) → { ok, status, data } (POST /features/:id/transition),
  *       confirmChallenge(feature) → Promise<boolean> (the operator confirms the activation),
  *       onStep?(state)
- * Resolves { ok, state, steps:[...], message }.
+ * Resolves { ok, state, steps:[...], message, apply?, readOnly?, cancelled? }.
+ * `ok` is true only when the setting itself followed the switch (or an older server
+ * reported no apply result at all).
  */
 export async function walkToEnabled(feature, deps, maxSteps = 6) {
   const steps = [];
+  if (feature && feature.switchable === false) return { ok: false, readOnly: true, state: feature.state, steps, message: `This switch is read-only: ${feature.readOnlyReason || READ_ONLY_FALLBACK}` };
   for (let i = 0; i < maxSteps; i++) {
     const info = await deps.getInfo(feature.id);
     if (!info.ok) return { ok: false, steps, message: `Couldn't read the feature: ${info.reason}.` };
     const f = flattenFeature(info.data);
-    if (f.state === 'enabled') return { ok: true, state: 'enabled', steps, message: 'On.' };
+    if (!f.switchable) return { ok: false, readOnly: true, state: f.state, steps, message: `This switch is read-only: ${f.readOnlyReason}` };
+    if (f.state === 'enabled') {
+      // Already recorded on: say what is actually in force rather than "On.".
+      if (f.effective && f.effective.status === 'recorded-only') return { ok: false, state: 'enabled', steps, message: f.effective.summary || 'Recorded as on, but the setting is still off.' };
+      return { ok: true, state: 'enabled', steps, message: f.effective && f.effective.summary ? f.effective.summary : 'On.' };
+    }
     const next = nextStepToEnabled(f.validTransitions);
     if (!next) return { ok: false, state: f.state, steps, message: `It can't be turned on from “${STATE_WORD[f.state] || f.state}”.` };
     const body = { to: next, trigger: 'explicit-ask', context: 'Turned on from the console' };
@@ -295,15 +378,22 @@ export async function walkToEnabled(feature, deps, maxSteps = 6) {
       if (!yes) return { ok: false, state: f.state, steps, message: 'Not turned on. Nothing changed after the last step.', cancelled: true };
       r = await deps.transition(feature.id, { ...body, consentRecord: consentRecord(feature), activationChallenge: challenge });
     }
-    if (!r.ok) return { ok: false, state: f.state, steps, message: errText(r.data && r.data.error, r.status) };
+    if (!r.ok) {
+      const code = r.data && r.data.error && r.data.error.code;
+      return { ok: false, state: f.state, steps, message: refusalText(r), readOnly: code === 'FEATURE_NOT_SWITCHABLE' || undefined, proofInvalid: code === 'OPERATOR_PROOF_INVALID' || r.status === 401 || undefined };
+    }
     steps.push(next);
     if (deps.onStep) deps.onStep(next);
+    if (next === 'enabled') {
+      const a = applyText(feature.name || feature.id, 'enable', r.data);
+      return { ok: a.applied !== false, state: 'enabled', steps, message: a.text, apply: (r.data && r.data.apply) || null };
+    }
   }
   return { ok: false, steps, message: 'It took more steps than expected; stopped to be safe.' };
 }
 
 /** Turn off: one step, only when the server lists it. */
-export function canTurnOff(f) { return Array.isArray(f.validTransitions) ? f.validTransitions.includes('disabled') : f.state === 'enabled'; }
+export function canTurnOff(f) { if (f.switchable === false) return false; return Array.isArray(f.validTransitions) ? f.validTransitions.includes('disabled') : f.state === 'enabled'; }
 
 /** Undo of a turn-off is offered only where re-enabling needs no fresh consent. */
 export function canUndoOff(f) { return !needsConsent(f.tier); }

@@ -6,20 +6,28 @@
 
 import {
   buildProfile, buildHistory, buildGuards, buildSuggestions, buildFeatures, flattenFeature, profileChanges,
-  walkToEnabled, canTurnOff, canUndoOff, needsConsent, facts, PROFILE_LABEL, PROFILE_SENTENCE, STATE_WORD,
+  walkToEnabled, canTurnOff, canUndoOff, needsConsent, facts, applyText, refusalText, PROFILE_LABEL, PROFILE_SENTENCE, STATE_WORD,
 } from './allowed-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const featureErrors = new Map(); // feature id → the server's last refusal, shown beside the row
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
-/** A request that keeps the status and the server's error object (features answer { error: { code, message } }). */
-async function send(method, path, body) {
+/**
+ * A request that keeps the status and the server's error object (features answer { error: { code, message } }).
+ * `withSession` adds the dashboard unlock proof only when the page already holds one
+ * (from an earlier PIN unlock); this page never asks for a PIN to switch a feature.
+ */
+async function send(method, path, body, withSession = false) {
   try {
-    const r = await fetch(path, { method, headers: { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+    const session = withSession ? operatorSession() : null;
+    const headers = { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', ...(session ? { 'X-Instar-Operator-Session': session } : {}) };
+    const r = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
     const data = await r.json().catch(() => ({}));
+    // A held unlock the server no longer accepts is dropped, so the next try uses the plain path.
+    if (session && r.status === 401) forgetOperatorSession();
     return { ok: r.ok, status: r.status, data, reason: r.ok ? null : `the server answered ${r.status}` };
   } catch { return { ok: false, status: 0, data: { error: { message: 'The server could not be reached.' } }, reason: 'the server could not be reached' }; }
 }
@@ -183,33 +191,44 @@ function featuresBlock(features, refresh) {
 
 function featureRow(f, refresh) {
   const err = featureErrors.get(f.id);
-  const sw = el('button', { class: `switch${f.on ? ' on' : ''}`, type: 'button', role: 'switch', 'aria-checked': f.on ? 'true' : 'false', 'aria-label': `${f.name}: ${f.on ? 'on' : 'off'}`, 'data-feature': f.id });
-  sw.addEventListener('click', () => (f.on ? turnOff(f, sw, refresh) : openFeature(f, refresh)));
-  return el('div', { class: 'feat-row', 'data-focus-key': `feat:${f.id}` },
+  const sub = f.oneLiner ? el('span', { class: 'row-sub', text: f.oneLiner }) : null;
+  // A read-only feature gets no switch: the server says why, beside the row.
+  const why = !f.switchable ? el('span', { class: 'row-sub feat-readonly', text: `Read-only: ${f.readOnlyReason}` })
+    : f.notice ? el('span', { class: 'row-sub feat-notice', text: f.stateText }) : null;
+  let sw = null;
+  if (f.switchable) {
+    sw = el('button', { class: `switch${f.on ? ' on' : ''}`, type: 'button', role: 'switch', 'aria-checked': f.on ? 'true' : 'false', 'aria-label': `${f.name}: ${f.stateWord}`, 'data-feature': f.id });
+    sw.addEventListener('click', () => (f.on ? turnOff(f, sw, refresh) : openFeature(f, refresh)));
+  }
+  return el('div', { class: `feat-row${f.switchable ? '' : ' read-only'}`, 'data-focus-key': `feat:${f.id}`, 'data-feature-row': f.id },
     el('button', { class: 'feat-main', type: 'button', onclick: () => openFeature(f, refresh) },
-      el('span', { class: 'row-title', text: f.name }), f.oneLiner ? el('span', { class: 'row-sub', text: f.oneLiner }) : null,
+      el('span', { class: 'row-title', text: f.name }), sub, why,
       err ? el('span', { class: 'feat-err', text: err }) : null),
-    el('span', { class: `feat-state${f.on ? ' on' : ''}`, text: STATE_WORD[f.state] || f.state }), sw);
+    el('span', { class: `feat-state${f.effectiveOn ? ' on' : ''}${f.notice ? ' attn' : ''}`, text: f.switchable ? f.stateWord : `${f.stateWord} · read-only` }), sw);
 }
 
 async function turnOff(f, sw, refresh) {
-  sw.disabled = true;
+  if (sw) sw.disabled = true;
   const info = await send('GET', `/features/${encodeURIComponent(f.id)}`);
   const cur = info.ok ? flattenFeature(info.data) : f;
+  if (!cur.switchable) { featureErrors.set(f.id, `This switch is read-only: ${cur.readOnlyReason}`); refresh(); return; }
   if (!canTurnOff(cur)) { featureErrors.set(f.id, `It can't be turned off from “${STATE_WORD[cur.state] || cur.state}”.`); refresh(); return; }
-  const r = await send('POST', `/features/${encodeURIComponent(f.id)}/transition`, { to: 'disabled', trigger: 'explicit-ask', context: 'Turned off from the console' });
-  if (!r.ok) { featureErrors.set(f.id, errWords(r)); refresh(); return; }
-  featureErrors.delete(f.id);
-  toast(`${f.name} is off.`, canUndoOff(f) ? { label: 'Undo', run: async () => {
-    const u = await send('POST', `/features/${encodeURIComponent(f.id)}/transition`, { to: 'enabled', trigger: 'explicit-ask', context: 'Undo from the console' });
-    if (!u.ok) featureErrors.set(f.id, errWords(u));
+  const r = await send('POST', `/features/${encodeURIComponent(f.id)}/transition`, { to: 'disabled', trigger: 'explicit-ask', context: 'Turned off from the console' }, true);
+  if (!r.ok) { featureErrors.set(f.id, refusalText(r)); refresh(); return; }
+  const a = applyText(f.name, 'disable', r.data);
+  // A refused or failed setting change stays beside the row, not only in a toast.
+  if (a.applied === false) featureErrors.set(f.id, a.text); else featureErrors.delete(f.id);
+  toast(a.text, canUndoOff(f) ? { label: 'Undo', run: async () => {
+    const u = await send('POST', `/features/${encodeURIComponent(f.id)}/transition`, { to: 'enabled', trigger: 'explicit-ask', context: 'Undo from the console' }, true);
+    if (!u.ok) featureErrors.set(f.id, refusalText(u));
+    else { const b = applyText(f.name, 'enable', u.data); if (b.applied === false) featureErrors.set(f.id, b.text); else featureErrors.delete(f.id); }
     refresh();
   } } : null);
   refresh();
 }
 
 function openFeature(f, refresh) {
-  const lines = [{ label: 'What it does', text: f.fullDescription || f.oneLiner || f.name }, { label: 'State now', text: STATE_WORD[f.state] || f.state }];
+  const lines = [{ label: 'What it does', text: f.fullDescription || f.oneLiner || f.name }, { label: 'State now', text: f.stateText }];
   const blocks = [story(lines)];
   if (f.dataImplications.length) {
     blocks.push(el('h3', { class: 'eyebrow sub-label', text: 'Your data' }),
@@ -219,25 +238,28 @@ function openFeature(f, refresh) {
   const status = el('p', { class: 'action-status', role: 'status', text: featureErrors.get(f.id) || '' });
   const confirmBox = el('div', { class: 'sheet-block' });
   const row = el('div', { class: 'sheet-actions' });
-  if (f.on) {
-    row.append(el('button', { class: 'btn-quiet', type: 'button', text: 'Turn off', onclick: (e) => { closeSheet(); turnOff(f, e.currentTarget, refresh); } }));
+  if (!f.switchable) {
+    // Read-only: no control, the server's reason instead.
+    blocks.push(note(`This switch is read-only: ${f.readOnlyReason}`));
+  } else if (f.on) {
+    row.append(el('button', { class: 'btn-quiet', type: 'button', text: 'Turn off', onclick: () => { closeSheet(); turnOff(f, null, refresh); } }));
   } else {
     const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Turn on' });
     go.addEventListener('click', async () => {
       go.disabled = true; status.textContent = 'Working…';
       const res = await walkToEnabled(f, {
         getInfo: (id) => send('GET', `/features/${encodeURIComponent(id)}`),
-        transition: (id, body) => send('POST', `/features/${encodeURIComponent(id)}/transition`, body),
+        transition: (id, body) => send('POST', `/features/${encodeURIComponent(id)}/transition`, body, true),
         confirmChallenge: () => challenge(confirmBox),
         onStep: (s) => { status.textContent = `Now “${STATE_WORD[s] || s}”…`; },
       });
-      if (res.ok) { featureErrors.delete(f.id); status.textContent = `${f.name} is on.`; setTimeout(() => { closeSheet(); refresh(); }, 800); }
+      if (res.ok) { featureErrors.delete(f.id); status.textContent = res.message; setTimeout(() => { closeSheet(); refresh(); }, 1500); }
       else { if (!res.cancelled) featureErrors.set(f.id, res.message); status.textContent = res.message; go.disabled = false; }
     });
     row.append(go);
     if (needsConsent(f.tier) && f.dataImplications.length) blocks.push(note('Turning this on records that you agreed to what is listed under “Your data”.'));
   }
-  blocks.push(confirmBox, row, status, details({ id: f.id, tier: f.tier, state: f.state }, ['id', 'tier', 'state']));
+  blocks.push(confirmBox, row, status, details({ id: f.id, tier: f.tier, state: f.state, effective: f.effective ? f.effective.status : 'not reported', switchable: f.switchable }, ['id', 'tier', 'state', 'effective', 'switchable']));
   sheet({ title: f.name }, ...blocks);
 }
 

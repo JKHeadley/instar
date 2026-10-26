@@ -599,6 +599,9 @@ select.reason-input { height: 44px; }
 .feat-err { font-size: 12.5px; color: var(--attn); }
 .feat-state { font-size: 13px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
 .feat-state.on { color: var(--accent); }
+.feat-state.attn { color: var(--attn); }
+.feat-row.read-only { grid-template-columns: 1fr auto; }
+.feat-notice { color: var(--attn); }
 .switch { position: relative; width: 46px; height: 28px; flex: none; border-radius: 999px; border: 1px solid var(--hairline-strong); background: var(--surface-raised); cursor: pointer; transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease); }
 .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--slate-400); transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); }
 .switch.on { background: var(--accent-wash); border-color: var(--accent); }
