@@ -31,6 +31,7 @@ import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js
 import { buildPlansPage, projectActions, refusalWords } from '../../dashboard/console/plans-model.js';
 import { buildCostsPage, windowParams, spendQuery } from '../../dashboard/console/costs-model.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { buildShipping, buildFeedback, buildPace, developmentHeadline, maintainerMode } from '../../dashboard/console/development-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -290,5 +291,54 @@ describe('Console Home E2E (feature is alive)', () => {
     // The console sends no write to any money route; the only write-shaped routes refuse or are dark.
     const freeze = await request(server.getApp()).post('/routing-spend/freeze').set(auth).send({ keyRef: 'x' });
     expect([400, 404, 409, 503]).toContain(freeze.status);
+  });
+
+  it('the Development page runs the real shipping, feedback and pace routes through its model: every 503 maps to honest words, maintainer mode stays a visibility choice, and the PIN routes refuse without one', async () => {
+    // The page's own reader keeps the status and the server's error code (a 503 body says WHY).
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      const code = r.body && typeof r.body.error === 'string' ? r.body.error : null;
+      return r.status === 200 ? { ok: true, status: 200, data: r.body, code } : { ok: false, status: r.status, data: r.body, code, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const res = {
+      watcher: await read('/green-pr-automerge'), verify: await read('/local-verify'), release: await read('/release-readiness'),
+      readiness: await read('/feedback-factory/readiness-authorities/proposal'), triageSummary: await read('/feedback-factory/triage/summary'), triageProposal: await read('/feedback-factory/triage/authority/proposal'),
+      execute: await read('/feedback-factory/execute/status'), queue: await read('/feedback-factory/triage/queue'), drain: await read('/feedback-factory/drain/status'),
+      pace: await read('/throughput/series?days=14'),
+    };
+    // Every read answered through the real auth + routing stack: a reading or a 503, never a 401/403/404/500.
+    for (const [k, r] of Object.entries(res)) expect(r.ok || r.status === 503, k).toBe(true);
+    const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, Date.now());
+    const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain }, Date.now());
+    const pace = buildPace(res.pace, { days: 14, person: 'team' }, Date.now());
+    // This bare server has no Instar source checkout and no operated feedback factory: the models say so, in words, never a fabricated zero.
+    expect(shipping.state).toBe('off');
+    expect(shipping.reason).toContain('aren’t set up on this machine');
+    expect(shipping.release.tone).toBe('off');
+    expect(feedback.state).toBe('off');
+    expect(feedback.headline).toBe('The feedback factory doesn’t run on this machine.');
+    expect(feedback.todos).toEqual([]);
+    expect(JSON.stringify(feedback)).not.toMatch(/Nothing needs you/);
+    // Pace: a GitHub sign-in may or may not exist in this environment; either a real reading or a can't-tell with the fix named.
+    if (pace.state === 'ok') expect(pace.headline).toMatch(/^(Last 14 days: |No merges in the last 14 days\.)/);
+    else { expect(pace.state).toBe('cant-tell'); expect(pace.reason.length).toBeGreaterThan(10); if (res.pace.code === 'github-auth-unavailable') expect(pace.reason).toContain('no GitHub sign-in found'); }
+    expect(developmentHeadline({ shipping, feedback, pace }).text).toBe('Development tools aren’t set up on this machine.');
+    // Maintainer mode from the same two repo-gated reads: not detected here; the per-browser switch only forces visibility.
+    const mode = maintainerMode({ localVerify: res.verify, greenPr: res.watcher });
+    expect(mode).toMatchObject({ visible: false, detected: 'no' });
+    expect(maintainerMode({ localVerify: res.verify, greenPr: res.watcher }, 'on').visible).toBe(true);
+    // The body-PIN routes refuse (or are dark) without a PIN; the console never sends one it did not just collect, and nothing here answers 200.
+    for (const [p, body] of [
+      ['/feedback-factory/readiness-authorities', { action: 'create', useProposal: true, operatorDecisionRef: 'e2e' }],
+      ['/feedback-factory/triage/authority', { action: 'create', useProposal: true, operatorDecisionRef: 'e2e' }],
+      ['/feedback-factory/triage/commit', { planId: 'x', nonce: 'y' }],
+      ['/green-pr-automerge/enable', {}],
+    ] as const) {
+      const r = await request(server.getApp()).post(p).set(auth).set('X-Instar-Request', '1').send(body);
+      expect([403, 409, 503], p).toContain(r.status);
+    }
+    // The bearer-only shipping writes are dark on this server (503), never a silent 200.
+    expect((await request(server.getApp()).post('/green-pr-automerge/hold').set(auth).send({ pr: 1, reason: 'e2e' })).status).toBe(503);
+    expect((await request(server.getApp()).post('/local-verify').set(auth).send({ pr: 1 })).status).toBe(503);
   });
 });
