@@ -93,7 +93,7 @@ import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
-import { telegramFetch } from '../messaging/telegram-egress.js';
+import { telegramFetch, TELEGRAM_API_CALL_TIMEOUT_MS } from '../messaging/telegram-egress.js';
 import { normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
@@ -3071,7 +3071,7 @@ export class TelegramLifeline {
     // finding 1). No pre-format call remains here; the comment that claimed one was corrected by
     // pass 36 finding 6.
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
-    const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
+    const timeoutMs = method === 'getUpdates' ? 60_000 : TELEGRAM_API_CALL_TIMEOUT_MS;
     // Origin review/storage/capacity must finish before this request's clock starts.
     const response = await telegramFetch(url, {
       method: 'POST',
