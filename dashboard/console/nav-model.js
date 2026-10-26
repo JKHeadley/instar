@@ -80,14 +80,14 @@ export const GROUPS = [
     ],
     hood: [
       { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
-      { id: 'pr-pipeline', label: 'PR pipeline', desc: 'Pull requests moving through review to merge.' },
+      { id: 'pr-pipeline', label: 'PR pipeline', desc: 'Now inside Development (Shipping): pull requests on their way to merge, and which need you.' },
       { id: 'evidence', label: 'Evidence', desc: 'The sources behind a memory.' },
       { id: 'routing-map', label: 'Routing map', desc: 'Now inside What thinking costs: which model handles each kind of background work, and the backups.' },
       { id: 'llm-activity', label: 'LLM activity', desc: 'Now inside What thinking costs: what the automatic AI checks did, failed or skipped.' },
-      { id: 'throughput', label: 'Throughput', desc: 'Delivery and quality over time.' },
+      { id: 'throughput', label: 'Throughput', desc: 'Now inside Development (Pace): how much merged, how fast, and how much was redone.' },
       { id: 'integrated-being', label: 'Integrated-Being', desc: 'What other parts of me have been doing.' },
       { id: 'process-health', label: 'Process health', desc: 'Failures caught and patterns found.' },
-      { id: 'feedback-drain', label: 'Feedback drain', desc: 'User feedback being turned into fixes.' },
+      { id: 'feedback-drain', label: 'Feedback drain', desc: 'Now inside Development (Feedback): the approvals it needs from you, and feedback being turned into fixes.' },
     ],
   },
 ];
@@ -112,6 +112,9 @@ export const NATIVE_PAGES = {
   'routing-map': '#/capacity/costs',
   origins: '#/people/messages',
   features: '#/settings/allowed',
+  'pr-pipeline': '#/work/development?s=shipping',
+  throughput: '#/work/development?s=pace',
+  'feedback-drain': '#/work/development?s=feedback',
 };
 
 /** Where a tile goes: the native page when it exists, else the legacy tab. */

@@ -17,6 +17,7 @@ import { renderAllowed } from './allowed.js';
 import { renderPlans } from './plans.js';
 import { renderCosts } from './costs.js';
 import { renderSchedule } from './schedule.js';
+import { renderDevelopment, groupExtras } from './development.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -404,6 +405,7 @@ function renderGroup(main, g) {
       el('p', { text: 'Each of these opens in the dashboard, where everything works exactly as before.' }),
     ),
     el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
+    ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
   ];
   if (g.hood && g.hood.length) {
     parts.push(
@@ -430,6 +432,7 @@ const NATIVE = {
   'work/plans': renderPlans,
   'work/plans/in-the-way': renderPlans,
   'work/schedule': renderSchedule,
+  'work/development': renderDevelopment,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
