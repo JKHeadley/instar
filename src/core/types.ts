@@ -2279,6 +2279,23 @@ export interface MachineCapacity {
   nickname?: string;
   /** Liveness, computed as (now(router) − routerReceivedAt) < failoverThreshold. */
   online: boolean;
+  /**
+   * Honest display liveness (trustworthy-machine-load spec A2): live /
+   * unreachable / stale / unknown, with the age and source of its evidence.
+   * DISPLAY ONLY — `online` keeps its existing placement semantics.
+   */
+  liveness?: import('./machineLiveness.js').MachineLiveness;
+  /** Load average carried by the last DIRECT contact, with that contact's time (A3). */
+  lastDirectLoadAvg?: { value: number; at: string };
+  /** Round-trip time of the last successful direct pull, ms (B3). */
+  lastPullRttMs?: number;
+  /** Multi-signal load report from the machine itself (trustworthy-machine-load B1). */
+  loadReport?: import('./machineLoadReport.js').MachineLoadReport;
+  loadReportReceivedAt?: string;
+  /** The report's own age: sampleAgeMs + time since receipt. */
+  loadReportAgeMs?: number;
+  /** The machine's verdict (B2) while its report is fresh (≤60 s); `unknown` otherwise. */
+  loadVerdict?: import('./machineLoadReport.js').LoadVerdict;
   /** The machine's own last-heartbeat timestamp (ISO) — debugging only. */
   selfReportedLastSeen?: string;
   /** When the router last observed this machine, on the ROUTER's clock (ISO). */
@@ -3551,6 +3568,17 @@ export interface InstarConfig {
       enabled?: boolean;
       maxAgeDays?: number;
       sweepIntervalMs?: number;
+      dryRun?: boolean;
+    };
+    /**
+     * attention-lifecycle-close-on-cause §3.5: a commitment waiting on the
+     * operator (owner:user / blocked on user-input or user-authorization)
+     * expires after `maxAgeDays` (default 14) instead of waiting forever.
+     * Own `dryRun`, default false. Rides the auto-expiry sweep cadence.
+     */
+    operatorWait?: {
+      enabled?: boolean;
+      maxAgeDays?: number;
       dryRun?: boolean;
     };
     agentOwnedFollowthrough?: {
@@ -7121,6 +7149,37 @@ export interface MonitoringConfig {
     reapIntervalMs?: number;
     maxReapsPerPass?: number;
     maxAncestorHops?: number;
+  };
+  /**
+   * CodexArmSessionSweeper (spec docs/specs/codex-arm-session-leak-and-sweeper.md).
+   * Closes the detached `instar-codex-arm-*` tmux sessions codexHookArm leaks when
+   * the process that created them is killed before its `finally` runs — which is
+   * PostUpdateMigrator on every update, during which the server restarts (~8
+   * orphans/day measured on one laptop; 41 retired by hand across two sweeps).
+   * Reads the MACHINE (`tmux ls`), never instar's own session registry, because an
+   * arm session is never registered there — the exact reason the leak was invisible
+   * (`GET /sessions` said 11 while the machine held 112). Ships enabled in DRY-RUN:
+   * the source fix stops new orphans, so the sweeper reports the backlog and kills
+   * nothing until `dryRun: false`. GET /codex-arm-sweeper.
+   */
+  codexArmSessionSweeper?: {
+    enabled?: boolean;
+    /** Default true: report would-kills (`wouldKillDistinct`), kill nothing. */
+    dryRun?: boolean;
+    /** Default 900_000; clamped to a 300_000 floor (~2x the ~150 s modeled arming budget). */
+    maxAgeMs?: number;
+    sweepIntervalMs?: number;
+    initialPassDelayMs?: number;
+    /** Kill ATTEMPTS per pass (dry-run and failures count). Default 50. */
+    maxKillsPerPass?: number;
+    /** Wall-clock budget per pass for the synchronous kill path. Default 3000. */
+    maxPassMs?: number;
+    /** Consecutive unreadable passes before the breaker opens. Default 5. */
+    maxConsecutiveListFailures?: number;
+    /** While open, one probe is let through every this many passes. Default 6. */
+    breakerProbeEveryPasses?: number;
+    /** Failed kills of one name before it is never retried. Default 3. */
+    maxKillFailuresPerSession?: number;
   };
   /**
    * Agent hard-sleep — SleepController decision foundation (RESPONSIBLE-RESOURCE-

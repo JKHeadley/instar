@@ -48,6 +48,13 @@ export interface PrSummary {
    * projection. `completedAt:0` means the timestamp was unknown.
    */
   failingChecks?: { name: string; completedAt: number }[];
+  /**
+   * merge-line-author-eligibility: the PR author's login (`author.login`) and
+   * whether the head lives in another repository (a fork). Optional — absent on a
+   * legacy projection, in which case only the namespace rule can admit a PR.
+   */
+  authorLogin?: string;
+  isCrossRepository?: boolean;
 }
 
 /**
@@ -174,9 +181,9 @@ export interface CandidateVerdict {
 export function classifyCandidate(
   pr: PrSummary,
   agentNamespace: string,
-  opts: { floor?: 'local' | 'actions'; hasRecord?: boolean } = {},
+  opts: { floor?: 'local' | 'actions'; hasRecord?: boolean; expectedGhLogin?: string } = {},
 ): CandidateVerdict {
-  if (!headInNamespace(pr.headRefName, agentNamespace)) {
+  if (!agentOwnership(pr, agentNamespace, opts.expectedGhLogin).owned) {
     return { eligible: false, skip: 'not-agent-namespace' };
   }
   const hold = holdReasonOf(pr);
@@ -196,6 +203,33 @@ export function classifyCandidate(
   if (pr.statusRollup === NO_CHECKS_ROLLUP) return { eligible: false, skip: 'no-checks-ran' };
   if (pr.statusRollup !== 'SUCCESS') return { eligible: false, skip: 'not-settled-green' };
   return { eligible: true };
+}
+
+export type OwnershipReason = 'namespace' | 'author' | 'fork' | 'author-mismatch' | 'ownership-unknown';
+
+/**
+ * Is this listed PR the agent's own (merge-line-author-eligibility)? A FILTER —
+ * every content gate and safe-merge still decide the merge.
+ *  1. GitHub reports the head as cross-repository → never owned (`fork`), checked
+ *     before either arm so a fork with a `<ns>/` branch is excluded too.
+ *  2. head in `<agentNamespace>/` → owned (`namespace`, the original rule).
+ *  3. author login equals `expectedGhLogin` (case-insensitive) on a same-repo head
+ *     → owned (`author`). This admits the agent's `fix/`, `chore/`, … branches.
+ *  4. otherwise not owned: `author-mismatch`, or `ownership-unknown` when the
+ *     author/repository fields are absent (legacy projection: only arm 2 admits).
+ */
+export function agentOwnership(
+  pr: Pick<PrSummary, 'headRefName' | 'authorLogin' | 'isCrossRepository'>,
+  agentNamespace: string,
+  expectedGhLogin?: string,
+): { owned: boolean; reason: OwnershipReason } {
+  if (pr.isCrossRepository === true) return { owned: false, reason: 'fork' };
+  if (headInNamespace(pr.headRefName, agentNamespace)) return { owned: true, reason: 'namespace' };
+  const login = (expectedGhLogin ?? '').trim().toLowerCase();
+  const author = (pr.authorLogin ?? '').trim().toLowerCase();
+  if (!author || pr.isCrossRepository !== false || !login) return { owned: false, reason: 'ownership-unknown' };
+  if (author === login) return { owned: true, reason: 'author' };
+  return { owned: false, reason: 'author-mismatch' };
 }
 
 /** A head branch `<agentName>/...` filter (a FILTER, not provenance — Decision 8). */

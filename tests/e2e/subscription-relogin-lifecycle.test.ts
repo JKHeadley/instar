@@ -9,10 +9,15 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SubscriptionReloginStore } from '../../src/core/SubscriptionReloginStore.js';
 import { createSubscriptionReloginRuntime } from '../../src/core/SubscriptionReloginRuntime.js';
+import { PlaywrightSeatLease } from '../../src/core/PlaywrightSeatLease.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { getInitDefaults } from '../../src/config/ConfigDefaults.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
+
+// The drive settles in milliseconds alone; under the local verifier's parallel lanes
+// it can exceed vi.waitFor's 1 s default. Wait on the outcome, not a wall clock.
+const RELOGIN_SETTLE = { timeout: 30_000, interval: 50 };
 
 const roots: string[] = [];
 const servers: AgentServer[] = [];
@@ -267,6 +272,8 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
       fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(), readPasteCode: vi.fn(),
       wait: vi.fn(), close: vi.fn(async () => {}) };
     const runtime = createSubscriptionReloginRuntime({ stateDir: cfg.stateDir, projectDir: root,
+      // A private seat lease, never the machine-wide file under HOME (see the integration test).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(root, 'seat-lease.json') }),
       machineId: 'machine-1', mode: 'approval', pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-api', measuredAt: new Date().toISOString() })) } as any,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as any,
@@ -287,7 +294,7 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
       .set('Authorization', 'Bearer relogin-api-token')
       .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({});
     expect(approved.status).toBe(202);
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     const events = await request(server.getApp()).get(`/subscription-relogin/${suggested.id}/events`)
       .set('Authorization', 'Bearer relogin-api-token');
     expect(events.status).toBe(200);
@@ -338,6 +345,8 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
         controls: [{ n: 1, text: 'Continue', identities: [] }] })),
       clickControl: vi.fn(async () => { crossed = true; }) };
     const runtime = createSubscriptionReloginRuntime({ stateDir: cfg.stateDir, projectDir: root,
+      // A private seat lease, never the machine-wide file under HOME (see the integration test).
+      seatLease: new PlaywrightSeatLease({ filePath: path.join(root, 'seat-lease.json') }),
       machineId: 'machine-1', mode: 'approval', pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'oauth-api', measuredAt: new Date().toISOString() })) } as any,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as any,
@@ -359,7 +368,7 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
       .set('Authorization', 'Bearer relogin-api-token')
       .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({});
     expect(approved.status).toBe(202);
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     const events = await request(server.getApp()).get(`/subscription-relogin/${suggested.id}/events`)
       .set('Authorization', 'Bearer relogin-api-token');
     expect(events.status).toBe(200);
