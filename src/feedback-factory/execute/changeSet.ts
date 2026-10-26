@@ -85,13 +85,52 @@ function readNoFollow(full: string): Buffer {
   } finally { fs.closeSync(fd); }
 }
 
+/** The one directory Claude Code itself creates under `.claude/` when its sandboxed shell runs. */
+export const CLAUDE_SANDBOX_BOOKKEEPING_DIR = '.cc-writes';
+
+/**
+ * Why the workspace's `.claude/` shows a breach, or null when it does not. `.claude/` is removed
+ * before spawn and every write into it is denied, so anything the session put there means the
+ * confinement did not hold. One shape is not the session's doing: Claude Code 2.1.310 creates an
+ * EMPTY `.claude/.cc-writes/` directory itself whenever its sandboxed shell runs (reproduced
+ * 2026-10-26 with a bare `claude -p` in a fresh folder; both of that morning's attempts were
+ * discarded as `sandbox-breach` on exactly that). Only that exact shape passes: `.claude` is a real
+ * directory (not a link) that is empty or whose only entry is a real, empty `.cc-writes` directory
+ * (an empty `.claude/` carries nothing that could load). A file, a link
+ * or any other name anywhere under `.claude/` is still a breach. Shared with the session canary so
+ * the rehearsal and the real gate cannot disagree.
+ */
+export function claudeDirBreach(workspace: string): string | null {
+  const dir = path.join(workspace, '.claude');
+  let st: fs.Stats;
+  try { st = fs.lstatSync(dir); } catch (error) {
+    // Only a genuinely absent .claude/ is clean. EACCES/EPERM/EIO mean it could not be inspected,
+    // which is a breach (the later walk skips .claude/ unread, so nothing else would look).
+    return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : '.claude/ in the session workspace could not be inspected';
+  }
+  if (!st.isDirectory()) return '.claude in the session workspace is not a directory';
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return '.claude/ in the session workspace is unreadable'; }
+  for (const name of names) {
+    if (name !== CLAUDE_SANDBOX_BOOKKEEPING_DIR) return `.claude/ reappeared in the session workspace (${name.slice(0, 60)})`;
+    const inner = path.join(dir, name);
+    let ist: fs.Stats;
+    try { ist = fs.lstatSync(inner); } catch { return '.claude/ in the session workspace changed while it was read'; }
+    if (!ist.isDirectory()) return `.claude/${CLAUDE_SANDBOX_BOOKKEEPING_DIR} in the session workspace is not a directory`;
+    let innerNames: string[];
+    try { innerNames = fs.readdirSync(inner); } catch { return `.claude/${CLAUDE_SANDBOX_BOOKKEEPING_DIR} is unreadable`; }
+    if (innerNames.length > 0) return `.claude/${CLAUDE_SANDBOX_BOOKKEEPING_DIR} in the session workspace is not empty`;
+  }
+  return null;
+}
+
 /**
  * Build the change set: workspace bytes vs the publish clone. Throws ChangeSetError for a
- * special file, an over-cap set, or a `.claude/` entry in the workspace (it was removed before
- * spawn and writes there are denied, so its presence means the confinement did not hold).
+ * special file, an over-cap set, or a `.claude/` breach in the workspace (see claudeDirBreach).
  */
 export function buildChangeSet(workspace: string, publishClone: string): ChangeSet {
-  if (fs.existsSync(path.join(workspace, '.claude'))) throw new ChangeSetError('sandbox-breach', '.claude/ reappeared in the session workspace');
+  const breach = claudeDirBreach(workspace);
+  if (breach) throw new ChangeSetError('sandbox-breach', breach);
   const ws = walk(workspace, { skipClaude: true });
   const base = walk(publishClone, { skipClaude: true });
   const entries: ChangeEntry[] = [];

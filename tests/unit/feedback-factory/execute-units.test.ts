@@ -9,13 +9,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath,
   pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
-import { ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
+import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
 import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
@@ -163,7 +163,56 @@ describe('change set', () => {
     expect(() => buildChangeSet(ws, pub)).toThrow(/nested git/);
     SafeFsExecutor.safeRmSync(path.join(ws, 'sub'), { recursive: true, force: true, operation: 'test' });
     fs.mkdirSync(path.join(ws, '.claude'));
+    // An EMPTY .claude/ carries nothing that could load (Claude Code may also clear its own
+    // .cc-writes/ bookkeeping); a file in it is still a breach.
+    expect(buildChangeSet(ws, pub).entries).toHaveLength(0);
+    fs.writeFileSync(path.join(ws, '.claude', 'settings.json'), '{}');
     expect(() => buildChangeSet(ws, pub)).toThrow(ChangeSetError);
+  });
+
+  it('Claude Code\'s own empty .claude/.cc-writes/ is not a breach; anything else under .claude/ still is', () => {
+    // 2026-10-26: Claude Code 2.1.310 creates an empty .claude/.cc-writes/ whenever its sandboxed
+    // shell runs, and both of that morning's attempts were discarded as sandbox-breach on it.
+    const { ws, pub } = trees();
+    const claude = path.join(ws, '.claude');
+    const cc = path.join(claude, '.cc-writes');
+    const reset = () => { SafeFsExecutor.safeRmSync(claude, { recursive: true, force: true, operation: 'test' }); };
+    expect(claudeDirBreach(ws)).toBeNull(); // absent
+    fs.mkdirSync(cc, { recursive: true });
+    expect(claudeDirBreach(ws)).toBeNull(); // the exact shape Claude Code leaves
+    expect(buildChangeSet(ws, pub).entries.map((e) => e.path)).not.toContain('.claude/.cc-writes');
+    fs.writeFileSync(path.join(cc, 'x'), 'x'); // something inside it
+    expect(claudeDirBreach(ws)).toMatch(/not empty/);
+    expect(() => buildChangeSet(ws, pub)).toThrow(/sandbox-breach/);
+    reset(); fs.mkdirSync(cc, { recursive: true });
+    fs.writeFileSync(path.join(claude, 'settings.local.json'), '{}'); // a settings file beside it
+    expect(claudeDirBreach(ws)).toMatch(/reappeared/);
+    reset(); fs.mkdirSync(path.join(claude, 'hooks'), { recursive: true }); // any other empty directory
+    expect(claudeDirBreach(ws)).toMatch(/reappeared/);
+    reset(); fs.mkdirSync(claude); fs.writeFileSync(cc, ''); // .cc-writes as a FILE
+    expect(claudeDirBreach(ws)).toMatch(/not a directory/);
+    reset(); fs.mkdirSync(claude); fs.symlinkSync('/tmp', cc); // .cc-writes as a link
+    expect(claudeDirBreach(ws)).toMatch(/not a directory/);
+    reset(); const elsewhere = path.join(path.dirname(ws), 'elsewhere'); fs.mkdirSync(path.join(elsewhere, '.cc-writes'), { recursive: true });
+    fs.symlinkSync(elsewhere, claude); // .claude itself a link to a clean-looking tree
+    expect(claudeDirBreach(ws)).toMatch(/not a directory/);
+    SafeFsExecutor.safeUnlinkSync(claude, { operation: 'test' });
+    fs.writeFileSync(claude, ''); // .claude as a file
+    expect(claudeDirBreach(ws)).toMatch(/not a directory/);
+    SafeFsExecutor.safeUnlinkSync(claude, { operation: 'test' });
+    // Name variants are not the bookkeeping directory.
+    for (const variant of ['.CC-WRITES', '.cc-writes ', '.cc‐writes']) {
+      fs.mkdirSync(path.join(claude, variant), { recursive: true });
+      expect(claudeDirBreach(ws)).toMatch(/reappeared/);
+      reset();
+    }
+    // Only ENOENT is "absent": any other inspection error is a breach (Codex review of this fix).
+    for (const code of ['EACCES', 'EPERM', 'EIO']) {
+      const spy = vi.spyOn(fs, 'lstatSync').mockImplementationOnce(() => { throw Object.assign(new Error(code), { code }); });
+      expect(claudeDirBreach(ws)).toMatch(/could not be inspected/);
+      spy.mockRestore();
+    }
+    expect(claudeDirBreach(ws)).toBeNull();
   });
 
   it('caps: more than 200 files or 2 MB fails', () => {
@@ -612,6 +661,14 @@ describe('canary review-round regressions', () => {
       linkEffectChecks(p, fx); // removes the links
       expect(() => fs.lstatSync(l.symLink)).toThrow();
       expect(() => fs.lstatSync(l.siblingLink)).toThrow();
+      // The session canary applies the change-set gate's own .claude/ check.
+      const okCanary = () => evaluateSessionCanary(p, fx, path.join(p.tmpDir, 'none.json'), null).find((c) => c.probe === 'session-claude-dir-clean')!;
+      expect(okCanary().ok).toBe(true);
+      fs.mkdirSync(path.join(p.workspace, '.claude', '.cc-writes'), { recursive: true });
+      expect(okCanary().ok).toBe(true);
+      fs.writeFileSync(path.join(p.workspace, '.claude', 'settings.local.json'), '{}');
+      expect(okCanary().ok).toBe(false);
+      SafeFsExecutor.safeRmSync(path.join(p.workspace, '.claude'), { recursive: true, force: true, operation: 'test' });
     } finally { await fx.close(); }
     // close() removes the sibling fixture directory, including a file the session wrote into it.
     expect(fs.existsSync(fx.siblingDir)).toBe(false);
