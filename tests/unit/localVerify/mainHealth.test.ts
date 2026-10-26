@@ -445,6 +445,19 @@ describe('fair share between main and PR verifies', () => {
     expect(decideStart({ foreignHolders: 0, queue: q('main', 'pr'), now: NOW, fairShare: fsh(NOW, { mainHealthy: false, lastStartWasMain: true }) })).toEqual({ kind: 'start', index: 1 });
     expect(decideStart({ foreignHolders: 0, queue: q('main'), now: NOW, fairShare: fsh(NOW, { mainHealthy: false, lastStartWasMain: true }) })).toEqual({ kind: 'start', index: 0 });
   });
+  it('an interrupted PR (resumeFirst) goes ahead of main unless main is known red', () => {
+    const qi = [{ kind: 'main' as const }, { resumeFirst: true as const }];
+    expect(decideStart({ foreignHolders: 0, queue: qi, now: NOW, fairShare: fsh(NOW - 120 * MIN) })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue: qi, now: NOW, fairShare: fsh(NOW, { mainHealthy: false }) })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue: qi, now: NOW, fairShare: { ...fsh(NOW, { mainHealthy: false }), mainRed: true } })).toEqual({ kind: 'start', index: 0 });
+    // With no `main` queued (or main in backoff) it still goes ahead of other PRs.
+    expect(decideStart({ foreignHolders: 0, queue: [{}, { resumeFirst: true as const }], now: NOW, fairShare: fsh(null) })).toEqual({ kind: 'start', index: 1 });
+    expect(decideStart({ foreignHolders: 0, queue: [{ kind: 'main' as const, notBefore: NOW + 1 }, {}, { resumeFirst: true as const }], now: NOW, fairShare: fsh(NOW) })).toEqual({ kind: 'start', index: 2 });
+    // Anywhere among the ready PRs, not only the first one.
+    expect(decideStart({ foreignHolders: 0, queue: [{ kind: 'main' as const }, {}, { resumeFirst: true as const }], now: NOW, fairShare: fsh(NOW, { mainHealthy: false }) })).toEqual({ kind: 'start', index: 2 });
+    // Not ready yet (backoff) ⇒ it does not jump.
+    expect(decideStart({ foreignHolders: 0, queue: [{ kind: 'main' as const }, { resumeFirst: true as const, notBefore: NOW + 1 }], now: NOW, fairShare: fsh(NOW, { mainHealthy: false }) })).toEqual({ kind: 'start', index: 0 });
+  });
   it('without fair-share inputs the order is unchanged (first ready entry)', () => {
     expect(decideStart({ foreignHolders: 0, queue: q('main', 'pr'), now: NOW })).toEqual({ kind: 'start', index: 0 });
   });

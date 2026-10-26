@@ -56,9 +56,9 @@ function record(): LocalVerifyRecord {
   };
 }
 
-function setup(views: Record<number, PrView>) {
-  const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
-  dirs.push(stateDir);
+function setup(views: Record<number, PrView>, existingStateDir?: string) {
+  const stateDir = existingStateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
+  if (!existingStateDir) dirs.push(stateDir);
   const children: Array<{ resultPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
@@ -181,6 +181,31 @@ describe('local-verify routes (integration)', () => {
     expect(after.mergeLine).toMatchObject({ hold: null, handoffs: 1, merged: 1, lastOutcome: 'merged' });
     expect(after.inFlight).toEqual({ pr: 8, headSha: sha('c') });
     expect(s.children).toHaveLength(2);
+  });
+
+  it('a run killed by a server stop shows on GET after the restart: counted, interrupted, and first ahead of the boot-time main verify', async () => {
+    const s = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: 8 })).status).toBe(202);
+    s.svc.shutdown(); // the server stops mid-run (a lifeline or manual restart)
+    s.children[0].resolve({ status: null, signal: 'SIGTERM' });
+
+    // The restarted server, on the same state dir.
+    const s2 = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) }, s.stateDir);
+    await s2.svc.boot();
+    const a2 = app(baseCtx(s2.stateDir, { localVerify: s2.svc }));
+    const before = (await request(a2).get('/local-verify')).body;
+    expect(before.inFlight).toBeNull();
+    expect(before.queue.map((e: { pr: number }) => e.pr)).toEqual([7, 8]);
+    expect(before.queue[0]).toMatchObject({ pr: 7, attempts: 1, interruptions: 1, resumeFirst: true });
+
+    s2.svc.noteMainHead(sha('9')); // the boot-time main verify (main health is suspect at boot)
+    await s2.svc.settle();
+    await s2.svc.tick();
+    const after = (await request(a2).get('/local-verify')).body;
+    expect(after.inFlight).toEqual({ pr: 7, headSha: sha('a') });
+    expect(after.queue.map((e: { pr: number; kind?: string }) => e.kind ?? e.pr)).toEqual(['main', 8]);
   });
 
   it('validates the record query', async () => {

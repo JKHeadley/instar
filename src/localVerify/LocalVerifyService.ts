@@ -136,7 +136,7 @@ export interface LocalVerifyServiceSeams {
   readProcessArgs(pid: number): Promise<string | null>;
   /** Live full-suite holders of the host test-runner bound. */
   foreignSuiteHolders(): Array<{ pid: number }>;
-  onStarved?(info: { pr: number; headSha: string; waitedMs: number }): void;
+  onStarved?(info: { pr: number; headSha: string; waitedMs: number; interruptions?: number; reason?: 'waited' | 'interrupted' }): void;
   /** Called by the completion path after a record is journaled (status projection plugs in here later). */
   onRecord?(record: LocalVerifyRecord): void;
   /** `git merge-base --is-ancestor` through the verifier's git funnel; null = undecidable (main health stays unhealthy). */
@@ -203,6 +203,14 @@ export interface QueueEntry {
   pausedMs?: number;
   /** When `baseSha` was last read from the base branch (request, in-place update or pre-start refresh). */
   baseResolvedAt?: number;
+  /**
+   * Runs of this (pr, head) a server stop killed before they finished. Each one is also an
+   * attempt (`attempts` is not rolled back), and INTERRUPTION_LIMITS.starvedAfter of them
+   * raise the starved signal without waiting for the clock.
+   */
+  interruptions?: number;
+  /** Set when a server stop killed this entry's run: it starts ahead of a `main` verify next (cleared at start). */
+  resumeFirst?: true;
 }
 
 export { MAIN_VERIFY_LIMITS };
@@ -284,14 +292,25 @@ export function decideVerifyRetry(
   return { action: 'stop', attempts: entry.attempts, errorRetries: entry.errorRetries };
 }
 
-/** The starved signal: once per entry, when it has waited (capacity waits included) longer than `starvedAfterMs`. */
+/** A run a server stop kills: how many of them make an entry starved without waiting for the clock. */
+export const INTERRUPTION_LIMITS = Object.freeze({ starvedAfter: 2 });
+
+/**
+ * The starved signal: once per entry, when it has waited (capacity waits included) longer
+ * than `starvedAfterMs`, or when server stops have killed its run `starvedAfter` times
+ * (each restart puts it back to zero, so waiting alone hides a run that can never finish).
+ */
 export function decideStarved(
-  entry: { firstQueuedAt: number; starvedRaised: boolean },
+  entry: { firstQueuedAt: number; starvedRaised: boolean; interruptions?: number },
   now: number,
-  limits: { starvedAfterMs: number } = LOCAL_VERIFY_LIMITS,
-): { raise: boolean; waitedMs: number } {
+  limits: { starvedAfterMs: number; interruptedStarvedAfter?: number } = { ...LOCAL_VERIFY_LIMITS, interruptedStarvedAfter: INTERRUPTION_LIMITS.starvedAfter },
+): { raise: boolean; waitedMs: number; reason: 'waited' | 'interrupted' | null } {
   const waitedMs = now - entry.firstQueuedAt;
-  return { raise: waitedMs > limits.starvedAfterMs && !entry.starvedRaised, waitedMs };
+  if (entry.starvedRaised) return { raise: false, waitedMs, reason: null };
+  if (waitedMs > limits.starvedAfterMs) return { raise: true, waitedMs, reason: 'waited' };
+  const after = limits.interruptedStarvedAfter ?? INTERRUPTION_LIMITS.starvedAfter;
+  if ((entry.interruptions ?? 0) >= after) return { raise: true, waitedMs, reason: 'interrupted' };
+  return { raise: false, waitedMs, reason: null };
 }
 
 /**
@@ -302,7 +321,7 @@ export function decideStarved(
 export function decideStart(
   i: {
     foreignHolders: number;
-    queue: ReadonlyArray<{ notBefore?: number; kind?: 'main' }>;
+    queue: ReadonlyArray<{ notBefore?: number; kind?: 'main'; resumeFirst?: true }>;
     now: number;
     /** The fair-share inputs (absent ⇒ the first ready entry, the pre-fair-share order). */
     fairShare?: FairShareState;
@@ -314,10 +333,15 @@ export function decideStart(
   const first = i.queue.findIndex(ready);
   if (first < 0) return { kind: 'idle' };
   if (!i.fairShare) return { kind: 'start', index: first };
+  const fs = i.fairShare;
+  // A PR run a server stop killed goes back first (wherever it sits among the ready PRs, with
+  // or without a `main` verify waiting): the restart, not the PR, lost its place. Not while
+  // `main` is known red (the repair path).
+  const resumeIdx = i.queue.findIndex((e) => ready(e) && e.kind !== 'main' && e.resumeFirst);
+  if (resumeIdx >= 0 && !fs.mainRed) return { kind: 'start', index: resumeIdx };
   const mainIdx = i.queue.findIndex((e) => ready(e) && e.kind === 'main');
   const prIdx = i.queue.findIndex((e) => ready(e) && e.kind !== 'main');
   if (mainIdx < 0 || prIdx < 0) return { kind: 'start', index: mainIdx < 0 ? prIdx : mainIdx };
-  const fs = i.fairShare;
   if (fs.mainHealthy) {
     // Healthy: `main` goes first once its oldest unverified merge is old enough that waiting
     // longer would approach the unverified alarm; until then waiting PRs go first.
@@ -331,6 +355,8 @@ export function decideStart(
 /** Fair share between `main` and PR verifies (Throughput budget). */
 export interface FairShareState {
   mainHealthy: boolean;
+  /** `main` is known red (not just unverified or suspect). Absent ⇒ not red. */
+  mainRed?: boolean;
   /** When the oldest `main` merge not yet covered by a green verify was first seen; null if none. */
   oldestUnverifiedMainAt: number | null;
   /** Whether the last verify started was a `main` verify. */
@@ -387,6 +413,10 @@ export interface PersistedQueueEntry {
   baseResolvedAt?: number;
   /** Present on the entry that was RUNNING when the file was written: found at boot ⇒ an unclean exit. */
   inFlight?: true;
+  /** Runs a server stop killed (see QueueEntry.interruptions). */
+  interruptions?: number;
+  /** The entry's run was killed by a server stop: it starts first after the restart. */
+  resumeFirst?: true;
 }
 
 /** What the AutoUpdater tells the verifier (spec §2 Restarts rule (b)); null = unknown (never pauses). */
@@ -682,12 +712,20 @@ export class LocalVerifyService {
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised, priority: 0,
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
+        ...(e.interruptions ? { interruptions: e.interruptions } : {}),
+        ...(e.resumeFirst ? { resumeFirst: true as const } : {}),
       };
       if (e.inFlight) {
+        // The server stopped without a clean shutdown while this ran: also an interruption.
+        entry.interruptions = (entry.interruptions ?? 0) + 1;
+        entry.resumeFirst = true;
         // It was running when the server died without a clean shutdown: that is one error
         // retry; past the limit it stops with an `error` record instead of re-running forever.
         const d = decideVerifyRetry(entry, 'error');
         if (d.action !== 're-run') {
+          // Dropped with an error record past the retry limit — but a PR the server keeps
+          // dying under still raises its alarm (otherwise the drop hides the second kill).
+          this.raiseStarvedIfDue(entry);
           drops['server-restarted']++;
           this.complete(this.syntheticError(entry, 'server-restarted'), 'run');
           this.audit({ event: 'queue-restore-stopped', pr: e.pr, headSha: e.headSha, reason: 'server-restarted' });
@@ -699,6 +737,9 @@ export class LocalVerifyService {
       this.queue.push(entry);
       restored++;
     }
+    // A restored entry the restarts have already killed twice alarms NOW, before anything
+    // can start it (a `main` observation pumps the queue before the first tick).
+    for (const e of this.queue) if (e.kind !== 'main') this.raiseStarvedIfDue(e);
     const dropped = Object.values(drops).reduce((a, b) => a + b, 0);
     this.audit({ event: 'queue-restored', restored, dropped, drops });
     return { restored, dropped };
@@ -910,13 +951,14 @@ export class LocalVerifyService {
     // CMT-973: a PR keeps its place and its firstQueuedAt. A base that moved is refreshed in
     // place; a moved head (or a retarget) takes the old entry's slot — the FRONT when the old
     // head was the run in flight (a push during a PR's own run never sends it to the back).
-    let keptPlace: { index: number; firstQueuedAt: number; pausedMs?: number; starvedRaised: boolean } | null = null;
+    // A new head is new work: `interruptions` start over, but a turn lost to a restart (`resumeFirst`) is kept.
+    let keptPlace: { index: number; firstQueuedAt: number; pausedMs?: number; starvedRaised: boolean; resumeFirst?: true } | null = null;
     // A moved head (or retarget) cancels the in-flight run for the old one.
     const f = this.inFlight;
     if (f && f.entry.pr === pr) {
       if (f.entry.headSha !== headSha || f.entry.baseRefName !== baseRefName) {
         this.cancelInFlight('head-moved');
-        keptPlace = { index: 0, firstQueuedAt: f.entry.firstQueuedAt, pausedMs: f.entry.pausedMs, starvedRaised: f.entry.starvedRaised };
+        keptPlace = { index: 0, firstQueuedAt: f.entry.firstQueuedAt, pausedMs: f.entry.pausedMs, starvedRaised: f.entry.starvedRaised, resumeFirst: f.entry.resumeFirst };
       } else if (!f.cancelled) return { ok: true, status: 'in-flight' };
     }
     const pendingIdx = this.queue.findIndex((e) => e.pr === pr);
@@ -933,7 +975,7 @@ export class LocalVerifyService {
         return { ok: true, status: 'already-queued', position: pendingIdx };
       }
       this.queue.splice(pendingIdx, 1);
-      keptPlace = { index: pendingIdx, firstQueuedAt: e.firstQueuedAt, pausedMs: e.pausedMs, starvedRaised: e.starvedRaised };
+      keptPlace = { index: pendingIdx, firstQueuedAt: e.firstQueuedAt, pausedMs: e.pausedMs, starvedRaised: e.starvedRaised, resumeFirst: e.resumeFirst };
       this.persistQueue();
       this.audit({ event: 'dequeued', pr, reason: 'head-moved', headSha: e.headSha });
     }
@@ -968,6 +1010,7 @@ export class LocalVerifyService {
       firstQueuedAt: keptPlace?.firstQueuedAt ?? this.now(), attempts: 0, errorRetries: 0,
       starvedRaised: keptPlace?.starvedRaised ?? false, priority: 0, baseResolvedAt: this.now(),
       ...(keptPlace?.pausedMs ? { pausedMs: keptPlace.pausedMs } : {}),
+      ...(keptPlace?.resumeFirst ? { resumeFirst: true as const } : {}),
     };
     if (keptPlace && keptPlace.index < this.queue.length) this.queue.splice(keptPlace.index, 0, entry);
     else this.queue.push(entry);
@@ -1004,8 +1047,12 @@ export class LocalVerifyService {
     if (f && !f.cancelled) {
       this.cancelInFlight('shutdown', { armKillTimer: false });
       if (f.entry.kind !== 'main') {
-        f.entry.attempts = Math.max(0, f.entry.attempts - 1);
+        // The stop killed a real run: it stays counted as an attempt, it is recorded as an
+        // interruption (enough of them raise the starved signal), and it goes back first.
+        f.entry.interruptions = (f.entry.interruptions ?? 0) + 1;
+        f.entry.resumeFirst = true;
         this.queue.unshift(f.entry);
+        this.audit({ event: 'interrupted', pr: f.entry.pr, headSha: f.entry.headSha, interruptions: f.entry.interruptions, ranMs: this.now() - f.startedAt });
       }
     }
     this.persistQueue();
@@ -1014,16 +1061,29 @@ export class LocalVerifyService {
   // ---- internals ----
 
   private checkStarved(): void {
+    // Queued PRs plus the one running (or about to): an interrupted PR that resumed first
+    // is in flight by the first tick and must still raise its alarm.
     const prs = this.queue.filter((e) => e.kind !== 'main');
+    const f = this.inFlight;
+    if (f && !f.cancelled && f.entry.kind !== 'main' && !prs.includes(f.entry)) prs.push(f.entry);
     if (prs.length === 0) return;
     const oldest = prs.reduce((a, b) => (a.firstQueuedAt <= b.firstQueuedAt ? a : b));
-    // Time paused for a pending update never counts toward starved.
-    const { raise, waitedMs: waited } = decideStarved({ ...oldest, firstQueuedAt: oldest.firstQueuedAt + (oldest.pausedMs ?? 0) }, this.now());
-    if (raise) {
-      oldest.starvedRaised = true;
-      this.audit({ event: 'starved', pr: oldest.pr, headSha: oldest.headSha, waitedMs: waited });
-      this.seams.onStarved?.({ pr: oldest.pr, headSha: oldest.headSha, waitedMs: waited });
-    }
+    // The oldest entry by the clock, and any entry whose run keeps being killed by restarts.
+    const candidates = [oldest, ...prs.filter((e) => e !== oldest && (e.interruptions ?? 0) > 0)];
+    let changed = false;
+    for (const e of candidates) if (this.raiseStarvedIfDue(e)) changed = true;
+    if (changed) this.persistQueue(); // once-per-entry survives a crash right after the signal
+  }
+
+  /** The starved signal for one entry, once (time paused for a pending update never counts). */
+  private raiseStarvedIfDue(e: QueueEntry): boolean {
+    const { raise, waitedMs: waited, reason } = decideStarved({ ...e, firstQueuedAt: e.firstQueuedAt + (e.pausedMs ?? 0) }, this.now());
+    if (!raise || !reason) return false;
+    e.starvedRaised = true;
+    const interruptions = e.interruptions ?? 0;
+    this.audit({ event: 'starved', pr: e.pr, headSha: e.headSha, waitedMs: waited, reason, interruptions });
+    this.seams.onStarved?.({ pr: e.pr, headSha: e.headSha, waitedMs: waited, interruptions, reason });
+    return true;
   }
 
   /** Rule (b): is starting a new verify paused for a pending update right now? Also accrues paused time. */
@@ -1108,7 +1168,7 @@ export class LocalVerifyService {
     this.queue.sort((a, b) => b.priority - a.priority); // stable: FIFO within a priority
     const d = decideStart({
       foreignHolders: 0, queue: this.queue, now: this.now(),
-      fairShare: { mainHealthy: this.health.isHealthy(), oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, lastStartWasMain: this.lastStartWasMain },
+      fairShare: { mainHealthy: this.health.isHealthy(), mainRed: this.health.snapshot().state === 'main-red', oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, lastStartWasMain: this.lastStartWasMain },
     });
     if (d.kind !== 'start') return;
     const next = this.queue[d.index];
@@ -1241,6 +1301,7 @@ export class LocalVerifyService {
     };
     this.writeInFlight(intent);
     entry.attempts++;
+    delete entry.resumeFirst; // it has its turn now
 
     const childArgs = [this.cfg.mainEntry, '--input', inputPath, '--result', resultPath, '--attempt-token', token];
     const useNice = this.cfg.nice ?? true;
@@ -1476,6 +1537,8 @@ export class LocalVerifyService {
         firstQueuedAt: e.firstQueuedAt, attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
+        ...(e.interruptions ? { interruptions: e.interruptions } : {}),
+        ...(e.resumeFirst ? { resumeFirst: true as const } : {}),
         // The running entry is marked: a clean shutdown re-queues it unmarked, so a marked
         // entry found at boot means the server died mid-run.
         ...(f && !f.cancelled && f.entry === e ? { inFlight: true as const } : {}),
@@ -1518,6 +1581,8 @@ export class LocalVerifyService {
       pausedMs: Number.isFinite(x.pausedMs) && (x.pausedMs as number) > 0 ? x.pausedMs : undefined,
       baseResolvedAt: Number.isFinite(x.baseResolvedAt) && (x.baseResolvedAt as number) > 0 ? x.baseResolvedAt : undefined,
       inFlight: x.inFlight === true ? true as const : undefined,
+      interruptions: Number.isInteger(x.interruptions) && (x.interruptions as number) > 0 ? x.interruptions : undefined,
+      resumeFirst: x.resumeFirst === true ? true as const : undefined,
     }));
     if (valid.length !== o.entries.length) this.audit({ event: 'queue-restore-invalid-entries', skipped: o.entries.length - valid.length });
     return valid;

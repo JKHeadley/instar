@@ -27,15 +27,44 @@ export interface RestartRequest {
   reason: string;              // e.g., 'noForwardStuck', 'version-skew', 'external-signal'
   bucket: 'watchdog' | 'versionSkew' | 'plannedUpgrade';
   context?: Record<string, unknown>;
+  /**
+   * A lifeline-only restart: the server is already current, so quiesce leaves it running
+   * for the next lifeline to adopt instead of stopping it (and its in-flight work).
+   */
+  keepServer?: boolean;
+}
+
+/**
+ * Does a restart on this bucket leave the server running? `versionSkew` (the lifeline is
+ * behind the server: drift auto-promote, a 426 handshake) and `plannedUpgrade` (the
+ * coordinated signal the server/updater/migrator write when the LIFELINE must move onto
+ * the current code) are lifeline-only restarts: the server is already current, so stopping
+ * it only kills its in-flight work (a 23-minute local verify, 2026-10-26). `watchdog`
+ * (server unhealthy, an external signal) keeps stopping the server. An explicit
+ * `keepServer` on the request wins.
+ */
+export function restartKeepsServer(bucket: RestartRequest['bucket']): boolean {
+  // These buckets ask the LIFELINE to reload its code. A server restart the updater asked for
+  // at the same time (restart-requested.json) stays the supervisor's job: the successor's
+  // supervisor reads that file at start() and performs it.
+  return bucket === 'versionSkew' || bucket === 'plannedUpgrade';
 }
 
 export interface OrchestratorDeps {
-  /** Halt polling, replay interval, watchdog timer; abort in-flight forwards. Returns when drained. */
-  quiesce: () => Promise<void>;
+  /** Halt polling, replay interval, watchdog timer; abort in-flight forwards. Returns when drained. Receives the request (keepServer). */
+  quiesce: (req?: RestartRequest) => Promise<void>;
   /** Persist all state files atomically. Returns when all writes complete. */
   persistAll: () => Promise<void>;
   /** Called to exit the process. Production: process.exit. Tests: spy. */
   exitFn: (code: number) => void;
+  /**
+   * Stop the server even though quiesce already detached from it: a request that must
+   * stop the server (watchdog, an external signal) arrived while a keep-server restart was
+   * in flight. The later request is suppressed as usual, but its server policy wins —
+   * otherwise a `launchctl bootout` landing inside a drift restart's quiesce window would
+   * exit the lifeline and leave the server running with no successor to adopt it.
+   */
+  stopServer?: () => Promise<void>;
   /** Whether this process runs under launchd (true) or dev (false). */
   isSupervised: boolean;
   /**
@@ -48,6 +77,8 @@ export interface OrchestratorDeps {
   reporter?: DegradationReporter;
   /** Maximum ms to wait for persistAll before hard-killing. */
   persistBudgetMs?: number;     // default 2000
+  /** Budget of the stop phase a competing stop request earns (default 10 s: the supervisor's 3 s graceful wait + a bounded force-kill). */
+  stopPhaseMs?: number;
   /** Hard-kill timeout — if persist hangs this long, call exitFn(1). */
   hardKillMs?: number;          // default 5000
   /** Defer duration if shadow-install lockfile is present. Default 30000 (one watchdog tick). */
@@ -59,12 +90,18 @@ export class RestartOrchestrator {
   private readonly reporter: DegradationReporter;
   private readonly persistBudgetMs: number;
   private readonly hardKillMs: number;
+  private readonly stopPhaseMs: number;
   public lastSuppressed: { reason: string; currentState: RestartState } | null = null;
+  /** The request being carried out, with its resolved server policy. */
+  private inFlight: { reason: string; keepServer: boolean } | null = null;
+  /** A suppressed request that must stop the server arrived while the in-flight one keeps it. */
+  private stopServerOverride = false;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.reporter = deps.reporter ?? DegradationReporter.getInstance();
     this.persistBudgetMs = deps.persistBudgetMs ?? 2000;
     this.hardKillMs = deps.hardKillMs ?? 5000;
+    this.stopPhaseMs = deps.stopPhaseMs ?? 10_000;
   }
 
   get state(): RestartState {
@@ -78,8 +115,15 @@ export class RestartOrchestrator {
    */
   async requestRestart(req: RestartRequest): Promise<'suppressed' | 'proceeded'> {
     // Synchronous guard — set BEFORE any await to prevent re-entry.
+    const keepServer = req.keepServer ?? restartKeepsServer(req.bucket);
     if (this._state !== 'idle') {
       this.lastSuppressed = { reason: req.reason, currentState: this._state };
+      // The suppressed request's SERVER policy still counts: a stop request cannot be
+      // swallowed by a lifeline-only restart that happens to be a second ahead of it.
+      if (this.inFlight?.keepServer && !keepServer && this._state !== 'exiting') {
+        this.stopServerOverride = true;
+        console.log(`[RestartOrchestrator] stop-server override: ${req.reason} arrived during keep-server restart ${this.inFlight.reason} — the server will be stopped before exit`);
+      }
       console.log(
         `[RestartOrchestrator] restart-request-suppressed ` +
         `reason=${req.reason} currentState=${this._state}`
@@ -87,6 +131,8 @@ export class RestartOrchestrator {
       return 'suppressed';
     }
     this._state = 'quiescing';
+    this.inFlight = { reason: req.reason, keepServer };
+    this.stopServerOverride = false;
 
     // Fire-and-forget degradation event (best-effort, budget 500ms).
     try {
@@ -116,6 +162,8 @@ export class RestartOrchestrator {
         `reason=${req.reason} — retry after tick`
       );
       this._state = 'idle';
+      this.inFlight = null;
+      this.stopServerOverride = false;
       return 'suppressed';
     }
 
@@ -126,13 +174,17 @@ export class RestartOrchestrator {
         `skipping exit. set INSTAR_SUPERVISED=1 to enable.`
       );
       this._state = 'idle';
+      this.inFlight = null;
+      this.stopServerOverride = false;
       return 'suppressed';
     }
 
-    // Step 1: quiesce — halt mutations before persist.
+    // Step 1: quiesce — halt mutations before persist. A stop request that arrived during
+    // the telemetry wait above already won: quiesce then stops the server itself.
+    const quiesceKeepsServer = keepServer && !this.stopServerOverride;
     try {
       await Promise.race([
-        this.deps.quiesce(),
+        this.deps.quiesce({ ...req, keepServer: quiesceKeepsServer }),
         new Promise<void>(resolve => setTimeout(resolve, 1000)),
       ]);
     } catch (err) {
@@ -156,15 +208,36 @@ export class RestartOrchestrator {
       console.error(`[RestartOrchestrator] persistAll error (continuing to exit): ${err}`);
     }
 
+    // Step 2b: a stop request that lost the race to a keep-server restart still stops the
+    // server. The persist hard-kill timer is cleared FIRST: it was armed for the persist
+    // budget and would otherwise fire during the supervisor's 3 s graceful wait, exiting
+    // the lifeline with the server still up and no successor to adopt it. The stop phase
+    // has its own budget; the supervisor force-kills within it.
+    clearTimeout(hardKill);
+    if (this.stopServerOverride && quiesceKeepsServer && this.deps.stopServer) {
+      console.log('[RestartOrchestrator] stopping the server after all (stop-server override)');
+      let done = false;
+      try {
+        await Promise.race([
+          this.deps.stopServer().then(() => { done = true; }),
+          new Promise<void>(resolve => setTimeout(resolve, this.stopPhaseMs)),
+        ]);
+      } catch (err) {
+        console.error(`[RestartOrchestrator] stopServer error (continuing to exit): ${err}`);
+      }
+      if (!done) console.error(`[RestartOrchestrator] stop phase exceeded ${this.stopPhaseMs}ms — exiting; the server may still be running`);
+    }
+
     // Step 3: exit.
     this._state = 'exiting';
-    clearTimeout(hardKill);
     this.deps.exitFn(0);
     return 'proceeded';
   }
 
   /** Test helper: reset state to idle without exiting. Only safe in tests. */
   _resetForTesting(): void {
+    this.inFlight = null;
+    this.stopServerOverride = false;
     this._state = 'idle';
     this.lastSuppressed = null;
   }
