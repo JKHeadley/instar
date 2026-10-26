@@ -20,6 +20,7 @@ import { LocalVerifyService, appendLocalVerifyAudit, type UpdatePendingState } f
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
+import type { ConflictNotice } from './LocalVerifyService.js';
 import { realGit } from './orchestratorSeams.js';
 import { verifyPaths } from './orchestrator.js';
 import { FloorGate } from './floorGate.js';
@@ -44,6 +45,8 @@ export interface LocalVerifyHooks {
   onRecord?(record: LocalVerifyRecord): void;
   onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
   signal?(key: string, detail: Record<string, unknown>): void;
+  /** A PR head stopped merging into its base, or that notice no longer applies (one attention item per (pr, head)). */
+  onConflict?(notice: ConflictNotice): void;
 }
 
 export interface LocalVerifyWiringOpts {
@@ -118,9 +121,29 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       // The same computation, over the files as they are NOW: an update that replaced the dist
       // under this still-running server holds the queue for the restart instead of burning it.
       installedVerifierVersion: () => computeVerifierVersion(path.dirname(mainEntry), undefined, { protectedList: PROTECTED_PATH_PREFIXES }),
+      onConflict: (n) => opts.hooks?.onConflict?.(n),
     },
   );
   return { service, reason: null };
+}
+
+/**
+ * The attention item for a merge-conflict notice (`state: 'open'`). Raised by the agent
+ * (`sourceContext: 'agent'`) so it reaches the Attention topic: nothing else will tell anyone
+ * that this PR is waiting for a rebase. The id is per (pr, head): a rebase gets a fresh item.
+ */
+export function conflictAttentionItem(n: ConflictNotice): {
+  id: string; title: string; summary: string; category: string; priority: 'NORMAL'; sourceContext: 'agent';
+} {
+  return {
+    id: n.id,
+    title: `PR #${n.pr} no longer merges into ${n.baseRefName} — rebase needed`,
+    summary: `Local verify could not test PR #${n.pr}: its head ${n.headSha.slice(0, 7)} conflicts with ${n.baseRefName} at ${n.baseSha.slice(0, 7)} (another change touched the same lines). `
+      + 'It will not merge until the branch is rebased and pushed; the new head is verified automatically and this item closes.',
+    category: 'degradation',
+    priority: 'NORMAL',
+    sourceContext: 'agent',
+  };
 }
 
 // ── The merge line (CMT-980) ─────────────────────────────────────────────

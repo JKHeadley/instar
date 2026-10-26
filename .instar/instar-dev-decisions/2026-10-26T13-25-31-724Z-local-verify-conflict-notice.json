@@ -1,0 +1,38 @@
+{
+  "ts": "2026-10-26T13:25:31.724Z",
+  "slug": "local-verify-conflict-notice",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 141,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/statusProjection.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 139,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The conflict notice fires at most once per (pr, head): the service keeps one open conflict per PR and returns early for the same head, and createAttentionItem is idempotent by id across restarts; it is driven only by a finished verify record (no tick), so its steady state is zero emits with no new pushes. The change also removes the automatic re-run for conflict records, so the registered local-verify-error-rerun controller only emits less (its convergence test still bounds it)."
+    }
+  },
+  "verdict": "pass"
+}

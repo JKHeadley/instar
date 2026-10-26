@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "slug": "local-verify-conflict-notice",
+  "sessionId": "f7e2be3f-4729-4466-864d-7a20194d485c",
+  "timestamp": "2026-10-26T13:20:14.011Z",
+  "artifactPath": "upgrades/side-effects/local-verify-conflict-notice.md",
+  "artifactSha256": "590aff8296d8be41d93011ec07e598137665bc357346385f09e71c2cc648618a",
+  "coveredFiles": [
+    "docs/specs/local-verify-conflict-notice.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/statusProjection.ts",
+    "src/scaffold/templates.ts",
+    "tests/integration/local-verify-conflict.test.ts",
+    "tests/unit/localVerify/conflictNotice.test.ts",
+    "upgrades/next/local-verify-conflict-notice.md",
+    "upgrades/side-effects/local-verify-conflict-notice.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible fix: a silent drop becomes a recorded signal plus one attention item; no new authority, no persistent state; a revert fully undoes it.",
+  "eli16Path": "docs/specs/local-verify-conflict-notice.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-conflict-notice.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The conflict notice fires at most once per (pr, head): the service keeps one open conflict per PR and returns early for the same head, and createAttentionItem is idempotent by id across restarts; it is driven only by a finished verify record (no tick), so its steady state is zero emits with no new pushes. The change also removes the automatic re-run for conflict records, so the registered local-verify-error-rerun controller only emits less (its convergence test still bounds it)."
+    }
+  }
+}

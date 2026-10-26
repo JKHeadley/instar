@@ -117,6 +117,10 @@ export function projectLocal(input: ProjectionInput): Projection {
   if (record.outcome !== 'success') {
     if (input.verifying) return p('pending', 'verifying');
     if (record.outcome === 'failure') return p('failure', 'verify-failed', statusDescription(record));
+    // Not a test result: the head does not merge into the base. Say what to do on the PR page.
+    if (record.errorStep === 'conflict') {
+      return p('failure', 'merge-conflict', `no longer merges into ${record.baseRefName} — rebase needed (base ${record.baseSha.slice(0, 7)})`);
+    }
     return p('failure', 'verify-error', statusDescription(record));
   }
   const gating = record.lanes.filter((l) => l.gating);

@@ -155,8 +155,37 @@ export interface LocalVerifyServiceSeams {
   signal?(key: string, detail: Record<string, unknown>): void;
   /** A `main` head's subject and parents (release collapse); null when unreadable (verify as usual). */
   commitInfo?(sha: string): Promise<CommitInfo | null>;
+  /**
+   * A PR's head stopped merging into its base (`state: 'open'`, once per (pr, head)), or that
+   * notice no longer applies (`state: 'resolved'`: a new head, a clean verify, the PR closed).
+   * The server raises and resolves one attention item under `id`.
+   */
+  onConflict?(notice: ConflictNotice): void;
   now?(): number;
   setTimer?(fn: () => void, ms: number): void;
+}
+
+/** A merge-conflict notice for one (pr, head): see `LocalVerifyServiceSeams.onConflict`. */
+export interface ConflictNotice {
+  state: 'open' | 'resolved';
+  /** `local-verify:conflict:<pr>:<head7>` — the attention item id. */
+  id: string;
+  pr: number;
+  headSha: string;
+  baseSha: string;
+  baseRefName: string;
+  /** Why a resolved notice no longer applies. */
+  reason?: 'head-moved' | 'verified' | 'closed' | 'superseded';
+}
+
+/** The attention id of a merge-conflict notice. */
+export function conflictNoticeId(pr: number, headSha: string): string {
+  return `local-verify:conflict:${pr}:${headSha.slice(0, 7)}`;
+}
+
+/** A record that says the head does not merge into its base. */
+export function isConflictRecord(r: Pick<LocalVerifyRecord, 'outcome' | 'errorStep'>): boolean {
+  return r.outcome === 'error' && r.errorStep === 'conflict';
 }
 
 export interface LocalVerifyServiceConfig {
@@ -473,6 +502,8 @@ export class LocalVerifyService {
   private blockedBy: InFlightIntent | null = null;
   private readonly index = new Map<string, LocalVerifyRecord>();
   private readonly execIndex = new Map<string, LocalVerifyRecord>();
+  /** Open merge-conflict notices, one per PR (rebuilt from the index at boot). */
+  private readonly conflicts = new Map<number, { headSha: string; baseSha: string; baseRefName: string; at: string }>();
   /** Bases a failed (pr, head, baseRef) record was already re-run against. */
   private readonly failureReruns = new Map<string, Set<string>>();
   private idleWaiters: Array<() => void> = [];
@@ -569,7 +600,7 @@ export class LocalVerifyService {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']> } {
+  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; conflicts: Array<{ pr: number; headSha: string; baseSha: string; baseRefName: string; at: string }> } {
     const h = this.verifierHold;
     return {
       queue: this.queue.map((e) => ({ ...e })),
@@ -581,6 +612,8 @@ export class LocalVerifyService {
       records: this.index.size,
       flakyFiles: this.flakyFiles(),
       mergeLine: this.mergeLine(),
+      // PRs whose head no longer merges into the base: they wait for a rebase, not in the queue.
+      conflicts: [...this.conflicts].map(([pr, c]) => ({ pr, ...c })),
     };
   }
 
@@ -856,6 +889,7 @@ export class LocalVerifyService {
       if (r.outcome !== 'error') this.execIndex.set(executionKey(r.headSha, r.baseSha), r);
       this.noteFlaky(r, { signal: false });
     }
+    this.rebuildConflicts();
     keep.sort((a, b) => (a.writtenAt < b.writtenAt ? -1 : a.writtenAt > b.writtenAt ? 1 : 0));
     const capped = keep.slice(-LOCAL_VERIFY_LIMITS.journalCap);
     this.rewriteJournal(capped);
@@ -865,6 +899,23 @@ export class LocalVerifyService {
     this.writeClosedSeen(closedSeen);
     this.audit({ event: 'index-rebuilt', loaded: this.index.size, skippedVersion, skippedClosed, kept: capped.length });
     return { loaded: this.index.size, skippedVersion, skippedClosed, kept: capped.length };
+  }
+
+  /**
+   * Open conflict notices after a restart: a PR whose LATEST indexed record is a conflict
+   * still has one (its attention item already exists, so nothing is raised again).
+   */
+  private rebuildConflicts(): void {
+    this.conflicts.clear();
+    const latest = new Map<number, LocalVerifyRecord>();
+    for (const r of this.index.values()) {
+      if (r.kind !== undefined) continue;
+      const cur = latest.get(r.pr);
+      if (!cur || r.finishedAt >= cur.finishedAt) latest.set(r.pr, r);
+    }
+    for (const [pr, r] of latest) {
+      if (isConflictRecord(r)) this.conflicts.set(pr, { headSha: r.headSha, baseSha: r.baseSha, baseRefName: r.baseRefName, at: r.finishedAt });
+    }
   }
 
   // ---- the POST path ----
@@ -882,6 +933,7 @@ export class LocalVerifyService {
     // A merged or closed PR has nothing to verify (an unknown answer queues it: the pre-start check asks again).
     if ((await this.seams.isPrOpen(pr).catch(() => null)) === false) {
       this.audit({ event: 'refused', pr, reason: 'pr-closed' });
+      this.resolveConflict(pr, 'closed');
       // A queued entry for it is no better: drop it now (a run in flight carries on to its own record).
       const queued = this.queue.findIndex((e) => e.pr === pr && e.kind !== 'main');
       if (queued >= 0) {
@@ -972,6 +1024,8 @@ export class LocalVerifyService {
     if (keptPlace && keptPlace.index < this.queue.length) this.queue.splice(keptPlace.index, 0, entry);
     else this.queue.push(entry);
     this.audit({ event: 'queued', pr, headSha, baseSha, explicit, ...(keptPlace ? { keptPlace: true, firstQueuedAt: entry.firstQueuedAt } : {}) });
+    const conflict = this.conflicts.get(pr);
+    if (conflict && conflict.headSha !== headSha) this.resolveConflict(pr, 'head-moved');
     const position = this.queue.indexOf(entry);
     this.pump();
     return { ok: true, status: 'queued', position };
@@ -1330,7 +1384,10 @@ export class LocalVerifyService {
         this.audit({ event: 'run-detail', ...runDetail(rec, result) });
       }
       if (rec) this.noteFlaky(rec);
-      if (rec && rec.outcome === 'error') this.handleErrorRetry(f.entry);
+      // A conflict is decided by (head, base) alone: re-running it cannot change the answer.
+      // It waits for a new head (a rebase) and says so once, instead of leaving the queue silently.
+      if (rec && isConflictRecord(rec)) this.openConflict(rec);
+      else if (rec && rec.outcome === 'error') this.handleErrorRetry(f.entry);
     }
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
@@ -1345,6 +1402,35 @@ export class LocalVerifyService {
     entry.errorRetries = d.errorRetries;
     this.audit({ event: 'error-auto-retry', pr: entry.pr, headSha: entry.headSha });
     this.retry(entry);
+  }
+
+  /** One notice per (pr, head): the PR's head no longer merges into its base. */
+  private openConflict(rec: LocalVerifyRecord): void {
+    const open = this.conflicts.get(rec.pr);
+    if (open && open.headSha === rec.headSha) {
+      open.baseSha = rec.baseSha;
+      return;
+    }
+    if (open) this.resolveConflict(rec.pr, 'superseded');
+    const c = { headSha: rec.headSha, baseSha: rec.baseSha, baseRefName: rec.baseRefName, at: rec.finishedAt };
+    this.conflicts.set(rec.pr, c);
+    this.audit({ event: 'conflict-open', pr: rec.pr, headSha: rec.headSha, baseSha: rec.baseSha });
+    this.notifyConflict('open', rec.pr, c);
+  }
+
+  /** Close the PR's open conflict notice, if any. */
+  private resolveConflict(pr: number, reason: NonNullable<ConflictNotice['reason']>): void {
+    const c = this.conflicts.get(pr);
+    if (!c) return;
+    this.conflicts.delete(pr);
+    this.audit({ event: 'conflict-resolved', pr, headSha: c.headSha, reason });
+    this.notifyConflict('resolved', pr, c, reason);
+  }
+
+  private notifyConflict(state: ConflictNotice['state'], pr: number, c: { headSha: string; baseSha: string; baseRefName: string }, reason?: ConflictNotice['reason']): void {
+    try {
+      this.seams.onConflict?.({ state, id: conflictNoticeId(pr, c.headSha), pr, headSha: c.headSha, baseSha: c.baseSha, baseRefName: c.baseRefName, ...(reason ? { reason } : {}) });
+    } catch { /* @silent-fallback-ok: the notice is best-effort; the record and the status carry the outcome */ }
   }
 
   /* @self-action-controller: local-verify-capacity-requeue */
@@ -1434,6 +1520,10 @@ export class LocalVerifyService {
     const key = recordKey(record.repo, record.pr, record.headSha, record.baseRefName);
     this.index.set(key, record);
     this.audit({ event: 'record', source, pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, outcome: record.outcome, errorStep: record.errorStep });
+    const conflict = record.kind === undefined ? this.conflicts.get(record.pr) : undefined;
+    if (conflict && !isConflictRecord(record) && (record.outcome !== 'error' || record.headSha !== conflict.headSha)) {
+      this.resolveConflict(record.pr, record.headSha === conflict.headSha ? 'verified' : 'head-moved');
+    }
     this.seams.onRecord?.(record);
     this.offerMerge(record);
     if (record.outcome !== 'error') {

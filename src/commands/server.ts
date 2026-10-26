@@ -22522,6 +22522,18 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         if (built.service) {
           localVerifyService = built.service;
+          // A PR whose head no longer merges into main: one attention item per (pr, head),
+          // closed when a new head is queued, a clean verify lands or the PR closes.
+          lvHooks.onConflict = (n) => {
+            if (!telegram) return;
+            if (n.state === 'open') {
+              void telegram.createAttentionItem(wiring.conflictAttentionItem(n) as never).catch(() => { /* attention delivery is non-fatal */ });
+              return;
+            }
+            const item = telegram.getAttentionItem(n.id);
+            if (!item || item.status === 'DONE' || item.status === 'WONT_DO') return;
+            void telegram.updateAttentionStatus(n.id, 'DONE', { resolution: `local-verify: ${n.reason ?? 'resolved'}` }).catch(() => { /* non-fatal */ });
+          };
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
