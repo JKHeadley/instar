@@ -32468,7 +32468,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         remoteDeletion,
         message: 'Baseline telemetry disabled. Local identity deleted. Re-enabling will create a new identity.',
       });
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — answers 500 with the error; the 20-line scan window reaches the next route
       res.status(500).json({ error: `Failed to disable telemetry: ${err instanceof Error ? err.message : err}` });
     }
   });

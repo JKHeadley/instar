@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "silent-fallback-telemetry-catch-mark",
+  "sessionId": "228799fc-89b6-4159-a138-827364d276a0",
+  "timestamp": "2026-10-26T14:45:56.826Z",
+  "artifactPath": "upgrades/side-effects/silent-fallback-telemetry-catch-mark.md",
+  "artifactSha256": "b0d1b791accee2242451aeb1c082f06285836a6fb8190c9ccd7849e7e5c5fd8a",
+  "coveredFiles": [
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one-line comment; a revert fully undoes it; no runtime change",
+  "eli16Path": "docs/specs/silent-fallback-telemetry-catch-mark.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/silent-fallback-telemetry-catch-mark.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
