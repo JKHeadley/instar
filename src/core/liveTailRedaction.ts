@@ -39,8 +39,9 @@ const RULES: CategoryRule[] = [
   { category: RedactionCategory.JwtLike, pattern: /\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b/g },
   // key/secret/token/password = "value" or : value
   { category: RedactionCategory.SecretAssignment, pattern: /\b(?:api[_-]?key|secret|token|password|passwd|client[_-]?secret)\b\s*[:=]\s*["']?[A-Za-z0-9._\-]{8,}["']?/gi },
-  // Generic long opaque api-key-ish tokens (sk-, ghp_, xoxb-, etc.)
-  { category: RedactionCategory.ApiKey, pattern: /\b(?:sk|pk|rk|ghp|gho|ghs|xox[bpoa])[_-][A-Za-z0-9]{16,}\b/g },
+  // Generic long opaque api-key-ish tokens (sk-, ghp_, xoxb-, etc.). The body may itself
+  // carry hyphens/underscores: Anthropic keys are sk-ant-api03-…, OpenAI project keys sk-proj-….
+  { category: RedactionCategory.ApiKey, pattern: /\b(?:sk|pk|rk|ghp|gho|ghs|xox[bpoa])[_-][A-Za-z0-9][A-Za-z0-9_-]{15,}/g },
 ];
 
 const PLACEHOLDER = (c: RedactionCategory) => `[redacted:${c}]`;
