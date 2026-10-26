@@ -510,11 +510,11 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
 
   const liveConfig = options.liveConfig ?? null;
 
-  // If file viewer is disabled, return empty router
-  if (!config.enabled) return router;
-
-  // Disabled while running (PATCH /api/files/config {enabled:false}): every file route but the
-  // config route itself answers 404 from that moment, not only after the next restart.
+  // Disabled (at boot, or while running via PATCH /api/files/config {enabled:false}): every
+  // file route but the config route itself answers 404. The routes are mounted either way so
+  // the config route exists to turn the viewer back on — an empty router when off at boot
+  // left the feature switch's own enable target answering 404 forever
+  // (spec feature-transition-applies-action §2.7).
   router.use('/api/files', (req: Request, res: Response, next) => {
     if (config.enabled || req.path === '/config') { next(); return; }
     res.status(404).json({ error: 'file viewer is disabled' });

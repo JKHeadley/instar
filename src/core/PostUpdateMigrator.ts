@@ -277,6 +277,23 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 - **When to use** (PROACTIVE — this is the trigger): the moment you catch yourself about to hold off on work, fan out parallel sub-agents, or report "the machine is loaded" → run \`load-assess.sh\` and act on its verdict, not on a load-average glance.\n`;
 }
 
+/**
+ * Feature switches apply their setting (spec feature-transition-applies-action).
+ * SHARED by `generateClaudeMd` and `migrateClaudeMd` (Agent Awareness + Migration
+ * Parity). Content-sniff marker: the heading below.
+ */
+export function FEATURE_SWITCH_CLAUDEMD_SECTION(port: number): string {
+  return `
+
+### Feature switches apply their setting (read \`effective\` before saying a feature is on)
+
+\`POST /features/:id/transition\` to \`enabled\`/\`disabled\` now ALSO sends the feature's own setting change (its \`enableAction\`/\`disableAction\`, e.g. \`PATCH /config\`) server-side, one switch per feature at a time, and answers with \`apply\` — \`{ outcome: applied | refused | failed | not-applied, httpStatus, detail }\`. The recorded choice is kept even when the setting change is refused; \`apply.detail\` carries the route's reason.
+- **Registry First — is feature X actually on?** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/features/X\` → \`effective\`: \`recorded\` (the switch), \`configured\` (the config key now), \`atBoot\` (the key when this process started; null = unknown), \`status\` (\`on\` · \`off\` · \`on-after-restart\` · \`off-after-restart\` · \`recorded-only\` · \`not-recorded\`) and a plain \`summary\`. Quote the summary; never tell the user a feature is "on" from \`state.enabled\` alone, and never say "running" — \`on\` means the setting was on at start, not a verified process.
+- The operator's own switch (the dashboard Features tab, with a fresh PIN unlock as \`X-Instar-Operator-Session\`) may set any feature on/off from any state and is itself the consent record. An agent call without that proof still walks the discovery graph (consent record, activation challenge) exactly as before.
+- **When to use** (PROACTIVE): user asks "I switched X on, why isn't it working?" → read \`effective.status\` + \`lastAttempt\`; \`recorded-only\` with a reason means the setting change was refused (fix the cause, then switch again); \`on-after-restart\` means it needs a restart (offer \`POST /sessions/restart-all\` or a server restart as appropriate).
+`;
+}
+
 export function CODEX_CONNECT_CLAUDEMD_SECTION(): string {
   return `
 
@@ -835,6 +852,26 @@ Onboarding a framework REQUIRES a stall-coverage matrix (\`docs/frameworks/<fram
  * "flag not heal" framing). The unique heading substring
  * `Duplicate-Session Prevention` is the content-sniff marker.
  */
+/**
+ * The ONE awareness section for the codex-arm session sweeper, shared by generateClaudeMd
+ * (new agents) and migrateClaudeMd (existing agents) so the two can never drift — the
+ * integration review found the first draft shipping "Ships ON" to fresh agents and
+ * "dry-run" to updated ones. Sniff key for the migrator: `/codex-arm-sweeper`.
+ * Spec: docs/specs/codex-arm-session-leak-and-sweeper.md
+ */
+export function CODEX_ARM_SWEEPER_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Orphaned codex-arm sessions
+
+instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to answer Codex's hook-trust prompt, and its teardown runs in the process that opened it. That process is PostUpdateMigrator, which arms on EVERY update — during which the server restarts — so the race is scheduled, not accidental, and a lost race orphans an interactive \`codex\` forever (measured: ~8/day on one machine, 41 retired by hand across two sweeps; the laptop they accumulated on reached 115 of 128 GB resident and starved a co-resident agent until its event loop drifted 8-19 s). Two layers close it: the session is now created WITH its own \`kill-session\` already scheduled in the tmux server, in the same request, so it dies on a timer regardless of what happens to its creator; and a sweeper closes whatever still leaks.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/codex-arm-sweeper\` → \`{ enabled, dryRun, maxAgeMs, passes, killed, wouldKill, wouldKillDistinct, alreadyGone, kept, errors, lastPassAt, lastKills, breakerOpen, breakerProbes, keptReasons }\`. **503 only when not wired**; a disabled sweeper still answers 200 with \`enabled: false\`, so read the field, not the status code. Audit: \`logs/codex-arm-sweeper.jsonl\`.
+- **It reads the MACHINE, not instar's session list** — an arm session is never registered with SessionManager, which is exactly why the leak was invisible: \`GET /sessions\` reported 11 while \`tmux ls\` held 112. A count from \`/sessions\` cannot answer "is anything piling up on this machine?".
+- **Ships enabled in DRY-RUN**: it reports what it WOULD close and kills nothing. Read \`wouldKillDistinct\` for the backlog (\`wouldKill\` re-counts the same orphan every pass). Arm it with \`monitoring.codexArmSessionSweeper.dryRun: false\` — read live at each pass, no restart. \`enabled: false\` turns it off (next restart; it then grades \`diverged-from-default\` on \`/guards\`, deliberately).
+- Safety: a session is a candidate only if its name's embedded birth time agrees with tmux's own creation record; the age threshold is clamped to a 5-minute floor (~2x the ~150 s modeled arming budget); an attached or recently-active session is kept whatever its age; a future-dated session is kept; an unreadable session list, or an unreadable protected-name list, ends the pass with zero kills; a pass is capped at 50 attempts and ~3 s of wall clock.
+- Proactive: user asks "why is this machine so full / what are all these terminal sessions?" → read this status AND run a real \`tmux ls\` count; the two together are the honest answer. Spec: \`docs/specs/codex-arm-session-leak-and-sweeper.md\`.
+`;
+}
+
 export function DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port: number): string {
   return `\n### Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)
 
@@ -6114,6 +6151,10 @@ if [[ "$ACTIVE" != "true" ]]; then`;
                 tmuxPath: detectTmuxPath() || 'tmux',
                 codexBinary,
                 model: 'gpt-5.2',
+                // The driver reports whether the arm session was created WITH its
+                // self-destruct (or refused) — without a logger that line is dropped
+                // and "is the source fix working?" is unanswerable from the update log.
+                log: (m) => console.warn(m),
               }),
             });
             result.upgraded.push(`.codex hook auto-arm: ${outcome.status}`);
@@ -7653,6 +7694,16 @@ setTimeout(() => process.exit(0), 2000);
       content += CODEX_CONNECT_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Hand-started Codex connect section');
+    }
+
+    // Feature switches apply their setting (spec feature-transition-applies-action) —
+    // Agent Awareness + Migration Parity: existing agents learn `apply` + `effective`
+    // and stop reporting a feature as on from state.enabled alone. Same text as
+    // generateClaudeMd. Content-sniff on the heading keeps it idempotent.
+    if (!content.includes('### Feature switches apply their setting')) {
+      content += FEATURE_SWITCH_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Feature switches apply their setting section');
     }
 
     // Normal-Chrome browser (spec normal-chrome-builtin-skill) — Agent Awareness +
@@ -10317,6 +10368,20 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: Reap-Log section already present');
     }
 
+    // Orphaned codex-arm tmux sessions (spec codex-arm-session-leak-and-sweeper.md).
+    // An agent that doesn't know this surface exists answers "why is this machine
+    // full of terminal sessions?" from `GET /sessions` — which structurally cannot
+    // see an arm session, and reported 11 while the machine held 112 (Agent
+    // Awareness standard). Idempotent via content-sniffing on the route path.
+    if (!content.includes('/codex-arm-sweeper')) {
+      const section = CODEX_ARM_SWEEPER_CLAUDEMD_SECTION(4040);
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
+    } else {
+      result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
     // Mid-Work Resume Queue + per-topic reap notices (reap-notify spec).
     // Existing agents only learn the new surfaces through this block — an
     // agent that doesn't know /sessions/resume-queue exists will tell the
@@ -10396,6 +10461,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
 
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:4042/green-pr-automerge\` — last tick, breaker, episodes, the dual-latch gate, the Layer-2 snapshot, plus \`armedCount\` + \`armed[]\` (PRs whose GitHub native auto-merge is armed and waiting on CI).
 - **How the merge happens (\`mergeStrategy\`).** Default \`auto\`: the watcher ARMS GitHub native auto-merge (\`safe-merge … --auto\`) and hands the wait off to GitHub — GitHub merges the instant every required check passes (enforcing branch protection, never bypassing it), so a server-restart-mid-merge can't strand it. The eventual merge is confirmed on a later reconciliation tick. \`mergeStrategy:'admin'\` restores the legacy synchronous poll-then-\`--admin\` behavior — the rollback lever and the escape hatch for a repo with "Allow auto-merge" disabled. An \`armed\`/\`armed-overdue\` (>24h, surfaced) episode means "GitHub owns the merge, waiting on CI" — not a failure.
+- **Which PRs count as mine:** a branch starting with my namespace (\`echo/\`) OR a same-repository PR opened by my \`expectedGhLogin\`, whatever its prefix (\`fix/\`, \`chore/\`, …). A fork is never mine. A listed PR still refused as not mine is in \`notAgentOwned[]\` with \`notAgentOwnedCount\` on GET /green-pr-automerge (and one \`skipped:not-agent-owned\` audit line per head), never silent.
 - **Holds always win — but a label/title alone does NOT stop an ARMED merge.** A \`[HOLD: …]\` title, a \`hold\`/\`do-not-merge\` label, or draft status excludes a PR from being armed in the first place. **But GitHub native auto-merge gates on required checks/mergeability, NOT on the PR title or labels — so a HOLD label alone does NOT stop a PR that is ALREADY armed.** To actually stop an in-flight armed merge, the operator's HOLD/rollback/pause now ALSO runs \`gh pr merge <pr> --disable-auto\` on every armed episode. The moment the operator says "hold #N", fire \`POST /green-pr-automerge/hold {"pr":N,"reason":"…"}\` (it applies the marker AND disables the in-flight auto-merge; it returns a non-2xx if it could not disable, so I never falsely claim the hold stopped the merge); never rely on remembering.
 - **Kill switch (anyone can STOP):** \`POST /green-pr-automerge/rollback\` disarms the watcher pool-wide AND \`--disable-auto\`s every already-armed PR in-line (absorbing, survives a lease move). Re-arming is the operator's — \`POST /green-pr-automerge/enable\` is dashboard-PIN-gated. Pool-disarm marker (PIN): \`POST /green-pr-automerge/pool-disarm\` also disarms in-flight armed merges. A per-PR \`--disable-auto\` that FAILS is reported as a DISTINCT "could NOT disable — disable it on GitHub directly" line, never folded into the disarmed-OK set.
 - **Manual trigger / soak:** \`POST /green-pr-automerge/tick\` (lease + single-flight + warm-up gated, rate-limited). \`dryRun: true\` observes without arming.
@@ -10407,7 +10473,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
       content += '\n' + GREEN_PR_SECTION;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Green-PR Auto-Merge section');
-    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review')) {
+    } else if (!content.includes('mergeStrategy') || !content.includes('approval-required') || !content.includes('needs-independent-review') || !content.includes('notAgentOwnedCount')) {
       // OLD section present (route string yes, the updated-copy marker no) →
       // replace the section body with the updated content. Match from the
       // section heading up to (but not including) the next top-level heading.
@@ -10420,7 +10486,7 @@ When one of my own PRs goes green, a background watcher merges it — I never ha
         content += '\n' + GREEN_PR_SECTION;
       }
       patched = true;
-      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review)');
+      result.upgraded.push('CLAUDE.md: updated Green-PR Auto-Merge section (mergeStrategy + disarm-reach + armed states + approval-required + independent review + author ownership)');
     } else {
       result.skipped.push('CLAUDE.md: Green-PR Auto-Merge section already up to date');
     }
@@ -11227,6 +11293,20 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
+    }
+
+    // Attention lifecycle (attention-lifecycle-close-on-cause, operator report
+    // 2026-10-25: ~1,140 open items nobody could act on). Deployed agents learn
+    // that items are one-per-condition, how to pass a conditionKey, how to
+    // close a cleared condition, and that untouched rows expire with an honest
+    // label. Sniff: '/attention/lifecycle'.
+    if (content.includes('**Attention Queue**') && !content.includes('/attention/lifecycle')) {
+      const lifecycleBullet = `- **Items close themselves (attention lifecycle, default on).** One row per CONDITION, not per observation: give a recurring item a stable \`"conditionKey"\` (no timestamps or episode counters, e.g. \`"sign-in:acct:machine"\`) and every later raise lands on the same row (its body refreshes when the ask changes; a closed row reopens for a new episode). When the cause is gone, CLOSE it yourself: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"sign-in:acct:machine","resolution":"signed in again and verified"}'\` (or \`"id"\` / a delimiter-terminated \`"idPrefix"\`). An hourly pass merges duplicate open rows for one condition, closes rows whose producer reports the condition over, and EXPIRES untouched rows with an honest label (\`closedBy: "expired"\`, resolution "never confirmed cleared"): automated notices after 14 days, items you raised or that ask for a decision after 30 days, acknowledged/in-progress rows and security items never. The first pass on a machine only LISTS what expiry would close. Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/attention/lifecycle\`; run a pass: \`POST /attention/lifecycle/sweep\` with \`{"dryRun":true}\` to list, \`{}\` to apply. Audit: \`logs/attention-lifecycle.jsonl\`. Rollback: \`messaging[].config.attentionLifecycle.enabled: false\`. Promises waiting on the operator (\`owner: "user"\`, blocked on user-input / user-authorization) expire after 14 days too (\`commitments.operatorWait\`). **When to use** (PROACTIVE): the user asks "why is the attention list full of old items?" / "why did my item disappear?" → read \`GET /attention/lifecycle\` and the audit log, don't guess; when you raise a recurring item, pass a \`conditionKey\` and clear it when the cause ends.\n`;
+      const proactive = /^- \*\*Proactive use\*\*: queue an item only[^\n]*\n/m;
+      if (proactive.test(content)) content = content.replace(proactive, (m) => `${m}${lifecycleBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${lifecycleBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added attention lifecycle (close-on-cause + expiry) bullet');
     }
 
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
@@ -12281,6 +12361,7 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // peer-credential-guard-tailscale-coherence: a pool read's failure reasons
       // are server-side and framework-neutral — a Codex/Gemini agent runs the

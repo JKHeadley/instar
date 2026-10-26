@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "console-makeover-home",
+  "sessionId": "cd11bb25-38ff-4a31-becc-216173b7ad19",
+  "timestamp": "2026-10-26T02:20:40.194Z",
+  "artifactPath": "upgrades/side-effects/console-makeover-home.md",
+  "artifactSha256": "558fc05a259127723fea8b46142dda40f1d213d09015841cfc58b254ad41b1e4",
+  "coveredFiles": [
+    "dashboard/console/allowed-model.js",
+    "dashboard/console/allowed.js",
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/nav-model.js",
+    "tests/e2e/console-home-lifecycle.test.ts",
+    "tests/integration/console-static-serving.test.ts",
+    "tests/unit/console-allowed.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Native 'What I'm allowed to do' console page over existing features/autonomy/guards routes; static dashboard files; server gates unchanged.",
+  "eli16Path": "docs/specs/console-makeover.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-makeover-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

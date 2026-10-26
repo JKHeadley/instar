@@ -17,6 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { registerSqliteHandle } from './SqliteRegistry.js';
+import type { FeatureApplyResult } from './FeatureActionApplier.js';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -79,6 +80,14 @@ export interface FeatureDefinition {
 
   // Config binding
   configPath: string;            // Dot-notation path into InstarConfig
+  /** The feature's consumer treats an ABSENT key as on (e.g. `enabled !== false`). Default false. */
+  defaultOn?: boolean;
+  /** When set, the key counts as on only when it equals this value (e.g. approvalMode === 'autonomous'). */
+  configEnabledValue?: unknown;
+  /** A plain sentence appended to the shown state where the runtime's real behaviour differs from the key. */
+  honestyNote?: string;
+  /** false = the runtime ignores this key, so the switch is read-only (the transition route refuses enable/disable). */
+  switchable?: boolean;
   enableAction: EnableAction;
   disableAction: EnableAction;
 
@@ -110,6 +119,31 @@ export interface FeatureState {
   declineCount: number;
   /** Feature version at time of last decline (for version-aware re-surfacing) */
   declinedAtVersion: string | null;
+  /** Result of the last attempt to apply the feature's enable/disable setting change. */
+  lastApply: FeatureApplyResult | null;
+}
+
+/**
+ * What the switch says vs what the agent is doing (spec §2.3).
+ * "Running" means the process booted with the setting on — the strongest claim
+ * available without a per-feature liveness probe.
+ */
+export type EffectiveStatus = 'on' | 'off' | 'on-after-restart' | 'off-after-restart' | 'recorded-only' | 'not-recorded';
+
+export interface FeatureEffectiveState {
+  /** What the switch says (state.enabled). */
+  recorded: boolean;
+  /** The config key now (config.json on disk merged over runtime config). */
+  configured: boolean;
+  /** The config key when this server process started; null when this process never took a boot snapshot. */
+  atBoot: boolean | null;
+  /** The last attempt to apply the setting change, kept even after a restart reset the switch. */
+  lastAttempt: FeatureApplyResult | null;
+  status: EffectiveStatus;
+  /** One plain sentence for a person (the base sentence plus `detail`, when any). */
+  summary: string;
+  /** What `summary` adds beyond the plain on/off sentence: a failed attempt and/or an honesty note. Null when nothing. */
+  detail: string | null;
 }
 
 /** Max declines before a feature goes permanently quiet (server-enforced) */
@@ -169,6 +203,7 @@ export interface FeatureSummary {
   consentTier: ConsentTier;
   enabled: boolean;
   discoveryState: DiscoveryState;
+  effective?: FeatureEffectiveState;
 }
 
 // ── Valid Transitions ────────────────────────────────────────────────
@@ -186,7 +221,7 @@ const VALID_TRANSITIONS: Record<DiscoveryState, DiscoveryState[]> = {
 /** Tiers requiring a consent record before enabling */
 const CONSENT_REQUIRED_TIERS: Set<ConsentTier> = new Set(['network', 'self-governing']);
 
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 
 // ── Registry ─────────────────────────────────────────────────────────
 
@@ -196,6 +231,15 @@ export class FeatureRegistry {
   private stateDir: string;
   private definitions: Map<string, FeatureDefinition> = new Map();
   private hmacKey: string | null = null;
+  /** Config value of each feature when this process bootstrapped (spec §2.3 atBoot). */
+  private bootValues: Map<string, boolean> = new Map();
+  /**
+   * Per-feature override of "is the key on in this config?" for a consumer whose
+   * default is not in config (autonomous evolution falls back to the autonomy
+   * profile). Set by server.ts before bootstrap; used by bootstrap AND the shown
+   * state so the two never disagree.
+   */
+  private configuredResolvers: Map<string, (config: Record<string, unknown>) => boolean> = new Map();
 
   constructor(stateDir: string, opts?: { hmacKey?: string }) {
     this.stateDir = stateDir;
@@ -295,6 +339,7 @@ export class FeatureRegistry {
         consentRecordId: row.consent_record_id,
         declineCount: row.decline_count ?? 0,
         declinedAtVersion: row.declined_at_version ?? null,
+        lastApply: parseApply(row.last_apply_json),
       };
     }
 
@@ -310,6 +355,7 @@ export class FeatureRegistry {
       consentRecordId: null,
       declineCount: 0,
       declinedAtVersion: null,
+      lastApply: null,
     };
   }
 
@@ -380,8 +426,8 @@ export class FeatureRegistry {
     const merged: FeatureState = { ...current, ...updates, featureId, userId };
 
     this.db.prepare(`
-      INSERT INTO feature_state (user_id, feature_id, enabled, discovery_state, last_surfaced_at, surface_count, last_declined_at, consent_record_id, decline_count, declined_at_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO feature_state (user_id, feature_id, enabled, discovery_state, last_surfaced_at, surface_count, last_declined_at, consent_record_id, decline_count, declined_at_version, last_apply_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id, feature_id) DO UPDATE SET
         enabled = excluded.enabled,
         discovery_state = excluded.discovery_state,
@@ -391,6 +437,7 @@ export class FeatureRegistry {
         consent_record_id = excluded.consent_record_id,
         decline_count = excluded.decline_count,
         declined_at_version = excluded.declined_at_version,
+        last_apply_json = excluded.last_apply_json,
         updated_at = datetime('now')
     `).run(
       merged.userId,
@@ -403,6 +450,7 @@ export class FeatureRegistry {
       merged.consentRecordId,
       merged.declineCount,
       merged.declinedAtVersion,
+      merged.lastApply ? JSON.stringify(merged.lastApply) : null,
     );
 
     return merged;
@@ -950,7 +998,8 @@ export class FeatureRegistry {
     const mergedConfig = { ...rawConfig, ...config };
 
     for (const def of this.definitions.values()) {
-      const isEnabled = this.resolveConfigValue(mergedConfig, def.configPath);
+      const isEnabled = this.resolveConfigValue(mergedConfig, def);
+      this.bootValues.set(def.id, isEnabled);
       const existingRow = this.db.prepare(
         'SELECT discovery_state, enabled FROM feature_state WHERE user_id = ? AND feature_id = ?'
       ).get(userId, def.id) as { discovery_state: string; enabled: number } | undefined;
@@ -980,28 +1029,165 @@ export class FeatureRegistry {
     }
   }
 
+  // ── Applied setting + honest state (spec feature-transition-applies-action) ──
+
+  /**
+   * Record the result of applying a feature's setting change, and log it next to
+   * the transition in the discovery-events audit trail.
+   */
+  recordApply(featureId: string, userId: string, result: FeatureApplyResult): void {
+    if (!this.db || !this.definitions.has(featureId)) return;
+    const current = this.getState(featureId, userId)!;
+    this.setState(featureId, userId, { lastApply: result });
+    this.logDiscoveryEvent({
+      timestamp: result.at,
+      userId,
+      featureId,
+      previousState: current.discoveryState,
+      newState: current.discoveryState,
+      context: `apply:${result.outcome}${result.detail ? ` — ${result.detail}` : ''}`,
+    });
+  }
+
+  /**
+   * The operator's switch (spec §2.4). The caller has already verified a fresh
+   * dashboard PIN unlock. Sets enabled/disabled from ANY state, skipping the
+   * discovery graph (the operator is setting a switch, not being surfaced to);
+   * the switch itself is the consent, so a consent record is written for
+   * network / self-governing features.
+   */
+  operatorSet(featureId: string, userId: string, to: 'enabled' | 'disabled', opts?: { context?: string }): TransitionResult {
+    if (!this.db) return { success: false, featureId, error: { code: 'NOT_READY', message: 'Database not open' } };
+    const def = this.definitions.get(featureId);
+    if (!def) return { success: false, featureId, error: { code: 'FEATURE_NOT_FOUND', message: `Feature '${featureId}' not found` } };
+    if (to !== 'enabled' && to !== 'disabled') {
+      return { success: false, featureId, error: { code: 'INVALID_TRANSITION', message: `The operator switch only sets 'enabled' or 'disabled'` } };
+    }
+    const current = this.getState(featureId, userId)!;
+    const now = new Date().toISOString();
+    const updates: Partial<FeatureState> = { discoveryState: to, enabled: to === 'enabled' };
+    if (to === 'enabled' && CONSENT_REQUIRED_TIERS.has(def.consentTier)) {
+      updates.consentRecordId = this.storeConsentRecord({
+        id: '',
+        userId,
+        featureId,
+        consentTier: def.consentTier,
+        dataImplications: def.dataImplications,
+        consentedAt: now,
+        mechanism: 'explicit-written',
+      });
+    }
+    this.setState(featureId, userId, updates);
+    this.logDiscoveryEvent({
+      timestamp: now,
+      userId,
+      featureId,
+      previousState: current.discoveryState,
+      newState: to,
+      trigger: 'operator-switch',
+      context: opts?.context,
+    });
+    return { success: true, featureId, previousState: current.discoveryState, newState: to, timestamp: now };
+  }
+
+  /** Install a consumer-specific "is it on?" rule (see configuredResolvers). */
+  setConfiguredResolver(featureId: string, resolver: (config: Record<string, unknown>) => boolean): void {
+    this.configuredResolvers.set(featureId, resolver);
+  }
+
+  /**
+   * Is the feature's config key on in this config? (Public form of the rule
+   * bootstrap() uses, so the shown state reads config exactly as boot does.)
+   */
+  isConfigured(featureId: string, config: Record<string, unknown>): boolean {
+    const def = this.definitions.get(featureId);
+    if (!def) return false;
+    return this.resolveConfigValue(config, def);
+  }
+
+  /**
+   * Merge config.json on disk one level deep OVER the given runtime config (disk
+   * wins — unlike bootstrap(), where runtime wins). Used by the shown state only.
+   */
+  readMergedConfig(runtimeConfig: Record<string, unknown>): Record<string, unknown> {
+    let rawConfig: Record<string, unknown> = {};
+    try {
+      const configPath = path.join(this.stateDir, 'config.json');
+      if (fs.existsSync(configPath)) rawConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch { /* @silent-fallback-ok — unreadable config file; runtime config still answers */ }
+    // Disk wins here (unlike boot): PATCH /config writes the file, and the shown
+    // state must reflect what was just written even where runtime lags. Merge one
+    // level deep (the shape PATCH /config writes), so a disk section never wipes
+    // sibling sub-keys the runtime holds for the same top-level key (review r2).
+    const merged: Record<string, unknown> = { ...runtimeConfig };
+    for (const [k, v] of Object.entries(rawConfig)) {
+      const base = merged[k];
+      merged[k] = v && typeof v === 'object' && !Array.isArray(v) && base && typeof base === 'object' && !Array.isArray(base)
+        ? { ...(base as Record<string, unknown>), ...(v as Record<string, unknown>) }
+        : v;
+    }
+    return merged;
+  }
+
+  /** What the switch says vs what is configured vs what this process booted with. */
+  getEffectiveState(featureId: string, userId: string, mergedConfig: Record<string, unknown>): FeatureEffectiveState | null {
+    const state = this.getState(featureId, userId);
+    const def = this.definitions.get(featureId);
+    if (!state || !def) return null;
+    const configured = this.isConfigured(featureId, mergedConfig);
+    const atBoot = this.bootValues.has(featureId) ? this.bootValues.get(featureId)! : null;
+    if (def.switchable === false) {
+      // A read-only switch: the key is what it is, the switch cannot move it, and the
+      // honest sentence is the note. (A prerequisite rule was tried in r1 and dropped in
+      // r2: the evolution consumers do not honor it, so it would have lied the other way.)
+      const note = def.honestyNote ?? 'The switch is read-only in this version.';
+      return {
+        recorded: configured, configured, atBoot, lastAttempt: state.lastApply,
+        status: configured ? 'on' : 'off',
+        summary: `${configured ? 'On.' : 'Off.'} ${note}`,
+        detail: note,
+      };
+    }
+    return deriveEffectiveState(state.enabled, configured, atBoot, state.lastApply, def.honestyNote ?? null);
+  }
+
   /**
    * Resolve a dot-notation config path to a boolean indicating if the feature is enabled.
    */
-  private resolveConfigValue(config: Record<string, unknown>, configPath: string): boolean {
-    const parts = configPath.split('.');
+  private resolveConfigValue(config: Record<string, unknown>, def: FeatureDefinition): boolean {
+    const resolver = this.configuredResolvers.get(def.id);
+    if (resolver) {
+      try { return resolver(config) === true; } catch { /* @silent-fallback-ok — fall through to the key */ }
+    }
+    const parts = def.configPath.split('.');
     let current: unknown = config;
 
     for (const part of parts) {
-      if (current == null || typeof current !== 'object') return false;
+      if (current == null || typeof current !== 'object') { current = undefined; break; }
       current = (current as Record<string, unknown>)[part];
     }
 
-    // If the path resolves to an object with an 'enabled' field, use that
-    if (current != null && typeof current === 'object' && 'enabled' in (current as object)) {
-      return !!(current as Record<string, unknown>).enabled;
+    // An absent key means whatever the consumer's default is (review r1: publishing,
+    // the tunnel, backups, the file viewer and external operations all run unless
+    // explicitly disabled — the registry called them "off").
+    if (current === undefined || current === null) return def.defaultOn === true;
+
+    // A key that is on only at one value (evolution.approvalMode === 'autonomous').
+    if (def.configEnabledValue !== undefined) return current === def.configEnabledValue;
+
+    // A section object: its boolean `enabled` decides; a section with other keys but
+    // no boolean `enabled` means the consumer's default applies (review r2 — the old
+    // "any object counts as on" read `feedback: { webhookUrl }` as on while the
+    // FeedbackManager, checking `this.config.enabled`, treated it as off).
+    if (current != null && typeof current === 'object') {
+      const enabled = (current as Record<string, unknown>).enabled;
+      if (typeof enabled === 'boolean') return enabled;
+      return def.defaultOn === true;
     }
 
-    // If the path resolves to a boolean, use directly
-    if (typeof current === 'boolean') return current;
-
-    // If the config key exists and is truthy (non-null object), consider it enabled
-    return current != null && typeof current === 'object';
+    // A bare boolean at the path decides; anything else (null, a string without a
+    // configEnabledValue) is off.
+    return typeof current === 'boolean' ? current : false;
   }
 
   // ── Activation Challenge (Self-Governing Tier) ─────────────────
@@ -1162,6 +1348,13 @@ export class FeatureRegistry {
       // Column already exists — expected
     }
 
+    // Migration: last apply result column (v4 → v5, spec feature-transition-applies-action §2.2)
+    try {
+      this.db.exec('ALTER TABLE feature_state ADD COLUMN last_apply_json TEXT');
+    } catch {
+      // @silent-fallback-ok — column already exists (idempotent ADD COLUMN migration, same as the v3/v4 columns above)
+    }
+
     // Migration: add signature column to consent_records if missing (v2 → v3)
     try {
       this.db.exec('ALTER TABLE consent_records ADD COLUMN signature TEXT');
@@ -1174,4 +1367,50 @@ export class FeatureRegistry {
       'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)'
     ).run('schema_version', SCHEMA_VERSION);
   }
+}
+
+function parseApply(raw: unknown): FeatureApplyResult | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const v = JSON.parse(raw) as FeatureApplyResult;
+    return v && typeof v === 'object' && typeof v.outcome === 'string' ? v : null;
+  } catch {
+    return null; // @silent-fallback-ok — a corrupt stored result reads as "no result"
+  }
+}
+
+/**
+ * The honest-state table (spec §2.3). Pure: exported for unit tests.
+ *
+ * "On" never claims the feature is verified running: a boot flag is not a
+ * successful start (review r1). atBoot null = this process took no snapshot.
+ */
+export function deriveEffectiveState(
+  recorded: boolean,
+  configured: boolean,
+  atBoot: boolean | null,
+  lastApply: FeatureApplyResult | null,
+  note: string | null = null,
+): FeatureEffectiveState {
+  const failed = lastApply && lastApply.outcome !== 'applied' ? lastApply : null;
+  const why = failed?.detail
+    ? ` The last attempt to turn it ${failed.direction === 'enable' ? 'on' : 'off'} was ${failed.outcome === 'not-applied' ? 'not made' : failed.outcome}: ${failed.detail}.`
+    : '';
+  const tail = note ? ` ${note}` : '';
+  const base = { recorded, configured, atBoot, lastAttempt: lastApply };
+  let status: EffectiveStatus;
+  let summary: string;
+  if (recorded && !configured) { status = 'recorded-only'; summary = 'Switched on, but the setting is still off.'; }
+  else if (!recorded && configured) { status = 'not-recorded'; summary = 'The setting is on, but the switch says off.'; }
+  else if (recorded) {
+    if (atBoot === true) { status = 'on'; summary = 'On (the setting was on when the agent started; running is not separately verified).'; }
+    else if (atBoot === false) { status = 'on-after-restart'; summary = 'Saved as on; it may not start until the next restart.'; }
+    else { status = 'on'; summary = 'On in the settings; whether it started is not known to this process.'; }
+  } else {
+    if (atBoot === false) { status = 'off'; summary = 'Off (the setting was off when the agent started; not running is not separately verified).'; }
+    else if (atBoot === true) { status = 'off-after-restart'; summary = 'Saved as off; it may keep running until the next restart.'; }
+    else { status = 'off'; summary = 'Off in the settings; whether it stopped is not known to this process.'; }
+  }
+  const detail = (why + tail).trim();
+  return { ...base, status, summary: summary + why + tail, detail: detail || null };
 }

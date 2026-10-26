@@ -1,0 +1,41 @@
+{
+  "ts": "2026-10-26T04:58:46.196Z",
+  "slug": "codex-arm-session-leak-and-sweeper",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 955,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/codexHookArm.ts",
+      "src/core/types.ts",
+      "src/monitoring/CodexArmSessionSweeper.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 932,
+    "deletedLines": 23
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "codexHookArm's tmux teardown lived only in a finally; the caller (PostUpdateMigrator) arms on every update while the server restarts, so a parent killed mid-poll orphaned the detached session. Latent since the arm path shipped; surfaced by the 2026-10-25 laptop census (112 tmux sessions vs 11 in /sessions)."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,13 @@
+# Attention items that close themselves — the plain-English version
+
+Every Instar agent keeps a list of things that need its person's attention. On Justin's agent that list had over a thousand open entries across his four machines, and he ignored all of them, because almost none still needed him. Three things caused it: nothing ever closed an entry (only 8 of about 70 sources ever marked their own entry done), the same problem got a new entry every time it was noticed (many sources put a timestamp in the entry's name, so 7 accounts needing sign-in became 27 entries and held replies became 243), and nothing ever aged out. Promises the agent made that were waiting on Justin had the same flaw: they waited forever, while the agent's own promises already expired after three weeks.
+
+This change puts three rules into the list itself, so no source has to remember them:
+
+- **One entry per problem.** When the same problem is noticed again, the existing entry is updated (a counter goes up) rather than a new one added. If what the person has to do changes — "approve the repair" becomes "tap the prompt on your phone now" — the entry's text changes and it is posted again. If a problem comes back after being closed, the old entry reopens, so it is never silently muted either. If the person said "won't do", it stays closed for a month.
+- **Entries close when the problem is gone.** The noisiest sources (sign-in repair, held replies, machine-ownership checks, duplicate sessions and a few more) now tell the list "this cleared" the moment they can see it — and only then: a sign-in repair that *failed* stays open, because that is exactly when the person is needed. Any job or script can do the same with one call.
+- **Old automated notices expire.** Once an hour the list merges leftover duplicates, closes what its sources report as over, and then closes automated notices nobody touched for 14 days with a label that says "expired, never confirmed cleared" — not "done". Questions the agent asked the person directly get 30 days. Anything the person acknowledged or is working on is left alone. Security items never expire. The first time this runs on a machine it only lists what it would expire, so there is something to review before anything ages out. Every close is written to a log and can be undone with one tap.
+
+Promises waiting on the person get the same bound: 14 days, then they close as unanswered, with a note saying so.
+
+Nothing is deleted. One setting turns the whole thing off and gives the old behaviour back exactly; another keeps the merging and the verified closes but makes expiry list-only.

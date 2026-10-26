@@ -153,7 +153,7 @@ export interface QuotaPollerConfig {
   /** Reconcile confirmed live attribution into the durable location ledger. */
   locationLedger?: CredentialLocationLedger;
   /** One deduped attention item per drift episode (id is stable until self-close). */
-  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
+  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string; conditionKey: string }) => void | Promise<void>;
   onIdentityRestored?: (accountId: string, attentionId: string) => void | Promise<void>;
   /** Passive evidence sink. It cannot select accounts, mutate pool authority, or trigger repair. */
   loginObservationSink?: (input: {
@@ -561,6 +561,9 @@ export class QuotaPoller {
     try {
       void this.emitIdentityDriftAttention?.({
         id: `credential-identity-drift-${expected.id}-${detectedAt}`,
+        // attention-lifecycle-close-on-cause §3.3 — the stable condition identity; the
+        // restore path clears by it so the close cannot miss a re-timestamped id.
+        conditionKey: `credential-identity-drift:${expected.id}`,
         title: `Credential identity drift: ${expected.id}`,
         summary: `Slot ${slot} is labelled ${expected.id} but live identity is ${actualId}. ${actual ? `Quota was attributed to ${actualId}` : 'The confirmed identity is not enrolled in the registry'}; the slot is excluded from swaps pending audited repair.`,
       });

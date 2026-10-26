@@ -121,7 +121,7 @@ export function buildNeeds(res, now = Date.now()) {
   const partial = failed.length > 0;
   const missing = failed.map((f) => f.nickname || f.machineNickname || f.machineId || 'a machine').join(', ');
   const tail = [
-    stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days, probably already handled.` : null,
+    stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days, listed separately.` : null,
     routine > 0 ? `${plural(routine, 'routine notice')} kept in the log.` : null,
   ].filter(Boolean).join(' ');
   const partialLine = partial ? `No answer from ${missing}.` : '';
@@ -188,6 +188,19 @@ export function isActiveCommitment(c, now = Date.now()) {
 
 export const REPLICA_FRESH_MS = 15 * 60 * 1000;
 
+/** When a promise was last touched (heartbeat, update or creation). */
+export function lastTouched(c) {
+  return Date.parse(c.lastHeartbeatAt || c.updatedAt || c.createdAt) || 0;
+}
+
+/** Missed: the tracker says violated, or a hard deadline passed while it was still open. */
+export function isMissed(c, now = Date.now()) {
+  if (!c) return false;
+  if (c.status === 'violated') return true;
+  const hard = Date.parse(c.hardDeadlineAt);
+  return Number.isFinite(hard) && hard < now && isActiveCommitment(c, now);
+}
+
 export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   if (!res.ok) return unknownCard(`Couldn't read commitments: ${res.reason}.`);
   if (res.data && res.data.enabled === false) return unknownCard('Commitment tracking is switched off on this agent.');
@@ -195,12 +208,13 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     : (Array.isArray(res.data) ? res.data : null);
   if (!list) return unknownCard('Commitments answered without a list.');
   const open = list.filter((c) => isActiveCommitment(c, now));
-  const fresh = (c) => now - (Date.parse(c.updatedAt || c.lastProbeAt || c.createdAt) || 0) <= STALE_DAYS * DAY;
+  const fresh = (c) => now - lastTouched(c) <= STALE_DAYS * DAY;
   const yoursAll = open.filter(waitsOnOperator).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const yours = yoursAll.filter(fresh);
   const yoursStale = yoursAll.length - yours.length;
-  const violated = open.filter((c) => c.status === 'violated' && !waitsOnOperator(c));
-  const rest = open.length - yoursAll.length - violated.length;
+  const violated = list.filter((c) => isMissed(c, now) && !waitsOnOperator(c));
+  const rest = open.filter((c) => fresh(c) && !waitsOnOperator(c) && !isMissed(c, now)).length;
+  const olderCarried = open.filter((c) => !fresh(c) && !waitsOnOperator(c) && !isMissed(c, now)).length;
   const toRow = (c, tone) => ({
     key: `${c.originMachineId || 'own'}:${c.id}`,
     detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
@@ -229,8 +243,8 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   const line = [
     yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
     violated.length ? `${violated.length} missed.` : null,
-    yoursStale ? `${plural(yoursStale, 'older one')} untouched for ${STALE_DAYS}+ days.` : null,
     rest > 0 ? `${plural(rest, 'other')} I'm carrying.` : null,
+    olderCarried + yoursStale > 0 ? `${olderCarried + yoursStale} older ones untouched for ${STALE_DAYS}+ days, listed separately.` : null,
   ].filter(Boolean).join(' ') || 'Nothing open.';
   const incomplete = origins.size === 0 || staleReplica || missingPeers === null || missingPeers > 0;
   const state = yours.length ? 'attn' : violated.length ? 'bad' : (incomplete ? 'partial' : 'ok');

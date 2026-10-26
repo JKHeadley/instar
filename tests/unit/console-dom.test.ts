@@ -89,7 +89,7 @@ describe('console shell (jsdom)', () => {
     dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
     await flush();
     const tiles = [...doc.querySelectorAll('a.tile')].map((a) => a.getAttribute('href'));
-    expect(tiles).toContain('/dashboard?tab=sessions');
+    expect(tiles).toContain('/dashboard?tab=dropzone');
     expect(doc.querySelector('iframe')).toBeNull();
   });
 });

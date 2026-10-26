@@ -96,7 +96,7 @@ describe('What needs you', () => {
     expect(m.count).toBe(1);
     expect(m.all).toHaveLength(2);
     expect(m.all[1].main).toBe('old');
-    expect(m.line).toContain('probably already handled');
+    expect(m.line).toContain('listed separately');
   });
   it('a security item never ages out', () => {
     const m = buildNeeds(ok({ items: [item({ category: 'security', source: 'agent', title: 'Rotate token', createdAt: minsAgo(60 * 24 * 40) })], pool: { failed: [] } }), NOW);
@@ -154,7 +154,7 @@ describe('What I have promised', () => {
   it('a promise waiting on the operator but untouched for 14+ days is not counted', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
     expect(m.count).toBe(0);
-    expect(m.line).toContain('untouched for 14+ days');
+    expect(m.line).toContain('untouched for 14+ days, listed separately');
   });
   it('promises waiting on the operator lead', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);

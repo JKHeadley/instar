@@ -3389,7 +3389,10 @@ For each overdue action:
 
 Also check pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
 
-If no overdue or stale items, exit silently.`,
+Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue": curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue: <ids>","priority":"medium","source":"agent"}'
+When the overdue list is EMPTY, close that row instead: curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"evolution-overdue","resolution":"no evolution actions are overdue"}'
+
+If no overdue or stale items, exit silently (after the clear above).`,
       },
       tags: ['cat:learning', 'role:worker', 'exec:prompt', 'pair:commitment-detection'],
     },
@@ -3836,7 +3839,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
         const codexArmModel = 'gpt-5.2';
         armCodexHooks({
           projectDir,
-          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel }),
+          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel, log: (m) => console.warn(m) }),
         });
       } catch {
         // fail-soft — the post-update migrator re-arms on the next update.

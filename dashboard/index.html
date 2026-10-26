@@ -4453,6 +4453,7 @@
     // Short-lived proof of a recent PIN unlock. Kept in memory only: the durable
     // API token is intentionally insufficient for operator-only actions.
     let operatorSessionToken = '';
+    let operatorSessionExpiresAt = '';
     let sessions = [];
     // Door + model controls (dashboard-door-model-controls §3.6).
     let topicProfileOptions = null;
@@ -4507,6 +4508,7 @@
             token = data.token;
             operatorSessionToken = typeof data.operatorSessionToken === 'string'
               ? data.operatorSessionToken : '';
+            operatorSessionExpiresAt = typeof data.operatorSessionExpiresAt === 'string' ? data.operatorSessionExpiresAt : '';
           } else {
             // Fall back: treat input as raw Bearer token
             token = pin;
@@ -9109,7 +9111,7 @@
         const featureList = rawFeatures?.features || rawFeatures || [];
         const flattened = featureList.map(f => {
           if (f.definition) {
-            return { ...f.definition, ...f.state, discoveryState: f.state?.discoveryState, enabled: f.state?.enabled };
+            return { ...f.definition, ...f.state, discoveryState: f.state?.discoveryState, enabled: f.state?.enabled, effective: f.effective || null };
           }
           return f;
         });
@@ -9153,18 +9155,19 @@
           <div class="feat-category-title">${esc(label)}</div>
           <div class="feat-grid">`;
         for (const f of items) {
-          const isEnabled = f.discoveryState === 'enabled' || f.enabled;
+          const isEnabled = featIsOn(f);
           const oneLiner = f.oneLiner || f.description || '';
           html += `<div class="feat-card" onclick="showFeatureDetail('${esc(f.id)}')">
             <div class="feat-card-top">
               <span class="feat-card-name">${esc(f.name)}</span>
-              <label class="feat-toggle" onclick="event.stopPropagation()">
-                <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
+              <label class="feat-toggle" onclick="event.stopPropagation()" ${featToggleTitle(f)}>
+                <input type="checkbox" ${isEnabled ? 'checked' : ''} ${f.switchable === false ? 'disabled' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
                 <span class="feat-toggle-slider"></span>
               </label>
               <span class="feat-card-arrow">&#9654;</span>
             </div>
             <div class="feat-card-desc">${esc(oneLiner)}</div>
+            ${featEffectiveLine(f)}
           </div>`;
         }
         html += '</div></div>';
@@ -9178,17 +9181,18 @@
           <div class="feat-category-title">${esc(cat)}</div>
           <div class="feat-grid">`;
         for (const f of items) {
-          const isEnabled = f.discoveryState === 'enabled' || f.enabled;
+          const isEnabled = featIsOn(f);
           html += `<div class="feat-card" onclick="showFeatureDetail('${esc(f.id)}')">
             <div class="feat-card-top">
               <span class="feat-card-name">${esc(f.name)}</span>
-              <label class="feat-toggle" onclick="event.stopPropagation()">
-                <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
+              <label class="feat-toggle" onclick="event.stopPropagation()" ${featToggleTitle(f)}>
+                <input type="checkbox" ${isEnabled ? 'checked' : ''} ${f.switchable === false ? 'disabled' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
                 <span class="feat-toggle-slider"></span>
               </label>
               <span class="feat-card-arrow">&#9654;</span>
             </div>
             <div class="feat-card-desc">${esc(f.oneLiner || f.description || '')}</div>
+            ${featEffectiveLine(f)}
           </div>`;
         }
         html += '</div></div>';
@@ -9197,21 +9201,103 @@
       catalog.innerHTML = html || '<div style="padding:20px;color:var(--text-dim);text-align:center">No features found</div>';
     }
 
+    // The feature whose detail panel is open, so a toggle re-renders its "Right now" line.
+    let __openFeatureDetailId = null;
+
+    // The switch position: what the switch recorded, or for a read-only switch the key itself.
+    function featIsOn(f) {
+      if (f.effective) return !!f.effective.recorded;
+      return f.discoveryState === 'enabled' || !!f.enabled;
+    }
+    function featToggleTitle(f) {
+      return f.switchable === false ? `title="${esc((f.effective && f.effective.detail) || 'Read-only in this version')}"` : '';
+    }
+
+    // What the agent is really doing, beside what the switch says
+    // (spec feature-transition-applies-action §2.3). ALWAYS shown (review r2): a
+    // refusal reason must survive the boot reset, and an honesty note must survive a
+    // plain on/off status.
+    function featEffectiveLine(f) {
+      const e = f.effective;
+      if (!e) return '';
+      const warn = e.status === 'recorded-only' || e.status === 'not-recorded' || !!(e.lastAttempt && e.lastAttempt.outcome !== 'applied');
+      return `<div class="feat-card-desc" style="color:${warn ? 'var(--red)' : 'var(--text-dim)'}">${esc(e.summary)}</div>`;
+    }
+
+    // The operator's switch: a fresh PIN unlock is the person's own consent (spec §2.4).
+    // The proof lives only in memory, so after a reload (or once it has expired) we ask
+    // for the PIN once. `force` drops a proof the server just refused.
+    async function featureOperatorProof(force) {
+      const expired = operatorSessionExpiresAt && Date.parse(operatorSessionExpiresAt) <= Date.now() + 5000;
+      if (operatorSessionToken && !expired && !force) return operatorSessionToken;
+      operatorSessionToken = ''; operatorSessionExpiresAt = '';
+      const pin = window.prompt('Enter your dashboard PIN to switch this feature.');
+      if (!pin) return '';
+      const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: pin.trim() }) });
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 403 || r.status === 429 || r.status === 400) { showToast(data.error || 'Incorrect PIN', 'error'); return ''; }
+      // No PIN endpoint on this install (raw-token login): the switch still works on the
+      // agent path, without a proof — the server then applies its ordinary consent rules.
+      if (!r.ok) return null;
+      operatorSessionToken = data.operatorSessionToken || '';
+      operatorSessionExpiresAt = data.operatorSessionExpiresAt || '';
+      return operatorSessionToken;
+    }
+
+    function featureDisclosure(f) {
+      const items = (f.dataImplications || []).map(d => `• ${d.dataType}: ${d.description || ''}${d.destination ? ' (goes to: ' + d.destination + ')' : ''}`);
+      return `Turn on ${f.name}?\n\n${f.fullDescription || f.oneLiner || ''}` + (items.length ? `\n\nWhat this shares:\n${items.join('\n')}` : '') + (f.reversibilityNote ? `\n\nTo undo: ${f.reversibilityNote}` : '');
+    }
+
     async function toggleFeature(featureId, enable) {
+      const f = featuresData && featuresData.features.find(x => x.id === featureId);
+      const consentTier = f && f.consentTier;
       try {
         const to = enable ? 'enabled' : 'disabled';
-        await apiFetch(`/features/${featureId}/transition`, {
+        // Enabling a feature that shares data or acts on its own: show what it does first,
+        // then the switch is the written consent (recorded server-side).
+        if (enable && f && (consentTier === 'network' || consentTier === 'self-governing')) {
+          if (!window.confirm(featureDisclosure(f))) { await featReloadKeepingDetail(); return; }
+        }
+        let proof = await featureOperatorProof(false);
+        if (proof === '') { await featReloadKeepingDetail(); return; }
+        // proof === null: no PIN endpoint here → send WITHOUT the header (agent path).
+        const send = (p) => fetch(`/features/${featureId}/transition`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...(p ? { 'X-Instar-Operator-Session': p } : {}) },
           body: JSON.stringify({ to }),
         });
-        // Refresh features data
-        featuresLoaded = false;
-        await loadFeatures();
+        let r = await send(proof);
+        let data = await r.json().catch(() => ({}));
+        if (r.status === 401 && data.error && data.error.code === 'OPERATOR_PROOF_INVALID') {
+          // The server says the proof expired: unlock once and retry the already-confirmed switch.
+          proof = await featureOperatorProof(true);
+          if (proof === '') { await featReloadKeepingDetail(); return; }
+          r = await send(proof);
+          data = await r.json().catch(() => ({}));
+        }
+        if (!r.ok) {
+          const err = data.error;
+          const msg = (err && typeof err === 'object' ? err.message : err) || `HTTP ${r.status}`;
+          showToast('Could not switch: ' + msg, 'error');
+        } else if (data.apply && data.apply.outcome !== 'applied') {
+          showToast((data.effective && data.effective.summary) || ('Switched, but the setting change was ' + data.apply.outcome), 'error');
+        } else if (data.effective && (data.effective.status === 'on-after-restart' || data.effective.status === 'off-after-restart')) {
+          showToast(data.effective.summary, 'info');
+        }
       } catch (e) {
         showToast('Failed to update feature: ' + (e.message || e), 'error');
-        featuresLoaded = false;
-        await loadFeatures(); // Reset toggle state
+      }
+      await featReloadKeepingDetail(); // re-read server truth either way
+    }
+
+    // Reload from the server; an open detail panel re-renders from the fresh data
+    // (review r3: it kept its old "Right now" sentence, and its checkbox stayed moved).
+    async function featReloadKeepingDetail() {
+      featuresLoaded = false;
+      await loadFeatures();
+      if (__openFeatureDetailId && document.getElementById('featDetailView').classList.contains('active')) {
+        showFeatureDetail(__openFeatureDetailId);
       }
     }
 
@@ -9227,7 +9313,8 @@
       document.getElementById('featureCatalog').style.display = 'none';
       document.getElementById('featDetailView').classList.add('active');
 
-      const isEnabled = f.discoveryState === 'enabled' || f.enabled;
+      const isEnabled = featIsOn(f);
+      __openFeatureDetailId = featureId;
       const content = document.getElementById('featDetailContent');
 
       let dataHtml = '';
@@ -9253,13 +9340,16 @@
         </div>`;
       }
 
-      content.innerHTML = `
+      const effectiveHtml = f.effective
+        ? `<div class="feat-detail-section"><div class="feat-detail-section-title">Right now</div><div class="feat-reversibility">${esc(f.effective.summary)}</div></div>`
+        : '';
+      content.innerHTML = `${effectiveHtml}
         <div class="feat-detail-header">
           <div class="feat-detail-title">
             <h3>${esc(f.name)}</h3>
             <span class="feat-detail-category">${esc(CATEGORY_LABELS[f.category] || f.category || '')}</span>
             <label class="feat-toggle">
-              <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleFeature('${esc(f.id)}', this.checked)">
+              <input type="checkbox" ${isEnabled ? 'checked' : ''} ${f.switchable === false ? 'disabled' : ''} ${featToggleTitle(f)} onchange="toggleFeature('${esc(f.id)}', this.checked)">
               <span class="feat-toggle-slider"></span>
             </label>
           </div>
@@ -9271,6 +9361,7 @@
     }
 
     function showFeaturesOverview() {
+      __openFeatureDetailId = null;
       document.getElementById('featDetailView').classList.remove('active');
       document.getElementById('profileSelectorView').classList.remove('active');
       const container = document.getElementById('featureCatalog').parentNode;

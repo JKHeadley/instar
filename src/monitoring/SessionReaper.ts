@@ -357,7 +357,9 @@ export interface SessionReaperDeps {
   /** ONE deduped attention item for a stand-down escalation. Distinct from the
    *  existing `raiseAttention` (whose shape the busy-orphan path owns) so the
    *  stand-down's priority is explicit at the callsite. */
-  raiseStandDownAttention?: (item: { id: string; title: string; summary: string; description?: string; priority?: 'medium' | 'high' }) => void;
+  raiseStandDownAttention?: (item: { id: string; title: string; summary: string; description?: string; priority?: 'medium' | 'high'; conditionKey?: string }) => void;
+  /** attention-lifecycle-close-on-cause §3.3 — close a stand-down attention row whose condition ended. */
+  clearStandDownAttention?: (conditionKey: string, resolution: string) => void;
   /** Can this session's drain be PROVEN at all (framework capability)? False /
    *  absent ⇒ the entry takes the shorter TTL and rides the attention path
    *  rather than pretending it drained. Cheap by construction — no probing. */
@@ -1097,10 +1099,15 @@ export class SessionReaper extends EventEmitter {
     const contested = (() => {
       try { return this.#deps.contestedWork?.(session, topicId) ?? null; } catch { return null; /* @silent-fallback-ok — the composition root maps its own read failure to 'contested' already; a null here defers to the validated admission bar */ }
     })();
+    if (!contested) {
+      // The contested-work condition (if a row was raised for it) is over.
+      try { this.#deps.clearStandDownAttention?.(`standdown:contested:${topicId}`, 'cleared: the duplicate copy is no longer doing contested work'); } catch { /* @silent-fallback-ok — clearing is observability */ }
+    }
     if (contested) {
       this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: contested });
       this.#deps.raiseStandDownAttention?.({
         id: `standdown-contested:${topicId}:${contested}`,
+        conditionKey: `standdown:contested:${topicId}`,
         priority: 'high',
         title: `Two machines are serving topic ${topicId} and this one is doing real work`,
         summary: contested === 'autonomous-run'
@@ -1462,6 +1469,7 @@ export class SessionReaper extends EventEmitter {
           if (confirmed) {
             this.#deps.raiseStandDownAttention?.({
               id: `standdown-mutual-muzzle:${entry.topicId}`,
+              conditionKey: `standdown:mutual-muzzle:${entry.topicId}`,
               priority: 'high',
               title: `Both machines went quiet on topic ${entry.topicId}`,
               summary: 'Each thought the other was serving it. I have resumed answering here so you are not left without a reply.',
@@ -1483,6 +1491,7 @@ export class SessionReaper extends EventEmitter {
     for (const latch of seam.claimLatchAttention()) {
       this.#deps.raiseStandDownAttention?.({
         id: `standdown-latched:${latch.topicId}`,
+        conditionKey: `standdown:latched:${latch.topicId}`,
         priority: 'high',
         title: `Topic ${latch.topicId} keeps looking like a duplicate`,
         summary: `I've stopped re-asking that copy to stand down after ${latch.blockedAttempts} attempts — something keeps re-creating it.`,
