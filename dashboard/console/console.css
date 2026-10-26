@@ -998,3 +998,23 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .inside-fold .list-rows > .card-note:first-child { margin-top: var(--s-2); }
 .inside-lookup-out, .inside-chain-out, .inside-history { margin-top: var(--s-2); }
 .list-section .inside-fold { border: 0; border-top: 1px solid var(--hairline); border-radius: 0; background: none; padding: var(--s-1) 0 0; margin-top: var(--s-2); }
+
+/* ── Paste to a session (work.md: Send content, inside Sessions) ─── */
+.sess-paste { margin: var(--s-4) 0 var(--s-2); }
+.paste-text { width: 100%; min-height: 180px; font-family: var(--font-mono); font-size: 14px; resize: vertical; box-sizing: border-box; }
+.sheet input.reason-input, .sheet .paste-text { width: 100%; box-sizing: border-box; margin-top: var(--s-2); }
+.paste-count { margin: var(--s-1) 0 0; font-size: 13.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.paste-kept { margin: var(--s-1) 0 var(--s-3); font-size: 13px; color: var(--text-muted); }
+.paste-where { margin: var(--s-2) 0 0; font-size: 14px; color: var(--text); }
+.paste-go { width: 100%; }
+.paste-result { margin-top: var(--s-2); font-size: 14px; }
+.paste-result[data-tone="ok"] { color: var(--text-strong); }
+.paste-result[data-tone="attn"] { color: var(--attn); }
+.paste-result[data-tone="bad"] { color: var(--bad); }
+.paste-recent { margin-top: var(--s-4); }
+.paste-recent > .list-head { width: 100%; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; text-align: left; min-height: 44px; }
+.paste-item { border-bottom: 1px solid var(--hairline); padding-bottom: var(--s-2); }
+.paste-row { cursor: default; }
+.paste-row .row-sub { overflow-wrap: anywhere; }
+.paste-row-actions { display: flex; flex-direction: column; gap: var(--s-2); padding: 0 var(--s-3); }
+.paste-row-actions > .btn-quiet { align-self: flex-end; min-height: 44px; }
