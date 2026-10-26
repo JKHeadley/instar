@@ -838,3 +838,19 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .author-fold .card-note { margin: var(--s-2) 0; }
 .change-list li.muted { color: var(--text-faint); }
 .reason-input.mono { font-family: var(--font-mono); font-size: 13px; }
+
+/* ── Passwords & keys (people-settings.md: Secrets → Passwords & keys) ──── */
+.secret-cards { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.secret-card { gap: 6px; }
+.secret-label { font-size: 17px; font-weight: 700; line-height: 1.3; color: var(--text-strong); overflow-wrap: anywhere; }
+.secret-left { font-variant-numeric: tabular-nums; }
+.secret-left.soon { color: var(--attn); font-weight: 700; }
+.secret-card .sheet-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+.secret-more { margin-left: auto; min-width: 44px; padding: 0 12px; font-size: 18px; line-height: 1; }
+.keys-fold { border: 1px solid var(--hairline); border-radius: var(--r-lg); padding: var(--s-3) var(--s-4); }
+.keys-fold .card-note { margin: var(--s-2) 0; }
+.key-names { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.key-names li { font-family: var(--font-mono); font-size: 12.5px; padding: 4px 8px; border-radius: var(--r-sm); border: 1px solid var(--hairline); background: var(--surface-raised); color: var(--text); overflow-wrap: anywhere; }
+.vault-bad { margin: var(--s-2) 0 0; font-weight: 700; color: var(--bad); font-size: 15px; }
+.sync-line { margin: var(--s-1) var(--s-2); font-size: 14.5px; color: var(--text); }
+.secret-card .action-status:empty { display: none; }

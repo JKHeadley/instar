@@ -36,6 +36,7 @@ import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { buildShipping, buildFeedback, buildPace, developmentHeadline, maintainerMode } from '../../dashboard/console/development-model.js';
 import { buildAgentsPage, threadModel, pairingModel, relayModel } from '../../dashboard/console/agents-model.js';
 import { buildSlips, buildAudit, buildApprovals, mandatesHeadline, mandatesFacts } from '../../dashboard/console/mandates-model.js';
+import { buildRequests, buildKeys, buildSync, secretsHeadline, secretsFacts, requestBody, resultWords as secretResultWords } from '../../dashboard/console/secrets-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -488,5 +489,47 @@ describe('Console Home E2E (feature is alive)', () => {
     }
     // Nothing was issued by those refusals.
     expect((await read('/mandate')).data.mandates).toEqual([]);
+  });
+  it('the Passwords-&-keys page runs the real Secret Drop routes through its model: an empty list reads as nothing waiting, a create and a cancel go through on the bearer token alone, and no value or length is served to the page', async () => {
+    const read = async (p: string) => {
+      const r = await request(server.getApp()).get(p).set(auth);
+      return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+    };
+    const [pendingRes, ctxRes, syncRes, topicsRes] = await Promise.all([read('/secrets/pending'), read('/self-knowledge/session-context?full=1'), read('/secrets/sync-status'), read('/telegram/topics')]);
+    expect(pendingRes.status).toBe(200);
+    expect([200, 503]).toContain(ctxRes.status); // dev-gated key list: on, or honestly off
+    expect(syncRes.status).toBe(503);            // single-machine: sync is off, the page hides it
+    expect(topicsRes.status).toBe(200);
+    const requests = buildRequests(pendingRes, { now: Date.now() });
+    const keys = buildKeys(ctxRes, syncRes);
+    const sync = buildSync(syncRes, null);
+    expect(requests).toMatchObject({ ok: true, waiting: [], expired: [], counts: { waiting: 0, soon: 0, expired: 0 } });
+    expect(sync).toEqual({ on: false, hidden: true });
+    expect(secretsHeadline({ requests, keys, sync })).toEqual({ text: 'Nothing is waiting.', tone: 'ok' });
+    expect(secretsFacts({ requests, keys, sync })[0]).toEqual({ n: 0, label: 'waiting', tone: null });
+    if (ctxRes.status === 200) expect(keys.ok).toBe(true); else expect(keys).toMatchObject({ ok: false, decryptFailed: false });
+
+    // A create through the page's exact body, on the bearer token alone (no PIN).
+    const req = requestBody({ label: 'e2e key', note: 'from the console e2e', topicId: '', ttlMs: '900000' });
+    expect(req.ok).toBe(true);
+    if (!req.ok) return;
+    const created = await request(server.getApp()).post('/secrets/request').set(auth).send(req.body);
+    expect(created.status).toBe(201);
+    expect(secretResultWords('create', created.status, created.body).ok).toBe(true);
+    const after = buildRequests(await read('/secrets/pending'), { now: Date.now(), origin: 'http://localhost:4040' });
+    expect(after.ok && after.waiting.map((c) => c.label)).toEqual(['e2e key']);
+    if (!after.ok) return;
+    expect(after.waiting[0].link).toEqual({ url: `http://localhost:4040/secrets/drop/${created.body.token}`, remote: false });
+    // The drop page itself is real and needs no token (the token is in the URL).
+    expect((await request(server.getApp()).get(`/secrets/drop/${created.body.token}`)).status).toBe(200);
+    // Cancel, then a second cancel reads as already ended, never as a failure to cancel.
+    const del = await request(server.getApp()).delete(`/secrets/pending/${created.body.token}`).set(auth);
+    expect(secretResultWords('cancel', del.status, del.body)).toEqual({ ok: true, text: 'Cancelled. The link no longer works.' });
+    const again = await request(server.getApp()).delete(`/secrets/pending/${created.body.token}`).set(auth);
+    expect(secretResultWords('cancel', again.status, again.body)).toMatchObject({ ok: false, gone: true });
+    expect((await read('/secrets/pending')).data.pending).toEqual([]);
+    // Without the token, every one of these routes refuses.
+    expect((await request(server.getApp()).get('/secrets/pending')).status).toBe(401);
+    expect((await request(server.getApp()).post('/secrets/request').send(req.body)).status).toBe(401);
   });
 });

@@ -67,7 +67,7 @@ export const GROUPS = [
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
       { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Replies held back from you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
-      { id: 'secrets', label: 'Secrets', icon: 'lock', desc: 'One-time links for handing over passwords and keys safely.' },
+      { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },
   {
@@ -113,6 +113,7 @@ export const NATIVE_PAGES = {
   origins: '#/people/messages',
   threadline: '#/people/agents',
   mandates: '#/people/mandates',
+  secrets: '#/people/secrets',
   features: '#/settings/allowed',
   'pr-pipeline': '#/work/development?s=shipping',
   throughput: '#/work/development?s=pace',
