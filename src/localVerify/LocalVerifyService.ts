@@ -477,6 +477,8 @@ interface InFlight {
   inputPath: string;
   resultPath: string;
   cancelled: boolean;
+  /** Latched once the child itself holds a suite slot; frees spare slots when cap > 1. */
+  suiteSlotAcquired?: boolean;
   /** When the run child started (restart-hold bound). */
   startedAt: number;
 }
@@ -1875,13 +1877,22 @@ export class LocalVerifyService {
 
   private pump(): void {
     this.persistQueue();
-    if (this.cfg.peerOnly) { this.publishSuitePriority(false); return; } // a peer-only service never starts its own work
+    if (this.inFlight && !this.inFlight.suiteSlotAcquired &&
+        this.seams.foreignSuiteHolders().some((h) => h.pid === this.inFlight!.pgid)) {
+      // The child's own holder is an acknowledgement that it has the suite
+      // slot. Retire the service claim so cap>1 can use spare capacity.
+      this.inFlight.suiteSlotAcquired = true;
+    }
+    if (this.cfg.peerOnly) {
+      // A peer verify also prepares before acquiring its suite slot.
+      this.publishSuitePriority(!this.stopped && !!this.inFlight && !this.inFlight.cancelled && !this.inFlight.suiteSlotAcquired);
+      return;
+    } // a peer-only service never starts its own queued work
     this.scheduleDispatch();
-    // The coordinator reserves the next slot only while waiting to start.
-    // Once the child starts, its lane-phase seam claims just before acquire;
-    // installs/builds must leave an idle suite slot usable by ordinary runs.
+    // Keep renewing the reservation through child preparation. Releasing it at
+    // spawn let ad-hoc suites take the slot before the child reached its lanes.
     if (this.inFlight || this.starting) {
-      this.publishSuitePriority(false);
+      this.publishSuitePriority(!this.stopped && (!!this.starting || (!!this.inFlight && !this.inFlight.cancelled && !this.inFlight.suiteSlotAcquired)));
       return;
     }
     // A merge hand-off holds the queue (bounded): the next PR is verified on top of the merge, not against it.
@@ -1934,7 +1945,6 @@ export class LocalVerifyService {
       // The verify tests the merge with TODAY's base: re-read it right before the start, and
       // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
       this.starting = next;
-      this.publishSuitePriority(false);
       void this.refreshBaseThenPump(next);
       return;
     }
@@ -2104,7 +2114,7 @@ export class LocalVerifyService {
     intent.pid = handle.pid;
     intent.pgid = handle.pid;
     this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt };
-    this.publishSuitePriority(false);
+    this.publishSuitePriority(true);
     const mine = this.inFlight;
     handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
     this.writeInFlight(intent);
@@ -2116,6 +2126,7 @@ export class LocalVerifyService {
     const f = this.inFlight;
     if (!f || f.cancelled) return;
     f.cancelled = true;
+    this.publishSuitePriority(false);
     this.audit({ event: 'cancel', pr: f.entry.pr, headSha: f.entry.headSha, reason });
     try { this.seams.killGroup(f.pgid, 'SIGTERM'); } catch { /* @silent-fallback-ok: group may already be gone */ }
     if (opts.armKillTimer === false) return;
@@ -2139,6 +2150,7 @@ export class LocalVerifyService {
     const result = this.readResult(f.resultPath);
     this.removeRunFiles(f);
     if (f.entry.peerAttempt) {
+      this.publishSuitePriority(false);
       this.finishPeerAttempt(f, result);
       const waiters = this.idleWaiters;
       this.idleWaiters = [];

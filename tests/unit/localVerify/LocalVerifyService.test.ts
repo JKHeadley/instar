@@ -467,7 +467,7 @@ describe('retry table', () => {
 });
 
 describe('single flight and starvation', () => {
-  it('claims the next suite slot while queued, then releases it during child preparation', async () => {
+  it('keeps renewing the next suite slot through child preparation, then releases it on exit', async () => {
     const s = setup({ views: { 1: view() } });
     s.setHolders([4242]);
     await s.svc.request(1);
@@ -476,7 +476,14 @@ describe('single flight and starvation', () => {
     s.setHolders([]);
     await s.svc.tick();
     expect(s.spawned).toHaveLength(1);
-    expect(s.priorities.at(-1)).toBe(false);
+    expect(s.priorities.at(-1)).toBe(true);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(true);
+    // Another holder does not complete the handoff; the child's own PID does.
+    s.setHolders([4242]);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(true);
+    s.setHolders([s.spawned[0].pid]);
     await s.svc.tick();
     expect(s.priorities.at(-1)).toBe(false);
     await s.finish(0, ok(record()));

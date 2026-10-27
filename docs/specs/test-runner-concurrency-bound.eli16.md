@@ -5,10 +5,12 @@
 The one-at-a-time rule exposed a new bottleneck: while Local Verify had a long
 queue, other sessions ran full suites back to back, and the merge line started
 no tests for nearly three hours. A runnable verifier now reserves the next
-suite slot while it waits for the current suite to finish. Once its child
-starts, it releases that reservation during install and build, so an idle slot
-can still be used. When the child is ready to run tests, it reserves the next
-slot again and waits for the current holder. Small targeted tests use their
+suite slot while it waits for the current suite to finish. It keeps that
+reservation while its child installs and builds. This stops other full suites
+from jumping in during setup. When the child is ready to run tests, it reserves the next
+slot again and waits for the current holder. Once it has the slot, the server
+releases its setup reservation within about 30 seconds, so a machine configured
+for two full suites can use its other slot. Small targeted tests use their
 own lane throughout. Each reservation expires within two minutes if its owner
 stalls. On a sustained merge backlog, ordinary full suites can still wait up
 to their existing 45-minute limit; the status API explains whether merge

@@ -12453,6 +12453,15 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       patched = true;
       result.upgraded.push('CLAUDE.md: added merge-gate suite-slot priority');
     }
+    // The first priority rollout released its claim at child spawn. Existing
+    // agents need to know that full suites now wait through verifier setup.
+    if (content.includes('When Local Verify has runnable merge-gate work') &&
+        content.includes('next full-suite slot. Ordinary full suites wait')) {
+      content = content.replace('next full-suite slot. Ordinary full suites wait',
+        'next full-suite slot through child preparation. Ordinary full suites wait');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: clarified merge-gate preparation priority');
+    }
 
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
     // Awareness + Migration Parity: an agent that doesn't know a "sender not

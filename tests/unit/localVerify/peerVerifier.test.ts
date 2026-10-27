@@ -134,6 +134,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
   const killed: Array<{ pgid: number; signal: string }> = [];
   const timers: Array<() => void> = [];
   const signals: string[] = [];
+  const priorities: boolean[] = [];
   let t = Date.parse('2026-10-21T12:00:00.000Z');
   let pid = 7000;
   let prOpen = true;
@@ -153,6 +154,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
     killGroup: (pgid, signal) => { killed.push({ pgid, signal }); },
     readProcessArgs: async () => null,
     foreignSuiteHolders: () => [],
+    setSuitePriority: (active) => { priorities.push(active); },
     signal: (key) => { signals.push(key); },
     now: () => t,
     setTimer: (fn) => { timers.push(fn); },
@@ -171,7 +173,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
     await flush();
   };
   const queueFile = () => JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<Record<string, unknown>> };
-  return { svc, seams, stateDir, views, spawned, killed, timers, signals, flush, runTimers, finish, queueFile, setPrOpen: (v: boolean) => { prOpen = v; }, advance: (ms: number) => { t += ms; }, now: () => t };
+  return { svc, seams, stateDir, views, spawned, killed, timers, signals, priorities, flush, runTimers, finish, queueFile, setPrOpen: (v: boolean) => { prOpen = v; }, advance: (ms: number) => { t += ms; }, now: () => t };
 }
 
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
@@ -456,6 +458,12 @@ describe('peer — accepting and running', () => {
   it('accepts once (idempotent), runs against exactly the dispatched base, refuses a second attempt as busy', async () => {
     const h = peerSide();
     expect(await h.svc.peerRun(runReq({ baseSha: sha('7') }), notHolder)).toEqual({ ok: true, attemptId: ATT });
+    expect(h.priorities.at(-1)).toBe(true);
+    await h.svc.tick();
+    expect(h.priorities.at(-1)).toBe(true);
+    h.seams.foreignSuiteHolders = () => [{ pid: h.spawned[0].pid }];
+    await h.svc.tick();
+    expect(h.priorities.at(-1)).toBe(false);
     expect(await h.svc.peerRun(runReq({ baseSha: sha('7') }), notHolder)).toEqual({ ok: true, attemptId: ATT });
     expect(h.spawned).toHaveLength(1);
     const input = JSON.parse(fs.readFileSync(h.spawned[0].inputPath, 'utf-8'));
@@ -483,7 +491,9 @@ describe('peer — accepting and running', () => {
   it('the result is kept for the coordinator and never enters this machine\'s own index or queue file', async () => {
     const h = peerSide();
     await h.svc.peerRun(runReq(), notHolder);
+    expect(h.priorities.at(-1)).toBe(true);
     await h.finish(0, ok(record({ machineId: 'peer1', attempt: { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 } })));
+    expect(h.priorities.at(-1)).toBe(false);
     expect(h.svc.peerResult(ATT)).toMatchObject({ state: 'done', record: { outcome: 'success', attempt: { id: ATT } } });
     expect(h.svc.getRecord(1, sha('a'), 'main')).toBeNull();
     const qf = path.join(h.stateDir, 'state', 'local-verify', 'queue.json');

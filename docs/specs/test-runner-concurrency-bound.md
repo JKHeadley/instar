@@ -37,11 +37,14 @@ ad-hoc waiter before the merge gate could start. The queue was full throughout.
 
 When a coordinator has a runnable Local Verify entry, it publishes a
 host-local, per-agent claim for the next full-suite slot before checking the
-current holder. It clears that claim as soon as the child starts, so an idle
-suite slot remains usable while the child installs, builds, and lints. Just
-before the lane phase, the child publishes its own claim and waits up to 45
-minutes for the current holder to finish. It clears that claim on acquisition
-or error. Claims renew while waiting and expire after two minutes without
+current holder. It keeps renewing that claim while the child installs, builds,
+and lints. This closes the observed preparation race: an ad-hoc suite could
+otherwise take an idle slot after spawn and force the verifier to requeue. Just
+before the lane phase, the child also publishes its own claim and waits up to 45
+minutes for the current holder to finish. The coordinator observes the child's
+own suite holder on its 30-second tick, then clears its claim so a host with a
+suite cap above one can use spare slots. The child clears its own claim on
+acquisition or error. Claims renew while waiting and expire after two minutes without
 renewal; dead-owner, expired, corrupt, and foreign-host claims are ignored.
 An ordinary suite waits while a live claim exists, even if the current holder
 has just released. The Local Verify child is the only caller that requests
