@@ -53,6 +53,16 @@ elsewhere too; compare the full source and A3 seed before calling any one an
 omission. Their presence inside capability sections is enough to make the
 keyword-only seed selection unsafe as a proof method.
 
+A spot-check against the frozen A3 health-check arm shows why this must be a
+semantic audit, not a count: the signed-message authority boundary and
+PromiseBeacon silence are already repeated in other always-loaded text. The
+publishing index says not to publish sensitive material but omits the source
+rule to tell the user that every Telegraph link is public. The general
+active-autonomous-run transfer rule is absent, although one narrow Threadline
+flow does describe a confirmation response. Cross-machine secret sync is an
+index entry without its names-only status rule. These are candidate gaps for
+paired tests, not a claim that the arm violated those rules in the trial.
+
 ### Pieces that already exist (reuse before inventing)
 
 - **`generateSeedClaudeMd()`** in `src/scaffold/templates.ts` — a ~250-line Tier 1 seed that defers detail to the Self-Knowledge Tree. `src/commands/init.ts` imports it but calls the monolith `generateClaudeMd()`; the seed path appears unused. It is the natural starting point for Justin's seed.
