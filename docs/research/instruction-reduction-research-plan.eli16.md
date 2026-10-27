@@ -4,8 +4,9 @@
 
 **First result.** Slim instructions for scheduled jobs, even with a one-line list
 of every feature, failed the agreed no-degradation test. They saved about 65%
-of input tokens, but missed the worktree reaper's authority in all five sampled
-cases and regressed on two feature-use cases. Echo's live instructions have not
+of input tokens, but made the wrong manual worktree-deletion judgment in all
+five sampled cases and regressed on two feature-use cases. We are checking the
+source for that battery's exact authority wording. Echo's live instructions have not
 changed. The seed and automatic-loading ideas remain research candidates.
 
 **What is in the file.** We measured it. Most of it (about 70%) is a reference manual: "here is feature X, here is how to call it". More than a third describes features that are switched off on most agents. About 15% is history: the story of why a rule exists. The core rules, such as "never paste a live password", "always reply on Telegram" and "don't quit because the conversation is long", are a small part.
@@ -25,7 +26,11 @@ changed. The seed and automatic-loading ideas remain research candidates.
 - Does it stay coherent over long sessions, including after its memory is compressed?
 - Is real work still as good?
 
-Graders don't know which version they are scoring. We run each safety test hundreds of times so we can show the failure rate is below about 1%.
+Graders don't know which version they are scoring. Five repeats find obvious
+failures; a separate, larger set of independent cases is needed to bound
+failure rates by safety category. An early audit also found that some rules
+were present yet ignored, and some rules were hidden in blocks labeled as
+reference. The next candidate must address both problems.
 
 **How we roll it out.** Offline tests first. Then a "shadow" run, where the new version watches real conversations without acting, for at least a week. Then a few low-risk jobs. Then one conversation, then all of Echo, and the wider fleet last. One setting switches everything back to the full file. Any safety slip switches it back automatically.
 

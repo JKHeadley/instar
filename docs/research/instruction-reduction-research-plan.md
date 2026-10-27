@@ -53,6 +53,15 @@ elsewhere too; compare the full source and A3 seed before calling any one an
 omission. Their presence inside capability sections is enough to make the
 keyword-only seed selection unsafe as a proof method.
 
+A provisional GPT-6 Astra review of all 47 is recorded in
+[the Phase 0 rule audit](phase0-rule-audit-2026-10-26.md). It found 18 distinct
+authority or integrity contracts, 16 task-specific bundles, six overlaps, six
+reference/diagnostic blocks, and one duplicate. This is still not the full
+denominator: mixed reference blocks also carry rules. In particular, AJ-15's
+pipe rule was already always loaded, so the trial tests compliance and salience
+as well as coverage. AJ-04's stricter manual-deletion requirement needs its
+own governing-source citation rather than being attributed verbatim to B187.
+
 A spot-check against the frozen A3 health-check arm shows why this must be a
 semantic audit, not a count: the signed-message authority boundary and
 PromiseBeacon silence are already repeated in other always-loaded text. The
