@@ -75,3 +75,9 @@ Removes up to 5 minutes of idle verify slot per release with no change to what m
 Concurred. Independent cross-model reviewer (Codex, read-only), two rounds:
 - Round 1 BLOCKED: (1) a run ending after `stop()` could arm a restart during shutdown — the recheck now only brings forward an already-scheduled retry (`deferralTimer` must exist), a no-op after `stop()`; (2) the service test stopped before the restart completed — it now waits through it and asserts one restart request; (3) missing cases — added: a next verify starting before the brought-forward retry (it defers on the new hold), recheck after `stop()`, a throwing listener.
 - Round 2 **CLEAN** ("The timer guard addresses the shutdown issue, and the retry rechecks active holds through the existing restart gate").
+
+## Merge reconciliation review
+
+**Reviewer:** Independent Codex read-only reviewer (/root/priority_review).
+
+The branch was merged with `origin/main` after the verify queue reported a conflict. The resolution keeps the run-ended restart callback and main's fail-fast and balanced-shard settings. Independent Codex review of the staged merge found no conflict-resolution error. The full Local Verify run on the merged head remains the merge authority.
