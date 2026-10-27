@@ -200,6 +200,8 @@ export interface LocalVerifyAutoUpdaterView {
   };
   /** What would hold a restart right now (sessions, then `hold:<name>` entries). */
   getRestartBlockers?(): string[];
+  /** A local-verify hold just ended: retry a restart deferred on it now. */
+  recheckRestartHolds?(): void;
 }
 
 /**
@@ -253,6 +255,7 @@ export function registerLocalVerifyRestartHold(
     const maxDeferralMs = (typeof hours === 'number' && Number.isFinite(hours) ? hours : 4) * 3_600_000;
     return [...service.restartHolds(maxDeferralMs), ...(extraHolds?.() ?? [])];
   });
+  service.setRunEndedListener(autoUpdater.recheckRestartHolds ? () => autoUpdater.recheckRestartHolds!() : null);
   service.setUpdatePendingProvider(() => {
     let blockers: string[] | null = null;
     try { blockers = autoUpdater.getRestartBlockers ? autoUpdater.getRestartBlockers() : null; } catch { blockers = null; }

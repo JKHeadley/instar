@@ -69,6 +69,62 @@ describe('AutoUpdater restart holds', () => {
     u.stop();
   });
 
+  it('a local-verify hold that ends triggers the restart within seconds, not at the 5-minute re-check', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'a local verify of PR #7 is running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-7'] });
+    holds = []; // the verify finished
+    u.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(u.getStatus().restartDeferral).toBeNull();
+    u.stop();
+  });
+
+  it('the recheck does nothing while a hold is still active, or when the deferral is not on a local-verify hold', async () => {
+    const lv: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }];
+    const u = updater(() => lv);
+    await gated(u);
+    u.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    u.stop();
+
+    let inv: RestartHold[] = [{ name: 'pairing-invite:abcd1234', until: Date.now() + 40 * 60_000, reason: 'invite waiting' }];
+    const v = updater(() => inv);
+    await gated(v);
+    inv = [];
+    v.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false); // waits for its own re-check, as before
+    v.stop();
+  });
+
+  it('a verify that starts again before the brought-forward retry runs defers the restart on the new hold', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify 7 running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    holds = [];
+    u.recheckRestartHolds();
+    holds = [{ name: 'local-verify:pr-8', until: Date.now() + 60 * 60_000, reason: 'verify 8 running' }]; // rule (b) exception: the next verify started
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-8'] });
+    u.stop();
+  });
+
+  it('after stop() the recheck arms nothing (no restart during shutdown)', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    u.stop();
+    holds = [];
+    u.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+  });
+
   it('releases once the accept finishes (the hold is gone at the next re-check)', async () => {
     let holds: RestartHold[] = [{ name: 'pairing-invite:abcd1234', until: Date.now() + 40 * 60_000, reason: 'invite waiting' }];
     const u = updater(() => holds);

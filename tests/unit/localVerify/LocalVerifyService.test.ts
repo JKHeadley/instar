@@ -579,6 +579,47 @@ describe('restart hold', () => {
         log.mockRestore();
       }
     });
+
+    it('when the verify ends, a restart deferred on its hold goes ahead at once (no 5-minute wait)', async () => {
+      tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-au-')));
+      dirs.push(tmp);
+      fs.mkdirSync(path.join(tmp, 'state'), { recursive: true });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        const s = setup({ views: { 1: view() } });
+        s.advance(Date.now() - Date.parse('2026-10-21T12:00:00.000Z'));
+        await s.svc.request(1);
+        const u = new AutoUpdater(checker(), state(), tmp, { preRestartDelaySecs: 0 });
+        u.setSessionDeps({ listRunningSessions: () => [] });
+        registerLocalVerifyRestartHold(u, s.svc);
+        await gated(u, false);
+        expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-1'] });
+        await s.finish(0, null); // the verify ends (here as a crash; any end releases the hold)
+        await new Promise((r) => setTimeout(r, 4_500));
+        // The restart went ahead on the run's end, long before the 300 s re-check, exactly once.
+        expect(log.mock.calls.some((c) => String(c[0]).includes('restart hold ended — attempting restart for v0.9.9'))).toBe(true);
+        expect(u.getStatus().restartDeferral).toBeNull();
+        expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
+        expect(log.mock.calls.filter((c) => String(c[0]).includes('attempting restart for v0.9.9')).length).toBe(1);
+        expect(s.spawned).toHaveLength(1); // nothing new started while the update waited
+        u.stop();
+      } finally {
+        log.mockRestore();
+      }
+    }, 15_000);
+  });
+});
+
+describe('run-ended listener', () => {
+  it('fires once per run end, and a throwing listener never breaks the run bookkeeping', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    let calls = 0;
+    s.svc.setRunEndedListener(() => { calls++; throw new Error('listener broke'); });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, null);
+    expect(calls).toBe(1);
+    expect(s.spawned).toHaveLength(2); // the next run still started
   });
 });
 

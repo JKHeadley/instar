@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "local-verify-restart-recheck",
+  "sessionId": "62b13b7f-084e-44ac-9c3a-a985249271f5",
+  "timestamp": "2026-10-27T02:27:54.589Z",
+  "artifactPath": "upgrades/side-effects/local-verify-restart-recheck.md",
+  "artifactSha256": "cb959d57c3a7681094fdf1945eb2e8076231a6999fb0d74330ff4bd57f0e09fd",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.md",
+    "docs/specs/local-verify-restart-recheck.eli16.md",
+    "src/core/AutoUpdater.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "tests/unit/AutoUpdater-restart-holds.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/local-verify-restart-recheck.md",
+    "upgrades/side-effects/local-verify-restart-recheck.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Brings an already-scheduled deferred-restart retry forward when the local-verify hold that deferred it ends; the full restart gate still decides; no config, route or record change.",
+  "eli16Path": "docs/specs/local-verify-restart-recheck.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-restart-recheck.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "fires at most once per verify run end and only moves the single existing deferred-restart timer earlier; the restart still passes the full gate; nothing re-triggers it"
+  }
+}
