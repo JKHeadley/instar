@@ -88,6 +88,7 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
   const githubRuntime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir });
   const seams = buildDefaultServiceSeams({
     repo: opts.repo,
+    priorityKey: `${opts.stateDir}:${opts.machineId}`,
     resolveGitHubEnv: () => {
       try { return githubRuntime().env; } catch { return null; } // @silent-fallback-ok — no explicit GitHub identity makes every request refuse as pr-unreadable
     },

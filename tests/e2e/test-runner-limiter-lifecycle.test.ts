@@ -129,6 +129,7 @@ describe('E2E: /test-runner-limiter is ALIVE through the real AgentServer', () =
       'posture',
       'ttlSignalArmed',
       'suite',
+      'mergeGatePriority',
       'targeted',
       'liveHolders',
       'admittedOpen',
@@ -146,6 +147,7 @@ describe('E2E: /test-runner-limiter is ALIVE through the real AgentServer', () =
     expect(Array.isArray(res.body.admittedOpen)).toBe(true);
     expect(Array.isArray(res.body.recentEvents)).toBe(true);
     expect(res.body.suite).toMatchObject({ available: HOST_TEST_SUITE_CAP_DEFAULT, saturated: false });
+    expect(res.body.mergeGatePriority).toEqual({ active: false });
     expect(res.body.targeted).toMatchObject({
       available: HOST_TEST_TARGETED_CAP_DEFAULT,
       saturated: false,

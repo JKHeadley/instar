@@ -65,6 +65,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const starved: Array<{ pr: number }> = [];
   const records: LocalVerifyRecord[] = [];
   const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+  const priorities: boolean[] = [];
   let holders: number[] = [];
   /** What the verifier files on disk compute right now; null (the default) = unknown, never holds. */
   let diskVersion: string | null = null;
@@ -91,6 +92,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     killGroup: (g, s) => { kills.push({ pgid: g, signal: s }); if (!stubborn.has(g)) alive.delete(g); },
     readProcessArgs: async (p) => procArgs.get(p) ?? null,
     foreignSuiteHolders: () => holders.map((pid) => ({ pid })),
+    setSuitePriority: (active) => { priorities.push(active); },
     onStarved: (i) => { starved.push(i); },
     onRecord: (r) => { records.push(r); },
     signal: (key, detail) => { signals.push({ key, detail }); },
@@ -115,7 +117,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     await flush();
   };
   return {
-    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, intentPath,
+    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, priorities, intentPath,
     setHolders: (h: number[]) => { holders = h; },
     setDiskVersion: (v: string | null) => { diskVersion = v; },
     advance: (ms: number) => { t += ms; },
@@ -393,6 +395,40 @@ describe('retry table', () => {
 });
 
 describe('single flight and starvation', () => {
+  it('claims the next suite slot while queued, then releases it during child preparation', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([4242]);
+    await s.svc.request(1);
+    expect(s.priorities.at(-1)).toBe(true);
+    expect(s.spawned).toHaveLength(0);
+    s.setHolders([]);
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1);
+    expect(s.priorities.at(-1)).toBe(false);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(false);
+    await s.finish(0, ok(record()));
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
+  it('clears the claim when shutdown stops the queued verifier', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([4242]);
+    await s.svc.request(1);
+    s.svc.shutdown();
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
+  it('clears the claim if the queued verifier is held by a changed installed version', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([4242]);
+    await s.svc.request(1);
+    expect(s.priorities.at(-1)).toBe(true);
+    s.setDiskVersion('vh3:changed');
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
   it('does not start while a foreign full suite holds the slot; starts once it is gone', async () => {
     const s = setup({ views: { 1: view() } });
     s.setHolders([4242]);

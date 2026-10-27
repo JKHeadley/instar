@@ -1,5 +1,20 @@
 # Test-Runner Concurrency Bound — plain-English overview
 
+## October 2026: the merge line gets the next slot
+
+The one-at-a-time rule exposed a new bottleneck: while Local Verify had a long
+queue, other sessions ran full suites back to back, and the merge line started
+no tests for nearly three hours. A runnable verifier now reserves the next
+suite slot while it waits for the current suite to finish. Once its child
+starts, it releases that reservation during install and build, so an idle slot
+can still be used. When the child is ready to run tests, it reserves the next
+slot again and waits for the current holder. Small targeted tests use their
+own lane throughout. Each reservation expires within two minutes if its owner
+stalls. On a sustained merge backlog, ordinary full suites can still wait up
+to their existing 45-minute limit; the status API explains whether merge
+priority is active. Older work branches must update before their test runners
+honor the new reservation.
+
 ## The problem in one paragraph
 
 When our test suite runs, it doesn't run as one process — it spins up a worker for roughly every CPU core on the machine. That's fine when one test suite runs at a time. But on a development machine where several AI agent sessions each build and test their own changes, nothing stops many suites from starting at once. On 2026-07-02, twenty-nine test suites ran simultaneously on one machine: roughly 300 worker processes fought for 16 cores, the agent servers sharing the machine froze, and the health watchdogs — misreading the freeze as sickness — killed healthy servers. The safety system became the outage.

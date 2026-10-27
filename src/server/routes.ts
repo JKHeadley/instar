@@ -13490,7 +13490,8 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.get('/test-runner-limiter', (_req, res) => {
     try {
-      const status = getHostTestRunnerSemaphore().status();
+      const sem = getHostTestRunnerSemaphore();
+      const status = sem.status();
       const projectHolder = (h: { pid: number; hostname: string; acquiredAt: number; ttlMs: number; state: string }) => ({
         pid: Number(h.pid),
         hostname: clampTestRunnerField(h.hostname),
@@ -13510,6 +13511,7 @@ export function createRoutes(ctx: RouteContext): Router {
         // over-admission is VISIBLE here, not merely ledgered (§2.7).
         admittedOpen: status.admittedOpen.map((w) => ({ pid: Number(w.pid), acquiredAt: Number(w.acquiredAt) })),
         suite: status.suite,
+        mergeGatePriority: { active: sem.hasMergeGatePriority() },
         targeted: status.targeted,
         // Additive DETAIL field (§4 freeze scope): a resolved cap above the
         // code default, surfaced as change-detection alongside ttlSignalArmed.

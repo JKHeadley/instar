@@ -43,6 +43,7 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import {
   HostTestRunnerSemaphore,
+  getHostTestRunnerSemaphore,
   resolveTestRunnerPaths,
   writeTuningFile,
   _resetHostTestRunnerSemaphoreForTest,
@@ -236,6 +237,15 @@ function pidAlive(pid: number): boolean {
 // ── GET /test-runner-limiter ───────────────────────────────────────────────
 
 describe('GET /test-runner-limiter (integration — real routes pipeline)', () => {
+  it('shows the live merge-gate priority claim and its release', async () => {
+    const app = appWith();
+    const sem = getHostTestRunnerSemaphore();
+    expect((await request(app).get('/test-runner-limiter').set(auth())).body.mergeGatePriority).toEqual({ active: false });
+    sem.setMergeGatePriority('agent-a', true);
+    expect((await request(app).get('/test-runner-limiter').set(auth())).body.mergeGatePriority).toEqual({ active: true });
+    sem.setMergeGatePriority('agent-a', false);
+    expect((await request(app).get('/test-runner-limiter').set(auth())).body.mergeGatePriority).toEqual({ active: false });
+  });
   it('Bearer required: 401 without a token; 403 with a wrong one; 200 with the right one', async () => {
     const app = appWith();
     expect((await request(app).get('/test-runner-limiter')).status).toBe(401);
