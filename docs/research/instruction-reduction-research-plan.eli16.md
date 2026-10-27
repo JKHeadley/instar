@@ -9,6 +9,13 @@ five sampled cases and regressed on two feature-use cases. We are checking the
 source for that battery's exact authority wording. Echo's live instructions have not
 changed. The seed and automatic-loading ideas remain research candidates.
 
+**Next experiment.** We will keep every unreviewed rule and feature in place.
+For one small peer-health feature, we will test whether a gate can load its
+reviewed how-to instructions before the agent needs them, including after a
+tool result or memory compression. If loading fails, the full instructions
+must return before the agent acts. This tests the loading mechanism; it does
+not yet prove that a broadly shorter instruction file is safe.
+
 **What is in the file.** We measured it. Most of it (about 70%) is a reference manual: "here is feature X, here is how to call it". More than a third describes features that are switched off on most agents. About 15% is history: the story of why a rule exists. The core rules, such as "never paste a live password", "always reply on Telegram" and "don't quit because the conversation is long", are a small part.
 
 **Good news: some of the tools already exist.** Instar already has a function that writes a short "seed" instruction file, but new agents don't use it. It also has a searchable capability index (the Self-Knowledge Tree), a Playbook that picks context by trigger, and a memory picker that ranks what to load. The plan builds on these before writing anything new.

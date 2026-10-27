@@ -93,6 +93,25 @@ Each is an arm in the experiment. **A0 is the control:** today's full file.
 - **A4 — Jev-ranked retrieval.** A1 plus a JevMemoryPicker-style ranker that scores sections against topic and recent messages at session start and on each turn, with pinned sections always loaded and failure falling back to the full file.
 - **A5 — Prune without restructuring.** Keep one file but shorten dark-feature detail on agents where it is dark to an awareness line (what it does and how to switch it on, see Section 6), and move history to linked notes. Cheapest; tests how much of the gain needs no retrieval at all.
 
+**Next smallest experiment: an A2 delivery pilot.** After A3's no-go, keep all
+unreviewed blocks loaded. Review every clause in one narrow peer-health bundle
+(around B239); retain its status meanings, uncertainty rules, and retry limits
+in the baseline, and defer only verified route/procedure detail. A programmatic
+gate must deliver that detail into the model's current context before a relevant
+query or claim. It checks the user turn, the pending tool action, and tool
+results; compaction invalidates prior delivery receipts. A retrieval miss,
+stale hash, truncation, ambiguity, or missing dependency restores the verified
+full context before the action; failure to restore suspends it. Unknown shell
+operations use that same fallback. Delivery never grants permission to act.
+This is a retrieval-mechanism test, not evidence that a small seed is safe.
+Keep enforcement identical in both arms, record proposed actions before gates
+as well as executed actions, and run paired direct, indirect, tool-result,
+status-variant, compaction, retrieval-failure, and false/true stand-down cases.
+AJ-04 and AJ-15 remain regression sentinels with their full source loaded.
+Any confirmed safety regression, missed pre-action delivery, false authority,
+or failed fallback stops the candidate. Broader removal waits for a clause
+inventory across all 274 blocks, including reference-tagged content.
+
 ## 3. Experiment design
 
 ### Batteries (fixed, versioned, written before any arm runs)
