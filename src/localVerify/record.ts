@@ -52,6 +52,32 @@ export interface LocalVerifyRecord {
    * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
    */
   flakyRetried?: FlakyRetry[];
+  /**
+   * Present only on a record a PEER verifier produced for a coordinator's hand-off
+   * (spec local-verify-capacity.md Part D): the attempt it answers, the coordinator that
+   * dispatched it and that coordinator's lease epoch at dispatch. The coordinator imports
+   * a peer record only when all three match its own dispatch marker.
+   */
+  attempt?: PeerAttemptRef;
+}
+
+export interface PeerAttemptRef {
+  /** 32 lowercase hex characters (16 random bytes). */
+  id: string;
+  coordinatorMachineId: string;
+  /** The coordinator's serving-lease epoch when it dispatched (null when the pool reports none). */
+  leaseEpoch: number | null;
+}
+
+export const ATTEMPT_ID_RE = /^[0-9a-f]{32}$/;
+
+export function isValidAttemptRef(a: unknown): a is PeerAttemptRef {
+  if (!a || typeof a !== 'object') return false;
+  const x = a as Record<string, unknown>;
+  return typeof x.id === 'string' && ATTEMPT_ID_RE.test(x.id)
+    && typeof x.coordinatorMachineId === 'string' && x.coordinatorMachineId.length > 0 && x.coordinatorMachineId.length <= 200
+    && (x.leaseEpoch === null || (typeof x.leaseEpoch === 'number' && Number.isSafeInteger(x.leaseEpoch) && x.leaseEpoch >= 0))
+    && Object.keys(x).every((k) => k === 'id' || k === 'coordinatorMachineId' || k === 'leaseEpoch');
 }
 
 export interface FlakyRetry {
@@ -129,6 +155,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
     const ir = x.independentReview as Record<string, unknown> | null;
     if (!ir || typeof ir !== 'object' || ir.concurred !== true || !isTracePath(ir.trace)) errors.push('independentReview');
   }
+  if (x.attempt !== undefined && (!isValidAttemptRef(x.attempt) || x.kind === 'main')) errors.push('attempt');
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }
 

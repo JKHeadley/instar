@@ -15,7 +15,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
+import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireLocalVerifyPeers, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
 import type { LocalVerifyServiceSeams } from '../../src/localVerify/LocalVerifyService.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
@@ -120,6 +120,46 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(wireMergeLine({ service: built.service!, watcher: null, status: null, enabled: () => true })).toEqual({ wired: false, reason: 'no-watcher' });
     expect((await request(a).get('/local-verify')).body.mergeLine.wired).toBe(false);
     built.service!.shutdown();
+  });
+
+  it('peer-only: off a source checkout with peer.enabled, built through the production function, alive over HTTP, never a coordinator', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-e2e-')));
+    dirs.push(home);
+    const stateDir = path.join(home, '.instar');
+    fs.mkdirSync(stateDir);
+    const built = buildLocalVerifyService({
+      config: { enabled: true, peer: { enabled: true } }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_peer', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    expect(svc.isPeerOnly()).toBe(true);
+    const values: Record<string, unknown> = { 'monitoring.localVerify.peer.enabled': true };
+    wireLocalVerifyPeers(svc, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) },
+      authToken: 't', lease: { holdsLease: () => false, leaseEpoch: () => 3, holderMachineId: () => 'm_coord' },
+    });
+    await svc.boot();
+    const c = { ...ctx(stateDir, svc), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 3 }) } } as never;
+    const st = await request(serve(c)).get('/local-verify/peer-status');
+    expect(st.status).toBe(200);
+    expect(st.body).toMatchObject({ enabled: true, inFlight: null });
+    expect(typeof st.body.slotBusy).toBe('boolean'); // the real host test-runner bound decides (a suite may be running on this host)
+    expect(st.body.verifierVersion).toMatch(/^vh\d+:/);
+    expect(await svc.request(1)).toEqual({ ok: false, code: 'peer-only' });
+    values['monitoring.localVerify.peer.enabled'] = false;
+    expect((await request(serve(c)).get('/local-verify/peer-status')).body.enabled).toBe(false);
+    svc.shutdown();
+  });
+
+  it('without peer.enabled, a machine with no source checkout still builds nothing', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-e2e-')));
+    dirs.push(home);
+    const built = buildLocalVerifyService({
+      config: { enabled: true }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir: path.join(home, '.instar'), agentHome: home, machineId: 'm_x', mainEntry: DIST_ENTRY,
+    });
+    expect(built).toEqual({ service: null, reason: 'no-source-checkout' });
   });
 
   it('disabled, off a source checkout, or with no GitHub login: not built, routes 503', async () => {

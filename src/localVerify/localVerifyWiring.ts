@@ -17,6 +17,7 @@ import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
 import { LocalVerifyService, appendLocalVerifyAudit, type UpdatePendingState } from './LocalVerifyService.js';
+import type { PeerClient, PeerResult, PeerRunAnswer, PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
@@ -37,6 +38,10 @@ export interface LocalVerifyConfigBlock {
   operatorGhLogin?: string;
   /** Post `instar/local-verify` statuses for real (default false: dry-run, the posts are only audited). */
   postStatuses?: boolean;
+  /** This machine may run verifies a coordinator hands it (spec local-verify-capacity.md Part D). Default off. */
+  peer?: { enabled?: boolean };
+  /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
+  peers?: Array<{ machineId: string; url: string }>;
 }
 
 /** Late-bound hooks: the service is built before the reconciler that consumes these. */
@@ -77,7 +82,11 @@ export function installedMainEntry(): string {
 
 export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerifyWiringResult {
   if (opts.config?.enabled !== true) return { service: null, reason: 'disabled' };
-  if (!fs.existsSync(path.join(opts.repoPath, '.git')) || !fs.existsSync(path.join(opts.repoPath, 'scripts', 'safe-merge.mjs'))) {
+  // A coordinator merges, so it must run from an instar source checkout. A machine without
+  // one may still run as a PEER (it never merges): a peer-only service (Part D).
+  const sourceCheckout = fs.existsSync(path.join(opts.repoPath, '.git')) && fs.existsSync(path.join(opts.repoPath, 'scripts', 'safe-merge.mjs'));
+  const peerOnly = !sourceCheckout && opts.config.peer?.enabled === true;
+  if (!sourceCheckout && !peerOnly) {
     return { service: null, reason: 'no-source-checkout' };
   }
   const expected = (opts.expectedGhLogin ?? '').trim();
@@ -109,6 +118,7 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
       nodeVersion: process.version,
       protectedList: PROTECTED_PATH_PREFIXES,
       baseEnv: scrubbedEnv(),
+      ...(peerOnly ? { peerOnly: true } : {}),
     },
     {
       ...seams,
@@ -367,4 +377,76 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
     actionsFloor: floor.actionsFloor, evaluate: floor.evaluate,
   }, seams, floorGate, opts.service);
   return { reconciler, floorGate, reason: null };
+}
+
+// ── Peer verifiers (spec local-verify-capacity.md Part D) ────────────────
+
+/**
+ * The coordinator's HTTP client to its peers: the agent's Bearer token over the pool's own
+ * addresses, a short timeout per call, and every failure reported as null (the caller's
+ * bounded recovery decides). `fetchImpl` is the test seam.
+ */
+export function makePeerClient(authToken: string, fetchImpl: typeof fetch = fetch, timeoutMs = 10_000): PeerClient {
+  const call = async (url: string, init: RequestInit): Promise<{ status: number; body: unknown } | null> => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      const r = await fetchImpl(url, { ...init, signal: ac.signal, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' } });
+      const text = await r.text();
+      let body: unknown = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = null; } // @silent-fallback-ok — an unparseable body reads as no answer
+      return { status: r.status, body };
+    } catch {
+      return null; // @silent-fallback-ok — unreachable / timed out: the coordinator's bounded recovery handles it
+    } finally {
+      clearTimeout(t);
+    }
+  };
+  return {
+    async status(peer) {
+      const r = await call(`${peer.url}/local-verify/peer-status`, { method: 'GET' });
+      if (!r || r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
+      const b = r.body as PeerStatus & { enabled?: boolean };
+      if (b.enabled === false) return null;
+      if (typeof b.verifierVersion !== 'string' || typeof b.policyHash !== 'string' || typeof b.slotBusy !== 'boolean') return null;
+      return { inFlight: b.inFlight ?? null, verifierVersion: b.verifierVersion, policyHash: b.policyHash, slotBusy: b.slotBusy };
+    },
+    async run(peer, req) {
+      const r = await call(`${peer.url}/local-verify/peer-run`, { method: 'POST', body: JSON.stringify(req) });
+      if (!r || !r.body || typeof r.body !== 'object') return null;
+      const b = r.body as PeerRunAnswer;
+      if (b.ok === true && b.attemptId === req.attemptId) return b;
+      if (b.ok === false && typeof b.reason === 'string') return b;
+      return null;
+    },
+    async result(peer, attemptId) {
+      const r = await call(`${peer.url}/local-verify/peer-result?attemptId=${encodeURIComponent(attemptId)}`, { method: 'GET' });
+      if (!r || r.status !== 200 || !r.body || typeof r.body !== 'object') return null;
+      const b = r.body as PeerResult;
+      if (b.state === 'unknown' || b.state === 'running') return { state: b.state };
+      if (b.state === 'done' && 'record' in b && b.record) return { state: 'done', record: b.record };
+      return null;
+    },
+    async cancel(peer, attemptId) {
+      await call(`${peer.url}/local-verify/peer-cancel`, { method: 'POST', body: JSON.stringify({ attemptId }) });
+    },
+  };
+}
+
+/** Wire the peer settings (read live), the client and the lease view onto a built service. */
+export function wireLocalVerifyPeers(
+  svc: Pick<LocalVerifyService, 'setPeerWiring'>,
+  o: {
+    liveConfig: { get<T>(key: string, fallback: T): T };
+    authToken: string;
+    lease: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null;
+    fetchImpl?: typeof fetch;
+  },
+): void {
+  svc.setPeerWiring({
+    peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,
+    peers: () => o.liveConfig.get<unknown>('monitoring.localVerify.peers', []),
+    client: makePeerClient(o.authToken, o.fetchImpl),
+    lease: o.lease,
+  });
 }

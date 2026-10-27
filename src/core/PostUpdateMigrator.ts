@@ -281,6 +281,12 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red hold: while `main` fails a known check, only a repair candidate (a PR whose diff touches a failing file, or whose title or body names it) or a `main` verify takes the slot; every other PR keeps its place and waits for green instead of running a doomed verify. `GET /local-verify` → `mainRedHold` (failing files, `repairPrs`, `heldPrs`, a plain `detail`; held entries carry `held`); a `POST /local-verify` answer for a held PR carries `hold`. Once `main` is red, ONE deduped attention item for the episode (`local-verify:main-red-hold`) names the failing check and every PR already fixing it, refreshes when that list changes and closes on green — before writing a fix for a red `main`, read `repairPrs`; if yours is the fix, name the failing file in its title or body. Off switch: `monitoring.localVerify.mainRedHold: false` (read live).';
 
 /**
+ * Local Verify peer verifiers — the awareness line appended to an existing CLAUDE.md's Local Verify
+ * section (`migrateClaudeMd`, content-sniffed on the config key).
+ */
+export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
+
+/**
  * Local Verify merge-throughput label — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on the label name).
  */
@@ -9380,6 +9386,12 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_MERGE_THROUGHPUT_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput label awareness');
+    }
+    // local-verify peer verifiers (local-verify-capacity Part D).
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.peers')) {
+      content += '\n' + LOCAL_VERIFY_PEERS_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify peer-verifier awareness');
     }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';

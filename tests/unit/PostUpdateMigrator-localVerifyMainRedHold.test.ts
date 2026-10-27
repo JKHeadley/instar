@@ -83,3 +83,18 @@ describe('Local Verify main-red hold + merge-throughput awareness', () => {
     expect(fs.readFileSync(claudeMd, 'utf-8').split('Local Verify merge-throughput label').length - 1).toBe(1);
   });
 });
+
+describe('Local Verify peer-verifier awareness', () => {
+  it('the template and the migration line name the settings and the read surfaces; appended once', async () => {
+    const { LOCAL_VERIFY_PEERS_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const md = generateClaudeMd('fixture', 'Fixture', 4042, true);
+    for (const text of [md, LOCAL_VERIFY_PEERS_CLAUDEMD_LINE]) {
+      for (const k of ['monitoring.localVerify.peers', 'monitoring.localVerify.peer.enabled', 'peer-status', 'local-verify:peer-breaker']) expect(text).toContain(k);
+    }
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify peer-verifier awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_PEERS_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify peer-verifier awareness');
+  });
+});

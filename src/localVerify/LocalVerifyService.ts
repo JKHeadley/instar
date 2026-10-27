@@ -54,6 +54,10 @@ import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from '
 import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import type { FailureDetail, VerifyRunInput, VerifyRunResult } from './orchestrator.js';
+import {
+  PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
+  type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
+} from './peer.js';
 
 /** Repeat-flake escalation (one tracked item per file, re-raised when the flake keeps recurring). */
 export const FLAKY_REPEAT = Object.freeze({ count: 3, windowMs: 7 * 24 * 60 * 60_000, keep: 20 });
@@ -220,6 +224,12 @@ export interface LocalVerifyServiceConfig {
   protectedList: readonly string[];
   extraHarnessGlobs?: readonly string[];
   baseEnv: Record<string, string>;
+  /**
+   * A peer-only service (spec local-verify-capacity.md Part D): built on a machine with no
+   * instar source checkout so it can run verifies a coordinator hands it. It refuses every
+   * coordinator role: no requests, no queue, no merge line, no `main` verifies.
+   */
+  peerOnly?: boolean;
 }
 
 export interface QueueEntry {
@@ -247,6 +257,14 @@ export interface QueueEntry {
   files?: string[] | null;
   /** The PR's title + body, lowercased and bounded, for the main-red repair match. In memory only. */
   text?: string;
+  /** Coordinator: reserved for one peer attempt (spec local-verify-capacity.md Part D). Persisted. */
+  remote?: RemoteMarker;
+  /** Coordinator: remote attempts spent on this entry (bounded by PEER_LIMITS.maxAttemptsPerEntry). Persisted. */
+  remoteAttempts?: number;
+  /** Peer: the coordinator's attempt this run answers. Never persisted in the queue (the peer keeps its own attempt file). */
+  peerAttempt?: { id: string; coordinatorMachineId: string; leaseEpoch: number | null };
+  /** Peer: the coordinator's isolation input for this run (its last green `main`). */
+  peerIsolation?: { allowed: boolean; notCleanOnGreenMain: string[] };
 }
 
 export { MAIN_VERIFY_LIMITS };
@@ -415,7 +433,7 @@ export interface MainRedHoldInfo {
 export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' };
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' };
 
 interface InFlight {
   entry: QueueEntry;
@@ -426,6 +444,27 @@ interface InFlight {
   cancelled: boolean;
   /** When the run child started (restart-hold bound). */
   startedAt: number;
+}
+
+/** Peer side: what this machine knows about the attempts coordinators handed it. */
+interface PeerAttemptState {
+  current: { attemptId: string; pr: number; headSha: string; state: 'running' | 'done'; acceptedAt: number; record?: LocalVerifyRecord } | null;
+  /** The last few finished attempts (so a late poll still finds its result). */
+  results: Array<{ attemptId: string; record: LocalVerifyRecord }>;
+  /** attemptId → when it was cancelled or abandoned; a peer-run for one is refused. */
+  tombstones: Record<string, number>;
+}
+
+const PEER_RESULTS_KEPT = 20;
+
+function isRemoteMarker(v: unknown): v is RemoteMarker {
+  if (!v || typeof v !== 'object') return false;
+  const m = v as RemoteMarker;
+  const d = m.dispatched as unknown as Record<string, unknown> | undefined;
+  return typeof m.machineId === 'string' && typeof m.attemptId === 'string' && /^[0-9a-f]{32}$/.test(m.attemptId)
+    && (m.leaseEpoch === null || Number.isSafeInteger(m.leaseEpoch)) && Number.isFinite(m.sentAt)
+    && (m.state === 'sending' || m.state === 'accepted') && !!d && isValidPr(d.pr) && isValidSha(d.headSha) && isValidSha(d.baseSha)
+    && typeof d.baseRefName === 'string' && typeof d.verifierVersion === 'string' && typeof d.policyHash === 'string';
 }
 
 /** A queue entry as persisted in `state/local-verify/queue.json` (PR verifies only; `main` is re-derived). */
@@ -446,6 +485,9 @@ export interface PersistedQueueEntry {
   inFlight?: true;
   /** The merge-throughput priority, kept so a restore whose PR view is unreadable does not drop the label. Absent ⇒ ordinary. */
   priority?: number;
+  /** A peer reservation (Part D), kept as written so a restart resumes polling the same attempt. */
+  remote?: RemoteMarker;
+  remoteAttempts?: number;
 }
 
 /** What the AutoUpdater tells the verifier (spec §2 Restarts rule (b)); null = unknown (never pauses). */
@@ -577,6 +619,21 @@ export class LocalVerifyService {
   /** Main-red hold (CMT-1033): the last failed `main` verify's failing files, the live switch, and the once-per-episode bookkeeping. */
   private mainFailure: MainFailureDetail | null = null;
   private mainRedHoldEnabled: (() => boolean) | null = null;
+  // ---- peer verifiers (spec local-verify-capacity.md Part D) ----
+  /** Peer role switch (`monitoring.localVerify.peer.enabled`; absent ⇒ off). */
+  private peerRoleEnabled: (() => boolean) | null = null;
+  /** Coordinator: the configured peers (`monitoring.localVerify.peers`; absent ⇒ none). */
+  private peersSetting: (() => unknown) | null = null;
+  private peerClient: PeerClient | null = null;
+  private leaseView: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null = null;
+  private readonly peerHealth = new Map<string, PeerHealth>();
+  private readonly remotePolledAt = new Map<string, number>();
+  private dispatching: QueueEntry | null = null;
+  private dispatchScheduled = false;
+  private dispatchRunning = false;
+  private pollRunning = false;
+  /** Peer side: the current attempt, recent results and cancelled ids (persisted to peer-attempts.json). */
+  private peerState: PeerAttemptState = { current: null, results: [], tombstones: {} };
   /** pr → the red head it was audited as held for (one `main-red-held` line per PR per episode). */
   private readonly heldAudited = new Map<number, string>();
   /** What the ONE hold item last said: the red head and the sorted repair-PR list (re-raised only when either changes). */
@@ -686,7 +743,7 @@ export class LocalVerifyService {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']> } {
+  snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']>; peers: ReturnType<LocalVerifyService['peersInfo']> } {
     const h = this.verifierHold;
     const hold = this.holdDecision();
     const heldWhy = new Map<number, 'no-overlap' | 'files-unknown'>(hold.active ? hold.heldPrs.map((x) => [x.pr, x.reason] as const) : []);
@@ -702,6 +759,7 @@ export class LocalVerifyService {
       records: this.index.size,
       flakyFiles: this.flakyFiles(),
       mergeLine: this.mergeLine(),
+      peers: this.peersInfo(),
     };
   }
 
@@ -743,8 +801,9 @@ export class LocalVerifyService {
     // Order matters: the orphan reap runs first, and a still-blocked reap keeps every
     // restored entry waiting (pump refuses while blockedBy is set).
     await this.reapOrphan();
+    this.loadPeerState(); // after the reap: an interrupted peer attempt is tombstoned, never resumed
     await this.rebuildIndex();
-    await this.restoreQueue();
+    if (!this.cfg.peerOnly) await this.restoreQueue();
   }
 
   /**
@@ -799,7 +858,8 @@ export class LocalVerifyService {
       if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) { drops['queue-full']++; continue; }
       const entry: QueueEntry = {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
-        baseSha: view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha,
+        // A reserved entry keeps the base it was dispatched with (the marker's snapshot decides import).
+        baseSha: e.remote ? e.baseSha : (view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha),
         baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         // An unreadable view keeps the saved label level (never more than the throughput level).
@@ -807,6 +867,8 @@ export class LocalVerifyService {
         files: view ? viewFiles(view) : null, text: view ? prMatchText(view.title, view.body) : '',
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
+        ...(e.remote ? { remote: e.remote } : {}),
+        ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
       };
       if (e.inFlight) {
         // It was running when the server died without a clean shutdown: that is one error
@@ -997,6 +1059,7 @@ export class LocalVerifyService {
   async request(pr: number, opts: { explicit?: boolean; force?: boolean } = {}): Promise<RequestResult> {
     const explicit = opts.explicit ?? true;
     if (!isValidPr(pr)) return { ok: false, code: 'invalid-pr' };
+    if (this.cfg.peerOnly) return { ok: false, code: 'peer-only' };
     if (this.stopped) return { ok: false, code: 'stopping' };
     if (this.restoring) await this.restoring.catch(() => undefined);
     // While `main` is unhealthy the watcher requests no PR verifies (they fail by
@@ -1011,7 +1074,9 @@ export class LocalVerifyService {
       const queued = this.queue.findIndex((e) => e.pr === pr && e.kind !== 'main');
       if (queued >= 0) {
         const [e] = this.queue.splice(queued, 1);
+        if (e.remote) this.abandonRemote(e, 'pr-closed', { failure: false, cancel: true });
         this.audit({ event: 'dequeued', pr, reason: 'closed', headSha: e.headSha });
+        this.persistQueue();
         this.pump();
       }
       return { ok: false, code: 'pr-closed' };
@@ -1050,7 +1115,8 @@ export class LocalVerifyService {
     if (pendingIdx >= 0) {
       const e = this.queue[pendingIdx];
       if (e.headSha === headSha && e.baseRefName === baseRefName) {
-        if (e.baseSha !== baseSha) {
+        // A reserved entry keeps the base it was handed to its peer with (the marker decides import).
+        if (e.baseSha !== baseSha && !e.remote) {
           const oldBase = e.baseSha;
           e.baseSha = baseSha;
           this.audit({ event: 'base-updated', pr, headSha, oldBase, newBase: baseSha, position: pendingIdx, firstQueuedAt: e.firstQueuedAt });
@@ -1063,6 +1129,8 @@ export class LocalVerifyService {
         this.pump(); // a renamed PR may now be a repair candidate
         return { ok: true, status: 'already-queued', position: pendingIdx, ...this.holdFor(pr) };
       }
+      // A new head abandons any peer attempt for the old one (its result can no longer be imported).
+      if (e.remote) this.abandonRemote(e, 'head-moved', { failure: false, cancel: true });
       this.queue.splice(pendingIdx, 1);
       keptPlace = { index: pendingIdx, firstQueuedAt: e.firstQueuedAt, pausedMs: e.pausedMs, starvedRaised: e.starvedRaised };
       this.persistQueue();
@@ -1125,6 +1193,451 @@ export class LocalVerifyService {
     return { hold: this.holdInfo(d) };
   }
 
+  // ---- peer verifiers (spec local-verify-capacity.md Part D) ----
+
+  /** Wire the peer settings (read at each use) and the coordinator's client and lease view. */
+  setPeerWiring(o: {
+    peerRoleEnabled?: (() => boolean) | null;
+    peers?: (() => unknown) | null;
+    client?: PeerClient | null;
+    lease?: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null;
+  }): void {
+    if (o.peerRoleEnabled !== undefined) this.peerRoleEnabled = o.peerRoleEnabled;
+    if (o.peers !== undefined) this.peersSetting = o.peers;
+    if (o.client !== undefined) this.peerClient = o.client;
+    if (o.lease !== undefined) this.leaseView = o.lease;
+  }
+
+  isPeerOnly(): boolean { return this.cfg.peerOnly === true; }
+
+  private peerRoleOn(): boolean {
+    try { return this.peerRoleEnabled ? this.peerRoleEnabled() === true : false; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (no peer runs)
+  }
+
+  private configuredPeers(): PeerTarget[] {
+    if (this.cfg.peerOnly) return [];
+    let v: unknown = null;
+    try { v = this.peersSetting ? this.peersSetting() : null; } catch { v = null; } // @silent-fallback-ok: an unreadable setting means no peers (local only)
+    return parsePeers(v, this.cfg.machineId);
+  }
+
+  private leaseState(): { holds: boolean; epoch: number | null; holder: string | null } {
+    if (!this.leaseView) return { holds: true, epoch: null, holder: this.cfg.machineId };
+    try {
+      return { holds: this.leaseView.holdsLease(), epoch: this.leaseView.leaseEpoch(), holder: this.leaseView.holderMachineId() };
+    } catch {
+      return { holds: false, epoch: null, holder: null }; // @silent-fallback-ok: an unreadable lease reads as not held (no dispatch, no import)
+    }
+  }
+
+  private get peerStatePath(): string { return path.join(this.lvStateDir, 'peer-attempts.json'); }
+
+  private loadPeerState(): void {
+    try {
+      const o = JSON.parse(fs.readFileSync(this.peerStatePath, 'utf-8')) as PeerAttemptState;
+      this.peerState = {
+        current: o.current && typeof o.current.attemptId === 'string' ? o.current : null,
+        results: Array.isArray(o.results) ? o.results.slice(-PEER_RESULTS_KEPT) : [],
+        tombstones: o.tombstones && typeof o.tombstones === 'object' ? o.tombstones : {},
+      };
+    } catch {
+      this.peerState = { current: null, results: [], tombstones: {} }; // @silent-fallback-ok: no peer state yet (first boot)
+    }
+    // A run interrupted by the restart is gone (its child was reaped): its id is tombstoned so
+    // the coordinator's `unknown` reclaim is final and a delayed peer-run for it is refused.
+    if (this.peerState.current && this.peerState.current.state === 'running') {
+      this.peerState.tombstones[this.peerState.current.attemptId] = this.now();
+      this.audit({ event: 'peer-attempt-interrupted', attemptId: this.peerState.current.attemptId, pr: this.peerState.current.pr });
+      this.peerState.current = null;
+    }
+    this.persistPeerState();
+  }
+
+  private persistPeerState(): boolean {
+    const now = this.now();
+    for (const [id, at] of Object.entries(this.peerState.tombstones)) {
+      if (now - at > PEER_LIMITS.tombstoneMs) delete this.peerState.tombstones[id];
+    }
+    try {
+      fs.mkdirSync(this.lvStateDir, { recursive: true });
+      const tmp = this.peerStatePath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(this.peerState), { mode: 0o600 }); /* state-registry: local-verify-peer-attempts */
+      fs.renameSync(tmp, this.peerStatePath);
+      return true;
+    } catch (e) {
+      this.audit({ event: 'peer-state-write-failed', detail: e instanceof Error ? e.message : String(e) });
+      return false;
+    }
+  }
+
+  /** Peer side: `POST /local-verify/peer-run`. Idempotent per attemptId. */
+  async peerRun(req: PeerRunRequest, ctx: { holdsLease: boolean; holderMachineId: string | null }): Promise<PeerRunAnswer> {
+    const refuse = (reason: Extract<PeerRunAnswer, { ok: false }>['reason']): PeerRunAnswer => {
+      this.audit({ event: 'peer-run-refused', attemptId: req.attemptId, pr: req.pr, reason });
+      return { ok: false, reason };
+    };
+    if (!this.peerRoleOn() || this.stopped) return refuse('peer-disabled');
+    if (ctx.holdsLease) return refuse('is-lease-holder');
+    if (!ctx.holderMachineId || req.coordinatorMachineId !== ctx.holderMachineId) return refuse('not-coordinator');
+    if (this.peerState.tombstones[req.attemptId] !== undefined) return refuse('attempt-cancelled');
+    if (this.peerState.current?.attemptId === req.attemptId || this.peerState.results.some((r) => r.attemptId === req.attemptId)) {
+      return { ok: true, attemptId: req.attemptId };
+    }
+    const busy = () => !!this.inFlight || !!this.starting || this.peerState.current?.state === 'running' || this.seams.foreignSuiteHolders().length > 0 || !!this.blockedBy;
+    if (busy()) return refuse('peer-busy');
+    if (req.verifierVersion !== this.cfg.verifierVersion || req.policyHash !== this.policyHash || this.verifierChangedOnDisk()) return refuse('verifier-mismatch');
+    const view = await this.seams.prView(req.pr).catch(() => null);
+    if (!view) return refuse('pr-unreadable');
+    if (!checkEligibility(view, this.cfg).eligible) return refuse('untrusted-head');
+    if (view.headRefOid !== req.headSha || view.baseRefName !== req.baseRefName) return refuse('head-moved');
+    // The read awaited: re-check everything that could have changed meanwhile, the role and the
+    // lease included (live, not the request-time snapshot).
+    if (!this.peerRoleOn() || this.stopped) return refuse('peer-disabled');
+    const live = this.leaseState();
+    if (this.leaseView && live.holds) return refuse('is-lease-holder');
+    if (this.leaseView && live.holder !== req.coordinatorMachineId) return refuse('not-coordinator');
+    if (this.peerState.tombstones[req.attemptId] !== undefined) return refuse('attempt-cancelled');
+    if (this.peerState.current?.attemptId === req.attemptId) return { ok: true, attemptId: req.attemptId };
+    if (busy()) return refuse('peer-busy');
+    const entry: QueueEntry = {
+      id: crypto.randomBytes(6).toString('hex'), pr: req.pr, headSha: req.headSha, baseSha: req.baseSha, baseRefName: req.baseRefName,
+      firstQueuedAt: this.now(), attempts: 0, errorRetries: 0, starvedRaised: false, priority: QUEUE_PRIORITY.ordinary,
+      peerAttempt: { id: req.attemptId, coordinatorMachineId: req.coordinatorMachineId, leaseEpoch: req.leaseEpoch },
+      ...(req.isolation ? { peerIsolation: req.isolation } : {}),
+    };
+    this.peerState.current = { attemptId: req.attemptId, pr: req.pr, headSha: req.headSha, state: 'running', acceptedAt: this.now() };
+    if (!this.persistPeerState()) {
+      // Without the durable record a restart could not tombstone this attempt: never start it.
+      this.peerState.current = null;
+      return refuse('state-unwritable');
+    }
+    this.audit({ event: 'peer-run-accepted', attemptId: req.attemptId, pr: req.pr, headSha: req.headSha, baseSha: req.baseSha, coordinator: req.coordinatorMachineId });
+    try {
+      this.start(entry);
+    } catch (e) {
+      if (this.inFlight?.entry === entry) {
+        // The child exists: keep its durable intent and exit handler until it dies.
+        // Clearing either here would leave an untracked verifier running.
+        this.audit({ event: 'peer-run-setup-failed-after-spawn', attemptId: req.attemptId, pr: req.pr, detail: e instanceof Error ? e.message : String(e) });
+        this.cancelInFlight('peer-run-setup-failed');
+        return { ok: true, attemptId: req.attemptId };
+      }
+      // A setup failure before the child exists (runs dir, input file, in-flight intent): the
+      // attempt ends now with an error record instead of looking busy until the run bound.
+      try { this.clearInFlight(); } catch { /* @silent-fallback-ok: nothing was written */ }
+      if (this.inFlight?.entry === entry) this.inFlight = null;
+      this.audit({ event: 'peer-run-setup-failed', attemptId: req.attemptId, pr: req.pr, detail: e instanceof Error ? e.message : String(e) });
+      this.finishPeerAttempt({ entry, cancelled: false }, { kind: 'crash' });
+    }
+    return { ok: true, attemptId: req.attemptId };
+  }
+
+  /** Peer side: `GET /local-verify/peer-status`. */
+  peerStatus(): PeerStatus & { enabled: boolean } {
+    const cur = this.peerState.current;
+    return {
+      enabled: this.peerRoleOn(),
+      inFlight: cur && cur.state === 'running' ? { attemptId: cur.attemptId, pr: cur.pr } : null,
+      verifierVersion: this.cfg.verifierVersion,
+      policyHash: this.policyHash,
+      slotBusy: !!this.inFlight || !!this.starting || this.seams.foreignSuiteHolders().length > 0,
+    };
+  }
+
+  /** Peer side: `GET /local-verify/peer-result`. */
+  peerResult(attemptId: string): PeerResult {
+    const cur = this.peerState.current;
+    if (cur && cur.attemptId === attemptId) return cur.state === 'done' && cur.record ? { state: 'done', record: cur.record } : { state: 'running' };
+    const done = this.peerState.results.find((r) => r.attemptId === attemptId);
+    return done ? { state: 'done', record: done.record } : { state: 'unknown' };
+  }
+
+  /** Peer side: `POST /local-verify/peer-cancel`. Tombstones the id; cancels it if it is running. */
+  peerCancel(attemptId: string): { cancelled: boolean } {
+    this.peerState.tombstones[attemptId] = this.now();
+    const running = this.inFlight && this.inFlight.entry.peerAttempt?.id === attemptId;
+    if (running) this.cancelInFlight('peer-cancel');
+    if (this.peerState.current?.attemptId === attemptId && this.peerState.current.state === 'running') this.peerState.current = null;
+    this.persistPeerState();
+    this.audit({ event: 'peer-attempt-cancelled', attemptId, wasRunning: !!running });
+    return { cancelled: !!running };
+  }
+
+  /**
+   * Peer side, every tick: a running peer attempt is cancelled (tombstoned) when it outlives
+   * PEER_LIMITS.maxRunMs, when the peer role is switched off, or when this machine has become the
+   * lease holder (peer attempts are never promoted into a coordinator's own authority).
+   */
+  private checkPeerAttempt(): void {
+    const cur = this.peerState.current;
+    if (!cur || cur.state !== 'running') return;
+    const lease = this.leaseState();
+    const why = this.now() - cur.acceptedAt > PEER_LIMITS.maxRunMs ? 'run-bound'
+      : !this.peerRoleOn() ? 'peer-disabled'
+        : this.leaseView && lease.holds ? 'became-lease-holder' : null;
+    if (!why) return;
+    this.audit({ event: 'peer-attempt-self-cancelled', attemptId: cur.attemptId, pr: cur.pr, reason: why });
+    this.peerCancel(cur.attemptId);
+  }
+
+  /** Peer side: a peer run ended. Its record is kept for the coordinator, never put in this machine's index. */
+  private finishPeerAttempt(f: Pick<InFlight, 'entry' | 'cancelled'>, result: VerifyRunResult | null | { kind: 'crash' | 'invalid' } | unknown): void {
+    const id = f.entry.peerAttempt!.id;
+    const cur = this.peerState.current;
+    if (f.cancelled || this.peerState.tombstones[id] !== undefined || !cur || cur.attemptId !== id) {
+      this.peerState.tombstones[id] = this.peerState.tombstones[id] ?? this.now();
+      if (cur && cur.attemptId === id) this.peerState.current = null;
+      this.persistPeerState();
+      this.audit({ event: 'peer-attempt-dropped', attemptId: id, pr: f.entry.pr });
+      return;
+    }
+    const r = result as { kind?: string; record?: LocalVerifyRecord } | null;
+    let record: LocalVerifyRecord;
+    if (r && r.kind === 'record' && r.record && validateRecord(r.record).ok) {
+      record = r.record;
+    } else {
+      // Anything else (crash, invalid record, a capacity requeue, a verifier mismatch) is an
+      // infrastructure error for this attempt: the coordinator counts it and runs the PR again.
+      record = { ...this.syntheticError(f.entry, r && typeof r.kind === 'string' ? `peer-${r.kind}` : 'peer-crash'), attempt: f.entry.peerAttempt };
+    }
+    cur.state = 'done';
+    cur.record = record;
+    this.peerState.results = [...this.peerState.results.filter((x) => x.attemptId !== id), { attemptId: id, record }].slice(-PEER_RESULTS_KEPT);
+    this.persistPeerState();
+    this.audit({ event: 'peer-attempt-done', attemptId: id, pr: record.pr, outcome: record.outcome });
+  }
+
+  /** Coordinator: after any pump, try to hand one more entry to an idle peer (never blocks the pump). */
+  private scheduleDispatch(): void {
+    if (this.dispatchScheduled || this.cfg.peerOnly || !this.peerClient) return;
+    this.dispatchScheduled = true;
+    const run = () => { this.dispatchScheduled = false; void this.dispatchOnce().catch((e) => this.audit({ event: 'peer-dispatch-error', detail: e instanceof Error ? e.message : String(e) })); };
+    if (this.seams.setTimer) this.seams.setTimer(run, 0); else setImmediate(run);
+  }
+
+  private dispatchable(e: QueueEntry, heldPrs: Set<number>): boolean {
+    return e.kind !== 'main' && !e.remote && !e.peerAttempt && e !== this.dispatching && e !== this.starting && this.inFlight?.entry !== e
+      && !heldPrs.has(e.pr) && (e.remoteAttempts ?? 0) < PEER_LIMITS.maxAttemptsPerEntry && !(e.notBefore && e.notBefore > this.now());
+  }
+
+  /* @self-action-controller: local-verify-peer-dispatch */
+  private async dispatchOnce(): Promise<void> {
+    if (this.dispatchRunning) return;
+    const peers = this.configuredPeers();
+    const client = this.peerClient;
+    if (!client || peers.length === 0) return;
+    if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold) return;
+    // Only when the coordinator's own slot is busy: its own next run always goes first.
+    if (!this.inFlight && !this.starting) return;
+    const lease = this.leaseState();
+    if (!lease.holds) return;
+    this.dispatchRunning = true;
+    try {
+      const now = this.now();
+      for (const peer of peers) {
+        const h = this.peerHealth.get(peer.machineId) ?? { consecutiveFailures: 0, openUntil: null, status: null, statusAt: 0 };
+        this.peerHealth.set(peer.machineId, h);
+        if (!peerHealthy(h, now)) continue;
+        if (this.queue.some((e) => e.remote?.machineId === peer.machineId)) continue; // one outstanding attempt per peer
+        if (now - h.statusAt >= PEER_LIMITS.statusMs || !h.status) {
+          const st = await client.status(peer).catch(() => null);
+          h.statusAt = this.now();
+          h.status = st;
+          if (!st) { this.peerFailure(peer, h, 'status-unreachable'); continue; }
+        }
+        const st = h.status;
+        if (!st || st.inFlight || st.slotBusy || st.verifierVersion !== this.cfg.verifierVersion || st.policyHash !== this.policyHash) continue;
+        const hold = this.holdDecision();
+        const held = new Set(hold.active ? hold.heldPrs.map((x) => x.pr) : []);
+        const sorted = [...this.queue].sort((a, b) => effectivePriority(b, this.now()) - effectivePriority(a, this.now()));
+        const entry = sorted.find((e) => this.dispatchable(e, held));
+        if (!entry) return;
+        // Today's base first: the same conditional refresh a local start uses.
+        if (decideBaseRefresh(entry, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
+          this.dispatching = entry;
+          const [fresh, open] = await Promise.all([
+            this.seams.baseHead ? this.seams.baseHead(entry.baseRefName).catch(() => null) : Promise.resolve(null),
+            this.seams.isPrOpen(entry.pr).catch(() => null),
+          ]);
+          this.dispatching = null;
+          if (!this.queue.includes(entry)) continue;
+          if (open === false) {
+            this.queue.splice(this.queue.indexOf(entry), 1);
+            this.audit({ event: 'dequeued', pr: entry.pr, reason: 'closed', headSha: entry.headSha });
+            this.persistQueue();
+            continue;
+          }
+          if (this.seams.baseHead) {
+            if (fresh && isValidSha(fresh)) {
+              if (fresh !== entry.baseSha) { this.audit({ event: 'base-refreshed', pr: entry.pr, headSha: entry.headSha, oldBase: entry.baseSha, newBase: fresh }); entry.baseSha = fresh; }
+            } else {
+              this.audit({ event: 'base-refresh-failed', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha });
+            }
+          }
+          entry.baseResolvedAt = this.now();
+        }
+        // Re-check after the await: still queued, unreserved, unheld, dispatchable; peer still free; lease still ours.
+        const lease2 = this.leaseState();
+        const hold2 = this.holdDecision();
+        const held2 = new Set(hold2.active ? hold2.heldPrs.map((x) => x.pr) : []);
+        if (!this.queue.includes(entry) || !this.dispatchable(entry, held2) || !lease2.holds || lease2.epoch !== lease.epoch) continue;
+        // The scheduling holds again too: a merge hand-off (or anything else that holds the queue)
+        // that began during the awaits means the next verify must wait for it, remote or local.
+        if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold) return;
+        if (this.queue.some((e) => e.remote?.machineId === peer.machineId) || this.stopped) continue;
+        const marker: RemoteMarker = {
+          machineId: peer.machineId, attemptId: crypto.randomBytes(16).toString('hex'), leaseEpoch: lease.epoch,
+          sentAt: this.now(), state: 'sending',
+          dispatched: { pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, baseRefName: entry.baseRefName, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash },
+        };
+        entry.remote = marker;
+        entry.remoteAttempts = (entry.remoteAttempts ?? 0) + 1;
+        if (!this.persistQueue()) { // durable intent BEFORE the send, or no send at all
+          entry.remote = undefined;
+          entry.remoteAttempts -= 1;
+          this.audit({ event: 'peer-dispatch-skipped', pr: entry.pr, reason: 'queue-unwritable' });
+          return;
+        }
+        this.audit({ event: 'peer-dispatch', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, peer: peer.machineId, attemptId: marker.attemptId, attempt: entry.remoteAttempts });
+        const iso = this.isolationInput();
+        const ans = await client.run(peer, {
+          attemptId: marker.attemptId, ...marker.dispatched, coordinatorMachineId: this.cfg.machineId, leaseEpoch: marker.leaseEpoch,
+          isolation: { allowed: iso.allowed, notCleanOnGreenMain: [...iso.notCleanOnGreenMain] },
+        }).catch(() => null);
+        if (entry.remote !== marker) continue; // abandoned meanwhile
+        if (ans === null) {
+          this.audit({ event: 'peer-dispatch-unanswered', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
+        } else if (ans.ok) {
+          marker.state = 'accepted';
+          this.audit({ event: 'peer-dispatch-accepted', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
+        } else if (ans.reason === 'peer-busy') {
+          // Backpressure, not a failure: the attempt does not count and the breaker is untouched.
+          entry.remote = undefined;
+          entry.remoteAttempts = Math.max(0, (entry.remoteAttempts ?? 1) - 1);
+          h.statusAt = 0;
+          this.audit({ event: 'peer-dispatch-busy', pr: entry.pr, peer: peer.machineId });
+        } else {
+          entry.remote = undefined;
+          this.audit({ event: 'peer-dispatch-refused', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId, reason: ans.reason });
+          this.peerFailure(peer, h, `refused:${ans.reason}`);
+        }
+        this.persistQueue();
+      }
+    } finally {
+      this.dispatchRunning = false;
+    }
+  }
+
+  private peerFailure(peer: PeerTarget, h: PeerHealth, why: string): void {
+    if (noteFailure(h, this.now())) {
+      this.audit({ event: 'peer-breaker-open', peer: peer.machineId, why, untilMs: h.openUntil });
+      this.seams.signal?.(`local-verify:peer-breaker:${peer.machineId}`, {
+        peer: peer.machineId, why, until: h.openUntil ? new Date(h.openUntil).toISOString() : null,
+        note: `The peer verifier ${peer.machineId} failed ${PEER_LIMITS.breakerFailures} times in a row (last: ${why}); this machine runs every verify itself for the next ${Math.round(PEER_LIMITS.breakerOpenMs / 60_000)} minutes.`,
+      });
+    }
+  }
+
+  /** Coordinator: drop a reservation. `count` = the attempt was spent; `failure` = it counts toward the peer's breaker. */
+  private abandonRemote(entry: QueueEntry, reason: string, o: { failure: boolean; cancel: boolean }): void {
+    const m = entry.remote;
+    if (!m) return;
+    entry.remote = undefined;
+    this.remotePolledAt.delete(m.attemptId);
+    this.audit({ event: 'peer-attempt-abandoned', pr: entry.pr, peer: m.machineId, attemptId: m.attemptId, reason });
+    const peer = this.configuredPeers().find((p) => p.machineId === m.machineId);
+    if (o.cancel && peer && this.peerClient) void this.peerClient.cancel(peer, m.attemptId).catch(() => undefined);
+    if (o.failure && peer) {
+      const h = this.peerHealth.get(peer.machineId) ?? { consecutiveFailures: 0, openUntil: null, status: null, statusAt: 0 };
+      this.peerHealth.set(peer.machineId, h);
+      this.peerFailure(peer, h, reason);
+    }
+    this.persistQueue();
+  }
+
+  /* @self-action-controller: local-verify-peer-poll */
+  /** Coordinator: poll each reserved entry's attempt (bounded rate) and import, reclaim or abandon. */
+  private async pollPeers(): Promise<void> {
+    if (this.pollRunning || this.cfg.peerOnly) return;
+    const reserved = this.queue.filter((e) => e.remote);
+    if (reserved.length === 0) return;
+    this.pollRunning = true;
+    try {
+      for (const entry of reserved) {
+        const m = entry.remote;
+        if (!m) continue;
+        const now = this.now();
+        const lease = this.leaseState();
+        if (!lease.holds || lease.epoch !== m.leaseEpoch) { this.abandonRemote(entry, 'lease-changed', { failure: false, cancel: true }); continue; }
+        const peer = this.configuredPeers().find((p) => p.machineId === m.machineId);
+        if (!peer || !this.peerClient) { this.abandonRemote(entry, 'peer-not-configured', { failure: false, cancel: false }); continue; }
+        if (now - (this.remotePolledAt.get(m.attemptId) ?? 0) < PEER_LIMITS.pollMs) continue;
+        this.remotePolledAt.set(m.attemptId, now);
+        const res = await this.peerClient.result(peer, m.attemptId).catch(() => null);
+        if (entry.remote !== m) continue; // changed while we waited
+        if (!this.queue.includes(entry)) {
+          this.abandonRemote(entry, 'entry-no-longer-queued', { failure: false, cancel: true });
+          continue;
+        }
+        const age = this.now() - m.sentAt;
+        const h = this.peerHealth.get(peer.machineId) ?? { consecutiveFailures: 0, openUntil: null, status: null, statusAt: 0 };
+        this.peerHealth.set(peer.machineId, h);
+        if (res === null) {
+          if (age > PEER_LIMITS.maxRunMs) this.abandonRemote(entry, 'unreachable-past-run-bound', { failure: true, cancel: true });
+          else this.peerFailure(peer, h, 'result-unreachable');
+          continue;
+        }
+        if (res.state === 'unknown') {
+          if (age > PEER_LIMITS.unknownGraceMs) this.abandonRemote(entry, 'unknown-attempt', { failure: true, cancel: true });
+          continue;
+        }
+        if (res.state === 'running') {
+          if (age > PEER_LIMITS.maxRunMs) this.abandonRemote(entry, 'run-bound', { failure: true, cancel: true });
+          else if (m.state === 'sending') { m.state = 'accepted'; this.persistQueue(); }
+          continue;
+        }
+        // The lease is read again NOW (the result fetch awaited): a lease lost or moved meanwhile imports nothing.
+        const leaseNow = this.leaseState();
+        const why = importRefusal(res.record, m, { repo: this.cfg.repo, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash, holdsLease: leaseNow.holds, leaseEpoch: leaseNow.epoch, coordinatorMachineId: this.cfg.machineId });
+        if (why) {
+          this.audit({ event: 'peer-record-rejected', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, reason: why });
+          this.abandonRemote(entry, `rejected:${why}`, { failure: true, cancel: false });
+          continue;
+        }
+        if (res.record.outcome === 'error') {
+          this.audit({ event: 'peer-record-error', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, errorStep: res.record.errorStep });
+          this.abandonRemote(entry, 'peer-error', { failure: true, cancel: false });
+          continue;
+        }
+        // Import: the one completion path, then the entry leaves the queue.
+        noteSuccess(h);
+        entry.remote = undefined;
+        this.remotePolledAt.delete(m.attemptId);
+        const i = this.queue.indexOf(entry);
+        if (i >= 0) this.queue.splice(i, 1);
+        this.audit({ event: 'peer-imported', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, outcome: res.record.outcome });
+        const imported = this.complete(res.record, 'peer');
+        if (imported) this.noteFlaky(imported);
+        this.persistQueue();
+      }
+    } finally {
+      this.pollRunning = false;
+    }
+    this.pump();
+  }
+
+  /** Coordinator view of the peers for `GET /local-verify`. */
+  peersInfo(): { configured: Array<{ machineId: string; healthy: boolean; status: PeerStatus | null; consecutiveFailures: number; openUntil: string | null }>; reserved: Array<{ pr: number; peer: string; attemptId: string; state: string; sentAt: string }> } {
+    const now = this.now();
+    return {
+      configured: this.configuredPeers().map((p) => {
+        const h = this.peerHealth.get(p.machineId);
+        return { machineId: p.machineId, healthy: peerHealthy(h, now), status: h?.status ?? null, consecutiveFailures: h?.consecutiveFailures ?? 0, openUntil: h?.openUntil ? new Date(h.openUntil).toISOString() : null };
+      }),
+      reserved: this.queue.filter((e) => e.remote).map((e) => ({ pr: e.pr, peer: e.remote!.machineId, attemptId: e.remote!.attemptId, state: e.remote!.state, sentAt: new Date(e.remote!.sentAt).toISOString() })),
+    };
+  }
+
   /** Periodic driver: orphan unblock, starvation signal, start the next run. */
   async tick(): Promise<void> {
     if (this.blockedBy) await this.reapOrphan();
@@ -1132,6 +1645,8 @@ export class LocalVerifyService {
     this.notePause();
     this.checkStarved();
     this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
+    if (!this.cfg.peerOnly) await this.pollPeers().catch((e) => this.audit({ event: 'peer-poll-error', detail: e instanceof Error ? e.message : String(e) }));
+    this.checkPeerAttempt();
     this.pump();
   }
 
@@ -1241,6 +1756,8 @@ export class LocalVerifyService {
 
   private pump(): void {
     this.persistQueue();
+    if (this.cfg.peerOnly) return; // a peer-only service never starts its own work
+    this.scheduleDispatch();
     // A merge hand-off holds the queue (bounded): the next PR is verified on top of the merge, not against it.
     if (this.stopped || this.restoring || this.inFlight || this.starting || this.blockedBy || this.mergeHold || this.verifierHold || this.queue.length === 0) return;
     if (this.notePause()) return; // an update is waiting only on us: let the running verify end, start nothing
@@ -1261,11 +1778,12 @@ export class LocalVerifyService {
     // (a PR that touches or names a failing file) or a `main` verify may take the slot;
     // every other PR entry keeps its place and waits for green. Never a doomed run.
     const hold = this.holdDecision();
-    let admissible: QueueEntry[] = this.queue;
+    // An entry reserved for a peer attempt (or being prepared for one) is the peer's, never started here.
+    let admissible: QueueEntry[] = this.queue.filter((e) => !e.remote && e !== this.dispatching);
     if (hold.active) {
       this.noteHold(hold);
       const held = new Set(hold.heldPrs.map((h) => h.pr));
-      admissible = this.queue.filter((e) => e.kind === 'main' || !held.has(e.pr));
+      admissible = admissible.filter((e) => e.kind === 'main' || !held.has(e.pr));
       if (admissible.length === 0) {
         if (this.holdIdleAudited !== hold.redHead) {
           this.holdIdleAudited = hold.redHead;
@@ -1397,8 +1915,10 @@ export class LocalVerifyService {
       machineId: this.cfg.machineId, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash,
       protectedList: this.cfg.protectedList, extraHarnessGlobs: this.cfg.extraHarnessGlobs, baseEnv: this.cfg.baseEnv,
       // PR verifies: an isolation re-run needs this machine's last green main record.
-      ...(entry.kind === 'main' ? {} : { isolation: this.isolationInput() }),
+      ...(entry.kind === 'main' ? {} : { isolation: entry.peerIsolation ?? this.isolationInput() }),
       ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
+      // A peer run answers one coordinator attempt: the record carries it (spec local-verify-capacity.md Part D).
+      ...(entry.peerAttempt ? { attempt: entry.peerAttempt } : {}),
     };
     fs.writeFileSync(inputPath, JSON.stringify(input), { mode: 0o600 });
 
@@ -1421,6 +1941,12 @@ export class LocalVerifyService {
       });
     } catch (e) {
       this.clearInFlight();
+      if (entry.peerAttempt) {
+        // A peer attempt never touches this machine's own index or queue: the coordinator gets an error record.
+        this.audit({ event: 'spawn-failed', pr: entry.pr, detail: e instanceof Error ? e.message : String(e), peerAttempt: entry.peerAttempt.id });
+        this.finishPeerAttempt({ entry, cancelled: false }, { kind: 'crash' });
+        return;
+      }
       this.complete(this.syntheticError(entry, 'spawn'), 'run');
       this.audit({ event: 'spawn-failed', pr: entry.pr, detail: e instanceof Error ? e.message : String(e) });
       this.handleErrorRetry(entry);
@@ -1430,12 +1956,12 @@ export class LocalVerifyService {
     // Phase 2: patch pid/pgid (detached: the child's pid IS its pgid).
     intent.pid = handle.pid;
     intent.pgid = handle.pid;
-    this.writeInFlight(intent);
     this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt };
-    this.persistQueue();
-    this.audit({ event: 'started', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: handle.pid, attempt: entry.attempts });
     const mine = this.inFlight;
     handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
+    this.writeInFlight(intent);
+    this.persistQueue();
+    this.audit({ event: 'started', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: handle.pid, attempt: entry.attempts });
   }
 
   private cancelInFlight(reason: string, opts: { armKillTimer?: boolean } = {}): void {
@@ -1462,6 +1988,13 @@ export class LocalVerifyService {
     if (this.inFlight === f) this.inFlight = null;
     const result = this.readResult(f.resultPath);
     this.removeRunFiles(f);
+    if (f.entry.peerAttempt) {
+      this.finishPeerAttempt(f, result);
+      const waiters = this.idleWaiters;
+      this.idleWaiters = [];
+      for (const w of waiters) w();
+      return;
+    }
     if (f.cancelled) {
       this.audit({ event: 'cancelled', pr: f.entry.pr, headSha: f.entry.headSha, exit });
     } else if (isVerifierMismatch(result)) {
@@ -1598,7 +2131,7 @@ export class LocalVerifyService {
    * Validates, appends, indexes, then derives records for queued PRs that share
    * the execution key (dedupe by merge-tree inputs).
    */
-  private complete(record: LocalVerifyRecord, source: 'run' | 'derived'): LocalVerifyRecord | null {
+  private complete(record: LocalVerifyRecord, source: 'run' | 'derived' | 'peer'): LocalVerifyRecord | null {
     const v = validateRecord(record);
     if (!v.ok || record.repo !== this.cfg.repo) {
       this.audit({ event: 'record-rejected', pr: record.pr, errors: v.ok ? ['repo'] : v.errors });
@@ -1617,7 +2150,7 @@ export class LocalVerifyService {
       if (source === 'run') this.execIndex.set(ek, record);
       for (let i = this.queue.length - 1; i >= 0; i--) {
         const e = this.queue[i];
-        if (e.headSha === record.headSha && e.baseSha === record.baseSha && !(e.pr === record.pr && e.baseRefName === record.baseRefName)) {
+        if (!e.remote && e.headSha === record.headSha && e.baseSha === record.baseSha && !(e.pr === record.pr && e.baseRefName === record.baseRefName)) {
           this.queue.splice(i, 1);
           this.complete({ ...record, pr: e.pr, baseRefName: e.baseRefName }, 'derived');
         }
@@ -1640,32 +2173,36 @@ export class LocalVerifyService {
    * Persist the PR queue (the in-flight PR entry first, then the pending ones) with an
    * atomic write. `main` entries are not persisted: the reconcile loop re-derives them.
    */
-  private persistQueue(): void {
-    if (this.restoring) return; // restore writes once it has the whole picture
+  private persistQueue(): boolean {
+    if (this.restoring) return true; // restore writes once it has the whole picture
     try {
       const entries: QueueEntry[] = [];
       const f = this.inFlight;
-      if (f && !f.cancelled && f.entry.kind !== 'main') entries.push(f.entry);
-      for (const e of this.queue) if (e.kind !== 'main' && !entries.includes(e)) entries.push(e);
+      if (f && !f.cancelled && f.entry.kind !== 'main' && !f.entry.peerAttempt) entries.push(f.entry);
+      for (const e of this.queue) if (e.kind !== 'main' && !e.peerAttempt && !entries.includes(e)) entries.push(e);
       const out: PersistedQueueEntry[] = entries.map((e) => ({
         pr: e.pr, headSha: e.headSha, baseSha: e.baseSha, baseRefName: e.baseRefName,
         firstQueuedAt: e.firstQueuedAt, attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
         ...(e.priority === QUEUE_PRIORITY.mergeThroughput ? { priority: e.priority } : {}),
+        ...(e.remote ? { remote: e.remote } : {}),
+        ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
         // The running entry is marked: a clean shutdown re-queues it unmarked, so a marked
         // entry found at boot means the server died mid-run.
         ...(f && !f.cancelled && f.entry === e ? { inFlight: true as const } : {}),
       }));
       const json = JSON.stringify({ v: 1, entries: out });
-      if (json === this.lastQueueJson) return; // unchanged: no write
+      if (json === this.lastQueueJson) return true; // unchanged: no write
       fs.mkdirSync(this.lvStateDir, { recursive: true });
       const tmp = this.queuePath + '.tmp';
       fs.writeFileSync(tmp, json, { mode: 0o600 }); /* state-registry: local-verify-queue */
       fs.renameSync(tmp, this.queuePath);
       this.lastQueueJson = json;
+      return true;
     } catch (e) {
       this.audit({ event: 'queue-persist-failed', detail: e instanceof Error ? e.message : String(e) });
+      return false;
     }
   }
 
@@ -1695,6 +2232,8 @@ export class LocalVerifyService {
       pausedMs: Number.isFinite(x.pausedMs) && (x.pausedMs as number) > 0 ? x.pausedMs : undefined,
       baseResolvedAt: Number.isFinite(x.baseResolvedAt) && (x.baseResolvedAt as number) > 0 ? x.baseResolvedAt : undefined,
       inFlight: x.inFlight === true ? true as const : undefined,
+      remote: isRemoteMarker(x.remote) ? x.remote : undefined,
+      remoteAttempts: Number.isSafeInteger(x.remoteAttempts) && (x.remoteAttempts as number) > 0 ? x.remoteAttempts : undefined,
     }));
     if (valid.length !== o.entries.length) this.audit({ event: 'queue-restore-invalid-entries', skipped: o.entries.length - valid.length });
     return valid;

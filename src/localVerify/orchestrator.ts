@@ -126,6 +126,8 @@ export interface VerifyRunInput {
    * on a PR verify ⇒ no re-run. `main` verifies ignore it (the plain rule).
    */
   isolation?: { allowed: boolean; notCleanOnGreenMain: readonly string[] };
+  /** A peer verify (spec local-verify-capacity.md Part D): copied onto the record as `attempt`. */
+  attempt?: { id: string; coordinatorMachineId: string; leaseEpoch: number | null };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -550,6 +552,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   };
   if (errorStep) record.errorStep = errorStep;
   if (input.kind === 'main') record.kind = 'main';
+  if (input.attempt && input.kind !== 'main') record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
   if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
   const kept = await cleanup(outcome !== 'success');
   const v = validateRecord(record);
