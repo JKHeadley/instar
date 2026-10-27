@@ -86,8 +86,12 @@ describe('job-cost production lifecycle', () => {
         quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
       }, sessions as any, state, stateDir);
       scriptScheduler.setScriptStartOffsetEnabled(false);
-      scriptScheduler.setConfigReader(() => ({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } }));
+      scriptScheduler.setConfigReader(() => ({}));
       scriptScheduler.start();
+      expect(await scriptScheduler.triggerJob('script-job-supervisor', 'fleet-e2e')).toBe('skipped');
+      expect(sessions._spawnCount).toBe(0);
+      expect(scriptScheduler.getRunHistory().query({ slug: 'script-job-supervisor', limit: 1 }).runs).toEqual([]);
+      scriptScheduler.setConfigReader(() => ({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } }));
       expect(await scriptScheduler.triggerJob('health-check', 'e2e')).toBe('triggered');
       const deadline = Date.now() + 10_000;
       while (state.getJobState('health-check')?.lastResult === 'pending' && Date.now() < deadline) {

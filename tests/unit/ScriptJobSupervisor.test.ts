@@ -126,10 +126,13 @@ describe('POST /jobs/script-supervision/pass', () => {
     } finally { server.close(); }
   }
   it('503s when not wired, runs the pass when wired', async () => {
-    const a = express(); a.use(createScriptSupervisionRoutes({ supervisor: null }));
+    const a = express(); a.use(createScriptSupervisionRoutes({ supervisor: null, enabled: () => false }));
     expect((await call(a)).status).toBe(503);
     const t = setup({ jobs: [row('a')] }, '{"flags":[]}');
-    const b = express(); b.use(createScriptSupervisionRoutes({ supervisor: t.sup }));
+    const missingGate = express();
+    missingGate.use(createScriptSupervisionRoutes({ supervisor: t.sup } as any));
+    expect((await call(missingGate)).status).toBe(503);
+    const b = express(); b.use(createScriptSupervisionRoutes({ supervisor: t.sup, enabled: () => true }));
     const r = await call(b);
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);

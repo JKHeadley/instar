@@ -5036,7 +5036,7 @@ export class AgentServer {
     const anomalyStore = options.scheduler
       ? new JobAnomalyEpisodeStore({ filePath: JobAnomalyEpisodeStore.defaultPath(options.config.stateDir) })
       : null;
-    const triageAuditPath = path.join(options.config.projectDir, 'logs', 'job-triage.jsonl');
+    const triageAuditPath = path.join(options.config.projectDir ?? path.dirname(options.config.stateDir), 'logs', 'job-triage.jsonl');
     const bootJobsConfig = (options.config as typeof options.config & { jobs?: unknown }).jobs;
     const getTriageConfig = buildScriptTriageConfigGetter({
       readLiveJobs: () => routeCtx.liveConfig?.get('jobs', bootJobsConfig) ?? bootJobsConfig,
@@ -5223,7 +5223,14 @@ export class AgentServer {
             .filter(key => key.startsWith(SUPERVISION_CONDITION_PREFIX)),
         })
       : null;
-    mountScriptSupervisionRoutes(this.app, { supervisor: scriptSupervisor });
+    mountScriptSupervisionRoutes(this.app, {
+      supervisor: scriptSupervisor,
+      enabled: () => {
+        const scheduled = options.scheduler?.getJobs().find(job => job.slug === 'script-job-supervisor');
+        return !!scheduled?.enabled && !!options.scheduler?.isScriptRunnerJob(scheduled)
+          && !!options.scheduler?.scriptRunnersActiveFor(scheduled.slug);
+      },
+    });
     if (options.config.projectName === 'echo' && routeCtx.windowLifecycleTick) {
       try { routeCtx.windowLifecycleTick(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and the periodic retry remains armed */ console.warn('[window-lifecycle] initial tick failed:', error); }
       this.windowLifecycleTimer = setInterval(() => { try { routeCtx.windowLifecycleTick?.(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and retried on the next tick */ console.warn('[window-lifecycle] periodic tick failed:', error); } }, 60_000);

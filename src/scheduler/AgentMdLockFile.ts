@@ -219,6 +219,10 @@ function resolveBundledPublicKey(): string | null {
     for (let i = 0; i < 5; i++) {
       const candidate = path.join(dir, 'keys', 'instar-release-pub.pem');
       if (fs.existsSync(candidate)) return candidate;
+      // Source-loaded development tests live under src/scheduler while the
+      // build places the same bundled key under the repository's dist/keys.
+      const sourceBuildCandidate = path.join(dir, 'dist', 'keys', 'instar-release-pub.pem');
+      if (fs.existsSync(sourceBuildCandidate)) return sourceBuildCandidate;
       dir = path.dirname(dir);
     }
   } catch {

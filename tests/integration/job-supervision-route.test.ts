@@ -17,7 +17,10 @@ describe('POST /jobs/script-supervision/pass', () => {
     const app = express();
     app.use(express.json());
     app.use(authMiddleware(() => token, 'test'));
-    const deps: { supervisor: ScriptJobSupervisor | null } = { supervisor: null };
+    let enabled = false;
+    const deps: { supervisor: ScriptJobSupervisor | null; enabled: () => boolean } = {
+      supervisor: null, enabled: () => enabled,
+    };
     app.use(createScriptSupervisionRoutes(deps));
     let calls = 0;
     const raised: string[] = [];
@@ -31,11 +34,18 @@ describe('POST /jobs/script-supervision/pass', () => {
         raiseAttention: item => { raised.push(item.conditionKey); },
         clearAttention: () => {}, listOpenConditionKeys: () => [],
       });
+      // A constructed supervisor is still dark until the live rollout gate opens.
+      expect((await request(app).post('/jobs/script-supervision/pass').set('Authorization', `Bearer ${token}`)).status).toBe(503);
+      expect(calls).toBe(0);
+      enabled = true;
       const response = await request(app).post('/jobs/script-supervision/pass').set('Authorization', `Bearer ${token}`);
       expect(response.status).toBe(200);
       expect(response.body).toMatchObject({ ok: true, reviewed: 1, raised: ['script-supervision:m-1:health-check'] });
       expect(calls).toBe(1);
       expect(raised).toEqual(['script-supervision:m-1:health-check']);
+      enabled = false;
+      expect((await request(app).post('/jobs/script-supervision/pass').set('Authorization', `Bearer ${token}`)).status).toBe(503);
+      expect(calls).toBe(1);
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/job-supervision-route.test.ts' });
     }

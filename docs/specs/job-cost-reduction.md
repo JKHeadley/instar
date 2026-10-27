@@ -961,7 +961,8 @@ in its unit test. It does not prove that every real failure is detected.
 
 - **The endpoint.** `POST /jobs/script-supervision/pass`, Bearer auth, triggered
   by the new shipped script job `script-job-supervisor` (daily, `deterministic`).
-  The job is claim-gated and runs on one machine.
+  The job is claim-gated and runs on one machine when its script runner is active;
+  otherwise the job skips and the endpoint returns 503.
 - **What it reads.** The pool view of `GET /jobs` (`?scope=pool`), whose script-job
   rows carry a new `recentOutputs` field (the last 3 `outputSummary` values, each
   about 1,000 characters, already scrubbed) and a new `triage` field: the last
@@ -984,7 +985,8 @@ in its unit test. It does not prove that every real failure is detected.
 - **Gaps.** When the pool read returns `pool.failed` peers, the pass records them
   as "not reviewed today" rather than silently skipping them.
 - **Single provider.** It runs on the default framework when no other is active.
-- **Cost.** One call a day, attributed to the slug `script-job-supervisor`.
+- **Cost.** One call a day when active, attributed to the slug
+  `script-job-supervisor`; zero calls on a fleet agent with the runner dark.
 
 **Delivery proof, honestly scoped.** The canaries stop before the send. The send
 goes through the shared job-notification and topic-send path, which every job and
@@ -1079,8 +1081,10 @@ Its implementation must settle these constraints, carried forward from here:
      scripted to observe the first wave. A later wave removes entries through
      an idempotent migration after its 48-hour review. `jobs.scriptRunners.enabled` is
      **omitted** and rides the development-agent gate: script runners are live on
-     development agents and, on the fleet, every converted job runs its body as a
-     session exactly as today. Taking script runners to the fleet is a later PR
+     development agents and, on the fleet, every pre-existing converted job runs
+     its body as a session exactly as today. The new script-job-supervisor skips
+     when its script runner is inactive, so a fleet update adds no daily session
+     or model call. Taking script runners to the fleet is a later PR
      that changes the code default (F6).
    - `jobs.scriptTriage: { enabled: true, sessionCooldownHours: 6,
      maxSessionsPerDay: 6, maxSessionsPerSlugPerDay: 3, backupIntervalHours: 6,
@@ -1098,8 +1102,10 @@ Its implementation must settle these constraints, carried forward from here:
    No hash history is needed.
 4. **Rollback switch.** `jobs.scriptRunners.enabled: false` (or the gate
    resolving off), or a slug listed in `disabledSlugs`, is read live at trigger
-   time. With it set, the scheduler runs a script job's body as an agentmd
-   session: today's behaviour, with no file changed. That session is built by
+   time. With it set, the scheduler runs a pre-existing converted script job's
+   body as an agentmd session: today's behaviour, with no file changed. The new
+   `script-job-supervisor` instead skips, including queued dispatch, and its
+   pass endpoint answers 503 while inactive. That session is built by
    the same projection as a triage session (a derived `agentmd` definition whose
    prompt is the body), but with the template's own frontmatter allowlist and
    lock trust, never the `legacy` full-tools path that `resolveAllowlist` gives

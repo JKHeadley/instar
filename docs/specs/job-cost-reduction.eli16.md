@@ -69,6 +69,8 @@ problem, because they all use the same built-in job templates.
 - Script jobs themselves also start on development agents only; everywhere else
   the jobs keep running exactly as today until a later change switches them.
   The first development-agent wave includes two jobs plus their supervisor.
+  On an agent where this rollout is off, the new supervisor stays inactive; it
+  does not start a new AI session just because its script is disabled.
   The other converted jobs wait for the first wave's 48-hour review.
 - Existing agents get the change automatically when they update, because
   built-in job files are already rewritten on every update.

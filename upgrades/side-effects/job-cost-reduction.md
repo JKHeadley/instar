@@ -107,8 +107,12 @@ reads inform cooldown but a failed peer read leaves local evidence in control.
 The first-wave rollout is dev gated, so a fleet update can install the scripts
 without changing its job execution. An operator can set
 `jobs.scriptRunners.enabled: false` or add a slug to
-`jobs.scriptRunners.disabledSlugs`; the next trigger uses its existing session
-body. `jobs.scriptTriage.enabled: false` stops Jev, backup and triage sessions
+`jobs.scriptRunners.disabledSlugs`; the next trigger of an existing converted
+job uses its session body. The newly added `script-job-supervisor` skips and its
+pass endpoint returns 503 while its runner is inactive, so the fleet gains no
+new daily session. `/jobs` reports its runner as `inactive`, and the Jobs detail
+card shows `Inactive` in that state.
+`jobs.scriptTriage.enabled: false` stops Jev, backup and triage sessions
 without disabling script verdicts or anomaly alerts.
 
 ## Independent review and evidence
@@ -166,6 +170,13 @@ models under sustained pressure and restart schedules.
 
 Verification before merge: typecheck, lint, focused unit tests for those
 boundaries, the route integration tests, a production-shaped E2E route and
-supervision lifecycle, and `npm run test:all`. The 48-hour development-agent
+supervision lifecycle, and the shared Local Verify merge queue. The broad
+local run passed its unit and integration tiers, then exposed E2E fixture
+assumptions: one manifest still expected `agentmd`, source-loaded tests could
+not find the bundled release key, and three production-shaped configs omitted
+`projectDir`. The template expectation now checks the shipped script, key
+lookup accepts the source tree's `dist/keys`, and the triage audit path falls
+back to the parent of `stateDir`. Focused reruns and Local Verify check those
+repairs without taking another broad local test slot. The 48-hour development-agent
 observation and seven-day cost comparison are later graduation evidence, not
 claims established by this PR.

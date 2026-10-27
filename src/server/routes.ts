@@ -16720,7 +16720,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         state: mergedState,
         runsOnThisMachine: sched.isJobLocal(job.slug),
         hasUserFork,
-        runner: isScriptRunner ? (sched.scriptRunnersActiveFor(job.slug) ? 'script' : 'session-rollback') : 'session',
+        runner: isScriptRunner
+          ? (sched.scriptRunnersActiveFor(job.slug) ? 'script'
+            : job.slug === 'script-job-supervisor' ? 'inactive' : 'session-rollback')
+          : 'session',
         lockTrust: job.lockTrust ?? null,
         ...(isScriptRunner ? { recentOutputs: sched.recentScriptOutputs(job.slug, 3) } : {}),
         shadowsConvertedDefault: sched.shadowsConvertedDefault?.(job, hasUserFork, convertedDefaults) ?? false,

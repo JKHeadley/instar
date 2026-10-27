@@ -25,7 +25,8 @@ describe('Scheduled jobs run as scripts — agent awareness', () => {
     expect(fresh).toContain('http://localhost:4042/jobs/triage');
     expect(fresh).toContain('http://localhost:4042/jobs/cost?sinceDays=7');
     expect(fresh).toContain('`runner`, `lockTrust`, `tokens`, `triage`');
-    expect(fresh).toContain('health-check pushes critical problems at once');
+    expect(fresh).toContain('When health-check runs as a script');
+    expect(fresh).toContain('the new supervisor is inactive, so the update adds no daily session or model call there');
     expect(fresh.split(SCRIPT_JOBS_CLAUDEMD_MARKER)).toHaveLength(2);
   });
 

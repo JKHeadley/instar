@@ -842,6 +842,18 @@ export class JobScheduler {
     // through the normal quota / capacity / claim path below.
     const isScriptRunner = this.isScriptRunnerJob(job);
     if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
+      // This job was introduced with script runners, so it has no historical
+      // session behavior to restore when the rollout is dark.
+      if (job.slug === 'script-job-supervisor') {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        if (!this.state.readOnly) this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — script supervision is inactive`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, gateReason: 'script-supervision-inactive' },
+        });
+        return 'skipped';
+      }
       job = this.projectAsAgentmd(job);
     }
     const runsAsScript = isScriptRunner && job.execute.type === 'script';
@@ -1205,6 +1217,18 @@ export class JobScheduler {
     // while the job sat in the queue takes effect on this run; an
     // unreadable/malformed file falls back to the last validated body.
     this.refreshAgentMdBodyIfChanged(job);
+
+    if (this.isScriptRunnerJob(job) && job.slug === 'script-job-supervisor'
+      && !this.scriptRunnersActiveFor(job.slug)) {
+      this.skipLedger.recordSkip(next.slug, 'disabled');
+      if (!this.state.readOnly) this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${next.slug}" skipped — script supervision is inactive`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug: next.slug, reason: next.reason, gateReason: 'script-supervision-inactive' },
+      });
+      return;
+    }
 
     const queueGate = this.normalizeCanRunResult(this.canRunJob(job.priority));
     if (!queueGate.allowed) {

@@ -8757,7 +8757,9 @@
           + desc
           + '<div class="job-item-meta">'
           + '<span>' + esc(schedule) + '</span>'
-          + (j.runner === 'script'
+          + (j.runner === 'inactive'
+            ? '<span class="model-badge" title="Script supervisor is inactive on this agent" style="background:rgba(180,180,180,0.18)">inactive</span>'
+            : j.runner === 'script'
             ? '<span class="model-badge" title="Runs as a small script with no AI session" style="background:rgba(150,200,220,0.18)">script</span>'
             : '<span class="model-badge">' + esc(j.model || '—') + '</span>')
           + priorityBadge
@@ -8916,12 +8918,13 @@
     }
     async function loadJobScriptCard(job) {
       const card = document.getElementById('jobScriptCard');
-      if (!card || job.runner !== 'script') return;
+      if (!card || !['script', 'session-rollback', 'inactive'].includes(job.runner)) return;
       const slug = job.slug;
       const s = job.state || {};
       const rows = [];
       rows.push('<div class="state-row"><span>Runs as</span><span class="state-val">'
-        + esc(job.runner === 'script' ? 'A script (no AI session)' : 'An AI session') + '</span></div>');
+        + esc(job.runner === 'script' ? 'A script (no AI session)'
+          : job.runner === 'inactive' ? 'Inactive' : 'An AI session') + '</span></div>');
       rows.push('<div class="state-row"><span>Last result</span><span class="state-val">' + esc(s.lastResult || '—') + '</span></div>');
       card.innerHTML = rows.join('');
       card.style.display = '';

@@ -19,6 +19,21 @@ const summary = new Function(`${extract('jobTriageSummaryFor')}\nreturn jobTriag
   (view: unknown, slug: string) => { decisions: number; sessions: number };
 
 describe('script-job dashboard triage card', () => {
+  it('labels an inactive supervisor in the Jobs list without implying a model will run', () => {
+    const list = { innerHTML: '' };
+    const render = new Function('document', 'jobsData', 'jobFilter', 'PRIORITY_ORDER',
+      'cronToHuman', 'timeAgo', 'selectedJob', 'esc',
+      `${extract('renderJobList')}\nreturn renderJobList;`)(
+        { getElementById: (id: string) => id === 'jobsList' ? list : { value: 'name' } },
+        [{ slug: 'script-job-supervisor', schedule: '0 0 * * *', enabled: true,
+          model: 'haiku', runner: 'inactive', state: {} }],
+        'all', {}, () => 'daily', () => 'never', '', (value: string) => value,
+      ) as () => void;
+    render();
+    expect(list.innerHTML).toContain('>inactive</span>');
+    expect(list.innerHTML).not.toContain('>haiku</span>');
+  });
+
   it('uses per-slug totals rather than the bounded recent list', () => {
     const view = {
       perSlug: {
@@ -33,7 +48,28 @@ describe('script-job dashboard triage card', () => {
     expect(summary(view, 'absent')).toEqual({ decisions: 0, sessions: 0 });
   });
 
-  it('does not render the script card for a session runner', () => {
-    expect(extract('loadJobScriptCard')).toContain("if (!card || job.runner !== 'script') return;");
+  it('shows inactive supervision accurately and leaves ordinary sessions without a script card', async () => {
+    const card = { innerHTML: '', style: { display: 'none' } };
+    let reads = 0;
+    const load = new Function('document', 'apiFetch', 'selectedJob', 'esc', 'jobCostRowFor',
+      'jobTokensOf', 'fmtTokens', 'jobTriageSummaryFor',
+      `async ${extract('loadJobScriptCard')}\nreturn loadJobScriptCard;`)(
+        { getElementById: () => card },
+        async () => { reads++; return null; },
+        'script-job-supervisor',
+        (value: string) => value,
+        () => null,
+        () => null,
+        () => '0',
+        () => ({ decisions: 0, sessions: 0 }),
+      ) as (job: { slug: string; runner: string; state: object }) => Promise<void>;
+    await load({ slug: 'script-job-supervisor', runner: 'inactive', state: {} });
+    expect(card.innerHTML).toContain('Inactive');
+    expect(card.innerHTML).not.toContain('An AI session');
+    expect(card.style.display).toBe('');
+    const rendered = card.innerHTML;
+    await load({ slug: 'script-job-supervisor', runner: 'session', state: {} });
+    expect(card.innerHTML).toBe(rendered);
+    expect(reads).toBe(2);
   });
 });

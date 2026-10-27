@@ -286,6 +286,54 @@ describe('overlap, cap, offset (F8)', () => {
 });
 
 describe('rollback projection (§8.4)', () => {
+  it.each([
+    ['fleet', {}],
+    ['explicit disable', { developmentAgent: true, jobs: { scriptRunners: { enabled: false } } }],
+    ['slug exclusion', { developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: ['script-job-supervisor'] } } }],
+  ])('new supervisor stays dark under %s without a new session', async (_label, cfg) => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'script-job-supervisor', "console.log('JOB_RESULT ok')\n");
+    const { s, sm } = mkScheduler(project, cfg);
+    scheduler = s;
+    s.start();
+    expect(await s.triggerJob('script-job-supervisor', 'test')).toBe('skipped');
+    expect(sm._spawnCount).toBe(0);
+    expect(lastRun(s, 'script-job-supervisor')).toBeUndefined();
+  });
+
+  it('the new supervisor runs as a script on dev and explicit fleet opt-in', async () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'script-job-supervisor', "console.log('JOB_RESULT ok')\n");
+    const { s, sm, setCfg } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    expect(await s.triggerJob('script-job-supervisor', 'dev')).toBe('triggered');
+    await waitFor(() => project!.state.getJobState('script-job-supervisor')?.lastResult === 'success');
+    setCfg({ jobs: { scriptRunners: { enabled: true } } });
+    expect(s.scriptRunnersActiveFor('script-job-supervisor')).toBe(true);
+    expect(await s.triggerJob('script-job-supervisor', 'fleet-opt-in')).toBe('triggered');
+    await waitFor(() => s.getRunHistory().query({ slug: 'script-job-supervisor', limit: 3 }).runs.length === 2);
+    expect(sm._spawnCount).toBe(0);
+  });
+
+  it('drops a queued supervisor when the script rollout closes before dispatch', () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'script-job-supervisor', "console.log('JOB_RESULT ok')\n");
+    const { s, sm, setCfg } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    (s as any).queue.push({ slug: 'script-job-supervisor', reason: 'queued-before-disable' });
+    setCfg({ developmentAgent: true, jobs: { scriptRunners: { enabled: false } } });
+    project.state.setReadOnly(true);
+    try {
+      expect(() => s.processQueue()).not.toThrow();
+    } finally {
+      project.state.setReadOnly(false);
+    }
+    expect(sm._spawnCount).toBe(0);
+    expect((s as any).queue).toHaveLength(0);
+  });
+
   it('keeps later-wave jobs on sessions even before config migration writes their exclusions', () => {
     project = createTempProject();
     const { s } = mkScheduler(project, { developmentAgent: true });

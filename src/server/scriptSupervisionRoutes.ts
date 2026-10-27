@@ -4,16 +4,16 @@
  * server's global auth middleware. Triggered by the shipped
  * `script-job-supervisor` script job (claim-gated, one machine).
  *
- * 503 when the supervisor is not wired on this agent (say so honestly).
+ * 503 when the supervisor is unwired or its script rollout is inactive.
  */
 
 import { Router, type Request, type Response } from 'express';
 import type { ScriptJobSupervisor } from '../scheduler/ScriptJobSupervisor.js';
 
-export function createScriptSupervisionRoutes(deps: { supervisor: ScriptJobSupervisor | null }): Router {
+export function createScriptSupervisionRoutes(deps: { supervisor: ScriptJobSupervisor | null; enabled: () => boolean }): Router {
   const router = Router();
   router.post('/jobs/script-supervision/pass', async (_req: Request, res: Response) => {
-    if (!deps.supervisor) return res.status(503).json({ error: 'script-supervision-unavailable', reason: 'the script job supervisor is not wired on this agent' });
+    if (!deps.supervisor || !deps.enabled?.()) return res.status(503).json({ error: 'script-supervision-unavailable', reason: 'the script job supervisor is not active on this agent' });
     try {
       const result = await deps.supervisor.pass();
       // A pass that could not judge is still a 200 with ok:false; the script
@@ -27,6 +27,6 @@ export function createScriptSupervisionRoutes(deps: { supervisor: ScriptJobSuper
 }
 
 /** Mount helper for the integrator: `mountScriptSupervisionRoutes(app, { supervisor })`. */
-export function mountScriptSupervisionRoutes(app: { use(router: Router): unknown }, deps: { supervisor: ScriptJobSupervisor | null }): void {
+export function mountScriptSupervisionRoutes(app: { use(router: Router): unknown }, deps: { supervisor: ScriptJobSupervisor | null; enabled: () => boolean }): void {
   app.use(createScriptSupervisionRoutes(deps));
 }
