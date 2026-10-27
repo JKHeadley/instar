@@ -6,9 +6,11 @@
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
+  failure, buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
+  buildAccountNeeds, buildPrNeeds, withAgentOwned,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { actionControl } from './actions.js';
+import { GROUPS, icon, tabHref, hubTiles, hoodTiles, movedList } from './nav-model.js';
 import { renderPromises } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
@@ -25,7 +27,7 @@ import { renderLearned } from './learned.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
-import { sheetIsOpen, closeSheet } from './ui.js';
+import { sheetIsOpen, closeSheet, sheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -202,7 +204,9 @@ const CARDS = [
   { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
 
-const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'partial', stale: 'out of date' };
+// The card's own colour carries attn/bad; a technical status word on the face
+// ("failing", "partial") only repeats what the line and rows already say.
+const STATE_WORD = { ok: null, attn: null, bad: null, unknown: 'can’t tell', partial: null, stale: 'out of date' };
 
 function cardShell(def) {
   const card = el('section', { class: `card${def.feature ? ' feature' : ''}`, id: `card-${def.id}`, 'data-state': 'loading', 'aria-busy': 'true' },
@@ -251,7 +255,8 @@ function paintCard(def, model, repaint = false) {
   card.querySelector('.dot').className = dotClass(model.state);
   const age = card.querySelector('.card-age');
   const word = STATE_WORD[model.state];
-  age.textContent = [model.coverage && !word ? model.coverage : word, model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
+  // Coverage ("partial view") is housekeeping: it lives under Details, never on the face.
+  age.textContent = [word, model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
   card.toggleAttribute('data-partial', Boolean(model.coverage));
 
   const value = card.querySelector('.card-value');
@@ -312,10 +317,22 @@ function paintCard(def, model, repaint = false) {
         });
         rows.append(row, d);
       } else rows.append(row);
+      // Every Ask Is Actionable: a needs-you row carries its one tap right under it.
+      const act = r.action ? actionControl(r.action, { onDone: () => setTimeout(() => { if (location.hash.startsWith('#/home')) loadHome(); }, 1500) }) : null;
+      if (act) rows.append(el('div', { class: 'row-action', 'data-focus-key': `${def.id}:${r.key || r.main}:action` }, act));
     }
     body.append(rows);
   }
-  if (model.note) body.append(el('p', { class: 'card-note', text: model.note }));
+  // Housekeeping (routine counts, coverage notes, older items) stays one tap deeper.
+  if (model.details && model.details.length) {
+    const key = `${def.id}:details`;
+    const fold = el('details', { class: 'more card-details', 'data-focus-key': key },
+      el('summary', {}, el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }), document.createTextNode('Details')),
+      ...model.details.map((t) => el('p', { class: 'card-note', text: t })));
+    if (openRows.has(key)) fold.open = true;
+    fold.addEventListener('toggle', () => { if (fold.open) openRows.add(key); else openRows.delete(key); });
+    body.append(fold);
+  }
   const foot = card.querySelector('.card-foot');
   foot.replaceChildren();
   const extra = model.all ? model.all.length - model.rows.length : (model.more || 0);
@@ -343,14 +360,11 @@ function paintHeadline(models) {
     const words = h.text.split(' ');
     h1.append(document.createTextNode(words.slice(0, -1).join(' ') + (words.length > 1 ? ' ' : '')), el('span', { class: 'accent', text: words[words.length - 1] }));
   } else h1.textContent = h.text;
-  const parts = [];
-  if (models.needs && models.needs.count > 0) parts.push(`${models.needs.value} in the queue`);
-  if (models.promised && models.promised.count > 0) parts.push(`${models.promised.count} ${models.promised.count === 1 ? 'promise' : 'promises'} waiting on you`);
-  sub.textContent = h.tone === 'attn' && parts.length ? `${parts.join(' and ')}.${h.sub ? ' ' + h.sub : ''}` : (h.sub || '');
+  sub.textContent = h.sub || '';
   $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-function pooled(id, path, build, set) {
+function pooled(id, path, build, set, namesP = Promise.resolve(null)) {
   const slow = setTimeout(() => {
     const card = $(`#card-${id}`);
     if (card && card.getAttribute('data-state') === 'loading') {
@@ -358,23 +372,64 @@ function pooled(id, path, build, set) {
       line.textContent = 'Still checking the other machines…';
     }
   }, TIMEOUT_MS);
-  get(path, POOL_TIMEOUT_MS).then((r) => { clearTimeout(slow); set(id, build(r)); });
+  Promise.all([get(path, POOL_TIMEOUT_MS), namesP]).then(([r, names]) => { clearTimeout(slow); set(id, build(r, names)); });
+}
+
+/** machineId → nickname from /pool, so a machine that did not answer is named, never shown by its id. */
+function poolNames(pool) {
+  const ms = pool && pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines : [];
+  return Object.fromEntries(ms.filter((m) => m && m.machineId && m.nickname).map((m) => [m.machineId, m.nickname]));
 }
 
 async function loadHome() {
   const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
-  const set = (id, model) => { models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model; paintHeadline(models); };
+  // "What needs you" is ONE card over four sources (attention queue, promises
+  // waiting on the operator, sign-in repairs waiting on a tap, PRs waiting for the
+  // operator's review), deduplicated by shared-counts; the headline reads its count
+  // from that card only.
+  let attn = { state: 'loading' };
+  const extra = { accounts: { state: 'loading', items: [] }, prs: { state: 'loading', items: [] } };
+  let doingRaw = null;
+  const paintDoing = () => {
+    if (!doingRaw) return;
+    const owned = models.needs && Array.isArray(models.needs.agentOwned) ? models.needs.agentOwned : [];
+    models.doing = paintCard(CARDS.find((c) => c.id === 'doing'), withAgentOwned(doingRaw, owned)) || doingRaw;
+  };
+  const paintNeeds = () => {
+    const model = combineNeeds(attn, models.promised, extra);
+    if (model.state === 'loading') { models.needs = model; return; }   // keep the skeleton until a source answers
+    models.needs = paintCard(CARDS.find((c) => c.id === 'needs'), model) || model;
+    paintDoing();
+  };
+  const set = (id, model) => {
+    if (id === 'needs') {
+      // Keep the last good queue reading, labelled, when a refresh of it fails.
+      if (model.state === 'unknown' && lastGood.attention) attn = { ...lastGood.attention.model, state: 'stale' };
+      else { attn = model; if (model.state !== 'unknown') lastGood.attention = { model, at: Date.now() }; }
+    } else if (id === 'doing') {
+      doingRaw = model; paintDoing();
+    } else {
+      models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model;
+    }
+    if (id === 'needs' || id === 'promised') paintNeeds();
+    paintHeadline(models);
+  };
   // Each card fetches and renders on its own (spec §1): one slow source never blocks the rest.
-  pooled('needs', '/attention?scope=pool', buildNeeds, set);
-  get('/health').then((r) => set('reach', buildReach(r)));
   const poolP = get('/pool');
+  const namesP = poolP.then(poolNames);
+  pooled('needs', '/attention?scope=pool', (r, names) => buildNeeds(r, Date.now(), names), set, namesP);
+  get('/health').then((r) => set('reach', buildReach(r)));
   Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
     const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
     set('promised', buildPromised(r, Date.now(), peers));
   });
-  pooled('doing', '/sessions?scope=pool', buildDoing, set);
+  pooled('doing', '/sessions?scope=pool', (r, names) => buildDoing(r, Date.now(), names), set, namesP);
   poolP.then((r) => set('running', buildRunning(r)));
   Promise.all([get('/guards'), get('/mandate')]).then(([g, m]) => set('allowed', buildAllowed(g, m)));
+  // The two other needs-you sources (a 503 reads as "not on this agent", never as a failure).
+  Promise.all([get('/subscription-pool?scope=pool', POOL_TIMEOUT_MS), get('/subscription-relogin?scope=pool', POOL_TIMEOUT_MS)])
+    .then(([p, r]) => { extra.accounts = buildAccountNeeds(p, r); paintNeeds(); paintHeadline(models); });
+  get('/green-pr-automerge').then((r) => { extra.prs = buildPrNeeds(r); paintNeeds(); paintHeadline(models); });
 }
 
 function renderHome(main) {
@@ -388,7 +443,6 @@ function renderHome(main) {
       el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main').map(cardShell)),
       el('div', { class: 'col col-side' }, CARDS.filter((c) => c.col === 'side').map(cardShell)),
     ),
-    footNote(),
   );
   loadHome();
   if (refreshTimer) clearInterval(refreshTimer);
@@ -403,33 +457,41 @@ function tile(t, withIcon = true) {
   return a;
 }
 
+// A hub page shows only its destinations. Where a legacy tab moved to is one tap
+// away ("Where did things move?"); the migration prose is gone from the face.
 function renderGroup(main, g) {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   const parts = [
     el('section', { class: 'group-head' },
       el('div', { class: 'eyebrow', text: g.label }),
       el('h1', { text: g.question }),
-      el('p', { text: 'Each of these opens in the dashboard, where everything works exactly as before.' }),
     ),
-    el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
+    el('div', { class: 'tiles' }, hubTiles(g).map((t) => tile(t))),
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
   ];
-  if (g.hood && g.hood.length) {
+  const hood = hoodTiles(g);
+  if (hood.length) {
     parts.push(
       el('h2', { class: 'eyebrow section-label', text: 'Under the hood' }),
-      el('div', { class: 'tiles tiles-hood' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
+      el('div', { class: 'tiles tiles-hood' }, hood.map((t) => tile({ ...t, icon: 'wrench' }))),
     );
   }
-  parts.push(footNote());
+  const b = el('button', { class: 'link-btn moved-link', type: 'button', text: 'Where did things move?', 'aria-haspopup': 'dialog' });
+  b.addEventListener('click', () => movedSheet(g, movedList(g)));
+  parts.push(el('p', { class: 'foot-note' }, b));
   main.replaceChildren(...parts);
 }
 
-function footNote() {
-  return el('p', { class: 'foot-note' },
-    document.createTextNode('This is the new Instar console. Everything is still in the '),
-    el('a', { href: '/dashboard', text: 'legacy dashboard' }),
-    document.createTextNode('.'),
-  );
+/** Old tab → new place, one row each; every row is an ordinary link to the new home. */
+function movedSheet(g, moved) {
+  const rows = el('div', { class: 'rows moved-rows' }, moved.map((m) => el('a', { class: 'row moved-row', href: m.href },
+    el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: `${m.label} → ${m.to}` }), el('span', { class: 'row-sub', text: m.what ? `${m.group} · ${m.what}` : m.group })),
+    el('span', { class: 'row-end' }, el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })))));
+  for (const a of rows.querySelectorAll('a')) a.addEventListener('click', () => closeSheet());
+  sheet({ title: 'Where did things move?' },
+    el('p', { class: 'confirm-text', text: 'These tabs of the old dashboard now live inside another page. Tap one to open its new home.' }),
+    rows,
+    el('p', { class: 'card-note' }, document.createTextNode('The old tabs are still in the '), el('a', { href: '/dashboard', text: 'legacy dashboard' }), document.createTextNode('.')));
 }
 
 // ── routing ───────────────────────────────────────────────────────────────

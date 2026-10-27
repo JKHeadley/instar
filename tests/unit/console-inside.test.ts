@@ -51,6 +51,13 @@ describe('recent activity: counted within the records shown', () => {
     expect(a.rows[3].tone).toBe('attn');
     expect(a.groups.map((g) => g.label)[0]).toBe('Today');
   });
+  it('identical thread events fold into one line with a count; the counts stay the window’s', () => {
+    const entries = Array.from({ length: 12 }, (_, i) => ent({ kind: 'thread-opened', subject: 'Relay message', counterparty: { type: 'agent', name: 'Dawn' }, t: hoursAgo(i + 1) }));
+    const a = buildActivity(ok({ entries: [...entries, ent({ kind: 'thread-opened', subject: 'Relay message', counterparty: { type: 'agent', name: 'PP' }, t: hoursAgo(2) })] }), { now: NOW });
+    expect(a.ok && a.n).toBe(13);
+    expect(a.ok && a.rows.map((r) => [r.main, r.sub])).toEqual([['Relay message', 'Thread opened · with Dawn · 12 times'], ['Relay message', 'Thread opened · with PP']]);
+    expect(a.ok && a.tiles[2]).toEqual({ n: 13, label: 'thread events', tone: null });
+  });
   it('chips filter what is shown but never the counts; kind and the counterparty query are the legacy filters', () => {
     const entries = [ent(), ent({ kind: 'agreement', counterparty: { type: 'user', name: 'user' } }), ent({ kind: 'thread-closed' })];
     const a = buildActivity(ok({ entries }), { chip: 'threads', now: NOW });
@@ -143,10 +150,18 @@ describe('problems I caught', () => {
   const insight = (over: Record<string, unknown> = {}) => ({ id: `i${++seq}`, summary: 'Timing clashes', status: 'discovered', distinctSessions: 4, distinctCauseCommits: 2, reopenCount: 0, supportingFailureIds: [], discoveredAt: hoursAgo(80), ...over });
   const week = (total: number) => ok({ total, attributed: 0, byCategory: {}, unknownToolchainByAuthor: {}, noFeatureLink: 0, rollout: { stage: 'capture-only' } });
   it('repeating vs nothing repeating, the week’s whole-ledger total, still open among those shown', () => {
-    const p = buildProblems({ insights: ok({ insights: [insight()] }), pages: [ok({ failures: [failure(), failure({ status: 'resolved' })] })], week: week(3), all: week(9) }, { now: NOW });
+    const p = buildProblems({ insights: ok({ insights: [insight()] }), pages: [ok({ failures: [failure(), failure({ status: 'resolved', summary: 'Lock held too long' })] })], week: week(3), all: week(9) }, { now: NOW });
     expect(p.ok && p.line).toBe('One kind of problem keeps coming back: Timing clashes, across 4 changes.');
     expect(p.ok && p.tiles).toEqual([{ n: 1, label: 'repeating', tone: null }, { n: 3, label: 'this week' }, { n: 1, label: 'still open among those shown' }]);
     expect(p.ok && p.stageWords).toBe('Watching quietly (no alerts)');
+    // "Repeating" is the operator's ordinary meaning: the same problem seen more than once (by count or by
+    // several records) is repeating even with no confirmed pattern, folded into one line, open first.
+    const r = buildProblems({ insights: ok({ insights: [] }), pages: [ok({ failures: [failure({ summary: 'CI Publish to npm failure', occurrenceCount: 5 }), failure({ summary: 'CI Publish to npm failure', occurrenceCount: 5, status: 'resolved' }), failure({ summary: 'CI CI failure', occurrenceCount: 3 }), failure({ summary: 'A one-off' })] })], week: week(23), all: week(79) }, { now: NOW });
+    expect(r.ok && r.repeatingCount).toBe(2);
+    expect(r.ok && r.line).toBe('2 problems keep repeating; the first: CI Publish to npm failure (seen 10 times).');
+    expect(r.ok && r.tiles[0]).toEqual({ n: 2, label: 'repeating', tone: 'attn' });
+    expect(r.ok && r.rows.map((x) => x.sub)).toEqual(['Still looking into it · seen 10 times across 2 records', 'Still looking into it · seen 3 times', 'Still looking into it · seen once']);
+    expect(insideHeadline({ problems: r }).text).toMatch(/^2 problems keep repeating/);
     const q = buildProblems({ insights: ok({ insights: [insight({ status: 'verified-effective' })] }), pages: [ok({ failures: [failure({ status: 'resolved' })] })], week: week(3), all: week(9) }, { now: NOW });
     expect(q.ok && q.line).toBe('Nothing repeating. 3 one-off problems this week, none still open among those shown.');
     expect(insightActive({ status: 'dismissed' })).toBe(false);

@@ -13,7 +13,8 @@ import {
   buildShipping, buildPace, buildFeedback, developmentHeadline, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
 } from './development-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, askPin } from './ui.js';
+import { consumeItem } from './actions.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'Work · Development';
@@ -79,11 +80,12 @@ export function groupExtras(g, { get }) {
         : m.detected === 'no' ? `Not a development agent: ${m.basis}. The Development tile is hidden unless you switch it on here.`
           : `Couldn’t tell whether this is a development agent (${m.basis}). Show developer tools?`;
     });
+    const why = el('details', { class: 'raw more-fold' }, el('summary', { text: 'Why' }), detected,
+      note('This only decides what this browser shows. Every action on that page is still checked by the server.'));
     return [el('h2', { class: 'eyebrow section-label', text: 'Developer tools' }),
       el('section', { class: 'list-section', id: 'sec-dev-tools' },
         el('label', { class: 'switch-row' }, box, el('span', { text: 'Show developer tools (the Development page) in this browser' })),
-        detected,
-        note('This only decides what this browser shows. Every action on that page is still checked by the server.'))];
+        why)];
   }
   return [];
 }
@@ -93,21 +95,29 @@ export async function renderDevelopment(main, ctx) {
   if (!main.querySelector('.dev-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading development' })));
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want && !view.open) view.open = want;
-  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace] = await Promise.all([
+  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace, promises] = await Promise.all([
     read('/green-pr-automerge'), read('/local-verify'), read('/release-readiness'),
     read('/feedback-factory/readiness-authorities/proposal'), read('/feedback-factory/triage/summary'), read('/feedback-factory/triage/authority/proposal'),
     read('/feedback-factory/execute/status'), read('/feedback-factory/triage/queue'), read('/feedback-factory/drain/status'),
     read(`/throughput/series?days=${view.days}`, 15000),
+    read('/commitments?scope=mesh', 8000),   // a promise about a PR that waits on the operator is a Needs-you row here too
   ]);
-  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace }, main, ctx };
+  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace, promises }, main, ctx };
   paint();
+}
+
+/** The repository the merge watcher reports (GET /green-pr-automerge → configuration.repo), when Pace did not answer. */
+function watcherRepo(w) {
+  const r = w && w.ok && w.data && w.data.configuration && w.data.configuration.repo;
+  return typeof r === 'string' && /^[\w.-]+\/[\w.-]+$/.test(r) ? r : null;
 }
 
 function paint() {
   const { res, main, ctx } = last;
   const now = Date.now();
   const pace = buildPace(res.pace, { days: view.days, person: view.person }, now);
-  const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || null });
+  const promised = res.promises && res.promises.ok && Array.isArray(res.promises.data && res.promises.data.commitments) ? res.promises.data.commitments : null;
+  const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || watcherRepo(res.watcher), promises: promised });
   const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain }, now);
   const h = developmentHeadline({ shipping, feedback, pace });
   const refresh = () => renderDevelopment(main, ctx);
@@ -133,6 +143,10 @@ function paint() {
   ));
   const sec = main.querySelector(`#sec-${view.open}`);
   if (sec && new URLSearchParams((location.hash.split('?')[1] || '')).get('s') === view.open) sec.scrollIntoView({ block: 'start' });
+  // A needs-you tap lands on the exact pull request: its sheet opens.
+  const item = sheetIsOpen() ? null : consumeItem();
+  const hit = item && shipping.rows ? shipping.rows.find((r) => String(r.pr) === String(item)) : null;
+  if (hit) openPr(hit, shipping, deps);
 }
 
 /** One of the three sections: a one-line summary that opens in place; one open at a time. */
@@ -273,12 +287,12 @@ function shippingBody(s, deps) {
     foot.append(stop);
   }
   const release = toneLine(s.release, s.release.attentionId ? el('a', { class: 'inline-link', href: '#/home', text: ' Open the item' }) : null);
+  // The fold line above already says "N on the way, M stuck"; the tiles split that number, so no sentence repeats it.
   return [
-    el('p', { class: 'card-line', text: s.headline }),
+    s.rows.length ? null : el('p', { class: 'card-line', text: s.headline }),
     tiles(s.tiles),
     release, toneLine(s.watcher),
     s.partial ? note('Partial: one of Shipping’s sources did not answer; its tile says why. The others are real.') : null,
-    s.repoKnown ? null : note('GitHub links are off: the repository name comes from the Pace read, which did not answer.'),
     list, foot,
   ];
 }
@@ -286,8 +300,10 @@ function shippingBody(s, deps) {
 function openPr(r, s, deps) {
   const strip = el('ol', { class: 'stages' }, r.stages.map((st) => el('li', { class: `stage${st === r.stage ? ' current' : ''}`, 'data-tone': st === r.stage ? (r.tone || 'ok') : null, text: st })));
   const rec = r.record || {};
+  const ALSO = { needs: 'needs you', stuck: 'stuck', armed: 'set to merge', testing: 'testing', held: 'held' };
   const lines = [
     { label: 'State', text: r.sub },
+    Array.isArray(r.also) && r.also.length ? { label: 'Also', text: r.also.map((a) => `${ALSO[a.group] || a.group}: ${a.sub}`).join('\n') } : null,
     r.group === 'needs' ? { label: 'Why it waits', text: 'GitHub requires a reviewer other than the pusher; the watcher merges the moment the approval lands.' } : null,
     r.group === 'held' ? { label: 'Why it waits', text: 'A [HOLD] title or a hold / do-not-merge label excludes it from arming.' } : null,
     rec.lastOutcome ? { label: 'Last outcome', text: String(rec.lastOutcome).replace(/[:-]/g, ' ') } : null,
@@ -297,6 +313,7 @@ function openPr(r, s, deps) {
   if (rec.headRefOid || rec.headSha || rec.armedHead) body.push(el('p', { class: 'mono card-line', text: `commit ${String(rec.headRefOid || rec.headSha || rec.armedHead).slice(0, 12)}` }));
   const acts = el('div', { class: 'sheet-actions' });
   if (r.href) acts.append(el('a', { class: 'btn-primary btn-inline', href: r.href, target: '_blank', rel: 'noopener', text: 'Open on GitHub ↗' }));
+  else body.push(note('No GitHub link: the repository name was not read (it comes from the Pace read, which did not answer).'));
   const status = el('p', { class: 'action-status', role: 'status' });
   if (r.group !== 'held') {
     const hold = el('button', { class: 'btn-quiet', type: 'button', text: 'Hold this pull request' });

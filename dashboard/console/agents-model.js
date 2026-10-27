@@ -86,7 +86,7 @@ const PAIRING_WORDS = {
   'identity-verified': 'Paired (on another of my machines)',
   // The code: a peer in `invite-accepted` is an INVITER I approved; its operator still has to Finish.
   'invite-accepted': 'Pairing not finished — waiting for the other side to finish',
-  'pending-verification': 'Started with the old word check — pair by invite instead',
+  'pending-verification': 'Not paired yet',
   'verification-failed': 'Blocked (the old word check did not match)',
 };
 export function pairingWord(state) { return state ? (PAIRING_WORDS[state] || `Pairing: ${String(state).replace(/-/g, ' ')}`) : null; }
@@ -322,8 +322,15 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
   const { agents, peersState, peersReason } = buildAgents({ pairing, peersRes, conversations, threadsRes }, now);
   const waiting = waitingCards(pairing, now);
   const paired = agents.filter((a) => a.paired);
-  const dark = agents.filter((a) => a.health && a.health.kind === 'dark');
-  const waitingSends = agents.filter((a) => a.health && (a.health.kind === 'stale' || a.health.kind === 'queued'));
+  // The page face is about the agents I actually work with: paired, or with a pairing under
+  // way. A contact known only from history or delivery records (often just a fingerprint)
+  // sits under "Other contacts", one tap deeper, and never leads the page.
+  const shown = agents.filter((a) => a.paired || a.pairingState);
+  const others = agents.filter((a) => !(a.paired || a.pairingState));
+  const dark = shown.filter((a) => a.health && a.health.kind === 'dark');
+  const waitingSends = shown.filter((a) => a.health && (a.health.kind === 'stale' || a.health.kind === 'queued'));
+  // A headline names an agent by its name only; a fingerprint is never a headline.
+  const named = (a) => (a.name && !/^Agent [0-9a-f]{6,}…?$/i.test(a.name) ? a.name : 'an unnamed agent');
 
   // Nothing of the network answers and pairing is off: one headline, how to turn it on, no empty sections.
   const relayOff = relay.state === 'not-configured';
@@ -348,18 +355,20 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
     headline = relay.state === 'displaced' ? 'I’m not connected to the agent network — another connection took my place.' : relay.state === 'not-provisioned' ? 'I have no agent-network identity on this machine yet.' : 'I’m not connected to the agent network — checking again.';
     tone = relay.tone === 'bad' ? 'bad' : 'attn';
   } else if (dark.length) {
-    headline = dark.length === 1 ? `${dark[0].name} hasn’t answered ${dark[0].health.word.replace(/^Nothing back /, '')}.` : `${dark.length} agents haven’t answered in a while.`;
+    headline = dark.length === 1 ? `${named(dark[0])} hasn’t answered ${dark[0].health.word.replace(/^Nothing back /, '')}.` : `${dark.length} agents haven’t answered in a while.`;
     tone = 'bad';
   } else if (waitingSends.length) {
-    headline = waitingSends.length === 1 ? `Messages to ${waitingSends[0].name} are waiting.` : `Messages to ${waitingSends.length} agents are waiting.`;
+    headline = waitingSends.length === 1 ? `Messages to ${named(waitingSends[0])} are waiting.` : `Messages to ${waitingSends.length} agents are waiting.`;
     tone = 'attn';
-  } else if (agents.length) {
-    const reachable = agents.filter((a) => a.health && a.health.tone === 'ok').length;
-    if (peersState !== 'ok') { headline = `${plural(agents.length, 'agent')}; can’t tell whether ${agents.length === 1 ? 'it is' : 'they are'} reachable.`; tone = 'muted'; }
-    else if (reachable === agents.length) headline = agents.length === 1 ? `${agents[0].name} is reachable.` : agents.length === 2 ? '2 agents, both reachable.' : `${agents.length} agents, all reachable.`;
-    else headline = `${plural(agents.length, 'agent')}, ${reachable} answered recently.`;
+  } else if (shown.length) {
+    const reachable = shown.filter((a) => a.health && a.health.tone === 'ok').length;
+    if (peersState !== 'ok') { headline = `${plural(shown.length, 'agent')}; can’t tell whether ${shown.length === 1 ? 'it is' : 'they are'} reachable.`; tone = 'muted'; }
+    else if (reachable === shown.length) headline = shown.length === 1 ? `${named(shown[0])} is reachable.` : shown.length === 2 ? '2 agents, both reachable.' : `${shown.length} agents, all reachable.`;
+    else headline = `${plural(shown.length, 'agent')}, ${reachable} answered recently.`;
   } else if (pairing.state === 'cant-tell' || peersState === 'failed') {
     headline = 'Can’t tell which agents I work with.'; tone = 'muted';
+  } else if (others.length) {
+    headline = 'No paired agents yet.';
   } else {
     headline = 'No other agents yet.';
   }
@@ -368,7 +377,7 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
   if (pairing.state === 'elsewhere') subParts.push(pairing.holder ? `Pairing runs on ${pairing.holder.name}; open the console there to make or approve invites.` : 'Pairing runs on another of my machines.');
   if (pairing.state === 'off' && agents.length) subParts.push('Pairing is turned off on this agent; the agents below are known from delivery records or history.');
   if (pairing.state === 'cant-tell') subParts.push(pairing.reason);
-  if (!agents.length && pairing.state === 'ok' && !waiting.length) subParts.push('Connect another agent to start.');
+  if (!shown.length && pairing.state === 'ok' && !waiting.length) subParts.push('Connect another agent to start.');
   if (relay.identity && relay.identity.tone === 'bad') subParts.push(relay.identity.word + '.');
   const facts = [
     { n: paired.length, label: 'paired' },
@@ -376,13 +385,16 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
     { n: dark.length, label: 'not answering', tone: dark.length ? 'bad' : null },
     relay.connected ? null : { n: relay.state === 'cant-tell' ? 'can’t tell' : relayOff ? 'off' : 'down', label: 'my connection', tone: relay.state === 'cant-tell' ? 'unknown' : relayOff ? null : 'attn' },
   ].filter(Boolean);
+  // notes: what changes what the operator should conclude (a source that could not be read).
+  // details: coverage housekeeping, kept one tap deeper.
   const notes = [];
+  const details = [];
   if (peersReason) notes.push(peersReason);
   if (conversations.state !== 'ok') notes.push(conversations.reason);
-  else if (conversations.partial) notes.push('Some older conversation records may be missing: the cross-machine read hit its bound.');
+  else if (conversations.partial) details.push('Some older conversation records may be missing: the cross-machine read hit its bound.');
   if (pairing.invitesReason) notes.push(pairing.invitesReason);
-  if (peersState === 'ok' && peersRes.data && peersRes.data.pool && Array.isArray(peersRes.data.pool.failed) && peersRes.data.pool.failed.length) notes.push(`No delivery records from ${peersRes.data.pool.failed.map((f) => names[f.machineId] || f.machineId).join(', ')}.`);
-  return { mode: 'ok', certain: true, headline, sub: subParts.join(' '), tone, facts, relay, pairing, agents, waiting, conversations, notes };
+  if (peersState === 'ok' && peersRes.data && peersRes.data.pool && Array.isArray(peersRes.data.pool.failed) && peersRes.data.pool.failed.length) details.push(`No delivery records from ${peersRes.data.pool.failed.map((f) => names[f.machineId] || f.machineId).join(', ')}.`);
+  return { mode: 'ok', certain: true, headline, sub: subParts.join(' '), tone, facts, relay, pairing, agents, shown, others, waiting, conversations, notes, details };
 }
 
 // ── One conversation's history (GET /threadline/threads/:id + /health) ──────

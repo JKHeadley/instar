@@ -40,7 +40,7 @@ export function cantTell(reason) {
 }
 
 /** 2. A section of rows with a title and count; collapsible sections start closed. */
-export function section({ id, title, rows, collapsed = false, empty, limit = 20, onRow, tone }) {
+export function section({ id, title, rows, collapsed = false, empty, limit = 20, showAll = false, onRow, tone }) {
   const wrap = el('section', { class: `list-section${tone ? ' ' + tone : ''}`, id: `sec-${id}` });
   const head = el(collapsed ? 'button' : 'div', { class: 'list-head', type: collapsed ? 'button' : null, 'aria-expanded': collapsed ? 'false' : null },
     el('h2', { class: 'eyebrow', text: title }), el('span', { class: 'list-count', text: String(rows.length) }),
@@ -48,19 +48,26 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
   const body = el('div', { class: 'rows list-rows', hidden: collapsed });
   let shown = 0;
   const renderMore = () => {
-    const next = rows.slice(shown, shown + limit);
+    // showAll: the first tap reveals every remaining row ("Show all 22") instead of one more page.
+    const next = rows.slice(shown, shown === 0 || !showAll ? shown + limit : rows.length);
     for (const r of next) {
       const b = el('button', { class: 'row', type: 'button', 'data-focus-key': r.key },
         el('span', { class: r.tone === 'bad' ? 'dot bad' : r.tone === 'attn' ? 'dot attn' : r.tone === 'unknown' ? 'dot unknown' : 'dot' }),
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: r.main }), r.sub ? el('span', { class: 'row-sub', text: r.sub }) : null),
         el('span', { class: 'row-end' }, document.createTextNode(r.end || ''), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
       );
+      if (r.item != null) b.setAttribute('data-item', String(r.item));
       b.addEventListener('click', () => onRow && onRow(r));
       body.insertBefore(b, more);
+      // Every Ask Is Actionable: a needs-you row carries its one tap right under it.
+      if (r.action && actionControlFor) {
+        const act = actionControlFor(r.action);
+        if (act) body.insertBefore(el('div', { class: 'row-action' }, act), more);
+      }
     }
     shown += next.length;
     more.hidden = shown >= rows.length;
-    more.textContent = `Show ${Math.min(limit, rows.length - shown)} more`;
+    more.textContent = showAll ? `Show all ${rows.length}` : `Show ${Math.min(limit, rows.length - shown)} more`;
   };
   const more = el('button', { class: 'link-btn show-more', type: 'button' });
   more.addEventListener('click', renderMore);
@@ -71,6 +78,10 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
   wrap.append(head, body);
   return wrap;
 }
+
+// actions.js imports ui.js, so section() reaches actionControl through this hook (set by actions.js).
+let actionControlFor = null;
+export function setActionRenderer(fn) { actionControlFor = fn; }
 
 /** 3. Detail sheet: bottom sheet on a phone, side panel on desktop. */
 let openSheet = null;
@@ -83,6 +94,8 @@ export function sheet({ title, onClose }, ...content) {
     el('div', { class: 'sheet-body' }, content));
   const scrim = el('div', { class: 'scrim', onclick: () => closeSheet() });
   const root = el('div', { class: 'sheet-root' }, scrim, panel);
+  // One placement everywhere: the sheet is appended to <body>, never inside the page, so
+  // a sticky or transformed ancestor can never shift it (bottom on a phone, right on desktop).
   document.body.append(root);
   const onKey = (e) => { if (e.key === 'Escape') closeSheet(); };
   document.addEventListener('keydown', onKey);
@@ -104,6 +117,17 @@ export function sheetIsOpen() { return Boolean(openSheet); }
 /** Story lines: label + text pairs. */
 export function story(lines) {
   return el('dl', { class: 'story' }, lines.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]));
+}
+
+/**
+ * Something the operator can dive into but need not see first: a closed fold with a
+ * plain label. The first-screen rule (console-makeover.md): housekeeping, coverage
+ * notes, explanations and ids live here, never on the page face.
+ */
+export function fold(label, ...kids) {
+  const d = el('details', { class: 'raw more-fold' }, el('summary', { text: label }));
+  for (const k of kids.flat()) if (k != null && k !== false) d.append(k);
+  return d;
 }
 
 /** A fold with raw fields (identifiers last, mono). */

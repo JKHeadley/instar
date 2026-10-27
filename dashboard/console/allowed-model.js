@@ -38,7 +38,7 @@ export function meaningRows(resolved) {
   const rows = [];
   if (typeof resolved.autoApplyUpdates === 'boolean') rows.push({ label: 'Updates install themselves', text: yesNo(resolved.autoApplyUpdates) });
   if (typeof resolved.autoRestart === 'boolean') rows.push({ label: 'I restart after updates', text: yesNo(resolved.autoRestart) });
-  if (typeof resolved.trustAutoElevate === 'boolean') rows.push({ label: 'I ask before raising my own trust', text: yesNo(!resolved.trustAutoElevate) });
+  if (typeof resolved.trustAutoElevate === 'boolean') rows.push({ label: 'Raising my own trust level', text: resolved.trustAutoElevate ? 'allowed when I have earned it, without asking you' : 'only when you say so' });
   return rows;
 }
 
@@ -99,36 +99,13 @@ export function buildHistory(res, now = Date.now()) {
 }
 
 // ── Safety checks ─────────────────────────────────────────────────────────
-const GUARD_WORDS = {
-  'on-confirmed': 'on', 'on-unverified': 'on, not confirmed', 'on-stale': 'on, gone quiet', 'on-blind': 'on, can’t see it working',
-  'on-dry-run': 'watching only', off: 'off', 'diverged-pending-restart': 'changed, waiting for a restart', errored: 'errored',
-  missing: 'missing', 'off-runtime-divergent': 'off while running',
-};
-// The same rule as Home's card: a check counts as needing a look only when it is off where
-// it should be on, errored, missing, diverged, or guarding nothing. "On, not confirmed" is
-// the ordinary state of about half the checks (not instrumented) and is listed, not counted.
-const NEEDS_LOOK = new Set(['diverged-pending-restart', 'errored', 'missing', 'off-runtime-divergent']);
-
-export function guardWord(g) {
-  if (g.loadBearingAccepted) return 'risk accepted';
-  if (g.loadBearingGap) return g.effective === 'on-dry-run' ? 'watching only, nothing guards it' : 'off, nothing guards it';
-  if (g.loadBearingSoaking) return 'watching only, trial run';
-  if (g.effective === 'off' && g.offClass === 'dark-default') return 'off by design';
-  if (g.effective === 'off' && g.offClass === 'diverged-from-default') return 'off, should be on';
-  return GUARD_WORDS[g.effective] || String(g.effective || 'unknown').replace(/-/g, ' ');
-}
-
-/** Off where it should be on, broken, or guarding nothing. */
-export function needsLook(g) {
-  if (g.loadBearingAccepted) return false;
-  if (g.loadBearingGap) return true;
-  if (g.effective === 'off') return g.offClass === 'diverged-from-default';
-  return NEEDS_LOOK.has(g.effective);
-}
-
-function humanKey(key) {
-  return String(key || 'A safety check').replace(/^monitoring\./, '').replace(/\.enabled$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._-]/g, ' ').replace(/^./, (c) => c.toUpperCase());
-}
+// The rule for "needs a look", the words for a guard's state, the plain name for a
+// setting key and the count itself live in shared-counts.js (guardNeedsLook /
+// guardWord / guardName / guardsNeedingLook): the same source Home's card and the
+// Machines page read, scope stated.
+import { guardWord, guardName, guardNeedsLook, guardsNeedingLook } from './shared-counts.js';
+export { guardWord, guardName };
+export function needsLook(g) { return guardNeedsLook(g); }
 
 /** Which writes a row offers. Only this machine's rows can be written; peers never. */
 export function guardActions(g, local) {
@@ -138,52 +115,24 @@ export function guardActions(g, local) {
   return [];
 }
 
-function guardRow(g, machine, local) {
-  const look = needsLook(g);
-  return {
-    key: `${machine.id || 'self'}:${g.key}`,
-    guardKey: g.key,
-    main: g.criticalPath ? `${g.criticalPath}` : humanKey(g.key),
-    sub: [guardWord(g), machine.name].filter(Boolean).join(' · '),
-    end: '',
-    tone: look ? 'attn' : g.loadBearingAccepted ? 'unknown' : undefined,
-    local, machine: machine.name, where: machine.name || machine.here || 'this machine', needsLook: look, record: g, actions: guardActions(g, local),
-  };
-}
-
 /**
  * Every guard row, this machine first. `res` is GET /guards (optionally ?scope=pool).
- * Returns { ok, look, others, failed, multi, selfName, counts }.
+ * Returns { ok, look, others, failed, multi, selfName, counts, scopeWords }.
+ * `counts.look` is the shared count; `failed` (machines that could not answer) is
+ * listed apart and never inside it.
  */
-export function buildGuards(res) {
-  if (!res.ok) return { ok: false, reason: `Couldn't read the safety checks: ${res.reason}.` };
-  const d = res.data || {};
-  if (!Array.isArray(d.guards)) return { ok: false, reason: 'The safety checks answered without their list.' };
-  const pool = d.pool && typeof d.pool === 'object' ? d.pool : null;
-  const peers = pool && Array.isArray(pool.machines) ? pool.machines : [];
-  const failed = pool && Array.isArray(pool.failed) ? [...pool.failed] : [];
-  const multi = peers.length + failed.length > 0;
-  const selfName = d.nickname || (multi ? 'this machine' : null);
-  const rows = d.guards.filter((g) => g && g.key).map((g) => guardRow(g, { id: d.machineId || 'self', name: multi ? selfName : null, here: d.nickname }, true));
-  for (const m of peers) {
-    const name = m.nickname || m.machineId || 'another machine';
-    if (!Array.isArray(m.guards)) { failed.push({ machineId: m.machineId, nickname: name, reason: 'no list' }); continue; }
-    for (const g of m.guards) if (g && g.key) rows.push(guardRow(g, { id: m.machineId, name }, false));
-  }
-  const look = rows.filter((r) => r.needsLook);
-  const others = rows.filter((r) => !r.needsLook);
-  const accepted = rows.filter((r) => r.record.loadBearingAccepted);
+export function buildGuards(res, { names = null } = {}) {
+  const g = guardsNeedingLook(res, { scope: 'pool', names });
+  if (!g.ok) return { ok: false, reason: g.reason };
+  const decorate = (r) => ({ ...r, end: '', where: r.machine || g.selfName || 'this machine', actions: guardActions(r.record, r.local) });
+  const look = g.rows.map(decorate);
+  const others = g.others.map(decorate);
   return {
-    ok: true, look, others, multi, selfName,
-    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: f.nickname || f.machineId || 'A machine', sub: `Can’t tell: ${FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
-    counts: { look: look.length, others: others.length, accepted: accepted.length, total: rows.length },
+    ok: true, look, others, multi: g.multi, selfName: g.selfName, scopeWords: g.scopeWords, machines: g.machines,
+    failed: g.cantTell.map((f) => ({ key: `failed:${f.machineId}`, main: f.machine, sub: `Can’t tell: ${f.words}`, tone: 'unknown' })),
+    counts: { look: look.length, others: others.length, accepted: g.accepted.length, total: g.all.length, cantTell: g.cantTell.length },
   };
 }
-const FAILED_WORDS = {
-  'no-known-url': 'no address known for it', offline: 'it is offline', 'url-rejected': 'its address was refused',
-  'route-missing': 'it needs an update to report', unauthorized: 'it refused the request', timeout: 'no answer in time',
-  unreachable: 'it could not be reached', error: 'it answered with an error', 'no list': 'it answered without a list',
-};
 
 // ── Suggestions ───────────────────────────────────────────────────────────
 export function buildSuggestions(res, now = Date.now()) {
@@ -402,7 +351,7 @@ export function canUndoOff(f) { return !needsConsent(f.tier); }
 export function facts({ profile, guards, features, suggestions }) {
   const out = [];
   if (profile && profile.ok) out.push({ n: PROFILE_LABEL[profile.profile], label: 'profile' });
-  if (guards && guards.ok && guards.counts.look) out.push({ n: guards.counts.look, label: guards.counts.look === 1 ? 'check needs a look' : 'checks need a look', tone: 'attn', href: '#/settings/allowed?s=guards' });
+  if (guards && guards.ok && guards.counts.look) out.push({ n: guards.counts.look, label: `${guards.counts.look === 1 ? 'check needs a look' : 'checks need a look'}${guards.scopeWords ? ' ' + guards.scopeWords : ''}`, tone: 'attn', href: '#/settings/allowed?s=guards' });
   if (features && features.ok) out.push({ n: `${features.on} of ${features.total}`, label: 'features on', href: '#/settings/allowed?s=features' });
   if (suggestions && suggestions.ok && suggestions.items.length) out.push({ n: suggestions.items.length, label: suggestions.items.length === 1 ? 'suggestion' : 'suggestions' });
   return out;

@@ -3,8 +3,9 @@
 // comes from /health and needs none.
 
 import { buildMessagesPage, displayModel } from './messages-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, operatorSession, forgetOperatorSession } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, operatorSession, forgetOperatorSession, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { consumeItem, landOn } from './actions.js';
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -36,12 +37,14 @@ export async function renderMessages(main, ctx) {
 
   if (!page.ok) {
     const hf = page.heldForward;
+    // One sentence about the PIN, on the card that asks for it; why it is needed and how
+    // long an unlock lasts sit one tap deeper.
     const unlock = status.needsUnlock ? el('div', { class: 'need-card' },
       el('span', { class: 'need-title', text: 'Message records need your PIN' }),
-      el('span', { class: 'need-sub', text: 'Who wrote each message is private to you. One unlock lasts about 15 minutes in this page.' }),
-      el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Unlock', onclick: async () => { const a = await askPin({ title: 'Message records', explain: 'Unlock message records. Your PIN is not kept; the unlock lives in this page until it expires.', adapter: 'session' }); if (a) refresh(); } })) : null;
+      el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Unlock', onclick: async () => { const a = await askPin({ title: 'Message records', explain: 'Unlock message records. Your PIN is not kept; the unlock lives in this page until it expires.', adapter: 'session' }); if (a) refresh(); } }),
+      fold('Why', note('Who wrote each message is private to you, so the full records are kept behind your PIN. One unlock lasts about 15 minutes in this page.'))) : null;
     setKids(main, el('div', { class: 'msg-page' },
-      pageHead({ eyebrow: 'People · Messages to you', headline: hf ? (hf.count ? `${hf.count} ${hf.count === 1 ? 'reply is' : 'replies are'} held on this machine.` : 'No replies held on this machine.') : 'Messages to you', sub: hf ? 'From the quick check; the full records need your PIN.' : '', tone: hf && hf.count ? 'attn' : 'muted' }),
+      pageHead({ eyebrow: 'People · Messages to you', headline: hf ? (hf.count ? `${hf.count} ${hf.count === 1 ? 'reply is' : 'replies are'} held on this machine.` : 'No replies held on this machine.') : 'Messages to you', sub: '', tone: hf && hf.count ? 'attn' : 'muted' }),
       unlock || cantTell(page.reason), legacyLink()));
     return;
   }
@@ -59,6 +62,10 @@ export async function renderMessages(main, ctx) {
       page.notReady.length ? section({ id: 'recording', title: 'Recording details', rows: page.notReady, collapsed: true, empty: 'Every part of message recording is ready.' }) : null,
     ),
     el('p', { class: 'foot-note' }, el('a', { href: legacyHref('origins'), text: 'The full message log (who wrote each message) is in the legacy Message origins tab' }))));
+  // An Attention tap lands on the held reply it is about (or on the held list).
+  const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
+  const item = consumeItem();
+  if (!landOn(main, item) && want === 'held') { const sec = main.querySelector('#sec-held'); if (sec) sec.scrollIntoView({ block: 'start' }); }
 }
 
 function legacyLink() {

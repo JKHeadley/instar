@@ -42,6 +42,7 @@ export async function renderCosts(main, ctx) {
   const hero = pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts });
   timeControl.classList.add('time-control');
   hero.insertBefore(timeControl, hero.querySelector('.facts'));
+  if (page.explain.length) hero.append(el('details', { class: 'raw more-detail' }, el('summary', { text: 'How these figures work' }), page.explain.map((t) => el('p', { class: 'card-note', text: t }))));
 
   setKids(main, el('div', { class: 'costs-page' },
     hero,
@@ -69,6 +70,7 @@ function recordedSection(page, repaint) {
   if (r.state !== 'ok') wrap.append(note(r.reason));
   else {
     wrap.append(el('p', { class: 'card-line', text: r.rows.length ? `${fmtUsd(r.netUsd)} pay-per-use across ${r.rows.length} ${r.rows.length === 1 ? 'model' : 'models'}${r.unpricedTokens ? `; ${fmtTokens(r.unpricedTokens)} tokens could not be priced` : ''}.` : 'Nothing recorded in this window.' }));
+    if (r.hiddenEmpty) wrap.append(el('p', { class: 'card-note', text: `${r.hiddenEmpty} ${r.hiddenEmpty === 1 ? 'row' : 'rows'} with no tokens and no cost ${r.hiddenEmpty === 1 ? 'is' : 'are'} not shown.` }));
     if (r.rows.length) wrap.append(rowsOf(r.rows, (row) => openCost(row)));
     if (r.amortized !== null) wrap.append(note(`Declared subscriptions amortize to ${fmtUsd(r.amortized)} over this window (reporting only, never cap-enforced).`));
     const grainChips = el('div', { class: 'filter-chips', role: 'group', 'aria-label': 'Grain' }, GRAINS.map((g) => el('button', { class: 'fchip', type: 'button', 'aria-pressed': g.key === view.grain ? 'true' : 'false', 'data-focus-key': `grain:${g.key}`, onclick: () => { if (g.key !== view.grain) { view.grain = g.key; repaint(); } } }, el('span', { text: g.label }))));
@@ -120,11 +122,16 @@ function openCost(row) {
 
 // ── 2. Background checks ───────────────────────────────────────────────────
 function checksSection(c) {
-  const wrap = el('section', { class: 'list-section', id: 'sec-checks' }, head('Background checks', 'AI calls on this machine'));
-  if (c.state !== 'ok') { wrap.append(note(c.reason)); return wrap; }
-  wrap.append(el('p', { class: 'card-line', text: c.sentence }));
-  if (c.insight.state === 'ok') wrap.append(el('p', { class: 'insight-line' }, el('span', { text: c.insight.text }), el('span', { class: 'insight-stamp', text: c.insight.stamp })));
-  else if (c.insight.state === 'paused') wrap.append(el('p', { class: 'card-note', text: c.insight.text }));
+  // Behind a tap: the counts of automatic checks are housekeeping, not something to read on arrival.
+  const wrap = el('section', { class: 'list-section', id: 'sec-checks' });
+  const headBtn = el('button', { class: 'list-head', type: 'button', 'aria-expanded': 'false' }, el('h2', { class: 'eyebrow', text: 'Background checks' }), el('span', { class: 'list-source', text: 'AI calls on this machine' }), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+  const fold = el('div', { class: 'list-rows', hidden: true });
+  headBtn.addEventListener('click', () => { fold.hidden = !fold.hidden; headBtn.setAttribute('aria-expanded', fold.hidden ? 'false' : 'true'); });
+  wrap.append(headBtn, fold);
+  if (c.state !== 'ok') { fold.append(note(c.reason)); return wrap; }
+  fold.append(el('p', { class: 'card-line', text: c.sentence }));
+  if (c.insight.state === 'ok') fold.append(el('p', { class: 'insight-line' }, el('span', { text: c.insight.text }), el('span', { class: 'insight-stamp', text: c.insight.stamp })));
+  else if (c.insight.state === 'paused') fold.append(el('p', { class: 'card-note', text: c.insight.text }));
   if (!c.rows.length) return wrap;
   const body = el('div', { class: 'rows list-rows' });
   const limit = 5;
@@ -139,7 +146,7 @@ function checksSection(c) {
   more.addEventListener('click', renderMore);
   body.append(more);
   renderMore();
-  wrap.append(body, el('p', { class: 'card-note', text: c.note }));
+  fold.append(body, el('p', { class: 'card-note', text: c.note }));
   return wrap;
 }
 

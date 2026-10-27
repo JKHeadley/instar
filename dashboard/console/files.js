@@ -16,6 +16,7 @@ import {
   buildListing, buildFile, saveBody, saveResult, conflictWords, stashFor, readStash,
   parseRecent, pushRecent, recentRows, pinnedFrom, searchLoaded, buildConfig, folderInput,
   configPatch, configResultWords, filesHeadline, refusalWords,
+  searchUrl, buildSearch, previewPlan, previewResult, splitSystem,
 } from './files-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, sheetIsOpen, note } from './ui.js';
 
@@ -48,6 +49,7 @@ function lib(name) {
 const S = {
   listings: {},          // dir → listing model
   expanded: new Set(),   // folders open in Browse
+  showSystem: false,     // dot-folders and generated folders shown in Browse
   file: null,            // the opened file's model
   openedAt: null,        // when it was opened (for the conflict sentence)
   view: 'rendered',      // markdown: rendered | source
@@ -57,7 +59,16 @@ const S = {
   config: null,
   machine: null,
   status: '',
+  serverSearch: null,    // true / false once known: does this server have GET /api/files/search?
+  found: null,           // the last server search result model
 };
+
+const SEARCH_DEBOUNCE_MS = 250;
+let searchTimer = null;
+let searchSeq = 0;
+// The image preview's object URL, revoked when another file opens.
+let preview = { path: null, url: null };
+function dropPreview() { if (preview.url) URL.revokeObjectURL(preview.url); preview = { path: null, url: null }; }
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 /** Any file route: keeps the status and the body; never signs out on a refusal. */
@@ -114,7 +125,7 @@ export async function renderFiles(main, ctx) {
       const ms = r.ok && r.data && Array.isArray(r.data.machines) ? r.data.machines : [];
       const self = ms.find((m) => m && (m.isSelf || m.machineId === r.data.selfMachineId));
       S.machine = ms.length > 1 ? String((self && (self.nickname || self.name)) || 'this machine') : '';
-      if (S.machine && page) { const t = page.querySelector('[data-machine]'); if (t) t.textContent = `Files on ${S.machine}. Each machine has its own.`; }
+      if (S.machine && page) { const t = page.querySelector('[data-machine]'); if (t) t.textContent = `Files on ${S.machine}.`; }
     });
   }
   page = el('div', { class: 'files-page', 'data-for': want });
@@ -134,6 +145,7 @@ async function openFile(p) {
   const path = normPath(p);
   if (S.edit && S.edit.path !== path && !dirty()) S.edit = null;
   if (S.file && S.file.path === path && S.file.kind !== 'refused') return;
+  if (preview.path && preview.path !== path) dropPreview();
   const r = await call('GET', `/api/files/read?path=${encodeURIComponent(path)}`);
   S.file = buildFile(r, path, S.config && S.config.ok ? S.config : {});
   S.openedAt = new Date().toISOString();
@@ -173,17 +185,41 @@ function browse() {
   const input = el('input', { class: 'files-find', type: 'search', placeholder: 'Find a file', 'aria-label': 'Find a file', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
   input.value = S.query;
   const results = el('div', { class: 'files-results' });
-  const showResults = () => {
-    S.query = input.value;
+  const pick = (r) => (r.type === 'directory' ? reveal(r.path) : go(r.path));
+  // Opened folders only: an older server without the search route, or while the whole-project answer is on its way.
+  const showLoaded = () => {
     const s = searchLoaded(S.listings, input.value);
     if (!s.query) { setKids(results); return; }
     setKids(results,
-      el('div', { class: 'rows' }, s.rows.length ? s.rows.map((r) => rowBtn(r, () => (r.type === 'directory' ? reveal(r.path) : go(r.path)))) : el('p', { class: 'empty-line', text: 'No name matches in the folders opened so far.' })),
+      el('div', { class: 'rows' }, s.rows.length ? s.rows.map((r) => rowBtn(r, () => pick(r))) : el('p', { class: 'empty-line', text: 'No name matches in the folders opened so far.' })),
       s.more ? note(`and ${s.more} more; type more of the name.`) : null,
       note(s.note));
   };
+  const showFound = (f) => {
+    if (!f.ok) { setKids(results, el('p', { class: 'card-note files-refusal', 'data-search-failed': '1', text: `Can’t search right now: ${f.text}` })); return; }
+    setKids(results,
+      el('div', { class: 'rows', 'data-search': 'project' }, f.rows.length ? f.rows.map((r) => rowBtn(r, () => pick(r))) : el('p', { class: 'empty-line', text: f.empty })),
+      f.note ? note(f.note) : null);
+  };
+  const runSearch = async (q) => {
+    const seq = ++searchSeq;
+    const found = buildSearch(await call('GET', searchUrl(q)), q);
+    if (seq !== searchSeq || input.value.trim() !== q) return; // a newer query is in flight
+    if (found.unsupported) { S.serverSearch = false; S.found = null; showLoaded(); return; }
+    S.serverSearch = true; S.found = found;
+    showFound(found);
+  };
+  const showResults = () => {
+    S.query = input.value;
+    const q = input.value.trim();
+    clearTimeout(searchTimer);
+    if (!q) { S.found = null; setKids(results); return; }
+    if (S.serverSearch === false) { showLoaded(); return; }
+    if (S.found && S.found.query === q.toLowerCase()) showFound(S.found); else showLoaded();
+    searchTimer = setTimeout(() => runSearch(q), SEARCH_DEBOUNCE_MS);
+  };
   input.addEventListener('input', showResults);
-  showResults();
+  if (S.found && S.found.query === input.value.trim().toLowerCase()) showFound(S.found); else showResults();
 
   const parts = [head, el('div', { class: 'files-search' }, input, results)];
   const recent = recentRows(loadRecent());
@@ -217,7 +253,10 @@ function group(title, kids) {
 
 function addLevel(container, listing, depth) {
   if (listing.empty) container.append(el('p', { class: 'empty-line', text: listing.empty }));
-  for (const e of listing.entries) {
+  // At the top level, dot-folders and generated folders wait behind one tap.
+  const split = depth === 0 ? splitSystem(listing) : { plain: listing.entries, system: [] };
+  const shown = depth === 0 && !S.showSystem ? split.plain : listing.entries;
+  for (const e of shown) {
     container.append(rowBtn({ key: `tree:${e.path}`, main: e.name, sub: e.sub, path: e.path, type: e.type }, () => (e.type === 'directory' ? toggle(e.path) : go(e.path)), depth));
     if (e.type === 'directory' && S.expanded.has(e.path)) {
       const child = S.listings[e.path];
@@ -225,6 +264,10 @@ function addLevel(container, listing, depth) {
       else if (!child.ok) container.append(el('p', { class: 'card-note files-refusal', 'data-refused': child.kind, text: child.text }));
       else addLevel(container, child, depth + 1);
     }
+  }
+  if (depth === 0 && split.system.length) {
+    container.append(el('button', { class: 'link-btn files-system', type: 'button', 'aria-expanded': S.showSystem ? 'true' : 'false', 'data-system': '1',
+      text: S.showSystem ? 'Hide system files' : `Show system files (${split.system.length})`, onclick: () => { S.showSystem = !S.showSystem; paint(); } }));
   }
   if (listing.cut) container.append(note(listing.cut));
 }
@@ -274,9 +317,13 @@ function viewer() {
       el('p', { class: 'card-line', text: f.text }),
       f.refusal === 'signin' ? el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Sign in again', onclick: signInAgain }) : null));
   } else if (f.kind === 'binary') {
-    body.append(el('section', { class: 'card' }, el('p', { class: 'card-line', text: f.sizeLine }),
-      el('p', { class: 'card-note', text: f.image ? 'Images are not previewed here yet; download it to look at it.' : 'This is not a text file, so it can’t be shown here.' }),
-      el('div', { class: 'sheet-actions' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Download', 'data-download': '1', onclick: () => download(f.path, status) }))));
+    const plan = previewPlan(f, S.config && S.config.ok ? S.config : {});
+    const card = el('section', { class: 'card' });
+    if (plan.preview) card.append(imagePreview(f));
+    card.append(el('p', { class: 'card-line', text: f.sizeLine }),
+      f.image ? (plan.why ? el('p', { class: 'card-note', 'data-no-preview': '1', text: plan.why }) : null) : el('p', { class: 'card-note', text: 'This is not a text file, so it can’t be shown here.' }),
+      el('div', { class: 'sheet-actions' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Download', 'data-download': '1', onclick: () => download(f.path, status) })));
+    body.append(card);
   } else if (editing) {
     body.append(editor(f, status));
   } else {
@@ -286,6 +333,39 @@ function viewer() {
     if (f.editable) body.append(el('button', { class: 'btn-primary files-edit-fab', type: 'button', text: 'Edit', 'data-edit': '1', onclick: () => { S.edit = { path: f.path, text: f.content, base: f.content, baseModified: f.modified, kept: false }; paint(); focusEditor(); } }));
   }
   return [header, status, body];
+}
+
+/**
+ * An image file, previewed: the bytes come from the download route with the bearer
+ * token (an <img src> cannot carry it), the real type is read from the first bytes
+ * (a file only named like an image is never shown), and the page shows it through an
+ * object URL — the console's CSP allows `img-src blob:` for exactly this.
+ */
+function imagePreview(f) {
+  const box = el('div', { class: 'files-image', 'data-image-preview': '1' });
+  if (preview.path === f.path && preview.url) {
+    box.append(el('img', { src: preview.url, alt: f.name }));
+    return box;
+  }
+  dropPreview();
+  preview.path = f.path;
+  const line = el('p', { class: 'card-note', text: 'Loading the preview…' });
+  box.append(line);
+  (async () => {
+    let status = 0;
+    let bytes = null;
+    try {
+      const r = await fetch(`/api/files/download?path=${encodeURIComponent(f.path)}`, { headers: { Authorization: `Bearer ${bearer()}` }, cache: 'no-store' });
+      status = r.status;
+      if (r.ok) bytes = new Uint8Array(await r.arrayBuffer());
+    } catch { status = 0; }
+    if (preview.path !== f.path) return; // another file opened meanwhile
+    const out = previewResult(status, bytes);
+    if (!out.ok) { line.textContent = out.text; line.setAttribute('data-no-preview', '1'); return; }
+    preview.url = URL.createObjectURL(new Blob([bytes], { type: out.mime }));
+    setKids(box, el('img', { src: preview.url, alt: f.name }));
+  })();
+  return box;
 }
 
 function signInAgain() { try { localStorage.removeItem('instar_token'); } catch { /* storage blocked */ } location.reload(); }

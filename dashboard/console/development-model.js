@@ -18,6 +18,7 @@
 //     it is never a release inventory.
 
 import { ago } from './home-model.js';
+import { prsNeedingYou, promisesAbout, prAction } from './shared-counts.js';
 
 export const DEV_TOOLS_KEY = 'instar_console_dev_tools';   // per-browser "show developer tools" switch
 export const WATCHER_CADENCE_MS = 600000;                  // GreenPrAutoMerger tickIntervalMs default (10 min)
@@ -92,7 +93,9 @@ export function releaseLine(res, now = Date.now()) {
   if (st === 'failed') return { text: `Release watchdog: can’t tell (${reasonOf(res)}).`, tone: 'unknown' };
   const d = res.data || {};
   if (d.disabled) return { text: 'Release watchdog: switched off.', tone: 'attn' };
-  const when = d.lastTickAt ? ` · last checked ${ago(d.lastTickAt, now)}` : ' · not checked yet';
+  // No tick yet means no finding either way: "nothing unresolved" would be a calm zero nobody measured.
+  if (!d.lastTickAt) return { text: 'Release status unknown: the release watchdog has not checked yet.', tone: 'unknown' };
+  const when = ` · last checked ${ago(d.lastTickAt, now)}`;
   const n = Number(d.openEpisodes) || 0;
   if (n > 0) return { text: `Release watchdog: ${plural(n, 'unresolved episode')}${when}.`, tone: 'attn', attentionId: d.openAttentionId || null, sha: d.oldestOpenSha || null };
   return { text: `Release watchdog: nothing unresolved${when}.`, tone: 'ok' };
@@ -101,8 +104,11 @@ export function releaseLine(res, now = Date.now()) {
 /**
  * Shipping from /green-pr-automerge (watcher), /local-verify (verify) and /release-readiness
  * (release). Each tile comes from its own source; a failed source dashes its tile only.
+ * `promises` (the /commitments?scope=mesh list, optional): a promise of the agent's about a
+ * pull request that waits on the operator is the same "needs you" Home counts, so it is a
+ * Needs-you row here too — folded into the PR's own row when the PR is already listed.
  */
-export function buildShipping({ watcher, verify, release } = {}, now = Date.now(), { repo = null } = {}) {
+export function buildShipping({ watcher, verify, release } = {}, now = Date.now(), { repo = null, promises = null } = {}) {
   const ws = sourceState(watcher), vs = sourceState(verify);
   const vStatus = verify && verify.status;
   if (ws === 'off' && vs === 'off') {
@@ -114,14 +120,21 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   const tile = (key, label, n, tone, reason) => ({ key, label, n, tone, reason: reason || null });
   const tiles = [];
 
-  // Needs you: code-owner review entries + approval-required episodes (watcher).
+  // Needs you: the shared rule (shared-counts.prsNeedingYou) + promises about a PR waiting on the operator.
+  const promised = Array.isArray(promises) ? promisesAbout(promises, 'pr', now) : [];
   if (w) {
-    const entries = Array.isArray(w.snapshot && w.snapshot.entries) ? w.snapshot.entries : [];
     const episodes = Array.isArray(w.episodes) ? w.episodes : [];
     const seen = new Set();
-    for (const e of entries) if (e && e.kind === 'code-owner-review' && !seen.has(e.pr)) { seen.add(e.pr); rows.push(shippingRow('needs', e.pr, 'waiting for your code-owner review on GitHub', w.snapshot.at ? ago(w.snapshot.at, now) : '', 'attn', e, repo, 'passed')); }
-    for (const ep of episodes) if (ep && ep.lastOutcome === 'refused:approval-required' && !seen.has(ep.pr)) { seen.add(ep.pr); rows.push(shippingRow('needs', ep.pr, 'waiting for your approval on GitHub', ep.lastAttemptAt ? ago(ep.lastAttemptAt, now) : '', 'attn', ep, repo, 'passed')); }
-    tiles.push(tile('needs', 'Needs you', seen.size, seen.size ? 'attn' : null));
+    // Every Ask Is Actionable: each needs-you row carries its one tap (GitHub's review page).
+    for (const p of prsNeedingYou(w, now)) { seen.add(p.pr); rows.push({ ...shippingRow('needs', p.pr, p.why, p.at ? ago(p.at, now) : '', 'attn', p.record, repo, 'passed'), item: p.pr, action: repo ? prAction(repo, p.pr) : p.action }); }
+    for (const p of promised) {
+      const pr = p.refs.prs.find((n) => seen.has(n));
+      if (pr) { const r = rows.find((x) => x.group === 'needs' && x.pr === pr); r.sub = `${r.sub} · also a promise of mine: ${p.main.slice(0, 80)}`; continue; }
+      const n = p.refs.prs[0] || null;
+      rows.push({ key: `needs:${p.key}`, pr: n, group: 'needs', main: n ? `#${n}` : 'A pull request', sub: `${p.main} · ${p.subKind === 'approval' ? 'waiting on your approval' : 'waiting on your answer'}`, end: p.end, tone: 'attn', record: p.record, href: n ? prHref(repo, n) : null, stage: 'passed', stages: STAGES, promise: true, item: n, action: p.action });
+    }
+    const needsN = rows.filter((r) => r.group === 'needs').length;
+    tiles.push(tile('needs', 'Needs you', needsN, needsN ? 'attn' : null));
     // Stuck: stuck-red PRs + episodes that gave up.
     const stuck = new Set();
     for (const s of Array.isArray(w.stuckRed) ? w.stuckRed : []) { stuck.add(s.pr); rows.push(shippingRow('stuck', s.pr, `checks have been red for ${String(ago(now - (s.redForMs || 0), now)).replace(' ago', '')}${s.failingChecks && s.failingChecks.length ? ` (${s.failingChecks.slice(0, 3).join(', ')})` : ''}`, '', 'bad', s, repo, 'queued')); }
@@ -164,11 +177,34 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
     tiles.push(tile('stuck', 'Stuck', 'Can’t tell', 'unknown', ws === 'off' ? 'the merge watcher is off on this agent' : reasonOf(watcher)));
   }
 
+  // One row per PR. A PR the three systems each know (stuck-red in the watcher AND queued in
+  // local verify, say) keeps ONE main state by this precedence, worst news first:
+  //   needs you > stuck > set to merge > testing > held
+  // and carries the other states as `also` for its sheet. The tiles count the SAME rows, so
+  // Needs you + Testing + Set to merge + Stuck = the PRs on the way, exactly.
+  const precedence = { needs: 0, stuck: 1, armed: 2, testing: 3, held: 4 };
+  const byPr = new Map();
+  for (const r of rows.slice().sort((a, b) => precedence[a.group] - precedence[b.group])) {
+    // A promise of mine that names no PR number is its own row (never merged with another).
+    const k = r.pr != null ? r.pr : r.key;
+    const kept = byPr.get(k);
+    if (!kept) byPr.set(k, { ...r, also: [] });
+    else kept.also.push({ group: r.group, sub: r.sub, record: r.record });
+  }
+  // Listed worst-news first, then the pipeline order: needs you, stuck, testing, set to merge, held.
   const order = { needs: 0, stuck: 1, testing: 2, armed: 3, held: 4 };
-  rows.sort((a, b) => order[a.group] - order[b.group] || a.pr - b.pr);
-  const needs = rows.filter((r) => r.group === 'needs').length;
-  const stuck = rows.filter((r) => r.group === 'stuck').length;
-  const moving = new Set(rows.filter((r) => r.group !== 'held').map((r) => r.pr)).size;
+  rows.length = 0; rows.push(...[...byPr.values()].sort((a, b) => order[a.group] - order[b.group] || (a.pr || 0) - (b.pr || 0)));
+  const countOf = (g) => rows.filter((r) => r.group === g).length;
+  for (const t of tiles) if (typeof t.n === 'number') t.n = countOf(t.key);
+  const needs = countOf('needs');
+  const stuck = countOf('stuck');
+  const held = countOf('held');
+  const moving = rows.filter((r) => r.pr != null).length - rows.filter((r) => r.pr != null && r.group === 'held').length;
+  // Why they are stuck, for the page's sub line (never a repeat of the count).
+  const stuckRows = rows.filter((r) => r.group === 'stuck');
+  const redChecks = stuckRows.filter((r) => r.record && typeof r.record.redForMs === 'number').length;
+  const gaveUp = stuckRows.length - redChecks;
+  const stuckWhy = stuckRows.length ? [redChecks ? `${redChecks} ${redChecks === 1 ? 'has' : 'have'} red checks` : null, gaveUp ? `the merge watcher gave up on ${gaveUp}` : null].filter(Boolean).join('; ') : null;
   const wl = w ? watcherLine(w, now) : null;
   const listFresh = Boolean(w && w.lastSuccessfulListAt && now - w.lastSuccessfulListAt <= 2 * WATCHER_CADENCE_MS);
 
@@ -185,7 +221,8 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   return {
     state: 'ok', headline, tone, tiles, rows, watcher: wl, release: releaseLine(release, now),
     partial: !w || !v, armedPrs, stopped: Boolean(wl && wl.stopped), rollbackLatches: (w && w.gate && Array.isArray(w.gate.rollback)) ? w.gate.rollback : [],
-    line: !w ? 'Shipping: can’t tell' : `Shipping: ${moving === 0 ? 'nothing on the way' : `${moving} on the way`}${needs ? `, ${needs} need${needs === 1 ? 's' : ''} you` : ''}${stuck ? `, ${needs ? '' : ''}${stuck} stuck` : ''}`,
+    line: !w ? 'Shipping: can’t tell' : `Shipping: ${moving === 0 ? 'nothing on the way' : `${moving} on the way`}${needs ? `, ${needs} need${needs === 1 ? 's' : ''} you` : ''}${stuck ? `, ${stuck} stuck` : ''}`,
+    counts: { needs, stuck, held, moving, testing: countOf('testing'), armed: countOf('armed') }, stuckWhy,
     repoKnown: Boolean(repo),
   };
 }
@@ -553,7 +590,11 @@ export function developmentHeadline({ shipping, feedback, pace } = {}) {
   if (needs.length) return { text: needs.length === 1 ? 'One pull request needs your approval on GitHub.' : `${needs.length} pull requests need your approval on GitHub.`, tone: 'attn', sub: shipping.line };
   if (feedback && feedback.state === 'cant-tell') return { text: 'Can’t tell whether anything needs you.', tone: 'muted', sub: feedback.headline };
   const stuck = shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'stuck').length : 0;
-  if (stuck) return { text: `${plural(stuck, 'pull request')} ${stuck === 1 ? 'is' : 'are'} stuck.`, tone: 'bad', sub: shipping.headline };
+  if (stuck) {
+    // The sub says WHY, not the count again (the Shipping line already carries the count).
+    const moving = shipping.counts ? shipping.counts.moving : stuck;
+    return { text: `${plural(stuck, 'pull request')} ${stuck === 1 ? 'is' : 'are'} stuck.`, tone: 'bad', sub: `Of ${plural(moving, 'pull request')} on the way: ${shipping.stuckWhy || 'the reason was not read'}.` };
+  }
   const lines = [shipping && shipping.line, feedback && feedback.line, pace && pace.line].filter(Boolean);
   const allOff = (!shipping || shipping.state === 'off') && (!feedback || feedback.state === 'off');
   if (allOff) return { text: 'Development tools aren’t set up on this machine.', tone: 'muted', sub: 'Shipping and the feedback factory run on a machine with the Instar source checkout.' };

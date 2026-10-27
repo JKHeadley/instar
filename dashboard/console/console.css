@@ -34,7 +34,7 @@
   --text: var(--slate-200);
   --text-strong: var(--slate-100);
   --text-muted: var(--slate-400);
-  --text-faint: var(--slate-500);
+  --text-faint: #7f8ea6; /* measured 5.9:1 on the page, 5.2:1 on a raised card (slate-500 was 4.1:1) */
   --accent: var(--teal-400);
   --accent-strong: var(--teal-300);
   --accent-wash: rgb(75 168 170 / 0.10);
@@ -71,9 +71,9 @@
   --text: var(--slate-700);
   --text-strong: var(--slate-900);
   --text-muted: var(--slate-500);
-  --text-faint: var(--slate-400);
-  --accent: var(--teal-600);
-  --accent-strong: #2c7476;
+  --text-faint: #5e6d84; /* measured 4.9:1 on the page (slate-400 was 2.4:1) */
+  --accent: #2c7476; /* measured 5.2:1; teal-600 was 3.6:1 as link text */
+  --accent-strong: #255f61;
   --accent-wash: rgb(58 143 145 / 0.08);
   --accent-glow: 0 10px 40px rgb(58 143 145 / 0.12);
   --attn: #b45309;
@@ -1001,3 +1001,86 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .inside-fold .list-rows > .card-note:first-child { margin-top: var(--s-2); }
 .inside-lookup-out, .inside-chain-out, .inside-history { margin-top: var(--s-2); }
 .list-section .inside-fold { border: 0; border-top: 1px solid var(--hairline); border-radius: 0; background: none; padding: var(--s-1) 0 0; margin-top: var(--s-2); }
+
+/* Files: image preview (follow-up) */
+.files-image { margin: 0 0 12px; }
+.files-image img { display: block; max-width: 100%; max-height: 70vh; height: auto; margin: 0 auto; border-radius: 8px; background: var(--surface-raised); }
+
+/* ── Paste to a session (work.md: Send content, inside Sessions) ─── */
+.sess-paste { margin: var(--s-4) 0 var(--s-2); }
+.paste-text { width: 100%; min-height: 180px; font-family: var(--font-mono); font-size: 14px; resize: vertical; box-sizing: border-box; }
+.sheet input.reason-input, .sheet .paste-text { width: 100%; box-sizing: border-box; margin-top: var(--s-2); }
+.paste-count { margin: var(--s-1) 0 0; font-size: 13.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.paste-kept { margin: var(--s-1) 0 var(--s-3); font-size: 13px; color: var(--text-muted); }
+.paste-where { margin: var(--s-2) 0 0; font-size: 14px; color: var(--text); }
+.paste-go { width: 100%; }
+.paste-result { margin-top: var(--s-2); font-size: 14px; }
+.paste-result[data-tone="ok"] { color: var(--text-strong); }
+.paste-result[data-tone="attn"] { color: var(--attn); }
+.paste-result[data-tone="bad"] { color: var(--bad); }
+.paste-recent { margin-top: var(--s-4); }
+.paste-recent > .list-head { width: 100%; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; text-align: left; min-height: 44px; }
+.paste-item { border-bottom: 1px solid var(--hairline); padding-bottom: var(--s-2); }
+.paste-row { cursor: default; }
+.paste-row .row-sub { overflow-wrap: anywhere; }
+.paste-row-actions { display: flex; flex-direction: column; gap: var(--s-2); padding: 0 var(--s-3); }
+.paste-row-actions > .btn-quiet { align-self: flex-end; min-height: 44px; }
+
+/* Card "Details" fold: housekeeping one tap deeper, never on the card face. */
+details.card-details { margin-top: var(--s-2); }
+details.card-details summary { font-size: 13px; min-height: 44px; }
+details.card-details .card-note { display: block; padding: 0; border: 0; margin: 0 0 6px; color: var(--text-muted); }
+details.card-details .card-note::before { content: none; }
+.card-line:empty { display: none; }
+
+/* ── First-screen review (console QA): layout, tap targets, contrast ───────── */
+/* The bottom nav never covers the end of a page or a sheet: pad by its height plus the home-bar inset. */
+.main { padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 32px); }
+.sheet { padding-bottom: 0; }
+.sheet-body { padding-bottom: calc(var(--s-6) + var(--nav-h) + env(safe-area-inset-bottom)); }
+@media (min-width: 900px) { .main { padding-bottom: var(--s-12); } .sheet-body { padding-bottom: var(--s-6); } }
+/* The dim overlay always covers the whole viewport, on desktop too. */
+.sheet-root { position: fixed; inset: 0; }
+.scrim { position: fixed; inset: 0; }
+.sheet { position: fixed; }
+/* Every tap target is at least 44px: folds, Show more, See all, Details. */
+.raw summary, details.more summary { min-height: 44px; display: flex; align-items: center; }
+.show-more, .link-btn { min-height: 44px; }
+.card-foot .link-btn, .card-foot a { min-height: 44px; }
+.list-head .list-count { min-height: 0; }
+/* A long single word (a fingerprint, a session name) wraps instead of pushing the page sideways. */
+.page-title, .sheet-title, .row-title, .mc-name, .need-title, .secret-label, .slip-summary { overflow-wrap: anywhere; }
+/* Folds that hold the quiet half of a page ("About these", "Also in the legacy dashboard"). */
+.more-fold { margin-top: var(--s-2); }
+.more-fold > summary { color: var(--text-muted); font-weight: 600; font-size: 14px; cursor: pointer; }
+.more-fold > .card-note, .more-fold > .sync-line, .more-fold > p { margin-top: var(--s-2); }
+.more-fold .facts { margin-top: var(--s-2); }
+/* The Paste button is an ordinary control at the end of the list, never a floating bar over a row. */
+.sess-paste { position: static; }
+/* Sessions on desktop: the list keeps the full width until a session is open. */
+@media (min-width: 900px) {
+  .sessions-page { display: block; }
+  .sessions-page.has-open { display: grid; }
+  .sessions-page:not(.has-open) .sess-view { display: none; }
+}
+/* Hub pages: a quiet "Where did things move?" link at the end, in the same place on every hub. */
+.foot-note .moved-link { min-height: 44px; font-weight: 500; color: var(--text-muted); }
+a.moved-row { color: inherit; }
+/* Machines: the card face is name, state and sessions; evidence age shows only when it is not current. */
+.mc-evidence:empty { display: none; }
+/* Allowed: the level in force on the face; the chooser is in a sheet. */
+.profile-now { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: var(--s-2) 0; }
+.profile-now .profile-level { grid-column: 1; grid-row: 1; font-size: 18px; font-weight: 700; color: var(--text-strong); }
+.profile-now .row-sub { grid-column: 1; grid-row: 2; white-space: normal; }
+.profile-now .btn-quiet { grid-column: 2; grid-row: 1 / span 2; }
+.sheet .seg { grid-template-columns: 1fr; }
+
+/* Every Ask Is Actionable: the one tap under a needs-you row, and a deep-link landing. */
+.row-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 var(--s-2) var(--s-2) 30px; }
+.row-action .need-action { height: 40px; padding: 0 16px; font-size: 14px; }
+.need-action-box { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.need-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.need-confirm .confirm-text { flex-basis: 100%; }
+.card-details .card-note { white-space: pre-line; }
+.landed { outline: 2px solid var(--attn, currentColor); outline-offset: 2px; border-radius: var(--r-sm); }
+.list-row-action { display: flex; justify-content: flex-end; padding: 0 var(--s-2) var(--s-2); }

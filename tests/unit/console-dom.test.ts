@@ -13,7 +13,7 @@ const NOW = new Date().toISOString();
 const ROUTES: Record<string, unknown> = {
   '/sessions': { sessions: [] },
   '/health': { project: { name: 'echo' }, telegramOrigin: { heldForward: { count: 0, observedAt: Date.now(), expiredUnreported: 0 } } },
-  '/attention?scope=pool': { items: [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, title: `Item ${n}`, status: 'OPEN', priority: 'URGENT', createdAt: NOW, description: `Detail ${n}` })), pool: { failed: [] } },
+  '/attention?scope=pool': { items: [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, title: `Item ${n}`, status: 'OPEN', priority: 'URGENT', createdAt: NOW, description: `Detail ${n}`, action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } })), pool: { failed: [] } },
   '/commitments?scope=mesh': { enabled: true, scope: 'mesh', commitments: [] },
   '/sessions?scope=pool': { sessions: [{ name: 'Fix it', status: 'running', startedAt: NOW, machineNickname: 'Mac Studio' }], pool: { failed: [] } },
   '/pool': { machines: [{ machineId: 'm1', nickname: 'Mac Studio', isSelf: true, online: true, routerReceivedAt: NOW, loadAvg: 1, hardware: { cpuCores: 16 } }] },
@@ -56,6 +56,29 @@ describe('console shell (jsdom)', () => {
     expect(doc.querySelector('#heroTitle')!.textContent).toBe('5 things need you.');
   });
 
+  it('promises waiting on you are listed in What needs you, and the headline agrees with it', async () => {
+    const saved = { a: ROUTES['/attention?scope=pool'], c: ROUTES['/commitments?scope=mesh'] };
+    ROUTES['/attention?scope=pool'] = { items: [{ id: 'r', title: 'Routine', status: 'OPEN', priority: 'LOW', category: 'worktree', createdAt: NOW }], pool: { failed: [] } };
+    ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [
+      { id: 'CMT-1', status: 'pending', owner: 'user', blockedOn: 'user-input', createdAt: NOW, agentResponse: 'Pick a name' },
+      { id: 'CMT-2', status: 'pending', owner: 'user', blockedOn: 'user-authorization', createdAt: NOW, agentResponse: 'Approve the spend' },
+    ] };
+    try {
+      const doc = await boot('t');
+      expect(doc.querySelector('#heroTitle')!.textContent).toBe('2 things need you.');
+      const card = doc.querySelector('#card-needs')!;
+      expect(card.querySelector('.card-value')!.textContent).toBe('2 things');
+      expect(card.textContent).not.toMatch(/Nothing needs you/);
+      expect(card.querySelectorAll('button.row')).toHaveLength(2);
+      // Housekeeping sits behind the Details fold, not on the face.
+      expect(card.querySelector('.card-line')!.textContent).not.toContain('routine');
+      expect(card.querySelector('details.card-details')!.textContent).toContain('1 routine notice kept in the log');
+      expect(doc.querySelector('#card-promised .card-line')!.textContent).toBe('2 of them are waiting on you, listed under What needs you.');
+    } finally {
+      ROUTES['/attention?scope=pool'] = saved.a; ROUTES['/commitments?scope=mesh'] = saved.c;
+    }
+  });
+
   it('a failing source says "Can\'t tell" on its own card; the others render', async () => {
     const doc = await boot('t');
     const allowed = doc.querySelector('#card-allowed')!;
@@ -83,13 +106,19 @@ describe('console shell (jsdom)', () => {
     expect(again.querySelectorAll('button.row')).toHaveLength(5);
   });
 
-  it('group pages link to legacy tabs as ordinary links, with no iframe', async () => {
+  it('group pages link to their native pages as ordinary links, with no iframe; moved tabs sit behind "Where did things move?"', async () => {
     const doc = await boot('t');
     dom.window.location.hash = '#/work';
     dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
     await flush();
     const tiles = [...doc.querySelectorAll('a.tile')].map((a) => a.getAttribute('href'));
-    expect(tiles).toContain('/dashboard?tab=dropzone');
+    expect(tiles).toContain('#/work/sessions');
+    expect(tiles).not.toContain('#/work/sessions?paste=1'); // a "Now inside …" pointer, not a destination
+    expect(tiles.every((h) => (h || '').startsWith('#/'))).toBe(true);
     expect(doc.querySelector('iframe')).toBeNull();
+    (doc.querySelector('.moved-link') as HTMLButtonElement).click();
+    const moved = [...doc.querySelectorAll('.sheet a.moved-row')].map((a) => a.getAttribute('href'));
+    expect(moved).toContain('#/work/sessions?paste=1');
+    expect(doc.querySelector('.sheet .row-title')!.textContent).toMatch(/→/);
   });
 });

@@ -19,8 +19,9 @@ import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
-  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
+  buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
 } from '../../dashboard/console/home-model.js';
+import { isActionable } from '../../dashboard/console/shared-counts.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
 import { buildAccountsPage } from '../../dashboard/console/accounts-model.js';
@@ -37,6 +38,8 @@ import { buildShipping, buildFeedback, buildPace, developmentHeadline, maintaine
 import { buildAgentsPage, threadModel, pairingModel, relayModel } from '../../dashboard/console/agents-model.js';
 import { buildSlips, buildAudit, buildApprovals, mandatesHeadline, mandatesFacts } from '../../dashboard/console/mandates-model.js';
 import { buildPreferences, buildCorrections, buildConflicts, learnedHeadline, learnedFacts, correctionsUrl } from '../../dashboard/console/learned-model.js';
+import { buildPreferenceEntries } from '../../dashboard/console/learned-model.js';
+import { buildSearch, searchUrl, previewResult } from '../../dashboard/console/files-model.js';
 import { PreferencesManager } from '../../src/core/PreferencesManager.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 import { buildRequests, buildKeys, buildSync, secretsHeadline, secretsFacts, requestBody, resultWords as secretResultWords } from '../../dashboard/console/secrets-model.js';
@@ -45,6 +48,8 @@ import { buildActivity, buildChain, buildStats, buildBindings, buildProblems, bu
 import { SharedStateLedger } from '../../src/core/SharedStateLedger.js';
 import { FailureLedger } from '../../src/monitoring/FailureLedger.js';
 import { buildSessions, sessionsHeadline, sessionsFacts, closeRequest, closeResultWords, createBody, createResultWords, doorChoices, machineChoices } from '../../dashboard/console/sessions-model.js';
+import { PasteManager } from '../../src/paste/PasteManager.js';
+import { pasteTargets, pasteBody, pasteResultWords, buildRecent, recentHead, deleteResultWords } from '../../dashboard/console/send-model.js';
 
 describe('Console Home E2E (feature is alive)', () => {
   const AUTH = 'console-home-e2e';
@@ -123,11 +128,12 @@ describe('Console Home E2E (feature is alive)', () => {
       const r = await request(server.getApp()).get(p).set(auth);
       return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: `the server answered ${r.status}` };
     };
+    const promised = buildPromised(await read('/commitments?scope=mesh'));
     const cards = {
       reach: buildReach(await read('/health')),
-      needs: buildNeeds(await read('/attention?scope=pool')),
+      needs: combineNeeds(buildNeeds(await read('/attention?scope=pool')), promised),
       doing: buildDoing(await read('/sessions?scope=pool')),
-      promised: buildPromised(await read('/commitments?scope=mesh')),
+      promised,
       running: buildRunning(await read('/pool')),
       allowed: buildAllowed(await read('/guards'), await read('/mandate')),
     };
@@ -139,9 +145,17 @@ describe('Console Home E2E (feature is alive)', () => {
       if (c.state === 'unknown') expect(c.line.length, id).toBeGreaterThan(5);
     }
     // The real commitment that waits on the operator surfaces.
-    expect(cards.promised.state).toBe('attn');
-    expect(cards.promised.value).toBe('1 need you');
-    expect(headline(cards).text).not.toBe('All quiet.');
+    // ...listed under What needs you, and the headline counts exactly that card.
+    expect(cards.promised.waitingCount).toBe(1);
+    expect(cards.needs.all.some((r: { main: string }) => r.main === 'waiting for your yes')).toBe(true);
+    expect(cards.needs.count).toBeGreaterThanOrEqual(1);
+    // Every Ask Is Actionable: each counted item carries its one tap through the real stack;
+    // the waiting promise's tap opens that exact promise.
+    for (const r of cards.needs.all as Array<{ action: unknown }>) expect(isActionable(r.action)).toBe(true);
+    const waitingRow = cards.needs.all.find((r: { main: string }) => r.main === 'waiting for your yes') as { action: { href: string }; id: string };
+    expect(waitingRow.action.href).toBe(`#/work/promises?s=waiting&item=${encodeURIComponent(waitingRow.id)}`);
+    const h = headline(cards);
+    expect(h.text).toBe(cards.needs.count === 1 ? 'One thing needs you.' : `${cards.needs.count} things need you.`);
   });
 
   it('the Promises page reads the real mesh view and its Mark-as-done reaches the real tracker', async () => {
@@ -373,7 +387,7 @@ describe('Console Home E2E (feature is alive)', () => {
     const bySlug = (s: string) => [...page.sections.needs, ...page.sections.coming, ...page.sections.everything].find((r: { slug: string }) => r.slug === s)!;
     // The past next-run time makes the enabled job late, in the plan's words; the same time on the off job does not.
     expect(bySlug('e2e-late')).toMatchObject({ kind: 'late', end: 'late' });
-    expect(bySlug('e2e-late').sub).toMatch(/^past its recorded next-run time by \d+ min, not running · last ran 5 h ago ✓$/);
+    expect(bySlug('e2e-late').sub).toMatch(/^\d+ min overdue · last ran 5 h ago ✓$/);
     expect(bySlug('e2e-off')).toMatchObject({ kind: 'off', tone: null });
     expect(bySlug('e2e-busy').kind).toBe('running');
     expect(page.headline).toBe('3 scheduled jobs. 1 is late.');
@@ -518,8 +532,8 @@ describe('Console Home E2E (feature is alive)', () => {
     if (approvalsRes.status === 503) expect(approvals.hidden).toBe(true); else expect(approvals.ok).toBe(true);
     const h = mandatesHeadline({ slips, approvals, audit });
     if (approvals.ok && approvals.rows.length) expect(h.tone).toBe('attn');
-    else expect(h).toEqual({ text: 'No slips — every agent-to-agent action is refused until you sign one.', tone: 'ok' });
-    expect(mandatesFacts({ slips, approvals, audit })).toContainEqual({ n: 'intact', label: 'decision record', tone: null });
+    else expect(h).toEqual({ text: 'No permission slips. Agents can still talk to each other; only actions that need a slip are refused.', tone: 'ok' });
+    expect(mandatesFacts({ slips, approvals, audit }).map((f) => f.label)).not.toContain('decision record'); // an intact record is not a first-screen chip; a broken one is
     // Every write the page offers is PIN-gated: without a PIN the server refuses (403) or says no PIN is configured (503); nothing answers 2xx.
     const future = new Date(Date.now() + 3600_000).toISOString();
     for (const [p, body] of [
@@ -858,5 +872,173 @@ describe('Console "How I\'m doing inside" E2E (feature is alive)', () => {
     for (const path of [recentUrl(), '/shared-state/stats', failuresUrl(), '/failures/insights?limit=50', claimsUrl(), '/class-reviews?limit=20']) {
       expect((await request(server.getApp()).get(path)).status, path).toBe(401);
     }
+  });
+});
+
+// ── Console follow-up reads (feature is alive) ────────────────────────────
+// Kept in its own describe with its own server so it never collides with other
+// additions to this file.
+describe('Console follow-up reads E2E: /preferences, /api/files/search, image preview (feature is alive)', () => {
+  const AUTH = 'console-followup-e2e';
+  const auth = { Authorization: `Bearer ${AUTH}` };
+  let tmp = '';
+  let server: AgentServer;
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+
+  beforeAll(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-followup-e2e-'));
+    const stateDir = path.join(tmp, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+    fs.writeFileSync(path.join(stateDir, 'identity.json'), '{"privateKey":"NEVER-RENDER"}');
+    fs.mkdirSync(path.join(tmp, 'docs', 'img'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'docs', 'img', 'logo.png'), PNG);
+    fs.writeFileSync(path.join(tmp, 'docs', 'img', 'fake.png'), '<svg onload="x">');
+    fs.writeFileSync(path.join(tmp, 'docs', 'identity-notes.md'), 'ok to show');
+    new PreferencesManager(stateDir).recordPreference({ learning: 'No approvals at night.', dedupeKey: 'user-preference:night', confidence: 0.9, violationPattern: 'regex:LOCAL-ONLY-PATTERN' });
+    const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10_000, version: '0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: path.join(stateDir, 'jobs.json'), maxParallelJobs: 1 }, messaging: [], updates: {},
+      monitoring: { correctionLearning: { enabled: true } } } as unknown as InstarConfig;
+    const sessionManager = { listRunningSessions: () => [], getSession: () => null } as never;
+    server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir) } as never);
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts:followup' });
+  });
+
+  const read = async (p: string) => {
+    const r = await request(server.getApp()).get(p).set(auth);
+    return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+  };
+
+  it('GET /preferences is alive (200, not 503) and the page model reads it; the local-only pattern never crosses', async () => {
+    const res = await read('/preferences');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.data)).not.toContain('LOCAL-ONLY-PATTERN');
+    const prefs = buildPreferenceEntries(res, { now: Date.now(), machines: {} });
+    expect(prefs).toMatchObject({ ok: true, structured: true, total: 1, newThisWeek: 1 });
+    expect(prefs.ok && prefs.rows[0].text).toBe('No approvals at night.');
+    expect(prefs.ok && prefs.rows[0].sub).toMatch(/^new this week · .+ · seen once · sure$/);
+    expect((await request(server.getApp()).get('/preferences')).status).toBe(401);
+  });
+
+  it('GET /api/files/search is alive and never returns key material; the page model maps it', async () => {
+    const call = async (p: string) => { const r = await request(server.getApp()).get(p).set(auth); return { status: r.status, data: r.body }; };
+    const found = buildSearch(await call(searchUrl('identity')), 'identity');
+    expect(found.ok).toBe(true);
+    expect(found.ok && found.rows.map((r: { path: string }) => r.path)).toEqual(['docs/identity-notes.md']);
+    const logo = buildSearch(await call(searchUrl('logo')), 'logo');
+    expect(logo.ok && logo.rows.map((r: { path: string }) => r.path)).toEqual(['docs/img/logo.png']);
+    expect((await request(server.getApp()).get(searchUrl('logo'))).status).toBe(401);
+  });
+
+  it('an image previews from the real download route; a file only named like one does not; the console page carries the narrow CSP', async () => {
+    const dl = async (p: string) => {
+      const r = await request(server.getApp()).get(`/api/files/download?path=${encodeURIComponent(p)}`).set(auth).buffer(true).parse((res, cb) => { const chunks: Buffer[] = []; res.on('data', (c: Buffer) => chunks.push(c)); res.on('end', () => cb(null, Buffer.concat(chunks))); });
+      return { status: r.status, bytes: new Uint8Array(r.body as Buffer) };
+    };
+    const real = await dl('docs/img/logo.png');
+    expect(previewResult(real.status, real.bytes)).toEqual({ ok: true, mime: 'image/png' });
+    const fake = await dl('docs/img/fake.png');
+    expect(previewResult(fake.status, fake.bytes).ok).toBe(false);
+    const page = await request(server.getApp()).get('/dashboard/console/');
+    expect(page.status).toBe(200);
+    expect(page.headers['content-security-policy']).toContain("img-src 'self' blob:");
+    const legacy = await request(server.getApp()).get('/dashboard');
+    expect(legacy.headers['content-security-policy'] || '').not.toContain('blob:');
+  });
+});
+
+describe('Console "Paste to a session" E2E (feature is alive)', () => {
+  const AUTH = 'console-paste-e2e';
+  const auth = { Authorization: `Bearer ${AUTH}` };
+  let tmp = '';
+  let server: AgentServer;
+  let pastes: PasteManager;
+  const injected: Array<{ session: string; notification: string }> = [];
+  let running: Array<Record<string, unknown>> = [];
+
+  beforeAll(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'console-paste-e2e-'));
+    const stateDir = path.join(tmp, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'server-data'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+    const config = { projectName: 'e2e', projectDir: tmp, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10_000, version: '0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
+      scheduler: { enabled: false, jobsFile: path.join(stateDir, 'jobs.json'), maxParallelJobs: 1 }, messaging: [], updates: {} } as unknown as InstarConfig;
+    // The same PasteManager construction server.ts uses; the session side records each injection.
+    pastes = new PasteManager({ pasteDir: path.join(stateDir, 'paste'), stateDir: path.join(stateDir, 'state'), projectDir: tmp });
+    const sessionManager = {
+      listRunningSessions: () => running, getSession: () => null,
+      getCachedRunningSessions: () => ({ count: running.length, sessions: running }),
+      injectPasteNotification: (session: string, notification: string) => { injected.push({ session, notification }); return 'injected'; },
+    } as never;
+    server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), pasteManager: pastes } as never);
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    pastes.shutdown();
+    SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/e2e/console-home-lifecycle.test.ts' });
+  });
+
+  const read = async (p: string) => {
+    const r = await request(server.getApp()).get(p).set(auth);
+    return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
+  };
+
+  it('a real paste through the page’s own body: waiting with nothing running, delivered to the named session, listed, deleted', async () => {
+    // Nothing running: the one choice keeps it for the next session; the server says waiting.
+    const t0 = pasteTargets([], { now: Date.now() });
+    const b0 = pasteBody({ text: 'first log line\n', label: 'build log', choice: t0.choices[0] });
+    expect(b0).toEqual({ ok: true, body: { content: 'first log line\n', label: 'build log' } });
+    const r0 = await request(server.getApp()).post('/pastes').set(auth).send(b0.ok && b0.body);
+    expect(r0.status).toBe(201);
+    expect(pasteResultWords(r0.status, r0.body)).toMatchObject({ state: 'waiting', tone: 'attn' });
+    expect(injected).toHaveLength(0);
+
+    // A running conversation: the page names it and the server delivers to exactly that one.
+    running = [{ id: 'u1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'running', startedAt: new Date().toISOString() }];
+    const m = buildSessions({ ok: true, data: { sessions: running, pool: { enabled: false } } }, { now: Date.now() });
+    const t1 = pasteTargets(m.ok ? m.rows : [], { now: Date.now() });
+    expect(t1.value).toBe('e2e-sess');
+    const b1 = pasteBody({ text: 'x'.repeat(1200), label: '', choice: t1.choices[0] });
+    const r1 = await request(server.getApp()).post('/pastes').set(auth).send(b1.ok && b1.body);
+    expect(r1.status).toBe(201);
+    expect(pasteResultWords(r1.status, r1.body, { titleOf: () => 'e2e-sess' }).text).toBe('Delivered 1,200 characters to e2e-sess.');
+    expect(injected.map((i) => i.session)).toEqual(['e2e-sess']);
+
+    // Recent: both, newest first, this machine only, with the server's retention.
+    const recent = buildRecent(await read('/pastes'), { now: Date.now() });
+    expect(recent.ok && recent.rows.map((r) => r.status)).toEqual(['delivered', 'waiting for a session']);
+    expect(recentHead(recent).title).toBe('Recent pastes (2)');
+    expect(recentHead(recent).sub).toMatch(/in the last 7 days, on this machine only · 1 waiting/);
+
+    // Delete the delivered one; a second delete reads as already gone.
+    const id = recent.ok ? recent.rows[0].id : '';
+    const d1 = await request(server.getApp()).delete(`/pastes/${encodeURIComponent(id)}`).set(auth);
+    expect(deleteResultWords(d1.status, d1.body)).toEqual({ ok: true, text: 'Deleted.' });
+    const d2 = await request(server.getApp()).delete(`/pastes/${encodeURIComponent(id)}`).set(auth);
+    expect(deleteResultWords(d2.status, d2.body)).toEqual({ ok: true, gone: true, text: 'Already gone.' });
+    expect((buildRecent(await read('/pastes')) as { total: number }).total).toBe(1);
+
+    // A refused paste reads in the server's words and keeps the text.
+    const bad = await request(server.getApp()).post('/pastes').set(auth).send({ content: 'a', label: 'x'.repeat(300) });
+    expect(bad.status).toBe(400);
+    expect(pasteResultWords(bad.status, bad.body).text).toMatch(/^Not sent: "label" must be a string under 256 characters\. Your text is still here\.$/);
+  });
+
+  it('every paste route refuses without the token, and needs nothing more than it (no PIN)', async () => {
+    expect((await request(server.getApp()).get('/pastes')).status).toBe(401);
+    expect((await request(server.getApp()).post('/pastes').send({ content: 'a' })).status).toBe(401);
+    expect((await request(server.getApp()).delete('/pastes/x')).status).toBe(401);
+    expect((await request(server.getApp()).get('/pastes').set(auth)).status).toBe(200);
   });
 });

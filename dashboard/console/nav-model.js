@@ -45,7 +45,7 @@ export const GROUPS = [
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
       { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Now inside Plans: longer efforts in flight, and the items that need you.' },
       { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'Now inside Plans, under “In the way”: what looked stuck, and how sure that still is.' },
-      { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Paste text or files straight into a session.' },
+      { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Now inside Sessions: paste a long text (a log, a document, a big prompt) into a session, and see whether it arrived.' },
     ],
   },
   {
@@ -53,9 +53,9 @@ export const GROUPS = [
     question: 'What do I run on, and what does it cost?',
     tabs: [
       { id: 'machines', label: 'Machines', icon: 'server', desc: 'Each machine’s health, which one leads, and how they reach each other.' },
-      { id: 'systems', label: 'Health', icon: 'heart', desc: 'Whether each of my subsystems is working.' },
+      { id: 'systems', label: 'Health', icon: 'heart', desc: 'Now inside Machines › This machine: whether each of my parts here is working.' },
       { id: 'subscriptions', label: 'Accounts', icon: 'key', desc: 'Subscriptions and sign-ins: usage left before reset, and fixing a sign-in from your phone.' },
-      { id: 'resources', label: 'Resource usage', icon: 'cpu', desc: 'CPU and memory for the server and every session.' },
+      { id: 'resources', label: 'Resource usage', icon: 'cpu', desc: 'Now inside Machines › This machine: CPU and memory for the server and every session here.' },
       { id: 'spend', label: 'What thinking costs', icon: 'wallet', desc: 'Recorded AI cost on this machine: pay-per-use by model, background checks, what your conversations process, and the spending limits.' },
       { id: 'tokens', label: 'Tokens', icon: 'coins', desc: 'Now inside What thinking costs: how much text your conversations process, Claude and Codex kept apart.' },
     ],
@@ -79,7 +79,7 @@ export const GROUPS = [
       { id: 'files', label: 'Files', icon: 'folder', desc: 'Find, read and fix a project file from your phone, and choose which folders can be browsed and edited.' },
     ],
     hood: [
-      { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
+      { id: 'insights', label: 'Insights', desc: 'Now one line at the top of What thinking costs › Background checks.' },
       { id: 'pr-pipeline', label: 'PR pipeline', desc: 'Now inside Development (Shipping): pull requests on their way to merge, and which need you.' },
       { id: 'evidence', label: 'Evidence', desc: 'Now inside How I’m doing inside: look up why I believe something, and what else relies on the same source.' },
       { id: 'routing-map', label: 'Routing map', desc: 'Now inside What thinking costs: which model handles each kind of background work, and the backups.' },
@@ -92,6 +92,29 @@ export const GROUPS = [
   },
 ];
 
+/**
+ * Tiles that only point at where a legacy tab moved ("Now inside …"). They are not
+ * destinations, so a hub page keeps them off its face and lists them in the
+ * "Where did things move?" sheet instead.
+ */
+export function isMovedTile(t) {
+  return typeof t.desc === 'string' && /^Now (inside|one line)/.test(t.desc);
+}
+export function hubTiles(g) { return g.tabs.filter((t) => !isMovedTile(t)); }
+export function hoodTiles(g) { return (g.hood || []).filter((t) => !isMovedTile(t)); }
+/**
+ * old tab → new place, from the tile's own words ("Now inside Plans: …" → "Plans").
+ * With a group, that group's moves come first; the rest of the console follows, so the
+ * same sheet answers the question on every hub.
+ */
+export function movedList(g = null) {
+  const groups = g ? [g, ...GROUPS.filter((x) => x !== g)] : GROUPS;
+  return groups.flatMap((grp) => [...grp.tabs, ...(grp.hood || [])].filter(isMovedTile).map((t) => {
+    const m = /^Now (?:inside|one line at the top of)\s+([^:]+?)(?:\s+\((\w+)\))?\s*(?::\s*(.*)|\.?)$/.exec(t.desc);
+    return { id: t.id, group: grp.label, label: t.label, to: m ? m[1].trim() : t.desc.replace(/^Now\s+/, ''), href: tabHref(t.id), what: (m && m[3]) || '' };
+  }));
+}
+
 /** Every legacy tab id the console links to. */
 export function allTabIds() {
   return GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id));
@@ -102,12 +125,16 @@ export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
   sessions: '#/work/sessions',
+  dropzone: '#/work/sessions?paste=1',
   projects: '#/work/plans',
   initiatives: '#/work/plans',
   blockers: '#/work/plans?s=in-the-way',
   machines: '#/capacity/machines',
+  systems: '#/capacity/machines?this=1',
+  resources: '#/capacity/machines?this=1',
   subscriptions: '#/capacity/accounts',
   spend: '#/capacity/costs',
+  insights: '#/capacity/costs',
   tokens: '#/capacity/costs',
   'llm-activity': '#/capacity/costs',
   'routing-map': '#/capacity/costs',

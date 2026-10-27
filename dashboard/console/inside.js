@@ -212,7 +212,8 @@ function problemsBlock(p, refresh) {
   if (p.stale) wrap.append(note(p.staleWords));
   wrap.append(lineP(p.line), tiles(p.tiles));
   wrap.append(el('h3', { class: 'eyebrow inside-sub', text: 'Repeating patterns' }));
-  wrap.append(p.patterns.ok ? rows(p.patterns.rows, (r) => openPattern(r, p), 'Nothing repeating.') : cantTell(p.patterns.reason));
+  // The empty words never contradict the count above: with repeats among the problems, say what is actually absent.
+  wrap.append(p.patterns.ok ? rows(p.patterns.rows, (r) => openPattern(r, p), p.repeatingCount ? 'No confirmed pattern yet; the repeats are listed below.' : 'Nothing repeating.') : cantTell(p.patterns.reason));
   wrap.append(el('h3', { class: 'eyebrow inside-sub', text: 'Problems lately' }), rows(p.rows, openFailure, 'Nothing has come up yet.'));
   if (p.moreFailed) wrap.append(note(p.moreFailed));
   if (p.canShowOlder) wrap.append(el('button', { class: 'link-btn show-more', type: 'button', 'data-show-older': '1', text: 'Show older', onclick: (ev) => {

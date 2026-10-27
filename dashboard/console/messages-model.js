@@ -36,6 +36,8 @@ export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicN
       sub: holdWords(h.hold_reason || h.holdReason || h.reason),
       end: ago(since, now) || '',
       tone: 'attn', record: h, sinceTs: Date.parse(since) || 0,
+      // The Attention item that announced this hold (telegram-origin-held:<topic>) lands here.
+      item: topic ? `telegram-origin-held:${topic}` : null,
     };
   }).sort((a, b) => b.sinceTs - a.sinceTs);
   const counts = (s.metrics && s.metrics.counts) || {};
