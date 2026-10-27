@@ -40,7 +40,8 @@ import { SessionSummarySentinel } from '../../src/messaging/SessionSummarySentin
 import { SpawnRequestManager } from '../../src/messaging/SpawnRequestManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import type { MessageEnvelope } from '../../src/messaging/types.js';
-import { registerAgent, unregisterAgent } from '../../src/core/AgentRegistry.js';
+import { registerAgent, unregisterAgent, loadRegistry } from '../../src/core/AgentRegistry.js';
+import { agentRegistryDir } from '../../src/core/AgentRegistryPaths.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { assertPlainEnglish, assertHonestFailure, assertNoZombie, assertTimely } from '../../src/messaging/detectors/assertUserVisible.js';
 import { TestClock } from '../../src/messaging/detectors/clock.js';
@@ -209,19 +210,45 @@ function makeEnvelope(
 describe('E2E: Multi-Agent Messaging (same machine)', () => {
   let agentA: TestAgent;
   let agentB: TestAgent;
+  let registrySandboxDir: string;
+  let previousRegistryDir: string | undefined;
 
   beforeAll(async () => {
-    agentA = await createTestAgent('e2e-agent-alpha');
-    agentB = await createTestAgent('e2e-agent-beta');
+    // AgentRegistry and AgentTokenManager both honor this process-local override.
+    // The live agents and other test shards share ~/.instar/registry.json; their
+    // heartbeats can exhaust its lock retries and turn an otherwise valid send
+    // into HTTP 400. Keep the two test agents in one isolated registry.
+    registrySandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-e2e-messaging-registry-'));
+    previousRegistryDir = process.env.INSTAR_TEST_REGISTRY_DIR;
+    process.env.INSTAR_TEST_REGISTRY_DIR = registrySandboxDir;
+    const suffix = crypto.randomBytes(6).toString('hex');
+    agentA = await createTestAgent(`e2e-agent-alpha-${suffix}`);
+    agentB = await createTestAgent(`e2e-agent-beta-${suffix}`);
 
-    // Register both agents in the global agent registry so they can discover each other
+    // Register both agents in their shared test registry so they can discover each other.
     registerAgent(agentA.projectDir, agentA.name, agentA.port, 'project-bound', process.pid);
     registerAgent(agentB.projectDir, agentB.name, agentB.port, 'project-bound', process.pid);
   });
 
   afterAll(async () => {
-    await destroyTestAgent(agentA);
-    await destroyTestAgent(agentB);
+    try {
+      try {
+        if (agentA) await destroyTestAgent(agentA);
+      } finally {
+        if (agentB) await destroyTestAgent(agentB);
+      }
+    } finally {
+      if (previousRegistryDir === undefined) delete process.env.INSTAR_TEST_REGISTRY_DIR;
+      else process.env.INSTAR_TEST_REGISTRY_DIR = previousRegistryDir;
+      if (registrySandboxDir) {
+        SafeFsExecutor.safeRmSync(registrySandboxDir, { recursive: true, force: true, operation: 'tests/e2e/messaging-multi-agent.test.ts:registry-cleanup' });
+      }
+    }
+  });
+
+  it('keeps its agent discovery registry separate from live agents', () => {
+    expect(agentRegistryDir()).toBe(registrySandboxDir);
+    expect(loadRegistry().entries.map(agent => agent.name).sort()).toEqual([agentA.name, agentB.name].sort());
   });
 
   // ── Cross-Agent HTTP Relay ───────────────────────────────────
@@ -295,8 +322,9 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
             priority: 'low',
             subject: `Batch message ${i}`,
             body: `Message number ${i}`,
-          })
-          .expect(201);
+          });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(201);
 
         expect(res.body.phase).toBe('received');
         messageIds.push(res.body.messageId);
@@ -706,8 +734,9 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
             priority,
             subject: `Priority ${priority}`,
             body: `Testing ${priority} routing`,
-          })
-          .expect(201);
+          });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(201);
 
         const stored = await agentB.store.get(res.body.messageId);
         expect(stored!.message.priority).toBe(priority);
@@ -2268,8 +2297,9 @@ describe('E2E: Multi-Agent Messaging (same machine)', () => {
           priority: 'low',
           subject: 'Large payload test',
           body: largeBody,
-        })
-        .expect(201);
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
 
       // Verify full body preserved at B
       const getRes = await request(agentB.app)
