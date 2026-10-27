@@ -170,6 +170,13 @@ The route:
   is therefore at most one send per `runId`, with an uncertain send held and
   visible rather than repeated; it is not exactly-once across a crash after
   Telegram accepted the message but before the outcome was recorded.
+- **Fence every effect.** Each pass carries the claim epoch and run identity
+  assigned at dispatch. The evolution-action write, checkpoint write, mark
+  advance, handoff write and outbound send each reject a stale epoch before
+  mutation. A lease transfer cancels the old worker; only the new claimant may
+  resume the saved chunk. A mark advances only after every write in that chunk
+  was accepted under the current claim. A stale worker can read but cannot
+  mutate state, even if it passed an earlier claim check.
 
 The pass, in order:
 
@@ -186,7 +193,9 @@ The pass, in order:
 2. **Empty check (deterministic).** A gather empty by a declared rule ends with
    `outcome: nothing-to-do`, zero model calls.
 3. **One routed call.** `IntelligenceRouter.evaluate()` with
-   `attribution.component = 'JobPass/<slug>'`, a fixed prompt per pass, the gather
+   `attribution.component = 'JobPass/<slug>'` and explicit
+   `attribution.jobSlug`, `attribution.machineId`, and `attribution.runId`, a fixed
+   prompt per pass, the gather
    in an untrusted-data envelope, and strict JSON output `{ actionable: boolean,
    summary: string (≤600 chars), handoff: string (≤1000 chars) }`.
 4. **Deliver through the automation reply chokepoint.** If `actionable`, the
@@ -283,9 +292,12 @@ missing or stale snapshot reads as unknown, and unknown means **not usable**.
    (a) the per-slot trust summary from `codexHookTrust` reports every instar hook
    trusted at its current content hash (`allArmed`), with
    `codexHookContractCanary` passing as a pre-check, and (b) a **deny canary**
-   passed within the last 7 days. The canary starts a throwaway Codex session
-   (`codex exec --json`) in the project directory, run only when the last pass is
-   older than 7 days, that tries one command matching a dangerous-command-guard
+   passed within the last 7 days for the exact runtime version, hook content
+   hashes, effective guard configuration and Codex slot identity in use now.
+   Any change to those inputs invalidates the cached pass and makes the pin
+   unusable until the canary reruns. The canary starts a throwaway Codex session
+   (`codex exec --json`) in the project directory when the last pass is older
+   than 7 days or an input changed. It tries one command matching a dangerous-command-guard
    deny pattern which is harmless if it runs: an `rm -rf` of a path that does not
    exist inside a fresh temporary directory, chained with creating a marker file
    in that directory. It passes only if the JSON event stream shows the deny for
@@ -424,7 +436,8 @@ minutes by a spec-1 script with no session. In order:
    shortfall is counted and reported (`DegradationReporter`, naming the topic
    and the message range), never silent. On first run the marks start at the
    later of the start of the old job's last completed run and one hour ago
-   (§9.5).
+   (§9.5). The legacy scalar bookmark is imported once as a conservative hint;
+   it cannot mark any topic past a row that the old executor did not inspect.
 2. **Empty check.** No new rows → `outcome: nothing-to-do`, zero calls.
 3. **Jev** (§6.3), per row.
 4. **One routed call per chunk** of at most 10 rows, oldest first, as many chunks
@@ -433,17 +446,20 @@ minutes by a spec-1 script with no session. In order:
    old job's question, strict JSON output: items `{ row, title, description,
    dueBy | null }`, each naming the row index it came from.
 5. **Write (deterministic).** The chunk's parsed items are first saved with the
-   chunk (`state/commitment-pass.json`), so a retry after a partial write reuses
-   the same items in the same order. Each item becomes `POST /evolution/actions`
-   exactly as the job wrote it, plus a new idempotency key `externalKey =
+   chunk (`state/commitment-pass.json`) under the current claim epoch, so a retry
+   after a partial write reuses the same items in the same order. Each item
+   becomes `POST /evolution/actions`
+   exactly as the job wrote it, with the claim epoch checked at the action route,
+   plus a new idempotency key `externalKey =
    promise:<topicId>:<messageId>:<n>`, where `n` is the item's position among the
    items from that message, so a message with two promises keeps both. The route
    honours the key (a second write with the same key returns the existing action;
    spec 1 §7 asked for a per-message key). The
    follow-through choice is the job's: `dueBy` when resolved, else the fixed
    opt-out reason.
-6. **Marks** advance per chunk, only after that chunk's writes succeed. A chunk
-   whose call fails is retried on the next run; after 6 hours of failures for a
+6. **Marks** advance per chunk, only after that chunk's writes succeed and only
+   under the current claim epoch. A chunk whose call fails is retried on the next
+   run; after 6 hours of failures for a
    topic the mark advances and the skipped rows are counted and reported.
 
 The pass sends no message: the job never did. A run that cannot classify rows,
@@ -479,11 +495,18 @@ model shared with the other passes. Moving to ingest events is folded into the
    promise or action item / no / a report of something already done / cannot
    tell), both option orders in one call, on the scrubbed message. Topics in
    `intelligence.jevPromisePass.excludedTopics` never go to Jev.
-2. **Confident no** (P(yes) < 0.30) on a live machine: the row is dropped before the
-   model call.
+2. **Confident no** on a live machine requires a valid response in both option
+   orders, both selecting the explicit `no` label for the same row, with
+   P(yes) < 0.30 in each order. A missing, malformed, `cannot tell`, reversed
+   disagreement, or merely low-probability answer is never a confident no.
+   Only a valid confident no may drop the row before the model call.
 3. **Anything else:** the row goes to the routed call, which is the referee (Codex
    `fast`, GPT-6 Luna, where active and bench-cited; the agent default otherwise).
    A confident yes still needs it for the title and deadline.
+   This extraction is the commitment job's required work, including after a
+   positive or uncertain Jev label. It does not make Haiku or Luna a routine
+   second opinion for spec 1's scheduled-result triage: that path uses Jev alone
+   when confident and a backup only during Jev outage.
 4. **Audit:** `intelligence.jevPromisePass.auditRate` (default 0.05, and at least
    5 rows a week) of confident-no rows still go to the call, both in shadow and
    after going live.
@@ -531,7 +554,9 @@ both orders).
   server-side by the scheduler before the spawn. insight-harvest:
   `GET /evolution/learnings?applied=false`. Secret-scrubbed (`scrubForStore`)
   before it leaves the machine.
-- **Confident no** means P(no) ≥ 0.70. On a slug in
+- **Confident no** means valid answers in both option orders explicitly select
+  `no`, agree on the label, and each reports P(no) ≥ 0.70. Missing, malformed,
+  `cannot tell`, or order-disagreeing answers proceed to the session. On a slug in
   `intelligence.jevJobPregate.liveSlugs` it ends the run, `outcome: jev-quiet`.
   Anything else: the run proceeds.
 - **Shadow.** For slugs not in `liveSlugs` every run proceeds, and each
@@ -606,14 +631,18 @@ piece to the fleet is a separate later PR (§12).
    the pass and the session template; any other caller using it is refused. The
    dedupe is per machine (replication fingerprints actions by title, target and
    creation time). Existing actions have none and are unaffected.
-5. **commitment-detection marks.** On first pass run the per-topic marks start at
-   the later of the **start** of the old job's last completed run (when it read
+5. **commitment-detection marks.** On first pass or upgraded-session run the
+   per-topic marks start at the later of the **start** of the old job's last completed run (when it read
    the log) and one hour ago, so nothing that arrived during that run is skipped,
    and a machine whose old job last ran weeks ago does not replay a backlog of
    stale promises; the gap, when there is one, is reported. Rows the old job's last
    run already recorded may be recorded once more (its actions carry no key); that
    is at most one run's worth, once. With no run history the marks start at
-   "now".
+   "now". The legacy scalar bookmark is read only for this one-time migration;
+   per-topic marks become the sole cursor for both executors. Import scans the
+   bounded retained history by topic and never applies one topic's maximum id to
+   another topic. If the retained window cannot prove coverage, report the gap
+   and start at the conservative lower mark.
 6. **Config.** §8, existence-checked.
 7. **User forks.** Reported once in `logs/job-runner-migration.jsonl` and flagged
    in `GET /jobs`, never rewritten (spec 1 §8.3).
@@ -626,11 +655,12 @@ piece to the fleet is a separate later PR (§12).
    breaker files are added to the BackupManager manifest; logs are excluded.
 10. **Rollback.** Every piece has a live switch (§8), and no piece rewrites a user
     file. Removing a pin is a template change shipped like any other. With passes
-    off, commitment-detection runs as its session again. So that the switch never
-    replays rows: the pass also advances the old job's bookmark
-    (`commitment-detection-bookmark.json`) to the newest row it processed, and the
-    session template, overwritten on every update, sends the same `externalKey`
-    when it records an action, so a row seen by both writes one action.
+    off, commitment-detection runs as its session again. Both executors use the
+    same per-topic marks in `state/commitment-pass.json` and the same
+    `externalKey`; neither advances the old global scalar bookmark. The scalar
+    bookmark is read only during the one-time migration in §9.5. A two-topic
+    interleaving cannot hide a lower message id in the other topic when the
+    switch flips in either direction.
 
 ## 10. Multi-machine posture
 
@@ -659,12 +689,19 @@ piece to the fleet is a separate later PR (§12).
 
 Built on spec 1's §9 machinery; nothing parallel.
 
-1. **Baseline.** Spec 1's 7-day post-conversion window, per slug and machine,
-   frozen into `.instar/state/job-routing-baseline.json`. commitment-detection's
-   real cost comes from spec 1's baseline, which counts it separately.
+1. **Baseline.** Spec 1's 7-day measurement window, per slug and machine,
+   frozen into `.instar/state/job-routing-baseline.json`. Before each conversion,
+   collect daily evolution-action counts for commitment-detection and the
+   before-state `wrong` or effect counts for pin candidates, alongside tokens,
+   runs and failures. If a historical surface cannot support a count, mark that
+   metric `unmeasured` and do not claim a quality delta or graduation from it.
+   Commitment-detection's real cost comes from spec 1's baseline, which counts it separately.
 2. **Per run** (run history): `runner`, `framework`, `model`, `routeBasis`
    (`bench` / `category-default` / `default` / `fallback`), `reason`, `outcome`,
-   tokens.
+   tokens. Every pass, retry, provider-swap, Jev and counterfactual call carries
+   explicit `jobSlug`, `machineId` and `runId` attribution. The cost ledger
+   groups by `jobSlug` and counts each provider attempt once, including both
+   attempts in a swap; a component name alone is insufficient.
 3. **Codex attribution.** Spec 1's `job_sessions` row gains `framework` and
    `framework_session_id`. For Codex the rollout id is recorded **when it is
    discovered** after spawn; until then, and if never, the session is counted
@@ -736,7 +773,9 @@ each quoting the numbers named for it.
   file closed, unreadable file open; reset only by a pin change.
 - Deny canary (with the first Codex pin): a deny event with the marker absent
   passes; a deny event with the marker present fails and raises one item; no event
-  fails; it runs only when the last pass is older than 7 days.
+  fails; it reruns when the last pass is older than 7 days or any bound runtime,
+  hook hash, guard configuration or slot identity changes. A cached result for
+  former inputs never makes the current pin usable.
 - Pass route: unclaimed `runId` → 409; non-allowlisted slug → 409; repeat POST
   returns the existing run; one running and at most one queued per slug; cap
   derivation; load-bearing cut → no call; empty → no call; schema failure retries
@@ -745,15 +784,25 @@ each quoting the numbers named for it.
   on the same run; 3 degraded runs raise one item that clears on a clean run;
   handoff scrubbed, enveloped, aged out; a pass past its limit or with a lost
   claim is cancelled and cannot deliver; delivery is idempotent by `runId`.
+- Claim fencing: transfer the lease between gather and each mutation boundary;
+  stale workers cannot write a chunk, action, cursor, handoff or send a summary;
+  a new claimant resumes partial writes with the same idempotency keys and only
+  then advances the mark. Verify provider swap calls carry the same explicit
+  `jobSlug`, `machineId` and `runId`, with each cost row counted once.
 - commitment-detection pass: automation rows ignored; per-topic marks across the
   main and issues groups; the mark does not advance past a failed call or failed
   write; after 6 hours it advances with a counted skip; a window shortfall is
   counted; each item maps to its row; at most 10 rows per call; the evolution
   action carries `dueBy` or the opt-out reason, and `externalKey`; a repeated
   write returns the existing action; first-run marks start at the old job's last
-  run, or an hour ago if that is later; the pass advances the old bookmark; the
-  session template sends the same `externalKey`; a cancelled run counts as
-  degraded.
+  run, or an hour ago if that is later; the pass and session share per-topic
+  marks and the same `externalKey`; interleaved topics survive rollback; a
+  cancelled run counts as degraded.
+- Jev label boundaries: both orders valid matching `no` can drop or skip when
+  their respective threshold is met; low probability alone, `cannot tell`,
+  malformed output and disagreement in either order always proceed.
+- Baseline: daily actions and effects are collected before conversion; a missing
+  historical metric is `unmeasured` and cannot satisfy a quality gate.
 - Jev in that pass: shadow never drops; confident-no drops only when live; the
   audit share (default 0.05, at least 5 a week) still calls the model; unsettled
   actions are `unknown` and the screen needs 10 settled; excluded topics never reach Jev; cap or Jev
