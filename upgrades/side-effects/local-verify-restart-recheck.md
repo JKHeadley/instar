@@ -81,3 +81,9 @@ Concurred. Independent cross-model reviewer (Codex, read-only), two rounds:
 **Reviewer:** Independent Codex read-only reviewer (/root/priority_review).
 
 The branch was merged with `origin/main` after the verify queue reported a conflict. The resolution keeps the run-ended restart callback and main's fail-fast and balanced-shard settings. Independent Codex review of the staged merge found no conflict-resolution error. The full Local Verify run on the merged head remains the merge authority.
+
+## Post-overflow merge review
+
+**Reviewer:** Independent Codex read-only reviewer (/root/priority_review).
+
+After PR #2397 merged, the restart branch was reconciled with its queue overflow changes. The reviewer confirmed both spec paragraphs, overflow restore and admission, the run-ended callback, and the pause check before starting another queued verify. No concrete issue was found. The next Local Verify run on this head remains the merge authority.

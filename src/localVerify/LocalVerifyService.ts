@@ -126,6 +126,13 @@ export const QUEUE_PRIORITY = Object.freeze({ main: MAIN_VERIFY_LIMITS.priority,
  */
 export const THROUGHPUT_AGING_MS = 90 * 60_000;
 
+/** The queue cap an entry of this priority is admitted under: labelled throughput work gets a bounded overflow. */
+export function capFor(priority: number): number {
+  return priority === QUEUE_PRIORITY.mergeThroughput
+    ? LOCAL_VERIFY_LIMITS.queueCap + LOCAL_VERIFY_LIMITS.throughputOverflow
+    : LOCAL_VERIFY_LIMITS.queueCap;
+}
+
 /** The stored priority for a PR entry, from its labels. */
 export function prPriority(view: Pick<PrView, 'labels'> | null | undefined): number {
   const labels = view?.labels;
@@ -856,14 +863,19 @@ export class LocalVerifyService {
         this.audit({ event: 'queue-restore-dropped', pr: e.pr, headSha: e.headSha, reason: why });
         continue;
       }
-      if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) { drops['queue-full']++; continue; }
+      const restoredPriority = view ? prPriority(view) : (e.priority === QUEUE_PRIORITY.mergeThroughput ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary);
+      // What was durably queued comes back, bounded by the largest cap any entry could have been
+      // admitted under (labelled overflow included): restoring the labelled entries first must not
+      // push ordinary entries that were legitimately queued below the cap out of the queue.
+      // +1: the run interrupted by the restart comes back at the head on top of a full overflow.
+      if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput) + 1) { drops['queue-full']++; continue; }
       const entry: QueueEntry = {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
         baseSha: view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha,
         baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         // An unreadable view keeps the saved label level (never more than the throughput level).
-        priority: view ? prPriority(view) : (e.priority === QUEUE_PRIORITY.mergeThroughput ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary),
+        priority: restoredPriority,
         files: view ? viewFiles(view) : null, text: view ? prMatchText(view.title, view.body) : '',
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
@@ -1162,18 +1174,24 @@ export class LocalVerifyService {
       if (derived) return { ok: true, status: 'recorded', record: derived };
     }
 
-    if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+    // A pushed head re-queued in its kept place replaces an entry that was already admitted:
+    // it is never refused for capacity (it would otherwise lose its place while the overflow is in use).
+    if (!keptPlace && this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
       // A queue full of HELD entries must not refuse the repair that would release them: a
       // repair candidate is admitted past the cap while the hold is active. There is no
       // second cap: candidates past it are bounded only by the open PRs that touch, name
       // or revert the failing check, and each one is audited below.
       const hold = this.holdDecision();
       const repair = hold.active && repairVerdict({ files: prFiles, text: prText }, hold.failingFiles).candidate;
-      if (!repair) {
+      // A merge-throughput PR gets a bounded overflow (LOCAL_VERIFY_LIMITS.throughputOverflow).
+      const throughput = !repair && prPriority(view) === QUEUE_PRIORITY.mergeThroughput
+        && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
+      if (!repair && !throughput) {
         this.audit({ event: 'queue-full', pr, ...(hold.active ? { mainRedHold: true } : {}) });
         return { ok: false, code: 'queue-full' };
       }
-      this.audit({ event: 'queue-full-repair-admitted', pr, headSha, redHead: hold.active ? hold.redHead : null });
+      if (repair) this.audit({ event: 'queue-full-repair-admitted', pr, headSha, redHead: hold.active ? hold.redHead : null });
+      else this.audit({ event: 'queue-full-throughput-admitted', pr, headSha });
     }
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha, baseSha, baseRefName,
@@ -1680,6 +1698,8 @@ export class LocalVerifyService {
     for (const r of failed) {
       if (seen.has(r.pr)) continue;
       seen.add(r.pr);
+      // Skipped at the ordinary cap BEFORE asking: request() marks the new base as tried even
+      // when it then answers queue-full, which would spend this PR's one re-run for nothing.
       if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
         this.audit({ event: 'rerun-after-green-overflow', pr: r.pr, headSha: r.headSha });
         continue;
