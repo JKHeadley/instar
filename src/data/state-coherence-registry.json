@@ -1699,9 +1699,11 @@
       ],
       "grandfathered": false,
       "retention": {
-        "class": "A",
+        "class": "time-window",
         "access": "whole-sync",
-        "note": "The last 20 completed results are kept; cancelled attempt ids expire after seven days. The current attempt is replaced on completion or restart."
+        "maxResults": 20,
+        "tombstoneMaxAgeMs": 604800000,
+        "note": "The current attempt is replaced on completion or restart, results keep their last 20 entries, and cancelled attempt ids expire after seven days. The snapshot is rewritten in place."
       }
     },
     {

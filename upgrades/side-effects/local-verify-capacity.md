@@ -78,3 +78,5 @@ Adds a second verifier with an exact import rule and bounded recovery; ships dar
 ## Second-pass review
 
 The independent reviewer found a closed-PR race: a queued entry removed during a peer-result fetch could still be imported. The close path now cancels the attempt and persists the removal; the import path rechecks queue membership. A focused test closes the PR during the pending fetch and confirms the late success never enters the index or merge line. The reviewer rechecked the fix and concurred with the review, finding no other material concern in the signal and authority, lease, child lifecycle, or state retention paths.
+
+CI then exposed a metadata mismatch: the peer attempt snapshot was registered as an append-only A-class stream, although it is rewritten in place with one current attempt, 20 results, and seven-day tombstones. The registry now describes that retention directly. Runtime state and its safety rules did not change.
