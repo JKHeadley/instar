@@ -53,6 +53,7 @@ import {
 } from './discovery.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { autoStartRefusalReason, setLastAutoStartRefusal, withTeardownLock } from '../core/ThrowawayAgentGuard.js';
 
 /**
  * Try allocatePort from the registry, fall back to scanning for a free port.
@@ -798,17 +799,40 @@ export function autoStartNeedsLifeline(plistContent: string, hasTelegramConfigur
   return hasTelegramConfigured && !plistContent.includes('<string>lifeline</string>');
 }
 
-export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
+export function installAutoStart(
+  projectName: string,
+  projectDir: string,
+  hasTelegram: boolean,
+  opts: { force?: boolean } = {},
+): boolean {
   const platform = process.platform;
 
-  if (platform === 'darwin') {
-    return installMacOSLaunchAgent(projectName, projectDir, hasTelegram);
-  } else if (platform === 'linux') {
-    return installLinuxSystemdService(projectName, projectDir, hasTelegram);
-  } else {
+  // Test-agent leak guard (docs/specs/test-agent-leak-guard.md). EVERY writer of
+  // the autostart unit funnels through here — the CLI, the server and lifeline
+  // startup self-heals, and the PostUpdateMigrator regenerations — so this one
+  // check covers them all. A throwaway agent (temp-folder project, sandboxed
+  // HOME, or a recorded throwaway marker) must never load a keep-alive job into
+  // the REAL user launchd/systemd: the domain belongs to the account, not to
+  // $HOME, and launchd then runs the job with the account's real HOME and login.
+  // The check-and-write runs under the same per-agent lock as the expiry
+  // teardown, so an install can never cross a teardown in progress.
+  const locked = withTeardownLock(projectDir, () => {
+    const refusal = autoStartRefusalReason(projectDir, { force: opts.force });
+    setLastAutoStartRefusal(refusal);
+    if (refusal) return false;
+    if (platform === 'darwin') {
+      return installMacOSLaunchAgent(projectName, projectDir, hasTelegram);
+    } else if (platform === 'linux') {
+      return installLinuxSystemdService(projectName, projectDir, hasTelegram);
+    }
     // Windows or other — no auto-start support yet
     return false;
+  });
+  if (!locked.ran) {
+    setLastAutoStartRefusal('a throwaway-agent teardown is in progress for this agent');
+    return false;
   }
+  return locked.value;
 }
 
 /**

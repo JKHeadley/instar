@@ -85,6 +85,7 @@ import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
 import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE } from '../commands/setup.js';
+import { autoStartRefusalReason, takeLastAutoStartRefusal } from './ThrowawayAgentGuard.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
@@ -3823,8 +3824,13 @@ export class PostUpdateMigrator {
         this.config.projectDir,
         this.config.hasTelegram,
       );
+      const refusal = takeLastAutoStartRefusal();
       if (installed) {
         result.upgraded.push('boot-wrapper .cjs: regenerated plist to reference instar-boot.cjs');
+      } else if (refusal) {
+        // Test-agent leak guard: a throwaway agent's autostart is refused on
+        // purpose — a skip, not a migration error.
+        result.skipped.push(`boot-wrapper .cjs: ${refusal}`);
       } else {
         result.errors.push('boot-wrapper .cjs: installAutoStart returned false');
       }
@@ -4594,6 +4600,17 @@ export class PostUpdateMigrator {
   private migrateFleetWatchdog(result: MigrationResult): void {
     if (process.platform !== 'darwin') {
       result.skipped.push('fleet-watchdog: non-darwin platform');
+      return;
+    }
+
+    // Test-agent leak guard (docs/specs/test-agent-leak-guard.md). The fleet
+    // watchdog is a MACHINE-WIDE launchd job. A throwaway agent (temp-folder
+    // project, sandboxed HOME, recorded throwaway) must never rewrite or reload
+    // it: under a sandboxed HOME this would replace the machine's real watchdog
+    // with one pointing into a temp folder that is later deleted.
+    const throwawayRefusal = autoStartRefusalReason(this.config.projectDir);
+    if (throwawayRefusal) {
+      result.skipped.push(`fleet-watchdog: ${throwawayRefusal}`);
       return;
     }
 
@@ -12358,6 +12375,22 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added TCC-protected path guard section');
+    }
+
+    // Test-agent leak guard (docs/specs/test-agent-leak-guard.md). OWN sniff key
+    // `Throwaway test agents` — content-sniffed for idempotency; the template
+    // emits the same section for new agents.
+    if (!content.includes('Throwaway test agents')) {
+      content += '\n\n' + `## Throwaway test agents (they cannot become permanent jobs on your login)
+
+An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folders\` and the like) or with a sandboxed \`HOME\` is a throwaway. On 2026-10-21 one such release-check agent installed itself into the operator's real launchd and ran scheduled jobs on the operator's Claude subscription for five days. Now, enforced in code:
+- **No self-installed auto-start.** A throwaway never installs a start-on-login job, and a non-interactive \`instar init\` records \`autostart.autoInstall: false\` so the server and lifeline do not install one on their own. \`instar autostart install\` is the explicit request (\`--force\` for a throwaway). The setup wizard already runs it.
+- **It expires.** \`init\` records \`throwawayAgent.expiresAt\` (24h by default; \`--expires-in 6h\`, or \`--keep\` to never expire). A temp-folder agent with no record gets one at its next boot. On expiry the server and lifeline remove their own auto-start (only the unit whose working directory is this agent) and exit; \`.instar/state/throwaway-expired.json\` says what was removed.
+- **No scheduled jobs.** A temp-folder or recorded throwaway refuses every scheduled job (skip reason \`throwaway-agent\`), because a session could reach the real login. \`scheduler.allowOnThrowawayAgent: true\` overrides it for a test that arranged its own login.
+- **When to use** (PROACTIVE): when you create a test agent, put it in a temp folder (or pass \`--expires-in\`) and never \`--force\` its auto-start; when the user asks "why don't this agent's jobs run?" or "why did this agent stop by itself?" read the skip ledger and the expired marker. Spec: \`docs/specs/test-agent-leak-guard.md\`.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Throwaway test agents section');
     }
 
     if (patched) {

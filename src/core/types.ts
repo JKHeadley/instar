@@ -767,6 +767,12 @@ export interface JobState {
 }
 
 export interface JobSchedulerConfig {
+  /**
+   * Test-agent leak guard: a throwaway-located agent refuses every scheduled
+   * job (it cannot prove a session would not use the operator's real login).
+   * true is the explicit override for a test that arranged its own login.
+   */
+  allowOnThrowawayAgent?: boolean;
   /** Path to jobs definition file */
   jobsFile: string;
   /** Whether the scheduler is active */
@@ -1368,6 +1374,7 @@ export type SkipReason =
   | 'machine-scope'   // Job is scoped to a different machine
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
+  | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**
@@ -4483,6 +4490,28 @@ export interface InstarConfig {
   enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build')[];
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
+  /**
+   * Test-agent leak guard (docs/specs/test-agent-leak-guard.md). Recorded by
+   * `instar init` when it created this agent in a temporary folder or under a
+   * sandboxed HOME (or with --expires-in). Once expiresAt passes, the server
+   * and lifeline remove this agent's own autostart and exit for good.
+   */
+  throwawayAgent?: {
+    createdAt: string;
+    expiresAt?: string;
+    reasons?: string[];
+  };
+  /**
+   * Install-time autostart posture. `autoInstall: false` (recorded by a
+   * non-interactive `instar init` without --autostart) stops the server and
+   * lifeline startup self-heals from installing or regenerating the autostart
+   * unit on their own. `instar autostart install` is the explicit request and
+   * sets it back to true.
+   */
+  autostart?: {
+    autoInstall?: boolean;
+    reason?: string;
+  };
   /** Registered users */
   users: UserProfile[];
   /** Messaging adapters to enable */
