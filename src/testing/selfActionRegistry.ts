@@ -40,6 +40,7 @@ import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, dec
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -2690,6 +2691,44 @@ const overloadAdmissionSelfHelp: SelfActionController = {
 };
 
 /**
+ * interactive-login-expired-swap — CMT-1008. A topic session stuck at Claude Code's expired-login
+ * screen is swapped onto a signed-in account. Under the pinned fixture the swap is always refused
+ * (targetAlwaysRejects: no eligible alternate / refresh refused) and the session never leaves the
+ * screen, so the monitor re-offers it forever. The REAL brake (`decideLoginExpiredSwap`, the same
+ * function the recovery calls): one attempt per 10-min cooldown, at most 3 per session, then it
+ * stays put. A successful swap resets the budget, but only after the dead source account is marked
+ * needs-reauth and excluded, so successes are bounded by the pool size (not modelled: the fixture
+ * refuses every swap).
+ */
+const interactiveLoginExpiredSwap: SelfActionController = {
+  id: 'interactive-login-expired-swap',
+  actionVerb: 'account-swap',
+  models: 'src/core/InteractiveLoginExpiredRecovery.ts (decideLoginExpiredSwap: 10-min cooldown + 3-attempt cap per session)',
+  modelsPath: 'src/core/InteractiveLoginExpiredRecovery.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt budget is in memory; after a restart a stuck session needs a fresh 60-s dwell and is again capped at 3 attempts, and nothing in this controller causes a restart.' },
+  boundK: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS,
+  perTargetBoundK: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS,
+  ticks: 60,
+  tickMs: 5 * 60_000, // the monitor re-offers well inside every cooldown
+  makeUnderPressure(f, sink) {
+    const TARGET = 'stuck-topic-session';
+    let attempts = 0;
+    let lastAt: number | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const d = decideLoginExpiredSwap({ attempts, lastAttemptAtMs: lastAt, nowMs: f.clock.nowMs(),
+          cooldownMs: INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, maxAttempts: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS });
+        if (d !== 'attempt') return;
+        attempts += 1; lastAt = f.clock.nowMs();
+        sink.emit({ verb: 'account-swap', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; } // a real move (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * overload-shed — trustworthy-machine-load Part D (D1–D4). The real
  * OverloadShedPlanner under the pinned worst case: this machine's admission is
  * closed and enforced on every sample, forever; a healthy peer always has room;
@@ -3052,4 +3091,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   agentIdentityCoherenceDetector,
   a2aPeerDarkRaise,
   threadlineConnectEnableRestart,
+  interactiveLoginExpiredSwap,
 ];

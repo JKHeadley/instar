@@ -161,6 +161,12 @@ describe('local-verify lifecycle (production wiring)', () => {
       liveConfig: { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) },
       authToken: 't', lease: { holdsLease: () => false, leaseEpoch: () => 3, holderMachineId: () => 'm_coord' },
     });
+    values['monitoring.localVerify.failFast'] = false;
+    values['monitoring.localVerify.laneShards'] = { integration: 1, e2e: 2 };
+    wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
+    const switches = svc as unknown as { failFastOn(): boolean; laneShards(): unknown };
+    expect(switches.failFastOn()).toBe(false);
+    expect(switches.laneShards()).toEqual({ integration: 1, e2e: 2 });
     await svc.boot();
     const c = { ...ctx(stateDir, svc), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 3 }) } } as never;
     const st = await request(serve(c)).get('/local-verify/peer-status');

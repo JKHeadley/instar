@@ -15211,7 +15211,36 @@ export async function startServer(options: StartOptions): Promise<void> {
     quotaPollerRef = quotaPoller;
     // A session ended at Claude Code's "Login expired" screen is a signal to the poller, which
     // alone decides whether that corroborates needs-reauth (and so opens the sign-in repair).
-    sessionManager.setLoginExpiredSink((input) => quotaPoller.noteCliLoginExpired(input));
+    // CMT-1008: the screen is authoritative over a READABLE credential — the poller moves that
+    // account to needs-reauth at once (an unreadable one still waits for the two-session rule).
+    sessionManager.setLoginExpiredSink((input) => {
+      // A tool-result-led frame stays a sighting only (the two-session rule decides).
+      if (!input.messageLed) { quotaPoller.noteCliLoginExpired(input); return; }
+      void quotaPoller.observeCliLoginExpired(input).catch((err) => console.warn(`[QuotaPoller] expired-login observation failed: ${err instanceof Error ? err.message : String(err)}`));
+    });
+    // CMT-1008: an INTERACTIVE (topic) session stuck at the same screen is moved onto a signed-in
+    // account through the reactive swap funnel (the one POST /subscription-pool/swap uses), after
+    // the poller marks its dead login. Kill switch: subscriptionPool.loginExpiredSwap.enabled:false.
+    const { InteractiveLoginExpiredRecovery } = await import('../core/InteractiveLoginExpiredRecovery.js');
+    const interactiveLoginExpiredRecovery = new InteractiveLoginExpiredRecovery({
+      observe: (input) => quotaPoller.observeCliLoginExpired(input),
+      swap: async (args) => {
+        if (!_quotaAwareScheduler) return { swapped: false, toAccountId: null, reason: 'scheduler-not-configured' };
+        return _quotaAwareScheduler.onQuotaPressure(args);
+      },
+      swapEnabled: () => liveConfig.get<unknown>('subscriptionPool.loginExpiredSwap.enabled', (config.subscriptionPool as { loginExpiredSwap?: { enabled?: boolean } } | undefined)?.loginExpiredSwap?.enabled ?? true) !== false,
+      logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      onSwapFailed: ({ signal, accountId, reason }) => {
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.monitorTick.interactiveLoginExpired',
+          primary: 'an interactive session stuck at an expired login is resumed on a signed-in pool account',
+          fallback: 'left at the login screen; the account is marked needs-reauth so new sessions avoid it',
+          reason: `Session "${signal.sessionName}" on ${accountId} could not be swapped (${reason})`,
+          impact: 'That conversation stays unanswered until another account is available or the login is signed in again.',
+        });
+      },
+    });
+    sessionManager.setInteractiveLoginExpiredSink((signal) => interactiveLoginExpiredRecovery.handle(signal));
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
       console.log(pc.green('  Subscription quota poller started'));
@@ -22765,6 +22794,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         if (built.service) {
           localVerifyService = built.service;
+          // Both the coordinator and a peer read the same live lane switches.
+          // A peer can run PR verifies without a source checkout.
+          wiring.wireLocalVerifySwitches(localVerifyService, liveConfig);
           try {
             await localVerifyService.boot();
             const svc = localVerifyService;
@@ -22844,10 +22876,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (localVerifyService && !localVerifyService.isPeerOnly()) {
         const svc = localVerifyService;
         const rec = localVerifyStatus;
-        // Main-red hold (CMT-1033): while `main` fails a known check, only a repair candidate
-        // takes the verify slot. Kill switch: monitoring.localVerify.mainRedHold (read live).
-        // Fail-fast (PR verifies): stop the other lanes once one has a real failure. monitoring.localVerify.failFast (read at each start).
-        (await import('../localVerify/localVerifyWiring.js')).wireLocalVerifySwitches(svc, liveConfig);
         greenPrAutoMerger?.attachLocalVerify({
           effectiveFloor: () => (rec ? rec.effectiveFloor() : null),
           mainHealth: () => svc.mainHealth().state,
