@@ -22805,6 +22805,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             wiring.wireLocalVerifyPeers(svc, {
               liveConfig,
               authToken: String(config.authToken ?? ''),
+              agentId: config.projectName,
               lease: coordinator.enabled
                 ? {
                     holdsLease: () => coordinator.holdsLease(),

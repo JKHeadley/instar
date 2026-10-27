@@ -427,12 +427,12 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
  * addresses, a short timeout per call, and every failure reported as null (the caller's
  * bounded recovery decides). `fetchImpl` is the test seam.
  */
-export function makePeerClient(authToken: string, fetchImpl: typeof fetch = fetch, timeoutMs = 10_000): PeerClient {
+export function makePeerClient(authToken: string, agentId: string, fetchImpl: typeof fetch = fetch, timeoutMs = 10_000): PeerClient {
   const call = async (url: string, init: RequestInit): Promise<{ status: number; body: unknown } | null> => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), timeoutMs);
     try {
-      const r = await fetchImpl(url, { ...init, signal: ac.signal, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' } });
+      const r = await fetchImpl(url, { ...init, signal: ac.signal, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${authToken}`, 'X-Instar-AgentId': agentId, 'Content-Type': 'application/json' } });
       const text = await r.text();
       let body: unknown = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = null; } // @silent-fallback-ok — an unparseable body reads as no answer
@@ -480,6 +480,7 @@ export function wireLocalVerifyPeers(
   o: {
     liveConfig: { get<T>(key: string, fallback: T): T };
     authToken: string;
+    agentId: string;
     lease: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null;
     fetchImpl?: typeof fetch;
   },
@@ -487,7 +488,7 @@ export function wireLocalVerifyPeers(
   svc.setPeerWiring({
     peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,
     peers: () => o.liveConfig.get<unknown>('monitoring.localVerify.peers', []),
-    client: makePeerClient(o.authToken, o.fetchImpl),
+    client: makePeerClient(o.authToken, o.agentId, o.fetchImpl),
     lease: o.lease,
   });
 }

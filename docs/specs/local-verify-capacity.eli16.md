@@ -4,6 +4,8 @@ Before a pull request can merge, its tests run on the Studio, one pull request a
 
 **What this adds.** The Mac Mini can run pull-request test runs that the Studio hands it. The Studio stays in charge: it keeps the line, decides what to hand over, and is still the only machine that merges. The Mini only runs the tests and keeps the result. The Studio then fetches that result and treats it like one of its own.
 
+Before turning it on, the Studio must be able to reach the Mini's test service with credentials and an agent name the Mini accepts. If that check fails, the Mini stays out of the line.
+
 **Why it's safe to trust the Mini's result.** Each hand-off gets a one-time id. The Studio accepts a result only if all of these hold:
 - it answers exactly that hand-off;
 - it tested exactly the code that was handed over (same pull request, same commit, same version of main);

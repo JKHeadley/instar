@@ -20,10 +20,12 @@ import { LocalVerifyService, type PrView } from '../../src/localVerify/LocalVeri
 import { computePolicyHash } from '../../src/localVerify/policy.js';
 import { makePeerClient } from '../../src/localVerify/localVerifyWiring.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
+import { authMiddleware } from '../../src/server/middleware.js';
 
 const REPO = 'JKHeadley/instar';
 const sha = (c: string) => c.repeat(40);
 const ATT = 'c'.repeat(32);
+const AUTH = 'test-token';
 const dirs: string[] = [];
 const servers: http.Server[] = [];
 afterEach(async () => {
@@ -76,6 +78,7 @@ async function listen(a: express.Express): Promise<string> {
 function appFor(c: RouteContext): express.Express {
   const a = express();
   a.use(express.json());
+  a.use(authMiddleware(() => AUTH, 'echo'));
   a.use(createRoutes(c));
   return a;
 }
@@ -89,8 +92,12 @@ describe('peer verifier routes (integration, real HTTP)', () => {
   it('the coordinator\'s real client reads status, dispatches, reads the result and cancels over HTTP', async () => {
     const p = peerService();
     const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
-    const client = makePeerClient('test-token');
+    const client = makePeerClient(AUTH, 'echo');
     const peer = { machineId: 'peer1', url };
+    expect((await request(url).get('/local-verify/peer-status')).status).toBe(401);
+    expect((await request(url).get('/local-verify/peer-status').set('Authorization', 'Bearer wrong-token')).status).toBe(403);
+    expect(await makePeerClient('wrong-token', 'echo').status(peer)).toBeNull();
+    expect(await makePeerClient(AUTH, 'wrong-agent').status(peer)).toBeNull();
     expect(await client.status(peer)).toMatchObject({ inFlight: null, verifierVersion: '1.0.0', policyHash: computePolicyHash(), slotBusy: false });
     expect(await client.run(peer, runBody())).toEqual({ ok: true, attemptId: ATT });
     expect(p.children).toHaveLength(1);
@@ -104,18 +111,18 @@ describe('peer verifier routes (integration, real HTTP)', () => {
   it('the lease holder refuses peer-run; a malformed body is a 400; a bad attempt id is a 400', async () => {
     const p = peerService();
     const holder = appFor(ctx(p.stateDir, p.svc, true));
-    const r = await request(holder).post('/local-verify/peer-run').send(runBody());
+    const r = await request(holder).post('/local-verify/peer-run').set('Authorization', `Bearer ${AUTH}`).send(runBody());
     expect(r.status).toBe(409);
     expect(r.body).toEqual({ ok: false, reason: 'is-lease-holder' });
     const standby = appFor(ctx(p.stateDir, p.svc, false));
-    expect((await request(standby).post('/local-verify/peer-run').send({ pr: 3 })).status).toBe(400);
-    expect((await request(standby).get('/local-verify/peer-result?attemptId=xyz')).status).toBe(400);
+    expect((await request(standby).post('/local-verify/peer-run').set('Authorization', `Bearer ${AUTH}`).send({ pr: 3 })).status).toBe(400);
+    expect((await request(standby).get('/local-verify/peer-result?attemptId=xyz').set('Authorization', `Bearer ${AUTH}`)).status).toBe(400);
   });
 
   it('a peer-only service answers the coordinator routes as the standby it is (409), and peer-status works', async () => {
     const p = peerService();
     const a = appFor(ctx(p.stateDir, p.svc, false));
-    expect((await request(a).get('/local-verify')).status).toBe(409);
-    expect((await request(a).get('/local-verify/peer-status')).body).toMatchObject({ enabled: true, inFlight: null });
+    expect((await request(a).get('/local-verify').set('Authorization', `Bearer ${AUTH}`)).status).toBe(409);
+    expect((await request(a).get('/local-verify/peer-status').set('Authorization', `Bearer ${AUTH}`)).body).toMatchObject({ enabled: true, inFlight: null });
   });
 });
