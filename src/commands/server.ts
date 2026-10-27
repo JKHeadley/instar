@@ -22716,6 +22716,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const lvCfg = (config.monitoring as { localVerify?: { enabled?: boolean; operatorGhLogin?: string; postStatuses?: boolean } } | undefined)?.localVerify;
       const gpCfg = config.monitoring?.greenPrAutoMerge as { expectedGhLogin?: string; repo?: string } | undefined;
       const lvMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
+      const wiring = await import('../localVerify/localVerifyWiring.js');
       const lvHooks: import('../localVerify/localVerifyWiring.js').LocalVerifyHooks = {};
       // Deduped attention for local-verify signals (main-red, status-stuck, mirror-pending, …).
       lvHooks.signal = (key, detail) => {
@@ -22732,21 +22733,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         }
         if (!telegram) return;
-        const id = typeof detail.head === 'string' && key === 'local-verify:mirror-pending' ? `${key}:${detail.head}` : key;
-        void telegram.createAttentionItem({
-          id,
-          title: `local-verify: ${key.replace(/^local-verify:/, '')}`,
-          // A signal that carries a plain-words `note` (the main-red hold item) reads as that note.
-          summary: (typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
-          category: 'degradation',
-          priority: ['local-verify:no-required-checks', 'local-verify:main-red', 'local-verify:required-but-not-posting'].includes(key) ? 'HIGH' : 'MEDIUM',
-        } as never).catch(() => { /* attention delivery is non-fatal */ });
+        // A starved PR ("the merge line is stuck behind it") is upserted so a later queue
+        // episode reopens the item; every other signal keeps create-once semantics.
+        const item = wiring.localVerifyAttentionItem(key, detail);
+        const row = { id: item.id, title: item.title, summary: item.summary, description: item.summary, category: 'degradation', priority: item.priority } as never;
+        void (item.mode === 'upsert' ? telegram.upsertAttentionItem(row) : telegram.createAttentionItem(row)).catch(() => { /* attention delivery is non-fatal */ });
       };
       // The main-red hold item closes itself when `main` is green again.
       lvHooks.clearSignal = (key, resolution) => {
         try { telegram?.clearAttentionCondition({ id: key }, resolution); } catch { /* @silent-fallback-ok — observability only; the lifecycle still expires the row */ }
       };
-      const wiring = await import('../localVerify/localVerifyWiring.js');
       if (lvCfg?.enabled) {
         const built = wiring.buildLocalVerifyService({
           config: lvCfg,

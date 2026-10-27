@@ -2895,6 +2895,83 @@ function makeThrowawayTeardownLoop(f: PressureFixture, sink: ActionSink): { tick
   };
 }
 
+/**
+ * local-verify-interrupted-resume — a server stop that kills a running PR verify
+ * (2026-10-26: the lifeline's drift restart killed PR 2350's run four times, each
+ * time un-counted and re-queued behind a fresh `main` verify). Modelled: every tick
+ * is a server stop + boot under which the interrupted PR is restored FIRST
+ * (`resumeFirst`, consumed on its single start — never two jumps per interruption),
+ * its attempt stays counted (`attempts` never decremented), and the starved signal
+ * fires ONCE per entry when `interruptions` reaches INTERRUPTION_LIMITS.starvedAfter
+ * (`starvedRaised` persisted) — horizon-independent: 48 restarts ⇒ at most one
+ * notify per entry (2 entries ⇒ boundK 2), not one per restart.
+ */
+const localVerifyInterruptedResume: SelfActionController = {
+  id: 'local-verify-interrupted-resume',
+  actionVerb: 'notify-starved-verify-retry',
+  models: 'src/localVerify/LocalVerifyService.ts (shutdown/restoreQueue → interruptions + resumeFirst; checkStarved/raiseStarvedIfDue → decideStarved(interrupted); pump → decideStart(resumeFirst))',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeInterruptedResume(f, sink),
+  },
+  makeUnderPressure(f, sink) { return makeInterruptedResume(f, sink); },
+};
+
+/** Entries live in `durableState` (queue.json): a restart is one more interruption, never a reset. */
+function makeInterruptedResume(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  type E = { pr: number; attempts: number; errorRetries: number; firstQueuedAt: number; starvedRaised: boolean; interruptions: number; resumeFirst?: true; running: boolean };
+  const key = 'local-verify-interrupted-resume:queue';
+  const t0 = f.clock.nowMs();
+  let queue = (f.durableState.get(key) as E[] | undefined)
+    ?? [301, 302].map((pr): E => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, interruptions: 0, running: false }));
+  f.durableState.set(key, queue);
+  const main: { kind: 'main'; notBefore?: number; pr?: undefined } = { kind: 'main' };
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      // 1. The server stops: the running entry is interrupted (shutdown): counted, marked, re-queued first.
+      const ran = queue.find((e) => e.running);
+      if (ran) {
+        ran.running = false;
+        ran.interruptions += 1;
+        ran.resumeFirst = true;
+        queue = [ran, ...queue.filter((e) => e !== ran)];
+        f.durableState.set(key, queue);
+      }
+      // 2. Boot: restored entries are checked for starvation before anything starts.
+      for (const e of queue) {
+        const d = decideStarved(e, now);
+        if (!d.raise) continue;
+        e.starvedRaised = true;
+        if (d.reason !== 'interrupted' && e.interruptions >= 2) throw new Error('interruption threshold should raise with reason interrupted');
+        sink.emit({ verb: 'notify-starved-verify-retry', target: String(e.pr) });
+      }
+      // 3. The boot-time `main` verify is queued; the interrupted PR must still start first.
+      const q: Array<E | typeof main> = [main, ...queue];
+      const d = decideStart({ foreignHolders: 0, queue: q, now, fairShare: { mainHealthy: false, oldestUnverifiedMainAt: now, lastStartWasMain: false } });
+      if (d.kind !== 'start') return;
+      const picked = q[d.index];
+      if (ran && picked !== ran) throw new Error(`interrupted PR ${ran.pr} did not resume first (picked ${picked.pr ?? 'main'})`);
+      if (picked.pr === undefined) return;
+      // The start consumes resumeFirst (one jump per interruption) and counts the attempt.
+      if (picked.resumeFirst !== true && ran === picked) throw new Error('resumeFirst was not set on the interrupted entry');
+      delete picked.resumeFirst;
+      picked.attempts += 1;
+      picked.running = true;
+      const prior = (f.durableState.get(key + ':attempts') as Map<number, number> | undefined) ?? new Map<number, number>();
+      if ((prior.get(picked.pr) ?? 0) >= picked.attempts) throw new Error(`attempts went backwards for pr ${picked.pr} (an interrupted run was un-counted)`);
+      prior.set(picked.pr, picked.attempts);
+      f.durableState.set(key + ':attempts', prior);
+    },
+  };
+}
+
 const throwawayExpiryTeardown: SelfActionController = {
   id: 'throwaway-expiry-teardown',
   actionVerb: 'kill',
@@ -2914,6 +2991,7 @@ const throwawayExpiryTeardown: SelfActionController = {
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   throwawayExpiryTeardown,
+  localVerifyInterruptedResume,
   attentionLifecyclePass,
   localVerifyFlakeRerun,
   localVerifyMergeHandoff,

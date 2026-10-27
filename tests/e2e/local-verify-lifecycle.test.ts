@@ -94,6 +94,28 @@ describe('local-verify lifecycle (production wiring)', () => {
     built.service!.shutdown();
   });
 
+  it('the starved signal is wired through the production function to hooks.signal (it used to reach only the audit log)', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+      hooks: { signal: (key, detail) => { signals.push({ key, detail }); } },
+    });
+    expect(built.service).not.toBeNull();
+    // Wiring integrity: the production seam is a real delegate, not absent or a no-op.
+    const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    expect(typeof seams.onStarved).toBe('function');
+    seams.onStarved!({ pr: 2350, headSha: '7befdd680e8fe9bb88277881f109eeca33f4bf68', waitedMs: 150 * 60_000, interruptions: 2, reason: 'interrupted' });
+    expect(signals).toEqual([{
+      key: 'local-verify:starved:2350',
+      detail: { pr: 2350, headSha: '7befdd680e8fe9bb88277881f109eeca33f4bf68', waitedMinutes: 150, reason: 'interrupted', interruptions: 2 },
+    }]);
+    await built.service!.boot();
+    expect((await request(serve(ctx(stateDir, built.service))).get('/local-verify')).status).toBe(200);
+    built.service!.shutdown();
+  });
+
   it('the merge line is wired through the production function and reports alive over HTTP; without a watcher it is inert and says so', async () => {
     const { home, stateDir } = sourceCheckout();
     const built = buildLocalVerifyService({
