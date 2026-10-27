@@ -4610,14 +4610,18 @@ process.stdin.on('end', async () => {
       },
       timeout: 3000,
     }, (res) => {
-      res.resume(); // drain response
+      // Exit as soon as the server has answered (it does in ~7 ms): this hook
+      // runs after every tool call and Claude Code waits for it, so the old
+      // fixed 50 ms wait was added to every action.
+      res.resume();
+      res.on('end', () => process.exit(0));
     });
 
-    req.on('error', () => {}); // silent failure
+    req.on('error', () => process.exit(0)); // silent failure
     req.write(payload);
     req.end();
 
-    // Don't wait for response — exit immediately
+    // Upper bound: never wait longer than before for a slow server.
     setTimeout(() => process.exit(0), 50);
   } catch (e) {
     process.exit(0);

@@ -346,6 +346,37 @@ describe('Hook installation for external operation safety', () => {
     expect(content).toContain('INSTAR_AUTH_TOKEN');
   });
 
+  it('hook-event-reporter.js delivers its event and exits once the server has answered', async () => {
+    const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'hook-event-reporter.js');
+    // Exit on the reply rather than after a fixed 50 ms: the hook runs after every
+    // tool call and Claude Code waits for it. The 50 ms timer stays as the cap.
+    expect(fs.readFileSync(hookPath, 'utf-8')).toContain("res.on('end', () => process.exit(0))");
+    const received: Array<{ url: string; body: string }> = [];
+    const server: Server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => { received.push({ url: req.url ?? '', body }); res.end('{}'); });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const code = await new Promise<number | null>((resolve) => {
+        const child = spawn(process.execPath, [hookPath], {
+          env: { ...process.env, INSTAR_SERVER_URL: `http://127.0.0.1:${port}`, INSTAR_AUTH_TOKEN: 't', INSTAR_SESSION_ID: 'sid-1' },
+          stdio: ['pipe', 'ignore', 'ignore'],
+        });
+        child.on('exit', (c) => resolve(c));
+        child.stdin.end(JSON.stringify({ session_id: 'claude-1', tool_name: 'Bash', tool_input: { command: 'ls' } }));
+      });
+      expect(code).toBe(0);
+      expect(received).toHaveLength(1);
+      expect(received[0].url).toBe('/hooks/events?instar_sid=sid-1');
+      expect(JSON.parse(received[0].body)).toMatchObject({ session_id: 'claude-1', tool_name: 'Bash' });
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it('hook-event-reporter.js is executable', () => {
     const hookPath = path.join(projectDir, '.instar', 'hooks', 'instar', 'hook-event-reporter.js');
     const stats = fs.statSync(hookPath);
