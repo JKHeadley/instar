@@ -26,7 +26,14 @@ afterAll(() => {
 function makeAgent(name: string, cfg: Record<string, unknown>): string {
   const dir = path.join(base, name);
   fs.mkdirSync(path.join(dir, '.instar', 'state'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.instar', 'config.json'), JSON.stringify({ projectName: name, port: 5677, authToken: 't', ...cfg }, null, 2));
+  // loadConfig checks these binary paths before the expired-agent startup gate.
+  // The gate exits before either binary can run, so a real executable path keeps
+  // this lifecycle test independent of what CI has installed.
+  fs.writeFileSync(path.join(dir, '.instar', 'config.json'), JSON.stringify({
+    projectName: name, port: 5677, authToken: 't',
+    sessions: { tmuxPath: process.execPath, claudePath: process.execPath },
+    ...cfg,
+  }, null, 2));
   return dir;
 }
 
@@ -49,7 +56,7 @@ describe('expired throwaway: production startup path', () => {
       env: { ...process.env, VITEST: 'true', INSTAR_SKIP_LAUNCHCTL_LOAD: '1' },
     });
     expect(r.error).toBeUndefined();
-    expect(r.status).toBe(0);
+    expect(r.status, `stdout: ${r.stdout}\nstderr: ${r.stderr}`).toBe(0);
     expect(r.stdout).toContain('throwaway agent expired');
     expect(fs.existsSync(expiredMarkerPath(dir))).toBe(true);
     expect(await portFree(5677)).toBe(true);
