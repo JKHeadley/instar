@@ -1,9 +1,13 @@
 ---
 title: Default Jobs
-description: The fourteen built-in jobs that give your agent its circadian rhythm.
+description: Built-in scheduled jobs, including session jobs and gated script runners.
 ---
 
-Instar ships with fourteen default jobs that run automatically on schedule. Each gives your agent a different rhythm: short-period health and commitment checks, mid-range reflection and evolution, daily identity reviews, and continuous oversight across development, learning, infrastructure, maintenance, and guardian responsibilities.
+Instar ships with built-in jobs on different schedules: frequent health and
+commitment checks, periodic reflection, daily reviews, and infrastructure
+maintenance. Some jobs use an AI session; script runners use a companion
+`.mjs` file. Rollout gates can keep a converted job on its existing session
+path until its script is enabled.
 
 ## Job schedule
 
@@ -38,6 +42,8 @@ Instar ships with fourteen default jobs that run automatically on schedule. Each
 | `benchmark-divergence-analysis` | `45 3 * * *` (daily 3:45am) | — (tier-0, deterministic) | [Benchmark-Divergence Detector](/features/benchmark-divergence) analysis pass — triggers `POST /benchmark-divergence/analyze` with `{"trigger":"cadence"}`. The server-side pass is fully deterministic (rolling matured-day window over the per-model quality rollup, pool-collect across machines, Wilson-aware comparison against the mirrored benchmark predictions, idempotent advisory finding upserts), so tier-0 supervision is justified — there is no LLM step anywhere. Lease-gated (a non-holder answers 409 and the job exits silently); observe-only (never messages). Ships `enabled: false` fleet-wide; the rollout step enables it on the development agent for the dryRun soak |
 | `feedback-factory-triage` | `*/15 * * * *` (every 15 min) | Haiku | Feedback triage tick — calls `POST /feedback-factory/triage/tick` so the operator-approved triage authority decides work / hold / ignore for feedback work items within deterministic floors, and held items come back on their timers. Near-silent; tier-1 supervised. Development-agent live, fleet dark; inert until the operator approves the triage authority. See [feedback factory processing](/features/feedback-factory-processing/) |
 | `feedback-factory-action-list` | `0 8 * * *` (daily 8am) | Haiku | Once-a-day operator action list from feedback triage — calls `POST /feedback-factory/triage/action-list`, which sends only NEW items that need the operator (at most 10 plus a count line, each with a direct link). The server enforces the 23:00–07:30 quiet window and once-per-item delivery. See [feedback factory processing](/features/feedback-factory-processing/) |
+| `feedback-factory-execute` | `17,47 * * * *` (twice hourly) | Script | Reconciles feedback fix attempts through `POST /feedback-factory/execute/tick`. Development agents run in dry-run first; fleet execution remains gated off. |
+| `script-job-supervisor` | `23 7 * * *` (daily) | Script + bounded AI review | Reviews script-job decisions and missing-machine signals once daily when the script rollout is active. It stays inactive on agents where the rollout is off. |
 
 All jobs ship inside `src/scaffold/templates/jobs/instar/` and are installed on `instar init` plus refreshed on every update via `PostUpdateMigrator`.
 
@@ -83,7 +89,7 @@ The agent can also modify its own jobs through the [evolution system](/features/
 
 ## The agentmd execution type
 
-A newer execution type, `agentmd`, lets the job body live in the markdown frontmatter of `.instar/jobs/<origin>/<slug>.md` rather than inline in `jobs.json`. The fourteen built-in jobs ship as `agentmd` files under `src/scaffold/templates/jobs/instar/`, which is why you'll find them as markdown files rather than JSON entries.
+A newer execution type, `agentmd`, lets the job body live in the markdown frontmatter of `.instar/jobs/<origin>/<slug>.md` rather than inline in `jobs.json`. Built-in jobs ship as Markdown files under `src/scaffold/templates/jobs/instar/`. A file can also declare `runner: script` and name a companion script installed under `.instar/jobs/instar/scripts/`.
 
 ## Superseded jobs
 
