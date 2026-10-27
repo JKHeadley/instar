@@ -181,3 +181,16 @@ safety, security or data loss in this build run, because every affected switch i
 dark on the fleet, in shadow on development agents, or flipped only by a later PR
 that quotes its numbers. Open questions: none. The spec is ready for review and
 approval.
+
+## 2026-10-27 audit amendment
+
+Justin added a universal requirement: Jev and every other LLM call must be
+benchmarkable, attributable and reviewable in bulk for accuracy and cost. A
+GPT-6 Astra review identified gaps in this spec's earlier per-run accounting:
+call-attempt identity, prompt version, actual model, independent outcome
+grading, unknown denominators and bulk joins were not mandatory on every path.
+The spec and ELI16 now make the audit adapter and its three-tier wiring tests a
+prerequisite for each new call family. This is an amendment after the six-round
+convergence above, not a claim that the amended design has already been built
+or certified. Existing callsites outside this spec require a separate coverage
+audit and retrofit.

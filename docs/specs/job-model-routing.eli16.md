@@ -81,6 +81,14 @@ secrets before it goes to Jev, and relationship records never go.
 
 ## How we know it worked
 
+Every Jev or other model call in this change must leave a reviewable record:
+which question it answered, the prompt version, the model actually used, its
+cost and timing, what it decided, and what later evidence showed. Calls with no
+known outcome stay marked unknown. A weekly bulk review can compare accuracy,
+missed work, speed and cost across models and prompt versions. A model agreeing
+with another model is a useful clue, but not proof that either was right. A new
+call path stays off until its benchmark, records and grading can be checked.
+
 The first spec adds per-job cost tracking. This spec freezes the week after the
 first spec lands as its starting point and then reports, per job, tokens before
 and after, how much Claude quota moved elsewhere, and whether quality held

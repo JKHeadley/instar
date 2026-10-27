@@ -47,6 +47,13 @@ no Jev key and no benchmark mirror stays fully functional. Jev, Codex and
 benchmark routing are optimizations only, and the one-provider path is measured
 first.
 
+**G7, auditability of every model call.** Every Jev, Claude, Codex, referee,
+counterfactual, retry, and provider-swap call introduced here must enter the
+same versioned benchmark and decision-quality system. No model route or Jev
+skip graduates on cost or model agreement alone. Calls whose outcomes cannot
+yet be graded remain explicitly `unknown`, not successful. This requirement
+also applies to the single-provider floor and to fallback calls.
+
 **Hard dependency.** This spec builds on spec 1's script runner (`runner:
 script`), its `job_sessions` attribution, `GET /jobs/cost` and its frozen
 baseline. None of those exist on `main` yet. This branch is stacked on spec 1's
@@ -90,6 +97,8 @@ Goals:
 - **G4.** Every path has a named single-provider behaviour, measured first.
 - **G5.** Migration parity: existing agents receive all of it on update.
 - **G6.** Savings and quality are measured per job, before and after (§11).
+- **G7.** Every new LLM call is benchmarked, recorded, graded where evidence
+  permits, and reviewable in bulk before its route can be activated (§11).
 
 Non-goals:
 
@@ -725,6 +734,39 @@ Built on spec 1's §9 machinery; nothing parallel.
    pin) is measured for its own week before the multi-provider numbers are
    reported.
 
+### Audit contract for every LLM call
+
+Before enabling a call family, register its stable decision-point id, versioned
+prompt/input schema and benchmark task set. Its adapter must write one durable
+attempt record for **every** invocation, including retries, timeouts, failures,
+Jev calls, fallback and shadow calls. The record includes a unique attempt id;
+parent decision id; job slug, run id, machine id and claim epoch; call purpose;
+prompt/schema version or hash; requested and actual provider/framework/model;
+input cohort and safe input reference/hash; start time, latency, token and cost
+usage where available; verdict or error; and route/fallback reason. A missing
+provider metric is `unknown`, never zero. Sensitive input stays in the
+appropriate protected store; bulk reports use references and redacted examples.
+
+The decision record joins all attempts for one input to the final action and
+subsequent observable outcome. Each decision point has a registered grade owner,
+grading rule and time window. Grades distinguish `correct`, `wrong`, `unknown`
+and `ungraded`; the denominator and missing-outcome count are reported. A
+model's agreement with another model is diagnostic evidence, never by itself
+an accuracy grade. Jev's confident negatives require sampled independent
+checking and outcome follow-up, including false negatives; skipped work cannot
+silently disappear from the denominator. For actions without an observable
+outcome, use a frozen, blinded human-graded or cross-family benchmark set and
+label live accuracy `unknown` until evidence exists.
+
+`GET /decision-quality` and `GET /jobs/cost?scope=pool` must permit a bounded
+bulk export joined by decision point, prompt version, actual model, agent,
+machine, time window and outcome. Unreachable peers, ungraded calls and
+unmapped costs are reported explicitly. A recurring review compares accuracy,
+false-negative/false-positive rates, latency and cost by cohort against the
+frozen baseline. Any prompt/model change starts a new version and a new review
+window. No route, Jev drop/skip, or fleet expansion proceeds if its records
+cannot be exported, joined and reviewed; the old functional path remains live.
+
 ### Verify the state, not its symbol
 
 | Signal | State it claims | Corroboration | When unmeasurable |
@@ -742,10 +784,12 @@ Built on spec 1's §9 machinery; nothing parallel.
 **This build run covers steps 1 and 2.** Later steps are separate PRs by the agent,
 each quoting the numbers named for it.
 
-1. Ship: the `framework` / `frameworkModel` fields with usability checks 1, 2 and 4
-   and the fallback; the pin ratchet; the pass runtime; the evolution-action
+1. Ship: the §11 audit adapter, benchmark and grader registrations first; the
+   `framework` / `frameworkModel` fields with usability checks 1, 2 and 4 and
+   the fallback; the pin ratchet; the pass runtime; the evolution-action
    `externalKey`; Jev in front of the commitment-detection pass, in shadow; the
-   pre-gate in shadow. No template carries a pin.
+   pre-gate in shadow. Each family stays inactive until its audit wiring passes
+   the three test tiers. No template carries a pin.
 2. On development agents: convert rope-health-digest and org-intent-drift-audit to
    scripts and the 9 pass jobs, commitment-detection included, to passes
    (category-default routing).
@@ -804,6 +848,12 @@ each quoting the numbers named for it.
   malformed output and disagreement in either order always proceed.
 - Baseline: daily actions and effects are collected before conversion; a missing
   historical metric is `unmeasured` and cannot satisfy a quality gate.
+- Audit adapter: each call family writes a record for success, error, timeout,
+  retry, Jev confidence, fallback and provider swap; actual-model identity,
+  prompt version and parent decision survive every path. Missing usage and
+  missing outcomes stay `unknown`; an agreement-only grade cannot qualify a
+  route. Bulk export joins attempted calls, actions, outcomes and costs, and
+  names unreachable peers instead of treating them as zero.
 - Jev in that pass: shadow never drops; confident-no drops only when live; the
   audit share (default 0.05, at least 5 a week) still calls the model; unsettled
   actions are `unknown` and the screen needs 10 settled; excluded topics never reach Jev; cap or Jev
@@ -823,6 +873,10 @@ each quoting the numbers named for it.
   actions the old job's instructions describe, and a second run writes none.
 - `GET /jobs` shows route fields; `GET /jobs/cost?scope=pool` merges and reports an
   unreachable peer as missing.
+- The decision-quality bulk view groups the same fixture attempts by decision
+  point, prompt version and actual model, including a Jev false negative and a
+  provider swap. Disabling or breaking the audit sink prevents activation of
+  the new call family while the old functional path still runs.
 
 **E2E (production init path)**
 - A server built like `server.ts` boots with the pass runtime, pin checks and the
@@ -832,6 +886,9 @@ each quoting the numbers named for it.
   `routeBasis: fallback` (the single-provider floor is alive).
 - With passes on, commitment-detection runs with no session; with passes off it
   runs its session as today.
+- Production wiring gives every newly enabled call family a real audit adapter
+  and grader registration; a no-op adapter or unregistered decision point keeps
+  that family inactive.
 
 ## Maturation plan
 
