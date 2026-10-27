@@ -61,6 +61,11 @@ describe('job-cost production lifecycle', () => {
     const stateDir = path.join(projectDir, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
     const endpoint = http.createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
       if (req.url !== '/decision-quality/grade-pass' || req.headers.authorization !== `Bearer ${token}`) {
         res.writeHead(401).end();
         return;
