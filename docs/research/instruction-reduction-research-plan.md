@@ -41,6 +41,17 @@ boundaries were built for the A3 trial, not checked paragraph by paragraph for
 safety. Review every one of those 47 against its full source text and every
 mixed reference block before freezing A1 or A2. AJ-04 shows why an index entry
 for a capability cannot substitute for the authority rule inside its block.
+Those 47 blocks total about 40,459 counted tokens, so blindly copying whole
+blocks into a 10k-token seed would miss the savings target. The review needs to
+extract short, testable authority clauses while leaving operational detail in
+the verified retrieval path. High-priority examples from the source text are
+the public/private publishing boundary (B023), signed agent messages carrying
+identity but no operator authority (B080), consent before moving an active
+autonomous run (B170), credential status showing names but never values
+(B173), and PromiseBeacon's default silence (B213). Each may be stated
+elsewhere too; compare the full source and A3 seed before calling any one an
+omission. Their presence inside capability sections is enough to make the
+keyword-only seed selection unsafe as a proof method.
 
 ### Pieces that already exist (reuse before inventing)
 
