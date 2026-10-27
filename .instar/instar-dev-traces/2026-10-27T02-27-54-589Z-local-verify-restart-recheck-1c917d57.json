@@ -4,7 +4,7 @@
   "sessionId": "62b13b7f-084e-44ac-9c3a-a985249271f5",
   "timestamp": "2026-10-27T02:27:54.589Z",
   "artifactPath": "upgrades/side-effects/local-verify-restart-recheck.md",
-  "artifactSha256": "cb959d57c3a7681094fdf1945eb2e8076231a6999fb0d74330ff4bd57f0e09fd",
+  "artifactSha256": "2be5149075156c6d228a25f9054f8a53749b54869c65f964f5ddb73b33edf8a9",
   "coveredFiles": [
     "docs/specs/local-verify-merge-authority.md",
     "docs/specs/local-verify-restart-recheck.eli16.md",

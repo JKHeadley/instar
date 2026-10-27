@@ -70,6 +70,8 @@ Removes up to 5 minutes of idle verify slot per release with no change to what m
 
 ## Second-pass review
 
+**Reviewer:** Independent cross-model reviewer (Codex read-only; two rounds, final concurrence).
+
 Concurred. Independent cross-model reviewer (Codex, read-only), two rounds:
 - Round 1 BLOCKED: (1) a run ending after `stop()` could arm a restart during shutdown — the recheck now only brings forward an already-scheduled retry (`deferralTimer` must exist), a no-op after `stop()`; (2) the service test stopped before the restart completed — it now waits through it and asserts one restart request; (3) missing cases — added: a next verify starting before the brought-forward retry (it defers on the new hold), recheck after `stop()`, a throwing listener.
 - Round 2 **CLEAN** ("The timer guard addresses the shutdown issue, and the retry rechecks active holds through the existing restart gate").
