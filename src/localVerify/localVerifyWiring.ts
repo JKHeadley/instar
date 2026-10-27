@@ -368,3 +368,15 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
   }, seams, floorGate, opts.service);
   return { reconciler, floorGate, reason: null };
 }
+
+/**
+ * The live switches the server reads at each decision (absent ⇒ on):
+ * `monitoring.localVerify.mainRedHold` (CMT-1033) and `monitoring.localVerify.failFast`.
+ */
+export function wireLocalVerifySwitches(
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled'>,
+  liveConfig: { get<T>(key: string, fallback: T): T },
+): void {
+  svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
+  svc.setFailFastEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.failFast', true) !== false);
+}

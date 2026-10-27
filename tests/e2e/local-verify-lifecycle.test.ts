@@ -15,7 +15,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
+import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireLocalVerifySwitches, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
 import type { LocalVerifyServiceSeams } from '../../src/localVerify/LocalVerifyService.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
@@ -120,6 +120,25 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(wireMergeLine({ service: built.service!, watcher: null, status: null, enabled: () => true })).toEqual({ wired: false, reason: 'no-watcher' });
     expect((await request(a).get('/local-verify')).body.mergeLine.wired).toBe(false);
     built.service!.shutdown();
+  });
+
+  it('the live switches are wired through the production function: absent ⇒ on, false ⇒ off, read at each call', () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    const svc = built.service!;
+    const values: Record<string, unknown> = {};
+    wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
+    const on = svc as unknown as { failFastOn(): boolean; mainRedHoldOn(): boolean };
+    expect(on.failFastOn()).toBe(true);
+    expect(on.mainRedHoldOn()).toBe(true);
+    values['monitoring.localVerify.failFast'] = false;
+    values['monitoring.localVerify.mainRedHold'] = false;
+    expect(on.failFastOn()).toBe(false);
+    expect(on.mainRedHoldOn()).toBe(false);
+    svc.shutdown();
   });
 
   it('disabled, off a source checkout, or with no GitHub login: not built, routes 503', async () => {

@@ -577,6 +577,8 @@ export class LocalVerifyService {
   /** Main-red hold (CMT-1033): the last failed `main` verify's failing files, the live switch, and the once-per-episode bookkeeping. */
   private mainFailure: MainFailureDetail | null = null;
   private mainRedHoldEnabled: (() => boolean) | null = null;
+  /** Fail-fast for PR verifies (`monitoring.localVerify.failFast`; absent ⇒ on). */
+  private failFastEnabled: (() => boolean) | null = null;
   /** pr → the red head it was audited as held for (one `main-red-held` line per PR per episode). */
   private readonly heldAudited = new Map<number, string>();
   /** What the ONE hold item last said: the red head and the sorted repair-PR list (re-raised only when either changes). */
@@ -620,6 +622,13 @@ export class LocalVerifyService {
 
   private mergeLineOn(): boolean {
     try { return this.mergeLineEnabled ? this.mergeLineEnabled() !== false : true; } catch { return true; } // @silent-fallback-ok: an unreadable switch reads as on (today's default)
+  }
+
+  /** The live switch for PR-verify fail-fast (`monitoring.localVerify.failFast`; absent ⇒ on). Read at each start. */
+  setFailFastEnabled(fn: (() => boolean) | null): void { this.failFastEnabled = fn; }
+
+  private failFastOn(): boolean {
+    try { return this.failFastEnabled ? this.failFastEnabled() !== false : true; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (every lane runs, today's behaviour)
   }
 
   /** The live kill switch for the main-red hold (`monitoring.localVerify.mainRedHold`; absent ⇒ on). */
@@ -1398,6 +1407,8 @@ export class LocalVerifyService {
       protectedList: this.cfg.protectedList, extraHarnessGlobs: this.cfg.extraHarnessGlobs, baseEnv: this.cfg.baseEnv,
       // PR verifies: an isolation re-run needs this machine's last green main record.
       ...(entry.kind === 'main' ? {} : { isolation: this.isolationInput() }),
+      // PR verifies: stop the other lanes once one lane has a failure its re-run did not clear.
+      ...(entry.kind !== 'main' && this.failFastOn() ? { failFast: true } : {}),
       ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
     };
     fs.writeFileSync(inputPath, JSON.stringify(input), { mode: 0o600 });
