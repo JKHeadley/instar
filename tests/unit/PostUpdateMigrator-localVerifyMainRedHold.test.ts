@@ -98,3 +98,52 @@ describe('Local Verify peer-verifier awareness', () => {
     expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify peer-verifier awareness');
   });
 });
+
+describe('Local Verify throughput overflow awareness', () => {
+  it('the template and the migration line carry it; appended once to an existing section', async () => {
+    const { LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    expect(generateClaudeMd('fixture', 'Fixture', 4042, true)).toContain('Local Verify throughput overflow');
+    expect(LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE).toContain('queue-full');
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
+  });
+});
+
+describe('Local Verify fail-fast awareness', () => {
+  it('the template and the migration line name the behaviour, the reason and the switch', async () => {
+    const { LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const md = generateClaudeMd('fixture', 'Fixture', 4042, true);
+    for (const text of [md, LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE]) {
+      for (const k of ['lane-stopped-early', 'monitoring.localVerify.failFast: false', 'flaky on `main`']) expect(text).toContain(k);
+    }
+  });
+  it('appends the fail-fast line once to a CLAUDE.md that has the Local Verify section', async () => {
+    const { LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify fail-fast awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify fail-fast awareness');
+  });
+});
+
+describe('Local Verify balanced-shards awareness', () => {
+  it('the template and the migration line name the setting and the rollback', async () => {
+    const { LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const md = generateClaudeMd('fixture', 'Fixture', 4042, true);
+    for (const text of [md, LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE]) {
+      for (const k of ['monitoring.localVerify.laneShards', 'file-durations.json', '"integration": 1, "e2e": 2']) expect(text).toContain(k);
+    }
+  });
+  it('appends the line once to a CLAUDE.md that has the Local Verify section', async () => {
+    const { LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n- `monitoring.localVerify.failFast`\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify balanced-shards awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify balanced-shards awareness');
+  });
+});

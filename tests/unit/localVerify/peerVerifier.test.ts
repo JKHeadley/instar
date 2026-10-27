@@ -171,7 +171,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
     await flush();
   };
   const queueFile = () => JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<Record<string, unknown>> };
-  return { svc, stateDir, views, spawned, killed, timers, signals, flush, runTimers, finish, queueFile, setPrOpen: (v: boolean) => { prOpen = v; }, advance: (ms: number) => { t += ms; }, now: () => t };
+  return { svc, seams, stateDir, views, spawned, killed, timers, signals, flush, runTimers, finish, queueFile, setPrOpen: (v: boolean) => { prOpen = v; }, advance: (ms: number) => { t += ms; }, now: () => t };
 }
 
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
@@ -282,6 +282,33 @@ describe('coordinator — dispatch', () => {
     const c = coordinator({ holds: false });
     await c.svc.request(1);
     await c.svc.request(2);
+    await c.runTimers();
+    expect(c.peer.runs()).toHaveLength(0);
+  });
+
+  it('does not dispatch another PR while a pending update waits for the local verifier', async () => {
+    const c = coordinator();
+    await c.svc.request(1);
+    c.svc.setUpdatePendingProvider(() => ({ pending: true, pendingSinceMs: c.now(), otherBlockers: false }));
+    await c.svc.request(2);
+    await c.runTimers();
+    expect(c.peer.runs()).toHaveLength(0);
+    expect(c.svc.snapshot().queue.find((e) => e.pr === 2)?.remote).toBeUndefined();
+    c.svc.setUpdatePendingProvider(() => null);
+    await c.svc.tick();
+    await c.runTimers();
+    expect(c.peer.runs().map((r) => r.pr)).toEqual([2]);
+  });
+
+  it('rechecks the update pause after the peer status read', async () => {
+    const c = coordinator();
+    await c.svc.request(1);
+    await c.svc.request(2);
+    const status = c.peer.client.status;
+    c.peer.client.status = async (p) => {
+      c.svc.setUpdatePendingProvider(() => ({ pending: true, pendingSinceMs: c.now(), otherBlockers: false }));
+      return status(p);
+    };
     await c.runTimers();
     expect(c.peer.runs()).toHaveLength(0);
   });
@@ -436,6 +463,21 @@ describe('peer — accepting and running', () => {
     expect(await h.svc.peerRun(runReq({ attemptId: 'b'.repeat(32), pr: 2, headSha: sha('c') }), notHolder)).toEqual({ ok: false, reason: 'peer-busy' });
     expect(h.svc.peerStatus()).toMatchObject({ inFlight: { attemptId: ATT, pr: 1 }, slotBusy: true });
     expect(h.svc.peerResult(ATT)).toEqual({ state: 'running' });
+  });
+
+  it('refuses a new handoff during an update pause, including one that begins during the PR read', async () => {
+    const h = peerSide();
+    h.svc.setUpdatePendingProvider(() => ({ pending: true, pendingSinceMs: h.now(), otherBlockers: false }));
+    expect(h.svc.peerStatus().slotBusy).toBe(true);
+    expect(await h.svc.peerRun(runReq(), notHolder)).toEqual({ ok: false, reason: 'peer-busy' });
+    h.svc.setUpdatePendingProvider(() => null);
+    const read = h.seams.prView;
+    h.seams.prView = async (pr) => {
+      h.svc.setUpdatePendingProvider(() => ({ pending: true, pendingSinceMs: h.now(), otherBlockers: false }));
+      return read(pr);
+    };
+    expect(await h.svc.peerRun(runReq(), notHolder)).toEqual({ ok: false, reason: 'peer-busy' });
+    expect(h.spawned).toHaveLength(0);
   });
 
   it('the result is kept for the coordinator and never enters this machine\'s own index or queue file', async () => {

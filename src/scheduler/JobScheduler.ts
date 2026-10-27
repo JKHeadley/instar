@@ -231,6 +231,18 @@ export class JobScheduler {
    */
   private roleGuardAttention: ((slug: string, machineId: string | null) => void) | null = null;
 
+  /** Test-agent leak guard; wired by server.ts (buildThrowawayJobGuard). */
+  private throwawayJobGuard: (() => { refuse: boolean; reason?: string }) | null = null;
+
+  setThrowawayJobGuard(guard: (() => { refuse: boolean; reason?: string }) | null): void {
+    this.throwawayJobGuard = guard;
+  }
+
+  /** Wiring-integrity accessor (tests): is a real guard installed? */
+  hasThrowawayJobGuard(): boolean {
+    return this.throwawayJobGuard !== null;
+  }
+
   constructor(
     config: JobSchedulerConfig,
     sessionManager: SessionManager,
@@ -756,6 +768,25 @@ export class JobScheduler {
     if (this.paused) {
       this.skipLedger.recordSkip(slug, 'paused');
       return 'skipped';
+    }
+
+    // Test-agent leak guard (docs/specs/test-agent-leak-guard.md). A throwaway
+    // agent (temp-folder project / sandboxed HOME / recorded throwaway) refuses
+    // every scheduled job: instar cannot prove its session would not spend the
+    // operator's real subscription login. Returns before scheduleRetry — the
+    // condition never clears on its own, so retrying would only spin.
+    if (this.throwawayJobGuard) {
+      const verdict = this.throwawayJobGuard();
+      if (verdict.refuse) {
+        this.skipLedger.recordSkip(slug, 'throwaway-agent');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" refused — ${verdict.reason ?? 'throwaway agent'}`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, gateReason: 'throwaway-agent' },
+        });
+        return 'skipped';
+      }
     }
 
     // In the legacy one-awake-machine posture the scheduler is constructed on

@@ -24,6 +24,10 @@ import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, 
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
+import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
+
+/** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
+export const MAX_LANE_SHARDS = 4;
 
 // ── Seams ──────────────────────────────────────────────────────────────
 
@@ -40,6 +44,8 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   deadlineKilled: boolean;
+  /** Stopped through `opts.signal` (fail-fast: a sibling lane already failed); never set with `deadlineKilled`. */
+  aborted?: boolean;
   pid: number | null;
 }
 
@@ -57,6 +63,8 @@ export interface OrchestratorFs {
   writeFile(p: string, data: string): void;
   /** null when absent or unreadable. */
   readFile(p: string): string | null;
+  /** Size in bytes, null when absent or unreadable. Absent seam ⇒ the duration history is never read. */
+  size?(p: string): number | null;
   /** A fresh private temp directory (outside the worktree). */
   mkdtemp(prefix: string): string;
   /** Recursive delete, scoped to local-verify's own directories by the real seam. */
@@ -73,7 +81,7 @@ export interface OrchestratorSeams {
   exec(
     command: string,
     args: string[],
-    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void },
+    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal },
   ): Promise<ExecResult>;
   fs: OrchestratorFs;
   now(): number;
@@ -128,6 +136,16 @@ export interface VerifyRunInput {
   isolation?: { allowed: boolean; notCleanOnGreenMain: readonly string[] };
   /** A peer verify (spec local-verify-capacity.md Part D): copied onto the record as `attempt`. */
   attempt?: { id: string; coordinatorMachineId: string; leaseEpoch: number | null };
+  /**
+   * PR verifies only: once a lane ends with a failure the isolation re-run did not clear, stop
+   * the other lanes (the verdict is already `failure`). Absent/false ⇒ every lane runs to the end.
+   */
+  failFast?: boolean;
+  /**
+   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service).
+   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards`.
+   */
+  laneShards?: { integration?: number; e2e?: number };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -165,6 +183,8 @@ export interface VerifyPaths {
   runDir: string;
   reportsDir: string;
   keptListFile: string;
+  /** Per-file durations of earlier runs on this machine (balanced shards only; never a verdict input). */
+  durationsPath: string;
 }
 
 export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
@@ -177,6 +197,7 @@ export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
     runDir: path.join(verifyRoot, 'runs', sha12),
     reportsDir: path.join(verifyRoot, 'reports', sha12),
     keptListFile: path.join(verifyRoot, 'kept-failed.json'),
+    durationsPath: path.join(verifyRoot, 'file-durations.json'),
   };
 }
 
@@ -299,14 +320,15 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   runEnv.PATH = [binDir, input.baseEnv.PATH ?? ''].filter(Boolean).join(path.delimiter);
 
   /** Run one process step; a deadline is an error naming the step. */
-  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv) => {
+  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv, signal?: AbortSignal) => {
     const t0 = seams.now();
     const r = await seams.exec(command, args, {
       cwd: p.runDir, env, deadlineMs: deadline.ms,
       onPid: (pid) => { ourPids.add(pid); },
+      ...(signal ? { signal } : {}),
     });
     // Per-step timing (metadata only): the Acceptance measurement reads these.
-    seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled });
+    seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled, ...(r.aborted ? { stoppedEarly: true } : {}) });
     if (r.deadlineKilled) throw new RunError(deadline.capped ? 'deadline:total' : `deadline:${step}`, `${command} hit its deadline`);
     return r;
   };
@@ -413,6 +435,20 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       seams.log({ event: 'overlap', ...o, slot: 'busy' });
       throw new Requeue('foreign-suite-at-start');
     }
+    // Fail-fast (PR verifies, `input.failFast`): the first lane to end with a failure the
+    // isolation re-run did not clear stops its siblings; their lanes are reported as stopped.
+    const stopLanes = new AbortController();
+    const failFast = input.failFast === true && input.kind !== 'main';
+    // Per-file durations from earlier runs on this machine (balanced shards); unreadable ⇒ none.
+    // Test code runs as the same user and could write this file: it is read only when small,
+    // and it can only change which process runs a file (see shardPlan.ts), never a verdict.
+    let durations: FileDurations = {};
+    try {
+      const size = seams.fs.size ? seams.fs.size(p.durationsPath) : null;
+      if (size !== null && size <= DURATIONS_MAX_BYTES) durations = mergeDurations(JSON.parse(seams.fs.readFile(p.durationsPath) ?? '{}'), {});
+      else if (size !== null) seams.log({ event: 'durations-ignored', bytes: size });
+    } catch { durations = {}; }
+    const observed: FileDurations = {};
     try {
       const settled = await Promise.allSettled(LANES.map((lane) => runLane(lane)));
       const firstError = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
@@ -420,10 +456,17 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const s of settled) if (s.status === 'fulfilled') laneRuns.push(s.value);
     } finally {
       if (typeof releaseSlot === 'function') releaseSlot();
+      // Keep what this run measured for the next run's shard plan (never part of a verdict).
+      if (Object.keys(observed).length > 0) {
+        try { seams.fs.writeFile(p.durationsPath, JSON.stringify(mergeDurations(durations, observed))); } catch { /* @silent-fallback-ok: a missed update only makes the next plan less balanced */ }
+      }
     }
 
     async function runLane(lane: (typeof LANES)[number]): Promise<LaneRunInput> {
-      const shards = lane.name === 'e2e' ? LOCAL_VERIFY_LIMITS.e2eShards : 1;
+      const shards = lane.name === 'e2e' ? shardCount(input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
+        : lane.name === 'integration' ? shardCount(input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
+      const plan = shards > 1 ? planShards(inventory.byLane[lane.name] ?? [], shards, durations) : null;
+      if (shards > 1) seams.log({ event: 'shard-plan', lane: lane.name, shards, balanced: plan !== null });
       const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
@@ -448,20 +491,25 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const r = await exec(
           path.join(binDir, 'vitest'),
           ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
-            ...(shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
-          key, budget(d.lanes[lane.name]), env,
+            ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
+          key, budget(d.lanes[lane.name]), env, failFast ? stopLanes.signal : undefined,
         );
+        if (r.aborted) return { report: null, status: null, unhandled: null, aborted: true };
         let report: ParsedLaneReport | null = null;
         const text = seams.fs.readFile(reportPath);
         if (text != null) {
           try { report = parseVitestJson(text, p.runDir); } catch { report = null; }
         }
         const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
-        return { report, status: r.status, unhandled };
+        return { report, status: r.status, unhandled, aborted: false };
       }));
       const shardError = settledParts.find((x): x is PromiseRejectedResult => x.status === 'rejected');
       if (shardError) throw shardError.reason;
-      const parts = settledParts.map((x) => (x as PromiseFulfilledResult<{ report: ParsedLaneReport | null; status: number | null; unhandled: number | null }>).value);
+      const parts = settledParts.map((x) => (x as PromiseFulfilledResult<{ report: ParsedLaneReport | null; status: number | null; unhandled: number | null; aborted: boolean }>).value);
+      if (parts.some((x) => x.aborted)) {
+        seams.log({ event: 'lane-stopped-early', lane: lane.name });
+        return { lane: lane.name, report: null, seconds: Math.round((seams.now() - t) / 1000), exitCode: null, stoppedEarly: true };
+      }
       // A lane's report is the union of its shards' reports; a missing shard report is a
       // missing lane report (the inventory rule then fails the run).
       // A file reported by two shards makes the lane report untrusted (missing): the verdict
@@ -470,6 +518,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const part of parts) {
         if (!part.report || !report) { report = null; continue; }
         for (const [f, c] of part.report.files) {
+          if (lane.name !== 'unit' && typeof c.ms === 'number') observed[f] = c.ms;
           if (report.files.has(f)) {
             seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
             report = null;
@@ -497,14 +546,34 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (decision.rerun.length > 0 && report) {
         rerunBudget -= decision.rerun.length;
         const laneDeadlineAt = t + d.lanes[lane.name];
-        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt);
+        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, failFast ? stopLanes.signal : undefined);
         // The exit code is cleared only when the failed files explain it: they all passed alone
         // AND the lane reported zero unhandled errors (checked before the re-run).
         if (allPassed && unhandled === 0) exitCode = 0;
       } else if (decision.reason !== 'no-failures') {
         seams.log({ event: 'isolation-rerun-skipped', lane: lane.name, reason: decision.reason });
       }
+      if (failFast && !stopLanes.signal.aborted && laneFailedFinally(report, exitCode)) {
+        seams.log({ event: 'lanes-stop', after: lane.name });
+        stopLanes.abort();
+      }
       return { lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode };
+    }
+
+    /** A shard count from the run input, clamped to 1..MAX_LANE_SHARDS; anything else is the default. */
+    function shardCount(v: number | undefined, fallback: number): number {
+      return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= MAX_LANE_SHARDS ? v : fallback;
+    }
+
+    /**
+     * A lane that will fail the run whatever its siblings do (counted after any isolation re-run).
+     * Mirrors `evaluateRun`'s lane rules exactly: a missing report, a failed file, or a NUMERIC
+     * non-zero exit (a null exit with a clean report is not a lane failure there, so not here).
+     */
+    function laneFailedFinally(report: ParsedLaneReport | null, exitCode: number | null): boolean {
+      if (!report) return true;
+      for (const c of report.files.values()) if (c.failed > 0) return true;
+      return exitCode != null && exitCode !== 0;
     }
 
     // ── 5. Tree must be clean, then the inventory rule ──
@@ -565,8 +634,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   /**
    * Failed files that must NOT be treated as possibly flaky (PR verifies): every one when the
    * PR rule cannot be applied (no green `main` record, no isolation input, unreadable diff);
-   * otherwise files the PR changed, files importing a changed file (static relative-import
-   * scan), and files that did not pass cleanly in the last green `main` verify. A `main`
+   * otherwise files the PR changed and files importing a changed file (static relative-import
+   * scan). A file that was itself re-run-passed on the last green `main` stays eligible: it is
+   * flaky on `main` already, so refusing its re-run failed every PR that hit the flake. A `main`
    * verify uses the plain rule (nothing is ineligible).
    */
   async function ineligibleFor(failed: readonly string[]): Promise<Set<string>> {
@@ -576,7 +646,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     const out = new Set<string>();
     const notClean = new Set(iso.notCleanOnGreenMain);
     for (const f of failed) {
-      if (changedForIsolation.has(f) || notClean.has(f)) { out.add(f); continue; }
+      if (changedForIsolation.has(f)) { out.add(f); continue; }
+      if (notClean.has(f)) seams.log({ event: 'isolation-rerun-flaky-on-main', file: f });
       let graph: string[] = [];
       try { graph = seams.importGraph ? seams.importGraph([path.join(p.runDir, f)]) : []; } catch { graph = []; }
       if (!seams.importGraph) { out.add(f); continue; } // no import scan available ⇒ cannot rule a change out
@@ -597,6 +668,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
    */
   async function isolationRerun(
     lane: LaneName, config: string, files: readonly string[], report: ParsedLaneReport, env: NodeJS.ProcessEnv, laneDeadlineAt: number,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     let all = true;
     for (let k = 0; k < files.length; k++) {
@@ -620,8 +692,15 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       const r = await seams.exec(
         path.join(binDir, 'vitest'),
         ['run', '--config', config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${out}`, file],
-        { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); } },
+        { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); }, ...(signal ? { signal } : {}) },
       );
+      if (r.aborted) {
+        // The run already failed in another lane: the re-run's answer no longer matters.
+        rerunMessages.set(file, 'isolation re-run stopped: another lane had already failed');
+        seams.log({ event: 'isolation-rerun', lane, file, outcome: 'stopped' });
+        all = false;
+        continue;
+      }
       let again: ParsedLaneReport | null = null;
       const text = r.deadlineKilled ? null : seams.fs.readFile(out);
       if (text != null) { try { again = parseVitestJson(text, p.runDir); } catch { again = null; } }

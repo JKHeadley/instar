@@ -29,6 +29,7 @@
  * Existing project adds .instar/ and appends to CLAUDE.md.
  */
 
+import { applyInitPosture, decideInitPosture, parseTtl } from '../core/ThrowawayAgentGuard.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -114,6 +115,12 @@ interface InitOptions {
    * dual-runtime use.
    */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build' | 'both';
+  /** Test-agent leak guard: allow self-installed autostart despite a non-interactive init. */
+  autostart?: boolean;
+  /** Test-agent leak guard: record an expiry (e.g. "30m", "6h", "2d"). */
+  expiresIn?: string;
+  /** Test-agent leak guard: never expire, even in a temporary folder. */
+  keep?: boolean;
 }
 
 /**
@@ -203,6 +210,15 @@ export function refuseIfTccProtected(projectDir: string, what: string): void {
  * Main init entry point. Handles both fresh and existing project modes.
  */
 export async function initProject(options: InitOptions): Promise<void> {
+  if (options.keep && options.expiresIn) {
+    console.log(pc.red('  --keep and --expires-in contradict each other; pass one.'));
+    process.exit(1);
+  }
+  if (options.expiresIn && parseTtl(options.expiresIn) === null) {
+    console.log(pc.red(`  --expires-in must look like 30m, 6h or 2d (got "${options.expiresIn}").`));
+    process.exit(1);
+  }
+
   // Standalone mode: create at ~/.instar/agents/<name>/
   if (options.standalone) {
     const agentName = options.name;
@@ -211,7 +227,8 @@ export async function initProject(options: InitOptions): Promise<void> {
       console.log(`  Usage: ${pc.cyan('instar init --standalone my-agent')}`);
       process.exit(1);
     }
-    return initStandaloneAgent(agentName, options);
+    const projectDir = path.join(standaloneAgentsDir(), agentName);
+    return withProvisioningPosture(projectDir, options, () => initStandaloneAgent(agentName, options));
   }
 
   // Detect mode: if a project name argument was passed, it's fresh install
@@ -219,9 +236,40 @@ export async function initProject(options: InitOptions): Promise<void> {
   const isFresh = !!projectName && !options.dir;
 
   if (isFresh) {
-    return initFreshProject(projectName!, options);
+    const projectDir = path.resolve(process.cwd(), projectName!);
+    return withProvisioningPosture(projectDir, options, () => initFreshProject(projectName!, options));
   } else {
-    return initExistingProject(options);
+    const projectDir = path.resolve(options.dir || process.cwd());
+    return withProvisioningPosture(projectDir, options, () => initExistingProject(options));
+  }
+}
+
+/**
+ * Test-agent leak guard (docs/specs/test-agent-leak-guard.md). After an init
+ * that CREATED this agent's config.json (never a re-run over an existing
+ * agent), record the provisioning posture: autostart.autoInstall:false for a
+ * non-interactive or throwaway init (unless --autostart), and a throwawayAgent
+ * expiry for a throwaway location or --expires-in (or a keep record).
+ */
+async function withProvisioningPosture(projectDir: string, options: InitOptions, run: () => Promise<void>): Promise<void> {
+  const configFile = path.join(projectDir, '.instar', 'config.json');
+  const existedBefore = fs.existsSync(configFile);
+  await run();
+  if (existedBefore || !fs.existsSync(configFile)) return;
+  const interactive = options.interactive ?? !!(process.stdin.isTTY && process.stdout.isTTY);
+  const posture = decideInitPosture({
+    projectDir,
+    interactive,
+    autostartFlag: options.autostart === true,
+    keep: options.keep === true,
+    expiresIn: options.expiresIn,
+  });
+  applyInitPosture(projectDir, posture);
+  if (posture.throwawayAgent?.expiresAt) {
+    console.log(pc.yellow(`  Throwaway agent: it will remove its own auto-start and stop at ${posture.throwawayAgent.expiresAt} (pass --keep to never expire).`));
+  }
+  if (posture.autostart) {
+    console.log(pc.dim(`  Auto-start will not install itself (${posture.autostart.reason}); run \`instar autostart install\` to add it.`));
   }
 }
 

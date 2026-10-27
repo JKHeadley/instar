@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "local-verify-survives-restart",
+  "sessionId": "3fc28b4d-c94e-440c-9adb-6bb2bfebe236",
+  "timestamp": "2026-10-26T13:12:34.729Z",
+  "artifactPath": "upgrades/side-effects/local-verify-survives-restart.md",
+  "artifactSha256": "fa879138ecbd471ddb850f95c30b6f5403cf60758be2bf9f7ec03ed1cf302ac2",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-10-26T13-12-12-903Z-local-verify-survives-restart.json",
+    ".instar/instar-dev-traces/2026-10-26T13-11-21-070Z-local-verify-survives-restart-a952d3b3.json",
+    "docs/specs/local-verify-survives-restart.eli16.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "tests/e2e/lifeline-keep-server-adoption.test.ts",
+    "upgrades/side-effects/local-verify-survives-restart.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up to 3d03cc967 after a red local verify: two silent-fallback markers and a removed e2e skipIf; no behavior change.",
+  "eli16Path": "docs/specs/local-verify-survives-restart.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-survives-restart.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
