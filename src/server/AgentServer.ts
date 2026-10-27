@@ -3385,6 +3385,14 @@ export class AgentServer {
             });
             return { id: action.id };
           } : undefined,
+          attentionRoute: options.telegram ? async (item) => {
+            await options.telegram!.createAttentionItem({
+              id: `correction-class-review:${item.title === 'Correction class review at work-item capacity' ? 'artifact-capacity' : item.priority === 'high' ? 'high-disposition' : 'disposition'}`,
+              title: item.title, summary: item.body, description: item.body,
+              priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+              category: 'general', sourceContext: 'correction-class-review',
+            });
+          } : undefined,
           audit: (event) => {
             try {
               const audit = path.join(options.config.stateDir!, 'logs', 'correction-class-review.jsonl');

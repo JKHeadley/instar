@@ -16456,6 +16456,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               captureAndDistill,
               drainBacklog,
               makeCaptureRateState,
+              pruneCaptureBacklogIfDue,
             } = await import('../monitoring/CorrectionCaptureLoop.js');
             const { llmCircuitAvailable } = await import('../core/LlmCircuitBreaker.js');
 
@@ -16534,8 +16535,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             // (drainBacklog itself never throws). Skips internally when the LLM
             // circuit is open / shedding (it would just re-fail every entry).
             let draining = false;
+            let lastBacklogPruneAt = 0;
             const maybeDrainBacklog = () => {
               if (!captureBacklog || draining) return;
+              // Expiration is a privacy boundary, not an LLM-capacity task.
+              // Keep enforcing the TTL on the 5-minute timer even if the
+              // circuit stays open for longer than the retention window.
+              const prune = pruneCaptureBacklogIfDue(captureBacklog, backlogTtlMs, lastBacklogPruneAt);
+              lastBacklogPruneAt = prune.lastPrunedAt;
+              if (prune.pruned > 0) correctionAudit({ decision: 'backlog-expired', topicId: null, detail: String(prune.pruned) });
               if (!llmCircuitAvailable()) return; // breaker open — don't even claim.
               draining = true;
               // void: NEVER awaited on any seam — fully detached.

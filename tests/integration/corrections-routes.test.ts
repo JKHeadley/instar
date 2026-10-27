@@ -164,6 +164,28 @@ describe('/corrections routes (integration)', () => {
     expect(JSON.stringify(listed.body)).not.toContain('abcdefghijklmnop');
   });
 
+  it('creates process work through the HTTP route when review receipts exceed the artifact cap', async () => {
+    ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+    const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 't' });
+    for (let i = 0; i < 3; i++) {
+      store.ensureShell({ dedupeKey: `old-${i}`, correctionId: `old-c-${i}`, origin: 'operator-attributed' });
+      store.fill(`old-${i}`, { standardReview: { verdict: 'covered', standardRef: 'Existing', isPolicyRelaxation: false },
+        processReview: { verdict: 'process-gap', proposedDelta: 'pending' }, rationale: 'r', confidence: 'high' });
+    }
+    const addAction = vi.fn(() => ({ id: 'ACT-from-route' }));
+    const engine = new CorrectionClassReview({ store, dryRun: false, maxOpenArtifacts: 1, addAction,
+      admitCorrectionAction: () => ({ allow: true, reason: 'review-filled' }),
+      intelligence: { evaluate: async () => JSON.stringify({ standardReview: { verdict: 'not-applicable', isPolicyRelaxation: false },
+        processReview: { verdict: 'process-gap', proposedDelta: 'route the process gap' }, rationale: 'r', confidence: 'high' }) } as any });
+    const ctx = ctxFor(stateDir, ledger); ctx.classReviewStore = store; ctx.correctionClassReview = engine;
+    const created = await request(appWith(ctx)).post('/corrections').set(auth()).set('X-Instar-Request', '1')
+      .send({ learning: 'The correction was captured but no work was assigned', kind: 'infra-gap' });
+    expect(created.status).toBe(201);
+    const rec = ledger.get(created.body.id)!;
+    await vi.waitFor(() => expect(store.get(rec.dedupeKey)?.actionId).toBe('ACT-from-route'));
+    expect(addAction).toHaveBeenCalledOnce();
+  });
+
   it('keeps outcome mutation operator-PIN bound and completion observation signal-only', async () => {
     ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
     const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 't' });

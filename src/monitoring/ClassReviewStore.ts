@@ -256,6 +256,16 @@ export class ClassReviewStore {
     return this.list({ limit: 1000 }).filter((record) => ['open', 'parked', 'reopened'].includes(record.reviewLifecycle)).length;
   }
 
+  /** Count the work items created by class reviews, not review receipts. A
+   * receipt without an Initiative or Action consumes no artifact capacity. */
+  countOpenArtifacts(): number {
+    const row = this.db.prepare(`SELECT
+      COUNT(DISTINCT CASE WHEN standard_outcome IN ('proposed','deferred','ratified','expired-unreviewed') THEN initiative_id END) AS initiatives,
+      COUNT(DISTINCT CASE WHEN process_outcome IN ('proposed','deferred','ratified','expired-unreviewed') THEN action_id END) AS actions
+      FROM class_reviews WHERE review_lifecycle IN ('open','parked','reopened')`).get() as { initiatives: number; actions: number };
+    return row.initiatives + row.actions;
+  }
+
   health(): ClassReviewHealth {
     const records = this.list({ limit: 1000 });
     const standardGroups = new Map<string, Set<string>>();
