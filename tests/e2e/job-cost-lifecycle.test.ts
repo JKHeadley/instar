@@ -97,7 +97,8 @@ describe('job-cost production lifecycle', () => {
       while (state.getJobState('health-check')?.lastResult === 'pending' && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 20));
       }
-      expect(state.getJobState('health-check')?.lastResult).toBe('success');
+      const healthState = state.getJobState('health-check');
+      expect(healthState?.lastResult, healthState?.lastError).toBe('success');
       expect(sessions._spawnCount).toBe(0);
       expect(scriptScheduler.getRunHistory().query({ slug: 'health-check', limit: 1 }).runs[0])
         .toMatchObject({ runner: 'script', result: 'success', tokens: 0 });
