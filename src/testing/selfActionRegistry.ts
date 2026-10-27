@@ -21,6 +21,10 @@
  * steady-state FREQUENCY under feedback).
  */
 
+import { WorkAdmission } from '../core/workAdmission.js';
+import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import os from 'node:os';
+import path from 'node:path';
 import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
@@ -2638,6 +2642,49 @@ const localVerifyMergeHandoff: SelfActionController = {
   },
 };
 
+
+/**
+ * overload-admission-self-help — trustworthy-machine-load Part C (C1/C4). The
+ * real WorkAdmission is driven by the 15 s load verdict: under the pinned
+ * worst case (every sample `saturated`, forever) it CLOSES once (a state
+ * transition, not an emit), fires the deterministic self-help notice ONCE per
+ * closed episode (an attention item naming the top processes), and then holds:
+ * no reopen (the 5-good-sample hysteresis never clears), no second item until
+ * a genuine reopen starts a new episode. Models the REAL class (no copy of its
+ * logic) with a virtual clock; the recovery slot is never touched by this path.
+ */
+const overloadAdmissionSelfHelp: SelfActionController = {
+  id: 'overload-admission-self-help',
+  actionVerb: 'overload-notify',
+  models: 'src/core/workAdmission.ts (WorkAdmission.observe — close on saturated/impaired, self-help once per closed episode, reopen only after 5 good samples)',
+  modelsPath: 'src/core/workAdmission.ts',
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason:
+      'The closed-episode latch is process-local by design (the audit stream records it; nothing re-reads it). A reconstruction under the same overload cannot re-fire immediately: the sampler needs 2 of 3 fresh samples before any non-unknown verdict (≥30 s) and WorkAdmission needs 3 consecutive overloaded samples (45 s) before self-help, so a restart loop is rate-floored at one item per ≥75 s and the supervisor restart backoff bounds the loop itself.',
+  },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 15_000, // the real sample cadence (LOAD_SAMPLE_INTERVAL_MS)
+  makeUnderPressure(f, sink) {
+    const wa = new WorkAdmission({
+      config: () => ({ enabled: true, dryRun: false, reopenAfterGoodSamples: 5, selfHelpAfterSaturatedSamples: 3 }),
+      // Never acquired on this path (no operator admit in the model); a real
+      // semaphore object is required by the type, pointed at a tmp path.
+      recoverySlot: new HostSpawnSemaphore({ holdersPath: path.join(os.tmpdir(), 'instar-overload-admission-model-slot.json'), cap: 1 }),
+      now: () => f.clock.nowMs(),
+      onSustainedOverload: () => { sink.emit({ verb: 'notify', target: 'overload-self-help' }); },
+    });
+    return {
+      tick() {
+        sink.considered += 1;
+        wa.observe('saturated'); // the worst case: overloaded on every sample, never clearing
+      },
+    };
+  },
+};
+
 /**
  * interactive-login-expired-swap — CMT-1008. A topic session stuck at Claude Code's expired-login
  * screen is swapped onto a signed-in account. Under the pinned fixture the swap is always refused
@@ -2786,6 +2833,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   systemTopicAdoption,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
+  overloadAdmissionSelfHelp,
   feedbackTriageTick,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,

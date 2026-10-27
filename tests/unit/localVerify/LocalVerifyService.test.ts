@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, MERGE_LINE,
+  MERGE_THROUGHPUT_LABEL, QUEUE_PRIORITY, THROUGHPUT_AGING_MS, effectivePriority, prPriority,
   type LocalVerifyServiceSeams, type PrView, type InFlightIntent, type MergeHandoffResult,
 } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
@@ -222,6 +223,80 @@ describe('request + queue', () => {
     await s.svc.request(1);
     s.timers.forEach((fn) => fn());
     expect(s.kills.map((k) => k.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+});
+
+describe('merge-throughput label priority', () => {
+  const MIN = 60_000;
+  const labelled = (head: string) => view({ headRefOid: sha(head), labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+
+  it('levels: the main verify > a labelled PR > an ordinary PR; labels come from the PR view', () => {
+    expect(QUEUE_PRIORITY.main).toBeGreaterThan(QUEUE_PRIORITY.mergeThroughput);
+    expect(QUEUE_PRIORITY.mergeThroughput).toBeGreaterThan(QUEUE_PRIORITY.ordinary);
+    expect(prPriority(view({ labels: [{ name: 'hold' }, { name: MERGE_THROUGHPUT_LABEL }] }))).toBe(QUEUE_PRIORITY.mergeThroughput);
+    expect(prPriority(view({ labels: [{ name: 'merge-throughput-ish' }] }))).toBe(QUEUE_PRIORITY.ordinary);
+    expect(prPriority(view())).toBe(QUEUE_PRIORITY.ordinary);
+    expect(prPriority(null)).toBe(QUEUE_PRIORITY.ordinary);
+  });
+
+  it('aging bounds the label: an ordinary PR that waited THROUGHPUT_AGING_MS (pauses excluded) ranks with it; main is never changed', () => {
+    const t0 = 1_000_000;
+    expect(effectivePriority({ priority: 0, firstQueuedAt: t0 }, t0 + THROUGHPUT_AGING_MS - 1)).toBe(0);
+    expect(effectivePriority({ priority: 0, firstQueuedAt: t0 }, t0 + THROUGHPUT_AGING_MS)).toBe(QUEUE_PRIORITY.mergeThroughput);
+    expect(effectivePriority({ priority: 0, firstQueuedAt: t0, pausedMs: 10 * MIN }, t0 + THROUGHPUT_AGING_MS)).toBe(0);
+    expect(effectivePriority({ priority: QUEUE_PRIORITY.mergeThroughput, firstQueuedAt: t0 }, t0 + 10 * THROUGHPUT_AGING_MS)).toBe(QUEUE_PRIORITY.mergeThroughput);
+    expect(effectivePriority({ priority: QUEUE_PRIORITY.main, kind: 'main', firstQueuedAt: t0 }, t0)).toBe(QUEUE_PRIORITY.main);
+    // The bound sits well inside the starved alarm, which is unchanged.
+    expect(THROUGHPUT_AGING_MS).toBeLessThan(LOCAL_VERIFY_LIMITS.starvedAfterMs);
+  });
+
+  it('a labelled PR queued after ordinary ones starts next', async () => {
+    const s = setup({ views: { 1: view({ headRefOid: sha('1') }), 2: view({ headRefOid: sha('2') }), 3: labelled('3') } });
+    for (const pr of [1, 2, 3]) expect((await s.svc.request(pr)).ok).toBe(true);
+    expect(s.svc.snapshot().inFlight?.pr).toBe(1);
+    expect(Object.fromEntries(s.svc.snapshot().queue.map((e) => [e.pr, e.priority]))).toEqual({ 2: 0, 3: QUEUE_PRIORITY.mergeThroughput });
+    await s.finish(0, ok(record({ pr: 1, headSha: sha('1') })));
+    expect(s.svc.snapshot().inFlight?.pr).toBe(3);
+    await s.finish(1, ok(record({ pr: 3, headSha: sha('3') })));
+    expect(s.svc.snapshot().inFlight?.pr).toBe(2);
+  });
+
+  it('an ordinary PR that has waited past the aging bound is not passed by a later labelled PR', async () => {
+    const s = setup({ views: { 1: view({ headRefOid: sha('1') }), 2: view({ headRefOid: sha('2') }), 3: labelled('3') } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.advance(THROUGHPUT_AGING_MS);
+    await s.svc.request(3);
+    await s.finish(0, ok(record({ pr: 1, headSha: sha('1') })));
+    expect(s.svc.snapshot().inFlight?.pr).toBe(2);
+  });
+
+  it('a restore whose PR view cannot be read keeps the saved label level; a readable view re-reads it', async () => {
+    const s = setup({ views: { 1: view({ headRefOid: sha('1') }), 2: labelled('2'), 3: labelled('3') } });
+    for (const pr of [1, 2, 3]) await s.svc.request(pr);
+    const saved = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8')) as { entries: Array<{ pr: number; priority?: number }> };
+    expect(saved.entries.find((e) => e.pr === 2)?.priority).toBe(QUEUE_PRIORITY.mergeThroughput);
+    expect(saved.entries.find((e) => e.pr === 1)?.priority).toBeUndefined();
+    s.alive.clear();
+    // PR 2's view is unreadable at boot; PR 3's label was removed meanwhile.
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view({ headRefOid: sha('1') }), 3: view({ headRefOid: sha('3') }) } });
+    await s2.svc.boot();
+    const pri = Object.fromEntries(s2.svc.snapshot().queue.map((e) => [e.pr, e.priority]));
+    expect(pri).toMatchObject({ 2: QUEUE_PRIORITY.mergeThroughput, 3: QUEUE_PRIORITY.ordinary });
+  });
+
+  it('adding the label to an already-queued PR raises it in place; removing it lowers it', async () => {
+    const s = setup({ views: { 1: view({ headRefOid: sha('1') }), 2: view({ headRefOid: sha('2') }), 3: view({ headRefOid: sha('3') }) } });
+    for (const pr of [1, 2, 3]) await s.svc.request(pr);
+    s.views[3] = labelled('3');
+    expect(await s.svc.request(3)).toMatchObject({ ok: true, status: 'already-queued' });
+    await s.finish(0, ok(record({ pr: 1, headSha: sha('1') })));
+    expect(s.svc.snapshot().inFlight?.pr).toBe(3);
+    s.views[2] = labelled('2');
+    await s.svc.request(2);
+    s.views[2] = view({ headRefOid: sha('2') });
+    await s.svc.request(2);
+    expect(s.svc.snapshot().queue.find((e) => e.pr === 2)?.priority).toBe(QUEUE_PRIORITY.ordinary);
   });
 });
 

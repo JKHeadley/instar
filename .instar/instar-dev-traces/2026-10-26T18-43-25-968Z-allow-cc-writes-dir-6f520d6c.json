@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "allow-cc-writes-dir",
+  "sessionId": "e82cf1fb-8d20-4927-82ff-79db212c5b4a",
+  "timestamp": "2026-10-26T18:43:25.968Z",
+  "artifactPath": "upgrades/side-effects/allow-cc-writes-dir.md",
+  "artifactSha256": "b6d6c453f4808dd7331add6d1f9cd159e3138e6fc3b80e1fcb3aa2cb0e962b4b",
+  "coveredFiles": [
+    "docs/specs/allow-cc-writes-dir.eli16.md",
+    "src/feedback-factory/execute/changeSet.ts",
+    "upgrades/side-effects/allow-cc-writes-dir.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two @silent-fallback-ok annotations on claudeDirBreach catches that fail closed, keeping the no-silent-fallbacks ratchet at baseline; docs note. Comment-only.",
+  "eli16Path": "docs/specs/allow-cc-writes-dir.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/allow-cc-writes-dir.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -138,7 +138,7 @@ import { RelationshipManager } from '../core/RelationshipManager.js';
 import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker, getFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { configureLlmCircuitBreaker, llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
-import { computeSelfQuotaState } from '../core/selfQuotaState.js';
+import { computeSelfQuotaState, computeSignedInUsable } from '../core/selfQuotaState.js';
 import { SessionStartFailureTracker } from '../core/startFailureTracker.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
@@ -1107,6 +1107,35 @@ let _staleOwnerEngine: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerRe
 // (single-machine / pool-dark → the seam's own null-guard/short-circuit keeps
 // dispatch byte-identical; the provenance route 503s).
 let _spawnAdmission: import('../core/SpawnAdmission.js').SpawnAdmission | null = null;
+// trustworthy-machine-load C5: one fixed holding notice per topic per overload
+// episode when EVERY machine refuses new work (30-min cooldown; the message
+// itself is already in durable custody, this only tells the user why it waits).
+const _allRefusingNoticeAt = new Map<number, number>();
+const ALL_REFUSING_NOTICE_COOLDOWN_MS = 30 * 60_000;
+
+/**
+ * trustworthy-machine-load C5: every machine refused new work. The message is
+ * already in durable custody; say so ONCE per topic per episode on the
+ * deterministic send path (never the LLM gate, which can fail closed under the
+ * very load being reported) and raise ONE deduped attention item.
+ */
+function noteAllMachinesRefusing(telegram: TelegramAdapter, topicId: number): void {
+  const last = _allRefusingNoticeAt.get(topicId) ?? 0;
+  if (Date.now() - last < ALL_REFUSING_NOTICE_COOLDOWN_MS) return;
+  _allRefusingNoticeAt.set(topicId, Date.now());
+  telegram.sendToTopic(topicId,
+    'Your message is saved. All of my machines are overloaded right now and are not taking new work; I will answer as soon as one has room.',
+  ).catch(() => { /* @silent-fallback-ok: the message is already in durable custody; the attention item below also carries it */ });
+  void telegram.createAttentionItem({
+    id: `work-admission:all-refusing:${new Date().toISOString().slice(0, 13)}`, // one per UTC hour
+    title: 'Every machine is overloaded — new conversations are waiting',
+    summary: `A message in topic ${topicId} is held in the durable queue because no machine is accepting new work.`,
+    description: 'Each machine closed its own admission on its load verdict (saturated or impaired). Queued messages are delivered when a machine reopens. Nothing is dropped and nothing is killed automatically.',
+    category: 'system',
+    priority: 'HIGH',
+    sourceContext: 'work-admission',
+  }).catch(() => { /* @silent-fallback-ok: observability only; custody and the holding notice are unaffected */ });
+}
 let _ownerDarkLadder: import('../core/OwnerDarkLadder.js').OwnerDarkLadder | null = null;
 let _judgmentProvenance: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog | null = null;
 let _duplicateReconciler: import('../monitoring/DuplicateSessionReconciler.js').DuplicateSessionReconciler | null = null;
@@ -2973,6 +3002,7 @@ export function wireTelegramRouting(
         // fall-through. Wiring pins assert both directions.
         if ((outcome.action === 'queued' || outcome.action === 'placement-blocked') && outcome.acked) {
           console.log(`[inbound-queue] topic ${topicId} msg ${msg.id} in durable custody (${outcome.detail ?? outcome.action}) — drain will deliver`);
+          if (outcome.detail === 'all-machines-refusing-work') noteAllMachinesRefusing(telegram, topicId);
           return;
         }
         // 'handled-locally' / 'spawned'(self) / 'owner-dead-replaced'(self) /
@@ -3270,6 +3300,31 @@ export function wireTelegramRouting(
         console.log(`[telegram→session] Auto-spawned "${newSessionName}" for topic ${topicId}`);
       }).catch((err) => {
         console.error(`[telegram→session] Auto-spawn failed:`, err);
+        // trustworthy-machine-load C1/C2 (enforce mode): an admission refusal is
+        // DEFERRAL, not failure — take durable custody of the message when the
+        // inbound queue is live and tell the user it is saved (deterministic path).
+        // Without a live queue, fall through to the cold-start fallback below,
+        // which says why and asks for a resend (loss-with-notice, never silence).
+        if ((err as { code?: string } | null)?.code === 'admission-refused' && _inboundQueue) {
+          let custody = false;
+          try {
+            const q = _inboundQueue.enqueueLive({
+              sessionKey: String(topicId),
+              messageId: String(msg.id),
+              payload: text,
+              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+              topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
+            }, 'work-admission-refusal');
+            custody = q.result === 'queued' || q.result === 'already-queued';
+          } catch { /* @silent-fallback-ok: custody is best-effort — no custody ⇒ the honest fallback reply below */ }
+          if (custody) {
+            console.log(`[work-admission] topic ${topicId} msg ${msg.id} in durable custody (admission refused: ${(err as Error).message}) — drain will deliver`);
+            sendDeterministicTelegramNotice(telegram, 'cold-start-fallback', topicId,
+              'Your message is saved. This machine is overloaded right now and is not starting new work; it will be picked up when the machine has room. If that takes too long I will tell you.',
+            ).catch(() => {});
+            return;
+          }
+        }
         // G1 "Agent Is Always Reachable" corollary (2): no silent resource rejection.
         // On a cold-start failure, hand the user WHY + a pointer to the always-alive
         // Lifeline topic + a copy-paste debug message — on the deterministic delivery
@@ -8227,6 +8282,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
+      // Send-only still owns the attention store: run its hourly lifecycle
+      // pass here too (start() is never called on this path). Idempotent.
+      telegram.startSendOnlyMaintenance();
 
       // Resolve any topic names still using the fallback "topic-NNNN" pattern
       telegram.resolveUnknownTopicNames().catch(err => {
@@ -17097,6 +17155,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // declared here (before the wake handler and the pool registry) so neither
     // closure can hit a temporal-dead-zone read during startup.
     let _machineLoadSampler: import('../core/machineLoadReport.js').MachineLoadSampler | null = null;
+    let _workAdmission: import('../core/workAdmission.js').WorkAdmission | null = null;
     let _eventLoopLagReader: (() => number | null) | null = null;
     const _tmuxAsyncHotPathWakeGuard = resolveDevAgentGate(
       config.monitoring?.tmuxResilience?.asyncHotPath?.enabled,
@@ -22669,10 +22728,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         void telegram.createAttentionItem({
           id,
           title: `local-verify: ${key.replace(/^local-verify:/, '')}`,
-          summary: JSON.stringify(detail).slice(0, 900),
+          // A signal that carries a plain-words `note` (the main-red hold item) reads as that note.
+          summary: (typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
           category: 'degradation',
           priority: ['local-verify:no-required-checks', 'local-verify:main-red', 'local-verify:required-but-not-posting'].includes(key) ? 'HIGH' : 'MEDIUM',
         } as never).catch(() => { /* attention delivery is non-fatal */ });
+      };
+      // The main-red hold item closes itself when `main` is green again.
+      lvHooks.clearSignal = (key, resolution) => {
+        try { telegram?.clearAttentionCondition({ id: key }, resolution); } catch { /* @silent-fallback-ok — observability only; the lifecycle still expires the row */ }
       };
       const wiring = await import('../localVerify/localVerifyWiring.js');
       if (lvCfg?.enabled) {
@@ -22754,6 +22818,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (localVerifyService) {
         const svc = localVerifyService;
         const rec = localVerifyStatus;
+        // Main-red hold (CMT-1033): while `main` fails a known check, only a repair candidate
+        // takes the verify slot. Kill switch: monitoring.localVerify.mainRedHold (read live).
+        svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
         greenPrAutoMerger?.attachLocalVerify({
           effectiveFloor: () => (rec ? rec.effectiveFloor() : null),
           mainHealth: () => svc.mainHealth().state,
@@ -22851,6 +22918,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             spawnCapSaturated: () => { const st = spawnSemMod.getHostSpawnSemaphore().peek(); return st.liveHolders >= st.cap; },
             testRunnerSaturated: () => testSemMod.getHostTestRunnerSemaphore().status().suite.saturated,
             log: (line) => console.log(pc.dim(`  [load-report] ${line}`)),
+            // trustworthy-machine-load C1: admission feeds on every verdict and is
+            // advertised in the report (late-bound; null until constructed below).
+            onSample: (v) => _workAdmission?.observe(v),
+            admission: () => _workAdmission?.advert() ?? null,
           });
           await _machineLoadSampler.start();
           console.log(pc.dim(`  [load-report] sampler started (verdict: ${_machineLoadSampler.verdict()})`));
@@ -22938,9 +23009,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               // said blocked:false → placement misrouted a session onto it; it died on arrival.)
               // Spec: docs/specs/placement-llm-circuit-aware-quota.md.
               // Third cause: this machine cannot start a session at all.
+              // Fourth cause: no signed-in account for the framework new conversations here
+              // run on (CMT-1051). Unknown (no pool / pool not ready) never blocks.
+              let signedInUsable: boolean | undefined;
+              try {
+                signedInUsable = subscriptionPool.getAvailability().state === 'ready'
+                  ? computeSignedInUsable(subscriptionPool.list(), _defaultFramework)
+                  : undefined;
+              } catch { signedInUsable = undefined; /* @silent-fallback-ok — an unreadable pool is unknown, which never blocks placement */ }
               return computeSelfQuotaState(
                 quotaTracker?.getState(), llmCircuitAvailable(), Date.now(),
-                startFailureTracker.state(),
+                startFailureTracker.state(), { usable: signedInUsable },
               );
             } catch { return undefined; /* unknown ≠ blocked */ }
           };
@@ -23180,6 +23259,99 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     } catch (err) { // @silent-fallback-ok: pool registry wiring is optional; the logged error leaves the server in explicit single-machine mode
       console.log(pc.dim(`  [pool] registry not wired: ${err instanceof Error ? err.message : String(err)}`));
+    }
+
+    // trustworthy-machine-load C4: deterministic self-help on SUSTAINED overload —
+    // ONE attention item per closed episode naming the top processes by CPU and
+    // memory, marked agent-owned vs external. No model session (it would spend the
+    // very resources the machine is short of). Hoisted so the admission deps can
+    // reference it; reads telegram by closure at call time.
+    async function raiseOverloadSelfHelp(verdict: string, episodeId: number): Promise<void> {
+      try {
+        const { listTopProcesses } = await import('../core/overloadSelfHelp.js');
+        const top = await listTopProcesses({ agentPid: process.pid });
+        const lines = top.map((p) => `${p.owner === 'agent' ? 'agent' : 'external'}: ${p.command} (pid ${p.pid}) — ${p.cpuPct.toFixed(0)}% CPU, ${(p.rssBytes / 1e9).toFixed(1)} GB`);
+        await telegram?.createAttentionItem({
+          id: `overload-self-help:${new Date(episodeId).toISOString()}`, // one item per closed episode
+          title: 'This machine is overloaded and has stopped taking new work',
+          summary: `Load verdict: ${verdict}. New automatic work waits until it eases; one recovery session stays free.`,
+          description:
+            'Top processes right now:\n' + (lines.length > 0 ? lines.join('\n') : '(process list unavailable)') +
+            '\n\nNothing is killed automatically. Existing conversations keep working; new automatic work resumes after load stays normal for about a minute.',
+          category: 'system',
+          priority: 'NORMAL',
+          sourceContext: 'work-admission',
+        });
+      } catch (err) {
+        console.log(pc.dim(`  [work-admission] self-help notice failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    }
+
+    // ── Overload admission (trustworthy-machine-load Part C) ──
+    // Each machine protects its own resources: closed to new AUTOMATIC work while
+    // its own load verdict is saturated/impaired, one host-wide recovery slot for an
+    // operator session, state advertised in the load report so placement elsewhere
+    // skips it. Dev-gated + dry-run first. A single-machine agent gets its own
+    // sampler here (the pool block builds one only on a multi-machine agent).
+    try {
+      const waCfgRaw = config.monitoring?.workAdmission;
+      const waEnabled = resolveDevAgentGate(waCfgRaw?.enabled, config);
+      if (waEnabled) {
+        const waMod = await import('../core/workAdmission.js');
+        const waConfig = () => {
+          const c = config.monitoring?.workAdmission;
+          return {
+            // Read LIVE on every sample: `enabled:false` written to the config
+            // reopens the machine on the next tick (the kill switch needs no restart).
+            enabled: resolveDevAgentGate(c?.enabled, config),
+            dryRun: c?.dryRun ?? waMod.DEFAULT_WORK_ADMISSION.dryRun,
+            reopenAfterGoodSamples: c?.reopenAfterGoodSamples ?? waMod.DEFAULT_WORK_ADMISSION.reopenAfterGoodSamples,
+            selfHelpAfterSaturatedSamples: c?.selfHelpAfterSaturatedSamples ?? waMod.DEFAULT_WORK_ADMISSION.selfHelpAfterSaturatedSamples,
+          };
+        };
+        _workAdmission = new waMod.WorkAdmission({
+          config: waConfig,
+          agentName: config.projectName,
+          runningSessionNames: () => sessionManager.listRunningSessions().map((x) => x.tmuxSession),
+          auditPath: path.join(config.stateDir, '..', 'logs', 'work-admission.jsonl'),
+          onSustainedOverload: (verdict, episodeId) => { void raiseOverloadSelfHelp(verdict, episodeId); },
+          log: (line) => console.log(pc.yellow(`  [work-admission] ${line}`)),
+        });
+        const wa = _workAdmission;
+        waMod.setActiveWorkAdmission(wa);
+        sessionManager.setAdmissionGate((kind, name) => wa.admit(kind, name), (name) => wa.releaseSlotFor(name));
+        sessionManager.on('sessionComplete', (s) => { try { wa.releaseSlotFor(s.tmuxSession); } catch { /* @silent-fallback-ok — releaseEndedSlots() reclaims it on the next operator admit */ } });
+        if (scheduler) {
+          const priorCanRun = scheduler.canRunJob;
+          scheduler.canRunJob = (priority) => {
+            // check(), not admit(): the scheduler polls this gate per tick per job;
+            // a polling read must not inflate the refusal counters or the audit.
+            const d = wa.check();
+            if (!d.allowed) return { allowed: false, reason: 'overload', detail: d.detail ?? 'machine overloaded' };
+            return priorCanRun(priority);
+          };
+        }
+        if (!_machineLoadSampler) {
+          const loadMod = await import('../core/machineLoadReport.js');
+          _machineLoadSampler = new loadMod.MachineLoadSampler({
+            eventLoopLagP99Ms: () => _eventLoopLagReader?.() ?? null,
+            sessions: () => ({
+              active: state.listSessions().filter((x) => x.status === 'running' || x.status === 'starting').length,
+              max: typeof config.sessions?.maxSessions === 'number' ? config.sessions.maxSessions : null,
+            }),
+            log: (line) => console.log(pc.dim(`  [load-report] ${line}`)),
+            onSample: (v) => wa.observe(v),
+            admission: () => wa.advert(),
+          });
+          await _machineLoadSampler.start();
+        }
+        const st = waConfig();
+        console.log(pc.green(`  Overload admission enabled${st.dryRun ? ' (dry-run: logs would-refuse, refuses nothing)' : ''}`));
+      }
+    } catch (err) {
+      // @silent-fallback-ok (logged): without admission the machine behaves as
+      // before (never refuses work) — reachability over protection.
+      console.log(pc.yellow(`  [work-admission] not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
     // ── MeshRpc dispatcher (§L0) + SessionOwnership registry (§L3) ──
@@ -26513,6 +26685,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // U4.1 §2E (i): hard-pin fulfilment requires the pinned machine
               // SUSTAINED-online (late-bound; absent/boot window ⇒ plain-online).
               sustainedOnline: (m) => (_ws13SustainedOnline ? _ws13SustainedOnline(m) : true),
+              overloadAwareRanking: () => _workAdmission?.enforced() === true, // trustworthy-machine-load C5
             }),
             // Placement must consult the breaker too: a message re-placed OFF a
             // suspect owner must not be placed right back ONTO it. Suspect

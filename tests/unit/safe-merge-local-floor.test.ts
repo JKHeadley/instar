@@ -309,6 +309,11 @@ describe('verifyRequestOutcome — the POST /local-verify outcome for verify-pen
     expect(verifyRequestOutcome({ status: 500, body: { error: 'x' } })).toBeNull();
     expect(verifyRequestOutcome(null)).toBeNull();
   });
+  it('a held answer (main-red hold, CMT-1033) carries the plain hold reason so the session sees which check and which PR is fixing it', () => {
+    const detail = 'main is red on tests/unit/no-silent-fallbacks.test.ts; PR #2372 is already fixing it. A PR that does not touch or name that file would fail the same check, so it waits until main is green.';
+    expect(verifyRequestOutcome({ status: 202, body: { ok: true, status: 'queued', hold: { reason: 'main-red', detail } } })).toBe(`queued (held: ${detail})`);
+    expect(verifyRequestOutcome({ status: 202, body: { ok: true, status: 'queued', hold: 'x' } })).toBe('queued');
+  });
 });
 
 describe('reviewPrecheckPasses — the shared review precheck', () => {

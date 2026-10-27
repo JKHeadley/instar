@@ -1,4 +1,5 @@
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
@@ -1113,6 +1114,8 @@ export interface RouteContext {
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
     /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
     lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
+    /** Why each needs-sign-in account on this machine has no repair (read-only). */
+    blockers?: () => Promise<import('../core/SubscriptionReloginRuntime.js').SubscriptionReloginBlocker[]>;
     close?: () => void;
   } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
@@ -13317,6 +13320,18 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.processFootprintMonitor.status());
+  });
+
+  // ── Overload admission status (trustworthy-machine-load Part C) ──
+  // Registry First: is this machine open to new work, is it enforcing, who holds
+  // the host-wide recovery slot, and what has it refused. 503 when dark here.
+  router.get('/work-admission', (_req, res) => {
+    const wa = getActiveWorkAdmission();
+    if (!wa) {
+      res.status(503).json({ enabled: false, error: 'overload admission not enabled on this agent (monitoring.workAdmission — dev-agent gated)' });
+      return;
+    }
+    res.json(wa.status());
   });
 
   // ── Fork-bomb prevention: host-wide spawn-cap status (forkbomb-prevention-simple §P1/§P3) ──
@@ -34559,8 +34574,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         state: state as import('../core/SubscriptionReloginStore.js').SubscriptionReloginState | undefined,
         accountId, limit,
       }) ?? [];
+      // A blocker read that fails leaves `blockers` absent (unknown), never an empty "nothing blocked".
+      const localBlockers = await ctx.subscriptionRelogin?.blockers?.().catch(() => undefined);
       if (req.query.scope !== 'pool') {
         res.json({ enabled: true, episodes: localEpisodes,
+          ...(localBlockers ? { blockers: localBlockers } : {}),
           lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
@@ -34575,6 +34593,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           return false;
         })
         .map((episode) => ({ ...episode, machineNickname: selfMachineNickname, remote: false }));
+      const blockers: Array<Record<string, unknown>> = (localBlockers ?? [])
+        .map((blocker) => ({ ...blocker, machineNickname: selfMachineNickname, remote: false }));
+      // Machines whose blockers could not be read (failed read, or an older peer without the
+      // field): unknown, never "nothing blocked".
+      const blockersUnknown: string[] = ctx.subscriptionRelogin && !localBlockers ? [selfMachineId] : [];
       if (!ctx.subscriptionRelogin) unavailable.push({ machineId: selfMachineId, reason: 'feature-unavailable' });
       const query = new URLSearchParams();
       if (state) query.set('state', state);
@@ -34595,7 +34618,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             failed.push({ machineId: peer.machineId, error: response.status === 401 || response.status === 403 ? 'unauthorized' : 'error' });
             return;
           }
-          const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>> };
+          const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>>;
+            blockers?: Array<Record<string, unknown>> };
           if (body.enabled === false) {
             unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
             return;
@@ -34604,12 +34628,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           for (const episode of body.episodes ?? []) {
             episodes.push({ ...episode, machineId: peer.machineId, machineNickname: nickname, remote: true } as typeof episodes[number]);
           }
+          if (!Array.isArray(body.blockers)) blockersUnknown.push(peer.machineId);
+          for (const blocker of Array.isArray(body.blockers) ? body.blockers : []) {
+            if (typeof blocker?.accountId !== 'string' || typeof blocker?.reason !== 'string') continue;
+            blockers.push({ accountId: blocker.accountId, framework: blocker.framework, reason: blocker.reason,
+              machineId: peer.machineId, machineNickname: nickname, remote: true });
+          }
         } catch (error) {
           const name = error instanceof Error ? error.name : '';
           failed.push({ machineId: peer.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
         }
       }));
-      res.json({ enabled: true, episodes, scope: 'pool', pool: { failed, unavailable } });
+      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown } });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'invalid re-login query' });
     }
