@@ -4,7 +4,7 @@
   "sessionId": "62b13b7f-084e-44ac-9c3a-a985249271f5",
   "timestamp": "2026-10-27T02:04:51.679Z",
   "artifactPath": "upgrades/side-effects/local-verify-balanced-shards.md",
-  "artifactSha256": "59d4d770ca631f61175bbbe350d70cb9c2bab082b4c9ae402607c3cffedfd3eb",
+  "artifactSha256": "748ffad991979fd1251cdc313bb431d2bbbf2cbb9376f7fddbd3d03868f3f85b",
   "coveredFiles": [
     "docs/specs/local-verify-balanced-shards.eli16.md",
     "docs/specs/local-verify-merge-authority.md",

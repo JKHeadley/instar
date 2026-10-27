@@ -76,6 +76,8 @@ No self-triggered action added: the change only decides the arguments of lane pr
 
 ## Second-pass review
 
+**Reviewer:** Independent cross-model reviewer (Codex read-only; two rounds, final concurrence).
+
 Concurred. Independent cross-model reviewer (Codex, read-only), two rounds:
 - Round 1 BLOCKED: (1) vitest positional filters are case-insensitive substrings, so a file whose path contains another's could run in two shards (an otherwise passing PR fails) — fixed with `filterOverlapGroups` (overlapping files planned as one unit); (2) the history file is writable by the lanes' test code and was read whole — now read only at ≤ 2 MB; (3) the test fake used exact matching — now uses vitest's rule, with overlap, size-cap and grouping tests.
 - Round 2 **CLEAN** ("No remaining defects found in this change"; its in-memory check ran 294 shard-coverage, substring-overlap and determinism cases).
