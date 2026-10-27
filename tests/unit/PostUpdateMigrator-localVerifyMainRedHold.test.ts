@@ -83,3 +83,21 @@ describe('Local Verify main-red hold + merge-throughput awareness', () => {
     expect(fs.readFileSync(claudeMd, 'utf-8').split('Local Verify merge-throughput label').length - 1).toBe(1);
   });
 });
+
+describe('Local Verify fail-fast awareness', () => {
+  it('the template and the migration line name the behaviour, the reason and the switch', async () => {
+    const { LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const md = generateClaudeMd('fixture', 'Fixture', 4042, true);
+    for (const text of [md, LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE]) {
+      for (const k of ['lane-stopped-early', 'monitoring.localVerify.failFast: false', 'flaky on `main`']) expect(text).toContain(k);
+    }
+  });
+  it('appends the fail-fast line once to a CLAUDE.md that has the Local Verify section', async () => {
+    const { LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify fail-fast awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify fail-fast awareness');
+  });
+});

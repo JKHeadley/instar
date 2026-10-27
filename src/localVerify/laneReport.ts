@@ -101,6 +101,8 @@ export interface LaneRunInput {
   seconds: number;
   /** vitest's exit code; a non-zero exit with no failed test (an unhandled error) fails a gating lane. */
   exitCode?: number | null;
+  /** Stopped by fail-fast after another lane failed: no report, and its files are not "not run" failures. */
+  stoppedEarly?: boolean;
 }
 
 export interface LaneTotals {
@@ -129,6 +131,9 @@ export function evaluateRun(
   lanes: readonly LaneDefinition[] = LANES,
 ): RunEvaluation {
   const reasons: string[] = [];
+  /** Appended last, so the run's first reason is always a real failure, never a stopped lane. */
+  const stopped: string[] = [];
+  const stoppedLanes = new Set<LaneName>();
   const gatingOf = new Map(lanes.map((l) => [l.name, l.gating]));
   const runs = new Map<LaneName, LaneRunInput>();
   for (const r of laneRuns) {
@@ -161,6 +166,12 @@ export function evaluateRun(
       name: def.name, gating: def.gating, files: 0, tests: 0, passed: 0, failed: 0, skipped: 0, todo: 0,
       seconds: run?.seconds ?? 0,
     };
+    if (run?.stoppedEarly && !run.report) {
+      stoppedLanes.add(def.name);
+      if (def.gating) stopped.push(`lane-stopped-early:${def.name}`);
+      totals.push(t);
+      continue;
+    }
     if (!run || !run.report) {
       if (def.gating) reasons.push(`lane-report-missing:${def.name}`);
       totals.push(t);
@@ -188,6 +199,7 @@ export function evaluateRun(
   for (const f of inventory.files) {
     const where = appearances.get(f.path) ?? [];
     if (where.length === 0) {
+      if (stoppedLanes.has(f.lane)) continue; // its lane was stopped after another lane failed
       reasons.push(`file-not-run:${f.path}`);
       continue;
     }
@@ -202,6 +214,9 @@ export function evaluateRun(
     else if (c.passed + c.skipped + c.todo === 0) reasons.push(`no-tests-collected:${f.path}`);
   }
 
+  // A stopped lane only exists because another lane failed; it is never the run's only reason.
+  if (stopped.length > 0 && reasons.length === 0) reasons.push('lane-stopped-without-failure');
+  reasons.push(...stopped);
   return { outcome: reasons.length === 0 ? 'success' : 'failure', reasons, lanes: totals, perFile };
 }
 

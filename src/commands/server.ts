@@ -22794,7 +22794,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const rec = localVerifyStatus;
         // Main-red hold (CMT-1033): while `main` fails a known check, only a repair candidate
         // takes the verify slot. Kill switch: monitoring.localVerify.mainRedHold (read live).
-        svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
+        // Fail-fast (PR verifies): stop the other lanes once one has a real failure. monitoring.localVerify.failFast (read at each start).
+        (await import('../localVerify/localVerifyWiring.js')).wireLocalVerifySwitches(svc, liveConfig);
         greenPrAutoMerger?.attachLocalVerify({
           effectiveFloor: () => (rec ? rec.effectiveFloor() : null),
           mainHealth: () => svc.mainHealth().state,

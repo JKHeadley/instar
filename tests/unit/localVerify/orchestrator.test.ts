@@ -83,6 +83,12 @@ interface FakeOpts {
   imports?: Record<string, string[]>;
   /** `git log` responder (default: empty output). */
   log?: (args: string[]) => GitResult;
+  /** Lanes whose run only ends when the run's fail-fast signal aborts it (when a signal is passed). */
+  hang?: Array<'unit' | 'integration' | 'e2e'>;
+  /** Override a lane's exit code (e.g. null = killed by a signal after writing its report). */
+  laneExit?: Partial<Record<'unit' | 'integration' | 'e2e', number | null>>;
+  /** Isolation re-runs that only end when the run's fail-fast signal aborts them. */
+  rerunHang?: string[];
 }
 
 function fake(o: FakeOpts = {}) {
@@ -160,6 +166,11 @@ function fake(o: FakeOpts = {}) {
       if (key === 'build') return r(0);
       const out = args.find((a) => a.startsWith('--outputFile='))!.slice('--outputFile='.length);
       const lane = key as 'unit' | 'integration' | 'e2e';
+      if (o.hang?.includes(lane) && opts.signal) {
+        const sig = opts.signal;
+        await new Promise<void>((res) => { if (sig.aborted) res(); else sig.addEventListener('abort', () => res(), { once: true }); });
+        return { ...r(null), signal: 'SIGTERM', aborted: true };
+      }
       const errFile = opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
       const isRerun = args.slice(1).some((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--config');
       if (errFile && args.includes('--reporter=/opt/instar/dist/localVerify/unhandledErrorsReporter.js')) {
@@ -169,6 +180,11 @@ function fake(o: FakeOpts = {}) {
       if (positional.length > 0) {
         // An isolation re-run of one file.
         const file = positional[0];
+        if (o.rerunHang?.includes(file) && opts.signal) {
+          const sig = opts.signal;
+          await new Promise<void>((res) => { if (sig.aborted) res(); else sig.addEventListener('abort', () => res(), { once: true }); });
+          return { ...r(null), signal: 'SIGTERM', aborted: true };
+        }
         const outcome = o.rerun?.[file] ?? ['passed'];
         const rd = o.rerunMs ?? 1000;
         if (outcome === 'deadline' || rd > opts.deadlineMs) { t += opts.deadlineMs; return { ...r(null), signal: 'SIGTERM', deadlineKilled: true }; }
@@ -189,6 +205,7 @@ function fake(o: FakeOpts = {}) {
       const file = TEST_FILES.find((f) => f.includes(`/${lane}/`))!;
       const statuses = o.laneStatuses?.[lane] ?? ['passed'];
       files.set(out, vitestReport(file, statuses));
+      if (o.laneExit && lane in o.laneExit) return r(o.laneExit[lane] as number | null);
       return r(statuses.includes('failed') ? 1 : 0);
     },
     fs: {
@@ -839,8 +856,15 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(vitestCalls(f)).toHaveLength(4); // unit, integration, two e2e shards
   });
-  it('a file that was not clean on the last green main is not re-run', async () => {
+  it('a file that was re-run-passed on the last green main is re-run like any other flake (it is flaky on main)', async () => {
     const f = fake(oneFlake);
+    const r = await runVerify(input({ isolation: { allowed: true, notCleanOnGreenMain: ['tests/integration/b.test.ts'] } }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(r.kind === 'record' && r.record.flakyRetried?.map((x) => x.file)).toEqual(['tests/integration/b.test.ts']);
+    expect(f.logs.some((l) => l.event === 'isolation-rerun-flaky-on-main')).toBe(true);
+  });
+  it('a flaky-on-main file the PR changed is still a real failure: no re-run', async () => {
+    const f = fake({ ...oneFlake, diff: 'M\ttests/integration/b.test.ts\n' });
     const r = await runVerify(input({ isolation: { allowed: true, notCleanOnGreenMain: ['tests/integration/b.test.ts'] } }), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
   });
@@ -877,5 +901,58 @@ describe('runVerify — isolation re-run safety (second pass)', () => {
     expect(rerun.env.TMUX_TMPDIR).not.toBe(lane.env.TMUX_TMPDIR);
     expect(f.removed).toContain(rerun.env.TMPDIR);
     expect(rerun.args).toContain('--reporter=/opt/instar/dist/localVerify/unhandledErrorsReporter.js');
+  });
+});
+
+describe('runVerify — fail-fast across lanes (PR verifies)', () => {
+  const vitestCalls = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.command.endsWith('vitest'));
+  it('a lane that fails for real stops the lanes still running; the first reason is the real failure', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] }, hang: ['integration', 'e2e'] });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind).toBe('record');
+    if (r.kind !== 'record') return;
+    expect(r.record.outcome).toBe('failure');
+    expect(r.reasons[0]).toMatch(/^lane-failed:unit/);
+    expect(r.reasons).toContain('lane-stopped-early:integration');
+    expect(r.reasons).toContain('lane-stopped-early:e2e');
+    expect(r.reasons.some((x) => x.startsWith('file-not-run:'))).toBe(false);
+    expect(f.logs.some((l) => l.event === 'lanes-stop' && l.after === 'unit')).toBe(true);
+  });
+  it('a flake cleared by its isolation re-run does not stop the other lanes', async () => {
+    const f = fake({ laneStatuses: { integration: ['passed', 'failed'] } });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
+  });
+  it('without failFast every lane runs to the end (today\'s behaviour)', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] }, hang: ['integration', 'e2e'] });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(r.kind === 'record' && r.reasons.some((x) => x.startsWith('lane-stopped-early'))).toBe(false);
+    expect(vitestCalls(f).length).toBeGreaterThanOrEqual(4);
+  });
+  it('a lane with a clean report and a null exit (killed by a signal) is not a failure, so nothing stops', async () => {
+    const f = fake({ laneExit: { unit: null } });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(f.logs.some((l) => l.event === 'lanes-stop')).toBe(false);
+  });
+  it('an isolation re-run still running when another lane fails is stopped and counts as failing', async () => {
+    const f = fake({
+      laneStatuses: { unit: ['failed'], integration: ['passed', 'failed'] },
+      rerun: { 'tests/unit/a.test.ts': ['failed'] },
+      rerunHang: ['tests/integration/b.test.ts'],
+      diff: 'M\tsrc/index.ts\n',
+      imports: { 'tests/unit/a.test.ts': ['src/other.ts'] },
+      hang: ['e2e'],
+    });
+    const r = await runVerify(input({ failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs.some((l) => l.event === 'isolation-rerun' && l.outcome === 'stopped')).toBe(true);
+  });
+  it('a main verify never stops lanes early, even with failFast set', async () => {
+    const f = fake({ laneStatuses: { unit: ['failed'] }, rerun: { 'tests/unit/a.test.ts': ['failed'] }, hang: ['integration', 'e2e'] });
+    const r = await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined, failFast: true }), f.seams);
+    expect(r.kind === 'record' && r.reasons.some((x) => x.startsWith('lane-stopped-early'))).toBe(false);
   });
 });
