@@ -1547,3 +1547,24 @@ describe('fail-fast switch (monitoring.localVerify.failFast)', () => {
     expect(inputOf(s).failFast).toBeUndefined();
   });
 });
+
+describe('lane shard setting (monitoring.localVerify.laneShards)', () => {
+  const inputOf = (s: ReturnType<typeof setup>) => JSON.parse(fs.readFileSync(s.spawned[0].args[s.spawned[0].args.indexOf('--input') + 1], 'utf-8'));
+  it('absent ⇒ no override in the run input (the policy defaults apply)', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toBeUndefined();
+  });
+  it('valid counts pass through; invalid ones are dropped', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => ({ integration: 1, e2e: 7 }));
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toEqual({ integration: 1 });
+  });
+  it('an unreadable setting means the defaults', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => { throw new Error('nope'); });
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toBeUndefined();
+  });
+});

@@ -238,6 +238,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
       mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
       writeFile: (p, data) => { fs.writeFileSync(p, data); },
       readFile: (p) => { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
+      size: (p) => { try { const st = fs.statSync(p); return st.isFile() ? st.size : null; } catch { return null; } }, // @silent-fallback-ok: absent or unreadable ⇒ no history
       mkdtemp: (prefix) => fs.mkdtempSync(path.join(localVerifyTempRoot(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),
       removeTree: (p) => removeScopedTree(p, verifyRoot),
     },

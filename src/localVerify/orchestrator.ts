@@ -24,6 +24,10 @@ import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, 
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
+import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
+
+/** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
+export const MAX_LANE_SHARDS = 4;
 
 // ── Seams ──────────────────────────────────────────────────────────────
 
@@ -59,6 +63,8 @@ export interface OrchestratorFs {
   writeFile(p: string, data: string): void;
   /** null when absent or unreadable. */
   readFile(p: string): string | null;
+  /** Size in bytes, null when absent or unreadable. Absent seam ⇒ the duration history is never read. */
+  size?(p: string): number | null;
   /** A fresh private temp directory (outside the worktree). */
   mkdtemp(prefix: string): string;
   /** Recursive delete, scoped to local-verify's own directories by the real seam. */
@@ -133,6 +139,11 @@ export interface VerifyRunInput {
    * the other lanes (the verdict is already `failure`). Absent/false ⇒ every lane runs to the end.
    */
   failFast?: boolean;
+  /**
+   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service).
+   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards`.
+   */
+  laneShards?: { integration?: number; e2e?: number };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -170,6 +181,8 @@ export interface VerifyPaths {
   runDir: string;
   reportsDir: string;
   keptListFile: string;
+  /** Per-file durations of earlier runs on this machine (balanced shards only; never a verdict input). */
+  durationsPath: string;
 }
 
 export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
@@ -182,6 +195,7 @@ export function verifyPaths(agentHome: string, headSha: string): VerifyPaths {
     runDir: path.join(verifyRoot, 'runs', sha12),
     reportsDir: path.join(verifyRoot, 'reports', sha12),
     keptListFile: path.join(verifyRoot, 'kept-failed.json'),
+    durationsPath: path.join(verifyRoot, 'file-durations.json'),
   };
 }
 
@@ -423,6 +437,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     // isolation re-run did not clear stops its siblings; their lanes are reported as stopped.
     const stopLanes = new AbortController();
     const failFast = input.failFast === true && input.kind !== 'main';
+    // Per-file durations from earlier runs on this machine (balanced shards); unreadable ⇒ none.
+    // Test code runs as the same user and could write this file: it is read only when small,
+    // and it can only change which process runs a file (see shardPlan.ts), never a verdict.
+    let durations: FileDurations = {};
+    try {
+      const size = seams.fs.size ? seams.fs.size(p.durationsPath) : null;
+      if (size !== null && size <= DURATIONS_MAX_BYTES) durations = mergeDurations(JSON.parse(seams.fs.readFile(p.durationsPath) ?? '{}'), {});
+      else if (size !== null) seams.log({ event: 'durations-ignored', bytes: size });
+    } catch { durations = {}; }
+    const observed: FileDurations = {};
     try {
       const settled = await Promise.allSettled(LANES.map((lane) => runLane(lane)));
       const firstError = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
@@ -430,10 +454,17 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const s of settled) if (s.status === 'fulfilled') laneRuns.push(s.value);
     } finally {
       if (typeof releaseSlot === 'function') releaseSlot();
+      // Keep what this run measured for the next run's shard plan (never part of a verdict).
+      if (Object.keys(observed).length > 0) {
+        try { seams.fs.writeFile(p.durationsPath, JSON.stringify(mergeDurations(durations, observed))); } catch { /* @silent-fallback-ok: a missed update only makes the next plan less balanced */ }
+      }
     }
 
     async function runLane(lane: (typeof LANES)[number]): Promise<LaneRunInput> {
-      const shards = lane.name === 'e2e' ? LOCAL_VERIFY_LIMITS.e2eShards : 1;
+      const shards = lane.name === 'e2e' ? shardCount(input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
+        : lane.name === 'integration' ? shardCount(input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
+      const plan = shards > 1 ? planShards(inventory.byLane[lane.name] ?? [], shards, durations) : null;
+      if (shards > 1) seams.log({ event: 'shard-plan', lane: lane.name, shards, balanced: plan !== null });
       const laneEnv: NodeJS.ProcessEnv = { ...runEnv };
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
@@ -458,7 +489,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const r = await exec(
           path.join(binDir, 'vitest'),
           ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
-            ...(shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
+            ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
           key, budget(d.lanes[lane.name]), env, failFast ? stopLanes.signal : undefined,
         );
         if (r.aborted) return { report: null, status: null, unhandled: null, aborted: true };
@@ -485,6 +516,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       for (const part of parts) {
         if (!part.report || !report) { report = null; continue; }
         for (const [f, c] of part.report.files) {
+          if (lane.name !== 'unit' && typeof c.ms === 'number') observed[f] = c.ms;
           if (report.files.has(f)) {
             seams.log({ event: 'file-in-multiple-shards', lane: lane.name, file: f });
             report = null;
@@ -524,6 +556,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         stopLanes.abort();
       }
       return { lane: lane.name, report, seconds: Math.round((seams.now() - t) / 1000), exitCode };
+    }
+
+    /** A shard count from the run input, clamped to 1..MAX_LANE_SHARDS; anything else is the default. */
+    function shardCount(v: number | undefined, fallback: number): number {
+      return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= MAX_LANE_SHARDS ? v : fallback;
     }
 
     /**

@@ -35,7 +35,15 @@ function report(files: ReturnType<typeof file>[]): string {
 describe('parseVitestJson', () => {
   it('counts per file and relativises the absolute name', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['passed', 'passed', 'skipped', 'todo', 'disabled'])]), ROOT);
-    expect(r.files.get('tests/unit/a.test.ts')).toEqual({ passed: 2, failed: 0, skipped: 2, todo: 1, message: '' });
+    expect(r.files.get('tests/unit/a.test.ts')).toMatchObject({ passed: 2, failed: 0, skipped: 2, todo: 1, message: '' });
+  });
+  it('records the file wall time from start/end when the report carries both, and nothing otherwise', () => {
+    const timed = { ...file('tests/unit/a.test.ts', ['passed']), startTime: 1000, endTime: 3500 };
+    const untimed = file('tests/unit/b.test.ts', ['passed']) as Record<string, unknown>;
+    delete untimed.startTime; delete untimed.endTime;
+    const r = parseVitestJson(report([timed, untimed as never]), ROOT);
+    expect(r.files.get('tests/unit/a.test.ts')!.ms).toBe(2500);
+    expect(r.files.get('tests/unit/b.test.ts')!.ms).toBeUndefined();
   });
   it('failed and pending (unfinished or .only) assertions count as failures', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['failed', 'pending', 'passed'])]), ROOT);

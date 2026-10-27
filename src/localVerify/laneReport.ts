@@ -21,6 +21,8 @@ export interface FileCounts {
   todo: number;
   /** Vitest's file-level message (an import/collect error); '' when none. */
   message?: string;
+  /** Wall time of the file in ms (vitest's start/end), when the report carried both. */
+  ms?: number;
 }
 
 export interface ParsedLaneReport {
@@ -61,7 +63,7 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
   const files = new Map<string, FileCounts>();
   for (const tr of (doc as { testResults: unknown[] }).testResults) {
     if (!tr || typeof tr !== 'object') throw new LaneReportParseError('testResults entry is not an object');
-    const r = tr as { name?: unknown; status?: unknown; message?: unknown; assertionResults?: unknown };
+    const r = tr as { name?: unknown; status?: unknown; message?: unknown; assertionResults?: unknown; startTime?: unknown; endTime?: unknown };
     if (typeof r.name !== 'string' || !Array.isArray(r.assertionResults)) {
       throw new LaneReportParseError('testResults entry lacks name or assertionResults');
     }
@@ -89,6 +91,9 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
       c.failed++;
     }
     if (typeof r.message === 'string' && r.message && !c.message) c.message = r.message.slice(0, FAILURE_MESSAGE_MAX);
+    if (typeof r.startTime === 'number' && typeof r.endTime === 'number' && r.endTime >= r.startTime) {
+      c.ms = (c.ms ?? 0) + Math.round(r.endTime - r.startTime);
+    }
     files.set(path, c);
   }
   return { files };

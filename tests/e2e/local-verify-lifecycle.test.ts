@@ -131,7 +131,10 @@ describe('local-verify lifecycle (production wiring)', () => {
     const svc = built.service!;
     const values: Record<string, unknown> = {};
     wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
-    const on = svc as unknown as { failFastOn(): boolean; mainRedHoldOn(): boolean };
+    const on = svc as unknown as { failFastOn(): boolean; mainRedHoldOn(): boolean; laneShards(): unknown };
+    expect(on.laneShards()).toBeNull();
+    values['monitoring.localVerify.laneShards'] = { integration: 1, e2e: 2 };
+    expect(on.laneShards()).toEqual({ integration: 1, e2e: 2 });
     expect(on.failFastOn()).toBe(true);
     expect(on.mainRedHoldOn()).toBe(true);
     values['monitoring.localVerify.failFast'] = false;
