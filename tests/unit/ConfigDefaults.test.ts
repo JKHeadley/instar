@@ -34,10 +34,10 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(true);
     });
 
-    it('starts the script rollout with the two observed jobs and preserves operator overrides', () => {
+    it('starts the script rollout with deterministic grading and preserves operator overrides', () => {
       const initial = (getInitDefaults('managed-project').jobs as any).scriptRunners.disabledSlugs as string[];
       expect(initial).not.toContain('llm-decision-grading');
-      expect(initial).not.toContain('correction-class-review-backstop');
+      expect(initial).toContain('correction-class-review-backstop');
       expect(initial).toContain('health-check');
       expect(initial).toContain('feedback-factory-process');
       const existing: any = { jobs: { scriptRunners: { disabledSlugs: ['custom-job'] } } };

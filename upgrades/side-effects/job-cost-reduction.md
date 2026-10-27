@@ -257,6 +257,12 @@ script still runs while correction-class backfill, health-check and the
 supervisor stay closed. The
 Local Verify queue supplies the full merged-head check.
 
+GitHub's first run on the narrowed gate caught three stale unit expectations:
+the initial enabled-slug list, the installed awareness sentence, and the
+hand-maintained dark-gate line map shifted by one source line. The expectations
+now match the one-script rollout, and all 72 tests in those three files pass
+locally. The new head must still pass GitHub and Local Verify before merge.
+
 **Second pass (earlier gate revision).** GPT-6 Astra independently reviewed the
 previous gate and concurred that the production wiring closed Jev, backup,
 investigator, narrator and supervisor model paths despite saved opt-ins. The
