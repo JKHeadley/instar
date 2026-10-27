@@ -523,6 +523,9 @@ describe('test-runner-bound meta-verification (spec §5)', () => {
 
       const root = spawnRoot({
         universe,
+        // Keep Vitest's minimum at one on hosts with more than 16 CPUs; the
+        // CLI flag still proves that a >4-worker request routes suite-class.
+        config: FIXTURE_MINSAFE_CONFIG,
         args: [...PROBES, '--maxWorkers=16'],
         env: { FIXTURE_PROBE_DIR: probeDir, FIXTURE_PROBE_EXPECT: '5' },
       });

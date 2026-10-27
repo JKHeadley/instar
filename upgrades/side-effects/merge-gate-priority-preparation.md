@@ -76,6 +76,7 @@ The first independent pass identified that keeping the claim through the entire 
 - The full unit tier passed on the committed branch on the M5: 51,860 tests, with 18 skips.
 - `tests/integration/test-runner-limiter-route.test.ts` passed 15 route checks on the M5.
 - `tests/e2e/local-verify-lifecycle.test.ts` and `tests/e2e/test-runner-limiter-lifecycle.test.ts` passed 16 production wiring checks on the M5.
+- The first full M5 integration run exposed a host-core-count fixture conflict in the existing CLI-precedence probe: Vitest inferred a minimum above the probe's explicit `--maxWorkers=16`. The probe now selects the existing one-worker-minimum fixture while retaining its real five-file suite-class routing assertion. Its focused M5 rerun passed, and the independent reviewer concurred that this does not weaken the routing invariant.
 
 ## Class-Closure Declaration (display-only mirror)
 
