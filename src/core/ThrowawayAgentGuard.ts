@@ -300,7 +300,7 @@ function patchConfig(projectDir: string, patch: (cfg: Record<string, unknown>) =
     return false;
   }
   if (!patch(cfg)) return false;
-  SafeFsExecutor.atomicWriteJsonSync(p, cfg, { operation: 'src/core/ThrowawayAgentGuard.ts:patchConfig' });
+  SafeFsExecutor.atomicWriteJsonSync(p, cfg, { operation: 'src/core/ThrowawayAgentGuard.ts:patchConfig', mode: 0o600 });
   return true;
 }
 

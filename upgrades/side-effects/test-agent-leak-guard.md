@@ -16,7 +16,7 @@ uses, now under the teardown lock), `PostUpdateMigrator.migrateFleetWatchdog` an
 (`server.ts`), the lifeline start and a 60-second timer (`TelegramLifeline.ts`), `JobScheduler.triggerJob`
 (new `throwaway-agent` skip), `loadConfig` (carries `scheduler.allowOnThrowawayAgent`), `initProject`
 (`--autostart`, `--expires-in`, `--keep`), `instar autostart install --force`, `instar join`, the
-CLAUDE.md template + migration, and one dashboard label. Tier 2; 21 files; spec review ran 6 rounds
+CLAUDE.md template + migration, and one dashboard label. Tier 2; 46 files; spec review ran 6 rounds
 (the Tier-2 cap) — rounds 4–6 were teardown failure-handling edge cases after the spend is already
 stopped, which is the long tail.
 
@@ -28,6 +28,15 @@ stopped, which is the long tail.
 - `JobScheduler.triggerJob` — add — refuse every job for a temp-folder / recorded throwaway, no retry.
 - Startup decision (server + lifeline) — add — run / exit / idle on expiry.
 - Expiry teardown — add — remove only this agent's own unit (exact working-directory match, file and loaded job).
+- Config posture write — modify — preserve mode `0600` when atomically replacing
+  `.instar/config.json`, which contains the authentication token.
+
+The first full integration run caught that the new posture write had inherited
+`SafeFsExecutor.atomicWriteJsonSync`'s default `0644` mode. The write now passes
+`mode: 0o600`; `fresh-install.test.ts` checks the actual file mode after init.
+Independent second pass on this correction: **Concur with the review.** The
+shared writer also covers boot backfill and explicit install; `fs.openSync`
+sets owner-only mode on the temporary file before atomic replacement.
 
 ---
 
