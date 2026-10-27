@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, decideStarved, INTERRUPTION_LIMITS, MERGE_LINE,
-  MERGE_THROUGHPUT_LABEL, QUEUE_PRIORITY, THROUGHPUT_AGING_MS, effectivePriority, prPriority,
+  MERGE_THROUGHPUT_LABEL, QUEUE_PRIORITY, capFor, THROUGHPUT_AGING_MS, effectivePriority, prPriority,
   type LocalVerifyServiceSeams, type PrView, type InFlightIntent, type MergeHandoffResult,
 } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
@@ -189,6 +189,78 @@ describe('request + queue', () => {
     expect(await s.svc.request(12)).toEqual({ ok: false, code: 'queue-full' });
     expect(await s.svc.request(5)).toMatchObject({ ok: true, status: 'already-queued' });
     expect(await s.svc.request(1)).toMatchObject({ ok: true, status: 'in-flight' });
+  });
+
+  it('a full queue still admits a merge-throughput PR, up to the bounded overflow, at the head of the PR order', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 11; i++) views[i] = view({ headRefOid: sha(String(i % 10)), baseRefOid: sha('b') });
+    views[11] = view({ headRefOid: sha('e') });
+    const cap = LOCAL_VERIFY_LIMITS.queueCap, over = LOCAL_VERIFY_LIMITS.throughputOverflow;
+    for (let k = 0; k <= over; k++) views[100 + k] = view({ headRefOid: `${'a'.repeat(39)}${k.toString(16)}`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    views[200] = view({ headRefOid: `${'c'.repeat(39)}1` });
+    const s = setup({ views });
+    for (let i = 1; i <= 11; i++) expect((await s.svc.request(i)).ok).toBe(true);
+    expect(s.svc.snapshot().queue).toHaveLength(cap);
+    for (let k = 0; k < over; k++) expect(await s.svc.request(100 + k)).toMatchObject({ ok: true, status: 'queued' });
+    expect(s.svc.snapshot().queue).toHaveLength(cap + over);
+    // The overflow is bounded, and an ordinary PR is still refused.
+    expect(await s.svc.request(100 + over)).toEqual({ ok: false, code: 'queue-full' });
+    expect(await s.svc.request(200)).toEqual({ ok: false, code: 'queue-full' });
+    expect(capFor(QUEUE_PRIORITY.mergeThroughput)).toBe(cap + over);
+    expect(capFor(QUEUE_PRIORITY.ordinary)).toBe(cap);
+  });
+
+  it('an ordinary queued PR whose head moves keeps its place while the overflow is in use', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 11; i++) views[i] = view({ headRefOid: sha(String(i % 10)), baseRefOid: sha('b') });
+    views[11] = view({ headRefOid: sha('e') });
+    views[100] = view({ headRefOid: `${'a'.repeat(39)}1`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    const s = setup({ views });
+    for (let i = 1; i <= 11; i++) await s.svc.request(i);
+    await s.svc.request(100); // the queue is now 10 ordinary + 1 labelled
+    const before = s.svc.snapshot().queue.map((e) => e.pr);
+    s.views[5] = view({ headRefOid: `${'c'.repeat(39)}5`, baseRefOid: sha('b') }); // a new push
+    expect(await s.svc.request(5)).toMatchObject({ ok: true, status: 'queued' });
+    const q = s.svc.snapshot().queue;
+    expect(q.map((e) => e.pr)).toEqual(before);
+    expect(q.find((e) => e.pr === 5)?.headSha).toBe(`${'c'.repeat(39)}5`);
+  });
+
+  it('a restart with a run in flight and the overflow full restores every entry', async () => {
+    const cap = LOCAL_VERIFY_LIMITS.queueCap, over = LOCAL_VERIFY_LIMITS.throughputOverflow;
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= cap + 1; i++) views[i] = view({ headRefOid: `${'d'.repeat(38)}${i.toString(16).padStart(2, '0')}`, baseRefOid: sha('b') });
+    for (let k = 0; k < over; k++) views[100 + k] = view({ headRefOid: `${'a'.repeat(39)}${k.toString(16)}`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    const s = setup({ views });
+    for (let i = 1; i <= cap + 1; i++) await s.svc.request(i); // one runs, cap wait
+    for (let k = 0; k < over; k++) expect(await s.svc.request(100 + k)).toMatchObject({ ok: true, status: 'queued' });
+    const before = [...s.svc.snapshot().queue.map((e) => e.pr), 1].sort((a, b) => a - b);
+    s.svc.shutdown();
+    const s2 = setup({ stateDir: s.stateDir, views: s.views });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().queue.map((e) => e.pr).sort((a, b) => a - b)).toEqual(before);
+  });
+
+  it('labelled PRs admitted past the cap survive a restart (the restore uses the same bounded cap)', async () => {
+    const views: Record<number, PrView> = {};
+    for (let i = 1; i <= 11; i++) views[i] = view({ headRefOid: sha(String(i % 10)), baseRefOid: sha('b') });
+    views[11] = view({ headRefOid: sha('e') });
+    views[100] = view({ headRefOid: `${'a'.repeat(39)}1`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    views[101] = view({ headRefOid: `${'a'.repeat(39)}2`, labels: [{ name: MERGE_THROUGHPUT_LABEL }] });
+    const s = setup({ views });
+    for (let i = 1; i <= 11; i++) await s.svc.request(i);
+    await s.svc.request(100);
+    await s.svc.request(101);
+    const before = s.svc.snapshot().queue.map((e) => e.pr).sort((a, b) => a - b);
+    expect(before).toContain(100);
+    expect(before).toContain(101);
+    s.svc.shutdown();
+    const s2 = setup({ stateDir: s.stateDir, views: s.views });
+    await s2.svc.boot();
+    const after = s2.svc.snapshot().queue.map((e) => e.pr).sort((a, b) => a - b);
+    // Every durably queued entry comes back (the ordinary ones below the cap and the labelled
+    // overflow), plus the in-flight run, which shutdown puts back at the head.
+    expect(after).toEqual([...before, 1].sort((a, b) => a - b));
   });
 
   it('a moved head replaces the pending entry', async () => {

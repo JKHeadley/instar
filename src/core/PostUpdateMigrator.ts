@@ -72,6 +72,9 @@ import {
   REROUTED_LOGIN_EXPIRED_MARKER,
   REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
+  REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET,
+  INTERACTIVE_LOGIN_EXPIRED_MARKER,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
   CONSOLE_BULLET,
@@ -281,6 +284,12 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
  * CLAUDE.md's Local Verify section (`migrateClaudeMd`, content-sniffed on the config key).
  */
 export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red hold: while `main` fails a known check, only a repair candidate (a PR whose diff touches a failing file, or whose title or body names it) or a `main` verify takes the slot; every other PR keeps its place and waits for green instead of running a doomed verify. `GET /local-verify` → `mainRedHold` (failing files, `repairPrs`, `heldPrs`, a plain `detail`; held entries carry `held`); a `POST /local-verify` answer for a held PR carries `hold`. Once `main` is red, ONE deduped attention item for the episode (`local-verify:main-red-hold`) names the failing check and every PR already fixing it, refreshes when that list changes and closes on green — before writing a fix for a red `main`, read `repairPrs`; if yours is the fix, name the failing file in its title or body. Off switch: `monitoring.localVerify.mainRedHold: false` (read live).';
+
+/**
+ * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
+ * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
+ */
+export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify throughput overflow: a PR labelled `merge-throughput` is admitted even when the queue is full (10), up to 5 extra entries, so its priority applies at once; an ordinary PR still answers `queue-full`. When a labelled PR answers `queue-full`, the overflow is full too: wait for an entry to finish and request it again.';
 
 /**
  * Local Verify fail-fast — the awareness line appended to an existing CLAUDE.md's Local Verify
@@ -9411,6 +9420,12 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput label awareness');
     }
+    // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
+    if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
+      content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
+    }
     // local-verify fail-fast: a PR verify stops its other lanes once one lane has a real failure.
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.failFast')) {
       content += '\n' + LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE + '\n';
@@ -10808,6 +10823,24 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       content = content.replace(REROUTED_LOGIN_EXPIRED_LEGACY_SENTENCE, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
       patched = true;
       result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet now names the sign-in repair');
+    }
+    // CMT-1008: a readable credential plus the CLI's own screen now marks the account at once.
+    if (content.includes(REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1)) {
+      content = content.replace(REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet names the readable-credential rule');
+    }
+    // CMT-1008: interactive (topic) sessions stuck at an expired login — placed right after the
+    // rerouted-job bullet when present, else appended. Idempotent via its marker.
+    if (!content.includes(INTERACTIVE_LOGIN_EXPIRED_MARKER)) {
+      const rrIdx = content.indexOf(REROUTED_LOGIN_EXPIRED_BULLET);
+      content = rrIdx >= 0
+        ? content.slice(0, rrIdx + REROUTED_LOGIN_EXPIRED_BULLET.length) + '\n' + INTERACTIVE_LOGIN_EXPIRED_BULLET + content.slice(rrIdx + REROUTED_LOGIN_EXPIRED_BULLET.length)
+        : content + '\n' + INTERACTIVE_LOGIN_EXPIRED_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added interactive expired-login bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: interactive expired-login bullet already present');
     }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener

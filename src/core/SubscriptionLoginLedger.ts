@@ -20,8 +20,9 @@ export const SUBSCRIPTION_LOGIN_CAUSE_CLASSES = [
   // The Codex CLI's own login check AND the live authenticated read both said signed out, on two
   // consecutive polls (spec skill-driven-signin-repair).
   'cli-signed-out-auth-refused',
-  // The stored Claude credential was unreadable AND Claude Code itself showed "Login expired" in
-  // at least two separate sessions under that config home within an hour.
+  // Claude Code itself showed its expired-login screen under that config home: either the stored
+  // credential was unreadable AND two separate sessions showed it within an hour, or (CMT-1008)
+  // the credential reads and one session showed it past the monitor's dwell.
   'cli-login-expired-observed',
   'unrecognized-reason',
 ] as const;

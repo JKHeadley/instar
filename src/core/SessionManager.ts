@@ -74,6 +74,7 @@ import { hostFreeMemPct, type MemReadDeps } from '../monitoring/hostMemoryPressu
 import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { classifyLoginExpired } from './LoginExpiredSignature.js';
+import type { InteractiveLoginExpiredSignal } from './InteractiveLoginExpiredRecovery.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import { resolveIdleSinceSeed } from './idleSincePersistence.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
@@ -341,6 +342,12 @@ const STARTUP_TAIL_WINDOW_MS = 120_000;
 /** How long a rerouted session must keep showing the expired-login frame before
  *  the monitor ends it (one frame alone never ends a session). */
 const LOGIN_EXPIRED_DWELL_MS = 60_000;
+/** Interactive sessions: how often the live tail is checked for the expired-login frame
+ *  (cheaper than every 5 s tick; well inside the ~1 minute recovery budget). */
+const INTERACTIVE_LOGIN_CHECK_INTERVAL_MS = 20_000;
+/** Interactive sessions: a session still at the screen after a recovery attempt is offered
+ *  again only after this long (the recovery owns its own per-session cooldown too). */
+const INTERACTIVE_LOGIN_REPORT_RETRY_MS = 10 * 60_000;
 /** Prepended to a topic bootstrap when its earlier conversation could not be reopened (spec §3.1, P24 in-band disclosure). */
 export const RESUME_REOPEN_FAILED_NOTE =
   'Note: your earlier conversation in this topic could not be reopened, so you only have the recent topic messages below.';
@@ -1044,6 +1051,10 @@ export class SessionManager extends EventEmitter {
    * longer running, and whenever the frame is no longer the live tail.
    */
   private readonly loginExpiredFirstSeen = new Map<string, number>();
+  /** Interactive (non-job) sessions: last time the live tail was checked for the expired-login
+   *  frame, and when the current episode was last handed to the recovery sink (CMT-1008). */
+  private readonly interactiveLoginLastCheckAt = new Map<string, number>();
+  private readonly interactiveLoginReportedAt = new Map<string, number>();
   /** Terminal child status sampled from a tmux pane retained by
    * `remain-on-exit failed`; consumed by the self-exit transition. */
   private readonly terminalExitCodes = new Map<string, number>();
@@ -1912,10 +1923,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   /** Signal sink for "this session showed Claude Code's Login expired frame under this config
    *  home". Wired by server.ts to the QuotaPoller, which alone decides pool status. */
-  private loginExpiredSink: ((input: { configHome: string; session: string }) => void) | null = null;
+  private loginExpiredSink: ((input: { configHome: string; session: string; messageLed?: boolean }) => void) | null = null;
 
-  setLoginExpiredSink(fn: ((input: { configHome: string; session: string }) => void) | null): void {
+  /** `messageLed` (CMT-1008): the frame was the CLI's own `⏺` message line, not a tool result —
+   *  only then may the sighting change pool state on its own. */
+  setLoginExpiredSink(fn: ((input: { configHome: string; session: string; messageLed?: boolean }) => void) | null): void {
     this.loginExpiredSink = fn;
+  }
+
+  /** Signal sink for "this INTERACTIVE session has sat at Claude Code's expired-login screen past
+   *  the dwell" (CMT-1008). Wired by server.ts to InteractiveLoginExpiredRecovery, which owns the
+   *  pool marking and the swap; this class only detects. */
+  private interactiveLoginExpiredSink: ((input: InteractiveLoginExpiredSignal) => void | Promise<unknown>) | null = null;
+
+  setInteractiveLoginExpiredSink(fn: ((input: InteractiveLoginExpiredSignal) => void | Promise<unknown>) | null): void {
+    this.interactiveLoginExpiredSink = fn;
   }
 
   /** The configured standing-session entries (tmux names and `topic:<id>`). */
@@ -2022,7 +2044,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const liveConfigHome = this.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true });
     const configHome = liveConfigHome ?? 'the default login';
     if (liveConfigHome && this.loginExpiredSink) {
-      try { this.loginExpiredSink({ configHome: liveConfigHome, session: session.tmuxSession }); }
+      try { this.loginExpiredSink({ configHome: liveConfigHome, session: session.tmuxSession, messageLed: verdict.messageLed === true }); }
       catch { /* @silent-fallback-ok — a signal sink failure must never block ending the session */ }
     }
     console.warn(`[SessionManager] Rerouted session "${session.name}" is stuck at an expired login (${configHome}): "${verdict.matchedLine}". Ending it so its slot is freed.`);
@@ -2045,6 +2067,63 @@ rm()  { "${shimRunner}" rm  "$@"; }
       });
     }
     return killed.terminated;
+  }
+
+  /**
+   * Interactive-branch helper (CMT-1008): a topic-bound Claude Code session placed on a login whose
+   * CLI sign-in has expired shows "Login expired · Please run /login" (or "Not logged in · Run
+   * /login") on every turn and never recovers on its own. When the live tail has shown that frame
+   * for LOGIN_EXPIRED_DWELL_MS, hand it to the recovery sink once per episode (re-offered after
+   * INTERACTIVE_LOGIN_REPORT_RETRY_MS if the screen persists). Detection only: it never kills,
+   * swaps, or touches pool state itself. Never throws into the tick.
+   */
+  private async reportInteractiveLoginExpired(session: Session): Promise<void> {
+    if (!this.interactiveLoginExpiredSink) return;
+    const key = session.tmuxSession;
+    const now = Date.now();
+    const lastCheck = this.interactiveLoginLastCheckAt.get(key);
+    if (lastCheck !== undefined && now - lastCheck < INTERACTIVE_LOGIN_CHECK_INTERVAL_MS) return;
+    this.interactiveLoginLastCheckAt.set(key, now);
+    let pane = '';
+    try {
+      pane = (await this.captureOutputMaybeAsync(key, 40)) || '';
+    } catch { /* @silent-fallback-ok — an unreadable pane is re-checked next interval */
+      return;
+    }
+    const verdict = classifyLoginExpired(pane);
+    // Only the CLI's own message line counts here: a `⎿`-led tool result (e.g. the session ran
+    // `claude auth status` against some login) must never mark this session's account.
+    if (!verdict.loginExpired || !verdict.messageLed) {
+      this.loginExpiredFirstSeen.delete(key);
+      this.interactiveLoginReportedAt.delete(key);
+      return;
+    }
+    const firstSeen = this.loginExpiredFirstSeen.get(key);
+    if (firstSeen === undefined) {
+      this.loginExpiredFirstSeen.set(key, now);
+      return;
+    }
+    if (now - firstSeen < LOGIN_EXPIRED_DWELL_MS) return;
+    const reportedAt = this.interactiveLoginReportedAt.get(key);
+    if (reportedAt !== undefined && now - reportedAt < INTERACTIVE_LOGIN_REPORT_RETRY_MS) return;
+    this.interactiveLoginReportedAt.set(key, now);
+    const configHome = this.configHomeForSession(key, { defaultWhenUnset: true });
+    console.warn(`[SessionManager] Interactive session "${session.name}" is stuck at an expired login (${configHome ?? 'unknown login'}): "${verdict.matchedLine}". Handing it to login-expired recovery.`);
+    try {
+      const r = this.interactiveLoginExpiredSink({
+        session: key,
+        sessionName: session.name,
+        configHome: configHome ?? null,
+        accountId: session.subscriptionAccountId ?? null,
+        matchedLine: verdict.matchedLine ?? '',
+        protected: this.config.protectedSessions.includes(key),
+      });
+      if (r && typeof (r as Promise<unknown>).catch === 'function') {
+        (r as Promise<unknown>).catch((err) => console.warn(`[SessionManager] login-expired recovery for "${session.name}" failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    } catch (err) { /* @silent-fallback-ok — a sink failure is logged and re-offered after the retry interval */
+      console.warn(`[SessionManager] login-expired recovery for "${session.name}" threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async terminateSession(
@@ -2677,10 +2756,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (!live.has(key)) this.startupTails.delete(key);
         }
       }
-      if (this.loginExpiredFirstSeen.size > 0) {
+      if (this.loginExpiredFirstSeen.size > 0 || this.interactiveLoginLastCheckAt.size > 0 || this.interactiveLoginReportedAt.size > 0) {
         const live = new Set(running.map(s => s.tmuxSession));
-        for (const key of this.loginExpiredFirstSeen.keys()) {
-          if (!live.has(key)) this.loginExpiredFirstSeen.delete(key);
+        for (const m of [this.loginExpiredFirstSeen, this.interactiveLoginLastCheckAt, this.interactiveLoginReportedAt]) {
+          for (const key of m.keys()) {
+            if (!live.has(key)) m.delete(key);
+          }
         }
       }
       // Drop age-gate work memory for sessions that are no longer running
@@ -2853,6 +2934,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // tick. Skip the rest of the loop body (the default exit/idle paths
           // below are tuned for the headless lane, not a held REPL).
           continue;
+        }
+
+        // Interactive (non-job) Claude Code session stuck at an expired login
+        // (CMT-1008): detection only — the recovery sink marks the pool and
+        // swaps the session onto a signed-in account. Falls through so the
+        // default lane below is unchanged.
+        if ((session.framework ?? 'claude-code') === 'claude-code' && !session.jobSlug) {
+          await this.reportInteractiveLoginExpired(session);
         }
 
         // Gemini CLI can complete a Telegram turn by rendering the final
