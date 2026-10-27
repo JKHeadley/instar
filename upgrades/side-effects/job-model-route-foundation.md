@@ -51,6 +51,8 @@ No new static heuristic at a competing-signals judgment point. Each check is an 
 
 New optional fields can appear in job and run-history API responses. No new operator action, message send, external API call, or model call is introduced. Existing manifest files need no migration; newly regenerated built-in manifests carry the fields only when a template declares them. Run-history rows gain optional route metadata; absent provenance on old rows means `unknown`. Queries preserve capped rows without adding a field after the 2 KB write limit is enforced.
 
+The shipped console DOM test uses timestamps relative to its real rendering clock, so its expected "hours ago" label remains valid as the calendar advances.
+
 ## 6b. Operator-surface quality
 
 No operator surface — not applicable.
