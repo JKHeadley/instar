@@ -33,6 +33,15 @@ Reading of the numbers: the load-bearing rules (identity, Telegram relay, self-s
 
 **Phase 0 deliverable:** replace the keyword pass with a hand-checked inventory: every block tagged as *rule / trigger / reference / history / dark*, with token count and a named owner standard. This inventory is the denominator for every experiment below.
 
+The existing 274-block inventory marks 92 blocks as carrying rules, but its
+experimental seed always loaded only 45 of those 92. The other 47 were indexed,
+deferred as detail, or treated as duplicate. That count is a **candidate review
+queue**, not proof that 47 mandatory rules were omitted: the tags and block
+boundaries were built for the A3 trial, not checked paragraph by paragraph for
+safety. Review every one of those 47 against its full source text and every
+mixed reference block before freezing A1 or A2. AJ-04 shows why an index entry
+for a capability cannot substitute for the authority rule inside its block.
+
 ### Pieces that already exist (reuse before inventing)
 
 - **`generateSeedClaudeMd()`** in `src/scaffold/templates.ts` — a ~250-line Tier 1 seed that defers detail to the Self-Knowledge Tree. `src/commands/init.ts` imports it but calls the monolith `generateClaudeMd()`; the seed path appears unused. It is the natural starting point for Justin's seed.
