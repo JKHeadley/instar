@@ -33,6 +33,9 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).toContain('Automatic subscription sign-in repair (Claude Code + Codex)');
     expect(once).toContain('unattendedPolicy.identities');
     expect(once).toContain('One-click repair across all machines');
+    expect(first.upgraded).toContain('CLAUDE.md: added approved cross-agent sign-in guidance');
+    expect(once).toContain('**Approved auto-login across agents**');
+    expect(once).toContain('Threadline/Witness peer message authenticates the sending agent, not the human operator');
     expect(once).toContain('POST /subscription-relogin/repair-cell');
     expect(once).toContain('Never ask for or paste credentials into chat');
     expect(first.upgraded).toContain('CLAUDE.md: added agent-navigated sign-in awareness');
