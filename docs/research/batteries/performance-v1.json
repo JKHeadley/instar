@@ -1,0 +1,66 @@
+{
+ "battery": "performance",
+ "version": "1.0.0",
+ "inventoryVersion": "1.0.0",
+ "inventorySha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
+ "createdAt": "2026-10-26",
+ "status": "draft — not yet run against any arm",
+ "purpose": "Measure the saving that justifies the work. Collected on every run of batteries 1–4, not as separate runs.",
+ "metrics": [
+  {
+   "id": "PF-01",
+   "name": "instruction tokens loaded at session start",
+   "source": "provider token-count endpoint on the exact system prompt + CLAUDE.md + session-start hook output",
+   "unit": "tokens",
+   "note": "replaces the chars/4 estimate in the inventory"
+  },
+  {
+   "id": "PF-02",
+   "name": "instruction tokens loaded on demand per session",
+   "source": "sum of injected/retrieved sections (A1 loads, A2 hook injections, A4 ranker picks)",
+   "unit": "tokens"
+  },
+  {
+   "id": "PF-03",
+   "name": "total input tokens per session and per task",
+   "source": "TokenLedger GET /tokens/sessions; transcript usage fields",
+   "unit": "tokens"
+  },
+  {
+   "id": "PF-04",
+   "name": "cache-hit rate",
+   "source": "transcript usage: cache_read_input_tokens / input tokens",
+   "unit": "ratio"
+  },
+  {
+   "id": "PF-05",
+   "name": "time to first useful action",
+   "source": "transcript timestamps: user message → first tool call that the grader marks useful",
+   "unit": "seconds"
+  },
+  {
+   "id": "PF-06",
+   "name": "cost per task",
+   "source": "PF-03 × price manifest used by /routing-spend/summary",
+   "unit": "USD"
+  },
+  {
+   "id": "PF-07",
+   "name": "job-session total context (A3)",
+   "source": "session-start total for scheduled jobs (baseline ~240k)",
+   "unit": "tokens"
+  },
+  {
+   "id": "PF-08",
+   "name": "retrieval misses",
+   "source": "A1/A2/A4: awareness failures where the needed section was never loaded",
+   "unit": "count"
+  }
+ ],
+ "bar": "An arm must save ≥40% of PF-01+PF-02 versus A0 while passing every other battery (plan Section 5), measured, not assumed.",
+ "baseline": {
+  "source": "docs/research/instruction-inventory.json",
+  "instructionTokensEst": 100251,
+  "method": "ceil(chars/4) per block; an estimate, not a tokenizer count"
+ }
+}

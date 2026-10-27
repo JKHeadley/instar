@@ -1,0 +1,462 @@
+{
+ "battery": "work-quality",
+ "version": "1.0.0",
+ "inventoryVersion": "1.0.0",
+ "inventorySha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
+ "createdAt": "2026-10-26",
+ "status": "draft — not yet run against any arm",
+ "purpose": "Real tasks with known good outcomes. INSTAR-Bench v2 measures internal gate/sentinel LLM calls, whose prompts do not come from CLAUDE.md, so it fits only as (a) the scoring machinery (aggregate.mjs pass rates, Wilson intervals) and (b) a 4-task invariance control. The rest are real past work items.",
+ "counts": {
+  "total": 40,
+  "byKind": {
+   "bug-fix": 20,
+   "spec-revision": 4,
+   "job-run": 6,
+   "operational": 6,
+   "instar-bench-v2-gate-invariance": 4
+  }
+ },
+ "passBar": "Candidate pass rate ≥ A0, one-sided 97.5% bound, no margin; blind cross-family grading plus ≥10% human sample; every candidate failure reviewed.",
+ "tasks": [
+  {
+   "id": "WQ-001",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "8897858e23de46fc4a9237d0f84095b344eb0b56",
+   "subject": "fix(credentials): a Google account backing two subscriptions is not a missing login (#1980)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-002",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "0afa2e4eec001632c35983cca6ba707543146db1",
+   "subject": "fix(autostart): a Linux auto-start install now starts at boot, and says which (#1978)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-003",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "91d264591cd867a6752203e7ed7ffa0ed3c686f6",
+   "subject": "fix(core): teach host-local classification to see ordinary Linux filesystems (#1977)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-004",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "2156e2bb186e01e4a953d18f65537b0df0dc8616",
+   "subject": "fix(control-paths): an emergency stop kills and reports truthfully; the reply client keeps decision refs intact (#1976)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-005",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "960cc3b7ef550792acaa03eda0e1256155388cd4",
+   "subject": "fix(worktree): resolve the commit identity instead of minting one (#1975)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-006",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "d8709b6b8df11d509a4b33a55a97401d608c18df",
+   "subject": "fix(threadline): two agents in one room could share a thread (#1971)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-007",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "24fed659cc10a33209d8b02d765fa961870962d6",
+   "subject": "fix(sessions): a session that exits on its own now leaves a trace (reason + reap-log row + last pane tail) (#1963)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-008",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "d36a7ff71f38ccc2d35cf95887885618f91a6c20",
+   "subject": "fix(codex): interactive sessions died ~18s after spawn — a menu read as ready (#1961)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-009",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "2806a3ecbac419d88238df9cca59d1cdc9a6e7c7",
+   "subject": "fix(ingress): a non-owner no longer claims an inbound it only relays (#1953)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-010",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "27ca302e9556ffdb7cef2fecd92e3a66bdc2dc04",
+   "subject": "fix(reroute): completion sentinel must not appear literally in the injected prompt (#1951)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-011",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "13644bdfa186ea9fe25fd0f107cdcf78154441ce",
+   "subject": "fix(follow-me): the outermost timeout in the cross-machine sign-in chain was the smallest (#1950)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-012",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "73004eeb7f6ae6100fc408afea9e633b43cd3893",
+   "subject": "fix(delivery): a re-delivered message now says it is re-delivered (#1949)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-013",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "180069d146073f28d58230d1c538966f2c16343d",
+   "subject": "fix(messaging): the relay reported suppressed duplicates as sent (#1948)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-014",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "56964af524144c7686b03f917fc817eb80ede777",
+   "subject": "fix(identity): require evidence for verified topic operators (#1918)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-015",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "03b6c2a3f40b2bbc59c2b2d7f0e6d233014d486b",
+   "subject": "fix(enrollment): stop re-asking a Codex sign-in that already succeeded (#1913)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-016",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "c1493b6239cc8fab2883a33b0a2067111334915f",
+   "subject": "fix(init): never create a GitHub repository from a test run (#1914)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-017",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "14d2d85c18ac82b9fef0977bb9f959c0e5ff458f",
+   "subject": "fix(follow-me): keep the account's provider/framework when it lives on a peer (#1912)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-018",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "73adf0edb9c6f696dc5e54b1c18435ee427c108b",
+   "subject": "fix(gate): let operator replies claim the interactive spawn reserve (#1903)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-019",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "205a6191593bfde5b1c3badd6861a65c4aaee670",
+   "subject": "fix(test-setup): regenerate the registry asset when it is STALE, not only absent (#1894)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-020",
+   "kind": "bug-fix",
+   "source": "real past fix (instar main)",
+   "fixCommit": "ab26b7ca36c1375d855f08c9a6a66e84e2b656e2",
+   "subject": "fix(lint): url-log guard resolves a credentialed URL split across a concatenation (#1893)",
+   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "pass": [
+    "the fix commit's own tests (restored after the run) pass",
+    "no other test regresses",
+    "blind review: comparable to the real fix in scope and quality"
+   ]
+  },
+  {
+   "id": "WQ-021",
+   "kind": "spec-revision",
+   "source": "new, from real past work items",
+   "task": "Revise a converged spec after a new reviewer finding (pick 4 specs from docs/specs with a later fix commit)",
+   "pass": [
+    "judge vs the real later revision"
+   ]
+  },
+  {
+   "id": "WQ-022",
+   "kind": "spec-revision",
+   "source": "new, from real past work items",
+   "task": "Write the ELI16 companion for a spec",
+   "pass": [
+    "passes the eli16 lint; blind plain-language review"
+   ]
+  },
+  {
+   "id": "WQ-023",
+   "kind": "spec-revision",
+   "source": "new, from real past work items",
+   "task": "Resolve a decision-completeness gap in a draft spec",
+   "pass": [
+    "judge: every open decision named and resolved or escalated correctly"
+   ]
+  },
+  {
+   "id": "WQ-024",
+   "kind": "spec-revision",
+   "source": "new, from real past work items",
+   "task": "Turn an operator correction into a spec change",
+   "pass": [
+    "judge: the change matches the correction, no scope creep"
+   ]
+  },
+  {
+   "id": "WQ-025",
+   "kind": "job-run",
+   "source": "new, from real past work items",
+   "task": "Run the worktree-monitor job once and report",
+   "pass": [
+    "deterministic: route calls + one report, no duplicate notice"
+   ]
+  },
+  {
+   "id": "WQ-026",
+   "kind": "job-run",
+   "source": "new, from real past work items",
+   "task": "Run the degradation-digest skill on a fixed log fixture",
+   "pass": [
+    "grouping matches the reference digest"
+   ]
+  },
+  {
+   "id": "WQ-027",
+   "kind": "job-run",
+   "source": "new, from real past work items",
+   "task": "Run state-integrity-check on a seeded broken state dir",
+   "pass": [
+    "finds every seeded defect"
+   ]
+  },
+  {
+   "id": "WQ-028",
+   "kind": "job-run",
+   "source": "new, from real past work items",
+   "task": "Run the guardian-pulse job with one silently failing job",
+   "pass": [
+    "flags it"
+   ]
+  },
+  {
+   "id": "WQ-029",
+   "kind": "job-run",
+   "source": "new, from real past work items",
+   "task": "Run memory-hygiene on a fixture MEMORY.md",
+   "pass": [
+    "finds duplicates and stale entries in the reference list"
+   ]
+  },
+  {
+   "id": "WQ-030",
+   "kind": "job-run",
+   "source": "new, from real past work items",
+   "task": "Run triage-findings on a fixture of pending findings",
+   "pass": [
+    "routes each to the reference destination"
+   ]
+  },
+  {
+   "id": "WQ-031",
+   "kind": "operational",
+   "source": "new, from real past work items",
+   "task": "Diagnose a reaped session from a fixture reap-log",
+   "pass": [
+    "names the right reason and next step"
+   ]
+  },
+  {
+   "id": "WQ-032",
+   "kind": "operational",
+   "source": "new, from real past work items",
+   "task": "Explain a held Telegram reply from a fixture origins status",
+   "pass": [
+    "correct hold reason; no resend"
+   ]
+  },
+  {
+   "id": "WQ-033",
+   "kind": "operational",
+   "source": "new, from real past work items",
+   "task": "Move a topic between two throwaway machines",
+   "pass": [
+    "POST /pool/transfer with confirm flow; ends on the target"
+   ]
+  },
+  {
+   "id": "WQ-034",
+   "kind": "operational",
+   "source": "new, from real past work items",
+   "task": "Pair two throwaway agents",
+   "pass": [
+    "invite flow; mutual-verified; no fingerprint asked of the person"
+   ]
+  },
+  {
+   "id": "WQ-035",
+   "kind": "operational",
+   "source": "new, from real past work items",
+   "task": "Set up a dated follow-up commitment from a conversation",
+   "pass": [
+    "commitment with absolute checkInAt"
+   ]
+  },
+  {
+   "id": "WQ-036",
+   "kind": "operational",
+   "source": "new, from real past work items",
+   "task": "Raise and later clear a recurring attention item",
+   "pass": [
+    "conditionKey used; cleared with a resolution"
+   ]
+  },
+  {
+   "id": "WQ-037",
+   "kind": "instar-bench-v2-gate-invariance",
+   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
+   "task": "Run the v2 critical-set cases for the tone gate (B1–B7 + walls) with the agent session under each arm",
+   "pass": [
+    "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
+   ]
+  },
+  {
+   "id": "WQ-038",
+   "kind": "instar-bench-v2-gate-invariance",
+   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
+   "task": "Run the v2 critical-set cases for the message sentinel (emergency stop) with the agent session under each arm",
+   "pass": [
+    "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
+   ]
+  },
+  {
+   "id": "WQ-039",
+   "kind": "instar-bench-v2-gate-invariance",
+   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
+   "task": "Run the v2 critical-set cases for the correction classifier with the agent session under each arm",
+   "pass": [
+    "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
+   ]
+  },
+  {
+   "id": "WQ-040",
+   "kind": "instar-bench-v2-gate-invariance",
+   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
+   "task": "Run the v2 critical-set cases for the coherence reviewer with the agent session under each arm",
+   "pass": [
+    "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
+   ]
+  }
+ ]
+}

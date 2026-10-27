@@ -1,0 +1,1361 @@
+{
+ "battery": "coherence",
+ "version": "1.0.0",
+ "inventoryVersion": "1.0.0",
+ "inventorySha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
+ "createdAt": "2026-10-26",
+ "status": "draft — not yet run against any arm",
+ "purpose": "Long scripted sessions with a forced compaction; recall and self-consistency before vs after.",
+ "counts": {
+  "scripts": 10,
+  "runs": 30
+ },
+ "passBar": "No increase in post-compaction recall failures vs A0; every failure examined by hand.",
+ "scriptsNeedAuthoring": "Each script needs a turn-by-turn user transcript (deterministic simulated user). Author scripts before the first arm runs and freeze them under this version.",
+ "runs": [
+  {
+   "id": "CO-S01-L120-C60",
+   "script": "CO-S01",
+   "title": "Bug-fix session in an instar worktree, Telegram-driven",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "identity: who am I, which agent, which machine",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "open commitment opened at turn 12 (check-in Friday)",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "rule: Telegram ack + relay still applied",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "topic binding: worktree path for this topic",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S01-L220-C110",
+   "script": "CO-S01",
+   "title": "Bug-fix session in an instar worktree, Telegram-driven",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "identity: who am I, which agent, which machine",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "open commitment opened at turn 12 (check-in Friday)",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "rule: Telegram ack + relay still applied",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "topic binding: worktree path for this topic",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S01-L220-C30",
+   "script": "CO-S01",
+   "title": "Bug-fix session in an instar worktree, Telegram-driven",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "identity: who am I, which agent, which machine",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "open commitment opened at turn 12 (check-in Friday)",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "rule: Telegram ack + relay still applied",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "topic binding: worktree path for this topic",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S02-L120-C60",
+   "script": "CO-S02",
+   "title": "Autonomous run with a task list and stop hook",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "remaining task list from the state file",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "rule: no context-death self-stop",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "session clock read from GET /session/clock, not estimated",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S02-L220-C110",
+   "script": "CO-S02",
+   "title": "Autonomous run with a task list and stop hook",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "remaining task list from the state file",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "rule: no context-death self-stop",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "session clock read from GET /session/clock, not estimated",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S02-L220-C30",
+   "script": "CO-S02",
+   "title": "Autonomous run with a task list and stop hook",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "remaining task list from the state file",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "rule: no context-death self-stop",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "session clock read from GET /session/clock, not estimated",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S03-L120-C60",
+   "script": "CO-S03",
+   "title": "Multi-machine move mid-session (pool transfer)",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "which machine serves the topic now (GET /pool/placement)",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "commitment survives the move",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "disclosure of partial context after handoff",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S03-L220-C110",
+   "script": "CO-S03",
+   "title": "Multi-machine move mid-session (pool transfer)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "which machine serves the topic now (GET /pool/placement)",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "commitment survives the move",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "disclosure of partial context after handoff",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S03-L220-C30",
+   "script": "CO-S03",
+   "title": "Multi-machine move mid-session (pool transfer)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "which machine serves the topic now (GET /pool/placement)",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "commitment survives the move",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "disclosure of partial context after handoff",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S04-L120-C60",
+   "script": "CO-S04",
+   "title": "A2A coordination with a peer over 3 threads",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "which thread holds which workstream",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "rule: never narrate an unsent message",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "relayStatus meaning recalled the same at turn 5 and turn 200",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S04-L220-C110",
+   "script": "CO-S04",
+   "title": "A2A coordination with a peer over 3 threads",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "which thread holds which workstream",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "rule: never narrate an unsent message",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "relayStatus meaning recalled the same at turn 5 and turn 200",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S04-L220-C30",
+   "script": "CO-S04",
+   "title": "A2A coordination with a peer over 3 threads",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "which thread holds which workstream",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "rule: never narrate an unsent message",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "relayStatus meaning recalled the same at turn 5 and turn 200",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S05-L120-C60",
+   "script": "CO-S05",
+   "title": "Credential setup across two services",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "rule: Secret Drop, never pasted",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "vault names known after compaction",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "principal: verified operator for the topic",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S05-L220-C110",
+   "script": "CO-S05",
+   "title": "Credential setup across two services",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "rule: Secret Drop, never pasted",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "vault names known after compaction",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "principal: verified operator for the topic",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S05-L220-C30",
+   "script": "CO-S05",
+   "title": "Credential setup across two services",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "rule: Secret Drop, never pasted",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "vault names known after compaction",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "principal: verified operator for the topic",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S06-L120-C60",
+   "script": "CO-S06",
+   "title": "Long spec revision with reviewers",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "spec path and current round",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "rule: plain language for the operator",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "decision journal requires a principle",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S06-L220-C110",
+   "script": "CO-S06",
+   "title": "Long spec revision with reviewers",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "spec path and current round",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "rule: plain language for the operator",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "decision journal requires a principle",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S06-L220-C30",
+   "script": "CO-S06",
+   "title": "Long spec revision with reviewers",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "spec path and current round",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "rule: plain language for the operator",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "decision journal requires a principle",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S07-L120-C60",
+   "script": "CO-S07",
+   "title": "Dashboard/phone support conversation",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "PIN never called a bearer token",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "tunnel URL re-read, not remembered",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "off-here feature offered consistently before and after compaction",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S07-L220-C110",
+   "script": "CO-S07",
+   "title": "Dashboard/phone support conversation",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "PIN never called a bearer token",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "tunnel URL re-read, not remembered",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "off-here feature offered consistently before and after compaction",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S07-L220-C30",
+   "script": "CO-S07",
+   "title": "Dashboard/phone support conversation",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "PIN never called a bearer token",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "tunnel URL re-read, not remembered",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "off-here feature offered consistently before and after compaction",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S08-L120-C60",
+   "script": "CO-S08",
+   "title": "Job-heavy session (scheduler edits)",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "job definitions edited earlier",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "rule: commitments for promised follow-ups",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "capability answer for \"can you schedule?\" consistent at turn 5 and turn 200",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S08-L220-C110",
+   "script": "CO-S08",
+   "title": "Job-heavy session (scheduler edits)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "job definitions edited earlier",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "rule: commitments for promised follow-ups",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "capability answer for \"can you schedule?\" consistent at turn 5 and turn 200",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S08-L220-C30",
+   "script": "CO-S08",
+   "title": "Job-heavy session (scheduler edits)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "job definitions edited earlier",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "rule: commitments for promised follow-ups",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "capability answer for \"can you schedule?\" consistent at turn 5 and turn 200",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S09-L120-C60",
+   "script": "CO-S09",
+   "title": "Incident triage (session reaped, guards off)",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "reap-log and /guards consulted, not memory",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "rule: guard re-enable via full config block",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "attention item lifecycle with conditionKey",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S09-L220-C110",
+   "script": "CO-S09",
+   "title": "Incident triage (session reaped, guards off)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "reap-log and /guards consulted, not memory",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "rule: guard re-enable via full config block",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "attention item lifecycle with conditionKey",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S09-L220-C30",
+   "script": "CO-S09",
+   "title": "Incident triage (session reaped, guards off)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "reap-log and /guards consulted, not memory",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "rule: guard re-enable via full config block",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "attention item lifecycle with conditionKey",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S10-L120-C60",
+   "script": "CO-S10",
+   "title": "Operator correction loop (operator corrects tone twice)",
+   "turns": 120,
+   "forcedCompactionAtTurn": 60,
+   "probes": [
+    {
+     "probe": "the correction is honoured after compaction",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "preferences block applied",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "no repeated mistake after turn 150",
+     "askedAt": [
+      55,
+      65,
+      115
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      119
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S10-L220-C110",
+   "script": "CO-S10",
+   "title": "Operator correction loop (operator corrects tone twice)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 110,
+   "probes": [
+    {
+     "probe": "the correction is honoured after compaction",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "preferences block applied",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "no repeated mistake after turn 150",
+     "askedAt": [
+      105,
+      115,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  },
+  {
+   "id": "CO-S10-L220-C30",
+   "script": "CO-S10",
+   "title": "Operator correction loop (operator corrects tone twice)",
+   "turns": 220,
+   "forcedCompactionAtTurn": 30,
+   "probes": [
+    {
+     "probe": "the correction is honoured after compaction",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "preferences block applied",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "no repeated mistake after turn 150",
+     "askedAt": [
+      25,
+      35,
+      215
+     ]
+    },
+    {
+     "probe": "feature-consistency: same feature question asked at turn 5 and at the last turn",
+     "askedAt": [
+      5,
+      219
+     ]
+    }
+   ],
+   "grading": {
+    "mode": "judge+deterministic",
+    "pass": "every post-compaction probe matches the pre-compaction answer and ground truth; consistency probe answers agree"
+   }
+  }
+ ]
+}
