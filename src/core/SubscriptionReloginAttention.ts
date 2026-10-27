@@ -11,7 +11,8 @@
  *
  * `cleared` only on VERIFIED recovery: the episode reached `succeeded`, the
  * operator cancelled it, it was resolved elsewhere, or the LOCAL pool cell for
- * that account reads healthy. `failed` / `refused` / a live attempt keep the
+ * that account is VERIFIED healthy (pool active, matching identity, live login
+ * check ok — the caller's `localCellHealthy`). `failed` / `refused` / a live attempt keep the
  * row `active` (the operator still has something to do). No episode on disk
  * and no healthy cell → `unknown` (never "probably fine").
  */
@@ -62,4 +63,26 @@ export function resolveSubscriptionReloginAttention(
     return verdictOf(episode);
   }
   return 'unknown';
+}
+
+export type AttentionConditionClear = (
+  match: { conditionKey?: string; idPrefix?: string },
+  resolution: string,
+) => { closed: number };
+
+/**
+ * A failed or refused repair whose account×machine cell is now verified signed in: close every
+ * open attention row about that condition — the producer's `conditionKey` row, plus any row for
+ * this episode raised before condition keys existed (legacy id prefix). Returns rows closed.
+ * Idempotent: rows already closed are not touched.
+ */
+export function clearRecoveredReloginAttention(
+  episode: Pick<SubscriptionReloginEpisode, 'id' | 'accountId' | 'machineId' | 'framework'>,
+  clear: AttentionConditionClear,
+): number {
+  const doorway = episode.framework === 'codex-cli' ? 'Codex' : 'Claude Code';
+  const resolution = `${doorway} subscription is signed in again (verified on this machine); the earlier repair failure no longer needs you`;
+  let closed = clear({ conditionKey: subscriptionReloginConditionKey(episode) }, resolution).closed;
+  closed += clear({ idPrefix: `subscription-relogin-${episode.id}-` }, resolution).closed;
+  return closed;
 }

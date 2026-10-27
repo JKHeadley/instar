@@ -57,6 +57,10 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).toContain('relogin_last_resort_anthropic_api_key');
     expect(once).toContain('last-resort-drive-started');
     expect(once.indexOf('Last-resort sign-in model')).toBeGreaterThan(once.indexOf('Failed sign-in repairs retry slowly'));
+    // Relogin self-heal: a failure verified signed in again closes its own alert; lands once, inside the slow-retry bullet.
+    expect(first.upgraded).toContain('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
+    expect(once.match(/why did that sign-in alert disappear\?/g)).toHaveLength(1);
+    expect(once.indexOf('why did that sign-in alert disappear?')).toBeLessThan(once.indexOf('Last-resort sign-in model'));
     run();
     expect(fs.readFileSync(target, 'utf8')).toBe(once);
   });

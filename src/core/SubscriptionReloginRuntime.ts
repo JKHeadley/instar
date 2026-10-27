@@ -77,6 +77,8 @@ export interface SubscriptionReloginRuntimeDeps {
   onTerminal?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onOperatorOnly?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
   onPhoneTap?: (episode: SubscriptionReloginEpisode, deliveryKey: string) => Promise<void> | void;
+  /** A failed/refused repair's cell is verified signed in again: close that condition's attention row. */
+  onConditionCleared?: (episode: SubscriptionReloginEpisode) => Promise<void> | void;
   /**
    * False when the live Codex app-server read is turned off (`subscriptionPool.codexLiveQuota:
    * false`). Then no Codex repair can ever prove authenticated use (the rollout file is not proof),
@@ -133,6 +135,12 @@ export interface SubscriptionReloginRuntime {
   helper: SubscriptionReloginHelper | null;
   /** The last-resort model port when configured (spec relogin-last-resort-model). */
   lastResort: ReloginLastResortPort | null;
+  /**
+   * True only when THIS machine's server has verified the account×machine cell signed in: pool
+   * `active`, no identity drift, and a live login check of `ok`. Another machine's cell is
+   * never verifiable here ⇒ false.
+   */
+  cellVerifiedHealthy(accountId: string, machineId: string): boolean;
   start(): void; stop(): void; close(): void;
 }
 
@@ -487,6 +495,15 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     }
     return candidates;
   };
+  // Verified healthy by the server: pool `active`, no identity drift (the poller reconciles the
+  // credential's identity), and this process's latest poll was an authenticated read. Only this
+  // machine's own cells can be verified here.
+  const cellVerifiedHealthy = (accountId: string, machineId: string): boolean => {
+    if (machineId !== deps.machineId) return false;
+    const acct = deps.pool.get(accountId);
+    return !!acct && acct.status === 'active' && acct.identityDrifted !== true
+      && deps.quotaPoller.loginCheck?.(acct.id) === 'ok';
+  };
   const service = new SubscriptionReloginService({ store, orchestrator, scanCandidates,
     revalidate: async (episode) => {
       const acct = account(episode); const sourceEpisode = source(episode);
@@ -499,17 +516,13 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     sourceIncidentOpen: (episode) => source(episode)?.closedAt === null,
     slowRetry: deps.slowRetry,
     onSuggested: deps.onSuggested, onTerminal: deps.onTerminal,
-    onOperatorOnly: deps.onOperatorOnly, onPhoneTap: deps.onPhoneTap, tickMs: deps.tickMs, now,
+    onOperatorOnly: deps.onOperatorOnly, onPhoneTap: deps.onPhoneTap, onConditionCleared: deps.onConditionCleared,
+    tickMs: deps.tickMs, now,
     // Verified healthy by the server: pool `active`, no identity drift (the poller reconciles the
     // credential's identity), and this process's latest poll was an authenticated read.
-    cellHealthy: (episode) => {
-      if (episode.machineId !== deps.machineId) return false;
-      const acct = account(episode);
-      return !!acct && acct.status === 'active' && acct.identityDrifted !== true
-        && deps.quotaPoller.loginCheck?.(acct.id) === 'ok';
-    } });
+    cellHealthy: (episode) => cellVerifiedHealthy(episode.accountId, episode.machineId) });
   serviceRef = service;
-  return { store, service, helper, lastResort: deps.lastResort ?? null,
+  return { store, service, helper, lastResort: deps.lastResort ?? null, cellVerifiedHealthy,
     start: () => {
       // Boot cleanup: a `relogin-*` helper left by a previous process can never finish.
       if (helper) {
