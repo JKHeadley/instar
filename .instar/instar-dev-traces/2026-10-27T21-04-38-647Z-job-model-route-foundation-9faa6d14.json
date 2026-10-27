@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "job-model-route-foundation",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-27T21:04:38.647Z",
+  "artifactPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "artifactSha256": "5d1e40f368d0fd21e4b6bbc4f10efa30fe07f8c47657a95220007067bd8c61e4",
+  "coveredFiles": [
+    "src/scheduler/JobRunHistory.ts",
+    "upgrades/side-effects/job-model-route-foundation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Preserve the 2 KB run-history cap when exposing optional route metadata; no routing activation.",
+  "eli16Path": "upgrades/eli16/job-model-route-foundation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

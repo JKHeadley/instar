@@ -24,6 +24,7 @@ import type {
   JobPriority,
   ModelTier,
 } from '../core/types.js';
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import {
   readLockFile,
   hashScriptBytes,
@@ -87,6 +88,9 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'priority',
   'expectedDurationMinutes',
   'model',
+  'framework',
+  'frameworkModel',
+  'leanContext',
   'enabled',
   'tags',
   'unrestrictedTools',
@@ -151,6 +155,9 @@ export interface PerSlugManifest {
   schedule: string;
   priority: JobPriority;
   model?: ModelTier;
+  framework?: IntelligenceFramework;
+  frameworkModel?: string;
+  leanContext?: boolean;
   expectedDurationMinutes: number;
   enabled: boolean;
   execute: { type: 'skill' | 'prompt' | 'script' | 'agentmd'; value?: string; args?: string };
@@ -730,6 +737,20 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Model (optional)
   if (j.model !== undefined && !VALID_MODELS.includes(j.model as ModelTier)) {
     throw new Error(`${prefix}: "model" must be one of ${VALID_MODELS.join(', ')}, got "${j.model}"`);
+  }
+  const frameworks = ['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli', 'grok-build'];
+  if (j.framework !== undefined && !frameworks.includes(j.framework as string)) {
+    throw new Error(`${prefix}: "framework" must be a known framework`);
+  }
+  if (j.frameworkModel !== undefined &&
+      (typeof j.frameworkModel !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(j.frameworkModel))) {
+    throw new Error(`${prefix}: "frameworkModel" must be a bounded model id`);
+  }
+  if ((j.framework === undefined) !== (j.frameworkModel === undefined)) {
+    throw new Error(`${prefix}: "framework" and "frameworkModel" must be set together`);
+  }
+  if (j.leanContext !== undefined && typeof j.leanContext !== 'boolean') {
+    throw new Error(`${prefix}: "leanContext" must be a boolean`);
   }
 
   // Cron expression
@@ -1410,6 +1431,9 @@ function manifestToJobDefinition(
     priority: manifest.priority,
     expectedDurationMinutes: manifest.expectedDurationMinutes,
     model: manifest.model ?? 'sonnet',
+    framework: manifest.framework,
+    frameworkModel: manifest.frameworkModel,
+    leanContext: manifest.leanContext,
     enabled: manifest.enabled,
     execute: manifest.execute as JobDefinition['execute'],
     origin: manifest.origin,

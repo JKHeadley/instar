@@ -309,11 +309,10 @@ describe('costs page in a DOM', () => {
 
   it('boots the shipped console, keeps the Claude and Codex lines separate, shows committed limits apart, caps lists at 5, and opens the routing sheet', async () => {
     // Seven Claude conversations, seven Codex ones and seven checks: each list shows 5 and offers the rest.
-    const liveNow = Date.now(); // The shipped page uses the wall clock, unlike the model tests above.
-    const liveHoursAgo = (h: number) => liveNow - h * 3600000;
-    const claudeSessions = [{ sessionId: 's1', projectPath: '/Users/x/.instar/agents/echo', totalTokens: 2300000, eventCount: 10, firstTs: liveHoursAgo(5), lastTs: liveHoursAgo(1) },
-      ...Array.from({ length: 6 }, (_, i) => ({ sessionId: `u${i}`, projectPath: '/Users/x/.instar/agents/echo', totalTokens: 1000000 - i, eventCount: 3, firstTs: liveHoursAgo(9), lastTs: liveHoursAgo(2 + i) }))];
-    const codexSessions = Array.from({ length: 7 }, (_, i) => ({ sessionId: `c${i}`, projectPath: '/Users/x/proj', model: 'gpt-6-astra', totalTokens: 600000 - i, firstTs: liveHoursAgo(400), lastTs: liveHoursAgo(2 + i) }));
+    const pageHoursAgo = (h: number) => Date.now() - h * 3600000; // the shipped page uses the real clock
+    const claudeSessions = [{ sessionId: 's1', projectPath: '/Users/x/.instar/agents/echo', totalTokens: 2300000, eventCount: 10, firstTs: pageHoursAgo(5), lastTs: pageHoursAgo(1) },
+      ...Array.from({ length: 6 }, (_, i) => ({ sessionId: `u${i}`, projectPath: '/Users/x/.instar/agents/echo', totalTokens: 1000000 - i, eventCount: 3, firstTs: pageHoursAgo(9), lastTs: pageHoursAgo(2 + i) }))];
+    const codexSessions = Array.from({ length: 7 }, (_, i) => ({ sessionId: `c${i}`, projectPath: '/Users/x/proj', model: 'gpt-6-astra', totalTokens: 600000 - i, firstTs: pageHoursAgo(400), lastTs: pageHoursAgo(2 + i) }));
     const feats = [feat(), ...Array.from({ length: 6 }, (_, i) => feat({ feature: `Check${i}`, errors: 0, llmErrors: 0, fired: 30 - i }))];
     const f = full({ claude: ok({ sessions: claudeSessions }), codex: ok({ sessions: codexSessions }), metrics: metrics(feats) });
     const got: string[] = [];

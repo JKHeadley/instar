@@ -260,6 +260,16 @@ describe('SessionManager behavioral tests', () => {
       expect(saved!.framework).toBe('codex-cli');
     });
 
+    it('records the actual Codex launch model after a model swap', async () => {
+      vi.spyOn(manager as unknown as { resolveCodexLaunchModel: (framework: string, model?: string) => Promise<string | undefined> },
+        'resolveCodexLaunchModel').mockResolvedValue('gpt-6-sol');
+      const session = await manager.spawnSession({
+        name: 'codex-swapped-job', prompt: 'Do work', model: 'gpt-6-luna', framework: 'codex-cli',
+      });
+      expect(session.model).toBe('gpt-6-sol');
+      expect(state.getSession(session.id)?.model).toBe('gpt-6-sol');
+    });
+
     it('includes jobSlug and triggeredBy when provided', async () => {
       const session = await manager.spawnSession({
         name: 'scheduled',

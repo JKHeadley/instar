@@ -32,9 +32,10 @@ import { notifyScriptRunObservers, type ScriptRunObserver } from './scriptRunObs
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../config/ConfigDefaults.js';
-import { AUDIT_READY_SCRIPT_SLUGS, JOB_COST_AUDIT_READY } from './JobCostAuditReadiness.js';
+import { AUDIT_READY_SCRIPT_SLUGS, JOB_COST_AUDIT_READY, JOB_MODEL_ROUTING_AUDIT_READY } from './JobCostAuditReadiness.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
+import { decideJobModelRoute, type JobRouteDecision, type JobRouteEvidence } from './JobModelRoute.js';
 import { SkipLedger } from './SkipLedger.js';
 import { classifySessionDeath } from '../monitoring/QuotaExhaustionDetector.js';
 import type { SessionManager } from '../core/SessionManager.js';
@@ -304,6 +305,16 @@ export class JobScheduler {
 
   /** Test-agent leak guard; wired by server.ts (buildThrowawayJobGuard). */
   private throwawayJobGuard: (() => { refuse: boolean; reason?: string }) | null = null;
+  /** Cached machine-local pin evidence. Absent means no pin can activate. */
+  private jobRouteEvidence: ((job: JobDefinition) => JobRouteEvidence) | null = null;
+
+  setJobRouteEvidenceProvider(provider: ((job: JobDefinition) => JobRouteEvidence) | null): void {
+    this.jobRouteEvidence = provider;
+  }
+
+  hasJobRouteEvidenceProvider(): boolean {
+    return this.jobRouteEvidence !== null;
+  }
 
   setThrowawayJobGuard(guard: (() => { refuse: boolean; reason?: string }) | null): void {
     this.throwawayJobGuard = guard;
@@ -2268,6 +2279,23 @@ export class JobScheduler {
     // was authorized, and (c) whether the resolver clamped to [Read] because
     // the two-flag guard failed.
     const allowlistResolution = JobScheduler.resolveAllowlist(job);
+    let route: JobRouteDecision = { routeBasis: 'default', reason: 'no-pin' };
+    if (job.framework !== undefined || job.frameworkModel !== undefined) {
+      let evidence: JobRouteEvidence = { enabled: false, auditReady: false, enabledFrameworks: new Set() };
+      try {
+        evidence = this.jobRouteEvidence?.(job) ?? evidence;
+      } catch {
+        // A broken cache read cannot prevent the job from running normally.
+      }
+      evidence = { ...evidence, auditReady: JOB_MODEL_ROUTING_AUDIT_READY && evidence.auditReady };
+      route = decideJobModelRoute(
+        { slug: job.slug, framework: job.framework, frameworkModel: job.frameworkModel,
+          toolAllowlist: allowlistResolution.allowlist },
+        evidence,
+      );
+    }
+    const requestedModel = route.routeBasis === 'bench' ? route.model : model;
+    const requestedFramework = route.routeBasis === 'bench' ? route.framework : undefined;
     // Side-channel signals (Dashboard event for clamp; degradation event for
     // both clamp and the instar-origin-without-allowlist Phase 1c gap).
     this.emitAllowlistSignals(job, allowlistResolution);
@@ -2315,7 +2343,8 @@ export class JobScheduler {
     this.sessionManager.spawnSession({
       name: sessionName,
       prompt,
-      model,
+      model: requestedModel,
+      framework: requestedFramework,
       jobSlug: job.slug,
       triggeredBy: `scheduler:${reason}`,
       maxDurationMinutes: job.expectedDurationMinutes,
@@ -2332,7 +2361,13 @@ export class JobScheduler {
         slug: job.slug,
         sessionId: sessionName,
         trigger: reason,
-        model: model ?? job.model,
+        model: session?.model ?? requestedModel ?? job.model,
+        framework: session?.framework,
+        routeBasis: route.routeBasis === 'bench' &&
+          (session?.framework !== route.framework || session?.model !== route.model) ? 'fallback' : route.routeBasis,
+        reason: route.routeBasis === 'fallback' ? route.reason :
+          route.routeBasis === 'bench' && session?.framework !== route.framework ? 'spawn-framework-fallback' :
+          route.routeBasis === 'bench' && session?.model !== route.model ? 'spawn-model-fallback' : undefined,
         origin: observability.origin,
         resolvedPath: observability.resolvedPath,
         bodyHash: observability.bodyHash,
@@ -2370,7 +2405,7 @@ export class JobScheduler {
         slug: job.slug,
         trigger: reason,
         error: errorMsg,
-        model: model ?? job.model,
+        model: requestedModel ?? job.model,
       });
 
       // Track failure with error message

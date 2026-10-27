@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "job-model-route-foundation",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-27T21:25:54.998Z",
+  "artifactPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "artifactSha256": "ebda74bb9ef2b7d2610a6460401f388366bd5f98457dbdc6b4c3f62e074f986c",
+  "coveredFiles": [
+    "tests/unit/console-costs.test.ts",
+    "upgrades/eli16/job-model-route-foundation.eli16.md",
+    "upgrades/side-effects/job-model-route-foundation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A calendar-stale DOM fixture failed the full verifier; use the page real clock for its relative-time assertion.",
+  "eli16Path": "upgrades/eli16/job-model-route-foundation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-model-route-foundation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

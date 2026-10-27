@@ -62,6 +62,12 @@ export interface JobRun {
   error?: string;
   /** Model tier used */
   model?: string;
+  /** Framework actually used for this session, when known. */
+  framework?: string;
+  /** How the model route was chosen; older rows have unknown provenance. */
+  routeBasis?: 'bench' | 'category-default' | 'default' | 'fallback' | 'unknown';
+  /** First failed pin check, when routeBasis is fallback. */
+  reason?: string;
   /** Machine ID that ran this job (multi-machine) */
   machineId?: string;
   /** Condensed output from the session (last ~1000 chars) */
@@ -217,6 +223,9 @@ export class JobRunHistory {
     sessionId: string;
     trigger: string;
     model?: string;
+    framework?: string;
+    routeBasis?: JobRun['routeBasis'];
+    reason?: string;
     // Phase 1b observability extensions (jobs-as-agentmd spec)
     origin?: 'instar' | 'user' | 'legacy' | 'triage';
     runner?: 'script';
@@ -239,6 +248,9 @@ export class JobRunHistory {
       startedAt: new Date().toISOString(),
       result: 'pending',
       model: opts.model,
+      ...(opts.framework !== undefined ? { framework: opts.framework } : {}),
+      ...(opts.routeBasis !== undefined ? { routeBasis: opts.routeBasis } : {}),
+      ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
       machineId: this.machineId ?? undefined,
       origin: opts.origin,
       ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
@@ -379,6 +391,8 @@ export class JobRunHistory {
     const total = filtered.length;
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
+    // Preserve the exact capped row. Adding a default field after persistence
+    // can push a 2 KB row over its bound; absent provenance means unknown.
     const runs = filtered.slice(offset, offset + limit);
 
     return { runs, total };

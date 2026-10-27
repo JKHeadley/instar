@@ -4022,7 +4022,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!options.omitAuthEnv) this.linkAgentOwnedMemory(headlessFramework, headlessSpec.envOverrides, resolvedCwd);
     const originEnvFlags = options.omitAuthEnv ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
       sessionId, harnessId: headlessFramework, projectDir: resolvedCwd,
-      configuredModel: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
+      configuredModel: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       configHome: this.originConfigHome(headlessFramework, headlessSpec.envOverrides),
     });
     // omitAuthEnv: blank every credential-shaped variable the tmux server could hand down.
@@ -4138,12 +4138,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       tmuxSession,
       startedAt: new Date().toISOString(),
       triggeredBy: options.triggeredBy,
-      // Record the framework-RESOLVED model, not the raw tier alias. A Codex
+      // Record the framework-RESOLVED launch model, not the raw tier alias. A Codex
       // agent's session must show its real gpt-5.x model on the dashboard, not
-      // the Claude tier nickname (haiku/sonnet) the caller passed. Falls back
-      // to the raw value when no mapping applies. + carry the framework so the
+      // the Claude tier nickname (haiku/sonnet) the caller passed. The launch
+      // model may also reflect a rate-limit swap. + carry the framework so the
       // dashboard can render engine-aware.
-      model: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
+      model: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       framework: headlessFramework,
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
