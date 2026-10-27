@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "lint-parallel-runner",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-27T18:53:10.944Z",
+  "artifactPath": "upgrades/side-effects/lint-parallel-runner.md",
+  "artifactSha256": "6ebb43f19b10a4e3b7be8ab677fe64653194e48b19686e206b0220baad8728a5",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    ".husky/pre-commit",
+    "docs/specs/lint-parallel-runner.eli16.md",
+    "package.json",
+    "scripts/lib/standards-enforcement-measurement.mjs",
+    "scripts/run-lint-parallel.mjs",
+    "tests/unit/run-lint-parallel.test.ts",
+    "upgrades/next/lint-parallel-runner.md",
+    "upgrades/side-effects/lint-parallel-runner.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Development tooling only: a runner that executes the unchanged lint step list concurrently, plus memoizing immutable git reads with byte-identical output; a revert fully undoes it.",
+  "eli16Path": "docs/specs/lint-parallel-runner.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lint-parallel-runner.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
