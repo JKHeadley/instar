@@ -25,7 +25,8 @@ not yet prove that a broadly shorter instruction file is safe.
 - **Seed plus automatic loading:** the same seed, but a hook reads each incoming message and loads the matching sections automatically, so the agent doesn't have to remember to look.
 - **Lean job context:** scheduled jobs load only the sections they need.
 - **Ranked loading:** a model picks the most relevant sections for each conversation.
-- **Simple trimming:** keep one file, but drop the switched-off features and the history.
+- **Simple trimming:** keep one file, but shorten the how-to details for
+  switched-off features and move history out; their awareness lines stay.
 
 **How we prove nothing gets worse.** We write fixed tests before trying anything:
 - Does the agent still find the right feature when a user asks something, without being told?
