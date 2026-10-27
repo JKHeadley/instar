@@ -3301,6 +3301,55 @@ export function getDefaultJobs(port: number): object[] {
         value: `Run a quick health check: verify the instar server is responding (curl http://localhost:\${INSTAR_PORT:-${port}}/health), check disk space (df -h), and report any issues. Only send a message if something needs attention — silence means healthy. IMPORTANT: If you find issues, describe them in plain conversational language. Never dump raw JSON, field names, error codes, or structured data. The user reads these on their phone — write like you're texting them a quick heads-up. If the health response includes a degradationSummary array, relay those narrative strings directly.`,
       },
       tags: ['cat:guardian'],
+      mcpAccess: 'none',
+      // Script runner (docs/specs/job-cost-reduction.md §5): the shipped
+      // scripts/health-check.mjs does this check with zero LLM calls. The prompt
+      // body above stays complete and unchanged: it is the narrator's context and
+      // the rollback path (§8.4).
+      runner: 'script',
+      script: 'health-check.mjs',
+      scriptTimeoutMinutes: 1,
+      supervision: 'tier0',
+      scriptSupervision: 'triage',
+      triageEvidence: 'full',
+      triageFields: ['disk_free_pct', 'sessions_current', 'sessions_max', 'degradations', 'llm_status'],
+      triageBareOk: ['healthy'],
+      triageBareSkipped: ['feature-dark'],
+      anomalies: [
+        { kind: 'disk-low', class: 'recoverable' },
+        { kind: 'disk-critical', class: 'critical' },
+        { kind: 'sessions-exhausted', class: 'recoverable' },
+        { kind: 'llm-unreliable', class: 'recoverable' },
+        { kind: 'degradation:*', class: 'recoverable' },
+      ],
+    },
+    {
+      slug: 'script-job-supervisor',
+      name: 'Script Job Supervisor',
+      description: 'One daily high-level review across every script job: triage decisions, sessions, backup-check disagreements, canaries and missing machines (docs/specs/job-cost-reduction.md §5.6.5). Advisory: raises or clears its own low-priority attention items.',
+      schedule: '23 7 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 5,
+      model: 'haiku',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `Run the daily script-job supervision pass once, then stop. Do NOT message the user: the server makes the one bounded review call and raises or clears its own low-priority attention items.
+
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+
+curl -sS -m 300 -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" -H "X-Instar-Request: 1" -H 'Content-Type: application/json' -d '{}' http://localhost:\${INSTAR_PORT:-${port}}/jobs/script-supervision/pass
+
+A 503 means the pass is dark on this agent; a 409 means another machine holds the run. Both are nothing to do. Never retry in the same run. Exit silently.`,
+      },
+      tags: ['cat:guardian', 'role:worker'],
+      mcpAccess: 'none',
+      runner: 'script',
+      script: 'script-job-supervisor.mjs',
+      scriptTimeoutMinutes: 6,
+      supervision: 'tier0',
+      scriptSupervision: 'deterministic',
     },
     {
       slug: 'reflection-trigger',

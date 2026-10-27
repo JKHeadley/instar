@@ -51,7 +51,33 @@ function frontmatterFor(entry) {
   };
   if (Array.isArray(entry.tags) && entry.tags.length > 0) fm.tags = entry.tags;
   if (entry.gate) fm.gate = entry.gate;
+  if (entry.mcpAccess) fm.mcpAccess = entry.mcpAccess;
   if (typeof entry.telegramNotify === 'boolean') fm.telegramNotify = entry.telegramNotify;
+  // job-cost-reduction §5.1: script-runner keys. The entry keeps
+  // execute.type 'prompt' with the full body (the rollback + narrator
+  // context); these keys make the installer write a script manifest.
+  if (entry.runner === 'script') {
+    fm.runner = 'script';
+    const script = entry.script ?? entry.scriptFile;
+    if (typeof script === 'string') fm.script = script;
+  }
+  if (entry.scriptTimeoutMinutes !== undefined) fm.scriptTimeoutMinutes = entry.scriptTimeoutMinutes;
+  if (Array.isArray(entry.anomalies) && entry.anomalies.length > 0) {
+    fm.anomalies = entry.anomalies.map((a) => {
+      // Each kind MUST carry its class: defaulting one would silently turn a
+      // critical push into a 6-hour wait (or the reverse).
+      if (!a || typeof a.kind !== 'string' || (a.class !== 'critical' && a.class !== 'recoverable')) {
+        throw new Error(`${entry.slug}: anomalies entries must be { kind, class: 'critical' | 'recoverable' }`);
+      }
+      return { kind: a.kind, class: a.class };
+    });
+  }
+  if (entry.runner === 'script' && entry.supervision) fm.supervision = entry.supervision;
+  if (entry.scriptSupervision) fm.scriptSupervision = entry.scriptSupervision;
+  if (entry.triageEvidence) fm.triageEvidence = entry.triageEvidence;
+  for (const k of ['triageFields', 'triageBareOk', 'triageBareSkipped']) {
+    if (Array.isArray(entry[k]) && entry[k].length > 0) fm[k] = entry[k];
+  }
   // Phase 1b: every shipped default is allowed full tools to preserve today's
   // behavior. Future PRs (per-slug allowlist narrowing) will refine these.
   fm.toolAllowlist = '*';
@@ -81,12 +107,13 @@ function main() {
   if (dryRun) {
     console.log('[regen-defaults] --dry-run: not writing files');
     for (const j of promptDefaults) console.log(`  would write ${j.slug}.md`);
+    console.log('  (hand-written templates not in getDefaultJobs() are never pruned)');
     return;
   }
 
   fs.mkdirSync(TEMPLATES_DIR, { recursive: true });
 
-  // Track files we wrote so we can prune stale templates.
+  // Track files we wrote (only to report which templates are hand-written).
   const written = new Set();
   for (const job of promptDefaults) {
     const target = path.join(TEMPLATES_DIR, `${job.slug}.md`);
@@ -95,16 +122,14 @@ function main() {
     console.log(`  wrote ${job.slug}.md (${job.execute.value.length} body bytes)`);
   }
 
-  // Prune templates that no longer correspond to a default. The spec moves
-  // them to retired-defaults; for the template directory we simply remove
-  // them (the retired-defaults manifest is computed from the lock-file at
-  // runtime, not from the template dir).
-  const existing = fs.readdirSync(TEMPLATES_DIR).filter((f) => f.endsWith('.md'));
-  for (const f of existing) {
-    if (!written.has(f)) {
-      console.log(`  removing stale ${f}`);
-      fs.rmSync(path.join(TEMPLATES_DIR, f));
-    }
+  // NEVER prune. Most shipped templates are hand-written .md files with no
+  // getDefaultJobs() entry (job-cost-reduction: 16 of the 17 converted jobs),
+  // so "not produced by this script" does NOT mean "stale" — the old prune
+  // step would have deleted them. Retiring a default is a deliberate file
+  // deletion in a PR; the installer's retired-defaults flow handles the agent side.
+  const handWritten = fs.readdirSync(TEMPLATES_DIR).filter((f) => f.endsWith('.md') && !written.has(f));
+  if (handWritten.length > 0) {
+    console.log(`  kept ${handWritten.length} hand-written template(s) not in getDefaultJobs(): ${handWritten.join(', ')}`);
   }
 }
 

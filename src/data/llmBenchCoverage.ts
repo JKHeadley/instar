@@ -128,6 +128,11 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ProfileIntentClassifier: { pending: 'wave-3' },
   JobReflector: { pending: 'wave-3' },
   crossModelReviewer: { pending: 'wave-3' },
+  // job-cost-reduction §5.6.5: the daily script-job review over pool-wide recent outputs.
+  ScriptJobSupervisor: { pending: 'wave-3' },
+  // job-cost-reduction §5.4: wording-only — the evidence block is rendered verbatim beside it,
+  // the reason ids and push timing are decided deterministically; nothing parses its reply.
+  JobAnomalyNarrator: { exempt: 'Wording-only: writes one plain sentence beside a verbatim, deterministically rendered evidence block; it decides no push, reason, timing, or routing, and nothing parses its reply. A bad sentence costs clarity, never a missed or wrong alert, and the fixed-template fallback already covers a failed call.' },
   SelfKnowledgeTree: { pending: 'wave-3' },
   TreeTriage: { pending: 'wave-3' },
   TopicSummarizer: { pending: 'wave-3' },
@@ -227,6 +232,8 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   // ── Reflectors extracting/summarizing over transcripts, peer data, files → true ──
   JobReflector: true,
   crossModelReviewer: true,
+  ScriptJobSupervisor: true, // reads scrubbed script output from every machine's recent runs
+  JobAnomalyNarrator: { false: 'its input is the job name, machine nickname, closed reason ids and the operator-authored job body (fenced, clamped); the raw evidence strings are rendered verbatim beside it and never sent to the model' },
   SelfKnowledgeTree: true,
   TreeTriage: true,
   TopicSummarizer: true,
@@ -410,6 +417,8 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
 
   // Reflectors/jobs that extract/summarize/route but do not credit a completion/health claim.
   crossModelReviewer: false, // reviews a SPEC document, not a session's completion claim
+  ScriptJobSupervisor: false, // flags script runs whose output disagrees with their result; it judges output, not a completion claim
+  JobAnomalyNarrator: false, // narrates a deterministically decided anomaly; judges nothing
   SelfKnowledgeTree: false, // extracts self-knowledge
   TreeTriage: false, // triages tree fragments
   TopicSummarizer: false, // summarizes a topic
@@ -572,7 +581,12 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   crossModelReviewer: {
     false:
       'produces a free-text review of a SPEC document — no closed output vocabulary the prompt teaches and a parser must accept',
+  },  ScriptJobSupervisor: { contractTest: 'tests/unit/ScriptJobSupervisor.test.ts' },
+  JobAnomalyNarrator: {
+    false:
+      'free-text narration rendered beside a verbatim evidence block — no closed verdict vocabulary a parser gates on',
   },
+
   SelfKnowledgeTree: {
     false:
       'extracts self-knowledge tree fragments as content that is stored/merged — no closed verdict token gates a branch on a taught vocabulary',
@@ -864,6 +878,10 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   // ── Reflectors ──
   JobReflector: exposed(EXPOSED_MODEL_TOOL),
   crossModelReviewer: exposed(EXPOSED_TOOL), // reviews a spec document (file)
+  ScriptJobSupervisor: exposed(EXPOSED_TOOL), // scrubbed script stdout from every machine
+  JobAnomalyNarrator: notExposed(
+    'input is closed reason ids, the job name, the machine nickname and the operator-authored job body; raw evidence never reaches the prompt',
+  ),
   SelfKnowledgeTree: exposed(EXPOSED_MODEL_TOOL), // extracts over transcripts
   TreeTriage: exposed(EXPOSED_TOOL),
   TopicSummarizer: exposed(EXPOSED_USER_MODEL),

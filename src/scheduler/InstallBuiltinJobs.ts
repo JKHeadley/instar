@@ -59,6 +59,56 @@ export interface InstallReport {
 
 const PORT_SENTINEL = '4042';
 
+/** job-cost-reduction §5.1 — a shipped script's name is a bare filename. */
+export const SCRIPT_FILE_RE = /^[a-z0-9-]+\.mjs$/;
+
+/**
+ * Copy the shipped `scripts/*.mjs` into `.instar/jobs/instar/scripts/`.
+ * Always overwrites (built-ins are never install-if-missing) and prunes any
+ * `.mjs` no longer shipped. Copied byte-for-byte: the lock-file's scriptHash
+ * covers the raw bytes, so no port substitution is applied (scripts read
+ * INSTAR_PORT from their environment).
+ */
+function installBuiltinScripts(templatesDir: string, installedDir: string, report: InstallReport): Set<string> {
+  const srcDir = path.join(templatesDir, 'scripts');
+  const dstDir = path.join(installedDir, 'scripts');
+  const shipped = new Set<string>();
+  if (fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory()) {
+    fs.mkdirSync(dstDir, { recursive: true });
+    for (const f of fs.readdirSync(srcDir).sort()) {
+      if (!f.endsWith('.mjs')) continue;
+      if (!SCRIPT_FILE_RE.test(f)) {
+        report.errors.push({ reason: `shipped script "${f}" refused: name must match ${SCRIPT_FILE_RE}` });
+        continue;
+      }
+      const src = path.join(srcDir, f);
+      const st = fs.lstatSync(src);
+      if (!st.isFile() || st.isSymbolicLink()) {
+        report.errors.push({ reason: `shipped script "${f}" refused: not a regular file` });
+        continue;
+      }
+      const dst = path.join(dstDir, f);
+      // A symlink planted at the target would redirect the write; remove it first.
+      if (fs.existsSync(dst) && fs.lstatSync(dst).isSymbolicLink()) {
+        SafeFsExecutor.safeUnlinkSync(dst, { operation: 'installBuiltinJobs replace symlinked script' });
+      }
+      fs.copyFileSync(src, dst);
+      shipped.add(f);
+    }
+  }
+  if (fs.existsSync(dstDir)) {
+    for (const f of fs.readdirSync(dstDir)) {
+      if (!f.endsWith('.mjs') || shipped.has(f)) continue;
+      try {
+        SafeFsExecutor.safeUnlinkSync(path.join(dstDir, f), { operation: 'installBuiltinJobs prune stale script' });
+      } catch (err) {
+        report.errors.push({ reason: `Failed to prune stale script ${f}: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+  }
+  return shipped;
+}
+
 export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallReport {
   const { agentStateDir, packageRoot, port } = opts;
 
@@ -110,6 +160,7 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
 
   const report: InstallReport = { installed: [], retired: [], errors: [] };
   const shippedSlugs = new Set<string>();
+  const shippedScripts = installBuiltinScripts(templatesDir, installedDir, report);
 
   for (const file of templateFiles) {
     const slug = path.basename(file, '.md');
@@ -169,6 +220,25 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       continue;
     }
 
+    // job-cost-reduction §5.1: a `runner: script` template gets a script
+    // manifest whose value is a bare, validated filename — never a command.
+    let execute: { type: 'agentmd' } | { type: 'script'; value: string } = { type: 'agentmd' };
+    if (frontmatter.runner === 'script') {
+      const scriptFile = frontmatter.script;
+      if (typeof scriptFile !== 'string' || !SCRIPT_FILE_RE.test(scriptFile) || scriptFile !== `${slug}.mjs`) {
+        report.errors.push({ slug, reason: `runner: script needs script: ${slug}.mjs matching ${SCRIPT_FILE_RE} (got ${JSON.stringify(scriptFile)}) — refused` });
+        continue;
+      }
+      if (!shippedScripts.has(scriptFile)) {
+        report.errors.push({ slug, reason: `runner: script names ${scriptFile}, which is not shipped — refused` });
+        continue;
+      }
+      execute = { type: 'script', value: scriptFile };
+    } else if (frontmatter.runner !== undefined) {
+      report.errors.push({ slug, reason: `unknown runner ${JSON.stringify(frontmatter.runner)} — refused` });
+      continue;
+    }
+
     // Build the manifest through the single typed constructor — priority,
     // expectedDurationMinutes, model + pass-throughs are carried here (their
     // omission is the bug this fixes). The typed return means a dropped required
@@ -180,7 +250,7 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       priority: frontmatter.priority as JobPriority,
       expectedDurationMinutes: durationMinutes,
       enabled: existingEnabled !== undefined ? existingEnabled : frontmatter.enabled !== 'false',
-      execute: { type: 'agentmd' },
+      execute,
       model: frontmatter.model != null && String(frontmatter.model).trim() ? (String(frontmatter.model) as ModelTier) : undefined,
       tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
       unrestrictedTools: coerceBool(frontmatter.unrestrictedTools),

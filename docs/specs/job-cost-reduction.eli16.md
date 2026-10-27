@@ -34,8 +34,8 @@ problem, because they all use the same built-in job templates.
    results can carry something a fixed rule cannot read (the health check, the
    three feedback-factory jobs and the check-in reminder), any result that is
    not a plain "all fine" goes to Jev with one question: is this routine, or
-   does it need a real AI session to look into it? When Jev is unsure, GPT-6
-   Luna answers instead (Haiku on an agent without Codex). Jev can only add
+   does it need a real AI session to look into it? When Jev is unsure, a bounded
+   investigation session starts. Jev can only add
    sessions: a fixed rule (a job that fails twice in a row, or a serious
    problem like a nearly full disk) always gets one, whatever Jev says.
    - A session started this way is an investigator: it gets a fixed brief, a
@@ -45,8 +45,8 @@ problem, because they all use the same built-in job templates.
      machine a day.
    - The other script jobs report counters or let the server raise its own
      alert, so nothing reads them per run.
-4. **Backups, and one review a day.** Every 6 hours, Luna or Haiku reads a
-   sample of the results called routine, in case Jev was confidently wrong, and
+4. **Outage replacement, and one review a day.** Only while Jev is unavailable,
+   Luna or Haiku reads a sample of the results called routine at most every 6 hours, and
    says how many it did not get to. Once a day, a single review looks across all
    the jobs. A daily practice check also feeds every script a fake broken server
    and checks that each one still notices the failure.
@@ -68,6 +68,8 @@ problem, because they all use the same built-in job templates.
   backup check until a later change turns it on for them and says so.
 - Script jobs themselves also start on development agents only; everywhere else
   the jobs keep running exactly as today until a later change switches them.
+  The first development-agent wave includes two jobs plus their supervisor.
+  The other converted jobs wait for the first wave's 48-hour review.
 - Existing agents get the change automatically when they update, because
   built-in job files are already rewritten on every update.
 - One switch in the config file turns the old behaviour back on, live.

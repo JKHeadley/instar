@@ -96,6 +96,8 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
 
   // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
   JobReflector: 'reflector',
+  ScriptJobSupervisor: 'reflector',
+  JobAnomalyNarrator: 'reflector', // job-cost-reduction §5.4: one bounded narration per job-anomaly push
   crossModelReviewer: 'reflector',
   SelfKnowledgeTree: 'reflector',
   TreeTriage: 'reflector',

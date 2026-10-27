@@ -201,7 +201,8 @@ import {
 } from '../core/PlaywrightProfileRegistry.js';
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
-import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
+import { buildViewTunnelUrl } from './viewTunnelUrl.js';
+import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
 import { relayHoldHours } from '../threadline/relayVerdict.js';
 import {
   buildPeerDarkSentence,
@@ -5174,6 +5175,12 @@ export function createRoutes(ctx: RouteContext): Router {
     // (`bearerMatches`): byte-identical to the inline check it replaced.
     const isAuthed = bearerMatches(req, ctx.config.authToken);
     if (isAuthed) {
+      // job-cost-reduction §5.3: the stable feature ids behind degradationSummary.
+      // The narrative strings carry per-occurrence values, so they are evidence
+      // only; health-check keys its `degradation:<feature>` reasons on these.
+      if (degradations.length > 0) {
+        base.degradationFeatures = [...new Set(degradations.map(e => e.feature).filter((f): f is string => typeof f === 'string' && f.length > 0))];
+      }
       const mem = process.memoryUsage();
       // Use ProcessIntegrity for truthful version reporting
       const integrity = ProcessIntegrity.getInstance();
@@ -16679,6 +16686,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   function buildLocalJobs(): Array<Record<string, unknown>> {
     if (!ctx.scheduler) return [];
     const nextRunTimes = ctx.scheduler.getNextRunTimes();
+    const convertedDefaults = ctx.scheduler.getConvertedDefaultSlugs?.() ?? new Set<string>();
     return ctx.scheduler.getJobs().map((job) => {
       const jobState = ctx.state.getJobState(job.slug);
       // Merge live scheduler nextRun into state — fixes display bug where
@@ -16701,11 +16709,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const userMdPath = stateDir ? path.join(stateDir, 'jobs', 'user', `${job.slug}.md`) : null;
       const hasUserFork = userMdPath ? fs.existsSync(userMdPath) : false;
 
+      // job-cost-reduction §5.1/§8.3: runner, lock trust, the last 3 script
+      // outputs (the supervision pass reads these pool-wide), and the
+      // user-fork-shadows-a-converted-default flag.
+      // (Optional-called: test doubles of the scheduler predate these methods.)
+      const sched = ctx.scheduler!;
+      const isScriptRunner = sched.isScriptRunnerJob?.(job) ?? false;
       return {
         ...job,
         state: mergedState,
-        runsOnThisMachine: ctx.scheduler!.isJobLocal(job.slug),
+        runsOnThisMachine: sched.isJobLocal(job.slug),
         hasUserFork,
+        runner: isScriptRunner ? (sched.scriptRunnersActiveFor(job.slug) ? 'script' : 'session-rollback') : 'session',
+        lockTrust: job.lockTrust ?? null,
+        ...(isScriptRunner ? { recentOutputs: sched.recentScriptOutputs(job.slug, 3) } : {}),
+        shadowsConvertedDefault: sched.shadowsConvertedDefault?.(job, hasUserFork, convertedDefaults) ?? false,
       };
     });
   }
@@ -17818,8 +17836,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error'];
-    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' : undefined;
+    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error', 'skipped'];
+    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' | 'skipped' : undefined;
 
     const data = history.query({ slug, sinceHours, result: resultFilter, limit, offset });
     const stats = slug ? history.stats(slug, sinceHours) : history.allStats(sinceHours);
@@ -17844,8 +17862,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
     const offset = parseInt(req.query.offset as string) || 0;
 
-    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error'];
-    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' : undefined;
+    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error', 'skipped'];
+    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' | 'skipped' : undefined;
 
     const data = history.query({ slug, sinceHours, result: resultFilter, limit, offset });
     const stats = history.stats(slug, sinceHours);
@@ -25100,14 +25118,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   /** Build a browser-clickable tunnel URL with HMAC signature for auth */
   function viewTunnelUrl(viewId: string): string | null {
-    const base = ctx.tunnel?.getExternalUrl(`/view/${viewId}`);
-    if (!base) return null;
-    if (ctx.config.authToken) {
-      const viewPath = `/view/${viewId}`;
-      const sig = signViewPath(viewPath, ctx.config.authToken);
-      return `${base}?sig=${sig}`;
-    }
-    return base;
+    return buildViewTunnelUrl(ctx.tunnel, ctx.config.authToken, viewId);
   }
 
   router.post('/view', (req, res) => {

@@ -1025,6 +1025,64 @@ const feedbackTriageTick: SelfActionController = {
 };
 
 /**
+ * A script anomaly episode may request an investigation more than once as
+ * observers retry, but its durable spawned outcome is terminal. New job runs
+ * are new external work and separately face the per-slug and machine daily
+ * caps in JobResultTriage; this fixture pins one unchanging episode forever.
+ */
+const jobScriptTriageEpisode: SelfActionController = {
+  id: 'job-script-triage-episode',
+  actionVerb: 'spawn-triage-session',
+  models: 'src/scheduler/JobResultTriage.ts (admitTriageSpawn episode outcome and daily session caps)',
+  modelsPath: 'src/scheduler/JobResultTriage.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 96,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return jobScriptTriageEpisode.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      if (f.durableState.get('job-script-triage-episode-spawned')) return;
+      f.durableState.set('job-script-triage-episode-spawned', true);
+      sink.emit({ verb: 'spawn-triage-session', target: 'persistent-anomaly-episode' });
+    } };
+  },
+};
+
+/** The outage backup pass is eligible only after its durable six-hour stamp. */
+const jobScriptTriageBackup: SelfActionController = {
+  id: 'job-script-triage-backup',
+  actionVerb: 'retry-outage-triage',
+  models: 'src/scheduler/JobTriageBackupCheck.ts (lastPassAt interval and Jev outage gate)',
+  modelsPath: 'src/scheduler/JobTriageBackupCheck.ts',
+  delegatedGiveUp: 'durable six-hour lastPassAt and bounded twelve-result sample per slug; investigation sessions retain daily caps',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 24 * 3,
+  tickMs: 60 * 60_000,
+  eternalSentinel: { reason: 'one bounded outage pass per six hours while Jev remains unavailable', rateFloorMs: 6 * 60 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return jobScriptTriageBackup.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const last = f.durableState.get('job-script-triage-backup-last-pass') as number | undefined;
+      if (last !== undefined && now - last < 6 * 60 * 60_000) return;
+      f.durableState.set('job-script-triage-backup-last-pass', now);
+      sink.emit({ verb: 'retry-outage-triage', target: 'outage-sample' });
+      sink.emitTimesMs.push(now);
+    } };
+  },
+};
+
+/**
  * feedback-triage-action-list — the operator action list (§5).
  *
  * Convergence argument: each item carries a durable notifiedAt stamp written
@@ -3047,6 +3105,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   overloadAdmissionSelfHelp,
   overloadShed,
   feedbackTriageTick,
+  jobScriptTriageEpisode,
+  jobScriptTriageBackup,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,
   passkeyRevokeOutbox,

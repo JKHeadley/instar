@@ -7,6 +7,7 @@
 
 // Type-only import (erased at compile time — types.ts stays runtime-import-free).
 import type { DecisionProvenanceBlock } from './decisionQualityTypes.js';
+import type { AnomalyDecl } from '../scheduler/jobScriptProtocol.js';
 
 // ── Provider Credentials ────────────────────────────────────────────
 
@@ -648,6 +649,32 @@ export interface JobDefinition {
     | 'untrusted-bad-signature'
     | 'untrusted-not-in-lockfile'
     | 'untrusted-hash-mismatch';
+  /** Job cost reduction §5.1 — `'script'` makes an instar-origin template run
+   *  its shipped node script (`scriptFile`) with no session. Accepted ONLY on
+   *  instar-origin templates in v1; user-origin `execute.type: 'script'` jobs
+   *  keep their shell behaviour. */
+  runner?: 'script';
+  /** Bare filename of the shipped script (`<slug>.mjs`, `^[a-z0-9-]+\.mjs$`).
+   *  Never a command line — the scheduler rebuilds the absolute path. */
+  scriptFile?: string;
+  /** The script's real bound; the execution timeout is twice this. */
+  scriptTimeoutMinutes?: number;
+  /** Declared anomaly kinds (§5.3). Undeclared kinds are ignored + logged. */
+  anomalies?: AnomalyDecl[];
+  /** Supervision class for a script job (§5.6.1). */
+  scriptSupervision?: 'triage' | 'deterministic';
+  /** Triage evidence projection (§5.6.2, F17). */
+  triageEvidence?: 'full' | 'structured-only';
+  /** Allowed `JOB_FIELD` keys (§5.2). */
+  triageFields?: string[];
+  /** Exact `JOB_RESULT ok` summaries that are bare-ok (no triage call). */
+  triageBareOk?: string[];
+  /** Skipped reason codes that are bare (no triage call). */
+  triageBareSkipped?: string[];
+  /** The signed lock-file's scriptHash for this job, set by the loader only
+   *  when the job is `trusted`. The scheduler re-hashes the script against it
+   *  immediately before every execution. */
+  scriptHashExpected?: string;
 }
 
 /** A pre-confirmed resolution for a common blocker pattern. */
@@ -755,7 +782,9 @@ export interface JobState {
    */
   firstSeenAt?: string;
   lastRun?: string;
-  lastResult?: 'success' | 'failure' | 'timeout' | 'pending';
+  /** `skipped` (job-cost-reduction §5.2): a script reported nothing to do.
+   *  It neither raises nor resets consecutiveFailures. */
+  lastResult?: 'success' | 'failure' | 'timeout' | 'pending' | 'skipped';
   /** Error message from the last failure (cleared on success) */
   lastError?: string;
   /** Handoff notes from the last successful run — claims to verify, not facts */
@@ -801,6 +830,9 @@ export interface JobSchedulerConfig {
   authToken?: string;
   /** Project name exposed as $INSTAR_AGENT_ID so gate shells can bind bearer auth to this agent. */
   projectName?: string;
+  /** Agent HTTP port exposed to script-runner jobs as $INSTAR_PORT
+   *  (job-cost-reduction §5.1). Falls back to `.instar/config.json` port. */
+  port?: number;
   /** Wake-time job reaper — closes runs left pending after the host wakes from sleep. */
   wakeReaper?: {
     /** Minimum sleep duration (seconds) to trigger a reap pass. Defaults to 60. */
@@ -1183,6 +1215,16 @@ export interface IntelligenceOptions {
      * downgraded to `background` (the safe default). Omitted ⇒ background.
      */
     lane?: 'interactive' | 'background';
+    /**
+     * Job-cost attribution (docs/specs/job-cost-reduction.md §9.1): set ONLY by a
+     * call made FOR a scheduled job (anomaly narrator, triage referee, backup check,
+     * supervision pass). Recorded on the feature-metrics row so GET /jobs/cost can
+     * total per-slug spend exactly. Content-free labels; no routing effect.
+     */
+    jobSlug?: string;
+    machineId?: string;
+    /** The run id or anomaly-episode id the call was made for. */
+    runId?: string;
   };
   /**
    * Optional token-usage callback (Iris-audit item 1, spec
@@ -1375,6 +1417,7 @@ export type SkipReason =
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
+  | 'script-cap'      // job-cost-reduction F8: 3 scripts already running on this server (retried in 1 min)
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**

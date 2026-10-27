@@ -231,6 +231,7 @@ export class TelemetryCollector {
     const allRuns = this.deps.runHistory.query({
       sinceHours,
       limit: 10000,
+      excludeSideRuns: true, // canary/triage rows are not the job's runs (job-cost-reduction §5.6)
     });
     const startISO = windowStart.toISOString();
     const endISO = windowEnd.toISOString();
@@ -312,6 +313,7 @@ export class TelemetryCollector {
         slug: job.slug,
         sinceHours,
         limit: 10000,
+        excludeSideRuns: true,
       }).runs.filter(r =>
         r.result !== 'pending' &&
         r.startedAt >= startISO &&

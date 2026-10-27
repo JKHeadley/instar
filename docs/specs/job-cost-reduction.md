@@ -4,7 +4,8 @@ slug: job-cost-reduction
 status: draft
 owner: echo
 author: echo
-requested-by: justin (Telegram topic 130742, 2026-10-26; supervision decision 2026-10-26 19:04 PDT)
+parent-principle: "Structure beats Willpower"
+requested-by: justin (Telegram topic 130742, 2026-10-26; supervision decision 19:04 PDT, backup clarification 19:06 PDT)
 eli16-overview: docs/specs/job-cost-reduction.eli16.md
 related:
   - docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md
@@ -22,7 +23,7 @@ approved: true
 approved-by: "justin (operator decision, Telegram topic 130742, 2026-10-26 19:04 PDT)"
 approval-basis: >
   Justin set the supervision design this revision implements ("leverage Jev ... with haiku or
-  Luna as a backup ... then a single high-level daily review") and the build was directed to
+  Luna replacing Jev only when unavailable ... then a single high-level daily review") and the build was directed to
   proceed after re-convergence. Recorded transparently by Echo, not silently self-granted.
 single-run-completable: true
 frontloaded-decisions: 19
@@ -31,6 +32,11 @@ contested-then-cleared: 3
 ---
 
 # Job cost reduction
+
+**Revision in progress (2026-10-26):** The operator's 19:06 clarification
+requires Haiku/Luna to replace Jev only when Jev is unavailable. The spec text
+and triage code now use that rule; production wiring and a fresh convergence
+review remain. The older convergence stamp above does not certify this revision.
 
 ## 1. Problem (measured)
 
@@ -75,17 +81,17 @@ Goals (operator direction):
 - **G1.** These jobs become far more efficient. A job whose work is a fixed
   command runs **with no session at all**, and **with no model call on a bare
   healthy run**. A model is called only to classify a non-trivial result (Jev,
-  §5.6.2), to word a push (§5.4), or on the small fixed backup and daily
+  §5.6.2), to word a push (§5.4), or on the outage backup and daily
   reviews; a session starts only when triage says one is needed.
 - **G2.** Work that genuinely needs a model runs on the **cheapest capable
   model**, chosen from **Instar benchmark evidence** (e.g. Codex GPT-6 Luna),
   with Claude as the fallback.
-- **G3.** Use **Jev (TypeSafe)** wherever the judgment is a classification. Use
-  the standing cascade: Jev's answer when it is confident; when it is unsure,
-  GPT-6 Luna decides (`src/core/JevCascade.ts`). In v1 that judgment is the
+- **G3.** Use **Jev (TypeSafe)** wherever the judgment is a classification.
+  A confident Jev answer decides; uncertainty starts a bounded investigator.
+  Haiku or Luna replaces Jev only during an outage. In v1 that judgment is the
   per-run question "does this result need a real session?" (§5.6.2), with a
-  slower Haiku-or-Luna backup check and one daily review (operator decision,
-  topic 130742, 2026-10-26 19:04).
+  slower Haiku-or-Luna replacement only while Jev is unavailable and one daily
+  review (operator decision and clarification, topic 130742, 2026-10-26 19:04–19:06).
 - **G4.** **Single-provider floor.** An agent with only one provider, no Jev key
   and no benchmark mirror stays fully functional. Jev, Codex and benchmark
   routing are optimizations, never dependencies. The single-provider path is the
@@ -190,10 +196,11 @@ Counts:
    - The narrator writes a one-paragraph summary. The evidence is rendered
      deterministically, and a fixed sentence is the fallback.
 3. **Supervision (§5.6).** Each script job is classed `triage` or
-   `deterministic`. A `triage` job's every result goes to Jev (Luna when Jev is
-   unsure; the script's own deterministic rule when no Jev), which decides
-   "routine" or "needs a real session"; a session is started only on the second,
-   bounded. A Haiku-or-Luna backup check re-reads routine results every 6 hours.
+   `deterministic`. A `triage` job's non-trivial results go to Jev, which decides
+   "routine" or "needs a real session". An uncertain Jev answer requests a
+   bounded investigator session. The script's deterministic rule still applies
+   when Jev is unavailable. Only during a Jev outage, a Haiku-or-Luna replacement
+   samples routine results at most every 6 hours.
    Daily must-fail canaries prove every script can still fail, and one daily
    review looks across all of it.
 4. **Measurement first (§9):** per-job attribution, a frozen baseline, and a
@@ -604,7 +611,7 @@ episode costs one narrator call of about 1–2k tokens. Status lines cost nothin
 they are deterministic text. A triage session costs what a job session costs
 today, at most 6 a day per machine.
 
-### 5.6 Supervision: per-run Jev triage, a slower backup check, one daily review
+### 5.6 Supervision: per-run Jev triage, an outage replacement, one daily review
 
 `docs/LLM-SUPERVISED-EXECUTION.md` puts health checks at Tier 1, to "detect
 false-positive healthy reports". Today a Haiku session on every run pays for that
@@ -616,13 +623,17 @@ duty. The operator's decision (topic 130742, 2026-10-26 19:04) replaces it:
 > which would run more infrequently than the Jev setup to save tokens). Then a
 > single high-level daily review would make sense."
 
+At 19:06 the operator clarified that "back up" means Haiku or Luna **replaces
+Jev when Jev is unavailable**. A periodic second opinion while Jev is working
+does not meet that decision.
+
 So v1 has four layers. Each script job is classed for the layers it needs.
 
 #### 5.6.1 Which jobs get which layers
 
 | Supervision class | What it means | Templates |
 |---|---|---|
-| `triage` | its non-trivial results go to the triage pass (§5.6.2); the backup check (§5.6.3) samples its routine ones | health-check, commitment-checkin-reminder, feedback-factory-triage, feedback-factory-process, feedback-factory-execute |
+| `triage` | its non-trivial results go to Jev (§5.6.2); only during a Jev outage does the slower replacement (§5.6.3) sample routine results | health-check, commitment-checkin-reminder, feedback-factory-triage, feedback-factory-process, feedback-factory-execute |
 | `deterministic` | the script's verdict is the whole answer: the endpoint it triggers owns every decision and raises its own attention items, the job is itself an instrument, or (mentor-onboarding) its spec forbids anything outside the server reading its subject | mentor-onboarding, llm-decision-grading, correction-class-review-backstop, feedback-factory-action-list, release-readiness-check, jev-completion-audit, review-canary-battery, benchmark-divergence-analysis, doorway-scan, stall-matrix-live-check, routing-price-refresh, routing-price-web-verify, script-job-supervisor |
 
 The class is a new template key, `scriptSupervision: triage | deterministic`,
@@ -657,6 +668,12 @@ pure function of the result, the streak and the anomaly classes) and then queues
 the run for a server-side `JobResultTriage` pass. Triage never holds the claim,
 an in-flight slot or a script-cap slot.
 
+The anomaly observer records the run and opens its episodes synchronously. It
+then starts triage with the episode id captured for that run before awaiting
+narration or Telegram delivery. External anomaly effects are serialized, but a
+waiting send cannot postpone a critical investigation. A later close and reopen
+gets a new episode id; an older delivery cannot mark the new episode pushed.
+
 - A run the floor marks `needs_session` goes into a **pending set** keyed by
   `<slug>:<reason set>` and is never coalesced away: a later healthy run cannot
   replace it. Its session admission outcome (spawned, suppressed, refused) is
@@ -690,7 +707,7 @@ fields, as defined by the `JOB_FIELD` transport (§5.2), never the free-text
 tail. health-check and commitment-checkin-reminder are `full`.
 
 This is **one evidence projection per run**, `triageEvidenceFor(run)`, and every
-model consumer reads only it: Jev, the referee, the triage session prompt, the
+model consumer reads only it: Jev, the triage session prompt, the
 backup check (§5.6.3), and the daily review's `recentOutputs` for script jobs
 (§5.6.5). The claim is scoped to prompts and model inputs: a triage session
 with Read can still open run history itself. A triage session's final output for a `structured-only` slug is shown
@@ -701,8 +718,8 @@ reaches it.
 **The question.** Does this result need a real session with real intelligence, or
 is it routine?
 
-- **The decision is additive: `needs_session = floor OR cascade`.** Jev and the
-  referee can add sessions; they can never remove one the floor requires. A
+- **The decision is additive: `needs_session = floor OR Jev`.** Jev can add a
+  session; it can never remove one the floor requires. A
   miscalibrated Jev can therefore only cost bounded extra sessions, never hide a
   failure.
 - **The deterministic floor.** `needs_session` when the run recorded `failure` on
@@ -711,8 +728,8 @@ is it routine?
   machine's own** `job-runs.jsonl` rows for the slug (they carry `machineId`),
   skipping `skipped`, `script-canary` and `origin: triage` rows (a row without
   `machineId` counts as local only on a single-machine agent), never from the
-  cluster-shared `JobState`, which only the lease holder writes. On an agent with no Jev, no
-  referee and no other provider, the floor alone decides (G4). (Server-managed
+  cluster-shared `JobState`, which only the lease holder writes. On an agent with no Jev
+  and no backup provider, the floor alone decides (G4). (Server-managed
   outcomes are already `ok`/`skipped` by §5.2, so they never reach this rule.)
 - **Jev (the cascade, `src/core/JevCascade.ts`).**
   - Input ("state"): the slug, the parsed result and reason, the declared anomaly
@@ -727,36 +744,22 @@ is it routine?
     both criteria orders in one call, as every Jev instrument does.
   - The forward order's `p(needs_session)` is tested against the unsure band
     (`bandFor('needs_session', …)`, default 0.30–0.70). Outside the band, Jev's
-    answer stands. Inside the band, a `cannot_tell` label, or the two orders
-    giving different labels: the referee decides.
+    answer stands. Inside the band, on a `cannot_tell` label, or when the two
+    orders disagree, the result needs a bounded investigator session. Jev is
+    available in these cases but cannot settle the decision; no backup model
+    is called.
   - The model is pinned (`jev-1.13.0`); a served model that does not match is
     discarded and the floor decides alone.
-  - 2% of confident answers are also sent to the referee (audit). An audited
-    answer is logged beside Jev's, never acted on differently.
-- **The referee.** `askReferee` with one boolean statement, `needs_session`;
-  `false` means routine.
-  - Its provider is built in `server.ts` as: the Codex provider when Codex is
-    available (its `fast` tier is GPT-6 Luna); otherwise the agent's default
-    framework provider at `fast` (Haiku on Claude). It has its own breaker,
-    `timeoutMs` 20 s, at most one call in flight, and
-    `jobs.scriptTriage.referee.maxCallsPerDay` (default 200 per machine).
-  - `askReferee` gains an optional `attribution` argument whose fields are merged
-    into the call's attribution (component `JobResultTriageReferee`,
-    `jobSlug`, `machineId`, `runId`); the triage caller passes `deferrable:
-    false` and `category: 'reflector'`. That is the only change to
-    `JevCascade.ts`. A shed or deferred call counts as a referee failure.
-  - **The single slot is owned by a provider wrapper**, `SingleFlightProvider`,
-    that the referee is given instead of the raw provider. The backup check gets
-    its own instance, so neither fails the other. Its `evaluate` takes the slot, calls the real provider, and frees
-    the slot only when that call settles, so `askReferee` returning on its
-    timeout race cannot let a second call overlap one still running. A call
-    still unsettled after 120 s frees the slot and opens that instance's
-    breaker for 10 minutes (longer than any abandoned call can run), after which
-    one test call is let through; success closes it, failure re-opens it for 10
-    minutes. A referee call made while the slot is taken fails at once (the
-    floor decides); the backup check waits up to 60 s for its own slot.
-  - Referee failure, timeout, cap or open breaker: the cascade answers nothing and
-    the floor stands alone.
+- **When Jev is unavailable.** The deterministic floor still runs immediately.
+  The slower Haiku/Luna replacement (§5.6.3) samples the routine outcomes at
+  most every six hours. It is silent while Jev is working. The replacement uses
+  its own `SingleFlightProvider` slot, with a bounded wait and breaker, so an
+  abandoned model call cannot cause overlapping replacements. An outage pass
+  owns the decision lane until it finishes; per-run checks do not start Jev
+  calls concurrently with that pass. The ownership is symmetric: a backup
+  pass cannot acquire the lane while any Jev request, including a recovery
+  request after an earlier failure, is in flight. Acquisition is synchronous
+  in one process before either provider call; the owner releases in `finally`.
 - **What `needs_session` does: a triage session.** The scheduler spawns one
   session through a new `spawnJobTriageSession(job, triageRow)` (named apart
   from the existing `SessionManager.spawnTriageSession`, which serves the
@@ -835,7 +838,7 @@ is it routine?
   | cooldown | for runs with no episode (the other triage jobs), one per `<slug>:<reason set>` per 6 h (`jobs.scriptTriage.sessionCooldownHours`). The reason set is the sorted anomaly ids, or `failure:<reason>`. A critical reason bypasses the cooldown once per reason set per day (not the caps). Before spawning, the cooldown is also checked against the pool (`GET /jobs/triage?scope=pool`), so a claim move does not start a second session for the same condition; if that read fails, the local check decides |
   | caps | 6 per machine per day across all slugs (`maxSessionsPerDay`), and 3 per slug per day (`maxSessionsPerSlugPerDay`). Over a cap, one calm item per day (`job-triage-cap:<machineId>`); a floor-required session refused by a cap is also written onto the open episode or failure alert, and into the daily review's input |
   | duration | the job's `expectedDurationMinutes` × 2, at most 30 minutes |
-  | audit | `logs/job-triage.jsonl` through `BoundedJsonlAudit` (14 days, size-capped): slug, run id, result, decider (`floor`, `jev`, `referee`, `fingerprint-reuse`), probabilities, decision, action (`spawned`, `suppressed-cooldown`, `suppressed-cap`, `refused:<reason>`). Never output text |
+  | audit | `logs/job-triage.jsonl` through `BoundedJsonlAudit` (14 days, size-capped): slug, run id, result, decider (`floor`, `jev`, `fingerprint-reuse`, `backup`), probabilities, decision, action (`spawned`, `suppressed-cooldown`, `suppressed-cap`, `refused:<reason>`). Never output text |
 
 - **Jev daily cap.** `jobs.scriptTriage.jev.maxChecksPerDay`, default 1,500 per
   machine, seeded from the day's audit rows. Over the cap the floor decides. The
@@ -849,25 +852,30 @@ is it routine?
   sending any job data to a third party is a fleet-wide decision, so `jobs.scriptTriage.jev.enabled` is
   **omitted** and rides the development-agent gate: on for development agents
   (the operator's decision covers his own agents), dark on the fleet, where the
-  floor, the referee and the backup check still run. Turning Jev triage on for
+  floor and the slower backup check still run during that Jev-unavailable state. Turning Jev triage on for
   the fleet is a later PR that names this egress (F12).
 
-#### 5.6.3 Layer 2: the backup check (Luna or Haiku, slower)
+#### 5.6.3 Layer 2: replacement when Jev is unavailable (Luna or Haiku, slower)
 
-Jev's routine answers are not re-read on every run. A backup check runs **every
-6 hours** per machine (`jobs.scriptTriage.backupIntervalHours`), driven by the
-scheduler tick, whether or not Jev is configured. With no Jev it is the only
-model reading these results.
+While Jev is available, this check makes **no model calls**. If Jev is disabled,
+has no key, has exceeded its daily cap, returns a model mismatch, times out, or
+fails a call, the check becomes eligible. It then runs at most **every 6 hours**
+per machine (`jobs.scriptTriage.backupIntervalHours`), driven by the scheduler
+tick. A recovered successful Jev call makes it ineligible again. The deterministic
+floor remains active throughout. The daily overall review (§5.6.5) runs on its
+own schedule regardless of Jev availability.
 
-- **It reads a sample, and says so.** For each `triage`-class slug it takes the
-  runs since its cursor whose decision was `routine` (by any decider, bare-ok
-  included), dedupes them by output fingerprint, orders them non-ok and
+- **It reads a replacement sample, and says so.** For each `triage`-class slug
+  it takes only runs that needed Jev but received a deterministic routine
+  decision while Jev was unavailable. Healthy Jev decisions, cached Jev
+  decisions, and bare-ok runs are excluded; they are not candidates for a
+  second opinion. It dedupes by output fingerprint, orders them non-ok and
   anomaly-bearing first, then oldest unseen first, and reads at most 12: each
   run's evidence projection (§5.6.2), clamped to 1,000 characters. It records `considered` and
   `unread: N` per slug per pass. health-check makes ~72 runs in 6 hours, so most
   of its identical healthy runs collapse to one fingerprint; distinct ones beyond
   12 are counted as unread, never claimed as reviewed.
-- **The call.** One bounded call per slug, on the same provider as the referee
+- **The call.** One bounded call per slug, on the outage replacement provider
   (Luna with Codex, the default framework at `fast` otherwise): "Do any of these
   results show something wrong that someone with tools should investigate now?
   Answer per run id." The reply is parsed strictly (a JSON object keyed by the
@@ -880,8 +888,8 @@ model reading these results.
   before the call. On success the cursor moves past every run considered. On
   failure the same ids are retried next pass. Two failed passes in a row raise one
   calm item (`job-triage-backup:<machineId>`).
-- Cost: at most 5 slugs × 4 passes a day per machine, each about 12k input
-  characters.
+- Cost during an outage: at most 5 slugs × 4 passes a day per machine, each
+  about 12k input characters. Cost while Jev works: zero.
 
 #### 5.6.4 Layer 3: daily must-fail canaries (deterministic, every script job)
 
@@ -986,9 +994,9 @@ send to the operator would be the only stronger proof. It would be noise, so it
 is not added.
 
 **Cost on the healthy path.** A bare-ok run costs nothing. A non-trivial run of a
-`triage` job costs one Jev call (none on a fingerprint repeat), plus a referee
-call only in the unsure band, on order disagreement or in the audit share. A
-`deterministic` job costs nothing. The backup check and the daily review are
+`triage` job costs one Jev call (none on a fingerprint repeat). Jev uncertainty
+or order disagreement asks for a bounded investigator session. A
+`deterministic` job costs nothing. The outage backup and the daily review are
 small fixed daily costs. Sessions start only on `needs_session`, bounded above.
 
 #### 5.6.6 Which spec owns each job
@@ -1019,20 +1027,19 @@ not appear in the measured week. v1 therefore leaves it unchanged, and §9's
 baseline measures its fleet cost. It moves to phase 2 (§7), together with the
 Jev work.
 
-## 7. Phase 2 (a follow-up spec)
+## 7. Separate model-routing proposal ([PR #2394](https://github.com/JKHeadley/instar/pull/2394))
 
 What remains after v1:
 
 - **The 15 agent-class templates plus commitment-detection.** About 160 + up to
   2,016 nominal runs a week, using the expensive models.
 - **The operator's goal G2 (benchmark routing).** v1 meets it only partly: v1's
-  narrator, referee, backup check and supervisor run off Claude when Codex is
+  narrator, outage backup check and supervisor run off Claude when Codex is
   active, but no benchmark evidence chooses the model yet. G3 (Jev) is met in v1
   for script-job results (§5.6.2); Jev for commitment detection is phase 2.
 
-A Close-the-Loop commitment for the phase-2 spec is registered **when this spec is
-accepted**, not when v1 lands, so the deferral is tracked from day one. Phase 2
-must settle these constraints, carried forward from here:
+PR #2394 is the reviewable tracker for the separate model-routing design.
+Its implementation must settle these constraints, carried forward from here:
 
 - **commitment detection becomes event-driven at message ingest**, following the
   existing Jev Telegram shadows (JevCorrectionShadow): no cron cursor. It
@@ -1066,18 +1073,21 @@ must settle these constraints, carried forward from here:
 2. **Config.** Defaults live in code (`ConfigDefaults.ts`, add-missing per key,
    never a whole-block write), so a later default change reaches agents that
    never set the key:
-   - `jobs.scriptRunners: { disabledSlugs: [] }`. `jobs.scriptRunners.enabled` is
+   - `jobs.scriptRunners.disabledSlugs` initially contains every converted
+     slug except `llm-decision-grading` and
+     `correction-class-review-backstop`; `script-job-supervisor` also stays
+     scripted to observe the first wave. A later wave removes entries through
+     an idempotent migration after its 48-hour review. `jobs.scriptRunners.enabled` is
      **omitted** and rides the development-agent gate: script runners are live on
      development agents and, on the fleet, every converted job runs its body as a
      session exactly as today. Taking script runners to the fleet is a later PR
      that changes the code default (F6).
    - `jobs.scriptTriage: { enabled: true, sessionCooldownHours: 6,
      maxSessionsPerDay: 6, maxSessionsPerSlugPerDay: 3, backupIntervalHours: 6,
-     referee: { maxCallsPerDay: 200, timeoutMs: 20000 }, jev: { model:
-     'jev-1.13.0', timeoutMs: 1500, maxChecksPerDay: 1500, auditRate: 0.02 } }`.
+     jev: { model: 'jev-1.13.0', timeoutMs: 1500, maxChecksPerDay: 1500 } }`.
      `jobs.scriptTriage.jev.enabled` is **omitted** (development-agent gate;
      §5.6.2 Egress). With `jobs.scriptTriage.enabled: false`, no Jev call,
-     referee call, backup check or triage session happens; script verdicts,
+     outage backup check or triage session happens; script verdicts,
      alerts, canaries and the daily review are unchanged.
    - All are read live.
 3. **User forks are reported, never rewritten.** Seamless Migration invariant 4
@@ -1108,8 +1118,8 @@ must settle these constraints, carried forward from here:
    - other problems show as calm attention items, and send one message only if
      they persist 6 hours or keep recurring;
    - `triage` jobs ask Jev (Luna when unsure) whether a result needs a real
-     session, and start one only then, bounded; a backup check re-reads routine
-     results every 6 hours and one daily review looks across all jobs;
+     session, and start one only then, bounded; during a Jev outage a replacement
+     samples routine results at most every 6 hours, and one daily review looks across all jobs;
    - where to look: `GET /jobs` (per run: `runner`, `lockTrust`, `tokens`,
      `triage`), `GET /jobs/triage` (recent triage decisions) and `GET /jobs/cost`.
 7. **Dashboard.** The Jobs tab shows each job's runner, its last result, its
@@ -1123,7 +1133,7 @@ must settle these constraints, carried forward from here:
      `session_id`. A side table, `job_sessions(session_id, job_slug, machine_id,
      started_at)`, is written when a job session starts and joined when the
      ledger is read. It is pruned on the same schedule as `token_events`.
-   - Model calls made by the narrator, the triage referee, the backup check and
+   - Model calls made by the narrator, the outage backup check and
      the supervision pass, and Jev calls (`framework: typesafe-api`), are attributed
      through `featureMetrics`. Each carries `attribution.component` plus the
      originating `jobSlug`, `machineId` and episode/run id, so per-slug totals
@@ -1183,7 +1193,7 @@ with real per-job numbers.
 
 | Part of the week | Sessions (est.) | Weighted tokens (est.) | After v1 |
 |---|---|---|---|
-| The five jobs | ~2,980 | ~717M | about 12M on average assumptions: Jev calls (billed by TypeSafe, not in this column), bounded narrator, referee, backup and daily-review calls, plus at most 6 triage sessions a day per machine (at the historical ~241k average that is ~1.4M weighted tokens a day if the cap is hit; a triage session uses the default model and may cost more, so its real cost is measured separately in §9, `origin: triage`) |
+| The five jobs | ~2,980 | ~717M | about 12M on average assumptions: Jev calls (billed by TypeSafe, not in this column), bounded narrator, outage backup and daily-review calls, plus at most 6 triage sessions a day per machine (at the historical ~241k average that is ~1.4M weighted tokens a day if the cap is hit; a triage session uses the default model and may cost more, so its real cost is measured separately in §9, `origin: triage`) |
 | Remaining agent-class jobs | ~160 | ~39M | unchanged in v1; phase 2's target |
 | **Total** | **3,140** | **~756M** | **~40–51M (about a 93–95% cut)** |
 
@@ -1216,7 +1226,7 @@ from §9.
        outcome as a failure;
      - zero session tokens for `deterministic` jobs; for `triage` jobs, sessions
        only where triage asked for one, within the bounds, each one read;
-     - the triage log's decider mix (Jev, referee, deterministic) and every
+     - the triage log's decider mix (Jev, backup, deterministic) and every
        backup disagreement read;
      - one raw run per slug, read end to end.
 4. **The rest, still on development agents.** Convert the three feedback-factory
@@ -1279,12 +1289,13 @@ from §9.
   - `boundedTail` leaves its marker.
 - Triage (`JobResultTriage`):
   - a confident Jev `routine` is taken; a confident `needs_session` is taken;
-  - an answer in the unsure band, or `cannot_tell`, goes to the referee;
+  - an answer in the unsure band, `cannot_tell`, or order disagreement requests
+    a bounded investigator session;
   - the served-model mismatch, HTTP error, timeout, no key and daily cap each fall
     to the deterministic rule, and the rule gives `needs_session` exactly for a
     second consecutive failure or a critical anomaly (both sides tested: a first
     failure and a recoverable anomaly give `routine`);
-  - the referee failing also falls to the deterministic rule;
+  - no second model is called while Jev is available;
   - `deterministic`-class jobs and canary runs are never triaged;
   - `needs_session` starts one session with the investigator prompt and the
     fixed allowlist; in-flight, cooldown and daily cap each suppress, and the cap
@@ -1296,9 +1307,8 @@ from §9.
   - the floor is additive: a confident Jev `routine` with a critical anomaly or
     a second consecutive failure still starts a session;
   - bare-ok runs are never sent; a repeated fingerprint reuses its verdict;
-  - differing forward/reversed labels go to the referee; the referee cap,
-    timeout and missing provider fall to the floor; referee attribution carries
-    slug, machine and run id;
+  - differing forward/reversed labels request an investigator session under the
+    same admission limits; Jev timeout and missing key fall to the floor;
   - the triage session is an `agentmd` projection with the fixed allowlist, the
     investigator prompt and slug tag `triage:<slug>`; it never resolves to
     `legacy`; the job's own next run is not skipped while it lives;
@@ -1313,8 +1323,8 @@ from §9.
     each session ends;
   - a `structured-only` slug never sends or quotes free text; undeclared or
     malformed `JOB_FIELD` lines are dropped and counted;
-  - a referee provider that ignores its timeout keeps the `SingleFlightProvider`
-    slot until it settles or is abandoned at 120 s;
+  - an outage backup provider that ignores its timeout keeps its
+    `SingleFlightProvider` slot until it settles or is abandoned at 120 s;
   - repeated `script-untrusted` failures alert but never start a triage session;
   - a triage session is spawned with `omitAuthEnv` (no Bearer or origin token in
     its environment) and the fixed allowlist; an env-token agent records
@@ -1326,8 +1336,8 @@ from §9.
   - identical output on a first and second failure: the second still gets a
     session (the fingerprint reuses only the cascade answer);
   - a floor-required run is not displaced by a later healthy run in the queue.
-- The backup check: runs every 6 h with or without Jev; reads only `routine`
-  runs since its cursor, deduped and prioritised, at most 12, and records
+- The backup check: runs at most every 6 h only while Jev is unavailable; reads only `routine`
+  runs left by an unavailable Jev since its cursor, deduped and prioritised, at most 12, and records
   `unread`; a strict-parse failure is `backup-failed` and the same ids are
   retried; a disagreement starts a bounded session and logs `backup-disagrees`;
   two failures in a row raise one item.
@@ -1359,7 +1369,7 @@ from §9.
 - The package contains `scripts/`.
 
 **Wiring tests:**
-- The narrator, the triage pass (Jev client, referee, deterministic floor), the
+- The narrator, the triage pass (Jev client and deterministic floor), the
   backup check, the supervision pass and the job-session attribution are
   non-null.
 - They delegate to the real intelligence provider, as wired in `server.ts`.
@@ -1448,12 +1458,12 @@ from §9.
 | Script trust verdict → run, or record `failed` with no session | invariant | lock-file hashes, re-checked immediately before execution |
 | Must-fail canary passed or not | invariant | deterministic assertion per script |
 | Supervision "anything odd?" (daily review) | judgment-candidate | advisory flag only, no action; floor = no flag |
-| Triage: does this script result need a real session? | judgment-candidate | `needs_session = floor OR cascade`. Floor (deterministic, always applied): a second consecutive failure or a critical anomaly ⇒ session. Arbiter: Jev, then the referee in the unsure band or on order disagreement (`JevCascade`). The model can only add sessions. Bounded by in-flight, cooldown, per-slug and daily caps |
-| Backup check: does a routine-classified result need a session? | judgment-candidate | one bounded `fast`-tier call per slug per 6 h; floor = no extra session (the per-run verdict stands) |
+| Triage: does this script result need a real session? | judgment-candidate | `needs_session = floor OR Jev`. Floor (deterministic, always applied): a second consecutive failure or a critical anomaly ⇒ session. Jev can only add sessions; uncertainty or order disagreement also requests one. Bounded by in-flight, cooldown, per-slug and daily caps |
+| Outage replacement: does a routine-classified result need a session? | judgment-candidate | only while Jev is unavailable, one bounded `fast`-tier call per slug per 6 h; floor = no extra session (the per-run verdict stands) |
 | Triage session spawn admitted | invariant | in-flight, cooldown, per-slug and daily caps, then `admitTriageSpawn()` (read-only, quota, capacity, work admission) |
 | Which runs are triaged (bare-ok skip, fingerprint reuse) | invariant | fixed per-template bare-ok list; sha256 fingerprint |
-| Forward/reversed Jev order reconciliation | invariant | forward order tests the band; differing labels go to the referee |
-| Referee provider selection | invariant | Codex when available, else the default framework at `fast`; none ⇒ floor alone |
+| Forward/reversed Jev order reconciliation | invariant | forward order tests the band; differing labels request an investigator session |
+| Outage replacement provider selection | invariant | Codex when available, else the default framework at `fast`; none ⇒ floor alone |
 | Triage session outcome recording | invariant | `origin: triage` row, excluded from the slug's stats, streak and JobState |
 | Heal attempt before the 6-hour push | invariant | one triage session per episode, or its recorded refusal, then the push |
 | Rollback flag | invariant | operator switch, read live |
@@ -1470,22 +1480,22 @@ from §9.
     (§5.6.1).
   - Per-run session supervision is replaced, per the operator's decision of
     2026-10-26 19:04, by: deterministic result parsing on every run; for
-    `triage` jobs, a per-run Jev triage (Luna when Jev is unsure, the
-    deterministic rule when there is no Jev) that starts a real session only when
-    one is needed; a backup Haiku-or-Luna check every 6 hours; deterministic
+    `triage` jobs, a per-run Jev triage (uncertainty requests a bounded
+    investigator session; the deterministic rule runs when Jev is unavailable);
+    a replacement Haiku-or-Luna check at most every 6 hours while Jev is unavailable; deterministic
     must-fail canaries every day; one high-level daily review; and the existing
     consecutive-failure alerts.
   - `docs/LLM-SUPERVISED-EXECUTION.md` makes every scheduled job critical by
     default, and these stay critical: v1 does not declare them otherwise. Their
-    Tier-1 supervision is layered rather than per-run: an LLM classifier (Jev,
-    with the referee) reads every non-trivial result; bare-ok results are covered
-    by the 6-hourly backup sample and the daily review, and their ability to fail
+    Tier-1 supervision is layered rather than per-run: Jev reads every
+    non-trivial result while available; bare-ok results are covered
+    by the daily review, and their ability to fail
     is proven by the canaries rather than by a model reading "ok".
   - The registry article's `Fails` clause (when the supervisor is unavailable,
     do not run the pipeline "unless a separately ratified deterministic safe rung
     governs it"): the always-applied deterministic floor and the canaries are that
-    rung, ratified by the operator's decision of 2026-10-26 19:04. With no Jev and
-    no referee the job still runs, governed by the floor, and the backup check and
+    rung, ratified by the operator's decision of 2026-10-26 19:04. With no Jev
+    the job still runs, governed by the floor, and the outage backup check and
     daily review still read it on the default framework.
   - The standard's tier table gains a "script job (layered Tier 1)" line and the
     critical-pipeline section a sentence naming this layering, in the same
@@ -1526,11 +1536,10 @@ from §9.
   cheap to change: moving a job to `triage` turns on third-party egress and
   session-spawning authority, so it needs its own review and a development-agent
   soak.
-- **F11 Triage bounds and cadences:** Jev unsure band 0.30–0.70, 2% audit share,
-  1,500 Jev checks per machine per day, 200 referee calls per machine per day
-  (20 s timeout, one in flight), one triage session per slug and reason set per
+- **F11 Triage bounds and cadences:** Jev unsure band 0.30–0.70,
+  1,500 Jev checks per machine per day, one triage session per slug and reason set per
   6 h (critical bypasses the cooldown), at most 3 per slug and 6 per machine per
-  day, backup check every 6 h over at most 12 distinct runs per slug. All are
+  day, backup check at most every 6 h during a Jev outage over at most 12 distinct runs per slug. All are
   `jobs.scriptTriage.*` config, read live.
 - **F12 Jev egress:** `jobs.scriptTriage.jev.enabled` rides the
   development-agent gate. Fleet egress of job output to TypeSafe is a later PR
@@ -1539,11 +1548,11 @@ from §9.
   body is reference only), the fixed allowlist `Read, Grep, Glob, Bash`, slug tag
   `triage:<slug>`, spawned with `omitAuthEnv` (no credentials), no
   `telegramNotify`, an `origin: triage` run row outside the slug's stats.
-- **F14 Referee and backup provider:** Codex (`fast` = GPT-6 Luna) when
+- **F14 Outage replacement provider:** Codex (`fast` = GPT-6 Luna) when
   available, else the default framework at `fast` (Haiku on Claude); its own
-  breaker. `askReferee` gains an optional attribution argument.
+  breaker. It is called only while Jev is unavailable.
 - **F15 Jev order reconciliation:** the forward order tests the band; if the two
-  orders' labels differ, the referee decides.
+  orders' labels differ, a bounded investigator session is requested.
 - **F16 Triage session model:** the agent's default framework and model, not
   the template's tier. Worst case 6 sessions a day per machine, as §10 counts.
 - **F17 Evidence policy:** the feedback-factory jobs are `triageEvidence:

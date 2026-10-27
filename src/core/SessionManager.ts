@@ -679,6 +679,31 @@ export function applyClaudeConfinement(argv: string[], confinement: { tmpDir: st
   return envFlags;
 }
 
+/**
+ * Tool confinement without an OS sandbox (job-cost-reduction §5.6.2, triage sessions): drop
+ * `--dangerously-skip-permissions`, add the confined permission form with `--tools <list>` (before
+ * `-p` when present), and assert it. The caller also passes `--allowedTools <list>` (so `dontAsk`
+ * permits exactly those tools) and `--strict-mcp-config --mcp-config {}` (no MCP servers load).
+ * Throws when the mode was not applied, so a spawn can never silently run with full permissions.
+ */
+export function applyClaudeToolConfinement(argv: string[], tools: string[]): void {
+  if (tools.length === 0 || tools.some((t) => !/^[A-Za-z][A-Za-z0-9_]*$/.test(t))) {
+    throw new Error('confined-tools-invalid: tool names must be plain identifiers');
+  }
+  const form: string[] = [...CLAUDE_CONFINED_PERMISSION_ARGS];
+  const toolsAt = form.indexOf('--tools');
+  form[toolsAt + 1] = tools.join(',');
+  let dangerous = argv.indexOf('--dangerously-skip-permissions');
+  while (dangerous >= 0) { argv.splice(dangerous, 1); dangerous = argv.indexOf('--dangerously-skip-permissions'); }
+  const dashP = argv.indexOf('-p');
+  argv.splice(dashP > 0 ? dashP : argv.length, 0, ...form);
+  const at = argv.indexOf('--tools');
+  if (argv.includes('--dangerously-skip-permissions') || !argv.includes('dontAsk') || at < 0 || argv[at + 1] !== tools.join(',')
+    || !argv.includes('--strict-mcp-config')) {
+    throw new Error('confined-tools-adapter-missing: the confined permission mode was not applied');
+  }
+}
+
 export class SessionManager extends EventEmitter {
   private config: SessionManagerConfig;
   private state: StateManager;
@@ -3633,6 +3658,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * framework, or a launch that would be rerouted to the interactive lane, is refused.
      */
     confinement?: { framework: 'claude-code'; settingsPath: string; tmpDir: string };
+    /**
+     * Narrow a claude-code session to exactly these tools (job-cost-reduction §5.6.2, triage
+     * sessions), on both the headless and the rerouted interactive lane: no
+     * `--dangerously-skip-permissions`; `--permission-mode dontAsk --tools <list> --no-chrome`,
+     * `--allowedTools <list>` and `--strict-mcp-config --mcp-config {}`. Asserted; the spawn fails
+     * if the form was not applied. Not an OS sandbox. No effect on other frameworks (they have no
+     * tool flag). Mutually exclusive with `confinement`, which has its own tool set.
+     */
+    confinedTools?: string[];
+    /**
+     * Launch on the agent's default model, ignoring `model` (the job's tier). Triage sessions use it:
+     * the operator asked for "a real session with real intelligence", not the template's tier.
+     */
+    useAgentDefaultModel?: boolean;
   }): Promise<Session> {
     if (options.cwd !== undefined) {
       const worktreesRoot = path.resolve(this.config.projectDir, '.worktrees');
@@ -3643,6 +3682,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!fs.existsSync(requested)) throw new Error('spawn-cwd-refused: directory does not exist');
     }
     if (options.confinement && !options.omitAuthEnv) throw new Error('confinement-requires-omit-auth-env');
+    if (options.confinement && options.confinedTools) throw new Error('confined-tools-conflicts-with-confinement');
+    if (options.confinedTools && options.confinedTools.length === 0) throw new Error('confined-tools-invalid: empty tool list');
+    if (options.useAgentDefaultModel) options = { ...options, model: undefined };
+    if (options.confinedTools) {
+      // dontAsk refuses any tool the settings do not allow: the allowlist IS the tool list.
+      options = { ...options, allowedTools: [...options.confinedTools], disableProjectMcp: true };
+    }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
@@ -3897,6 +3943,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (dashPIndex > 0) {
         headlessSpec.argv.splice(dashPIndex, 0, ...extraClaudeFlags);
       }
+    }
+    if (options.confinedTools && headlessFramework === 'claude-code') {
+      applyClaudeToolConfinement(headlessSpec.argv, options.confinedTools);
     }
 
     // Threadline A2A continuity (claude-code HEADLESS only): set/resume the
@@ -4334,6 +4383,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (extraClaudeFlags.length > 0) {
       launchSpec.argv.push(...extraClaudeFlags);
     }
+    if (options.confinedTools) applyClaudeToolConfinement(launchSpec.argv, options.confinedTools);
 
     // K9: build PATH env with shim prepended (when shim was installed) — same as
     // the headless block.
@@ -4370,25 +4420,30 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // headless confined launch — no agent authority in the tmux env, the shared adapter (G2/G4/G6),
     // and the prompt delivered as a FILE behind one fixed typed line (D1), never typed itself.
     const confinement = options.confinement;
+    // omitAuthEnv (job-cost-reduction §5.6.2): the token blanking and the credential-shaped-variable
+    // blanking are keyed on omitAuthEnv here exactly as on the headless lane (confinement implies it).
+    const omitAuth = Boolean(confinement) || Boolean(options.omitAuthEnv);
     let confinedEnvFlags: string[] = [];
     let confinedPromptPath: string | null = null;
-    if (confinement) {
-      // The trust dialog is matched on the exact workspace path, which must be whitespace-free; refuse
-      // by name here rather than failing every startup as `dialog-unknown` (spec D2 rule 3).
-      if (/\s/.test(resolvedCwd)) throw new Error('confinement-adapter-missing: workspace-path-whitespace — the confined workspace path contains whitespace');
+    if (omitAuth) {
       for (const key of Object.keys(process.env).sort()) {
         if (isCredentialEnvName(key) && key !== 'CLAUDE_CONFIG_DIR') confinedEnvFlags.push('-e', `${key}=`);
       }
       confinedEnvFlags.push('-e', 'GH_TOKEN=', '-e', 'GITHUB_TOKEN=', '-e', 'INSTAR_BIND_TOKEN=', '-e', 'INSTAR_FENCING_TOKEN=');
+    }
+    if (confinement) {
+      // The trust dialog is matched on the exact workspace path, which must be whitespace-free; refuse
+      // by name here rather than failing every startup as `dialog-unknown` (spec D2 rule 3).
+      if (/\s/.test(resolvedCwd)) throw new Error('confinement-adapter-missing: workspace-path-whitespace — the confined workspace path contains whitespace');
       confinedEnvFlags.push(...applyClaudeConfinement(launchSpec.argv, confinement, { sessionId, tmuxSession },
         launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR));
       confinedPromptPath = path.join(path.resolve(confinement.tmpDir), `confined-prompt-${sessionId}.md`);
       confinedPromptLine(confinedPromptPath); // validates the path shape before anything runs
       fs.writeFileSync(confinedPromptPath, promptWithSentinel, { mode: 0o600, flag: 'wx' });
-    } else {
+    } else if (!omitAuth) {
       this.linkAgentOwnedMemory('claude-code', launchSpec.envOverrides, resolvedCwd);
     }
-    const originEnvFlags = confinement ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
+    const originEnvFlags = omitAuth ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
       sessionId, harnessId: 'claude-code', projectDir: resolvedCwd, configuredModel: launchModel,
       configHome: this.originConfigHome('claude-code', launchSpec.envOverrides),
     });
@@ -4412,7 +4467,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ...originEnvFlags,
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${confinement ? '' : this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -4439,9 +4494,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
-        ...(confinement ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
-        ...(workTreeFencingToken && !confinement ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
-        ...(workTreeFencingToken && !confinement ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
+        ...(omitAuth ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
+        ...(workTreeFencingToken && !omitAuth ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
+        ...(workTreeFencingToken && !omitAuth ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
         ...anthropicEnvFlags,
         // Same DB-credential isolation as every other spawn (Portal 2026-02-22).
@@ -4496,7 +4551,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       completionMode: 'pattern',
       completionPatterns: [sentinel],
       // A confined caller's own bound is its contract (the canary 10 min, a build its lease).
-      maxLifetimeMinutes: confinement ? (options.maxDurationMinutes ?? lifetimeMinutes) : lifetimeMinutes,
+      // A triage session (omitAuthEnv) has its own bound too (job-cost-reduction §5.6.2: 2× expected, ≤30 min).
+      maxLifetimeMinutes: omitAuth ? (options.maxDurationMinutes ?? lifetimeMinutes) : lifetimeMinutes,
       ...(confinement ? { confinedConfigHome: launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
     };
     // Saved BEFORE any startup step: the monitor and both auto-answerers see this session only

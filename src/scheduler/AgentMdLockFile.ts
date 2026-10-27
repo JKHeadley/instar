@@ -30,6 +30,10 @@ export interface LockFileEntry {
   slug: string;
   bodyHash: string;        // sha256:<hex> over normalize(body)
   frontmatterHash: string; // sha256:<hex> over normalize(canonicalize(frontmatter))
+  /** job-cost-reduction §5.1 — sha256:<hex> over the RAW bytes of the shipped
+   *  `scripts/<slug>.mjs`. Present only for templates with `runner: script`.
+   *  Covered by the signature (it is part of `entries`). */
+  scriptHash?: string;
 }
 
 /** The on-disk shape of `.instar/jobs/instar.lock.json`. */
@@ -80,6 +84,12 @@ export function normalize(content: string): string {
       .replace(ZERO_WIDTH_CHARS_RE, '')
       .trimEnd() + '\n'
   );
+}
+
+/** sha256 over RAW bytes (no normalization) — used for shipped job scripts,
+ *  which are executed byte-for-byte, so any byte change must break trust. */
+export function hashScriptBytes(content: Buffer | string): string {
+  return 'sha256:' + crypto.createHash('sha256').update(content).digest('hex');
 }
 
 /** sha256(normalize(content)) returned as `sha256:<hex>`. */
@@ -250,11 +260,17 @@ function validateLockFileSchema(
     if (typeof e.frontmatterHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(e.frontmatterHash)) {
       return { ok: false, reason: `Lock-file entry[${i}].frontmatterHash must match sha256:<64-hex>` };
     }
-    entries.push({
+    if (e.scriptHash !== undefined && (typeof e.scriptHash !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(e.scriptHash))) {
+      return { ok: false, reason: `Lock-file entry[${i}].scriptHash must match sha256:<64-hex> if present` };
+    }
+    const entry: LockFileEntry = {
       slug: e.slug,
       bodyHash: e.bodyHash,
       frontmatterHash: e.frontmatterHash,
-    });
+    };
+    // Carried verbatim so the signature (which covers `entries`) covers it.
+    if (typeof e.scriptHash === 'string') entry.scriptHash = e.scriptHash;
+    entries.push(entry);
   }
 
   return {

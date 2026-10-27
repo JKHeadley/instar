@@ -18,6 +18,22 @@ import { createHash, createHmac, timingSafeEqual, createPrivateKey, randomBytes,
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { JobCostReport } from '../scheduler/JobCostReport.js';
+import { mountJobCostRoutes } from './jobCostRoutes.js';
+import { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
+import { JobResultTriage, buildScriptTriageConfigGetter, buildTriageProviders, evaluateFloor } from '../scheduler/JobResultTriage.js';
+import { JobTriageBackupCheck } from '../scheduler/JobTriageBackupCheck.js';
+import { ScriptCanaryRunner } from '../scheduler/ScriptCanaryRunner.js';
+import { verifyJobAnomalyEpisodes } from '../scheduler/JobCanaryEpisodeHarness.js';
+import { createJobTriagePoolFetcher, mountJobTriageRoutes, poolHasRecentTriageSession } from './jobTriageRoutes.js';
+import { getFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
+import { ScriptJobSupervisor, SUPERVISION_CONDITION_PREFIX, type PoolJobsView } from '../scheduler/ScriptJobSupervisor.js';
+import { mountScriptSupervisionRoutes } from './scriptSupervisionRoutes.js';
+import { JobAnomalyEpisodeStore } from '../scheduler/JobAnomalyEpisodeStore.js';
+import { JobAnomalyNarrator } from '../scheduler/JobAnomalyNarrator.js';
+import { JobAnomalyPusher, type JobAnomalyPusherDeps } from '../scheduler/JobAnomalyPusher.js';
+import { BoundedJsonlAudit } from '../core/BoundedJsonlAudit.js';
+import { buildViewTunnelUrl } from './viewTunnelUrl.js';
 import { DynamicMcpService } from '../core/DynamicMcpService.js';
 import { MachineSshIdentity } from '../core/MachineSshIdentity.js';
 import { activeAutonomousJobs } from '../core/AutonomousSessions.js';
@@ -424,6 +440,9 @@ export class AgentServer {
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
+  private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
+  private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
+  private scriptCanaryTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private relayVerdictCounters: (() => Record<string, number>) | null = null;
   /** A2A inbound message-id ledger controller (docs/specs/a2a-inbound-id-ledger.md). */
@@ -687,6 +706,7 @@ export class AgentServer {
     quotaTracker?: QuotaTracker;
     publisher?: TelegraphService;
     viewer?: PrivateViewer;
+    jobAnomalySendAutomationReply?: JobAnomalyPusherDeps['sendAutomationReply'];
     tunnel?: TunnelManager;
     evolution?: EvolutionManager;
     watchdog?: SessionWatchdog;
@@ -4993,6 +5013,217 @@ export class AgentServer {
     }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
+    // The cost surface reads the same live ledgers and scheduler as production
+    // routes. A missing ledger is reported in the response, not replaced with
+    // synthetic zero usage.
+    const jobCostReport = new JobCostReport({
+      stateDir: options.config.stateDir,
+      machineId: () => this.meshSelfId ?? null,
+      runHistory: options.scheduler?.getRunHistory() ?? null,
+      tokenLedger: this.tokenLedger,
+      featureMetrics: this.featureMetricsLedger,
+      jobBodies: () => new Map((options.scheduler?.getJobs() ?? []).map(job => [job.slug, job.body ?? job.execute.value ?? ''])),
+    });
+    mountJobCostRoutes(this.app, {
+      report: jobCostReport,
+      resolvePeerUrls: options.resolvePeerUrls,
+      authToken: options.config.authToken,
+      recordRopeResult: options.recordRopeResult,
+    });
+    const triageState = options.scheduler
+      ? new JobTriageStateStore({ file: path.join(options.config.stateDir, 'state', 'job-triage-state.json') })
+      : null;
+    const anomalyStore = options.scheduler
+      ? new JobAnomalyEpisodeStore({ filePath: JobAnomalyEpisodeStore.defaultPath(options.config.stateDir) })
+      : null;
+    const triageAuditPath = path.join(options.config.sessions.projectDir, 'logs', 'job-triage.jsonl');
+    const bootJobsConfig = (options.config as typeof options.config & { jobs?: unknown }).jobs;
+    const getTriageConfig = buildScriptTriageConfigGetter({
+      readLiveJobs: () => routeCtx.liveConfig?.get('jobs', bootJobsConfig) ?? bootJobsConfig,
+      developmentAgent: (options.config as { developmentAgent?: boolean }).developmentAgent,
+    });
+    const fetchTriagePool = options.resolvePeerUrls
+      ? createJobTriagePoolFetcher({
+          resolvePeerUrls: options.resolvePeerUrls,
+          authToken: options.config.authToken,
+          recordRopeResult: options.recordRopeResult,
+        })
+      : undefined;
+    let triage: JobResultTriage | null = null;
+    if (options.scheduler && triageState) {
+      const triageKeyStore = new SecretStore({
+        stateDir: options.config.stateDir,
+        forceFileKey: options.config.secrets?.forceFileKey,
+      });
+      triage = new JobResultTriage({
+        getConfig: getTriageConfig,
+        scheduler: options.scheduler,
+        state: triageState,
+        machineId: this.meshSelfId ?? null,
+        isSingleMachine: () => !options.resolvePeerUrls?.().length,
+        readKey: () => {
+          const key = triageKeyStore.get('typesafe_api_key');
+          return typeof key === 'string' ? key : null;
+        },
+        auditPath: triageAuditPath,
+        anthropicApiKeyPresent: () => !!process.env.ANTHROPIC_API_KEY,
+        admissionCheck: () => {
+          if (options.state?.readOnly) return 'read-only';
+          const decision = options.scheduler!.canRunJob?.('low');
+          return decision && decision !== true && !decision.allowed ? (decision.reason ?? 'job-admission') : null;
+        },
+        poolCooldownCheck: (conditionKey, sinceMs) => poolHasRecentTriageSession(fetchTriagePool, conditionKey, sinceMs),
+        raiseAttention: item => {
+          void options.telegram?.createAttentionItem({
+            id: item.id, conditionKey: item.conditionKey, title: item.title,
+            summary: item.body, description: item.body, priority: 'LOW',
+            category: 'job', sourceContext: item.source,
+          });
+        },
+        metrics: { record: row => getFeatureMetricsRecorder()?.record(row as never) },
+        episodeIdFor: ctx => anomalyStore?.listOpen(ctx.job.slug)
+          .find(ep => ctx.parsed.anomalies.some(a => a.kind === ep.reasonId))?.id,
+      });
+      const activeTriage = triage;
+      const backupProvider = buildTriageProviders({ defaultProvider: options.intelligence }).backup;
+      const backup = new JobTriageBackupCheck({
+        getConfig: getTriageConfig,
+        jevAvailable: () => activeTriage.isJevAvailable(),
+        tryAcquireBackup: () => activeTriage.tryAcquireBackup(),
+        releaseBackup: () => activeTriage.releaseBackup(),
+        state: triageState,
+        provider: backupProvider,
+        listTriageJobs: () => options.scheduler!.listScriptJobs(),
+        machineId: this.meshSelfId ?? null,
+        requestSession: (job, entry) => activeTriage.spawnForBackupEntry(job, entry),
+        raiseAttention: item => {
+          void options.telegram?.createAttentionItem({
+            id: item.id, conditionKey: item.conditionKey, title: item.title,
+            summary: item.body, description: item.body, priority: 'LOW',
+            category: 'job', sourceContext: item.source,
+          });
+        },
+        auditPath: triageAuditPath,
+      });
+      this.jobTriageBackupTimer = setInterval(() => {
+        void backup.tick().catch(error => console.error('[job-triage-backup] tick failed:', error));
+      }, 60_000);
+      this.jobTriageBackupTimer.unref?.();
+    }
+    if (options.scheduler && anomalyStore && options.telegram && options.jobAnomalySendAutomationReply) {
+      const telegram = options.telegram;
+      const scheduler = options.scheduler;
+      const anomalyAudit = new BoundedJsonlAudit({
+        file: path.join(options.config.sessions.projectDir, 'logs', 'job-anomaly.jsonl'),
+      });
+      const anomalyPusher = new JobAnomalyPusher({
+        store: anomalyStore,
+        narrator: new JobAnomalyNarrator({ intelligence: options.intelligence ?? null, audit: anomalyAudit }),
+        machineId: this.meshSelfId ?? 'local',
+        raiseAttention: item => telegram.createAttentionItem(item),
+        clearAttention: (conditionKey, resolution) => telegram.clearAttentionCondition({ conditionKey }, resolution),
+        sendAutomationReply: options.jobAnomalySendAutomationReply,
+        sendDeterministicTopic: (topicId, message) => telegram.sendToTopic(topicId, message, { provenance: 'automation' }),
+        createPrivateView: options.viewer ? (title, markdown) => ({ id: options.viewer!.create(title, markdown).id }) : undefined,
+        viewTunnelUrl: viewId => buildViewTunnelUrl(options.tunnel, options.config.authToken, viewId),
+        ensureJobTopic: job => scheduler.ensureJobTopic(job),
+        requestHealAttempt: ep => triage?.requestHealAttempt({
+          episodeId: ep.id, slug: ep.slug, reasons: [ep.reasonId], critical: ep.class === 'critical',
+        }) ?? Promise.resolve('disabled'),
+        readHealOutcome: episodeId => triage?.settledHealOutcome(episodeId) ?? null,
+        triageEnabled: () => getTriageConfig().enabled !== false,
+        jobBySlug: slug => scheduler.getJobs().find(job => job.slug === slug),
+        audit: anomalyAudit,
+      });
+      scheduler.addScriptRunObserver({
+        onScriptRunCompleted: async ctx => {
+          // Episode observation is synchronous. Start triage while narration and
+          // Telegram delivery run, with the episode id captured for this run.
+          const delivery = anomalyPusher.onScriptRunCompleted(ctx);
+          triage?.onScriptRunCompleted(ctx);
+          await delivery;
+        },
+      });
+      this.jobAnomalyTimer = setInterval(() => {
+        void anomalyPusher.tick().catch(error => console.error('[job-anomaly] tick failed:', error));
+      }, 60_000);
+      this.jobAnomalyTimer.unref?.();
+    } else if (options.scheduler && triage) {
+      options.scheduler.addScriptRunObserver(triage);
+    }
+    if (options.scheduler && options.telegram) {
+      const scheduler = options.scheduler;
+      const telegram = options.telegram;
+      const canaryMachineId = this.meshSelfId ?? 'local';
+      const canaryRunner = new ScriptCanaryRunner({
+        scheduler,
+        history: scheduler.getRunHistory(),
+        machineId: canaryMachineId,
+        stateDir: options.config.stateDir,
+        logsDir: path.join(options.config.sessions.projectDir, 'logs'),
+        raiseAttention: item => telegram.createAttentionItem({
+          id: item.id, conditionKey: item.conditionKey, title: item.title,
+          summary: item.summary, description: item.summary,
+          priority: item.priority, sourceContext: item.source, category: item.category,
+        }),
+        clearAttention: (conditionKey, resolution) => {
+          telegram.clearAttentionCondition({ conditionKey }, resolution);
+        },
+        episodeHarness: (runId, reasons, clock) => {
+          const healthJob = scheduler.getJobs().find(job => job.slug === 'health-check');
+          if (!healthJob) return { ok: false, failures: ['health-check job is unavailable'] };
+          return verifyJobAnomalyEpisodes(healthJob, runId, reasons, clock);
+        },
+        floorFn: ({ runId, parsed, consecutiveFailures }) => {
+          const previous = Array.from({ length: consecutiveFailures }, (_, i) => ({
+            runId: `${runId}:prior:${i}`, machineId: canaryMachineId, result: 'failure',
+          })) as import('../scheduler/JobRunHistory.js').JobRun[];
+          const verdict = evaluateFloor(
+            { runId, machineId: canaryMachineId, parsed }, previous, { singleMachine: true },
+          );
+          return verdict.needsSession ? 'needs_session' : 'routine';
+        },
+      });
+      this.scriptCanaryTimer = setInterval(() => {
+        if (!scheduler.listScriptJobs().some(job => scheduler.scriptRunnersActiveFor(job.slug))) return;
+        void canaryRunner.tick().catch(error => console.error('[script-canary] tick failed:', error));
+      }, 60_000);
+      this.scriptCanaryTimer.unref?.();
+    }
+    mountJobTriageRoutes(this.app, {
+      state: () => triageState,
+      auditPath: triageAuditPath,
+      machineId: this.meshSelfId ?? null,
+      enabled: () => getTriageConfig().enabled !== false,
+      fetchPool: fetchTriagePool,
+    });
+    const scriptSupervisor = options.scheduler && options.intelligence && options.telegram
+      ? new ScriptJobSupervisor({
+          fetchPoolJobs: async () => {
+            const response = await fetch(`http://127.0.0.1:${options.config.port}/jobs?scope=pool`, {
+              headers: { Authorization: `Bearer ${options.config.authToken ?? ''}` },
+              signal: AbortSignal.timeout(30_000),
+            });
+            if (!response.ok) throw new Error(`jobs route returned ${response.status}`);
+            return await response.json() as PoolJobsView;
+          },
+          intelligence: options.intelligence,
+          machineId: this.meshSelfId ?? 'local',
+          logsDir: path.join(options.config.sessions.projectDir, 'logs'),
+          raiseAttention: item => options.telegram!.createAttentionItem({
+            id: item.id, conditionKey: item.conditionKey, title: item.title,
+            summary: item.summary, description: item.summary, priority: item.priority,
+            category: item.category, sourceContext: item.source,
+          }),
+          clearAttention: (conditionKey, resolution) => {
+            options.telegram!.clearAttentionCondition({ conditionKey }, resolution);
+          },
+          listOpenConditionKeys: () => options.telegram!.getAttentionItems('OPEN')
+            .map(item => item.conditionKey ?? '')
+            .filter(key => key.startsWith(SUPERVISION_CONDITION_PREFIX)),
+        })
+      : null;
+    mountScriptSupervisionRoutes(this.app, { supervisor: scriptSupervisor });
     if (options.config.projectName === 'echo' && routeCtx.windowLifecycleTick) {
       try { routeCtx.windowLifecycleTick(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and the periodic retry remains armed */ console.warn('[window-lifecycle] initial tick failed:', error); }
       this.windowLifecycleTimer = setInterval(() => { try { routeCtx.windowLifecycleTick?.(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and retried on the next tick */ console.warn('[window-lifecycle] periodic tick failed:', error); } }, 60_000);
@@ -6850,6 +7081,18 @@ export class AgentServer {
     if (this.windowRunLivenessTimer) {
       clearInterval(this.windowRunLivenessTimer);
       this.windowRunLivenessTimer = null;
+    }
+    if (this.jobTriageBackupTimer) {
+      clearInterval(this.jobTriageBackupTimer);
+      this.jobTriageBackupTimer = null;
+    }
+    if (this.jobAnomalyTimer) {
+      clearInterval(this.jobAnomalyTimer);
+      this.jobAnomalyTimer = null;
+    }
+    if (this.scriptCanaryTimer) {
+      clearInterval(this.scriptCanaryTimer);
+      this.scriptCanaryTimer = null;
     }
     if (this.subscriptionLoginLedger) {
       try { this.subscriptionLoginLedger.close(); }

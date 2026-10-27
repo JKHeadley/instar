@@ -208,6 +208,24 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
 export const DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE =
   '`confidence` must be a finite number in `[0, 1]`; a numeric string such as `"0.8"` is accepted and stored as a number, while a qualitative label such as `"high"` is refused rather than mapped to a score. Existing qualitative rows are treated as unmeasurable and are not rewritten. Branch on `assessable`: `sampleSize > 0` does not by itself prove an alignment score is assessable.';
 
+/**
+ * Script jobs awareness (docs/specs/job-cost-reduction.md §8 item 6). SHARED by
+ * `generateClaudeMd` (new installs) and `migrateClaudeMd` (existing agents).
+ * Content-sniff marker: the heading `### Scheduled jobs run as scripts`.
+ */
+export const SCRIPT_JOBS_CLAUDEMD_MARKER = '### Scheduled jobs run as scripts';
+export function SCRIPT_JOBS_CLAUDEMD_SECTION(port: number): string {
+  return `
+${SCRIPT_JOBS_CLAUDEMD_MARKER} (no session unless one is needed)
+
+Most shipped scheduled jobs (health-check, the feedback-factory jobs, llm-decision-grading and the other converted templates) now run as small scripts with NO Claude session: each run prints one result line (ok, skipped or failed) and the scheduler records it. Live on development agents first; on the fleet these jobs still run as sessions until a later release.
+- **health-check pushes critical problems at once** (disk nearly full, reminders that could not be delivered). Other problems show as a calm attention item and send one message only if they last 6 hours or keep coming back.
+- **Triage jobs** (health-check, commitment-checkin-reminder, the three feedback-factory jobs) ask Jev whether a non-routine result needs a real session; an uncertain answer requests a bounded investigator session, and a fixed rule still applies during Jev outages. Only while Jev is unavailable, Luna or Haiku samples routine results at most every 6 hours, a daily must-fail canary proves each script can still report a failure, and one daily review looks across all script jobs.
+- Where to look (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\` (per job: \`runner\`, \`lockTrust\`, \`tokens\`, \`triage\`), \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/triage\` (recent triage decisions and the sessions they started) and \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/jobs/cost?sinceDays=7"\` (tokens per job against the baseline; \`?scope=pool\` for every machine). The Jobs dashboard tab shows the same.
+- **When to use** (PROACTIVE): the user asks "why did a job start a session?" → \`GET /jobs/triage\`; "what do my jobs cost?" → \`GET /jobs/cost\`; "why did I get a job safety-check notice?" → a daily canary failed: read that job's run history. Rollback: \`jobs.scriptRunners.enabled: false\` (or a slug in \`jobs.scriptRunners.disabledSlugs\`) runs the job as a session again, read live.
+`;
+}
+
 /** Shared new-install/update awareness for W32's authoritative run model. */
 export function WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port: number): string {
   return `
@@ -7386,6 +7404,15 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Authoritative Window Run Liveness section');
     }
 
+    // Script jobs (job-cost-reduction §8 item 6): content-sniffed on the heading.
+    if (!content.includes(SCRIPT_JOBS_CLAUDEMD_MARKER)) {
+      content += SCRIPT_JOBS_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Scheduled jobs run as scripts section');
+    } else {
+      result.skipped.push('CLAUDE.md: Scheduled jobs run as scripts section already present');
+    }
+
     if (!content.includes('W32 cadence executor:')) {
       content += '\n- **W32 cadence executor:** `GET /window-run-liveness/cadence` exposes durable 30-minute receipt intervals and 3-hour Telegram synthesis receipts. It consumes only server-minted advancing work receipts, continues across executor recovery/rebind, and never treats narration as progress. `POST /window-run-liveness/cadence/tick` is the authenticated deterministic tick. Enable explicitly with `monitoring.windowRunLiveness.cadenceExecutor.enabled`; ship dry-run first.\n';
       patched = true;
@@ -12898,6 +12925,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // Codex/Gemini agent without this keeps reporting "I passed it on" while
       // posting where the operator has no reason to look — the founding incident.
       '### Where a peer agent\'s notices go (per-peer homebase topic)',
+      // job-cost-reduction §8 item 6: script jobs and triage are server-side, so a
+      // Codex/Gemini agent needs the same read surfaces.
+      '### Scheduled jobs run as scripts',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming

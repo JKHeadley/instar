@@ -38,10 +38,13 @@ const PENDING_BASELINE = [
   // feedback-triage-and-execution Phase 1 (2026-10-08): operator-approved per-deployment triage authority and its
   // cross-family second opinion; graded triage-side (weekly cross-family sample + recurrence) until a bench task lands.
   'FeedbackTriageArbiter', 'FeedbackTriageSecondOpinion',
+  // job-cost-reduction §5.6.5 (2026-10-26): the daily script-job review; graded by its must-flag canary until a bench task lands.
+  'ScriptJobSupervisor',
 ].sort();
 
 const EXEMPT_BASELINE = [
   'telegram-origin-recovery', // advisory-only, no parsed decision or routing-nature claim; same posture as DashboardInsightEngine
+  'JobAnomalyNarrator', // job-cost-reduction §5.4: wording-only beside a verbatim evidence block; decides nothing
   'InteractivePoolCanaryJudge',
   // MoveIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
   // benchmark (tests/unit/move-intent-discrimination.test.ts — deterministic

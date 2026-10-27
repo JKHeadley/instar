@@ -810,6 +810,22 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Cross-model spec-document review over file content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
+    decisionPoint: 'script-job-supervision',
+    component: 'ScriptJobSupervisor',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Daily review of every machine\'s recent script-job outputs (job-cost-reduction §5.6.5); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+  },
+  {
+    decisionPoint: 'job-anomaly-narration',
+    component: 'JobAnomalyNarrator',
+    status: 'exempt:no-decision-content',
+    contentClass: 'metadata',
+    reason:
+      'Wording-only (job-cost-reduction §5.4): one plain sentence beside a verbatim evidence block; the push, its reasons and its timing are decided deterministically before the model is called, and nothing parses its reply.',
+  },
+  {
     decisionPoint: 'self-knowledge-extract',
     component: 'SelfKnowledgeTree',
     status: 'pending:backlog:decision-quality-enrolment',

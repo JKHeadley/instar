@@ -5,7 +5,6 @@ schedule: "*/30 * * * *"
 priority: low
 expectedDurationMinutes: 5
 model: haiku
-supervision: tier1
 enabled: true
 tags:
   - cat:feedback-factory
@@ -15,6 +14,24 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: feedback-factory-process.mjs
+scriptTimeoutMinutes: 4
+supervision: tier0
+scriptSupervision: triage
+triageEvidence: structured-only
+triageFields:
+  - outcome
+  - http_status
+  - server_reason
+  - run_id
+triageBareOk:
+  - "succeeded"
+  - "no-op"
+  - "proxied"
+triageBareSkipped:
+  - feature-dark
+  - status-unreadable-fleet
 ---
 Run one feedback-factory operating-drain tick. This is a near-silent operated cadence — do NOT message the user. The server owns every transition; this job only triggers one bounded run and records an honest outcome.
 

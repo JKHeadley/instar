@@ -26,6 +26,7 @@ import type {
 } from '../core/types.js';
 import {
   readLockFile,
+  hashScriptBytes,
   hashBody,
   hashFrontmatter,
   type LockFileLoadResult,
@@ -101,6 +102,18 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'completionAudit',
   'declaredEffects',
   'conditionalEffects',
+  // job-cost-reduction §5.1 — script-runner vocabulary. Read ONLY on the
+  // instar-origin `execute.type: 'script'` branch (applyScriptRunnerFields);
+  // on any other entry they are inert.
+  'runner',
+  'script',
+  'scriptTimeoutMinutes',
+  'anomalies',
+  'scriptSupervision',
+  'triageEvidence',
+  'triageFields',
+  'triageBareOk',
+  'triageBareSkipped',
 ]);
 
 // ── Zod preprocessors (spec §6) ────────────────────────────────────────────
@@ -350,7 +363,49 @@ export function loadAgentMdJobs(
       continue;
     }
 
-    if (manifest.execute.type === 'agentmd') {
+    if (manifest.execute.type === 'script' && manifest.origin === 'instar') {
+      // job-cost-reduction §5.1 loader branch: an instar-origin script job
+      // loads its .md body + frontmatter (the narrator context and the
+      // rollback prompt) and the lock-file trust — body hash AND script hash.
+      const loaded = loadAgentMdBody(manifest, jobsRootDir);
+      if (loaded.problem) {
+        problems.push(loaded.problem);
+        continue;
+      }
+      const job = loaded.job!;
+      const fieldProblem = applyScriptRunnerFields(job, manifest);
+      if (fieldProblem) {
+        problems.push(fieldProblem);
+        continue;
+      }
+      const trustCheck = applyLockFileTrust(job, lockResult);
+      if (trustCheck.problem) {
+        problems.push(trustCheck.problem);
+        if (trustCheck.skipEntry) continue;
+      }
+      job.lockTrust = trustCheck.trust;
+      if (trustCheck.trust === 'trusted') {
+        const entry = lockResult.state === 'present-trusted' ? lockResult.bySlug.get(job.slug) : undefined;
+        const scriptPath = path.join(jobsRootDir, 'instar', 'scripts', job.scriptFile!);
+        const verdict = verifyScriptHash(scriptPath, entry?.scriptHash);
+        if (verdict.ok) {
+          job.scriptHashExpected = entry!.scriptHash;
+        } else {
+          // Kept LOADED (not skipped) so the scheduler records a failed run
+          // with reason script-untrusted and the consecutive-failure alert
+          // fires — a silently absent job alerts no one.
+          job.lockTrust = 'untrusted-hash-mismatch';
+          problems.push({
+            kind: 'lock-mismatch',
+            slug: job.slug,
+            origin: 'instar',
+            path: scriptPath,
+            message: `Script for "${job.slug}" failed verification: ${verdict.reason}. The script will not run.`,
+          });
+        }
+      }
+      jobs.push(job);
+    } else if (manifest.execute.type === 'agentmd') {
       const loaded = loadAgentMdBody(manifest, jobsRootDir);
       if (loaded.problem) {
         problems.push(loaded.problem);
@@ -491,6 +546,107 @@ function applyLockFileTrust(
   return { trust: 'trusted', problem: null, skipEntry: false };
 }
 
+/**
+ * job-cost-reduction §5.1 — re-hash a shipped script against its lock-file
+ * entry. Called at load AND by the scheduler immediately before every
+ * execution, so a file changed after loading never runs.
+ */
+export function verifyScriptHash(
+  scriptPath: string,
+  expected: string | undefined,
+): { ok: true } | { ok: false; reason: string } {
+  if (!expected) return { ok: false, reason: 'the signed lock-file has no scriptHash for this job' };
+  let buf: Buffer;
+  try {
+    const st = fs.lstatSync(scriptPath);
+    if (st.isSymbolicLink() || !st.isFile()) return { ok: false, reason: 'script is not a regular file' };
+    buf = fs.readFileSync(scriptPath);
+  } catch (err) {
+    return { ok: false, reason: `script unreadable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const actual = hashScriptBytes(buf);
+  if (actual !== expected) return { ok: false, reason: `script hash ${actual} does not match the signed ${expected}` };
+  return { ok: true };
+}
+
+const ANOMALY_KIND_RE = /^[a-z0-9][a-z0-9_.:-]{0,62}(:\*)?$/;
+const TRIAGE_FIELD_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const REASON_CODE_RE = /^[A-Za-z0-9_.:/-]{1,64}$/;
+
+/**
+ * Carry the script-runner frontmatter (all strings under FAILSAFE_SCHEMA)
+ * onto the JobDefinition with strict coercion. Returns a problem (entry
+ * skipped) on any malformed value — a half-understood script job never runs.
+ */
+export function applyScriptRunnerFields(job: JobDefinition, manifest: PerSlugManifest): LoadProblem | null {
+  const fm = job.frontmatter ?? {};
+  const bad = (message: string): LoadProblem => ({
+    kind: 'agentmd-frontmatter-invalid',
+    slug: manifest.slug,
+    origin: manifest.origin,
+    message,
+  });
+  if (fm.runner !== 'script') return bad('an origin:instar script manifest needs frontmatter runner: script');
+  const scriptFile = manifest.execute.value;
+  if (fm.script !== scriptFile) return bad(`frontmatter script (${JSON.stringify(fm.script)}) must equal the manifest's ${JSON.stringify(scriptFile)}`);
+  job.runner = 'script';
+  job.scriptFile = scriptFile;
+
+  if (fm.scriptTimeoutMinutes !== undefined) {
+    const parsed = IntField.safeParse(fm.scriptTimeoutMinutes);
+    if (!parsed.success || parsed.data <= 0) return bad('"scriptTimeoutMinutes" must be a positive integer');
+    job.scriptTimeoutMinutes = parsed.data;
+  }
+  if (fm.anomalies !== undefined) {
+    if (!Array.isArray(fm.anomalies)) return bad('"anomalies" must be a list of { kind, class }');
+    const out: NonNullable<JobDefinition['anomalies']> = [];
+    for (const a of fm.anomalies as unknown[]) {
+      const o = a as Record<string, unknown> | null;
+      if (!o || typeof o !== 'object' || typeof o.kind !== 'string' || !ANOMALY_KIND_RE.test(o.kind)) {
+        return bad(`"anomalies" entry ${JSON.stringify(a)} needs a kind matching ${ANOMALY_KIND_RE}`);
+      }
+      if (o.class !== 'critical' && o.class !== 'recoverable') {
+        return bad(`"anomalies" entry ${o.kind} needs class critical | recoverable`);
+      }
+      out.push({ kind: o.kind, class: o.class });
+    }
+    job.anomalies = out;
+  }
+  if (fm.scriptSupervision !== undefined) {
+    if (fm.scriptSupervision !== 'triage' && fm.scriptSupervision !== 'deterministic') {
+      return bad('"scriptSupervision" must be triage | deterministic');
+    }
+    job.scriptSupervision = fm.scriptSupervision;
+  }
+  if (fm.triageEvidence !== undefined) {
+    if (fm.triageEvidence !== 'full' && fm.triageEvidence !== 'structured-only') {
+      return bad('"triageEvidence" must be full | structured-only');
+    }
+    job.triageEvidence = fm.triageEvidence;
+  }
+  const strList = (key: string, re?: RegExp): string[] | LoadProblem | undefined => {
+    const v = fm[key];
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.some((e) => typeof e !== 'string' || (re ? !re.test(e) : !e.trim()))) {
+      return bad(`"${key}" must be a list of strings${re ? ` matching ${re}` : ''}`);
+    }
+    return v as string[];
+  };
+  for (const [key, re] of [
+    ['triageFields', TRIAGE_FIELD_KEY_RE],
+    ['triageBareOk', undefined],
+    ['triageBareSkipped', REASON_CODE_RE],
+  ] as const) {
+    const r = strList(key, re);
+    if (r && !Array.isArray(r)) return r;
+    if (r) (job as unknown as Record<string, unknown>)[key] = r;
+  }
+  if (job.supervision === undefined && (fm.supervision === 'tier0' || fm.supervision === 'tier1' || fm.supervision === 'tier2')) {
+    job.supervision = fm.supervision as JobDefinition['supervision'];
+  }
+  return null;
+}
+
 // Re-export the bounded-concurrency helper for downstream callers. Phase 1b's
 // scheduler dispatch path will route I/O through it; exposing it now keeps the
 // API surface stable.
@@ -612,6 +768,14 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
     // Legacy types still require value.
     if (typeof exec.value !== 'string' || !(exec.value as string).trim()) {
       throw new Error(`${prefix}: execute.value is required for type === "${exec.type}"`);
+    }
+  }
+  // job-cost-reduction §5.1: an instar-origin script manifest names a bare
+  // shipped filename, never a command line. (User-origin script jobs keep
+  // their shell command value unchanged.)
+  if (exec.type === 'script' && j.origin === 'instar') {
+    if (!/^[a-z0-9-]+\.mjs$/.test(exec.value as string) || exec.value !== `${j.slug}.mjs`) {
+      throw new Error(`${prefix}: an origin:instar script manifest must name "${j.slug}.mjs" (^[a-z0-9-]+\\.mjs$), got "${exec.value}"`);
     }
   }
   if (exec.args !== undefined && typeof exec.args !== 'string') {
@@ -1263,7 +1427,7 @@ function manifestToJobDefinition(
     conditionalEffects: manifest.conditionalEffects,
   };
 
-  if (manifest.execute.type === 'agentmd') {
+  if (manifest.execute.type === 'agentmd' || (manifest.execute.type === 'script' && manifest.origin === 'instar')) {
     if (body !== undefined) job.body = body;
     if (frontmatter !== undefined) job.frontmatter = frontmatter;
     if (resolvedPath !== undefined) job.resolvedPath = resolvedPath;

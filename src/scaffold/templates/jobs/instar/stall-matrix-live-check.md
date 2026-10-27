@@ -5,7 +5,6 @@ schedule: "0 5 * * 1"
 priority: low
 expectedDurationMinutes: 10
 model: haiku
-supervision: tier1
 enabled: false
 perMachineIndependent: true
 tags:
@@ -16,6 +15,11 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: ["Bash"]
 unrestrictedTools: false
 mcpAccess: none
+runner: script
+script: stall-matrix-live-check.mjs
+scriptTimeoutMinutes: 9
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run one stall-matrix live check. This job only INVOKES the deterministic checker and sanity-checks that it produced a well-formed result — the checker owns 100% of the matrix parsing, loopback HTTP, dedup-keyed issue filing, aggregation, and delivery (it performs the POST /framework-issues/observe + POST /commitments + POST /attention itself, in-process). You have Bash ONLY — no Edit/Write tool. Do NOT try to edit any source file; this job NEVER rewrites a matrix (a `pending-mint` → real-ref rewrite is an ordinary PR the operator/dev agent lands, never a runtime write to the checked-out tree).
 

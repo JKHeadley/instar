@@ -26,9 +26,14 @@ import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
 import { formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
-import { readAgentMdBody, rehydrateAgentMdJobFromLastValidatedBody } from './AgentMdJobLoader.js';
+import { readAgentMdBody, rehydrateAgentMdJobFromLastValidatedBody, verifyScriptHash } from './AgentMdJobLoader.js';
+import { parseScriptOutput, capScriptOutput, type ParsedScriptRun } from './jobScriptProtocol.js';
+import { notifyScriptRunObservers, type ScriptRunObserver } from './scriptRunObservers.js';
+import { scrubForStore } from '../core/durableSecretScrub.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../config/ConfigDefaults.js';
 import { hashBody } from './AgentMdLockFile.js';
-import { JobRunHistory } from './JobRunHistory.js';
+import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
 import { SkipLedger } from './SkipLedger.js';
 import { classifySessionDeath } from '../monitoring/QuotaExhaustionDetector.js';
 import type { SessionManager } from '../core/SessionManager.js';
@@ -98,6 +103,47 @@ const FAILURE_ALERT_REMINDER_CADENCE_MS = [
   24 * 60 * 60_000,
 ] as const;
 
+/** The TokenLedger seam (job-cost-reduction §9) — optional method. */
+export interface JobSessionLedger {
+  recordJobSession?(
+    sessionId: string,
+    slug: string,
+    machineId: string | null,
+    startedAt: string,
+    origin: 'job' | 'triage' | 'rollback',
+  ): void;
+}
+
+/** What a projected (`triage:<slug>`) session ended with. `result` is absent
+ *  only when the outcome is unknown. */
+export interface ProjectedSessionEnd {
+  slugTag: string;
+  sessionName: string;
+  trigger: string;
+  output: string;
+  result?: 'success' | 'failure' | 'timeout' | 'spawn-error';
+}
+
+/** Fired when a projected (`triage:<slug>`) session ends. */
+export type ProjectedSessionListener = (end: ProjectedSessionEnd) => void;
+
+interface ScriptExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  timedOut: boolean;
+  overBuffer: boolean;
+  spawnError?: string;
+}
+
+/** spawnSession options plus the triage pass-throughs SessionManager gains
+ *  (job-cost-reduction F13: omitAuthEnv, confinedTools, useAgentDefaultModel). */
+type ProjectedSpawnOptions = Parameters<SessionManager['spawnSession']>[0] & {
+  omitAuthEnv?: boolean;
+  confinedTools?: string[];
+  useAgentDefaultModel?: boolean;
+};
+
 /* @self-action-controller: job-failure-alert-delivery */
 export class JobScheduler {
   private config: JobSchedulerConfig;
@@ -122,6 +168,30 @@ export class JobScheduler {
 
   /** Map session names to run IDs for completion tracking */
   private activeRunIds: Map<string, string> = new Map();
+
+  // ── job-cost-reduction script runners (§5.1, F8) ──
+  /** Slugs whose script run is in flight (one run per slug at a time). */
+  private scriptInFlight: Set<string> = new Set();
+  /** F8: at most this many scripts run at once per server. */
+  static readonly MAX_CONCURRENT_SCRIPTS = 3;
+  /** Fallback script bound when a template omits scriptTimeoutMinutes. */
+  static readonly DEFAULT_SCRIPT_TIMEOUT_MINUTES = 5;
+  /** F8: fixed per-slug start offset upper bound. */
+  static readonly MAX_SCRIPT_START_OFFSET_MS = 20_000;
+  /** Child-process buffer; the protocol cap (64 KB) is applied after scrub. */
+  private static readonly SCRIPT_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+  private scriptStartOffsetEnabled = true;
+  private scriptRunObservers: ScriptRunObserver[] = [];
+  private projectedSessionListeners: ProjectedSessionListener[] = [];
+  /** Triage sessions: tmux name → their run row. */
+  private projectedRuns: Map<string, { runId: string; slugTag: string; slug: string; trigger: string }> = new Map();
+  private tokenLedger: JobSessionLedger | null = null;
+  private configReader: (() => Record<string, unknown> | null) | null = null;
+  private configCache: { mtimeMs: number; value: Record<string, unknown> } | null = null;
+  /** One degradation report per (slug, untrusted reason) per process. */
+  private untrustedReported: Set<string> = new Set();
+  /** Slugs already reported to logs/job-runner-migration.jsonl this process. */
+  private shadowLogged: Set<string> = new Set();
 
   /** Retry state for skipped jobs: slug → { retries, lastAttempt, timer } */
   private retryState: Map<string, { retries: number; timer: ReturnType<typeof setTimeout> }> = new Map();
@@ -740,7 +810,7 @@ export class JobScheduler {
       return 'skipped';
     }
 
-    const job = this.jobs.find(j => j.slug === slug);
+    let job = this.jobs.find(j => j.slug === slug);
     if (!job) {
       this.skipLedger.recordSkip(slug, 'disabled');
       this.state.appendEvent({
@@ -764,6 +834,17 @@ export class JobScheduler {
     }
 
     this.refreshAgentMdBodyIfChanged(job);
+
+    // job-cost-reduction §5.1 / §8.4: an instar-origin `runner: script` job
+    // runs its shipped script — unless the rollback switch (read LIVE here)
+    // turns script runners off globally or for this slug, in which case the
+    // job's body runs as an agentmd session exactly as before the change,
+    // through the normal quota / capacity / claim path below.
+    const isScriptRunner = this.isScriptRunnerJob(job);
+    if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
+      job = this.projectAsAgentmd(job);
+    }
+    const runsAsScript = isScriptRunner && job.execute.type === 'script';
 
     if (this.paused) {
       this.skipLedger.recordSkip(slug, 'paused');
@@ -940,6 +1021,41 @@ export class JobScheduler {
       }
     }
 
+    // job-cost-reduction §5.1 ordering: a script-runner job takes the same
+    // claim/lease as a session job (below the claim), but stays ABOVE the
+    // session-capacity check — it is governed only by the script cap, so
+    // health-check still runs (and can report sessions-exhausted) when every
+    // session slot is full. perMachineIndependent still skips the claim.
+    if (runsAsScript) {
+      if (this.scriptInFlight.has(slug)) {
+        this.skipLedger.recordSkip(slug, 'already-running');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — its previous script run is still in flight`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, gateReason: 'already-running', runner: 'script' },
+        });
+        return 'skipped';
+      }
+      if (this.scriptInFlight.size >= JobScheduler.MAX_CONCURRENT_SCRIPTS) {
+        this.skipLedger.recordSkip(slug, 'script-cap');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — ${JobScheduler.MAX_CONCURRENT_SCRIPTS} scripts already running`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, gateReason: 'script-cap', runner: 'script' },
+        });
+        this.scheduleRetry(slug, 'script-cap');
+        return 'skipped';
+      }
+      const scriptBoundMs = (job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000;
+      if (!this.takeClaim(job, reason, claimPath, scriptBoundMs + JobScheduler.MAX_SCRIPT_START_OFFSET_MS)) return 'skipped';
+      if (!reason.startsWith('retry:')) this.clearRetryState(slug);
+      this.scriptInFlight.add(slug);
+      this.runScriptRunnerJob(job, reason);
+      return 'triggered';
+    }
+
     // Script jobs are zero-token shell work — they do NOT spawn a model session,
     // so they bypass session-capacity gating and the spawn path entirely and run
     // directly in a bounded subprocess. Without this they were spawned with a
@@ -963,13 +1079,34 @@ export class JobScheduler {
       return 'queued';
     }
 
+    const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
+    if (!this.takeClaim(job, reason, claimPath, timeoutMs)) return 'skipped';
+
+    // Clear retry state on successful trigger
+    this.clearRetryState(slug);
+
+    this.spawnJobSession(job, reason);
+    return 'triggered';
+  }
+
+  /**
+   * Take the multi-machine claim before running a job (session spawn or, since
+   * job-cost-reduction §5.1, a script-runner run). Returns false when a peer
+   * leased the slug between the check seam and here (the caller skips).
+   */
+  private takeClaim(
+    job: JobDefinition,
+    reason: string,
+    claimPath: { path: 'journal' | 'bus'; epoch: number; journalDryRun: boolean } | null,
+    timeoutMs: number,
+  ): boolean {
+    const slug = job.slug;
     // Take the claim before spawning. The cutover gate (resolved at the check
     // seam above) decides the mechanism: a durable epoch-fenced journal lease
     // when the pool is coherent, else the legacy best-effort AgentBus broadcast.
     // DRY-RUN: when the gate is coherent-but-dry-run, the intended journal claim
     // is LOGGED (the WS-wide "log intended claims" posture) but the bus path
     // still runs — so a dry-run pool never half-migrates.
-    const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
     // Spec §2.8/D11 — a perMachineIndependent job takes NO claim (neither the
     // journal lease nor the legacy bus broadcast); each machine runs it locally.
     if (job.perMachineIndependent) {
@@ -988,7 +1125,7 @@ export class JobScheduler {
           timestamp: new Date().toISOString(),
           metadata: { slug, reason, claimedBy: attempt.heldBy, claimPath: 'journal' },
         });
-        return 'skipped';
+        return false;
       }
     } else {
       if (claimPath?.journalDryRun) {
@@ -1000,12 +1137,7 @@ export class JobScheduler {
         });
       }
     }
-
-    // Clear retry state on successful trigger
-    this.clearRetryState(slug);
-
-    this.spawnJobSession(job, reason);
-    return 'triggered';
+    return true;
   }
 
   /**
@@ -1497,7 +1629,604 @@ export class JobScheduler {
     });
   }
 
-  private spawnJobSession(job: JobDefinition, reason: string): void {
+  // ── job-cost-reduction: script runners (docs/specs/job-cost-reduction.md §5) ──
+
+  /** Slugs of converted defaults on this agent (the shipped scripts present
+   *  under `.instar/jobs/instar/scripts/`). */
+  getConvertedDefaultSlugs(): Set<string> {
+    const dir = path.join(this.stateDir, 'jobs', 'instar', 'scripts');
+    try {
+      return new Set(fs.readdirSync(dir).filter((f) => /^[a-z0-9-]+\.mjs$/.test(f)).map((f) => f.slice(0, -4)));
+    } catch {
+      // @silent-fallback-ok — no scripts dir means nothing is converted.
+      return new Set();
+    }
+  }
+
+  /**
+   * §8.3: a user job whose slug matches a converted default is reported,
+   * never rewritten. Logs each such slug ONCE to
+   * `logs/job-runner-migration.jsonl` (deduped against the file itself, so a
+   * restart does not re-log) and returns whether this job shadows one.
+   */
+  shadowsConvertedDefault(job: JobDefinition, hasUserFork: boolean, converted?: Set<string>): boolean {
+    const set = converted ?? this.getConvertedDefaultSlugs();
+    if (!set.has(job.slug)) return false;
+    const shadows = job.origin !== 'instar' || hasUserFork;
+    if (shadows && !this.shadowLogged.has(job.slug)) {
+      this.shadowLogged.add(job.slug);
+      const logPath = path.join(path.dirname(this.stateDir), 'logs', 'job-runner-migration.jsonl');
+      try {
+        const existing = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf-8') : '';
+        const already = existing.split('\n').some((line) => {
+          try { return (JSON.parse(line) as { slug?: string }).slug === job.slug; } catch { return false; }
+        });
+        if (!already) {
+          fs.mkdirSync(path.dirname(logPath), { recursive: true });
+          fs.appendFileSync(logPath, JSON.stringify({
+            ts: new Date().toISOString(),
+            kind: 'user-job-shadows-converted-default',
+            slug: job.slug,
+            note: 'A user job shares this slug with a default that now runs as a script. The user job was not changed; drop the fork to use the script runner.',
+          }) + '\n');
+        }
+      } catch (err) {
+        // @silent-fallback-ok — the GET /jobs flag is the primary surface.
+        console.warn(`[scheduler] could not write job-runner-migration log: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return shadows;
+  }
+
+  /** The last `limit` script-run output summaries for a slug (this machine). */
+  recentScriptOutputs(slug: string, limit = 3): Array<{ runId: string; result: string; startedAt: string; outputSummary?: string }> {
+    return this.runHistory
+      .localRunsForSlug(slug, 20)
+      .filter((r) => r.runner === 'script' && r.result !== 'pending' && !isSideRun(r))
+      .slice(0, limit)
+      .map((r) => ({ runId: r.runId, result: r.result, startedAt: r.startedAt, outputSummary: r.outputSummary }));
+  }
+
+  /** An instar-origin template whose manifest names its shipped script. User
+   *  `execute.type: 'script'` jobs are NOT script runners (they keep the shell
+   *  path), so `runner: script` grants no new user privilege. */
+  isScriptRunnerJob(job: JobDefinition): boolean {
+    return job.origin === 'instar' && job.execute.type === 'script' && job.runner === 'script';
+  }
+
+  /** Inject a live config reader (e.g. LiveConfig). When unset the scheduler
+   *  re-reads `<stateDir>/config.json` on mtime change. */
+  setConfigReader(reader: (() => Record<string, unknown> | null) | null): void {
+    this.configReader = reader;
+  }
+
+  /** Token attribution sink (job-cost-reduction §9). Optional-chained: the
+   *  ledger may not carry the method on older builds. */
+  setTokenLedger(ledger: JobSessionLedger | null): void {
+    this.tokenLedger = ledger;
+  }
+
+  /** Test seam: disable the fixed per-slug 0–20 s start offset. */
+  setScriptStartOffsetEnabled(enabled: boolean): void {
+    this.scriptStartOffsetEnabled = enabled;
+  }
+
+  addScriptRunObserver(o: ScriptRunObserver): void {
+    this.scriptRunObservers.push(o);
+  }
+
+  /** Subscribe to the end of a projected session (`triage:<slug>` tag). */
+  addProjectedSessionListener(fn: ProjectedSessionListener): void {
+    this.projectedSessionListeners.push(fn);
+  }
+
+  listScriptJobs(): JobDefinition[] {
+    return this.jobs.filter((j) => this.isScriptRunnerJob(j));
+  }
+
+  /** This machine's rows for one slug, newest first. */
+  getLocalRunsForSlug(slug: string, limit: number): JobRun[] {
+    return this.runHistory.localRunsForSlug(slug, limit);
+  }
+
+  /** Fixed per-slug start offset in [0, 20 s] (F8) — spreads co-scheduled
+   *  scripts without making any slug's cadence drift. */
+  static scriptStartOffsetMs(slug: string): number {
+    const h = crypto.createHash('sha256').update(slug).digest();
+    return h.readUInt32BE(0) % (JobScheduler.MAX_SCRIPT_START_OFFSET_MS + 1);
+  }
+
+  private readAgentConfig(): Record<string, unknown> | null {
+    if (this.configReader) {
+      try {
+        return this.configReader();
+      } catch {
+        // @silent-fallback-ok — fall through to the on-disk read.
+      }
+    }
+    const p = path.join(this.stateDir, 'config.json');
+    try {
+      const mtime = fs.statSync(p).mtimeMs;
+      if (this.configCache && this.configCache.mtimeMs === mtime) return this.configCache.value;
+      const value = JSON.parse(fs.readFileSync(p, 'utf-8')) as Record<string, unknown>;
+      this.configCache = { mtimeMs: mtime, value };
+      return value;
+    } catch {
+      // @silent-fallback-ok — no/unreadable config → defaults (the dev gate
+      // then resolves off, which is the conservative agentmd path).
+      return null;
+    }
+  }
+
+  /**
+   * Rollback switch (§8.4), read LIVE at every trigger:
+   * `jobs.scriptRunners.enabled` — omitted rides the development-agent gate —
+   * and `jobs.scriptRunners.disabledSlugs`.
+   */
+  scriptRunnersActiveFor(slug: string): boolean {
+    const cfg = this.readAgentConfig() ?? {};
+    const jobsCfg = (cfg.jobs ?? {}) as { scriptRunners?: { enabled?: unknown; disabledSlugs?: unknown } };
+    const sr = jobsCfg.scriptRunners ?? {};
+    const explicit = typeof sr.enabled === 'boolean' ? sr.enabled : undefined;
+    if (!resolveDevAgentGate(explicit, cfg as { developmentAgent?: boolean })) return false;
+    const disabledSlugs: readonly string[] = Array.isArray(sr.disabledSlugs)
+      ? sr.disabledSlugs : SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS;
+    if (disabledSlugs.includes(slug)) return false;
+    return true;
+  }
+
+  /**
+   * The derived agentmd definition of a script job: its body is the prompt,
+   * its frontmatter allowlist + lock trust are kept — never the `legacy`
+   * full-tools path `resolveAllowlist` would give a `script`-typed definition.
+   */
+  projectAsAgentmd(job: JobDefinition): JobDefinition {
+    return { ...job, execute: { type: 'agentmd' } };
+  }
+
+  private scriptPathFor(slug: string): string {
+    return path.join(this.stateDir, 'jobs', 'instar', 'scripts', `${slug}.mjs`);
+  }
+
+  private resolveAgentPort(): number | undefined {
+    if (typeof this.config.port === 'number') return this.config.port;
+    const cfg = this.readAgentConfig();
+    return typeof cfg?.port === 'number' ? cfg.port : undefined;
+  }
+
+  /** The reduced environment allowlist (§5.1). Nothing else is inherited. */
+  buildScriptEnv(job: JobDefinition, extra: Record<string, string> = {}): Record<string, string> {
+    const env: Record<string, string> = {};
+    if (process.env.PATH) env.PATH = process.env.PATH;
+    if (process.env.HOME) env.HOME = process.env.HOME;
+    if (this.config.authToken) env.INSTAR_AUTH_TOKEN = this.config.authToken;
+    if (this.config.projectName) env.INSTAR_AGENT_ID = this.config.projectName;
+    const port = this.resolveAgentPort();
+    if (port !== undefined) env.INSTAR_PORT = String(port);
+    env.INSTAR_JOB_SLUG = job.slug;
+    env.INSTAR_MESSAGE_KIND = 'automated';
+    env.INSTAR_SENDER_CLASS = 'script';
+    return { ...env, ...extra };
+  }
+
+  /**
+   * Trust verdict at execution time. `untrusted-no-lockfile` (unsigned dev
+   * builds) runs, as an unsigned agentmd default does today; every tamper
+   * state refuses. A trusted job's script is RE-HASHED here, immediately
+   * before execution, so a file changed after loading never runs.
+   */
+  private checkScriptTrust(job: JobDefinition): { ok: true } | { ok: false; reason: string } {
+    if (job.scriptFile !== `${job.slug}.mjs`) return { ok: false, reason: 'script name does not match the slug' };
+    if (job.lockTrust === 'untrusted-no-lockfile') {
+      try {
+        const st = fs.lstatSync(this.scriptPathFor(job.slug));
+        if (st.isSymbolicLink() || !st.isFile()) return { ok: false, reason: 'script is not a regular file' };
+      } catch {
+        return { ok: false, reason: 'script file missing' };
+      }
+      return { ok: true };
+    }
+    if (job.lockTrust !== 'trusted') return { ok: false, reason: `lock trust is ${job.lockTrust ?? 'unknown'}` };
+    return verifyScriptHash(this.scriptPathFor(job.slug), job.scriptHashExpected);
+  }
+
+  /** Run the script: execFile(node, [absPath, ...args]) — no shell. */
+  private executeScript(
+    job: JobDefinition,
+    args: string[],
+    extraEnv: Record<string, string>,
+  ): Promise<ScriptExecResult> {
+    const timeout = Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000;
+    const abs = this.scriptPathFor(job.slug);
+    return new Promise((resolve) => {
+      execFile(
+        process.execPath,
+        [abs, ...args],
+        {
+          cwd: path.dirname(this.stateDir),
+          env: this.buildScriptEnv(job, extraEnv),
+          timeout,
+          maxBuffer: JobScheduler.SCRIPT_MAX_BUFFER_BYTES,
+          encoding: 'utf-8',
+          windowsHide: true,
+        },
+        (err, stdout, stderr) => {
+          const e = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string | null; code?: number | string }) | null;
+          const overBuffer = e?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+          const timedOut = !!e && !overBuffer && (e.killed === true || e.signal === 'SIGTERM') && typeof e.code !== 'number';
+          const spawnError = !!e && typeof e.code === 'string' && !overBuffer ? e.message : undefined;
+          const exitCode = !e ? 0 : typeof e.code === 'number' ? e.code : 1;
+          resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), exitCode, timedOut, overBuffer, spawnError });
+        },
+      );
+    });
+  }
+
+  /** Scrub (durableSecretScrub) THEN cap, THEN parse (§5.1, §5.2). */
+  private parseExec(job: JobDefinition, exec: ScriptExecResult): { parsed: ParsedScriptRun; scrubbed: string } {
+    const out = capScriptOutput(scrubForStore(exec.stdout).text);
+    const err = exec.stderr ? capScriptOutput(scrubForStore(exec.stderr).text) : { text: '', overCap: false };
+    const overCap = exec.overBuffer || out.overCap || err.overCap;
+    let parsed = parseScriptOutput(out.text, exec.exitCode, {
+      anomalies: job.anomalies,
+      triageFields: job.triageFields,
+      overCap,
+    });
+    if (exec.timedOut || exec.spawnError) {
+      const reason = exec.timedOut ? 'script-timeout' : 'script-spawn-error';
+      parsed = { ...parsed, result: 'failure', reason, reasonCode: reason };
+    }
+    if (parsed.ignoredAnomalies > 0) {
+      console.warn(`[scheduler] Script "${job.slug}" printed ${parsed.ignoredAnomalies} undeclared/malformed JOB_ANOMALY line(s) — ignored.`);
+    }
+    const scrubbed = capScriptOutput(err.text ? `${out.text}\n[stderr]\n${err.text}` : out.text).text;
+    return { parsed, scrubbed };
+  }
+
+  private untrustedParse(reason: string): ParsedScriptRun {
+    return {
+      result: 'failure',
+      reason: `script-untrusted ${reason}`,
+      reasonCode: 'script-untrusted',
+      summary: '',
+      anomalies: [],
+      ignoredAnomalies: 0,
+      fields: {},
+      droppedFields: 0,
+      missingResultLine: true,
+      overCap: false,
+    };
+  }
+
+  /**
+   * Execute an instar `runner: script` job (§5.1). The caller already holds
+   * the claim and has added the slug to `scriptInFlight`.
+   */
+  private runScriptRunnerJob(job: JobDefinition, reason: string): void {
+    const slug = job.slug;
+    const sessionName = `script-${slug}-${Date.now().toString(36)}`;
+    const projected = this.projectAsAgentmd(job);
+    const observability = JobScheduler.computeRunObservability(projected, JobScheduler.resolveAllowlist(projected));
+    const startedAt = new Date().toISOString();
+    const runId = this.runHistory.recordStart({
+      slug,
+      sessionId: sessionName,
+      trigger: reason,
+      origin: 'instar',
+      runner: 'script',
+      lockTrust: job.lockTrust ?? 'unknown',
+      tokens: 0,
+      resolvedPath: observability.resolvedPath,
+      bodyHash: observability.bodyHash,
+      frontmatterHash: observability.frontmatterHash,
+      manifestVersion: observability.manifestVersion,
+      toolAllowlist: null,
+    });
+    const prior = this.state.getJobState(slug);
+    this.state.saveJobState({
+      slug,
+      lastRun: startedAt,
+      lastResult: 'pending',
+      lastError: undefined,
+      consecutiveFailures: prior?.consecutiveFailures ?? 0,
+      nextScheduled: this.getNextRun(slug),
+    });
+    this.state.appendEvent({
+      type: 'job_triggered',
+      summary: `Job "${slug}" triggered (${reason})`,
+      sessionId: sessionName,
+      timestamp: startedAt,
+      metadata: { slug, reason, mode: 'script-runner' },
+    });
+
+    const run = async (): Promise<void> => {
+      const trust = this.checkScriptTrust(job);
+      let parsed: ParsedScriptRun;
+      let scrubbed = '';
+      if (!trust.ok) {
+        parsed = this.untrustedParse(trust.reason);
+        const key = `${slug}|${trust.reason}`;
+        if (!this.untrustedReported.has(key)) {
+          this.untrustedReported.add(key);
+          DegradationReporter.getInstance().report({
+            feature: 'JobScheduler.scriptRunner',
+            primary: `Run the shipped script for "${slug}"`,
+            fallback: 'Record the run as failed; start no session',
+            reason: `${job.name || slug} not running: its script failed verification (${trust.reason})`,
+            impact: `"${slug}" does no work until the shipped script verifies again (reinstall or update instar)`,
+          });
+        }
+      } else {
+        const exec = await this.executeScript(job, [], {});
+        ({ parsed, scrubbed } = this.parseExec(job, exec));
+      }
+      this.finishScriptRun(job, runId, parsed, scrubbed, startedAt);
+    };
+
+    const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
+    const go = () => {
+      run()
+        .catch((err) => {
+          console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
+          try {
+            this.finishScriptRun(job, runId, { ...this.untrustedParse(''), reason: 'script-runner-error', reasonCode: 'script-runner-error' }, '', startedAt);
+          } catch { /* @silent-fallback-ok — bookkeeping best-effort on an internal throw */ }
+        })
+        .finally(() => this.scriptInFlight.delete(slug));
+    };
+    if (offset > 0) {
+      const t = setTimeout(go, offset);
+      t.unref?.();
+    } else {
+      go();
+    }
+  }
+
+  /** Record a finished script run: job state, history, alerts, claim, observers. */
+  private finishScriptRun(
+    job: JobDefinition,
+    runId: string,
+    parsed: ParsedScriptRun,
+    scrubbed: string,
+    startedAt: string,
+  ): void {
+    const slug = job.slug;
+    const finishedAt = new Date().toISOString();
+    const outputSummary = scrubbed ? scrubbed.slice(-1000) : undefined;
+    const lastAssessment = parseInstrumentAssessment(scrubbed) ?? undefined;
+    const previous = this.state.getJobState(slug);
+    const startedAtMs = Date.parse(startedAt) || Date.now();
+    const captureJev = (result: 'success' | 'failure') => {
+      try {
+        this.jevAudit?.capture({
+          runId, slug, goal: job.description ?? slug, result,
+          trigger: 'script', output: scrubbed, declaredEffects: job.declaredEffects, conditionalEffects: job.conditionalEffects,
+          completionAudit: job.completionAudit, workDir: path.dirname(this.stateDir),
+          startedAtMs, instrumentAssessment: lastAssessment,
+        });
+      } catch { /* @silent-fallback-ok — the audit must never break completion handling. */ }
+    };
+
+    if (parsed.result === 'success') {
+      this.state.saveJobState({
+        slug, lastRun: finishedAt, lastResult: 'success', lastError: undefined, lastAssessment,
+        consecutiveFailures: 0, nextScheduled: this.getNextRun(slug),
+      });
+      this.runHistory.recordCompletion({ runId, result: 'success', outputSummary });
+      captureJev('success');
+      this.clearRetryState(slug);
+      this.clearFailureAlertState(slug);
+      this.releaseClaim(slug, 'success');
+    } else if (parsed.result === 'skipped') {
+      // §5.2: neither success nor failure — consecutiveFailures unchanged
+      // (neither raised nor reset), no retry, no Jev audit capture.
+      this.state.saveJobState({
+        slug, lastRun: finishedAt, lastResult: 'skipped', lastError: previous?.lastError, lastAssessment,
+        consecutiveFailures: previous?.consecutiveFailures ?? 0, nextScheduled: this.getNextRun(slug),
+      });
+      this.runHistory.recordCompletion({ runId, result: 'skipped', error: parsed.reason || undefined, outputSummary });
+      this.clearRetryState(slug);
+      this.releaseClaim(slug, 'success');
+    } else {
+      const errorMsg = parsed.reason || 'failed';
+      const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
+      this.state.saveJobState({
+        slug, lastRun: finishedAt, lastResult: 'failure', lastError: errorMsg, lastAssessment,
+        consecutiveFailures, nextScheduled: this.getNextRun(slug),
+      });
+      this.runHistory.recordCompletion({ runId, result: 'failure', error: errorMsg, outputSummary });
+      captureJev('failure');
+      void this.alertOnConsecutiveFailures(job, consecutiveFailures, errorMsg);
+      this.releaseClaim(slug, 'failure');
+      // An untrusted script cannot be fixed by a retry; the alert is the path.
+      if (parsed.reasonCode !== 'script-untrusted') this.scheduleRetry(slug, 'error');
+    }
+
+    notifyScriptRunObservers(this.scriptRunObservers, {
+      job,
+      runId,
+      machineId: this.machineId,
+      parsed,
+      scrubbedOutput: scrubbed,
+      startedAt,
+      finishedAt,
+      canary: false,
+      lockTrust: job.lockTrust ?? 'unknown',
+    });
+  }
+
+  /**
+   * Run a converted job's script in canary mode (§5.6.4): no claim, no run
+   * history row, no job state. Observers receive the run with `canary: true`
+   * (every observer other than the canary runner must ignore it).
+   */
+  async runScriptCanary(
+    slug: string,
+    opts: { serverUrl: string; extraArgs?: string[]; env?: Record<string, string> },
+  ): Promise<{ parsed: ParsedScriptRun; exitCode: number; stdout: string }> {
+    const job = this.listScriptJobs().find((j) => j.slug === slug);
+    if (!job) {
+      const parsed = { ...this.untrustedParse('not a script job'), reason: 'canary-unknown-slug', reasonCode: 'canary-unknown-slug' };
+      return { parsed, exitCode: 1, stdout: '' };
+    }
+    const trust = this.checkScriptTrust(job);
+    if (!trust.ok) return { parsed: this.untrustedParse(trust.reason), exitCode: 1, stdout: '' };
+    const startedAt = new Date().toISOString();
+    const exec = await this.executeScript(
+      job,
+      ['--canary', '--server-url', opts.serverUrl, ...(opts.extraArgs ?? [])],
+      { ...(opts.env ?? {}), INSTAR_SCRIPT_CANARY: '1' },
+    );
+    const { parsed, scrubbed } = this.parseExec(job, exec);
+    notifyScriptRunObservers(this.scriptRunObservers, {
+      job,
+      runId: `canary-${slug}-${Date.now().toString(36)}`,
+      machineId: this.machineId,
+      parsed,
+      scrubbedOutput: scrubbed,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      canary: true,
+      lockTrust: job.lockTrust ?? 'unknown',
+    });
+    return { parsed, exitCode: exec.exitCode, stdout: capScriptOutput(scrubForStore(exec.stdout).text).text };
+  }
+
+  /**
+   * Spawn a session from a derived agentmd projection of a job (§8.4 rollback,
+   * §5.6.2 triage). For origin `triage` the session is tagged `triage:<slug>`
+   * (so the job's own already-running guard is not tripped), its run row is
+   * `origin: 'triage'` (outside the slug's stats), and JobState / failure
+   * streak / failure-alert state are NEVER touched. Admission (cooldowns,
+   * caps) is the caller's job.
+   */
+  spawnProjectedSession(
+    job: JobDefinition,
+    opts: {
+      prompt: string;
+      slugTag: string;
+      allowlist?: string[] | 'template';
+      modelOverride?: 'agent-default';
+      omitAuthEnv?: boolean;
+      confinedTools?: string[];
+      maxDurationMinutes?: number;
+      telegramNotify?: boolean;
+      origin?: 'triage' | 'rollback';
+      trigger: string;
+    },
+  ): { sessionName: string } | { refused: string } {
+    const projected = this.projectAsAgentmd(job);
+    if (opts.origin !== 'triage') {
+      // Rollback: today's job session, with the template's own frontmatter
+      // allowlist + lock trust and the body as the prompt.
+      if (opts.slugTag !== job.slug) return { refused: 'rollback-slug-tag-must-equal-slug' };
+      const sessionName = this.spawnJobSession({ ...projected, body: opts.prompt || projected.body }, opts.trigger);
+      return { sessionName };
+    }
+
+    if (opts.slugTag !== `triage:${job.slug}`) return { refused: 'triage-slug-tag-must-be-triage:<slug>' };
+    // The row's trigger names the run being triaged: `triage:<runId>`.
+    if (!/^triage:\S+$/.test(opts.trigger)) return { refused: 'triage-trigger-must-be-triage:<runId>' };
+    const tools = opts.confinedTools ?? (Array.isArray(opts.allowlist) ? opts.allowlist : undefined);
+    if (!tools || tools.length === 0) return { refused: 'triage-needs-explicit-tools' };
+    if (this.sessionManager.listRunningSessions().some((s) => s.jobSlug === opts.slugTag)) {
+      return { refused: 'already-running' };
+    }
+
+    const sessionName = `triage-${job.slug}-${Date.now().toString(36)}`;
+    const startedAt = new Date().toISOString();
+    const runId = this.runHistory.recordStart({
+      slug: job.slug,
+      sessionId: sessionName,
+      trigger: opts.trigger,
+      origin: 'triage',
+      toolAllowlist: tools,
+    });
+    this.projectedRuns.set(sessionName, { runId, slugTag: opts.slugTag, slug: job.slug, trigger: opts.trigger });
+
+    const spawnOpts: ProjectedSpawnOptions = {
+      name: sessionName,
+      prompt: opts.prompt,
+      jobSlug: opts.slugTag,
+      triggeredBy: `scheduler:${opts.trigger}`,
+      maxDurationMinutes: opts.maxDurationMinutes ?? job.expectedDurationMinutes,
+      allowedTools: tools,
+      disableProjectMcp: true,
+      ...(opts.modelOverride === 'agent-default' ? { useAgentDefaultModel: true } : { model: job.model }),
+      ...(opts.omitAuthEnv !== undefined ? { omitAuthEnv: opts.omitAuthEnv } : {}),
+      ...(opts.confinedTools !== undefined ? { confinedTools: opts.confinedTools } : {}),
+    };
+    this.sessionManager
+      .spawnSession(spawnOpts as Parameters<SessionManager['spawnSession']>[0])
+      .then((session) => {
+        this.recordLedgerSession(session?.id ?? sessionName, job.slug, startedAt, 'triage');
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.runHistory.recordCompletion({ runId, result: 'failure', error: `spawn-error: ${msg}` });
+        this.projectedRuns.delete(sessionName);
+        this.emitProjectedSessionEnded({ slugTag: opts.slugTag, sessionName, trigger: opts.trigger, output: '', result: 'spawn-error' });
+      });
+    return { sessionName };
+  }
+
+  private recordLedgerSession(sessionId: string, slug: string, startedAt: string, origin: 'job' | 'triage' | 'rollback'): void {
+    try {
+      this.tokenLedger?.recordJobSession?.(sessionId, slug, this.machineId, startedAt, origin);
+    } catch (err) {
+      // @silent-fallback-ok — attribution is observability; never a spawn gate.
+      console.warn(`[scheduler] token-ledger job attribution failed for "${slug}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private emitProjectedSessionEnded(end: ProjectedSessionEnd): void {
+    for (const fn of this.projectedSessionListeners) {
+      try {
+        fn(end);
+      } catch (err) {
+        // @silent-fallback-ok — a listener never affects completion handling.
+        console.error(`[scheduler] projected-session listener threw for ${end.slugTag}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /** Completion for a projected (triage) session — no JobState, no claim,
+   *  no failure-alert state; the row lives outside the slug's stats. */
+  private completeProjectedSession(slugTag: string, session: { name: string; status: string }, tmuxSession: string): void {
+    let output = '';
+    try {
+      output = this.sessionManager.captureOutput(tmuxSession) ?? '';
+    } catch {
+      // @silent-fallback-ok — session may already be gone
+    }
+    const entry = this.projectedRuns.get(session.name);
+    const failed = session.status === 'failed' || session.status === 'killed';
+    const result = session.status === 'killed' ? 'timeout' as const : failed ? 'failure' as const : 'success' as const;
+    if (entry) {
+      this.runHistory.recordCompletion({
+        runId: entry.runId,
+        result,
+        error: failed ? `Session ${session.status}` : undefined,
+        outputSummary: output ? scrubForStore(output).text.slice(-1000) : undefined,
+      });
+      this.projectedRuns.delete(session.name);
+    }
+    // After a restart the in-memory row map is gone; the trigger is then
+    // unknown here (the run row still holds it).
+    this.emitProjectedSessionEnded({
+      slugTag,
+      sessionName: session.name,
+      trigger: entry?.trigger ?? (session as { triggeredBy?: string }).triggeredBy?.replace(/^scheduler:/, '') ?? '',
+      output,
+      result,
+    });
+  }
+
+  private spawnJobSession(job: JobDefinition, reason: string): string {
+    // job-cost-reduction §8.4: a script-runner job that reaches the session
+    // path (rollback, or a queued drain) always runs as its agentmd
+    // projection — never the legacy "Run this script:" full-tools path.
+    if (this.isScriptRunnerJob(job)) job = this.projectAsAgentmd(job);
     const prompt = this.buildPrompt(job);
     const sessionName = `job-${job.slug}-${Date.now().toString(36)}`;
 
@@ -1568,7 +2297,8 @@ export class JobScheduler {
       // MCP boot cost + the auth-required-remote-MCP headless hang hazard
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
-    }).then(() => {
+    }).then((session) => {
+      this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
         slug: job.slug,
@@ -1642,6 +2372,7 @@ export class JobScheduler {
 
       void this.alertOnConsecutiveFailures(job, failures, errorMsg);
     });
+    return sessionName;
   }
 
   /**
@@ -1825,6 +2556,13 @@ export class JobScheduler {
     // Find which job this session belongs to by looking up session state
     const session = this.state.getSession(sessionId);
     if (!session?.jobSlug) return;
+
+    // job-cost-reduction F13: a triage session is tagged `triage:<slug>` and
+    // is handled BEFORE the job lookup — it never touches the job's state.
+    if (session.jobSlug.startsWith('triage:')) {
+      this.completeProjectedSession(session.jobSlug, session, tmuxSession);
+      return;
+    }
 
     const job = this.jobs.find(j => j.slug === session.jobSlug);
     if (!job) return;
@@ -2174,6 +2912,34 @@ export class JobScheduler {
     }
 
     this.state.set('job-topic-mappings', mappings);
+  }
+
+  /**
+   * The job's Telegram topic, lazily created when missing — the same
+   * find-or-create + mapping save `notifyJobComplete` does for an on-alert job's
+   * first notification. Used by the job-anomaly push (job-cost-reduction §5.4),
+   * which needs a destination before it can send. Null with no Telegram adapter
+   * or when creation fails (the pusher records `no-topic`).
+   */
+  async ensureJobTopic(job: JobDefinition): Promise<number | null> {
+    const live = this.jobs.find(j => j.slug === job.slug) ?? job;
+    if (live.topicId) return live.topicId;
+    const mapped = this.state.get<Record<string, number>>('job-topic-mappings')?.[live.slug];
+    if (mapped) { live.topicId = mapped; return mapped; }
+    if (!this.telegram) return null;
+    try {
+      const topic = await this.telegram.findOrCreateForumTopic(
+        `${TOPIC_STYLE.JOB.emoji} Job: ${live.name}`,
+        TOPIC_STYLE.JOB.color,
+        { label: 'job-topics' },
+      );
+      live.topicId = topic.topicId;
+      this.saveJobTopicMapping(live.slug, topic.topicId);
+      return topic.topicId;
+    } catch (err) {
+      console.error(`[scheduler] Failed to create topic for ${live.slug}: ${err}`);
+      return null;
+    }
   }
 
   /**

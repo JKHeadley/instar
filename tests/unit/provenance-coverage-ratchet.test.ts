@@ -120,6 +120,7 @@ const PENDING_BASELINE = [
   'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
+  'script-job-supervision::ScriptJobSupervisor::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
@@ -136,6 +137,7 @@ const EXEMPT_BASELINE = [
   'input-detector-alias::InputDetector::deterministic-only',
   'integration-gate-delegate::IntegrationGate::deterministic-only',
   'interactive-pool-canary-judge::InteractivePoolCanaryJudge::no-decision-content',
+  'job-anomaly-narration::JobAnomalyNarrator::no-decision-content',
   'promise-beacon-status-line::PromiseBeacon::deterministic-only',
 ].sort();
 

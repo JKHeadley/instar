@@ -5,7 +5,6 @@ schedule: "*/15 * * * *"
 priority: low
 expectedDurationMinutes: 3
 model: haiku
-supervision: tier1
 enabled: true
 tags:
   - cat:feedback-factory
@@ -15,6 +14,27 @@ gate: "curl -sf -H \"Authorization: Bearer $INSTAR_AUTH_TOKEN\" -H \"X-Instar-Ag
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: feedback-factory-triage.mjs
+scriptTimeoutMinutes: 4
+supervision: tier0
+scriptSupervision: triage
+triageEvidence: structured-only
+triageFields:
+  - outcome
+  - http_status
+  - server_reason
+  - run_id
+  - decided
+  - owner
+triageBareOk:
+  - "succeeded"
+  - "no-op"
+  - "no-op not-canonical-owner"
+  - "no-op tick-in-flight"
+  - "rate-limited"
+triageBareSkipped:
+  - feature-dark
 ---
 Run one feedback triage tick. This is a near-silent operated cadence — do NOT message the user. The server owns every decision; this job only triggers one bounded run and records an honest outcome.
 

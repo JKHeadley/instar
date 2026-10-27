@@ -44,6 +44,18 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'scriptRunners',
+    configPath: 'jobs.scriptRunners.enabled',
+    description: 'Script runners (job-cost-reduction §5.1): the converted built-in jobs run their shipped Node script instead of opening a model session; omitted ⇒ live on a development agent, every converted job runs its body as a session on the fleet.',
+    justification: 'Each script calls the same local endpoint its session body called, under the same claim and lock-file trust; an untrusted script records failed and starts nothing. Setting enabled:false or listing a slug in disabledSlugs restores the session path live at the next trigger. No credential or state mutation beyond what the session already did; it removes spend.',
+  },
+  {
+    name: 'scriptTriageJev',
+    configPath: 'jobs.scriptTriage.jev.enabled',
+    description: 'Jev triage of script-job results (job-cost-reduction §5.6.2): a scrubbed, clamped summary of a non-bare script run is sent to TypeSafe for routine / needs-session; omitted ⇒ live on a development agent, dark on the fleet (F12).',
+    justification: 'Advisory only: the deterministic floor (critical anomaly or a second consecutive failure) still starts a session whatever Jev answers, and every Jev failure falls to that floor. Inert without the vault typesafe_api_key; daily call cap; sessions are bounded by the triage caps and cooldown.',
+  },
+  {
     name: 'workAdmission',
     configPath: 'monitoring.workAdmission.enabled',
     description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',
