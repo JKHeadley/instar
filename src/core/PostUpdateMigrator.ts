@@ -281,6 +281,12 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red hold: while `main` fails a known check, only a repair candidate (a PR whose diff touches a failing file, or whose title or body names it) or a `main` verify takes the slot; every other PR keeps its place and waits for green instead of running a doomed verify. `GET /local-verify` → `mainRedHold` (failing files, `repairPrs`, `heldPrs`, a plain `detail`; held entries carry `held`); a `POST /local-verify` answer for a held PR carries `hold`. Once `main` is red, ONE deduped attention item for the episode (`local-verify:main-red-hold`) names the failing check and every PR already fixing it, refreshes when that list changes and closes on green — before writing a fix for a red `main`, read `repairPrs`; if yours is the fix, name the failing file in its title or body. Off switch: `monitoring.localVerify.mainRedHold: false` (read live).';
 
 /**
+ * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
+ * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
+ */
+export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify throughput overflow: a PR labelled `merge-throughput` is admitted even when the queue is full (10), up to 5 extra entries, so its priority applies at once; an ordinary PR still answers `queue-full`. When a labelled PR answers `queue-full`, the overflow is full too: wait for an entry to finish and request it again.';
+
+/**
  * Local Verify merge-throughput label — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on the label name).
  */
@@ -9380,6 +9386,12 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_MERGE_THROUGHPUT_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput label awareness');
+    }
+    // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
+    if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
+      content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
     }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';

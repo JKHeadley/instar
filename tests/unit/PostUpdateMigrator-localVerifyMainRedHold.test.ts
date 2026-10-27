@@ -83,3 +83,16 @@ describe('Local Verify main-red hold + merge-throughput awareness', () => {
     expect(fs.readFileSync(claudeMd, 'utf-8').split('Local Verify merge-throughput label').length - 1).toBe(1);
   });
 });
+
+describe('Local Verify throughput overflow awareness', () => {
+  it('the template and the migration line carry it; appended once to an existing section', async () => {
+    const { LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    expect(generateClaudeMd('fixture', 'Fixture', 4042, true)).toContain('Local Verify throughput overflow');
+    expect(LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE).toContain('queue-full');
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
+  });
+});

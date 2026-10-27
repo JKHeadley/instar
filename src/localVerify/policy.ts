@@ -41,6 +41,12 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
   holderPollMs: 30_000,
   queueCap: 10,
   /**
+   * PRs labelled `merge-throughput` may queue past `queueCap` by at most this many: a full
+   * queue of ordinary PRs must not keep out the work that speeds the queue up (2026-10-26:
+   * two labelled PRs answered queue-full for hours, so their priority never applied).
+   */
+  throughputOverflow: 5,
+  /**
    * Isolation re-run (Throughput budget, evidence-per-run "known-flaky"): a lane whose ONLY
    * problem is 1..N failed files re-runs exactly those files once, one at a time. More than N
    * failed files is a real break (no re-run). N is also the cap across a whole verify.
