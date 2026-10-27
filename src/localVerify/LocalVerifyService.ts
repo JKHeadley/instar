@@ -51,6 +51,7 @@ import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VE
 import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
+import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import type { FailureDetail, VerifyRunInput, VerifyRunResult } from './orchestrator.js';
 
@@ -99,6 +100,43 @@ export interface PrView {
   headRefOid: string;
   baseRefName: string;
   baseRefOid: string;
+  /** Title + body + changed files (gh `--json title,body,files`; files = the first 100). Absent on older seams ⇒ unknown. */
+  title?: string | null;
+  body?: string | null;
+  files?: ReadonlyArray<{ path: string }> | null;
+  /** The PR's labels (gh `--json labels`). Absent ⇒ none: ordinary priority. */
+  labels?: ReadonlyArray<{ name: string }> | null;
+}
+
+/**
+ * Queue priority levels (higher starts first; FIFO within a level). The `main` health
+ * verify stays on top; a PR labelled `merge-throughput` (work that safely raises merge
+ * throughput) runs ahead of ordinary PRs. While the main-red hold is active only repair
+ * candidates may start at all, so a labelled PR never runs ahead of the PR fixing a red
+ * `main` unless it is itself such a repair.
+ */
+export const MERGE_THROUGHPUT_LABEL = 'merge-throughput';
+/** The ONE attention item for the "main is red" condition (stable id: a newer red head refreshes the same row; green closes it). */
+export const MAIN_RED_HOLD_SIGNAL_KEY = 'local-verify:main-red-hold';
+export const QUEUE_PRIORITY = Object.freeze({ main: MAIN_VERIFY_LIMITS.priority, mergeThroughput: 10, ordinary: 0 });
+/**
+ * The bound on the label: an ordinary PR that has waited this long (update pauses excluded)
+ * is ranked at the throughput level too, so no labelled PR queued after it can pass it. Half
+ * of `starvedAfterMs` (3 h), and the starved alarm is unchanged.
+ */
+export const THROUGHPUT_AGING_MS = 90 * 60_000;
+
+/** The stored priority for a PR entry, from its labels. */
+export function prPriority(view: Pick<PrView, 'labels'> | null | undefined): number {
+  const labels = view?.labels;
+  return Array.isArray(labels) && labels.some((l) => !!l && l.name === MERGE_THROUGHPUT_LABEL) ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary;
+}
+
+/** The priority the queue is sorted by: stored priority, raised to the throughput level once an ordinary PR has aged. Pure. */
+export function effectivePriority(e: { priority: number; kind?: 'main'; firstQueuedAt: number; pausedMs?: number }, now: number, agingMs: number = THROUGHPUT_AGING_MS): number {
+  if (e.kind === 'main') return e.priority;
+  const waited = now - e.firstQueuedAt - (e.pausedMs ?? 0);
+  return waited >= agingMs ? Math.max(e.priority, QUEUE_PRIORITY.mergeThroughput) : e.priority;
 }
 
 export function checkEligibility(
@@ -153,6 +191,8 @@ export interface LocalVerifyServiceSeams {
   installedVerifierVersion?(): string | null;
   /** Deduped attention signal (`local-verify:main-red`, `local-verify:main-unverified`, `local-verify:flaky:<file>`). */
   signal?(key: string, detail: Record<string, unknown>): void;
+  /** Close a deduped attention item whose condition ended (the main-red hold item, on green). */
+  clearSignal?(key: string, resolution: string): void;
   /** A `main` head's subject and parents (release collapse); null when unreadable (verify as usual). */
   commitInfo?(sha: string): Promise<CommitInfo | null>;
   now?(): number;
@@ -211,6 +251,10 @@ export interface QueueEntry {
   interruptions?: number;
   /** Set when a server stop killed this entry's run: it starts ahead of a `main` verify next (cleared at start). */
   resumeFirst?: true;
+  /** Repo-relative files the PR changes (from the PR view; null = unreadable). In memory only: a restore re-reads the view. */
+  files?: string[] | null;
+  /** The PR's title + body, lowercased and bounded, for the main-red repair match. In memory only. */
+  text?: string;
 }
 
 export { MAIN_VERIFY_LIMITS };
@@ -381,8 +425,21 @@ export interface InFlightIntent {
   pgid: number | null;
 }
 
+/** Why a queued PR is not starting yet (GET /local-verify `mainRedHold`, the POST answer's `hold`). */
+export interface MainRedHoldInfo {
+  reason: 'main-red';
+  state: 'main-suspect' | 'main-red';
+  redHead: string;
+  failingFiles: string[];
+  /** PRs admitted as repair candidates (they run first). */
+  repairPrs: number[];
+  /** PRs waiting for `main` to be green. */
+  heldPrs: number[];
+  detail: string;
+}
+
 export type RequestResult =
-  | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number }
+  | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
   | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' };
 
@@ -417,6 +474,8 @@ export interface PersistedQueueEntry {
   interruptions?: number;
   /** The entry's run was killed by a server stop: it starts first after the restart. */
   resumeFirst?: true;
+  /** The merge-throughput priority, kept so a restore whose PR view is unreadable does not drop the label. Absent ⇒ ordinary. */
+  priority?: number;
 }
 
 /** What the AutoUpdater tells the verifier (spec §2 Restarts rule (b)); null = unknown (never pauses). */
@@ -545,6 +604,16 @@ export class LocalVerifyService {
   private starting: QueueEntry | null = null;
   private mainMovedAt: number | null = null;
   private readonly mergeLineStats = { handoffs: 0, merged: 0, lastOutcome: null as string | null, lastPr: null as number | null };
+  /** Main-red hold (CMT-1033): the last failed `main` verify's failing files, the live switch, and the once-per-episode bookkeeping. */
+  private mainFailure: MainFailureDetail | null = null;
+  private mainRedHoldEnabled: (() => boolean) | null = null;
+  /** pr → the red head it was audited as held for (one `main-red-held` line per PR per episode). */
+  private readonly heldAudited = new Map<number, string>();
+  /** What the ONE hold item last said: the red head and the sorted repair-PR list (re-raised only when either changes). */
+  private holdSignalled: string | null = null;
+  /** Repair candidates seen this episode (kept after they leave the queue, until green). */
+  private readonly repairSeen = new Map<number, RepairCandidate>();
+  private holdIdleAudited: string | null = null;
 
   constructor(cfg: LocalVerifyServiceConfig, seams: LocalVerifyServiceSeams) {
     this.cfg = cfg;
@@ -568,6 +637,7 @@ export class LocalVerifyService {
   get inFlightPath(): string { return path.join(this.lvStateDir, 'inflight.json'); }
   get queuePath(): string { return path.join(this.lvStateDir, 'queue.json'); }
   private get closedSeenPath(): string { return path.join(this.lvStateDir, 'closed-seen.json'); }
+  private get mainFailurePath(): string { return path.join(this.lvStateDir, 'main-failure.json'); }
   private get runsDir(): string { return path.join(this.lvStateDir, 'runs'); }
   get auditPath(): string { return path.join(this.cfg.stateDir, 'logs', 'local-verify.jsonl'); }
 
@@ -580,6 +650,53 @@ export class LocalVerifyService {
 
   private mergeLineOn(): boolean {
     try { return this.mergeLineEnabled ? this.mergeLineEnabled() !== false : true; } catch { return true; } // @silent-fallback-ok: an unreadable switch reads as on (today's default)
+  }
+
+  /** The live kill switch for the main-red hold (`monitoring.localVerify.mainRedHold`; absent ⇒ on). */
+  setMainRedHoldEnabled(fn: (() => boolean) | null): void { this.mainRedHoldEnabled = fn; }
+
+  private mainRedHoldOn(): boolean {
+    try { return this.mainRedHoldEnabled ? this.mainRedHoldEnabled() !== false : true; } catch { return true; } // @silent-fallback-ok: an unreadable switch reads as on (the hold is the safe default: it only delays doomed runs)
+  }
+
+  /** The main-red hold over the current queue (pure decision over health, the kept failure detail and the queue). */
+  private holdDecision(): MainRedHoldDecision {
+    const h = this.health.snapshot();
+    const asInput = (e: QueueEntry) => ({ pr: e.pr, kind: e.kind, files: e.files ?? null, text: e.text ?? '' });
+    const f = this.inFlight;
+    return decideMainRedHold({
+      enabled: this.mainRedHoldOn(),
+      health: { state: h.state, redHead: h.redHead },
+      failure: this.mainFailure,
+      queue: this.queue.map(asInput),
+      inFlight: f && !f.cancelled ? asInput(f.entry) : null,
+      remembered: [...this.repairSeen.values()],
+    });
+  }
+
+  /** The hold as the read surface shows it (null when inactive). */
+  mainRedHold(): (MainRedHoldInfo & { since: string | null }) | null {
+    const d = this.holdDecision();
+    if (!d.active) return null;
+    return { ...this.holdInfo(d), since: this.mainFailure ? this.mainFailure.recordedAt : null };
+  }
+
+  private holdInfo(d: Extract<MainRedHoldDecision, { active: true }>): MainRedHoldInfo {
+    return {
+      reason: 'main-red', state: d.state as 'main-suspect' | 'main-red', redHead: d.redHead, failingFiles: d.failingFiles,
+      repairPrs: d.repairPrs.map((r) => r.pr), heldPrs: d.heldPrs.map((h) => h.pr), detail: holdReasonText(d),
+    };
+  }
+
+  /** The repair/held split for a failure over the queue as it is now (for the main-red signal's detail). */
+  private holdLists(f: MainFailureDetail): { failingFiles: string[]; repairPrs: number[]; heldPrs: number[] } {
+    const repairPrs: number[] = [];
+    const heldPrs: number[] = [];
+    for (const e of this.queue) {
+      if (e.kind === 'main') continue;
+      (repairVerdict({ files: e.files ?? null, text: e.text ?? '' }, f.files).candidate ? repairPrs : heldPrs).push(e.pr);
+    }
+    return { failingFiles: [...f.files], repairPrs, heldPrs };
   }
 
   /** The merge line's state: wired or not, the live switch, the open hold, and the hand-off counters (`merged` counts acted hand-offs). */
@@ -599,10 +716,14 @@ export class LocalVerifyService {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: QueueEntry[]; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']> } {
+  snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']> } {
     const h = this.verifierHold;
+    const hold = this.holdDecision();
+    const heldWhy = new Map<number, 'no-overlap' | 'files-unknown'>(hold.active ? hold.heldPrs.map((x) => [x.pr, x.reason] as const) : []);
     return {
-      queue: this.queue.map((e) => ({ ...e })),
+      // `text` (the PR body) stays out of the read surface; `files` is bounded and useful.
+      queue: this.queue.map((e) => { const { text: _t, ...rest } = e; void _t; const why = heldWhy.get(e.pr); return why && e.kind !== 'main' ? { ...rest, held: { reason: 'main-red' as const, why } } : { ...rest }; }),
+      mainRedHold: hold.active ? { ...this.holdInfo(hold), since: this.mainFailure ? this.mainFailure.recordedAt : null } : null,
       inFlight: this.inFlight
         ? { pr: this.inFlight.entry.pr, headSha: this.inFlight.entry.headSha, ...(this.inFlight.entry.kind ? { kind: this.inFlight.entry.kind } : {}) }
         : null,
@@ -647,6 +768,7 @@ export class LocalVerifyService {
 
   async boot(): Promise<void> {
     this.health.load();
+    this.mainFailure = this.readMainFailure();
     this.mainObs.immediate = true; // the boot-time `main` verify skips the debounce
     // Order matters: the orphan reap runs first, and a still-blocked reap keeps every
     // restored entry waiting (pump refuses while blockedBy is set).
@@ -709,7 +831,10 @@ export class LocalVerifyService {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
         baseSha: view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha,
         baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
-        errorRetries: e.errorRetries, starvedRaised: e.starvedRaised, priority: 0,
+        errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
+        // An unreadable view keeps the saved label level (never more than the throughput level).
+        priority: view ? prPriority(view) : (e.priority === QUEUE_PRIORITY.mergeThroughput ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary),
+        files: view ? viewFiles(view) : null, text: view ? prMatchText(view.title, view.body) : '',
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
         ...(e.interruptions ? { interruptions: e.interruptions } : {}),
@@ -947,6 +1072,8 @@ export class LocalVerifyService {
     const baseSha = currentBase;
     const baseRefName = view.baseRefName;
     const key = recordKey(this.cfg.repo, pr, headSha, baseRefName);
+    const prFiles = viewFiles(view);
+    const prText = prMatchText(view.title, view.body);
 
     // CMT-973: a PR keeps its place and its firstQueuedAt. A base that moved is refreshed in
     // place; a moved head (or a retarget) takes the old entry's slot — the FRONT when the old
@@ -971,8 +1098,12 @@ export class LocalVerifyService {
           this.audit({ event: 'base-updated', pr, headSha, oldBase, newBase: baseSha, position: pendingIdx, firstQueuedAt: e.firstQueuedAt });
         }
         e.baseResolvedAt = this.now(); // the base was just read: no pre-start re-read needed for a while
+        e.priority = prPriority(view); // the merge-throughput label may have been added or removed
+        e.files = prFiles; // the title/body may have been edited to name the failing check: re-read it
+        e.text = prText;
         this.persistQueue();
-        return { ok: true, status: 'already-queued', position: pendingIdx };
+        this.pump(); // a renamed PR may now be a repair candidate
+        return { ok: true, status: 'already-queued', position: pendingIdx, ...this.holdFor(pr) };
       }
       this.queue.splice(pendingIdx, 1);
       keptPlace = { index: pendingIdx, firstQueuedAt: e.firstQueuedAt, pausedMs: e.pausedMs, starvedRaised: e.starvedRaised, resumeFirst: e.resumeFirst };
@@ -1002,13 +1133,23 @@ export class LocalVerifyService {
     }
 
     if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
-      this.audit({ event: 'queue-full', pr });
-      return { ok: false, code: 'queue-full' };
+      // A queue full of HELD entries must not refuse the repair that would release them: a
+      // repair candidate is admitted past the cap while the hold is active. There is no
+      // second cap: candidates past it are bounded only by the open PRs that touch, name
+      // or revert the failing check, and each one is audited below.
+      const hold = this.holdDecision();
+      const repair = hold.active && repairVerdict({ files: prFiles, text: prText }, hold.failingFiles).candidate;
+      if (!repair) {
+        this.audit({ event: 'queue-full', pr, ...(hold.active ? { mainRedHold: true } : {}) });
+        return { ok: false, code: 'queue-full' };
+      }
+      this.audit({ event: 'queue-full-repair-admitted', pr, headSha, redHead: hold.active ? hold.redHead : null });
     }
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha, baseSha, baseRefName,
       firstQueuedAt: keptPlace?.firstQueuedAt ?? this.now(), attempts: 0, errorRetries: 0,
-      starvedRaised: keptPlace?.starvedRaised ?? false, priority: 0, baseResolvedAt: this.now(),
+      starvedRaised: keptPlace?.starvedRaised ?? false, priority: prPriority(view), baseResolvedAt: this.now(),
+      files: prFiles, text: prText,
       ...(keptPlace?.pausedMs ? { pausedMs: keptPlace.pausedMs } : {}),
       ...(keptPlace?.resumeFirst ? { resumeFirst: true as const } : {}),
     };
@@ -1017,7 +1158,14 @@ export class LocalVerifyService {
     this.audit({ event: 'queued', pr, headSha, baseSha, explicit, ...(keptPlace ? { keptPlace: true, firstQueuedAt: entry.firstQueuedAt } : {}) });
     const position = this.queue.indexOf(entry);
     this.pump();
-    return { ok: true, status: 'queued', position };
+    return { ok: true, status: 'queued', position, ...this.holdFor(pr) };
+  }
+
+  /** `{ hold }` for a POST answer when the main-red hold is holding THIS pr; `{}` otherwise. */
+  private holdFor(pr: number): { hold?: MainRedHoldInfo } {
+    const d = this.holdDecision();
+    if (!d.active || !d.heldPrs.some((h) => h.pr === pr)) return {};
+    return { hold: this.holdInfo(d) };
   }
 
   /** Periodic driver: orphan unblock, starvation signal, start the next run. */
@@ -1165,13 +1313,33 @@ export class LocalVerifyService {
     // The files on disk must still be the verifier this server labels records with: an update
     // that landed under us holds the queue for the restart instead of spawning a child that refuses.
     if (this.verifierChangedOnDisk()) return;
-    this.queue.sort((a, b) => b.priority - a.priority); // stable: FIFO within a priority
+    const now = this.now();
+    // Stable: FIFO within a level. An ordinary PR that has waited THROUGHPUT_AGING_MS ranks with
+    // the merge-throughput label, so the label can never hold an old PR back indefinitely.
+    this.queue.sort((a, b) => effectivePriority(b, now) - effectivePriority(a, now));
+    // Main-red hold (CMT-1033): while `main` fails a known check, only a repair candidate
+    // (a PR that touches or names a failing file) or a `main` verify may take the slot;
+    // every other PR entry keeps its place and waits for green. Never a doomed run.
+    const hold = this.holdDecision();
+    let admissible: QueueEntry[] = this.queue;
+    if (hold.active) {
+      this.noteHold(hold);
+      const held = new Set(hold.heldPrs.map((h) => h.pr));
+      admissible = this.queue.filter((e) => e.kind === 'main' || !held.has(e.pr));
+      if (admissible.length === 0) {
+        if (this.holdIdleAudited !== hold.redHead) {
+          this.holdIdleAudited = hold.redHead;
+          this.audit({ event: 'main-red-hold-idle', redHead: hold.redHead, held: hold.heldPrs.length, failingFiles: hold.failingFiles });
+        }
+        return;
+      }
+    }
     const d = decideStart({
-      foreignHolders: 0, queue: this.queue, now: this.now(),
+      foreignHolders: 0, queue: admissible, now: this.now(),
       fairShare: { mainHealthy: this.health.isHealthy(), mainRed: this.health.snapshot().state === 'main-red', oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, lastStartWasMain: this.lastStartWasMain },
     });
     if (d.kind !== 'start') return;
-    const next = this.queue[d.index];
+    const next = admissible[d.index];
     if (next.kind !== 'main' && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
       // The verify tests the merge with TODAY's base: re-read it right before the start, and
       // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
@@ -1179,7 +1347,7 @@ export class LocalVerifyService {
       void this.refreshBaseThenPump(next);
       return;
     }
-    const [entry] = this.queue.splice(d.index, 1);
+    const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
     this.lastStartWasMain = entry.kind === 'main';
     this.start(entry);
   }
@@ -1435,7 +1603,13 @@ export class LocalVerifyService {
     }
     const head = record.headSha;
     this.audit({ event: 'main-record', headSha: head, outcome: record.outcome, errorStep: record.errorStep });
-    const detail = runDetail(record, run);
+    let detail = runDetail(record, run);
+    if (record.outcome === 'failure') {
+      // Kept (and written durably) for the main-red hold: which files failed, so a repair can be told from a doomed run.
+      this.mainFailure = mainFailureFromRunDetail(head, run, new Date(this.now()).toISOString());
+      this.writeMainFailure(this.mainFailure);
+      detail = { ...detail, hold: this.holdLists(this.mainFailure) };
+    }
     if (record.outcome !== 'error') this.noteMainHeadVerified(head);
     if (record.outcome === 'success') this.saveGreenMain(record);
     if (record.outcome !== 'success' || record.flakyRetried) this.audit({ event: 'run-detail', kind: 'main', ...detail });
@@ -1454,8 +1628,10 @@ export class LocalVerifyService {
     const current = this.mainObs.head;
     if (record.outcome === 'success' && current !== null && (head === current || this.releaseAlias.get(current) === head)) this.mainObs.oldestUnverifiedAt = null;
     const work = this.health.onVerify(head, record.outcome, detail).then(async (action) => {
+      if (this.health.isHealthy()) this.clearMainFailure();
       if (action === 'rerun') this.enqueueMain(head, 'rerun');
       else if (action === 'cleared') await this.rerunFailures();
+      this.pump(); // a hold that just lifted (or just engaged) changes what may start
     }).catch((e) => this.audit({ event: 'main-health-error', detail: e instanceof Error ? e.message : String(e) }));
     this.pendingMainWork.push(work);
   }
@@ -1539,6 +1715,7 @@ export class LocalVerifyService {
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
         ...(e.interruptions ? { interruptions: e.interruptions } : {}),
         ...(e.resumeFirst ? { resumeFirst: true as const } : {}),
+        ...(e.priority === QUEUE_PRIORITY.mergeThroughput ? { priority: e.priority } : {}),
         // The running entry is marked: a clean shutdown re-queues it unmarked, so a marked
         // entry found at boot means the server died mid-run.
         ...(f && !f.cancelled && f.entry === e ? { inFlight: true as const } : {}),
@@ -1719,10 +1896,98 @@ export class LocalVerifyService {
     return Object.fromEntries([...this.flaky.entries()].sort(([a], [b]) => (a < b ? -1 : 1)));
   }
 
+  /**
+   * Once-per-episode bookkeeping for an active hold: one `main-red-held` audit line per held
+   * PR, and — only once `main` is RED (a first failure raises no notice, spec §2) — one deduped
+   * item for the "main is red" condition (`local-verify:main-red-hold`) naming the failing
+   * check and every PR already fixing it, re-raised (same id: the row's body refreshes) only
+   * when the red head or the sorted fixing list changes, so a second session does not write
+   * the same fix.
+   */
+  private noteHold(d: Extract<MainRedHoldDecision, { active: true }>): void {
+    for (const r of d.repairPrs) if (!this.repairSeen.has(r.pr)) this.repairSeen.set(r.pr, r);
+    for (const h of d.heldPrs) {
+      if (this.heldAudited.get(h.pr) === d.redHead) continue;
+      this.heldAudited.set(h.pr, d.redHead);
+      this.audit({ event: 'main-red-held', pr: h.pr, redHead: d.redHead, reason: h.reason, failingFiles: d.failingFiles, state: d.state });
+    }
+    if (d.state !== 'main-red') return;
+    // Sorted: the same PRs in another order (one started, one was remembered, a label re-sorted
+    // the queue) is the same news and must not repost the item or reopen an acknowledged row.
+    const prs = d.repairPrs.map((r) => r.pr).sort((a, b) => a - b);
+    const signature = `${d.redHead}|${prs.join(',')}`;
+    if (this.holdSignalled === signature) return;
+    this.holdSignalled = signature;
+    const key = MAIN_RED_HOLD_SIGNAL_KEY;
+    const fixing = d.repairPrs.length === 0
+      ? 'No queued PR is fixing it yet.'
+      : `Already fixing it: ${prs.map((pr) => `PR #${pr}`).join(', ')}. Check ${prs.length === 1 ? 'it' : 'them'} before writing another fix.`;
+    const detail = {
+      // `note` first: the attention summary reads it as the plain-words body.
+      note: `main is red on ${d.failingFiles.join(', ')}. ${fixing} ${d.heldPrs.length} other PR${d.heldPrs.length === 1 ? '' : 's'} held until main is green. A fix runs first when its diff touches the failing file or its title or body names it; a revert of the breaking change also runs first.`,
+      redHead: d.redHead, failingFiles: d.failingFiles,
+      repairPrs: [...d.repairPrs].sort((a, b) => a.pr - b.pr).map((r) => ({ pr: r.pr, by: r.by, file: r.file })), heldPrs: d.heldPrs.map((h) => h.pr),
+    };
+    this.audit({ event: 'signal', key, ...detail });
+    try { this.seams.signal?.(key, detail); } catch { /* @silent-fallback-ok: a signal sink failure never changes the queue */ }
+  }
+
+  /**
+   * Close the hold item. Keyed on the stable id, not on memory: after a restart the item may be
+   * open while nothing in memory says so; closing a row that is not open is a no-op.
+   */
+  private clearHoldSignal(resolution: string): void {
+    this.holdSignalled = null;
+    this.audit({ event: 'signal-cleared', key: MAIN_RED_HOLD_SIGNAL_KEY, resolution });
+    try { this.seams.clearSignal?.(MAIN_RED_HOLD_SIGNAL_KEY, resolution); } catch { /* @silent-fallback-ok: a clear-sink failure never changes the queue; the attention lifecycle still expires the row */ }
+  }
+
+  private clearMainFailure(): void {
+    if (this.mainFailure === null && this.heldAudited.size === 0 && this.holdSignalled === null && this.repairSeen.size === 0) return;
+    this.mainFailure = null;
+    this.heldAudited.clear();
+    this.clearHoldSignal('main is green again');
+    this.repairSeen.clear();
+    this.holdIdleAudited = null;
+    try {
+      SafeFsExecutor.safeRmSync(this.mainFailurePath, { force: true, operation: 'local-verify:main-failure-cleared' });
+    } catch (e) {
+      this.audit({ event: 'main-failure-remove-failed', detail: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private readMainFailure(): MainFailureDetail | null {
+    try {
+      const o = JSON.parse(fs.readFileSync(this.mainFailurePath, 'utf-8')) as { v?: unknown; detail?: MainFailureDetail };
+      const d = o?.v === 1 ? o.detail : undefined;
+      if (d && isValidSha(d.headSha) && Array.isArray(d.files) && d.files.every((f) => typeof f === 'string') && Array.isArray(d.reasons) && typeof d.recordedAt === 'string') {
+        return { headSha: d.headSha, files: d.files, reasons: d.reasons.filter((r): r is string => typeof r === 'string'), messages: d.messages && typeof d.messages === 'object' ? d.messages : {}, recordedAt: d.recordedAt };
+      }
+    } catch { /* @silent-fallback-ok: missing/unreadable ⇒ failing files unknown ⇒ no hold (today's behaviour) */ }
+    return null;
+  }
+
+  private writeMainFailure(d: MainFailureDetail): void {
+    try {
+      fs.mkdirSync(this.lvStateDir, { recursive: true });
+      const tmp = `${this.mainFailurePath}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ v: 1, detail: d }), { mode: 0o600 }); /* state-registry: local-verify-main-failure */
+      fs.renameSync(tmp, this.mainFailurePath);
+    } catch (e) {
+      this.audit({ event: 'main-failure-write-failed', detail: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   /** Metadata-only audit log, rotating at 5 MB, 10 files kept. */
   private audit(event: Record<string, unknown>): void {
     appendLocalVerifyAudit(this.auditPath, event, this.now());
   }
+}
+
+/** The PR's changed files from its view (null when the seam did not read them). */
+function viewFiles(view: PrView): string[] | null {
+  if (!Array.isArray(view.files)) return null;
+  return view.files.filter((f) => !!f && typeof f.path === 'string').map((f) => f.path).slice(0, 300);
 }
 
 /** Append one metadata-only line to the local-verify audit log (rotates at 5 MB, 10 files kept). Never throws. */

@@ -14,6 +14,10 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'cli-login-expired-observed',
 ]);
 const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
+/** Whether the automatic repair supports this provider × framework at all. */
+export function isReloginSupportedPath(provider: string, framework: string): boolean {
+  return SUPPORTED_PROVIDER_PATHS.has(`${provider}:${framework}`);
+}
 const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp', 'google-passkey']);
 
 /**

@@ -474,7 +474,13 @@ export function evaluateLocalPredicate(a) {
 export function verifyRequestOutcome(post) {
   const b = post?.body;
   if (!post || !b || typeof b !== 'object') return null;
-  if (b.ok === true && typeof b.status === 'string') return b.status;
+  if (b.ok === true && typeof b.status === 'string') {
+    // The main-red hold (CMT-1033): the PR is queued but will not start while `main` fails a
+    // check it does not fix; say which check, and which PR is already fixing it.
+    const h = b.hold;
+    if (h && typeof h === 'object' && typeof h.detail === 'string') return `${b.status} (held: ${h.detail.slice(0, 400)})`;
+    return b.status;
+  }
   if (b.ok === false && typeof b.code === 'string') return b.code;
   return null;
 }

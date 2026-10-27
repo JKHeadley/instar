@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'workAdmission',
+    configPath: 'monitoring.workAdmission.enabled',
+    description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',
+    justification: 'Ships dryRun:true: the state machine, audit and advert run on the real verdict feed but nothing is refused and peers keep placing work here until a deliberate dryRun:false. Even live it only DEFERS automatic work (jobs retry, inbound messages stay in the durable queue) and always leaves an operator session a slot; no LLM, no spend, no kills, no credential or state mutation.',
+  },
+  {
     name: 'identityReannounce',
     configPath: 'multiMachine.identityReannounce.enabled',
     description: 'Challenge-bound machine signing-key recovery with recovery-key continuity and exact epochs.',

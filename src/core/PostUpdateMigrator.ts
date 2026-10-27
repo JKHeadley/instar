@@ -275,6 +275,18 @@ Before deferring work because the machine "looks loaded," RUN \`.instar/scripts/
 }
 
 /**
+ * Local Verify main-red hold (CMT-1033) — the one awareness line appended to an existing
+ * CLAUDE.md's Local Verify section (`migrateClaudeMd`, content-sniffed on the config key).
+ */
+export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red hold: while `main` fails a known check, only a repair candidate (a PR whose diff touches a failing file, or whose title or body names it) or a `main` verify takes the slot; every other PR keeps its place and waits for green instead of running a doomed verify. `GET /local-verify` → `mainRedHold` (failing files, `repairPrs`, `heldPrs`, a plain `detail`; held entries carry `held`); a `POST /local-verify` answer for a held PR carries `hold`. Once `main` is red, ONE deduped attention item for the episode (`local-verify:main-red-hold`) names the failing check and every PR already fixing it, refreshes when that list changes and closes on green — before writing a fix for a red `main`, read `repairPrs`; if yours is the fix, name the failing file in its title or body. Off switch: `monitoring.localVerify.mainRedHold: false` (read live).';
+
+/**
+ * Local Verify merge-throughput label — the awareness line appended to an existing CLAUDE.md's
+ * Local Verify section (`migrateClaudeMd`, content-sniffed on the label name).
+ */
+export const LOCAL_VERIFY_MERGE_THROUGHPUT_CLAUDEMD_LINE = '- Local Verify merge-throughput label: a queued PR carrying the GitHub label `merge-throughput` runs ahead of ordinary PRs (the `main` verify still first; while the main-red hold is active only PRs fixing the red `main` start). Bounded: an ordinary PR that has waited 90 minutes ranks with labelled PRs, and the 3-hour `local-verify:starved` alarm is unchanged. `GET /local-verify` shows each entry\'s `priority` (100 main, 10 labelled, 0 ordinary). When a PR safely raises merge throughput, add the label (`gh pr edit <n> --add-label merge-throughput`) and re-request the verify; never label ordinary work to jump the line.';
+
+/**
  * Feature switches apply their setting (spec feature-transition-applies-action).
  * SHARED by `generateClaudeMd` and `migrateClaudeMd` (Agent Awareness + Migration
  * Parity). Content-sniff marker: the heading below.
@@ -8528,6 +8540,13 @@ Rule: I do not state that work landed inside another agent's state unless I have
         patched = true;
         result.upgraded.push('CLAUDE.md: added last-resort sign-in model awareness');
       }
+      // Repair blockers (why a needs-sign-in account has no repair) for existing agents.
+      const lastResortEnd = "a Secret Drop submission alone does not create the vault key.";
+      if (content.includes(lastResortEnd) && !content.includes('Why a sign-in repair did not start')) {
+        content = content.replace(lastResortEnd, lastResortEnd + '\n' + "- **Why a sign-in repair did not start** \u2014 `GET /subscription-relogin` now carries `blockers`: one row per account on this machine that needs sign-in but has no repair, with the reason. `no-open-incident` means nothing has confirmed the sign-in failure on this machine (often its saved login cannot be read), and a repair needs that confirmation; `profile-unresolved` means this machine has no browser profile signed in to that account (create one with `POST /playwright-profiles` and sign it in with /subscription-signin); any other reason is the repair's admission refusal. `?scope=pool` merges every machine's rows, and the dashboard shows the reason in plain words under the cell's Sign in button (a machine where repair is not running at all says so). Read-only: it never starts a repair. **When to use** (PROACTIVE): the user asks \"why is this still Needs sign-in?\" / \"why didn't auto-login fix it?\" \u2192 read `blockers` before guessing.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added sign-in repair blockers awareness');
+      }
     }
 
     // Fleet one-click assisted re-login awareness for existing agents that
@@ -9349,6 +9368,19 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge line awareness (CMT-980)');
     }
+    // local-verify main-red hold (CMT-1033): agents that already have the Local Verify
+    // section learn the hold, the repair rule and its kill switch. Content-sniff on the key.
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.mainRedHold')) {
+      content += '\n' + LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify main-red hold awareness (CMT-1033)');
+    }
+    // local-verify merge-throughput label: the queue lever for work that speeds up merging.
+    if (content.includes('/local-verify') && !content.includes('merge-throughput')) {
+      content += '\n' + LOCAL_VERIFY_MERGE_THROUGHPUT_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput label awareness');
+    }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';
       patched = true;
@@ -9903,6 +9935,7 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
 - **Every session, every machine:** the dashboard sessions list shows ALL sessions across the pool, each tagged with the machine it runs on. API: \`GET /sessions?scope=pool\` → \`{ sessions: [...each with machineId/machineNickname...], pool: { peersOk, failed } }\`. An unreachable peer degrades to a \`failed\` entry — local sessions always answer.
 - **Idle vs broken machine (WS4.2):** the same \`pool.machines[]\` carries an explicit per-machine state so an idle machine never reads as broken. A machine with ZERO sessions gets \`pool.machines[].emptyState\` = \`online — no active sessions\` (heartbeat-fresh, just idle) / \`offline since <t>\` (known offline) / \`unreachable (last seen <t>)\` (was online, now not answering — the \`failed\` case). Honest derivation from the registry online flag + last-seen + the live fan-out — never a fabricated "looks fine". The dashboard sessions view renders these per-machine; a machine WITH sessions gets no empty-state (its tiles already name it). Single-machine install = just the lone self row.
 - **Honest machine state (trustworthy-machine-load, P1):** every \`pool.machines[]\` row now carries \`liveness\` = \`live\` / \`unreachable\` (shape \`struggling\` | \`refusing\` | \`silent\`) / \`stale\` / \`unknown\`, each with the evidence age and source, plus a ready-made \`livenessLine\` (\`<liveness>, last evidence <age> ago from <source>\`) and the freshest other-machine sighting ("Mac Mini reached it 3 min ago"). The last DIRECT contact is saved to disk, so a server restart renders \`stale, last evidence 20 min ago\` instead of "offline". **Never say a machine is "offline" without positive evidence** (a shutdown announcement or the sleep gate): quote the liveness, its age and its source — an overloaded machine looks exactly like a dead one to a plain timeout. Each row also carries a multi-signal \`loadReport\` (cores, CPU idle, available memory, native memory pressure, server event-loop lag, sessions in use) and \`loadVerdict\` = \`ok\` / \`elevated\` / \`saturated\` / \`impaired\` / \`unknown\` — a report older than 60 s reads \`unknown\`, and a peer on older code reads \`unknown\`, never \`ok\`. Reporting only: the \`online\` flag, placement and ownership keep their existing semantics in this phase.
+- **Overload admission (trustworthy-machine-load, P2):** each machine protects its own resources. When its own \`loadVerdict\` is \`saturated\` or \`impaired\` it CLOSES to new automatic work (scheduled jobs, helpers, placement of new conversations): the work waits and is retried, nothing is dropped, and existing conversations keep working. It reopens after five consecutive good samples (about 75 s). One host-wide **recovery slot** (shared by every agent on the machine) stays free so a session the operator asks for can always start and assess the machine. Placement never puts new work on a machine that is refusing it; if every machine refuses, the message stays in the durable inbound queue (\`all-machines-refusing-work\`). Registry First: \`GET /work-admission\` → \`{ enabled, dryRun, enforced, acceptingWork, lastVerdict, recoverySlot, counters }\`; each machine's \`loadReport.acceptingWork\` / \`admissionEnforced\` in \`GET /pool\`; audit \`logs/work-admission.jsonl\`. Ships dev-gated + dry-run (\`monitoring.workAdmission\`: it logs what it WOULD refuse, refuses nothing, and peers keep placing work here until \`dryRun:false\`). When the user asks "why didn't a job run / why is this machine not taking work?" → read \`GET /work-admission\` before guessing.
 - **Post-transfer closeout (automatic):** when a topic moves to another machine, the OLD machine's session for it is closed automatically (immediately on an explicit "move", or within ~2 reaper ticks for any other path) — no duplicate sessions doing duplicate work. The close is recorded in the reap-log with reason "topic moved to <machine>"; protected sessions are never auto-closed.
 - **Quota-aware placement (automatic):** capacity heartbeats carry each machine's LLM-account quota state, and placement avoids machines whose account is currently rate-limited/blocked (no more topics placed onto a silent machine). A hard pin still wins (flagged \`pinned-machine-quota-blocked\`); if EVERY machine is blocked, placement proceeds least-loaded with \`all-machines-quota-blocked\` flagged. \`GET /pool\` shows each machine's \`quotaState\`.
 - **Machine nicknames** are the user-facing handle (auto-assigned, editable). Rename via \`PATCH /pool/machines/:machineId\` with \`{"nickname":"the mini"}\`, or inline on the Machines tab.
@@ -10034,6 +10067,18 @@ Beyond the one-awake-machine model: with the pool enabled I run conversations ac
       content += '\n' + livenessLine + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added honest machine liveness + load report line');
+    }
+
+    // trustworthy-machine-load-and-mesh-floor P2 (2026-10-25): overload admission —
+    // agents that carry the pool section learn that an overloaded machine closes to
+    // new automatic work, keeps one recovery slot, and where to read it
+    // (GET /work-admission). Idempotent via the unique 'Overload admission (trustworthy-machine-load' marker.
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Overload admission (trustworthy-machine-load')) {
+      const admissionLine = `
+- **Overload admission (trustworthy-machine-load, P2):** each machine protects its own resources. When its own \`loadVerdict\` is \`saturated\` or \`impaired\` it CLOSES to new automatic work (scheduled jobs, helpers, placement of new conversations): the work waits and is retried, nothing is dropped, and existing conversations keep working. It reopens after five consecutive good samples (about 75 s). One host-wide **recovery slot** (shared by every agent on the machine) stays free so a session the operator asks for can always start and assess the machine. Placement never puts new work on a machine that is refusing it; if every machine refuses, the message stays in the durable inbound queue (\`all-machines-refusing-work\`). Registry First: \`GET /work-admission\` → \`{ enabled, dryRun, enforced, acceptingWork, lastVerdict, recoverySlot, counters }\`; each machine's \`loadReport.acceptingWork\` / \`admissionEnforced\` in \`GET /pool\`; audit \`logs/work-admission.jsonl\`. Ships dev-gated + dry-run (\`monitoring.workAdmission\`: it logs what it WOULD refuse, refuses nothing, and peers keep placing work here until \`dryRun:false\`). When the user asks "why didn't a job run / why is this machine not taking work?" → read \`GET /work-admission\` before guessing.`;
+      content += '\n' + admissionLine + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added overload admission + recovery slot line');
     }
 
     // Post-transfer closeout awareness (2026-06-05): agents that already carry

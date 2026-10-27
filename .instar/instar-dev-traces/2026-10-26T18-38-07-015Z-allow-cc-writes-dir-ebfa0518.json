@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "allow-cc-writes-dir",
+  "sessionId": "e82cf1fb-8d20-4927-82ff-79db212c5b4a",
+  "timestamp": "2026-10-26T18:38:07.015Z",
+  "artifactPath": "upgrades/side-effects/allow-cc-writes-dir.md",
+  "artifactSha256": "5b0430bd31ece4e60de9ed44f4b803af05377f70bf8e4408dfd5fdb6ee52eb97",
+  "coveredFiles": [
+    "docs/specs/allow-cc-writes-dir.eli16.md",
+    "src/feedback-factory/execute/changeSet.ts",
+    "upgrades/side-effects/allow-cc-writes-dir.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two @silent-fallback-ok annotations on catches in claudeDirBreach that fail closed (ENOENT is the clean case; every other error is reported as a breach), so the no-silent-fallbacks ratchet stays at its baseline. Comment-only.",
+  "eli16Path": "docs/specs/allow-cc-writes-dir.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/allow-cc-writes-dir.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

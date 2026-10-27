@@ -8,9 +8,10 @@
  *   witness init                      create the Witness key (once; never overwritten)
  *   witness bind --agent <did>        bind the Witness key to the Threadline key (both sign)
  *   witness sign --subject <did> --claim <claim> --context <text> [--evidence <item>]... [--confidence <0-100>]
- *   witness verify <record.json> --binding <binding.json>
- *   witness seal-evidence <seal-file> [--url <where-to-fetch>]
- *   witness export                    the binding chain and every record, as JSON
+ *   witness verify <record.json> --binding <binding.json> [--seal <file>]...
+ *   witness seal-evidence <seal-file> [--party <id> --url <read-url>]   (SealKeeper form; provisional)
+ *   witness seal-evidence <seal-file> [--url <where-to-fetch>]           (the v0 form, still accepted)
+ *   witness export [--seal <file>]...  the binding chain, every record, and their SEAL bytes, as JSON
  *
  * Registry commands — the ONLY ones that talk to a network, and only when run:
  *   witness publish <record.json> --binding <binding.json>   verify locally, then POST to the registry
@@ -42,6 +43,10 @@ import { verifyRecordWithBinding } from './localverify.js';
 import {
   LOOKUP_MAX_LIMIT, RegistryError, UNVERIFIED_NOTE, assessLookupPage, assessSingleRecord, registryBase, registryRequest,
 } from './registry.js';
+import {
+  SEAL_LABELS_NOTE, SEAL_REFERENCE_PROVISIONAL_NOTE, checkSealBytes, formatSealkeeperReference,
+  parseSealReference, sealReferencesIn, sha256Hex, type SealReference,
+} from './seal.js';
 
 const BINDING_FILE = 'binding.json';
 
@@ -105,14 +110,69 @@ function existingBinding(home: string): KeyBinding {
   return result.binding;
 }
 
-/** A SEAL is carried by hash plus where to fetch it, never inline (Witness v0 evidence items cap at 500 chars). */
-export function sealEvidence(sealBytes: Buffer, url?: string): string[] {
-  const items = [`seal:sha256:${crypto.createHash('sha256').update(sealBytes).digest('hex')}`];
+const SEALS_DIR = 'seals';
+
+/**
+ * A SEAL is never inline in a record (evidence items cap at 500 chars). With --party
+ * it is referenced in SealKeeper's one-string form, `sealkeeper:seal:1:<party>:<sha256>:<url>`
+ * (PROVISIONAL until SealKeeper confirms the reading); without, in the v0 form
+ * `seal:sha256:<hex>` plus an optional URL. Either way only the hash is trusted.
+ */
+export function sealEvidence(sealBytes: Buffer, options: { url?: string; party?: string } = {}): string[] {
+  const { url, party } = options;
+  const sha256 = sha256Hex(sealBytes);
+  if (party !== undefined) {
+    if (!url) fail('--party needs --url: the sealkeeper:seal:1 form carries the SEAL read URL');
+    try {
+      return [formatSealkeeperReference({ party, sha256, url })];
+    } catch (err) {
+      fail(`cannot build the sealkeeper reference: ${(err as Error).message}`);
+    }
+  }
+  const items = [`seal:sha256:${sha256}`];
   if (url) {
     if (!/^https:\/\/\S+$/.test(url) || url.length > 500) fail('--url must be an https URL of at most 500 characters');
     items.push(url);
   }
   return items;
+}
+
+/** Keeps a copy of the SEAL under its hash so `export` can carry it beside the record. */
+function storeSealBytes(home: string, sealBytes: Buffer): { sha256: string; file: string } {
+  const sha256 = sha256Hex(sealBytes);
+  const dir = path.join(home, SEALS_DIR);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, `${sha256}.seal`);
+  if (!fs.existsSync(file)) fs.writeFileSync(file, sealBytes, { mode: 0o600, flag: 'wx' });
+  return { sha256, file };
+}
+
+/** The stored SEAL for a hash, or undefined. A stored file that no longer hashes to its name is a refusal. */
+function storedSealBytes(home: string, sha256: string): Buffer | undefined {
+  const file = path.join(home, SEALS_DIR, `${sha256}.seal`);
+  if (!fs.existsSync(file)) return undefined;
+  const bytes = fs.readFileSync(file);
+  if (sha256Hex(bytes) !== sha256) fail(`stored SEAL ${file} does not hash to its name; refusing to carry it`);
+  return bytes;
+}
+
+function readSealFiles(files: string[] | undefined): Buffer[] {
+  return (files ?? []).map((f) => {
+    if (!fs.existsSync(f)) fail(`no SEAL file at ${f}`);
+    return fs.readFileSync(f);
+  });
+}
+
+/** What verify reports per SEAL reference: the hash verdict plus the honest status of the labels. */
+function describeSeal(ref: SealReference, bytesChecked: boolean): Record<string, unknown> {
+  if (ref.format === 'malformed') {
+    return { reference: ref.reference, format: ref.format, reason: ref.reason, bytesChecked: false, provisional: true };
+  }
+  const base = { reference: ref.reference, format: ref.format, sha256: ref.sha256, bytesChecked, provisional: ref.provisional };
+  if (ref.format === 'sealkeeper-v1') {
+    return { ...base, party: ref.party, url: ref.url, trusted: ref.trusted, unverified: ref.unverified, labels: SEAL_LABELS_NOTE };
+  }
+  return base;
 }
 
 export async function run(argv: string[]): Promise<unknown> {
@@ -132,6 +192,8 @@ export async function run(argv: string[]): Promise<unknown> {
       confidence: { type: 'string' },
       binding: { type: 'string' },
       url: { type: 'string' },
+      party: { type: 'string' },
+      seal: { type: 'string', multiple: true },
       registry: { type: 'string' },
       limit: { type: 'string' },
       cursor: { type: 'string' },
@@ -215,9 +277,29 @@ export async function run(argv: string[]): Promise<unknown> {
       if (!file) fail('verify needs a record file');
       if (!values.binding) fail('verify needs --binding <binding.json> naming the issuer\'s key');
       // The same check the registry commands run on every record they read back (localverify.ts).
-      const v = verifyRecordWithBinding(readJson(path.resolve(file), 'record'), readJson(path.resolve(values.binding), 'binding'));
+      const record = readJson(path.resolve(file), 'record');
+      const v = verifyRecordWithBinding(record, readJson(path.resolve(values.binding), 'binding'));
       if (!v.ok) return v;
-      return { ok: true, expired: v.expired, threadlineFingerprint: v.threadlineFingerprint, issuerKeyCheck: v.issuerKeyCheck };
+      const evidence = Array.isArray((record as { evidence?: unknown }).evidence) ? (record as { evidence: string[] }).evidence : [];
+      const refs = sealReferencesIn(evidence);
+      const check = checkSealBytes(refs, readSealFiles(values.seal));
+      if (check.unmatched.length) {
+        return {
+          ok: false,
+          reason: `SEAL bytes do not match any SEAL reference in the record (sha256 ${check.unmatched.join(', ')})`,
+          seals: refs.map((r) => describeSeal(r, false)),
+        };
+      }
+      const seals = refs.map((r) => describeSeal(r, r.format !== 'malformed' && check.matched.has(r.sha256)));
+      const provisional = refs.some((r) => r.provisional);
+      return {
+        ok: true,
+        expired: v.expired,
+        threadlineFingerprint: v.threadlineFingerprint,
+        issuerKeyCheck: v.issuerKeyCheck,
+        ...(refs.length ? { seals } : {}),
+        ...(provisional ? { provisional: SEAL_REFERENCE_PROVISIONAL_NOTE } : {}),
+      };
     }
     case 'publish': {
       const file = positionals[0];
@@ -292,12 +374,44 @@ export async function run(argv: string[]): Promise<unknown> {
       const file = positionals[0];
       if (!file) fail('seal-evidence needs the SEAL file');
       if (!fs.existsSync(file)) fail(`no file at ${file}`);
-      return { evidence: sealEvidence(fs.readFileSync(file), values.url) };
+      const bytes = fs.readFileSync(file);
+      const evidence = sealEvidence(bytes, { url: values.url, party: values.party });
+      const stored = storeSealBytes(home, bytes);
+      const provisional = values.party !== undefined;
+      return {
+        evidence,
+        sha256: stored.sha256,
+        sealStored: stored.file,
+        ...(provisional ? { provisional: SEAL_REFERENCE_PROVISIONAL_NOTE, labels: SEAL_LABELS_NOTE } : {}),
+      };
     }
     case 'export': {
       const binding = existingBinding(home);
       const store = new WitnessStore({ dir: path.join(home, 'store') });
-      return { binding, records: store.list({ issuer: binding.agent }).map((r) => r.record) };
+      const records = store.list({ issuer: binding.agent }).map((r) => r.record);
+      // The SEAL bytes travel with the records, matched by hash: SealKeeper does not
+      // serve past SEALs, so the URL in a reference returns the current SEAL, not this one.
+      const refs = records.flatMap((r) => sealReferencesIn(r.evidence));
+      const supplied = checkSealBytes(refs, readSealFiles(values.seal));
+      if (supplied.unmatched.length) {
+        fail(`--seal bytes do not match any SEAL referenced by an exported record (sha256 ${supplied.unmatched.join(', ')})`);
+      }
+      const seals: Record<string, { bytes: string; source: 'seal-file' | 'stored' }> = {};
+      const sealsMissing: string[] = [];
+      for (const ref of refs) {
+        if (ref.format === 'malformed' || seals[ref.sha256]) continue;
+        const fromFile = supplied.matched.get(ref.sha256);
+        if (fromFile) { seals[ref.sha256] = { bytes: Buffer.from(fromFile).toString('base64'), source: 'seal-file' }; continue; }
+        const stored = storedSealBytes(home, ref.sha256);
+        if (stored) seals[ref.sha256] = { bytes: stored.toString('base64'), source: 'stored' };
+        else sealsMissing.push(ref.sha256);
+      }
+      const provisional = refs.some((r) => r.provisional);
+      return {
+        binding, records, seals,
+        ...(sealsMissing.length ? { sealsMissing } : {}),
+        ...(provisional ? { provisional: SEAL_REFERENCE_PROVISIONAL_NOTE } : {}),
+      };
     }
     default:
       fail(`unknown command "${command ?? ''}". Commands: init, bind, sign, verify, seal-evidence, export, publish, lookup, get, stats`);

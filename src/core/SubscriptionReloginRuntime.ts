@@ -6,7 +6,8 @@ import type { QuotaPoller } from './QuotaPoller.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import type { PlaywrightProfileRegistry, PlaywrightAccount, PlaywrightProfileDetail } from './PlaywrightProfileRegistry.js';
 import type { PendingLogin } from './PendingLoginStore.js';
-import { evaluateSubscriptionReloginAdmission, type PasskeyCellAdmissionState } from './SubscriptionReloginPolicy.js';
+import { evaluateSubscriptionReloginAdmission, isReloginSupportedPath, type PasskeyCellAdmissionState,
+  type SubscriptionReloginRefusal } from './SubscriptionReloginPolicy.js';
 import { SubscriptionReloginStore, type SubscriptionReloginEpisode } from './SubscriptionReloginStore.js';
 import { SubscriptionReloginOrchestrator } from './SubscriptionReloginOrchestrator.js';
 import { SubscriptionReloginService } from './SubscriptionReloginService.js';
@@ -133,7 +134,22 @@ export interface SubscriptionReloginRuntime {
   helper: SubscriptionReloginHelper | null;
   /** The last-resort model port when configured (spec relogin-last-resort-model). */
   lastResort: ReloginLastResortPort | null;
+  /**
+   * Why each needs-sign-in account on THIS machine has no repair (Registry First: "why didn't the
+   * repair start?" is a read, never a guess). Read-only: no row, ledger entry or login is written.
+   */
+  blockers(): Promise<SubscriptionReloginBlocker[]>;
   start(): void; stop(): void; close(): void;
+}
+
+/**
+ * A needs-sign-in account the automatic repair will not start for. `no-open-incident`: nothing
+ * has corroborated the sign-in as dead on this machine (for example its stored login cannot be
+ * read), and a repair needs that evidence; any other reason is the admission refusal.
+ */
+export interface SubscriptionReloginBlocker {
+  accountId: string; machineId: string; framework: string;
+  reason: 'no-open-incident' | SubscriptionReloginRefusal;
 }
 
 /** Production-shaped composition. All authority lookups are repeated at action boundaries. */
@@ -487,6 +503,23 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     }
     return candidates;
   };
+  const blockers = async (): Promise<SubscriptionReloginBlocker[]> => {
+    if (deps.pool.getAvailability().state !== 'ready') return [];
+    const open = deps.ledger.listEpisodes({ limit: 500 }).filter((item) => item.closedAt === null && item.machineId === deps.machineId);
+    const out: SubscriptionReloginBlocker[] = [];
+    for (const acct of deps.pool.list()) {
+      if (acct.status !== 'needs-reauth' || !isReloginSupportedPath(acct.provider, acct.framework)) continue;
+      const sourceEpisode = open.find((item) => item.accountId === acct.id);
+      const base = { accountId: acct.id, machineId: deps.machineId, framework: acct.framework };
+      if (!sourceEpisode) { out.push({ ...base, reason: 'no-open-incident' }); continue; }
+      // A repair row for this incident is already visible as an episode; its state says the rest.
+      if (store.list({ accountId: acct.id, limit: 100 }).some((item) => item.sourceEpisodeId === sourceEpisode.id
+        && item.machineId === deps.machineId)) continue;
+      const verdict = await admissionFor(acct, sourceEpisode);
+      if (!verdict.admitted) out.push({ ...base, reason: verdict.reason });
+    }
+    return out;
+  };
   const service = new SubscriptionReloginService({ store, orchestrator, scanCandidates,
     revalidate: async (episode) => {
       const acct = account(episode); const sourceEpisode = source(episode);
@@ -509,7 +542,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         && deps.quotaPoller.loginCheck?.(acct.id) === 'ok';
     } });
   serviceRef = service;
-  return { store, service, helper, lastResort: deps.lastResort ?? null,
+  return { store, service, helper, lastResort: deps.lastResort ?? null, blockers,
     start: () => {
       // Boot cleanup: a `relogin-*` helper left by a previous process can never finish.
       if (helper) {
@@ -574,6 +607,7 @@ export function subscriptionReloginRouteContext(runtime: SubscriptionReloginRunt
     // Registry First: the last-resort model's live state (never the key), or available:false.
     lastResortStatus: (): ReloginLastResortStatus | { available: false } =>
       runtime.lastResort?.available() ? runtime.lastResort.status() : { available: false },
+    blockers: () => runtime.blockers(),
     close: () => runtime.close(),
   };
 }

@@ -594,6 +594,30 @@ describe('renderAccountMatrix', () => {
     expect(cell!.querySelector('[data-matrix-setup]')).toBeNull();
   });
 
+  it('says in plain words why a needs-sign-in cell will not repair on its own, and keeps Sign in', () => {
+    const render = (status: string, blockers: unknown[]) => {
+      const t = el();
+      renderAccountMatrix(doc, t, {
+        enabled: true,
+        accounts: [{ id: 'a1', email: 'a1@x.com', status, machineId: 'm1', machineNickname: 'Mini' }],
+        pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+      }, { enabled: true, logins: [] }, {}, [], [], blockers);
+      return t.querySelector('[data-cell-key="a1::m1"]')!;
+    };
+    const noProfile = render('needs-reauth', [{ accountId: 'a1', machineId: 'm1', reason: 'profile-unresolved' }]);
+    expect(noProfile.textContent).toContain('no browser profile signed in to this account');
+    expect(noProfile.querySelector('[data-matrix-setup]')).toBeTruthy();
+    expect(render('needs-reauth', [{ accountId: '*', machineId: 'm1', reason: 'feature-unavailable' }]).textContent)
+      .toContain('Automatic repair isn’t running on this machine');
+    expect(render('needs-reauth', [{ accountId: 'a1', machineId: 'm1', reason: 'some-future-reason' }]).textContent)
+      .toContain('Won’t repair on its own on this machine');
+    // Another cell's blocker, or an active cell, adds nothing.
+    expect(render('needs-reauth', [{ accountId: 'a2', machineId: 'm1', reason: 'profile-unresolved' }]).textContent)
+      .not.toContain('Won’t repair');
+    expect(render('active', [{ accountId: 'a1', machineId: 'm1', reason: 'profile-unresolved' }]).textContent)
+      .not.toContain('Won’t repair');
+  });
+
   it('renders a "Set up" button for a genuinely-empty (reachable) cell', () => {
     // Two reachable machines m1, m1b; account a1 is active only on m1 → a1 × m1b is empty.
     const t = el();

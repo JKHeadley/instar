@@ -46,9 +46,17 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
   };
   return {
     async prView(pr: number): Promise<PrView | null> {
-      const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid']);
+      // title/body/files feed the main-red repair match (mainRedHold.ts); gh lists the first 100 files.
+      // labels: `merge-throughput` ranks the PR ahead of ordinary PRs (prPriority).
+      const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,title,body,files,labels']);
       if (!out) return null;
-      try { return JSON.parse(out) as PrView; } catch { return null; }
+      try {
+        const v = JSON.parse(out) as PrView & { files?: unknown };
+        const files = Array.isArray(v.files) ? (v.files as Array<{ path?: unknown }>).filter((f) => !!f && typeof f.path === 'string').map((f) => ({ path: f.path as string })) : null;
+        const raw = v as { labels?: unknown };
+        const labels = Array.isArray(raw.labels) ? (raw.labels as Array<{ name?: unknown }>).filter((l) => !!l && typeof l.name === 'string').map((l) => ({ name: l.name as string })) : null;
+        return { ...v, files, labels };
+      } catch { return null; }
     },
     async baseHead(baseRefName: string): Promise<string | null> {
       if (!/^[A-Za-z0-9._/-]{1,200}$/.test(baseRefName)) return null;

@@ -200,3 +200,16 @@ describe('MachineLoadSampler', () => {
     expect(s.verdict()).toBe('impaired');
   });
 });
+
+describe('clampLoadReport — admission fields (P2)', () => {
+  const base = { bootId: 'b1', seq: 1, sampleAgeMs: 0 };
+  it('absent on the wire → absent after the clamp (a peer on older code is never read as refusing)', () => {
+    const r = clampLoadReport(base)!;
+    expect('acceptingWork' in r).toBe(false);
+    expect('admissionEnforced' in r).toBe(false);
+  });
+  it('present → boolean/null, and admissionEnforced is true ONLY for literal true', () => {
+    expect(clampLoadReport({ ...base, acceptingWork: false, admissionEnforced: true })).toMatchObject({ acceptingWork: false, admissionEnforced: true });
+    expect(clampLoadReport({ ...base, acceptingWork: 'no', admissionEnforced: 'yes' })).toMatchObject({ acceptingWork: null, admissionEnforced: false });
+  });
+});

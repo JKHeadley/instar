@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "slug": "trustworthy-machine-load-p2",
+  "sessionId": "2ec314b8-48fb-456a-9d9a-4641c5b6298e",
+  "timestamp": "2026-10-26T07:09:23.761Z",
+  "artifactPath": "upgrades/side-effects/trustworthy-machine-load-p2.md",
+  "artifactSha256": "2aec9fe8c0b64bd8be1803b8b1359ef7b6d3baa4925eab18066fb53c42ca1d4e",
+  "specPath": "docs/specs/trustworthy-machine-load-and-mesh-floor.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-10-26T07-00-31-680Z-trustworthy-machine-load-p2.json",
+    ".instar/instar-dev-decisions/2026-10-26T07-01-57-610Z-trustworthy-machine-load-p2.json",
+    ".instar/instar-dev-decisions/2026-10-26T07-06-36-616Z-trustworthy-machine-load-p2.json",
+    ".instar/instar-dev-decisions/2026-10-26T07-08-47-817Z-trustworthy-machine-load-p2.json",
+    "src/commands/server.ts",
+    "src/core/PlacementExecutor.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/hostSpawnSemaphore.ts",
+    "src/core/machineLoadReport.ts",
+    "src/core/overloadSelfHelp.ts",
+    "src/core/types.ts",
+    "src/core/workAdmission.ts",
+    "src/data/state-coherence-registry.json",
+    "src/monitoring/guardManifest.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/work-admission-lifecycle.test.ts",
+    "tests/integration/work-admission-route.test.ts",
+    "tests/unit/machine-load-report.test.ts",
+    "tests/unit/placement-overload-admission.test.ts",
+    "tests/unit/work-admission.test.ts",
+    "upgrades/next/trustworthy-machine-load-p2.md",
+    "upgrades/side-effects/trustworthy-machine-load-p2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds enforced refusal authority on session spawn, scheduler and placement (dry-run first) under a converged, approved spec; second-pass review ran two rounds and concurred",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "WorkAdmission is registered as overload-admission-self-help in src/testing/selfActionRegistry.ts: under the pinned always-saturated fixture it closes once, emits the self-help notice once per closed episode (boundK 1, perTargetBoundK 1, horizon-independent over 40 and 80 ticks) and never reopens; the other emits are rate-bounded (all-refusing notice once per topic per 30 min; custody notice one per refused inbound message, user-driven)"
+    },
+    "component": "WorkAdmission"
+  }
+}

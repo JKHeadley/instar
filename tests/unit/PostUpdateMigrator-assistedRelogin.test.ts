@@ -57,6 +57,11 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).toContain('relogin_last_resort_anthropic_api_key');
     expect(once).toContain('last-resort-drive-started');
     expect(once.indexOf('Last-resort sign-in model')).toBeGreaterThan(once.indexOf('Failed sign-in repairs retry slowly'));
+    // Repair blockers: "why didn't the repair start?" lands once, after the last-resort bullet.
+    expect(first.upgraded).toContain('CLAUDE.md: added sign-in repair blockers awareness');
+    expect(once.match(/Why a sign-in repair did not start/g)).toHaveLength(1);
+    expect(once).toContain('no-open-incident');
+    expect(once.indexOf('Why a sign-in repair did not start')).toBeGreaterThan(once.indexOf('Last-resort sign-in model'));
     run();
     expect(fs.readFileSync(target, 'utf8')).toBe(once);
   });
