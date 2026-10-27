@@ -80,3 +80,5 @@ This changes an existing self-triggered verifier scheduling path, rather than ad
 **Reviewer:** Independent Codex read-only reviewer (/root/priority_review).
 
 The branch was merged with `origin/main` after the verify queue reported a conflict. The resolution combines the new suite-priority seam with main's starvation callback and preserves both E2E lifecycle tests. Independent Codex review of the staged merge found no remaining conflict-resolution error. The full Local Verify run on the merged head remains the merge authority.
+
+After the v1.3.1460 release moved pending upgrade notes, the branch was merged with current main again. The suite-priority upgrade note stays in `upgrades/next/` for the next release. An independent Codex reviewer checked head `005cf0018` against current main and concurred: the priority behavior, migration, agent awareness, and merge resolution have no identified blocker. The two earlier Local Verify failures involved untouched messaging and standards-coverage behavior; a new full run on this head remains required before merging. The reconciled branch builds, and its 234 focused slot and Local Verify unit tests pass.
