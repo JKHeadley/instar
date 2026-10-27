@@ -10,7 +10,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  buildSchedulePage, buildHistory, buildSetupIssues, entryStatus, jobRow, sortRows, scheduleWords, storySentence, storyLines, jobActions, toggleConfirm,
+  buildSchedulePage, buildHistory, buildSetupIssues, entryStatus, jobRow, sortRows, scheduleWords, overdueWords, storySentence, storyLines, jobActions, toggleConfirm,
   runStartWords, runFollowWords, saveRefusalWords, originWords, skipWords, medianDurations, baselineFor, markText, LATE_GRACE_MS, COMING_UP,
 } from '../../dashboard/console/schedule-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
@@ -85,7 +85,7 @@ describe('late — only for a job that is on and runs on that machine', () => {
   it('is late when enabled, local, not running and past its recorded next-run time by over 10 min', () => {
     const st = entryStatus(entry(withState({}, { nextScheduled: past })), NOW);
     expect(st.kind).toBe('late');
-    expect(st.words).toBe('past its recorded next-run time by 40 min, not running');
+    expect(st.words).toBe('40 min overdue');
     expect(st.words).not.toMatch(/missed/i);
     expect(LATE_GRACE_MS).toBe(600000);
   });
@@ -122,7 +122,7 @@ describe('failing, running and running long', () => {
   it('failing: the failure count, and late is added to it when both hold', () => {
     const st = entryStatus(entry(withState({}, { lastResult: 'failure', consecutiveFailures: 2, nextScheduled: minsAgo(30) })), NOW);
     expect(st).toMatchObject({ kind: 'failing', tone: 'bad', failures: 2 });
-    expect(st.words).toBe('failed its last 2 runs · past its recorded next-run time by 30 min, not running');
+    expect(st.words).toBe('failed its last 2 runs · 30 min overdue');
     expect(entryStatus(entry(withState({}, { lastResult: 'failure', consecutiveFailures: 1 })), NOW).words).toBe('failed its last run');
   });
   it('running long only against a real baseline: measured median first, declared duration second, none → no claim', () => {
@@ -230,6 +230,20 @@ describe('sorting, filtering and words', () => {
     expect(scheduleWords('0 9 * * 1-5')).toBe('Weekdays at 9 am');
     expect(scheduleWords('0 0 1 1 *')).toBe('Yearly on January 1 at 12 am');
     expect(scheduleWords('5 4 */2 * *')).toBe('5 4 */2 * *');
+    // Lists and ranges, in words — never a cron string on the first screen.
+    expect(scheduleWords('17,47 * * * *')).toBe('Twice an hour, at :17 and :47');
+    expect(scheduleWords('0,20,40 * * * *')).toBe('3 times an hour, at :00, :20 and :40');
+    expect(scheduleWords('0,30 */2 * * *')).toBe('Every 2 hours, at :00 and :30');
+    expect(scheduleWords('30 11 * * 1,3,5')).toBe('Mon, Wed and Fri at 11:30 am');
+    expect(scheduleWords('0 9,17 * * *')).toBe('Daily at 9 am and 5 pm');
+    expect(scheduleWords('0 9,17 * * 1-5')).toBe('Weekdays at 9 am and 5 pm');
+    expect(scheduleWords('0 9-17 * * 1-5')).toBe('Every hour from 9 am to 5 pm on weekdays');
+    expect(scheduleWords('0 9 1,15 * *')).toBe('On the 1st and 15th at 9 am');
+    expect(scheduleWords('0 8 * * 0,6')).toBe('Weekends at 8 am');
+    expect(overdueWords(40 * 60000)).toBe('40 min overdue');
+    expect(overdueWords(3 * 3600000)).toBe('3 h overdue');
+    expect(overdueWords(14 * 86400000)).toBe('14 days overdue');
+    expect(overdueWords(86400000 * 2)).toBe('2 days overdue');
     expect(scheduleWords('')).toBe('no schedule');
   });
   it('the sheet sentence reads in words and gains the last run’s duration once history is read', () => {
@@ -397,7 +411,7 @@ describe('schedule page in a DOM', () => {
     const ids = [...doc.querySelectorAll('.page-sections section[id]')].map((s) => s.id);
     expect(ids.indexOf('sec-needs')).toBeLessThan(ids.indexOf('sec-coming'));
     expect([...doc.querySelectorAll('#sec-needs button.row .row-title')].map((e) => e.textContent)).toEqual(['Git sync', 'Feedback process']);
-    expect(doc.querySelector('#sec-needs button.row:nth-of-type(2) .row-sub')!.textContent).toBe('past its recorded next-run time by 40 min, not running · last ran 2 h ago ✓');
+    expect(doc.querySelector('#sec-needs button.row:nth-of-type(2) .row-sub')!.textContent).toBe('40 min overdue · last ran 2 h ago ✓');
     expect([...doc.querySelectorAll('#sec-coming button.row .row-title')].map((e) => e.textContent)).toEqual(['Memory hygiene']);
     expect(doc.querySelector('#sec-everything .list-count')!.textContent).toBe('1');
     expect(doc.querySelector('#sec-everything .list-rows')!.hasAttribute('hidden')).toBe(true);
@@ -437,5 +451,26 @@ describe('schedule page in a DOM', () => {
     expect(doc.querySelector('.sheet .switch-action .action-status')!.textContent).toBe('Off. Nothing runs it until it is switched back on.');
     // Your job: Edit is offered; a default's actions are not.
     expect([...doc.querySelectorAll('.sheet .more-actions button')].map((b) => b.textContent)).toEqual(['Edit']);
+  });
+});
+
+
+describe('QA content fixes — Schedule', () => {
+  it('a late job reads "N days overdue" in its row, and the raw cron stays out of the row', () => {
+    const late = withState({ slug: 'evo', name: 'Evolution Proposal Evaluate', schedule: '17,47 * * * *' }, { nextScheduled: minsAgo(14 * 1440), lastRun: minsAgo(14 * 1440 + 5) });
+    const p = buildSchedulePage(res([late]), NOW, { names: NAMES, selfMachineId: 'm1' });
+    expect(p.sections.needs[0].sub).toBe('14 days overdue · last ran 14 d ago ✓');
+    expect(p.sections.needs[0].sub).not.toMatch(/past its recorded|\* \*/);
+    const fine = withState({ slug: 'ffe', name: 'Feedback-Factory Execute', schedule: '17,47 * * * *' }, { nextScheduled: minsAhead(2) });
+    const q = buildSchedulePage(res([fine]), NOW, { names: NAMES, selfMachineId: 'm1' });
+    expect(q.sections.coming[0].sub).toBe('Twice an hour, at :17 and :47 · last ran 2 h ago ✓');
+  });
+  it('the machine line counts the machines whose jobs are listed: one machine is "on this machine", never "across 1 machine"', () => {
+    const jobs = [job()];
+    const one = buildSchedulePage(res(jobs, { pool: pool(jobs.map((j) => ({ ...j, machineId: 'm1' })), { peersQueried: 3, peersOk: 3 }) }), NOW, { names: NAMES, selfMachineId: 'm1' });
+    expect(one.sub).toBe('Jobs on this machine.');
+    const remote = job({ slug: 'remote-only', name: 'Remote only', machineId: 'm2', remote: true });
+    const two = buildSchedulePage(res(jobs, { pool: pool([...jobs.map((j) => ({ ...j, machineId: 'm1' })), remote], { peersQueried: 3, peersOk: 3 }) }), NOW, { names: NAMES, selfMachineId: 'm1' });
+    expect(two.sub).toBe('Jobs across 2 machines.');
   });
 });

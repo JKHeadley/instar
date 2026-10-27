@@ -6,10 +6,10 @@
 // "To change one, tell me in chat." Read only: no write route is called from here.
 
 import {
-  buildPreferences, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
+  buildPreferences, buildPreferenceEntries, isMissingRoute, dateWords, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
 } from './learned-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, fold } from './ui.js';
 
 const PAGE = 20;
 // The last good preferences build, so a failed refresh shows it with its age (stale) instead of nothing.
@@ -22,14 +22,18 @@ const CORRECTION_KEYS = ['id', 'kind', 'status', 'occurrenceCount', 'detectedAt'
 export async function renderLearned(main, ctx) {
   const { get } = ctx;
   if (!main.querySelector('.learned-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’ve learned about you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [prefsRes, firstPage, conflictsRes, poolRes] = await Promise.all([
-    get('/preferences/session-context'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'),
+  const [listRes, firstPage, conflictsRes, poolRes] = await Promise.all([
+    get('/preferences'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'),
   ]);
   const now = Date.now();
-  const prefs = buildPreferences(prefsRes, { lastGood, now });
+  const machines = machineNames(poolRes);
+  // An older server has no structured read: fall back to parsing the session-context block.
+  const prefs = isMissingRoute(listRes)
+    ? buildPreferences(await get('/preferences/session-context'), { lastGood, now })
+    : buildPreferenceEntries(listRes, { lastGood, now, machines });
   if (prefs.ok && !prefs.stale) lastGood = { prefs, at: now };
   const corrections = buildCorrections([firstPage, ...olderPages], { now });
-  const conflicts = buildConflicts(conflictsRes, { machines: machineNames(poolRes), now });
+  const conflicts = buildConflicts(conflictsRes, { machines, now });
   const refresh = () => renderLearned(main, ctx);
   const h = learnedHeadline({ prefs, corrections });
 
@@ -56,25 +60,29 @@ function prefsBlock(prefs) {
   }
   if (prefs.stale) wrap.append(note(prefs.staleWords));
   if (!prefs.rows.length) {
-    wrap.append(el('p', { class: 'empty-line', text: prefs.total ? 'I keep some preferences, but none fit in what loads at the start of a conversation.' : 'Nothing saved yet. Correct me the same way on a couple of different days and it shows up here.' }));
+    wrap.append(el('p', { class: 'empty-line', text: prefs.total ? 'I keep some preferences, but none fit in what loads at the start of a conversation.' : 'Nothing saved yet.' }));
   } else {
     wrap.append(el('div', { class: 'pref-cards' }, prefs.rows.map((p) => prefCard(p, prefs))));
   }
   if (prefs.notLoadedWords) wrap.append(note(prefs.notLoadedWords));
-  if (prefs.meshWords) wrap.append(note(prefs.meshWords));
-  wrap.append(el('p', { class: 'card-note', text: ADVISORY_LINE }));
+  // How these are used, and where they come from, one tap deeper.
+  wrap.append(fold('About these', el('p', { class: 'card-note', text: ADVISORY_LINE }), prefs.meshWords ? note(prefs.meshWords) : null));
   return wrap;
 }
 
 function prefCard(p, prefs) {
   const b = el('button', { class: 'pref-card', type: 'button', 'data-focus-key': p.key },
+    p.fresh === 'new this week' ? el('span', { class: 'chip on pref-new', 'data-new': '1', text: 'New this week' }) : null,
     el('span', { class: 'pref-quote', text: `“${p.text}”` }),
     el('span', { class: 'slip-foot' }, el('span', { class: 'row-sub', text: p.sub }), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })));
   b.addEventListener('click', () => {
     const lines = [{ label: 'What I picked up', text: p.text }, { label: 'How often', text: p.seen ? (p.seen > 1 ? `Seen ${p.seen} times` : 'Seen once') : 'Not recorded' }];
     if (p.confidence != null) lines.push({ label: 'How sure', text: `${confidenceWords(p.confidence)} (${p.confidence.toFixed(2)})` });
+    if (p.recordedAt) lines.push({ label: 'Last seen', text: `${dateWords(p.recordedAt) || 'unknown'}${p.fresh ? ` (${p.fresh})` : ''}` });
+    if (p.machine) lines.push({ label: 'Which machine', text: p.machine });
+    if (p.redacted) lines.push({ label: 'Hidden', text: 'Part of it looked like a password or key, so it is hidden here.' });
     lines.push({ label: 'Loaded', text: 'At the start of every conversation' });
-    if (prefs.mesh) lines.push({ label: 'Where', text: 'This machine’s list, including what my other machines learned' });
+    if (prefs.mesh && !p.machine) lines.push({ label: 'Where', text: 'This machine’s list, including what my other machines learned' });
     sheet({ title: 'A preference I picked up' }, story(lines), note(ADVISORY_LINE), note('To change or drop it, tell me in chat.'), details({ line: p.raw }, ['line']));
   });
   return b;

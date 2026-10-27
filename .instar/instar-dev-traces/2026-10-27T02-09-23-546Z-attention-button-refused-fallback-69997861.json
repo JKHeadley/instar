@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "attention-button-refused-fallback",
+  "sessionId": "94177e2d-85a2-4315-9510-e63211d04631",
+  "timestamp": "2026-10-27T02:09:23.546Z",
+  "artifactPath": "upgrades/side-effects/attention-button-refused-fallback.md",
+  "artifactSha256": "94c0954790a95345fbfc91782d70e0b69c62193a43623998d57be02d248fc2a0",
+  "coveredFiles": [
+    "docs/specs/attention-button-refused-fallback.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/attentionAction.ts",
+    "src/server/routes.ts",
+    "tests/integration/attention-pool-scope.test.ts",
+    "tests/unit/attention-action.test.ts",
+    "upgrades/next/every-ask-is-actionable.md",
+    "upgrades/side-effects/attention-button-refused-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible delivery-fallback fix and display-field validation inside PR #2377; a revert restores prior behavior exactly; no state, config or migration.",
+  "eli16Path": "docs/specs/attention-button-refused-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attention-button-refused-fallback.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot bounded fallback within a single send (at most two extra sendMessage attempts, only after an HTTP 400 refusal); not a self-triggered loop"
+  }
+}

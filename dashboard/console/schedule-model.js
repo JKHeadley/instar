@@ -36,21 +36,71 @@ export function scheduleWords(cron) {
   const [min, hour, dom, mon, dow] = parts;
   const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const clock = (h, m) => `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''} ${h >= 12 ? 'pm' : 'am'}`;
+  const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+  const isNum = (x) => /^\d+$/.test(x);
+  const join = (xs) => xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
+  // Days of the week as words: "1,3,5" → "Mon, Wed and Fri"; "1-5" → "weekdays"; "0,6" → "weekends".
+  const dowWords = (d) => {
+    if (d === '*') return null;
+    if (d === '1-5') return 'weekdays';
+    if (d === '0,6' || d === '6,0') return 'weekends';
+    const m = /^(\d)-(\d)$/.exec(d);
+    if (m) return `${DAY_SHORT[Number(m[1])]} to ${DAY_SHORT[Number(m[2])]}`;
+    const parts = list(d);
+    if (parts.every(isNum)) return parts.length === 1 ? DAYS[Number(parts[0])] || d : join(parts.map((x) => DAY_SHORT[Number(x)] || x));
+    return null;
+  };
   if (/^\*\/(\d+)$/.test(min) && hour === '*' && dom === '*' && mon === '*' && dow === '*') { const n = Number(min.slice(2)); return n === 1 ? 'Every minute' : `Every ${n} minutes`; }
+  // "17,47 * * * *" → "Twice an hour, at :17 and :47"; "0,30 */2 * * *" → "Every 2 hours, at :00 and :30".
+  if (/^\d+(,\d+)+$/.test(min) && dom === '*' && mon === '*' && dow === '*' && (hour === '*' || /^\*\/(\d+)$/.test(hour))) {
+    const mins = list(min).map((x) => `:${String(Number(x)).padStart(2, '0')}`);
+    const times = join(mins);
+    if (hour === '*') return `${mins.length === 2 ? 'Twice' : `${mins.length} times`} an hour, at ${times}`;
+    const n = Number(hour.slice(2));
+    return `Every ${n} ${n === 1 ? 'hour' : 'hours'}, at ${times}`;
+  }
+  // Several fixed times a day: "0 9,17 * * *" → "Daily at 9 am and 5 pm".
+  if (isNum(min) && /^\d+(,\d+)+$/.test(hour) && dom === '*' && mon === '*') {
+    const times = join(list(hour).map((h) => clock(Number(h), Number(min))));
+    const dw = dowWords(dow);
+    if (dow === '*') return `Daily at ${times}`;
+    if (dw) return `${dw.charAt(0).toUpperCase() + dw.slice(1)} at ${times}`;
+  }
+  // Hours within a window: "0 9-17 * * 1-5" → "Every hour from 9 am to 5 pm on weekdays".
+  if (isNum(min) && /^(\d+)-(\d+)$/.test(hour) && dom === '*' && mon === '*') {
+    const m = /^(\d+)-(\d+)$/.exec(hour);
+    const dw = dowWords(dow);
+    return `Every hour from ${clock(Number(m[1]), Number(min))} to ${clock(Number(m[2]), Number(min))}${dw ? ` on ${dw}` : ''}`;
+  }
   if (min === '*' && hour === '*' && dom === '*' && mon === '*' && dow === '*') return 'Every minute';
   if (/^\d+$/.test(min) && /^\*\/(\d+)$/.test(hour) && dom === '*' && mon === '*' && dow === '*') { const n = Number(hour.slice(2)); return n === 1 ? 'Every hour' : `Every ${n} hours`; }
   if (/^\d+$/.test(min) && hour === '*' && dom === '*' && mon === '*' && dow === '*') return 'Every hour';
   if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*' && mon === '*') {
     if (dow === '*') return `Daily at ${clock(Number(hour), Number(min))}`;
     if (/^\d$/.test(dow)) return `${DAYS[Number(dow)] || dow} at ${clock(Number(hour), Number(min))}`;
-    if (dow === '1-5') return `Weekdays at ${clock(Number(hour), Number(min))}`;
+    const dw = dowWords(dow);
+    if (dw) return `${dw.charAt(0).toUpperCase() + dw.slice(1)} at ${clock(Number(hour), Number(min))}`;
   }
+  // Several days of the month: "0 9 1,15 * *" → "On the 1st and 15th at 9 am".
+  if (isNum(min) && isNum(hour) && /^\d+(,\d+)+$/.test(dom) && mon === '*' && dow === '*') return `On the ${join(list(dom).map((d) => ordinal(Number(d))))} at ${clock(Number(hour), Number(min))}`;
   if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && mon === '*' && dow === '*') return `Monthly on the ${ordinal(Number(dom))} at ${clock(Number(hour), Number(min))}`;
   if (/^\d+$/.test(min) && /^\d+$/.test(hour) && /^\d+$/.test(dom) && /^\d+$/.test(mon) && dow === '*') return `Yearly on ${monthName(Number(mon))} ${Number(dom)} at ${clock(Number(hour), Number(min))}`;
   return cron;
 }
 function ordinal(n) { const s = ['th', 'st', 'nd', 'rd']; const v = n % 100; return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`; }
 function monthName(m) { return ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][m - 1] || String(m); }
+
+/** "14 days overdue", "3 h overdue", "25 min overdue": how far past its recorded next-run time a job is. */
+export function overdueWords(ms) {
+  const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min overdue`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h overdue`;
+  const d = Math.round(h / 24);
+  return `${d} ${d === 1 ? 'day' : 'days'} overdue`;
+}
 
 /** "in 12 min", "in 3 h", "in 2 d", "now". */
 export function until(ts, now = Date.now()) {
@@ -151,7 +201,7 @@ export function entryStatus(e, now = Date.now(), medians = {}) {
   }
   const next = Date.parse(s.nextScheduled);
   const late = e.local && Number.isFinite(next) && now - next > LATE_GRACE_MS;
-  const lateWords = late ? `past its recorded next-run time by ${spell((now - next) / 1000)}, not running` : null;
+  const lateWords = late ? overdueWords(now - next) : null;
   if (failures) return { kind: 'failing', tone: 'bad', words: [failWords, lateWords].filter(Boolean).join(' · '), failures, late };
   if (!e.local) return { kind: 'elsewhere', tone: null, words: machinesWords(e.job), failures };
   if (!Number.isFinite(next)) return { kind: 'next-unknown', tone: 'unknown', words: 'next run unknown', failures };
@@ -311,8 +361,10 @@ export function buildSchedulePage(res, now = Date.now(), opts = {}) {
     headline = `${plural(rows.length, 'scheduled job', 'scheduled jobs')}. ${clauses.length ? clauses.join('; ') + '.' : 'Nothing is late or failing.'}`;
     tone = counts.failing ? 'bad' : (counts.late || counts.runningLong) ? 'attn' : 'ok';
   }
+  // Count the machines whose jobs are actually listed; a pool read that only brought this
+  // machine's jobs is "Jobs on this machine", never "across 1 machine".
   const machineCount = new Set(rows.flatMap((x) => x.statuses.map((s) => s.entry.machineId || 'self'))).size;
-  const sub = !rows.length ? 'Ask me in chat to do something on a schedule.' : multi ? `Jobs across ${machineCount} ${machineCount === 1 ? 'machine' : 'machines'}.` : 'Jobs on this machine.';
+  const sub = !rows.length ? 'Ask me in chat to do something on a schedule.' : multi && machineCount > 1 ? `Jobs across ${machineCount} machines.` : 'Jobs on this machine.';
   const facts = [
     { n: counts.late, label: 'late', tone: counts.late ? 'attn' : null, href: '#/work/schedule?s=needs' },
     { n: counts.failing, label: 'failing', tone: counts.failing ? 'bad' : null, href: '#/work/schedule?s=needs' },

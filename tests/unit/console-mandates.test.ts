@@ -164,13 +164,13 @@ describe('approvals, headline and facts', () => {
     expect(mandatesHeadline({ slips, approvals: { ...a, rows: a.rows.slice(0, 1) }, audit })).toEqual({ text: 'Echo is asking you to approve 1 thing.', tone: 'attn' });
     expect(mandatesHeadline({ slips, approvals: buildApprovals(off()), audit })).toEqual({ text: '1 slip active; nothing waiting.', tone: 'ok' });
     expect(mandatesHeadline({ slips, approvals: f, audit })).toEqual({ text: '1 slip active; can’t tell if anything is waiting.', tone: 'muted' });
-    expect(mandatesHeadline({ slips: buildSlips(ok({ mandates: [] }), { now: NOW }), approvals: buildApprovals(off()), audit })).toEqual({ text: 'No slips — every agent-to-agent action is refused until you sign one.', tone: 'ok' });
+    expect(mandatesHeadline({ slips: buildSlips(ok({ mandates: [] }), { now: NOW }), approvals: buildApprovals(off()), audit })).toEqual({ text: 'No permission slips. Agents can still talk to each other; only actions that need a slip are refused.', tone: 'ok' });
     expect(mandatesHeadline({ slips: buildSlips(off(), { now: NOW }), approvals: buildApprovals(off()), audit: buildAudit(off(), { now: NOW }) })).toEqual({ text: 'Permission slips are switched off on this agent.', tone: 'muted' });
     expect(mandatesHeadline({ slips: buildSlips(fail(), { now: NOW }), approvals: buildApprovals(off()), audit })).toEqual({ text: 'Can’t tell what you have allowed.', tone: 'muted' });
     expect(mandatesFacts({ slips, approvals: a, audit })).toEqual([
-      { n: 2, label: 'waiting on you', tone: 'attn' }, { n: 1, label: 'active slip' }, { n: 0, label: 'people with grants' }, { n: 'intact', label: 'decision record', tone: null },
+      { n: 2, label: 'waiting on you', tone: 'attn' }, { n: 1, label: 'active slip' },
     ]);
-    expect(mandatesFacts({ slips: buildSlips(fail(), { now: NOW }), approvals: buildApprovals(off()), audit: buildAudit(fail(), { now: NOW }) })).toEqual([{ n: '?', label: 'active slips' }, { n: '?', label: 'decision record' }]);
+    expect(mandatesFacts({ slips: buildSlips(fail(), { now: NOW }), approvals: buildApprovals(off()), audit: buildAudit(fail(), { now: NOW }) })).toEqual([{ n: '?', label: 'active slips' }]);
   });
 });
 
@@ -231,7 +231,7 @@ describe('request bodies match the routes', () => {
     expect(resultWords('issue', 502, { issued: true, reason: 'peer offline' })).toMatchObject({ ok: false, issued: true });
     expect(resultWords('issue', 201, { issued: true, delivered: true }).text).toBe('Issued and delivered to the other machine. The slip is active.');
     expect(resultWords('revoke', 200, { revoked: true })).toEqual({ ok: true, text: 'Revoked. Everything this slip allowed is refused from now on.' });
-    expect(resultWords('grant', 201, {}).text).toBe('Granted. The slip now carries it.');
+    expect(resultWords('grant', 201, {}).text).toBe('Done. The slip now carries it.');
     expect(resultWords('approve', 200, { alreadyApproved: true }).text).toBe('This was already approved.');
     expect(resultWords('deny', 200, {}).text).toBe('Declined.');
     expect(resultWords('deny', 0, {}).text).toBe('The server could not be reached. Nothing was sent.');
@@ -283,7 +283,7 @@ describe('permission slips in a DOM', () => {
     expect(doc.querySelector('.page-title')!.textContent).toBe('1 slip active; nothing waiting.');
     expect(doc.querySelector('.incident')).toBeNull();
     expect(doc.querySelector('#sec-waiting')).toBeNull(); // the approvals feature is off here: no block, no false "nothing waiting" card
-    expect([...doc.querySelectorAll('.fact')].map((f) => f.textContent)).toEqual(['1active slip', '1person with a grant', 'intactdecision record']);
+    expect([...doc.querySelectorAll('.fact')].map((f) => f.textContent)).toEqual(['1active slip']); // people and the record verdict are housekeeping: in the slip's sheet and inside the history fold
     const cards = doc.querySelectorAll('.slip-card');
     expect(cards).toHaveLength(1);
     expect(cards[0].querySelector('.slip-summary')!.textContent).toMatch(/^Echo and Dawn may sign a code review and hand over a read-only credential until /);
@@ -301,13 +301,13 @@ describe('permission slips in a DOM', () => {
     expect(doc.querySelector('.sheet select[aria-label="Who"] option')!.textContent).toBe('Mia — engineer');
     expect(doc.querySelector('.sheet .change-list li')!.textContent).toMatch(/^Mia may deploy to production until /);
     (doc.querySelector('.sheet button[data-revoke="m1"]') as HTMLButtonElement).click();
-    expect(doc.querySelector('.sheet .confirm-text')!.textContent).toBe('Ends this slip and the 1 grant it carries, now. Can’t be undone.');
+    expect(doc.querySelector('.sheet .confirm-text')!.textContent).toBe('Ends this slip and the 1 person’s permission it carries, now. Can’t be undone.');
     (doc.querySelector('.sheet textarea.reason-input') as HTMLTextAreaElement).value = 'wrong peer';
     (doc.querySelector('.sheet button[data-revoke-confirm="m1"]') as HTMLButtonElement).click();
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 10));
     const pin = doc.querySelector('.sheet form.pin-form input.pin-input') as HTMLInputElement;
     expect(pin).toBeTruthy();
-    expect(doc.querySelector('.sheet .confirm-text')!.textContent).toContain('Ends “Feedback migration” and the 1 grant it carries, now. Can’t be undone.');
+    expect(doc.querySelector('.sheet .confirm-text')!.textContent).toContain('Ends “Feedback migration” and the 1 person’s permission it carries, now. Can’t be undone.');
     pin.value = '246810';
     pin.form!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
     for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 20));

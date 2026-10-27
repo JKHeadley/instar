@@ -14,7 +14,7 @@
 import {
   buildAgentsPage, threadModel, inviteResultWords, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime,
 } from './agents-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'People · Other agents';
@@ -63,7 +63,9 @@ export async function renderAgents(main, ctx) {
     return;
   }
 
-  const agentRows = page.agents.map((a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, tone: a.tone === 'ok' ? null : a.tone, agent: a }));
+  const rowOf = (a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, tone: a.tone === 'ok' ? null : a.tone, agent: a });
+  const agentRows = page.shown.map(rowOf);
+  const otherRows = page.others.map(rowOf);
   const connect = el('button', { class: 'btn-primary btn-inline connect-btn', type: 'button', text: '+ Connect another agent', onclick: () => openConnect(deps) });
   setKids(main, el('div', { class: 'agents-page' },
     pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
@@ -72,10 +74,12 @@ export async function renderAgents(main, ctx) {
     page.relay.state === 'cant-tell' ? note(page.relay.word + '.') : null,
     page.notes.map((n) => note(n)),
     el('div', { class: 'page-sections' },
-      section({ id: 'agents', title: 'Agents', rows: agentRows, empty: page.pairing.state === 'ok' ? 'No other agents yet. Connect one below.' : 'No agents are known on this machine.', onRow: (r) => openAgent(r.agent, deps) }),
+      section({ id: 'agents', title: 'Agents', rows: agentRows, empty: page.pairing.state === 'ok' ? 'No paired agents yet. Connect one below.' : 'No paired agents are known on this machine.', onRow: (r) => openAgent(r.agent, deps) }),
+      otherRows.length ? section({ id: 'others', title: 'Other contacts', rows: otherRows, collapsed: true, onRow: (r) => openAgent(r.agent, deps) }) : null,
       page.pairing.openInvites.length ? section({ id: 'open-invites', title: 'Invites not used yet', collapsed: true, rows: page.pairing.openInvites.map((i) => ({ key: `inv:${i.iid}`, main: `Invite ${String(i.iid).slice(0, 6)}`, sub: `works once · expires at ${localTime(i.exp)}`, invite: i })), onRow: (r) => openInvite(r.invite, deps) }) : null,
     ),
     page.pairing.state === 'off' ? turnOnCard(deps) : page.pairing.state === 'elsewhere' ? note(page.pairing.holder ? `Pairing runs on ${page.pairing.holder.name}; open the console there to connect another agent.` : 'Pairing runs on another of my machines; connect another agent from there.') : el('div', { class: 'page-primary' }, connect),
+    page.details.length ? fold('What this view covers', ...page.details.map((d) => note(d))) : null,
     footLink(),
   ));
 }
@@ -239,7 +243,7 @@ function openInvite(i, deps) {
 function openAgent(a, deps) {
   const h = a.health;
   const lines = [
-    { label: 'Pairing', text: a.pairingWord },
+    { label: 'Pairing', text: a.pairingState === 'pending-verification' ? 'Not finished: it was started with the old word check. Pair by invite instead.' : a.pairingWord },
     { label: 'Reachable', text: h ? `${h.word}${h.sub ? ` — ${h.sub}` : ''}` : a.peersState === 'ok' ? 'No delivery record yet.' : 'Can’t tell: delivery records did not answer.' },
     h && h.counts ? { label: 'Delivery', text: h.counts } : null,
     a.pairingRow && a.pairingRow.verifiedAt ? { label: 'Verified', text: new Date(a.pairingRow.verifiedAt).toLocaleString() } : null,

@@ -417,3 +417,43 @@ describe('development page in a DOM', () => {
     expect(doc.querySelectorAll('#sec-pace .fchip[aria-pressed="true"]')).toHaveLength(2);
   });
 });
+
+
+describe('QA content fixes — Development', () => {
+  it('one row per PR: a PR known to the watcher AND the verifier keeps one main state by precedence (needs you > stuck > set to merge > testing > held) and the tiles split the total', () => {
+    const w = watcher({
+      snapshot: { at: minsAgo(3), entries: [] }, armed: [], armedCount: 0,
+      stuckRed: [{ pr: 2350, redForMs: 18 * 3600000, failingChecks: ['E2E Tests'] }, { pr: 2364, redForMs: 3 * 3600000, failingChecks: ['Unit Tests'] }],
+      episodes: [{ pr: 2370, headRefOid: 'x', attempts: 3, rearmEpisodes: 0, state: 'gave-up', lastOutcome: 'refused:verify-failed', lastAttemptAt: minsAgo(360) }],
+    });
+    const v = verify({ inFlight: { id: 'f', pr: 2364, kind: 'pr', headSha: 'c'.repeat(40) }, queue: [
+      { id: 'q1', pr: 2374, firstQueuedAt: minsAgo(100) }, { id: 'q2', pr: 2350, firstQueuedAt: minsAgo(60) }, { id: 'q3', pr: 2370, firstQueuedAt: minsAgo(50) }, { id: 'q4', pr: 2378, firstQueuedAt: minsAgo(20) },
+    ] });
+    const s = buildShipping({ watcher: ok(w), verify: ok(v), release: ok(release()) }, NOW, { repo: 'JKHeadley/instar' });
+    const prs = s.rows.map((r) => r.pr);
+    expect(new Set(prs).size).toBe(prs.length);                       // one row per PR
+    expect(s.rows.map((r) => [r.group, r.pr])).toEqual([['stuck', 2350], ['stuck', 2364], ['stuck', 2370], ['testing', 2374], ['testing', 2378]]);
+    expect(s.rows[0].also).toEqual([expect.objectContaining({ group: 'testing', sub: '2nd in line · about 45 min each' })]);
+    expect(s.rows[1].also[0].sub).toBe('testing now · about 45 min');
+    expect(s.tiles.map((t) => [t.key, t.n])).toEqual([['needs', 0], ['testing', 2], ['armed', 0], ['stuck', 3]]);
+    const sum = s.tiles.reduce((a, t) => a + (typeof t.n === 'number' ? t.n : 0), 0);
+    expect(sum).toBe(s.counts.moving);                                 // the tiles partition "on the way"
+    expect(s.headline).toBe('5 pull requests on the way. 3 are stuck.');
+    expect(s.line).toBe('Shipping: 5 on the way, 3 stuck');
+    expect(s.stuckWhy).toBe('2 have red checks; the merge watcher gave up on 1');
+    const h = developmentHeadline({ shipping: s, feedback: { state: 'ok', todos: [], line: 'Feedback: nothing needs you' } });
+    expect(h.text).toBe('3 pull requests are stuck.');
+    expect(h.sub).toBe('Of 5 pull requests on the way: 2 have red checks; the merge watcher gave up on 1.');
+    expect(h.sub).not.toMatch(/are stuck/);                             // the count is said once
+  });
+  it('a PR in exactly one system is unchanged; a held PR stays out of the count', () => {
+    const s = buildShipping({ watcher: ok(watcher()), verify: ok(verify()), release: ok(release()) }, NOW);
+    expect(s.rows.every((r) => r.also.length === 0)).toBe(true);
+    expect(s.counts).toMatchObject({ needs: 1, stuck: 0, held: 1, moving: 3, testing: 1, armed: 1 });
+  });
+  it('the release line is "status unknown" until the watchdog has checked; a real check keeps its words', () => {
+    expect(releaseLine(ok(release({ lastTickAt: null })), NOW)).toMatchObject({ text: 'Release status unknown: the release watchdog has not checked yet.', tone: 'unknown' });
+    expect(releaseLine(ok(release()), NOW).text).toBe('Release watchdog: nothing unresolved · last checked 10 min ago.');
+    expect(releaseLine(ok(release({ openEpisodes: 2 })), NOW).text).toBe('Release watchdog: 2 unresolved episodes · last checked 10 min ago.');
+  });
+});

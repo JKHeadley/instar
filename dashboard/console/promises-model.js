@@ -1,22 +1,16 @@
 // Promises page — pure view-model (docs/specs/console-features/work.md, "Promises").
 //
-// One model with Home: the waiting-on-you, active and 14-day rules come from
-// home-model.js, so Home's card and this page can never disagree.
+// One model with Home: the waiting-on-you, active, missed and 14-day rules — and the
+// partition into sections — come from shared-counts.js (sortPromises), so Home's card
+// and this page can never disagree on what is open.
 
-import { isActiveCommitment, waitsOnOperator, isMissed, lastTouched, STALE_DAYS, REPLICA_FRESH_MS, ago, failure } from './home-model.js';
+import { waitsOnOperator, isMissed, lastTouched, REPLICA_FRESH_MS, ago, failure, briefOf } from './home-model.js';
+import { sortPromises, looksLikePromise, normText, nextDue, DUE_SOON_MS, CLOSED_WINDOW_MS, promiseNeed } from './shared-counts.js';
 
 export { failure };
 
-const DAY = 86400000;
-export const DUE_SOON_MS = DAY;
-export const CLOSED_WINDOW_MS = 7 * DAY;
+export { DUE_SOON_MS, CLOSED_WINDOW_MS, nextDue, looksLikePromise };
 
-/** When this promise next expects something (the soonest real date it carries). */
-export function nextDue(c) {
-  const ts = [c.hardDeadlineAt, c.checkInAt, c.nextUpdateDueAt, c.softDeadlineAt]
-    .map((t) => Date.parse(t)).filter(Number.isFinite);
-  return ts.length ? Math.min(...ts) : null;
-}
 
 /** "in 3 h", "in 2 d", "now". */
 export function until(ts, now = Date.now()) {
@@ -44,6 +38,36 @@ function machineName(id, names) {
   return (names && names[id]) || 'another machine';
 }
 
+/** "from Laptop, current" / "from Laptop, 18 h old" / "from Laptop, age unknown" — never "just now old". */
+export function replicaWords(c, names, now = Date.now()) {
+  const st = Number(c.stalenessMs);
+  const known = c.stalenessMs !== null && c.stalenessMs !== undefined && Number.isFinite(st);
+  const who = `from ${machineName(c.originMachineId, names)}`;
+  if (!known) return `${who}, age unknown`;
+  if (st < 60000) return `${who}, current`;
+  return `${who}, ${ago(now - st, now).replace(' ago', '')} old`;
+}
+
+
+
+/**
+ * Collapse word-for-word duplicates (the same promise registered several times) into one
+ * row that says how many times it was said; the newest stays, the others ride in `dupes`.
+ */
+export function dedupeRows(rows) {
+  const by = new Map();
+  for (const r of rows) {
+    // Key on the FULL wording (the title is a one-sentence brief), so two promises that
+    // share only a first sentence are never merged.
+    const rec = r.record || {};
+    const k = normText(rec.agentResponse || rec.userRequest || r.main);
+    const kept = by.get(k);
+    if (!kept) by.set(k, { ...r, dupes: [] });
+    else kept.dupes.push(r);
+  }
+  return [...by.values()].map((r) => (r.dupes.length ? { ...r, sub: `${r.sub} · said ${r.dupes.length + 1} times` } : r));
+}
+
 /** A row in plain words. */
 export function toRow(c, now = Date.now(), names = {}) {
   const due = nextDue(c);
@@ -54,16 +78,14 @@ export function toRow(c, now = Date.now(), names = {}) {
   if (isMissed(c, now)) bits.push('missed');
   else if (due && due > now) bits.push(`due ${until(due, now)}`);
   if (c.beaconPaused) bits.push('reminders paused');
-  if (c.viewSource === 'replica') {
-    const fresh = Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null;
-    bits.push(`from ${machineName(c.originMachineId, names)}${fresh ? `, ${ago(now - c.stalenessMs, now).replace(' ago', '')} old` : ', age unknown'}`);
-  }
+  if (c.viewSource === 'replica') bits.push(replicaWords(c, names, now));
   return {
     key: `${c.originMachineId || 'own'}:${c.id}`,
     id: c.id,
     origin: c.originMachineId || null,
     replica: c.viewSource === 'replica',
-    main: c.agentResponse || c.userRequest || c.id,
+    // One plain sentence, ids stripped; the sheet's story carries the full text and the id.
+    main: briefOf(c.agentResponse || c.userRequest) || c.id,
     sub: bits.join(' · '),
     end: ago(c.createdAt, now) || '',
     record: c,
@@ -80,31 +102,20 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments : null;
   if (!list) return { ok: false, reason: 'The promise list answered without records.' };
 
-  const fresh = (c) => now - lastTouched(c) <= STALE_DAYS * DAY;
-  const s = { waiting: [], missed: [], dueSoon: [], carrying: [], handled: [], closed: [] };
-  for (const c of list) {
-    if (!c) continue;
-    if (isActiveCommitment(c, now) || c.status === 'violated') {
-      // A missed promise stays in Missed at any age: age is not evidence it was handled.
-      // Anything else untouched for 14 days is listed as "Older, still open" and not
-      // counted in the headline (Home's rule, the operator's noise requirement).
-      if (isMissed(c, now) && !waitsOnOperator(c)) s.missed.push(c);
-      else if (!fresh(c)) s.handled.push(c);
-      else if (waitsOnOperator(c)) s.waiting.push(c);
-      else {
-        const due = nextDue(c);
-        if (due && due > now && due - now <= DUE_SOON_MS) s.dueSoon.push(c);
-        else s.carrying.push(c);
-      }
-    } else if (c.status === 'delivered' || c.status === 'withdrawn' || c.status === 'expired') {
-      const r = Date.parse(c.resolvedAt);
-      if (Number.isFinite(r) && now - r <= CLOSED_WINDOW_MS) s.closed.push(c);
-    }
-  }
-  const byNewest = (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0);
-  for (const k of Object.keys(s)) s[k].sort(k === 'dueSoon' ? (a, b) => nextDue(a) - nextDue(b) : k === 'closed' ? (a, b) => Date.parse(b.resolvedAt) - Date.parse(a.resolvedAt) : byNewest);
-  const sections = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map((c) => toRow(c, now, names))]));
-  const counts = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.length]));
+  // THE partition (shared-counts.sortPromises): the same sections and the same open total
+  // Home's card shows. Missed is already one entry per distinct wording; a promise said several
+  // times carries "said N times".
+  const p = sortPromises(list, now);
+  const s = { waiting: p.waiting, missed: p.missed, missedUnclear: p.missedUnclear, dueSoon: p.dueSoon, carrying: p.carrying, handled: p.older, closed: p.closed };
+  const said = (c, r) => {
+    if (!p.repeats.has(c)) return r;
+    const dupes = p.repeats.get(c).map((d) => toRow(d, now, names));
+    return dupes.length ? { ...r, dupes, sub: `${r.sub} · said ${dupes.length + 1} times` } : { ...r, dupes };
+  };
+  const sections = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map((c) => said(c, toRow(c, now, names)))]));
+  // Waiting on you: each row carries the same one tap Home shows (shared-counts.promiseNeed).
+  sections.waiting = sections.waiting.map((r) => ({ ...r, action: promiseNeed(r.record, now).action }));
+  const counts = { ...Object.fromEntries(Object.entries(sections).map(([k, v]) => [k, v.length])), open: p.counts.open, older: p.counts.older, olderWaiting: p.counts.olderWaiting };
 
   const replicas = list.filter((c) => c && c.viewSource === 'replica');
   const origins = new Set(replicas.map((c) => c.originMachineId));
@@ -124,10 +135,13 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   else if (n.dueSoon + n.carrying) headline = 'Nothing is waiting on you.';
   else headline = 'No open promises.';
   const carryingTotal = n.dueSoon + n.carrying;
-  const sub = [
-    carryingTotal ? `${carryingTotal} more I'm carrying${n.dueSoon ? `, ${n.dueSoon} due within a day` : ''}.` : null,
-    n.waiting && n.missed ? `${n.missed} missed.` : null,
-  ].filter(Boolean).join(' ');
+  // The same total Home's card shows ("N open promises"), spelled out once.
+  const sub = n.open ? `${n.open} open in all: ` + [
+    n.waiting ? `${n.waiting} waiting on you` : null,
+    n.missed ? `${n.missed} missed` : null,
+    n.missedUnclear ? `${n.missedUnclear} missed but maybe not promises` : null,
+    carryingTotal ? `${carryingTotal} I'm carrying${n.dueSoon ? ` (${n.dueSoon} due within a day)` : ''}` : null,
+  ].filter(Boolean).join(', ') + '.' : '';
   return { ok: true, sections, counts, coverage, headline, sub, tone: n.waiting ? 'attn' : n.missed ? 'bad' : coverage ? 'muted' : 'ok' };
 }
 

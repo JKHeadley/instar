@@ -10,7 +10,7 @@
 import {
   buildSchedulePage, buildHistory, markText, storySentence, storyLines, jobActions, toggleConfirm, runStartWords, runFollowWords, saveRefusalWords, originWords, scheduleWords, ago, HISTORY_LIMIT, STRIP_LIMIT,
 } from './schedule-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'Work · Schedule';
@@ -69,8 +69,14 @@ function paint() {
   const controls = el('div', { class: 'list-controls' }, q, chipRow(page.chips, 'origin', 'Filter by origin'), el('div', { class: 'sort-row' }, el('span', { class: 'sort-label', text: 'Sort:' }), chipRow(page.sorts, 'sort', 'Sort order')));
   every.querySelector('.list-rows').prepend(controls);
 
+  // Late and failing are the counts that change what you do; "running" and "off" are
+  // reference, one tap deeper.
+  const faceFacts = page.facts.filter((f) => f.label === 'late' || f.label === 'failing' || f.tone === 'attn');
+  const quietFacts = page.facts.filter((f) => !faceFacts.includes(f));
+  const head = pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: faceFacts });
+  if (quietFacts.length) head.append(fold('More counts', el('div', { class: 'facts' }, quietFacts.map((f) => el('a', { class: 'fact', href: f.href || null }, el('span', { class: 'fact-n', text: String(f.n) }), el('span', { class: 'fact-label', text: f.label }))))));
   setKids(main, el('div', { class: 'schedule-page' },
-    pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
+    head,
     liveNote(),
     page.notes.map((t) => note(t)),
     el('div', { class: 'page-sections' }, needs, coming, every, setupSection(page.setup, refresh)),

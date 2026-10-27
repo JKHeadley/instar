@@ -161,15 +161,49 @@ function recheckText(e, now) {
   return { text: `rechecking ${new Date(t).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`, overdue: false };
 }
 
-/** A blocker as a row: { key, main, sub, end, tone, kind, record }. */
+export const BLOCKER_TITLE_MAX = 90;
+const SHELL_START = /^\s*(?:cd\s|cat\s|curl\s|node\s|npm\s|npx\s|git\s|python3?\s|bash\s|sh\s|[A-Z_]+=|\(|\{|\.\/|\.instar\/|\.claude\/|~\/|\/)/;
+const SHELL_SIGNS = /<<\s*['"]?EOF|\|\s*\.?\.?\/?[\w./-]*telegram-reply\.sh|&&\s*(?:cat|curl|node)|\bcurl\s+-s|\$\(|\$\{/;
+
+/**
+ * What the blocker's text is: a shell command (the deferral detector posts the whole
+ * command it flagged), a message that command was sending, or plain text.
+ * Returns { kind: 'message'|'command'|'text', title, body }.
+ */
+export function blockerText(raw) {
+  const text = String(raw || '').replace(/\r/g, '');
+  const isShell = SHELL_START.test(text) && (SHELL_SIGNS.test(text) || /\n|&&|\|/.test(text)) || SHELL_SIGNS.test(text);
+  if (!isShell) {
+    const line = text.split('\n').map((l) => l.trim()).find(Boolean) || '';
+    return { kind: 'text', title: clip(line || 'A blocker', BLOCKER_TITLE_MAX), body: text };
+  }
+  // A heredoc message: the text between <<'EOF' and the closing EOF, minus the reply
+  // script's own arguments (flags, a topic id) when they ride the first line.
+  const m = /<<\s*['"]?EOF['"]?\s*([\s\S]*?)(?:\nEOF\b|\s+EOF\s*(?:$|[;&|)]|curl))/.exec(text);
+  if (m) {
+    let msg = m[1].trim();
+    msg = msg.replace(/^[\s\S]*?telegram-reply\.sh(?:\s+--[\w-]+(?:\s+"[^"]*"|\s+'[^']*'|\s+\S+)?)*\s+\d+\s*/, '');
+    // The first sentence; a very short one ("Report, 8:15pm.") takes the next along.
+    const sentences = msg.split(/(?<=[.!?])\s+|\n/).map((l) => l.trim()).filter(Boolean);
+    const first = sentences.length && sentences[0].length < 25 && sentences[1] ? `${sentences[0]} ${sentences[1]}` : sentences[0] || '';
+    if (first) return { kind: 'message', title: clip(first, BLOCKER_TITLE_MAX), body: text, message: msg };
+  }
+  return { kind: 'command', title: 'A command I ran', body: text };
+}
+function clip(s, max) { const t = String(s).replace(/\s+/g, ' ').trim(); return t.length > max ? t.slice(0, max - 1).trimEnd() + '…' : t; }
+
+const KIND_WORDS = { message: 'flagged in a message I was sending', command: 'flagged in a command I ran' };
+
+/** A blocker as a row: { key, main, sub, end, tone, kind, record }. The raw text stays in the sheet. */
 export function blockerRow(e, now = Date.now()) {
-  const main = e.detectedText || e.origin || 'A blocker';
+  const t = blockerText(e.detectedText || e.origin || 'A blocker');
   let sub; let tone = null; let kind;
   if (e.state === 'true-blocker') { const r = recheckText(e, now); sub = `Truly stuck for now · ${r.text}`; tone = 'bad'; kind = 'stuck'; }
   else if (e.state === 'access-requested') { sub = 'Waiting on you for access'; tone = 'attn'; kind = 'needs-you'; }
   else if (e.state === 'resolved') { sub = 'Cleared — it turned out not to be a wall'; kind = 'cleared'; }
   else { sub = blockerStateWord(e); kind = 'working'; }
-  return { key: `b:${e.id}`, id: e.id, type: 'blocker', main, sub, end: ago(e.updatedAt || e.createdAt, now) || '', tone, kind, overdue: kind === 'stuck' && recheckText(e, now).overdue, record: e };
+  if (KIND_WORDS[t.kind]) sub = `${sub} · ${KIND_WORDS[t.kind]}`;
+  return { key: `b:${e.id}`, id: e.id, type: 'blocker', main: t.title, textKind: t.kind, sub, end: ago(e.updatedAt || e.createdAt, now) || '', tone, kind, overdue: kind === 'stuck' && recheckText(e, now).overdue, record: e };
 }
 
 /**
@@ -200,7 +234,8 @@ export function buildInTheWay(res, now = Date.now()) {
 
 /** The blocker detail story. */
 export function blockerStory(e, now = Date.now()) {
-  const lines = [{ label: 'What looked stuck', text: e.detectedText || '—' }];
+  const t = blockerText(e.detectedText);
+  const lines = [{ label: 'What looked stuck', text: t.kind === 'message' ? t.message : t.kind === 'command' ? 'A command I ran looked like giving up; its full text is under Details.' : (e.detectedText || '—') }];
   const tried = [];
   if (e.dryRun && e.dryRun.detail) tried.push(`Tried safely first: ${e.dryRun.detail}`);
   if (e.liveRun && e.liveRun.outcome) tried.push(`${e.liveRun.succeeded ? 'Tried for real, and it worked' : 'Tried for real, and it did not work'}: ${e.liveRun.outcome}`);
@@ -329,7 +364,14 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
   const byTouched = (a, b) => (b.touched || 0) - (a.touched || 0);
   for (const k of Object.keys(s)) s[k].sort(byTouched);
   const planNeedsYou = s.needsYou.filter((x) => x.type !== 'blocker').length;
+  // ONE partition of the open plans, used by the headline, the sub line and the tiles alike:
+  //   open (the headline's "in flight") = plans that need you + plans moving (touched within 7 days)
+  //   idleTotal (the sub line and the idle tile) = idle (7–14 days) + older (14+ days)
+  // A tile's number is never computed a second way.
   const counts = { needsYou: s.needsYou.length, planNeedsYou, inFlight: s.inFlight.length, idle: s.idle.length, older: s.older.length, finished: s.finished.length, olderNeedsYou: olderNeedsYou.length, stuck: inTheWay.stuck.length, working: inTheWay.working.length };
+  counts.open = counts.planNeedsYou + counts.inFlight;
+  counts.idleTotal = counts.idle + counts.older;
+  counts.inTheWay = counts.stuck + counts.working;
   const sections = {
     needsYou: s.needsYou,
     inFlight: filter.status ? s.inFlight.filter((x) => x.status === filter.status) : s.inFlight,
@@ -338,10 +380,11 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
     finished: filter.done ? s.finished.filter((x) => x.status === filter.done) : s.finished,
   };
 
-  const open = counts.inFlight + counts.idle + counts.planNeedsYou; // plans, not blockers
+  const open = counts.open; // plans, not blockers
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   let headline;
-  if (open === 0 && counts.older === 0 && counts.stuck === 0) headline = 'No longer plans are running.';
+  if (open === 0 && counts.idleTotal === 0 && counts.stuck === 0) headline = 'No longer plans are running.';
+  else if (open === 0 && counts.stuck === 0) headline = 'No plan is moving.';
   else {
     const clauses = [];
     if (counts.needsYou) clauses.push(`${plural(counts.needsYou, 'needs', 'need')} you`);
@@ -349,17 +392,17 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
     headline = `${plural(open, 'plan', 'plans')} in flight.${clauses.length ? ` ${clauses.join('; ')}.` : ''}`;
   }
   const sub = [
-    counts.older ? `${counts.older} older, still open.` : null,
+    counts.idleTotal ? `${counts.idleTotal} idle, still open.` : null,
     truncated ? `Round detail loaded for ${truncated.shown} of ${truncated.total} projects.` : null,
     'Plans on this machine.',
   ].filter(Boolean).join(' ');
   const facts = [
     { n: counts.needsYou, label: counts.needsYou === 1 ? 'needs you' : 'need you', tone: counts.needsYou ? 'attn' : null, href: '#/work/plans?s=needsYou' },
-    inTheWay.state === 'ok' ? { n: counts.stuck + counts.working, label: 'in the way', tone: counts.stuck ? 'bad' : null, href: '#/work/plans?s=in-the-way' }
+    inTheWay.state === 'ok' ? { n: counts.inTheWay, label: 'in the way', tone: counts.stuck ? 'bad' : null, href: '#/work/plans?s=in-the-way' }
       : inTheWay.state === 'off' ? { n: 'off', label: 'blocker tracking', tone: 'unknown', href: '#/work/plans?s=in-the-way' }
         : { n: 'Can’t tell', label: 'in the way', tone: 'unknown', href: '#/work/plans?s=in-the-way' },
     { n: counts.inFlight, label: 'moving', href: '#/work/plans?s=inFlight' },
-    { n: counts.idle + counts.older, label: 'idle', href: '#/work/plans?s=idle' },
+    { n: counts.idleTotal, label: 'idle', href: '#/work/plans?s=idle' },
   ];
   return {
     ok: true, headline, sub, tone: counts.needsYou ? 'attn' : counts.stuck ? 'bad' : 'ok', facts, counts, sections, chips, doneChips,

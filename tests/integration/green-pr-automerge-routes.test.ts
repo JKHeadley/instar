@@ -104,6 +104,8 @@ describe('green-pr-automerge routes (integration)', () => {
       issues: [],
       agentNamespace: 'echo',
       identityConfigured: true,
+      // Every Ask Is Actionable: a PR waiting on the operator links straight to its GitHub review.
+      repo: 'JKHeadley/instar',
     });
     expect(res.body.namespaceMismatch).toBeNull();
   });

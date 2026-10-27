@@ -2,9 +2,11 @@
 // Read with Home's rules; actions use the bearer token only (no PIN on these routes).
 
 import { buildPromisesPage, storyOf, actionsFor } from './promises-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { consumeItem } from './actions.js';
 
+const MISSED_SHOWN = 5; // the most recent missed promises on the first screen; "Show all N" for the rest
 const RAW_KEYS = ['id', 'status', 'owner', 'blockedOn', 'actionClass', 'topicId', 'createdAt', 'nextUpdateDueAt', 'hardDeadlineAt', 'checkInAt', 'lastHeartbeatAt', 'heartbeatCount', 'cadenceMs', 'beaconEnabled', 'beaconPaused', 'beaconPausedReason', 'resolvedAt', 'resolution', 'originMachineId', 'viewSource', 'stalenessMs'];
 
 /** Telegram link to a topic in the agent's main group, when we know the group. */
@@ -40,15 +42,17 @@ export async function renderPromises(main, ctx) {
         { n: n.carrying + n.dueSoon, label: 'I’m carrying', href: '#/work/promises?s=carrying' },
       ],
     }),
-    page.coverage ? note(page.coverage) : null,
     el('div', { class: 'page-sections' },
       section({ id: 'waiting', title: 'Waiting on you', rows: s.waiting.map((r) => ({ ...r, tone: 'attn' })), empty: 'Nothing is waiting on you.', onRow: open }),
-      n.missed ? section({ id: 'missed', title: 'Missed', rows: s.missed.map((r) => ({ ...r, tone: 'bad' })), onRow: open }) : null,
+      n.missed ? section({ id: 'missed', title: 'Missed', rows: s.missed.map((r) => ({ ...r, tone: 'bad' })), limit: MISSED_SHOWN, showAll: true, onRow: open }) : null,
+      n.missedUnclear ? section({ id: 'missedUnclear', title: 'Missed, but maybe not promises', rows: s.missedUnclear.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }) : null,
       section({ id: 'dueSoon', title: 'Due within a day', rows: s.dueSoon, empty: 'Nothing is due in the next day.', onRow: open }),
       section({ id: 'carrying', title: 'I’m carrying', rows: s.carrying, collapsed: true, onRow: open }),
       section({ id: 'handled', title: 'Older, still open', rows: s.handled.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }),
       section({ id: 'closed', title: 'Closed this week', rows: s.closed, collapsed: true, onRow: open }),
     ),
+    // Which machines this view covers is housekeeping: one tap deeper, never on the face.
+    page.coverage ? fold('Details', note(page.coverage)) : null,
     legacyLink(),
   );
   // A fact links to its section: open it and scroll there.
@@ -58,6 +62,12 @@ export async function renderPromises(main, ctx) {
     const head = sec && sec.querySelector('button.list-head[aria-expanded="false"]');
     if (head) head.click();
     if (sec) sec.scrollIntoView({ block: 'start' });
+  }
+  // A needs-you tap (Home, Telegram) lands on the exact promise: its sheet opens.
+  const item = sheetIsOpen() ? null : consumeItem();
+  if (item) {
+    const hit = Object.values(s).flat().find((r) => r && r.id === item);
+    if (hit) open(hit);
   }
 }
 
@@ -88,6 +98,7 @@ function openPromise(r, { post, chatId, names, refresh }) {
       reason: 'Why it no longer matters', run: (why) => result('withdraw', { reason: why }), done: () => setTimeout(() => { closeSheet(); refresh(); }, 700),
     })));
   }
+  if (Array.isArray(r.dupes) && r.dupes.length) blocks.push(note(`This promise was registered ${r.dupes.length + 1} times with the same wording; the newest is shown. The others: ${r.dupes.map((d) => d.id).join(', ')}.`));
   blocks.push(details(c, RAW_KEYS));
   sheet({ title: r.main.length > 70 ? r.main.slice(0, 68) + '…' : r.main }, ...blocks);
 }

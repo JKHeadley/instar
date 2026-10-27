@@ -528,12 +528,15 @@ export class GreenPrAutoMerger extends EventEmitter {
     issues: string[];
     agentNamespace: string;
     identityConfigured: boolean;
+    /** owner/name, so a PR waiting on the operator can link straight to its GitHub review. */
+    repo: string | null;
   } {
     return {
       ok: this.configurationOk,
       issues: [...this.configurationIssues],
       agentNamespace: this.cfg.agentNamespace,
       identityConfigured: this.cfg.expectedGhLogin.length > 0,
+      repo: typeof this.cfg.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(this.cfg.repo) ? this.cfg.repo : null,
     };
   }
 

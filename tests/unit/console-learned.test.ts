@@ -132,7 +132,7 @@ describe('headline and facts', () => {
   const corr = buildCorrections([ok({ records: [rec()], totalRecords: 1, nextBefore: null })], { now: NOW });
   it('counts what is kept; nothing yet; off; can’t tell', () => {
     expect(learnedHeadline({ prefs, corrections: corr })).toEqual({ text: 'I’ve picked up 7 things about how you like to work.', tone: 'ok' });
-    expect(learnedHeadline({ prefs: buildPreferences(ok({ present: false, block: '', count: 0 })), corrections: corr }).text).toBe('Nothing yet — correct me the same way twice and it shows up here.');
+    expect(learnedHeadline({ prefs: buildPreferences(ok({ present: false, block: '', count: 0 })), corrections: corr }).text).toBe('Nothing yet — correct me the same way on a couple of different days and it shows up here.');
     expect(learnedHeadline({ prefs: buildPreferences(off()), corrections: buildCorrections([off()]) })).toEqual({ text: 'Learning from corrections is off on this agent.', tone: 'muted' });
     expect(learnedHeadline({ prefs: buildPreferences(fail()), corrections: corr }).text).toBe('Can’t tell what I’ve learned about you.');
   });

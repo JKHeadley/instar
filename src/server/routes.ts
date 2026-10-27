@@ -419,6 +419,7 @@ import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { attentionActionFor, peerItemAction, validAction as validAttentionAction } from '../messaging/attentionAction.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -20304,9 +20305,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const sticky = req.body.sticky === true ? true : undefined;
+    // Every Ask Is Actionable: a producer may name the one tap for its item (a console
+    // hash path + button words). Anything else is refused rather than stored.
+    if (req.body.action !== undefined && req.body.action !== null && !validAttentionAction(req.body.action)) {
+      res.status(400).json({ error: '"action" must be { kind: "open", href: "#/<console page>?…", label: "<button words, ≤40 chars>" }' });
+      return;
+    }
+    const action = req.body.action ? { kind: 'open' as const, href: String(req.body.action.href), label: String(req.body.action.label) } : undefined;
 
     try {
       const create = ctx.telegram.createAttentionItem({
+        action,
         id,
         title,
         summary,
@@ -20530,10 +20539,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const selfNickname = selfMachineId
       ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? undefined
       : undefined;
+    // Every Ask Is Actionable: each item carries the one tap the operator has for
+    // it (or null — then it is the agent's, not an ask). Peer items from an older
+    // version are stamped below after the merge, from the same rule.
     const localItems = ctx.telegram.getAttentionItems(status).map((it) => ({
       ...it,
       machineId: it.machineId ?? selfMachineId ?? undefined,
       machineNickname: selfNickname,
+      action: attentionActionFor(it),
     }));
 
     // scope=pool (WS4.1, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): merge every
@@ -20554,6 +20567,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       }
       const merged = await attentionPoolMerge(localItems, status);
+      if (Array.isArray(merged.items)) {
+        // A peer's action is re-checked with the local validator (peerItemAction): a
+        // foreign or malformed link never becomes a tap, and is logged instead.
+        const attnLogsDir = path.join(ctx.config.stateDir, 'logs');
+        merged.items = (merged.items as Array<Record<string, unknown>>).map((it) => ({ ...it, action: peerItemAction(it as { id?: string }, attnLogsDir) }));
+      }
       if (limit === undefined) {
         res.json(merged);
       } else {
@@ -28274,6 +28293,54 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       const result = manager.sessionContext(maxBytes);
       res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read preferences' });
+    }
+  });
+
+  // GET /preferences — the STRUCTURED learned preferences (console "What I've
+  // learned about you", docs/specs/console-features/people-settings.md). Read only.
+  // Same gate (503 when correction-learning is off) and the SAME source precedence
+  // as /preferences/session-context above (foundation union → WS2.1 merged view →
+  // own store), so the page and the injected block never disagree about what is
+  // kept. Every `learning` is credential-scrubbed at serve time (redactForLiveTail,
+  // the replication serve path's scrubber) on every source; `violationPattern` and
+  // replication bookkeeping are never served.
+  router.get('/preferences', async (_req, res) => {
+    try {
+      const cfg = ctx.config.monitoring?.correctionLearning;
+      if (cfg?.enabled !== true) {
+        res.status(503).json({ error: 'correction-learning disabled' });
+        return;
+      }
+      const { PreferencesManager } = await import('../core/PreferencesManager.js');
+      const { buildPreferenceList, unionToPreferenceRows } = await import('../core/PreferencesListView.js');
+      const selfId = typeof ctx.meshSelfId === 'string' && ctx.meshSelfId.length > 0 ? ctx.meshSelfId : null;
+      const stateSyncPrefEnabled = resolveDevAgentGate(
+        (ctx.config.multiMachine as { stateSync?: { preferences?: { enabled?: boolean } } } | undefined)
+          ?.stateSync?.preferences?.enabled,
+        ctx.config as { developmentAgent?: boolean },
+      );
+      if (stateSyncPrefEnabled && ctx.preferencesUnionReader) {
+        const { PREF_STORE_KEY } = await import('../core/PreferencesReplicatedStore.js');
+        const list = buildPreferenceList(unionToPreferenceRows(ctx.preferencesUnionReader.readAll(PREF_STORE_KEY)));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const manager = new PreferencesManager(ctx.config.stateDir);
+      const ws21Enabled =
+        (ctx.config.multiMachine as { seamlessness?: { ws21PreferencesPool?: boolean } } | undefined)
+          ?.seamlessness?.ws21PreferencesPool === true;
+      const replicas = ws21Enabled && selfId ? (ctx.preferenceReplicaStore?.allReplicas() ?? []) : [];
+      if (ws21Enabled && selfId && replicas.length > 0) {
+        const { mergePreferenceViews } = await import('../core/PreferencesSync.js');
+        const merged = mergePreferenceViews({ ownMachineId: selfId, own: manager.getAllForSync(), replicas });
+        const list = buildPreferenceList(merged.map((m) => ({ entry: m, origin: m.winningMachineId, redacted: m.textRedacted === true })));
+        res.json({ ...list, scope: 'mesh' });
+        return;
+      }
+      const list = buildPreferenceList(manager.read().preferences.map((entry) => ({ entry, origin: selfId })));
+      res.json({ ...list, scope: 'local' });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read preferences' });
     }

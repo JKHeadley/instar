@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-27T02:09:09.444Z",
+  "slug": "attention-button-refused-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 104,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/attentionAction.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 97,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot bounded fallback within a single send (at most two extra sendMessage attempts, only after an HTTP 400 refusal); not a self-triggered loop"
+  },
+  "verdict": "blocked"
+}

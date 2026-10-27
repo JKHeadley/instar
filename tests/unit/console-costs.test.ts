@@ -84,7 +84,7 @@ describe('recorded cost — basis labels and unpriced tokens', () => {
 
   it('totals: $0 with unpriced tokens is said as unpriced, never as covered; dollars name their basis and door', () => {
     const zero = buildRecordedCost(spend([spendRow({ costBasis: 'unpriced', netUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 })], { netUsd: 0, grossUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 }));
-    expect(zero.costWords).toBe('No pay-per-use cost');
+    expect(zero.costWords).toBe('Recorded cost $0 · actual cost unknown'); // unpriced tokens: $0 is not "no cost"
     expect(zero.howWords).toBeNull();
     expect(zero.unpricedTokens).toBe(41000);
     expect(JSON.stringify(zero)).not.toMatch(/covered/i);
@@ -248,30 +248,34 @@ describe('the whole page', () => {
   it('headline from the ledger with the window phrase; facts; the limits sentence apart', () => {
     const p = buildCostsPage(full(), NOW, { window: 'week' });
     expect(p.headline).toBe('About $4.20 of pay-per-use cost this week on this machine.');
-    expect(p.sub).toBe('Estimated from token counts and a price list, all on OpenRouter. Spending limits are off (held by Mac Studio), and no paid route is open. Figures are this machine’s own ledger.');
+    expect(p.sub).toBe('Estimated from token counts and a price list, all on OpenRouter.');
+    // The limits and the ledger's provenance are behind a tap, not under the headline.
+    expect(p.explain).toEqual(['Spending limits are off (held by Mac Studio), and no paid route is open.', 'Figures are this machine’s own ledger.']);
     expect(p.headline).not.toMatch(/estimated|unpriced|provider-reported|recorded/i); // the labels live in the sub-line
-    expect(p.facts.map((f) => [String(f.n), f.label])).toEqual([['$4.20', 'recorded cost · estimated'], ['410', 'background checks · 2 failed'], ['off', 'limits']]);
+    expect(p.facts.map((f) => [String(f.n), f.label])).toEqual([['$4.20', 'recorded cost · estimated'], ['off', 'limits']]); // background checks live in their fold
     expect(p.tone).toBe('attn');
     expect(p.window.key).toBe('week');
   });
 
   it('unpriced tokens reach the headline and a fact; a quiet page is ok', () => {
     const p = buildCostsPage(full({ spend: spend([spendRow({ costBasis: 'unpriced', netUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 })], { netUsd: 0, unpricedTokensIn: 30000, unpricedTokensOut: 11000 }), metrics: metrics([feat({ errors: 0, llmErrors: 0 })], { errors: 0 }) }), NOW, { window: 'today' });
-    expect(p.headline).toBe('No pay-per-use cost today on this machine.');
-    expect(p.sub).toContain('41k tokens went through with no price on file for their route, so they are counted but not priced.');
+    expect(p.headline).toBe('Recorded cost $0 · actual cost unknown today on this machine.');
+    expect(p.sub).toBe('41k tokens have no price on file, so what they cost is unknown.');
+    expect(p.facts[0]).toMatchObject({ n: '$0', label: 'recorded · actual unknown', tone: 'unknown' });
     expect(p.facts[1]).toMatchObject({ n: '41k', label: 'tokens unpriced', tone: 'unknown' });
     expect(p.tone).toBe('ok');
     const subs = buildCostsPage(full({ spend: spend([spendRow({ door: 'claude-code', doorClass: 'cli', costBasis: 'subscription-zero', netUsd: 0, grossUsd: 0, tokensIn: 300000000, tokensOut: 34000000 })], { netUsd: 0, grossUsd: 0 }) }), NOW, { window: 'week' });
-    expect(subs.headline).toBe('No pay-per-use cost this week on this machine.');
-    expect(subs.sub).toContain('334M tokens ran on subscriptions, which are not billed per token.');
+    expect(subs.headline).toBe('No pay-per-use cost this week on this machine.'); // no unpriced tokens: $0 really is no cost
+    expect(subs.explain).toContain('334M tokens ran on subscriptions, which are not billed per token.');
     expect(subs.sub).not.toContain('no price on file');
+    expect(subs.facts[0]).toMatchObject({ n: '$0', label: 'recorded cost' });
   });
 
   it('503 on the spend view is said once, separately from the limits switch; the other sections still render', () => {
     const p = buildCostsPage(full({ spend: OFF, caps: OFF }), NOW);
     expect(p.headline).toBe('Spend figures aren’t available on this agent.');
     expect(p.sub).toContain('Turning limits on does not change that');
-    expect(p.sub).toContain('Spending limits are off (held by Mac Studio).');
+    expect(p.explain).toContain('Spending limits are off (held by Mac Studio).');
     expect(p.facts[0]).toMatchObject({ n: 'off', label: 'recorded cost', tone: 'unknown' });
     expect(p.recorded.state).toBe('off');
     expect(p.limits.caps.state).toBe('off');
@@ -283,7 +287,8 @@ describe('the whole page', () => {
   it('a failed read is Can’t tell with its reason, never a zero', () => {
     const p = buildCostsPage(full({ spend: FAIL, metrics: FAIL, status: FAIL, tokens: FAIL, chains: FAIL }), NOW);
     expect(p.headline).toBe('Can’t tell what AI use cost on this machine.');
-    expect(p.facts.map((f) => String(f.n))).toEqual(['Can’t tell', 'Can’t tell', 'Can’t tell']);
+    expect(p.facts.map((f) => String(f.n))).toEqual(['Can’t tell', 'Can’t tell']);
+    expect(p.checks.state).toBe('failed');
     expect(p.sub).toContain('the server answered 500');
     expect(p.checks.reason).toContain('the server answered 500');
     expect(p.conversations.reason).toContain('the server answered 500');
@@ -393,5 +398,30 @@ describe('costs page in a DOM', () => {
     for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 20));
     expect(got).toContain('/metrics/features?sinceHours=24');
     expect(doc.querySelector('.page-title')!.textContent).toContain('today');
+  });
+});
+
+
+describe('QA content fixes — What thinking costs', () => {
+  it('$0 with unpriced tokens is "actual cost unknown"; $0 with nothing unpriced is "no pay-per-use cost"', () => {
+    const unknown = buildCostsPage(full({ spend: spend([spendRow({ costBasis: 'unpriced', netUsd: 0, grossUsd: 0, tokensIn: 300000000, tokensOut: 62000000, unpricedTokensIn: 300000000, unpricedTokensOut: 62000000 })], { netUsd: 0, grossUsd: 0, unpricedTokensIn: 300000000, unpricedTokensOut: 62000000 }) }), NOW, { window: 'week' });
+    expect(unknown.headline).toBe('Recorded cost $0 · actual cost unknown this week on this machine.');
+    expect(unknown.sub).toBe('362M tokens have no price on file, so what they cost is unknown.');
+    expect(unknown.facts[0]).toMatchObject({ n: '$0', label: 'recorded · actual unknown', tone: 'unknown' });
+    expect(unknown.facts.map((f) => f.label)).toEqual(['recorded · actual unknown', 'tokens unpriced', 'limits']);
+    expect(unknown.explain.join(' ')).toContain('Spending limits are off');
+    expect(unknown.explain.join(' ')).toContain('Figures are this machine’s own ledger.');
+    const none = buildCostsPage(full({ spend: spend([spendRow({ costBasis: 'subscription-zero', netUsd: 0, grossUsd: 0 })], { netUsd: 0, grossUsd: 0 }) }), NOW, { window: 'week' });
+    expect(none.headline).toBe('No pay-per-use cost this week on this machine.');
+    expect(none.facts[0]).toMatchObject({ n: '$0', label: 'recorded cost', tone: null });
+  });
+  it('a row with no tokens and no cost is counted, not shown', () => {
+    const r = buildRecordedCost(spend([spendRow(), spendRow({ door: 'unknown', modelId: 'unknown', costBasis: 'unpriced', tokensIn: 0, tokensOut: 0, netUsd: 0, grossUsd: 0 })]));
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].main).toBe('GPT-6 Luna · OpenRouter');
+    expect(r.hiddenEmpty).toBe(1);
+    const kept = buildRecordedCost(spend([spendRow({ door: 'unknown', modelId: 'unknown', costBasis: 'unpriced', tokensIn: 0, tokensOut: 0, netUsd: 0, grossUsd: 0, unpricedTokensIn: 5, unpricedTokensOut: 0 })]));
+    expect(kept.rows).toHaveLength(1); // 5 unpriced tokens is still information
+    expect(kept.hiddenEmpty).toBe(0);
   });
 });

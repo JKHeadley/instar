@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   failure, ago, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
-  machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
+  machineState, headline, combineNeeds, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
 } from '../../dashboard/console/home-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
@@ -58,7 +58,7 @@ describe('Can I reach you', () => {
 });
 
 describe('What needs you', () => {
-  const item = (over: Record<string, unknown>) => ({ id: Math.random().toString(36), title: 'T', status: 'OPEN', priority: 'HIGH', createdAt: minsAgo(5), ...over });
+  const item = (over: Record<string, unknown>) => ({ id: Math.random().toString(36), title: 'T', status: 'OPEN', priority: 'HIGH', createdAt: minsAgo(5), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' }, ...over });
 
   it('fails honestly', () => {
     expect(buildNeeds(failure('the server answered 500'), NOW).state).toBe('unknown');
@@ -71,7 +71,8 @@ describe('What needs you', () => {
     const m = buildNeeds(ok({ items: [item({ priority: 'URGENT' }), item({}), item({}), item({ status: 'DONE', priority: 'URGENT' })], pool: { failed: [] } }), NOW);
     expect(m.state).toBe('attn');
     expect(m.value).toBe('1 thing');
-    expect(m.line).toContain('2 routine notices');
+    expect(m.line).not.toContain('routine');
+    expect(m.details.join(' ')).toContain('2 routine notices');
   });
   it('shows at most three rows but keeps the full list for See all, newest first', () => {
     const items = [1, 2, 3, 4, 5].map((n) => item({ priority: 'URGENT', title: `i${n}`, createdAt: minsAgo(n * 10) }));
@@ -96,7 +97,8 @@ describe('What needs you', () => {
     expect(m.count).toBe(1);
     expect(m.all).toHaveLength(2);
     expect(m.all[1].main).toBe('old');
-    expect(m.line).toContain('listed separately');
+    expect(m.line).not.toContain('untouched');
+    expect(m.details.join(' ')).toContain('untouched for 14+ days');
   });
   it('a security item never ages out', () => {
     const m = buildNeeds(ok({ items: [item({ category: 'security', source: 'agent', title: 'Rotate token', createdAt: minsAgo(60 * 24 * 40) })], pool: { failed: [] } }), NOW);
@@ -147,19 +149,27 @@ describe('What I have promised', () => {
     expect(isActiveCommitment(c({ expiresAt: minsAgo(1) }), NOW)).toBe(false);
   });
   it('a remote violated promise is not hidden', () => {
-    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', agentResponse: 'I’ll do X and report back.', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
     expect(m.state).toBe('bad');
     expect(m.rows[0].sub).toContain('another machine');
+    // A missed fragment with no promise wording ("Do X") is still listed, never hidden; it does not turn the card red.
+    const u = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
+    expect(u.rows[0].main).toBe('Do X');
+    expect(u.value).toBe('1 open promise');
   });
   it('a promise waiting on the operator but untouched for 14+ days is not counted', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
-    expect(m.count).toBe(0);
-    expect(m.line).toContain('untouched for 14+ days, listed separately');
+    expect(m.waitingCount).toBe(0);
+    expect(m.waitingStale).toHaveLength(1);
+    expect(m.details.join(' ')).toContain('untouched for 14+ days');
   });
-  it('promises waiting on the operator lead', () => {
+  it('promises waiting on the operator are pointed at, not counted a second time', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);
-    expect(m.state).toBe('attn');
-    expect(m.value).toBe('2 need you');
+    expect(m.waitingCount).toBe(2);
+    expect(m.waiting.map((r: { sub: string }) => r.sub.split(' · ')[0])).toEqual(['Needs your approval', 'Needs your answer']);
+    expect(m.value).toBe('3 open promises');
+    expect(m.line).toBe('2 of them are waiting on you, listed under What needs you.');
+    expect(m.state).not.toBe('attn');
   });
   it('without replica rows it says only this machine is visible', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'own' })] }), NOW);
@@ -229,10 +239,13 @@ describe('What I am allowed to do', () => {
     expect(m.value).toBe('70 of 97 on');
     expect(m.state).toBe('attn');
   });
-  it('lists the guards that are not on, deviants before by-design', () => {
+  it('lists only the guards that need a look (the shared rule): off-by-design is not a finding', () => {
     const m = buildAllowed(ok({ summary, guards }), ok({ mandates: [] }), NOW);
-    expect(m.all.map((r: { sub?: string; main: string }) => r.main)).toEqual(['a.enabled', 'b.enabled']);
-    expect(m.all[1].end).toBe('off by design');
+    expect(m.all.map((r: { sub?: string; main: string }) => r.main)).toEqual(['A']);
+    expect(m.all[0].end).toBe('off, should be on');
+    expect(m.needLook).toBe(1);
+    expect(m.rows[0].main).toBe('1 safety check needs a look on this machine');
+    expect(m.details[0]).toBe('7 watching only, 12 off by design.');
   });
   it('a failed mandate read is partial, not zero', () => {
     const m = buildAllowed(ok({ summary, guards }), failure('x'), NOW);
@@ -269,14 +282,13 @@ describe('headline()', () => {
   it('waits for both counting cards before announcing anything', () => {
     expect(headline({ needs: card('loading'), promised: card('attn', '3 need you', 3), reach: card('ok') }).text).toBe('Checking in…');
   });
-  it('sums what needs the operator', () => {
-    expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), reach: card('ok') }).text).toBe('3 things need you.');
+  it('reads its count from the What needs you card only', () => {
+    expect(headline({ needs: card('attn', '3 things', 3), promised: card('ok', '5 open promises'), reach: card('ok') }).text).toBe('3 things need you.');
   });
   it('never says all quiet while a card cannot tell', () => {
     const h = headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') });
     expect(h.text).toBe('Nothing urgent that I can see.');
     expect(h.tone).toBe('muted');
-    expect(h.sub).toContain("can't see fully");
   });
   it('a partial-coverage card blocks "all quiet" even when its state is ok', () => {
     expect(headline({ needs: card('ok'), promised: { state: 'ok', value: '', coverage: 'partial view' } }).text).not.toBe('All quiet.');
@@ -284,15 +296,17 @@ describe('headline()', () => {
   it('attention outside the two queues is still announced', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), allowed: card('attn', '70 of 99 on') }).text).toBe('One area needs a look.');
   });
-  it('a known total keeps its coverage qualification', () => {
-    expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).toContain("can't see fully");
+  it('a known total from an incomplete card says there may be more', () => {
+    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }, { id: 'b', title: 'U', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }], pool: { failed: [] } }), NOW);
+    const p = buildPromised(failure('x'), NOW);
+    expect(headline({ needs: combineNeeds(n, p), promised: p }).sub).toBe('There may be more.');
   });
   it('a partial queue keeps its known urgency in the headline (round-4 blocker)', () => {
-    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
+    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
     expect(n.state).toBe('partial');
     const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
     expect(h.text).toBe('One thing needs you.');
-    expect(h.sub).toContain("can't see fully");
+    expect(h.sub).toContain('There may be more');
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');

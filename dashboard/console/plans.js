@@ -14,7 +14,7 @@ import { topicLink } from './promises.js';
 const EYEBROW = 'Work · Plans';
 const PROJECT_KEYS = ['id', 'kind', 'status', 'version', 'ownerMachineId', 'targetRepoPath', 'unacknowledgedAdvanceCount', 'firstLaunchAckAt', 'lastAckedRoundIndex', 'telegramTopicId', 'createdAt', 'updatedAt', 'lastTouchedAt'];
 const INITIATIVE_KEYS = ['id', 'kind', 'status', 'version', 'parentProjectId', 'pipelineStage', 'specPath', 'prNumber', 'feedbackWorkKey', 'nextCheckAt', 'createdAt', 'updatedAt', 'lastTouchedAt'];
-const BLOCKER_KEYS = ['id', 'state', 'origin', 'version', 'createdAt', 'updatedAt', 'lastReopenedAt'];
+const BLOCKER_KEYS = ['id', 'state', 'origin', 'version', 'createdAt', 'updatedAt', 'lastReopenedAt', 'detectedText'];
 
 const filter = { status: null, done: null };   // the status chips; kept across refreshes
 let last = null;                                // the last data read, repainted on a chip tap

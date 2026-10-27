@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "console-followups-decision-records",
+  "sessionId": "94177e2d-85a2-4315-9510-e63211d04631",
+  "timestamp": "2026-10-27T01:31:01.609Z",
+  "artifactPath": "upgrades/side-effects/console-followups-decision-records.md",
+  "artifactSha256": "c1866d95f5aded71a265d693d30ea13a135a0f07f48a520a69e94571db6aaa4b",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/PreferencesListView.ts",
+    "src/core/liveTailRedaction.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/attentionAction.ts",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/fileRoutes.ts",
+    "src/server/middleware.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Twelve source files, ~550 added lines, all reverted by a revert: two read-only routes, a console-only CSP widening, a scrubber that redacts more, additive CLAUDE.md lines, and an Attention post button that never decides to withhold a post. Records the gate evaluation the PR's original commits skipped (worktree without husky shim).",
+  "eli16Path": "docs/specs/console-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-followups-decision-records.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot per admitted attention item, not a self-triggered loop: the change only adds a button/action argument to the existing Attention hub sendToTopic calls and the existing createAttentionItem call; no new send, retry, loop or cadence; hub filter and repost throttle unchanged."
+  }
+}

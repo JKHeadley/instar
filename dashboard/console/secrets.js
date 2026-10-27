@@ -9,8 +9,10 @@ import {
   topicNameMap, conversationChoices, requestCard, requestBody, testRequestBody, resultWords, shareWords,
   leftWords, TTL_CHOICES,
 } from './secrets-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { promisesAbout } from './shared-counts.js';
+import './actions.js'; // registers the needs-you row control used by section()
 
 const RECORD_KEYS = ['token', 'topicId', 'createdAt', 'expiresAt'];
 
@@ -56,10 +58,12 @@ async function share(url, title, status) {
 export async function renderSecrets(main, ctx) {
   const { get } = ctx;
   if (!main.querySelector('.secrets-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Passwords & keys' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [pendingRes, ctxRes, syncRes, topicsRes, poolRes] = await Promise.all([
+  const [pendingRes, ctxRes, syncRes, topicsRes, poolRes, promisesRes] = await Promise.all([
     get('/secrets/pending'), get('/self-knowledge/session-context?full=1'), get('/secrets/sync-status'), get('/telegram/topics'), get('/pool'),
+    get('/commitments?scope=mesh', 8000),   // a promise about a password that waits on the operator shows here too
   ]);
   const now = Date.now();
+  const promised = promisesRes.ok && Array.isArray(promisesRes.data && promisesRes.data.commitments) ? promisesAbout(promisesRes.data.commitments, 'password', now) : [];
   const names = topicNameMap(topicsRes);
   const origin = location.origin;
   const requests = buildRequests(pendingRes, { names, now, origin });
@@ -68,18 +72,19 @@ export async function renderSecrets(main, ctx) {
   const multi = poolRes.ok && poolRes.data && Array.isArray(poolRes.data.machines) && poolRes.data.machines.length > 1;
   const refresh = () => renderSecrets(main, ctx);
   const deps = { refresh, names, origin };
-  const h = secretsHeadline({ requests, keys, sync });
+  const h = secretsHeadline({ requests, keys, sync, promised });
 
-  const parts = [pageHead({ eyebrow: 'People · Passwords & keys', headline: h.text, tone: h.tone, facts: secretsFacts({ requests, keys, sync }) })];
+  const parts = [pageHead({ eyebrow: 'People · Passwords & keys', headline: h.text, tone: h.tone, facts: secretsFacts({ requests, keys, sync, promised }) })];
   // A vault that can't be opened leads the page: hands off, tell the agent (never repair or rotate).
   if (vaultBroken(keys, sync)) parts.push(el('section', { class: 'incident', role: 'alert' }, el('span', { class: 'incident-title', text: 'Saved keys can’t be opened' }), el('p', { class: 'incident-text', text: VAULT_BROKEN_WORDS })));
   const sections = [];
   sections.push(waitingBlock(requests, deps, multi));
+  if (promised.length) sections.push(section({ id: 'promised', title: 'Promised, waiting on you', tone: 'attn', rows: promised.map((p) => ({ key: p.key, main: p.main, sub: p.sub, end: p.end, tone: 'attn', action: p.action, item: p.id })), onRow: (r) => { location.hash = r.action ? r.action.href : '#/work/promises?s=waiting'; } }));
   sections.push(el('div', { class: 'page-primary' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: '+ Ask someone for one', 'data-ask': '1', onclick: () => askSheet(deps) })));
   sections.push(keysBlock(keys));
   if (requests.ok) sections.push(section({ id: 'expired', title: 'Expired', rows: requests.expired.map((c) => ({ key: c.key, main: c.label, sub: c.sub, tone: 'unknown', card: c })), collapsed: true, empty: 'No request has expired.', onRow: (r) => openRequest(r.card, deps) }));
-  if (sync.on) sections.push(el('section', { class: 'list-section', id: 'sec-sync' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Other machines' })), el('p', { class: 'sync-line', text: sync.words }), sync.unreachableWords ? note(sync.unreachableWords) : null));
-  else if (!sync.hidden) sections.push(el('section', { class: 'list-section', id: 'sec-sync' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Other machines' })), note(sync.reason)));
+  if (sync.on) sections.push(fold('Other machines', el('p', { class: 'sync-line', text: sync.words }), sync.unreachableWords ? note(sync.unreachableWords) : null));
+  else if (!sync.hidden) sections.push(fold('Other machines', note(sync.reason)));
   parts.push(el('div', { class: 'page-sections' }, sections), el('p', { class: 'foot-note' }, el('a', { href: legacyHref('secrets'), text: 'Open secrets in the legacy dashboard' })));
   setKids(main, el('div', { class: 'secrets-page' }, parts));
   startTicker();
@@ -89,10 +94,10 @@ export async function renderSecrets(main, ctx) {
 function waitingBlock(requests, deps, multi) {
   const wrap = el('section', { class: 'list-section', id: 'sec-waiting' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Waiting' }), requests.ok ? el('span', { class: 'list-count', text: String(requests.waiting.length) }) : null));
   if (!requests.ok) { wrap.append(cantTell(requests.reason)); return wrap; }
-  if (!requests.waiting.length) wrap.append(el('p', { class: 'empty-line', text: 'Nothing is waiting. When the agent needs a password or key, it asks here with a one-time link.' }));
+  if (!requests.waiting.length) wrap.append(el('p', { class: 'empty-line', text: 'Nothing is waiting.' }));
   else wrap.append(el('div', { class: 'secret-cards' }, requests.waiting.map((c) => waitingCard(c, deps))));
-  wrap.append(note('Once someone submits, it moves to the agent; it doesn’t stay listed here.'));
-  if (multi) wrap.append(note('These are this machine’s requests. Each machine keeps its own.'));
+  // How a request works, and which machine's requests these are, one tap deeper.
+  wrap.append(fold('How this works', note('When the agent needs a password or key, it asks here with a one-time link. Once someone submits, it moves to the agent and no longer stays listed.'), multi ? note('These are this machine’s requests. Each machine keeps its own.') : null));
   return wrap;
 }
 

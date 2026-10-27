@@ -67,6 +67,22 @@ describe('LiveTailBuffer — sequence dedup', () => {
 });
 
 describe('liveTailRedaction', () => {
+  it('redacts hyphenated provider keys (Anthropic sk-ant-api03-…, OpenAI sk-proj-…) as well as plain sk- keys', () => {
+    const fakeAnt = 'sk-ant-api03-' + 'Q'.repeat(20) + '_x-' + 'Z'.repeat(8);
+    const fakeProj = 'sk-proj-' + 'a1'.repeat(12);
+    const fakePlain = 'sk-' + 'b2'.repeat(12);
+    for (const key of [fakeAnt, fakeProj, fakePlain]) {
+      const r = redactForLiveTail(`remember: my key is ${key} ok`);
+      expect(r.text, key.slice(0, 8)).not.toContain(key.slice(3, 20));
+      expect(r.categories).toContain(RedactionCategory.ApiKey);
+    }
+  });
+
+  it('leaves ordinary hyphenated prose alone', () => {
+    const r = redactForLiveTail('the user prefers task-by-task updates and risk-first summaries');
+    expect(r.redactedCount).toBe(0);
+  });
+
   it('redacts a bearer token', () => {
     const r = redactForLiveTail('Authorization: Bearer abcdef1234567890XYZ');
     expect(r.text).not.toContain('abcdef1234567890XYZ');

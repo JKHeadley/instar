@@ -684,6 +684,23 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
   return timingSafeEqual(expected, provided);
 }
 
+const DASHBOARD_CSP_BASE =
+  "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'";
+
+/**
+ * The dashboard CSP for a path. Only the new console (`/dashboard/console/…`)
+ * additionally allows `img-src 'self' blob:` — its Files page previews an image by
+ * fetching the bytes with the bearer token (an `<img src>` cannot carry it) and
+ * showing them through an object URL. `blob:` URLs can only be minted by script
+ * already running in this origin, so this admits no new image source; `data:` and
+ * remote hosts stay blocked, and the legacy dashboard keeps the exact old policy.
+ * Exported for its unit test.
+ */
+export function dashboardCsp(reqPath: string): string {
+  const isConsole = reqPath === '/dashboard/console' || reqPath.startsWith('/dashboard/console/');
+  return isConsole ? `${DASHBOARD_CSP_BASE}; img-src 'self' blob:` : DASHBOARD_CSP_BASE;
+}
+
 /**
  * Security headers for dashboard paths — prevents clickjacking, MIME-sniffing,
  * and restricts resource loading to trusted sources.
@@ -692,10 +709,7 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   if (req.path === '/dashboard' || req.path.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
-    res.header(
-      'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'",
-    );
+    res.header('Content-Security-Policy', dashboardCsp(req.path));
     res.header('Referrer-Policy', 'no-referrer');
   }
   next();
