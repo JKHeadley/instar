@@ -4,6 +4,7 @@ slug: job-model-routing
 status: draft
 owner: echo
 author: echo
+parent-principle: "Judgment Within Floors"
 requested-by: justin (Telegram topic 130742, 2026-10-26)
 eli16-overview: docs/specs/job-model-routing.eli16.md
 depends-on: docs/specs/job-cost-reduction.md

@@ -12,8 +12,10 @@ This spec handles the 20 jobs that are left. Justin asked for two things for
 them. First, when a job really does need a model, it should run on the
 best-value model the agent can reach, picked from Instar's own benchmark results
 (for example OpenAI's GPT-6 Luna through Codex), with Claude as the fallback.
-Second, use Jev (TypeSafe's fast classifier) as much as possible, the standing
-way: trust Jev when it is confident, and ask GPT-6 Luna when Jev is unsure. And
+Second, use Jev (TypeSafe's fast classifier) to skip empty work only after its
+answers have been validated. An uncertain answer lets the job proceed. This is
+separate from the first spec's scheduled-result triage, where Haiku or Luna
+replaces Jev only during an outage. And
 one rule sits over both: an agent with only one AI provider must still work
 fully. Jev and Codex make things cheaper; they are never required.
 
@@ -26,9 +28,13 @@ fully. Jev and Codex make things cheaper; they are never required.
   the same tracked items, but as one small call inside the server instead of a
   session, and with no call at all when nothing new was said. Jev reads each new
   message first; once it has proven itself, a message Jev is confident holds no
-  promise is not sent to the model. That proof is checked against what actually
+  promise is not sent to the model. Jev must explicitly say "no" in both option
+  orders; an uncertain or malformed answer still reaches the model. That proof
+  is checked against what actually
   happened: whether the promises the model found were later completed. A message
-  is never lost if a call fails: the job simply tries again on its next run. On a
+  is never lost if a call fails: the job simply tries again on its next run. The
+  pass and its session rollback share a per-topic cursor, so switching modes
+  cannot hide messages from a second topic. On a
   one-provider agent nothing depends on Jev.
 - **Two jobs become plain scripts.** The rope-health digest and the org-intent
   drift audit already get their wording from the server.
@@ -54,7 +60,8 @@ clearly above 80%. Development agents try it first.
 
 At each run, the pin is used only if that framework is installed, reachable and
 not near its limit, and Instar's safety hooks are proven to block a dangerous
-command there (a small test run checks this every week). Otherwise the job
+  command there (a small test run checks this every week and again whenever the
+  runtime, safety hooks, configuration or slot changes). Otherwise the job
 simply runs on the default, as today, and the record says why. If a pinned job
 fails or has its work undone three times in a week, that machine switches it
 back to the default and raises one note.
