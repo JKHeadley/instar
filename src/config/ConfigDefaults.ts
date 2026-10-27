@@ -2366,7 +2366,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     scriptRunners: {
       // §11 first wave: only llm-decision-grading and
       // correction-class-review-backstop run as scripts initially. The
-      // supervisor stays scripted so it can observe that wave. Later waves
+      // supervisor is installed but code-gated inactive until its model call
+      // has benchmark and decision-quality audit coverage. Later waves
       // need an explicit idempotent migration; add-missing defaults alone
       // cannot remove entries already written to an agent's config.
       disabledSlugs: [...SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS],

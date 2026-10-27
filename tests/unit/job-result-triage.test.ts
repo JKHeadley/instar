@@ -568,13 +568,14 @@ describe('JobResultTriage', () => {
     expect(h.triage.inFlightCount()).toBe(0);
   });
 
-  it('dev gate: jobs.scriptTriage.jev.enabled omitted ⇒ on for a dev agent, off on the fleet; explicit false wins', () => {
+  it('audit readiness keeps live Jev triage closed on dev and fleet even with saved opt-in', () => {
     const dev = buildScriptTriageConfigGetter({ readLiveJobs: () => ({ scriptTriage: { enabled: true } }), developmentAgent: true })();
     const fleet = buildScriptTriageConfigGetter({ readLiveJobs: () => ({ scriptTriage: {} }), developmentAgent: false })();
     const off = buildScriptTriageConfigGetter({ readLiveJobs: () => ({ scriptTriage: { jev: { enabled: false } } }), developmentAgent: true })();
-    expect(dev.jev?.enabled).toBe(true);
+    expect(dev.jev?.enabled).toBe(false);
+    expect(dev.enabled).toBe(false);
     expect(fleet.jev?.enabled).toBe(false);
-    expect(fleet.enabled).toBe(true);
+    expect(fleet.enabled).toBe(false);
     expect(off.jev?.enabled).toBe(false);
   });
 

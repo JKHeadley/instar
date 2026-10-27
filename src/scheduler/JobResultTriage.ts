@@ -35,6 +35,7 @@ import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { readJsonlTailLines } from '../utils/jsonl-tail.js';
 import type { ScriptRunContext, ScriptRunObserver } from './scriptRunObservers.js';
 import type { JobRun } from './JobRunHistory.js';
+import { JOB_COST_AUDIT_READY } from './JobCostAuditReadiness.js';
 import type { JobTriageStateStore, TriageSessionRecord } from './JobTriageStateStore.js';
 
 export const JOB_TRIAGE_FEATURE = 'job-result-triage';
@@ -79,7 +80,8 @@ export function buildScriptTriageConfigGetter(opts: {
     const block = (raw && typeof raw === 'object' ? raw : {}) as ScriptTriageConfig;
     const jev = block.jev && typeof block.jev === 'object' ? block.jev : {};
     const jevEnabled = resolveDevAgentGate(typeof jev.enabled === 'boolean' ? jev.enabled : undefined, { developmentAgent: opts.developmentAgent });
-    return { ...block, enabled: block.enabled !== false, jev: { ...jev, enabled: jevEnabled } };
+    return { ...block, enabled: JOB_COST_AUDIT_READY.resultTriage && block.enabled !== false,
+      jev: { ...jev, enabled: JOB_COST_AUDIT_READY.resultTriage && jevEnabled } };
   };
 }
 

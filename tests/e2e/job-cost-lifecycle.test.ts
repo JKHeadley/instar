@@ -56,26 +56,26 @@ describe('job-cost production lifecycle', () => {
     expect(triage.body.counts.sessionsSpawned).toBe(0);
   });
 
-  it('installs the shipped health-check script and executes it with zero sessions', async () => {
+  it('keeps later conversions on sessions while an audited first-wave script runs with zero sessions', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-job-script-e2e-'));
     const stateDir = path.join(projectDir, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
-    const health = http.createServer((req, res) => {
-      if (req.url !== '/health' || req.headers.authorization !== `Bearer ${token}`) {
+    const endpoint = http.createServer((req, res) => {
+      if (req.url !== '/decision-quality/grade-pass' || req.headers.authorization !== `Bearer ${token}`) {
         res.writeHead(401).end();
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ sessions: { current: 0, max: 4 }, llmReliability: { status: 'ok' }, degradationFeatures: [] }));
+      res.end(JSON.stringify({ graded: 0, byRule: {}, cursors: {} }));
     });
     let scriptScheduler: JobScheduler | undefined;
     try {
-      await new Promise<void>(resolve => health.listen(0, '127.0.0.1', resolve));
-      const address = health.address();
-      if (!address || typeof address === 'string') throw new Error('health fixture has no port');
+      await new Promise<void>(resolve => endpoint.listen(0, '127.0.0.1', resolve));
+      const address = endpoint.address();
+      if (!address || typeof address === 'string') throw new Error('endpoint fixture has no port');
       const installed = installBuiltinJobs({ agentStateDir: stateDir, packageRoot: process.cwd(), port: address.port });
       expect(installed.errors).toEqual([]);
-      expect(fs.existsSync(path.join(stateDir, 'jobs', 'instar', 'scripts', 'health-check.mjs'))).toBe(true);
+      expect(fs.existsSync(path.join(stateDir, 'jobs', 'instar', 'scripts', 'llm-decision-grading.mjs'))).toBe(true);
       const jobsFile = path.join(stateDir, 'jobs.json');
       fs.writeFileSync(jobsFile, '[]');
       const state = new StateManager(stateDir);
@@ -92,19 +92,25 @@ describe('job-cost production lifecycle', () => {
       expect(sessions._spawnCount).toBe(0);
       expect(scriptScheduler.getRunHistory().query({ slug: 'script-job-supervisor', limit: 1 }).runs).toEqual([]);
       scriptScheduler.setConfigReader(() => ({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } }));
+      expect(scriptScheduler.scriptRunnersActiveFor('health-check')).toBe(false);
+      expect(scriptScheduler.scriptRunnersActiveFor('script-job-supervisor')).toBe(false);
+      expect(scriptScheduler.scriptRunnersActiveFor('llm-decision-grading')).toBe(true);
+      expect(await scriptScheduler.triggerJob('script-job-supervisor', 'dev-e2e')).toBe('skipped');
       expect(await scriptScheduler.triggerJob('health-check', 'e2e')).toBe('triggered');
+      expect(sessions._spawnCount).toBe(1);
+      expect(await scriptScheduler.triggerJob('llm-decision-grading', 'e2e')).toBe('triggered');
       const deadline = Date.now() + 10_000;
-      while (state.getJobState('health-check')?.lastResult === 'pending' && Date.now() < deadline) {
+      while (state.getJobState('llm-decision-grading')?.lastResult === 'pending' && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 20));
       }
-      const healthState = state.getJobState('health-check');
-      expect(healthState?.lastResult, healthState?.lastError).toBe('success');
-      expect(sessions._spawnCount).toBe(0);
-      expect(scriptScheduler.getRunHistory().query({ slug: 'health-check', limit: 1 }).runs[0])
+      const gradingState = state.getJobState('llm-decision-grading');
+      expect(gradingState?.lastResult, gradingState?.lastError).toBe('success');
+      expect(sessions._spawnCount).toBe(1);
+      expect(scriptScheduler.getRunHistory().query({ slug: 'llm-decision-grading', limit: 1 }).runs[0])
         .toMatchObject({ runner: 'script', result: 'success', tokens: 0 });
     } finally {
       scriptScheduler?.stop();
-      if (health.listening) await new Promise<void>(resolve => health.close(() => resolve()));
+      if (endpoint.listening) await new Promise<void>(resolve => endpoint.close(() => resolve()));
       SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/job-cost-lifecycle.test.ts' });
     }
   });

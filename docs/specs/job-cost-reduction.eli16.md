@@ -59,6 +59,15 @@ problem, because they all use the same built-in job templates.
 
 ## What stays safe
 
+- **Audit gate added 2026-10-27:** Justin requires every Jev or other AI call to
+  support regular bulk reviews of cost, performance and accuracy. Until the new
+  job calls have benchmark cases, decision records and outcome grading, code
+  keeps Jev triage, its fallback, the model-written anomaly sentence and the
+  daily model review off. Saved settings cannot override this. The first two
+  deterministic scripts still run on development agents, while the other jobs
+  keep their current session behavior. This means the large projected savings
+  remain a target, not an achieved result.
+
 - An agent with only one AI provider still works fully. Jev, Codex and the
   benchmark only make things cheaper. With no Jev, each script's own fixed rule
   decides whether a session is needed (a real failure or a critical problem),
@@ -68,7 +77,8 @@ problem, because they all use the same built-in job templates.
   backup check until a later change turns it on for them and says so.
 - Script jobs themselves also start on development agents only; everywhere else
   the jobs keep running exactly as today until a later change switches them.
-  The first development-agent wave includes two jobs plus their supervisor.
+  The first development-agent wave includes two jobs; their model-backed
+  supervisor stays inactive until the audit gate opens.
   On an agent where this rollout is off, the new supervisor stays inactive; it
   does not start a new AI session just because its script is disabled.
   The other converted jobs wait for the first wave's 48-hour review.

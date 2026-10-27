@@ -1077,8 +1077,9 @@ Its implementation must settle these constraints, carried forward from here:
    never set the key:
    - `jobs.scriptRunners.disabledSlugs` initially contains every converted
      slug except `llm-decision-grading` and
-     `correction-class-review-backstop`; `script-job-supervisor` also stays
-     scripted to observe the first wave. A later wave removes entries through
+     `correction-class-review-backstop`; `script-job-supervisor` is installed but
+     stays inactive until its LLM call has benchmark and decision-quality audit
+     coverage. A later wave removes entries through
      an idempotent migration after its 48-hour review. `jobs.scriptRunners.enabled` is
      **omitted** and rides the development-agent gate: script runners are live on
      development agents and, on the fleet, every pre-existing converted job runs
@@ -1090,7 +1091,13 @@ Its implementation must settle these constraints, carried forward from here:
      maxSessionsPerDay: 6, maxSessionsPerSlugPerDay: 3, backupIntervalHours: 6,
      jev: { model: 'jev-1.13.0', timeoutMs: 1500, maxChecksPerDay: 1500 } }`.
      `jobs.scriptTriage.jev.enabled` is **omitted** (development-agent gate;
-     §5.6.2 Egress). With `jobs.scriptTriage.enabled: false`, no Jev call,
+     §5.6.2 Egress). A code-owned audit-readiness gate currently forces effective
+     triage off even on development agents and with saved opt-in. The same gate
+     keeps later script conversions on their session path, uses deterministic
+     anomaly narration, and leaves the daily supervisor inactive. Each model
+     family opens only after its calls have benchmark tasks, versioned prompts,
+     provenance and outcome grading, and a bulk review path. Config cannot
+     bypass this gate. With `jobs.scriptTriage.enabled: false`, no Jev call,
      outage backup check or triage session happens; script verdicts,
      alerts, canaries and the daily review are unchanged.
    - All are read live.
@@ -1217,6 +1224,17 @@ nominal sessions a week, which v1 does not touch. Each agent's real numbers come
 from §9.
 
 ## 11. Rollout
+
+**Audit certification added 2026-10-27 (Justin, topic 130742).** Every new Jev
+or LLM call must join the benchmark and decision-quality audit system before
+activation. The first two deterministic script conversions may run without a
+new model call. Later conversions, Jev triage, outage replacement, anomaly
+narration and the daily supervisor remain code-gated until each call family has
+a stable decision-point and prompt identity, actual model and cost/latency
+records, scrubbed provenance, outcome grading or an explicit unknown, and a
+bulk review report. A pending registry entry or a token counter alone does not
+meet this gate. The wider inventory of pre-existing callsites is separate
+retrofit work; this rollout does not claim fleet-wide audit completeness.
 
 1. **Measurement.** Land §9.1–9.3. Collect 7 days of prospective per-job
    attribution, then freeze the baselines. No behaviour change.

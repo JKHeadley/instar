@@ -22,6 +22,7 @@ import { JobCostReport } from '../scheduler/JobCostReport.js';
 import { mountJobCostRoutes } from './jobCostRoutes.js';
 import { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
 import { JobResultTriage, buildScriptTriageConfigGetter, buildTriageProviders, evaluateFloor } from '../scheduler/JobResultTriage.js';
+import { JOB_COST_AUDIT_READY } from '../scheduler/JobCostAuditReadiness.js';
 import { JobTriageBackupCheck } from '../scheduler/JobTriageBackupCheck.js';
 import { ScriptCanaryRunner } from '../scheduler/ScriptCanaryRunner.js';
 import { verifyJobAnomalyEpisodes } from '../scheduler/JobCanaryEpisodeHarness.js';
@@ -5118,7 +5119,7 @@ export class AgentServer {
       });
       const anomalyPusher = new JobAnomalyPusher({
         store: anomalyStore,
-        narrator: new JobAnomalyNarrator({ intelligence: options.intelligence ?? null, audit: anomalyAudit }),
+        narrator: new JobAnomalyNarrator({ intelligence: JOB_COST_AUDIT_READY.anomalyNarration ? options.intelligence ?? null : null, audit: anomalyAudit }),
         machineId: this.meshSelfId ?? 'local',
         raiseAttention: item => telegram.createAttentionItem(item),
         clearAttention: (conditionKey, resolution) => telegram.clearAttentionCondition({ conditionKey }, resolution),
@@ -5197,7 +5198,7 @@ export class AgentServer {
       enabled: () => getTriageConfig().enabled !== false,
       fetchPool: fetchTriagePool,
     });
-    const scriptSupervisor = options.scheduler && options.intelligence && options.telegram
+    const scriptSupervisor = JOB_COST_AUDIT_READY.dailySupervision && options.scheduler && options.intelligence && options.telegram
       ? new ScriptJobSupervisor({
           fetchPoolJobs: async () => {
             const response = await fetch(`http://127.0.0.1:${options.config.port}/jobs?scope=pool`, {

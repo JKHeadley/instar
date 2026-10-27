@@ -32,6 +32,7 @@ import { notifyScriptRunObservers, type ScriptRunObserver } from './scriptRunObs
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../config/ConfigDefaults.js';
+import { AUDIT_READY_SCRIPT_SLUGS, JOB_COST_AUDIT_READY } from './JobCostAuditReadiness.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
 import { SkipLedger } from './SkipLedger.js';
@@ -1788,6 +1789,9 @@ export class JobScheduler {
    * and `jobs.scriptRunners.disabledSlugs`.
    */
   scriptRunnersActiveFor(slug: string): boolean {
+    if (!JOB_COST_AUDIT_READY.laterScriptJobs && !AUDIT_READY_SCRIPT_SLUGS.has(slug)
+      && (SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS as readonly string[]).includes(slug)) return false;
+    if (!JOB_COST_AUDIT_READY.dailySupervision && slug === 'script-job-supervisor') return false;
     const cfg = this.readAgentConfig() ?? {};
     const jobsCfg = (cfg.jobs ?? {}) as { scriptRunners?: { enabled?: unknown; disabledSlugs?: unknown } };
     const sr = jobsCfg.scriptRunners ?? {};

@@ -13,8 +13,9 @@ and a slower outage replacement. Anomaly episodes, canaries, a daily review,
 and per-job cost reports provide checks on the conversion. The script runner is
 development-agent gated; the fleet keeps the current session path. On
 development agents, the default first wave is only
-`llm-decision-grading` and `correction-class-review-backstop`, with the
-`script-job-supervisor` observing them. Other converted slugs use their
+`llm-decision-grading` and `correction-class-review-backstop`. The
+`script-job-supervisor` remains inactive until its model call is auditable.
+Other converted slugs use their
 existing session path until a later migration removes them from
 `jobs.scriptRunners.disabledSlugs` after the 48-hour review.
 
@@ -180,3 +181,79 @@ back to the parent of `stateDir`. Focused reruns and Local Verify check those
 repairs without taking another broad local test slot. The 48-hour development-agent
 observation and seven-day cost comparison are later graduation evidence, not
 claims established by this PR.
+
+## 2026-10-27 audit-readiness addendum
+
+Justin made benchmark and bulk accuracy review a fundamental requirement for
+every Jev and LLM call. The new model calls in this change have cost and local
+decision logs, but their benchmark and decision-quality enrollment is not yet
+complete. `JobCostAuditReadiness` therefore keeps them inactive in production
+code until a reviewed change certifies each call family. The only active
+first-wave script jobs invoke existing deterministic server operations.
+
+**Decision points.** The scheduler's script-versus-session choice now checks
+code-owned audit readiness before config. Triage's effective config is disabled
+before Jev, outage replacement or investigator admission. Anomaly narration
+uses its fixed fallback sentence. The daily supervisor is unconstructed, so
+its route returns 503 and its scheduled job skips.
+
+**1. Over-block.** A legitimate operator opt-in to health-check scripts or the
+daily supervisor remains inactive even on a development agent. That is the
+intended temporary cost of requiring accuracy evidence before activation;
+existing jobs retain their session path and the new supervisor has no prior
+session behavior to preserve.
+
+**2. Under-block.** The gate covers these four *new* job model families. It
+does not certify all older Instar LLM callsites or prove that existing server
+endpoints invoked by the two deterministic scripts have complete audits. That
+inventory and retrofit remain necessary; this change makes no global claim.
+
+**3. Level of abstraction.** A code-owned readiness map is the correct layer
+for a build certification invariant. Config still controls rollout within an
+audited family, but cannot declare a call audited. The existing benchmark and
+quality registries remain the evidence authorities; this map is a closed
+activation latch, not a parallel scoring system.
+
+**4. Signal versus authority.** The gate decides no natural-language meaning.
+It enforces a finite release prerequisite: a call family either has reviewed
+benchmark and outcome-audit coverage or remains closed. That is a hard
+invariant under `docs/signal-vs-authority.md`, not a brittle semantic detector.
+No new static heuristic is added at a competing-signals judgment point.
+
+**5. Interactions.** The readiness check runs before the existing dev-agent and
+per-slug rollout switches; those opt-outs still win after certification. Saved
+all-enabled config cannot reopen an unaudited path. The supervisor's queued
+dispatch is skipped by the same scheduler check. The narrator's deterministic
+fallback keeps anomaly notification available without a model call. No new
+state or retry loop is introduced.
+
+**6. External surfaces.** Development agents see only two first-wave script
+conversions. `GET /jobs` reports the other jobs on their session path and the
+supervisor inactive; manual supervisor POSTs return 503. Fleet agents retain
+their prior session behavior. There is no new operator action or URL. The
+release note and installed awareness text state this posture.
+
+**7. Multi-machine posture.** The gate is replicated as shipped code on every
+machine. Each machine applies its own config only after the same readiness
+check, so an old saved opt-in on one peer cannot create an unaudited call.
+The two script jobs keep the existing job claim and pooled cost read path.
+No user-facing notice, new durable state, or machine-specific URL is added.
+
+**8. Rollback.** Reverting this addendum's code would reopen model calls that
+lack required audit coverage, so that is not an acceptable operational
+rollback. If the two deterministic scripts misbehave, the live
+`jobs.scriptRunners.enabled: false` switch restores their session path. No
+data migration or agent-state repair is needed. Later certification opens
+each call family in a reviewed code change, with its own rollback switch.
+
+**Conclusion.** This narrows the first rollout and avoids claiming the
+projected savings have arrived. Targeted unit tests cover saved opt-in and
+effective triage disable; the production-shaped E2E verifies a first-wave
+script still runs while health-check and the supervisor stay closed. The
+Local Verify queue supplies the full merged-head check.
+
+**Second pass.** GPT-6 Astra independently reviewed the completed artifact and
+diff and concurred: the production wiring closes Jev, backup, investigator,
+narrator and supervisor model paths despite saved opt-ins; manual supervisor
+requests return 503; the two first-wave scripts remain available. It agreed
+that older endpoint audit coverage is not certified by this change.

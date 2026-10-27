@@ -301,18 +301,16 @@ describe('rollback projection (§8.4)', () => {
     expect(lastRun(s, 'script-job-supervisor')).toBeUndefined();
   });
 
-  it('the new supervisor runs as a script on dev and explicit fleet opt-in', async () => {
+  it('the new supervisor remains inactive even with dev and explicit fleet opt-in until audit certification', async () => {
     project = createTempProject();
     addScriptJob(project.stateDir, 'script-job-supervisor', "console.log('JOB_RESULT ok')\n");
     const { s, sm, setCfg } = mkScheduler(project);
     scheduler = s;
     s.start();
-    expect(await s.triggerJob('script-job-supervisor', 'dev')).toBe('triggered');
-    await waitFor(() => project!.state.getJobState('script-job-supervisor')?.lastResult === 'success');
+    expect(await s.triggerJob('script-job-supervisor', 'dev')).toBe('skipped');
     setCfg({ jobs: { scriptRunners: { enabled: true } } });
-    expect(s.scriptRunnersActiveFor('script-job-supervisor')).toBe(true);
-    expect(await s.triggerJob('script-job-supervisor', 'fleet-opt-in')).toBe('triggered');
-    await waitFor(() => s.getRunHistory().query({ slug: 'script-job-supervisor', limit: 3 }).runs.length === 2);
+    expect(s.scriptRunnersActiveFor('script-job-supervisor')).toBe(false);
+    expect(await s.triggerJob('script-job-supervisor', 'fleet-opt-in')).toBe('skipped');
     expect(sm._spawnCount).toBe(0);
   });
 
@@ -336,12 +334,14 @@ describe('rollback projection (§8.4)', () => {
 
   it('keeps later-wave jobs on sessions even before config migration writes their exclusions', () => {
     project = createTempProject();
-    const { s } = mkScheduler(project, { developmentAgent: true });
+    const { s, setCfg } = mkScheduler(project, { developmentAgent: true });
     scheduler = s;
     expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
     expect(s.scriptRunnersActiveFor('feedback-factory-process')).toBe(false);
     expect(s.scriptRunnersActiveFor('llm-decision-grading')).toBe(true);
     expect(s.scriptRunnersActiveFor('correction-class-review-backstop')).toBe(true);
+    setCfg({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } });
+    expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
   });
 
   it.each([
