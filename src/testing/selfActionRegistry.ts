@@ -22,7 +22,11 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
+import { PlacementExecutor } from '../core/PlacementExecutor.js';
+import type { MachineCapacity } from '../core/types.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
@@ -2724,6 +2728,77 @@ const interactiveLoginExpiredSwap: SelfActionController = {
 };
 
 /**
+ * overload-shed — trustworthy-machine-load Part D (D1–D4). The real
+ * OverloadShedPlanner under the pinned worst case: this machine's admission is
+ * closed and enforced on every sample, forever; a healthy peer always has room;
+ * and the peer NEVER claims a proposed topic (every move expires). Brakes, all in
+ * the planner: one live move at a time (10 min entry TTL), 2 moves per hour, a
+ * 30 min per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
+ * at most MAX_REFUNDS_PER_TOPIC (2) refunds for proposals whose transfer never
+ * started (the worst case modelled here). The episode never ends under pressure,
+ * so the total settles at 4 × the topics (5 topics → 20 proposals) and the
+ * per-topic count at 4, independent of the horizon. The reconciler (the actuator)
+ * additionally initiates at most ONE transfer per topic per episode. The episode,
+ * attempt and refund counts are durable, so a restart continues the same episode.
+ */
+function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  let statePath = f.durableState.get('overload-shed-state-path') as string | undefined;
+  if (!statePath) {
+    statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'instar-overload-shed-model-')), 'state.json');
+    f.durableState.set('overload-shed-state-path', statePath);
+  }
+  const topics = Array.from({ length: 5 }, (_, i) => ({ sessionKey: String(1001 + i), pinned: false }));
+  const nowIso = () => new Date(f.clock.nowMs()).toISOString();
+  const planner = new OverloadShedPlanner({
+    config: () => ({ ...DEFAULT_OVERLOAD_SHED, enabled: true, dryRun: false }),
+    selfMachineId: () => 'm-self',
+    admission: () => ({ acceptingWork: false, enforced: true }),
+    capacities: () => [
+      { machineId: 'm-self', online: true, maxSessions: 10, activeSessionCount: 10, loadVerdict: 'saturated' },
+      { machineId: 'm-peer', online: true, maxSessions: 100, activeSessionCount: 1, loadVerdict: 'ok',
+        liveness: { state: 'live', evidenceAgeMs: 5_000, evidenceAt: nowIso(), source: 'direct' } },
+    ] as MachineCapacity[],
+    ownedTopics: () => topics,
+    ownerOf: () => 'm-self', // the peer never claims: every proposed move expires
+    // Worst case for the refund path: the transfer is never even started, so every
+    // expiry is refundable — capped at MAX_REFUNDS_PER_TOPIC per topic per episode.
+    statusOf: () => ({ status: 'active' }),
+    placement: new PlacementExecutor(),
+    statePath,
+    now: () => f.clock.nowMs(),
+  });
+  let proposedSeen = 0; // per-process counter (the planner's counters are in memory)
+  return {
+    tick() {
+      sink.considered += 1;
+      planner.tick();
+      const proposed = (planner.status() as { counters: { proposed: number } }).counters.proposed;
+      const live = planner.overloadMoves()[0];
+      if (proposed > proposedSeen && live) {
+        proposedSeen = proposed;
+        sink.emit({ verb: 'converge-overload-transfer', target: live.sessionKey });
+      }
+    },
+  };
+}
+
+const overloadShed: SelfActionController = {
+  id: 'overload-shed',
+  actionVerb: 'converge-overload-transfer',
+  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 30 min topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
+  modelsPath: 'src/core/OverloadShedPlanner.ts',
+  boundK: 20,
+  perTargetBoundK: 4,
+  ticks: 4 * 60 * 16, // 16 hours of 15 s samples (enough for 20 proposals at 2/hour)
+  tickMs: 15_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return makeOverloadShedPlanner(f, sink); },
+  },
+  makeUnderPressure(f, sink) { return makeOverloadShedPlanner(f, sink); },
+};
+
+/**
  * attention-lifecycle-pass — the hourly attention reconciliation pass
  * (src/messaging/TelegramAdapter.ts runAttentionLifecyclePass; spec
  * docs/specs/attention-lifecycle-close-on-cause.md §3.4): supersede duplicate
@@ -2818,8 +2893,87 @@ function makeAttentionLifecyclePassModel(f: PressureFixture, sink: ActionSink, d
   };
 }
 
+
+/**
+ * local-verify-interrupted-resume — a server stop that kills a running PR verify
+ * (2026-10-26: the lifeline's drift restart killed PR 2350's run four times, each
+ * time un-counted and re-queued behind a fresh `main` verify). Modelled: every tick
+ * is a server stop + boot under which the interrupted PR is restored FIRST
+ * (`resumeFirst`, consumed on its single start — never two jumps per interruption),
+ * its attempt stays counted (`attempts` never decremented), and the starved signal
+ * fires ONCE per entry when `interruptions` reaches INTERRUPTION_LIMITS.starvedAfter
+ * (`starvedRaised` persisted) — horizon-independent: 48 restarts ⇒ at most one
+ * notify per entry (2 entries ⇒ boundK 2), not one per restart.
+ */
+const localVerifyInterruptedResume: SelfActionController = {
+  id: 'local-verify-interrupted-resume',
+  actionVerb: 'notify-starved-verify-retry',
+  models: 'src/localVerify/LocalVerifyService.ts (shutdown/restoreQueue → interruptions + resumeFirst; checkStarved/raiseStarvedIfDue → decideStarved(interrupted); pump → decideStart(resumeFirst))',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeInterruptedResume(f, sink),
+  },
+  makeUnderPressure(f, sink) { return makeInterruptedResume(f, sink); },
+};
+
+/** Entries live in `durableState` (queue.json): a restart is one more interruption, never a reset. */
+function makeInterruptedResume(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  type E = { pr: number; attempts: number; errorRetries: number; firstQueuedAt: number; starvedRaised: boolean; interruptions: number; resumeFirst?: true; running: boolean };
+  const key = 'local-verify-interrupted-resume:queue';
+  const t0 = f.clock.nowMs();
+  let queue = (f.durableState.get(key) as E[] | undefined)
+    ?? [301, 302].map((pr): E => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, interruptions: 0, running: false }));
+  f.durableState.set(key, queue);
+  const main: { kind: 'main'; notBefore?: number; pr?: undefined } = { kind: 'main' };
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      // 1. The server stops: the running entry is interrupted (shutdown): counted, marked, re-queued first.
+      const ran = queue.find((e) => e.running);
+      if (ran) {
+        ran.running = false;
+        ran.interruptions += 1;
+        ran.resumeFirst = true;
+        queue = [ran, ...queue.filter((e) => e !== ran)];
+        f.durableState.set(key, queue);
+      }
+      // 2. Boot: restored entries are checked for starvation before anything starts.
+      for (const e of queue) {
+        const d = decideStarved(e, now);
+        if (!d.raise) continue;
+        e.starvedRaised = true;
+        if (d.reason !== 'interrupted' && e.interruptions >= 2) throw new Error('interruption threshold should raise with reason interrupted');
+        sink.emit({ verb: 'notify-starved-verify-retry', target: String(e.pr) });
+      }
+      // 3. The boot-time `main` verify is queued; the interrupted PR must still start first.
+      const q: Array<E | typeof main> = [main, ...queue];
+      const d = decideStart({ foreignHolders: 0, queue: q, now, fairShare: { mainHealthy: false, oldestUnverifiedMainAt: now, lastStartWasMain: false } });
+      if (d.kind !== 'start') return;
+      const picked = q[d.index];
+      if (ran && picked !== ran) throw new Error(`interrupted PR ${ran.pr} did not resume first (picked ${picked.pr ?? 'main'})`);
+      if (picked.pr === undefined) return;
+      // The start consumes resumeFirst (one jump per interruption) and counts the attempt.
+      if (picked.resumeFirst !== true && ran === picked) throw new Error('resumeFirst was not set on the interrupted entry');
+      delete picked.resumeFirst;
+      picked.attempts += 1;
+      picked.running = true;
+      const prior = (f.durableState.get(key + ':attempts') as Map<number, number> | undefined) ?? new Map<number, number>();
+      if ((prior.get(picked.pr) ?? 0) >= picked.attempts) throw new Error(`attempts went backwards for pr ${picked.pr} (an interrupted run was un-counted)`);
+      prior.set(picked.pr, picked.attempts);
+      f.durableState.set(key + ':attempts', prior);
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   interactiveLoginExpiredSwap,
+  localVerifyInterruptedResume,
   attentionLifecyclePass,
   localVerifyFlakeRerun,
   localVerifyMergeHandoff,
@@ -2834,6 +2988,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   overloadAdmissionSelfHelp,
+  overloadShed,
   feedbackTriageTick,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,

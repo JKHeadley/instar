@@ -548,10 +548,11 @@ export class TelegramLifeline {
    * Stop all in-flight / scheduled mutation sources so the queue snapshot
    * is consistent when persisted.
    */
-  private async quiesceEverything(): Promise<void> {
+  private async quiesceEverything(opts: { keepServer?: boolean } = {}): Promise<void> {
+    // Synchronous teardown FIRST: the orchestrator bounds this whole function (quiesce
+    // budget), so anything after an await may never run. Timers, the registry entry,
+    // the lock and the supervisor's grip on the server are settled before the first await.
     this.polling = false;
-    try { await this.telegramOriginBoot?.close(); }
-    catch (error) { console.error('[telegram-origin] lifeline shutdown cleanup incomplete', error); }
     if (this.pollTimeout) clearTimeout(this.pollTimeout);
     if (this.replayInterval) { clearInterval(this.replayInterval); this.replayInterval = null; }
     if (this.restartSignalInterval) { clearInterval(this.restartSignalInterval); this.restartSignalInterval = null; }
@@ -563,7 +564,19 @@ export class TelegramLifeline {
     // (registry lost-update race; same shape as the server-side fix).
     try { unregisterAgent(this.projectConfig.projectDir + '-lifeline', { onlyIfPid: process.pid }); } catch { /* non-critical */ }
     try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
-    try { await this.supervisor.stop(); } catch { /* best-effort */ }
+    const keepServer = opts.keepServer === true;
+    if (keepServer) {
+      // A lifeline-only restart: the server is already on the current code, so it keeps
+      // running (with whatever it is doing) and the next lifeline adopts it. Detached
+      // before any await so no supervisor callback can still reach the server.
+      console.log('[Lifeline] lifeline-only restart — leaving the server running for the next lifeline to adopt');
+      try { this.supervisor.detach(); } catch { /* @silent-fallback-ok: detach only clears timers; a throw here must not stop the exit */ }
+    }
+    try { await this.telegramOriginBoot?.close(); }
+    catch (error) { console.error('[telegram-origin] lifeline shutdown cleanup incomplete', error); }
+    if (!keepServer) {
+      try { await this.supervisor.stop(); } catch { /* @silent-fallback-ok: the process is exiting; a failed stop is found by the successor's orphan handling */ }
+    }
   }
 
   /**
@@ -583,7 +596,7 @@ export class TelegramLifeline {
     const isSupervised = detectLaunchdSupervised();
 
     this.orchestrator = new RestartOrchestrator({
-      quiesce: () => this.quiesceEverything(),
+      quiesce: (req) => this.quiesceEverything({ keepServer: req?.keepServer === true }),
       persistAll: async () => {
         // Each persist is best-effort; Promise.all so they run in parallel.
         await Promise.all([
@@ -596,6 +609,8 @@ export class TelegramLifeline {
         ]);
       },
       exitFn: (code) => process.exit(code),
+      // A stop request that arrived during a keep-server quiesce still stops the server.
+      stopServer: () => this.supervisor.stop({ evenIfDetached: true }),
       isSupervised,
       isShadowInstallUpdating: () => {
         // Shadow-install sibling path: `.instar/shadow-install/.updating`.
@@ -652,10 +667,14 @@ export class TelegramLifeline {
               console.warn(`[Lifeline] DriftPromoter wanted to restart (reason=${reason}) but no orchestrator installed`);
               return;
             }
+            // Patch drift is the LIFELINE being behind: the server already runs the current
+            // code, so this restart leaves it up (stopping it killed in-flight server work,
+            // e.g. a 23-minute local verify on 2026-10-26).
             await this.orchestrator.requestRestart({
               reason,
               bucket: 'versionSkew',
               context: { source: 'drift-auto-promote' },
+              keepServer: true,
             });
           },
           recordPendingNotice: (info) => this.writeDriftRestartPendingMarker(info),

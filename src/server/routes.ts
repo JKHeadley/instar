@@ -1,5 +1,7 @@
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
+import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
+import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
@@ -13331,7 +13333,20 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ enabled: false, error: 'overload admission not enabled on this agent (monitoring.workAdmission — dev-agent gated)' });
       return;
     }
-    res.json(wa.status());
+    const prio = getActiveSessionPriorityLowerer();
+    res.json({ ...wa.status(), ...(prio ? { sessionPriority: prio.status() } : {}) });
+  });
+
+  // ── Overload shed status (trustworthy-machine-load Part D) ──
+  // Registry First: is this machine shedding existing conversations, which move is
+  // live, what is reserved on which target, and how close the breaker is. 503 when dark.
+  router.get('/overload-shed', (_req, res) => {
+    const p = getActiveOverloadShedPlanner();
+    if (!p) {
+      res.status(503).json({ enabled: false, error: 'overload shed not enabled on this agent (monitoring.overloadShed — dev-agent gated)' });
+      return;
+    }
+    res.json(p.status());
   });
 
   // ── Fork-bomb prevention: host-wide spawn-cap status (forkbomb-prevention-simple §P1/§P3) ──

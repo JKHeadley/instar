@@ -919,6 +919,42 @@
       }
     },
     {
+      "category": "audit-overload-shed",
+      "description": "Overload-shed audit stream (trustworthy-machine-load-and-mesh-floor Part D): one JSON line per proposed move, would-move (dry-run, at most one per topic/target per 5 min), claim, expiry, breaker hold and governor hold. Machine-local observability of this machine's own shed decisions; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/overload-shed.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "OverloadShedPlanner.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending."
+      }
+    },
+    {
+      "category": "overload-shed-state",
+      "description": "Overload-shed planner state (trustworthy-machine-load Part D): capacity reservations on targets (TTL), the per-hour move breaker, per-topic cooldowns and attempt counts for the current overload episode, peers recently seen refusing work, and the one live move. Restart-safe so a restart neither resets the breaker nor re-proposes a topic.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/overload-shed.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file replaced in place; every list in it is pruned each tick (reservations by TTL, move times to one hour, cooldowns to 30 min, attempts reset per episode and bounded by the topics this machine owns)."
+      }
+    },
+    {
       "category": "audit-reaper",
       "description": "Reaper decision audit stream (keep/kill transitions stamped with pressure tier).",
       "scope": "machine-local",

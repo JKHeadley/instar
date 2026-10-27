@@ -6578,6 +6578,23 @@ export interface MonitoringConfig {
     selfHelpAfterSaturatedSamples?: number;
   };
   /**
+   * Overload shed (trustworthy-machine-load Part D): move existing conversations off
+   * this machine once its admission has stayed closed for 3 minutes, one at a time,
+   * through the ownership reconciler. `enabled` undefined resolves via the
+   * developmentAgent gate; `dryRun` defaults true (log would-move, move nothing).
+   * Status: GET /overload-shed.
+   */
+  overloadShed?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Admission must stay closed this long before this machine sheds (default 180000). */
+    sourceAfterMs?: number;
+    /** Breaker: moves proposed per hour from this machine (default 2). */
+    maxMovesPerHour?: number;
+    /** Same-topic cooldown, and how long a machine seen refusing work is not a target (default 1800000). */
+    recentShedMs?: number;
+  };
+  /**
    * ProcessFootprintMonitor — observe-only per-machine process-count measurement
    * (the climb signal missing before the 2026-06-26 resource-exhaustion panic).
    * `enabled` undefined resolves via the developmentAgent gate (live on echo, dark

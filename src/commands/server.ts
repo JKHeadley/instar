@@ -48,6 +48,7 @@ import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
+import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
@@ -1096,6 +1097,8 @@ let _sessionRefresh: import('../core/SessionRefresh.js').SessionRefresh | null =
 // the `/pool/reconciler` readout (status + per-topic explain) can reach it. Null until the
 // pool block constructs it (single-machine / dark → stays null → the route 503s).
 let _ownershipReconciler: import('../core/OwnershipReconciler.js').OwnershipReconciler | null = null;
+/** trustworthy-machine-load D: the overload-shed evaluation timer (cleared at shutdown). */
+let _overloadShedTimer: ReturnType<typeof setInterval> | null = null;
 // U4.2 stale-owner release — the evidence-upgraded Case C engine, hoisted so the
 // GET /pool/stale-owner-release route + the reconciler dep can reach it. Null
 // until the pool block constructs it (single-machine / dark → the route 503s).
@@ -22708,6 +22711,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const lvCfg = (config.monitoring as { localVerify?: { enabled?: boolean; operatorGhLogin?: string; postStatuses?: boolean } } | undefined)?.localVerify;
       const gpCfg = config.monitoring?.greenPrAutoMerge as { expectedGhLogin?: string; repo?: string } | undefined;
       const lvMachineId = coordinator.identity?.machineId ?? `m_host_${os.hostname()}`;
+      const wiring = await import('../localVerify/localVerifyWiring.js');
       const lvHooks: import('../localVerify/localVerifyWiring.js').LocalVerifyHooks = {};
       // Deduped attention for local-verify signals (main-red, status-stuck, mirror-pending, …).
       lvHooks.signal = (key, detail) => {
@@ -22724,21 +22728,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         }
         if (!telegram) return;
-        const id = typeof detail.head === 'string' && key === 'local-verify:mirror-pending' ? `${key}:${detail.head}` : key;
-        void telegram.createAttentionItem({
-          id,
-          title: `local-verify: ${key.replace(/^local-verify:/, '')}`,
-          // A signal that carries a plain-words `note` (the main-red hold item) reads as that note.
-          summary: (typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
-          category: 'degradation',
-          priority: ['local-verify:no-required-checks', 'local-verify:main-red', 'local-verify:required-but-not-posting'].includes(key) ? 'HIGH' : 'MEDIUM',
-        } as never).catch(() => { /* attention delivery is non-fatal */ });
+        // A starved PR ("the merge line is stuck behind it") is upserted so a later queue
+        // episode reopens the item; every other signal keeps create-once semantics.
+        const item = wiring.localVerifyAttentionItem(key, detail);
+        const row = { id: item.id, title: item.title, summary: item.summary, description: item.summary, category: 'degradation', priority: item.priority } as never;
+        void (item.mode === 'upsert' ? telegram.upsertAttentionItem(row) : telegram.createAttentionItem(row)).catch(() => { /* attention delivery is non-fatal */ });
       };
       // The main-red hold item closes itself when `main` is green again.
       lvHooks.clearSignal = (key, resolution) => {
         try { telegram?.clearAttentionCondition({ id: key }, resolution); } catch { /* @silent-fallback-ok — observability only; the lifecycle still expires the row */ }
       };
-      const wiring = await import('../localVerify/localVerifyWiring.js');
       if (lvCfg?.enabled) {
         const built = wiring.buildLocalVerifyService({
           config: lvCfg,
@@ -22820,7 +22819,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const rec = localVerifyStatus;
         // Main-red hold (CMT-1033): while `main` fails a known check, only a repair candidate
         // takes the verify slot. Kill switch: monitoring.localVerify.mainRedHold (read live).
-        svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
+        // Fail-fast (PR verifies): stop the other lanes once one has a real failure. monitoring.localVerify.failFast (read at each start).
+        (await import('../localVerify/localVerifyWiring.js')).wireLocalVerifySwitches(svc, liveConfig);
         greenPrAutoMerger?.attachLocalVerify({
           effectiveFloor: () => (rec ? rec.effectiveFloor() : null),
           mainHealth: () => svc.mainHealth().state,
@@ -23344,6 +23344,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             admission: () => wa.advert(),
           });
           await _machineLoadSampler.start();
+        }
+        // C3 (carried into P3): sessions and everything they start run at nice 5 while
+        // admission is ENFORCED; the server and lifeline stay at normal priority.
+        {
+          const prioMod = await import('../core/sessionPriority.js');
+          const lowerer = new prioMod.SessionPriorityLowerer({
+            active: () => wa.enforced(),
+            tmuxPath: config.sessions.tmuxPath,
+            runningSessions: () => sessionManager.listRunningSessions().map((x) => x.tmuxSession),
+            log: (line) => console.log(pc.dim(`  [session-priority] ${line}`)),
+          });
+          prioMod.setActiveSessionPriorityLowerer(lowerer);
+          const t = setInterval(() => { void lowerer.tick(); }, 15_000);
+          t.unref?.();
         }
         const st = waConfig();
         console.log(pc.green(`  Overload admission enabled${st.dryRun ? ' (dry-run: logs would-refuse, refuses nothing)' : ''}`));
@@ -24201,6 +24215,19 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return out;
               } catch { return new Map(); /* @silent-fallback-ok — an unreadable annotation view reads as no suspensions this tick; the next tick retries */ }
             }),
+            // trustworthy-machine-load D1/D4: the transient overload-move list (late-bound
+            // planner, constructed just below) and unpinned in-flight transfer driving,
+            // both under the overloadShed dev-gate (live on a dev agent, dark on the fleet).
+            overloadMoves: () => {
+              try { return getActiveOverloadShedPlanner()?.overloadMoves() ?? []; } catch { return []; /* @silent-fallback-ok — no planner → no overload moves (today's behavior) */ }
+            },
+            // Live only when overload shed is enabled AND out of dry-run: driving unpinned
+            // transfers (claim / abort past the deadline) is real authority over every
+            // unpinned in-flight transfer, so the soft dry-run lever must hold it too.
+            driveUnpinnedTransfers: () => resolveDevAgentGate(config.monitoring?.overloadShed?.enabled, config)
+              && config.monitoring?.overloadShed?.dryRun === false,
+            // A target that is itself refusing work (enforced) does not claim moved work.
+            acceptingMovedWork: () => !(_workAdmission?.enforced() === true && _workAdmission.acceptingWork() === false),
             isTopicBusy: (sessionKey) => {
               try {
                 // Conservative safe-point signal: an inbound for this topic is
@@ -24238,6 +24265,71 @@ export async function startServer(options: StartOptions): Promise<void> {
             logger: (m) => console.log(pc.dim(`  ${m}`)),
           });
           _ownershipReconciler = reconciler; // hoist for the /pool/reconciler readout
+
+          // ── trustworthy-machine-load Part D: overload shed (docs/specs/trustworthy-machine-load-and-mesh-floor.md) ──
+          // Proposes moving ONE existing Telegram conversation at a time off this machine once
+          // its admission has stayed closed for 3 min; the reconciler above performs the move.
+          // Dev-gated + dry-run first; config read live each tick (enabled:false is the kill switch).
+          try {
+            if (resolveDevAgentGate(config.monitoring?.overloadShed?.enabled, config)) {
+              const shedMod = await import('../core/OverloadShedPlanner.js');
+              const shedPlaceMod = await import('../core/PlacementExecutor.js');
+              const shedCfg = () => {
+                const c = config.monitoring?.overloadShed;
+                const dflt = shedMod.DEFAULT_OVERLOAD_SHED;
+                return {
+                  ...dflt,
+                  enabled: resolveDevAgentGate(c?.enabled, config),
+                  dryRun: c?.dryRun ?? dflt.dryRun,
+                  sourceAfterMs: c?.sourceAfterMs ?? dflt.sourceAfterMs,
+                  maxMovesPerHour: c?.maxMovesPerHour ?? dflt.maxMovesPerHour,
+                  recentShedMs: c?.recentShedMs ?? dflt.recentShedMs,
+                };
+              };
+              const shedPinned = (key: string): boolean => {
+                try {
+                  const meta = _pinPlacementMetadata?.(key) ?? _topicPinStore?.asTopicMetadata(key);
+                  return !!(meta?.preferredMachine || meta?.pinned);
+                } catch { return true; /* @silent-fallback-ok — an unreadable pin view treats the topic as pinned (never moved) */ }
+              };
+              const planner = new shedMod.OverloadShedPlanner({
+                config: shedCfg,
+                selfMachineId: () => _meshSelfId,
+                admission: () => _workAdmission?.advert() ?? null,
+                capacities: () => machinePoolRegistry?.getCapacities() ?? [],
+                ownedTopics: () => ownReg.all()
+                  .filter((r) => r.status === 'active' && r.ownerMachineId === _meshSelfId)
+                  .map((r) => ({ sessionKey: r.sessionKey, pinned: shedPinned(r.sessionKey) })),
+                ownerOf: (key) => ownReg.read(key)?.ownerMachineId,
+                statusOf: (key) => {
+                  const r = ownReg.read(key);
+                  return r ? { status: r.status, ...(r.transferTo ? { transferTo: r.transferTo } : {}) } : undefined;
+                },
+                isTopicBusy: (key) => currentInboundByTopic?.has(key) ?? false,
+                placement: new shedPlaceMod.PlacementExecutor(undefined, {
+                  sustainedOnline: (m) => (_ws13SustainedOnline ? _ws13SustainedOnline(m) : true),
+                }),
+                hasLiveAutonomousRun: (sessionKey) => {
+                  try {
+                    return !!autoSessionsMod.listAutonomousJobs(config.stateDir)
+                      .find((j) => j.topic === sessionKey && j.active && !j.paused);
+                  } catch { return true; /* @silent-fallback-ok — unreadable run registry: never propose moving the topic */ }
+                },
+                statePath: path.join(config.stateDir, 'overload-shed.json'),
+                auditPath: path.join(config.stateDir, '..', 'logs', 'overload-shed.jsonl'),
+                log: (line) => console.log(pc.yellow(`  [overload-shed] ${line}`)),
+              });
+              shedMod.setActiveOverloadShedPlanner(planner);
+              _overloadShedTimer = setInterval(() => {
+                try { planner.tick(); } catch (err) { console.log(pc.yellow(`  [overload-shed] tick failed: ${err instanceof Error ? err.message : String(err)}`)); /* @silent-fallback-ok (logged) — the next tick retries */ }
+              }, 15_000);
+              _overloadShedTimer.unref?.();
+              console.log(pc.green(`  Overload shed enabled${shedCfg().dryRun ? ' (dry-run: logs would-move, moves nothing)' : ''}`));
+            }
+          } catch (err) {
+            // @silent-fallback-ok (logged): without the planner nothing is shed (today's behavior).
+            console.log(pc.yellow(`  [overload-shed] not wired: ${err instanceof Error ? err.message : String(err)}`));
+          }
 
           // ── U4.2 stale-owner release engine (docs/specs/u4-2-stale-owner-release.md) ──
           // Case C's evidence upgrade, invoked FROM reconciler.tick() (one actor;
@@ -24293,6 +24385,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               listOwnershipRecords: () => {
                 try { return ownReg.all(); } catch { return []; /* @silent-fallback-ok — no records → nothing to evaluate this tick */ }
               },
+              // trustworthy-machine-load D5: honest owner wording in notices (display only).
+              ownerLiveness: (machineId) => machinePoolRegistry?.getCapacity(machineId)?.liveness,
               durableLastKnownHeartbeatMs: (machineId) => {
                 try {
                   const rec = sorHeartbeatReader.read(machineId);
@@ -30967,6 +31061,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       releaseOriginLeaseRenewal();
       coordinator.stop();
       ropeHealthMonitor?.stop();
+      if (_overloadShedTimer) clearInterval(_overloadShedTimer);
       if (_passkeyOutboxTimer) clearInterval(_passkeyOutboxTimer);
       if (_passkeyPoolTimer) clearInterval(_passkeyPoolTimer);
       if (_passkeyHealthTimer) clearInterval(_passkeyHealthTimer);

@@ -236,6 +236,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'overloadShed',
+    prefixes: ['/overload-shed'],
+    description: 'Overload shed (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part D) — moves EXISTING conversations off a machine that has stayed overloaded: once this machine has refused new work for 3 minutes it proposes moving one Telegram conversation at a time to a healthy machine (live evidence under 2 min, verdict ok, room after reservations), through the ownership reconciler; pinned topics and topics with a live autonomous run stay. Breaker 2 moves/hour, 2 tries per topic per episode. GET /overload-shed reports enabled/dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour and counters (proposed, wouldMove, claimed, expired, breakerHeld). Dev-gated + dry-run first (monitoring.overloadShed); 503 when dark. When asked "why did my conversation move machines / why is this overloaded machine still holding work?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /overload-shed'],
+    }),
+  },
+  {
     key: 'workAdmission',
     prefixes: ['/work-admission'],
     description: 'Overload admission (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part C) — each machine protects its own resources: when its own multi-signal load verdict is saturated/impaired it CLOSES to new automatic work (scheduled jobs, helper sessions, placement of new conversations; the work waits and retries, nothing is dropped, running conversations keep going), reopens after 5 consecutive good samples, and keeps ONE host-wide recovery slot free so an operator session can always start. GET /work-admission reports enabled/dryRun/enforced, acceptingWork, lastVerdict, the recovery slot (cap/inUse) and counters (closes, reopens, refused, wouldRefuse, recoverySlotGrants). Dev-gated + dry-run first (monitoring.workAdmission): in dry-run it logs would-refuse and refuses nothing; 503 when dark. When asked "why didn\'t a job run / is this machine taking work?" → read this, don\'t guess.',

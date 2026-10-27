@@ -20,7 +20,7 @@
  * Pure over its inputs; the caller performs the actual transfers (TransferOrchestrator).
  */
 
-import type { PlacementExecutor, TopicPlacement } from './PlacementExecutor.js';
+import type { PlacementExecutor, PlacementRequest, TopicPlacement } from './PlacementExecutor.js';
 import type { MachineCapacity } from './types.js';
 
 export interface RebalanceSession {
@@ -30,6 +30,9 @@ export interface RebalanceSession {
   lowPriority?: boolean; // default true — only low-priority sessions are rebalanced
   lastTransferredAt?: number;
   topicMetadata?: TopicPlacement;
+  /** The session's channel scope, threaded to placement so a move never lands on a
+   *  machine that cannot reach the conversation's platform/workspace (CMT-1568). */
+  channel?: PlacementRequest['channel'];
 }
 
 export interface RebalanceInput {
@@ -40,6 +43,17 @@ export interface RebalanceInput {
   now: number;
   /** Hard cap on moves proposed per cycle (default = number of saturated sources). */
   maxMovesPerCycle?: number;
+  /**
+   * Source override (trustworthy-machine-load D2): when set, a machine is a source iff
+   * this returns true (e.g. "refusing work for 3 minutes"), replacing the session-ratio
+   * threshold. Absent ⇒ the ratio rule (today's behavior).
+   */
+  isSource?: (m: MachineCapacity) => boolean;
+  /**
+   * Target restriction (trustworthy-machine-load D2): only machines passing this are
+   * offered to placement as targets. Absent ⇒ every machine (today's behavior).
+   */
+  targetEligible?: (m: MachineCapacity) => boolean;
 }
 
 export interface RebalanceMove {
@@ -60,7 +74,8 @@ export function planRebalance(input: RebalanceInput, placement: PlacementExecuto
 
   const saturated = (id: string): boolean => {
     const m = caps.get(id);
-    return !!m && m.online && sessionRatio(m) > threshold;
+    if (!m || !m.online) return false;
+    return input.isSource ? input.isSource(m) : sessionRatio(m) > threshold;
   };
   const sources = input.machines.filter((m) => saturated(m.machineId)).sort((a, b) => sessionRatio(caps.get(b.machineId)!) - sessionRatio(caps.get(a.machineId)!));
   const cap = input.maxMovesPerCycle ?? sources.length;
@@ -79,19 +94,20 @@ export function planRebalance(input: RebalanceInput, placement: PlacementExecuto
       input.now - (s.lastTransferredAt ?? 0) > input.placementCooldownMs,
     );
     for (const s of candidates) {
-      // One move per source per cycle (cascade guard).
-      // NOTE (placement-platform-workspace-aware, second-pass finding): this rebalance
-      // decide() does NOT thread `channel`, so a Slack session could be moved onto a
-      // machine not connected to its workspace (recreating the wrong-workspace black-hole
-      // via the rebalance door). DORMANT today — RebalancePlanner is not wired into the
-      // server (no live moves). Before rebalance is ever activated, plumb the channel scope
-      // onto RebalanceSession and pass `channel` here. <!-- tracked: CMT-1568 -->
+      // One move per source per cycle (cascade guard). The session's channel scope is
+      // threaded (CMT-1568, fixed with trustworthy-machine-load P3) so a move never lands
+      // on a machine whose adapter cannot reach the conversation's platform/workspace.
+      const registry = input.targetEligible
+        ? [...caps.values()].filter((m) => m.machineId !== src.machineId && input.targetEligible!(m))
+        : [...caps.values()];
+      if (registry.length === 0) break;
       const decision = placement.decide({
         sessionKey: s.sessionKey,
         topicMetadata: s.topicMetadata ?? {},
-        machineRegistry: [...caps.values()],
+        machineRegistry: registry,
         currentOwner: undefined, // rebalance ignores stickiness
         reason: 'rebalance',
+        ...(s.channel ? { channel: s.channel } : {}),
       });
       if (decision.outcome === 'placed' && decision.chosenMachine && decision.chosenMachine !== src.machineId) {
         moves.push({ sessionKey: s.sessionKey, fromMachine: src.machineId, toMachine: decision.chosenMachine, reason: 'load-rebalance' });
