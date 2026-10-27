@@ -109,7 +109,7 @@ Each is an arm in the experiment. **A0 is the control:** today's full file.
 ### Order of experiments
 
 1. A5 and A3 first: cheapest, narrowest, and they size the easy gain.
-2. Freeze a complete safety-rule inventory with source hashes, dependencies, triggers, and both positive and boundary tests. Repair the known J-SF-028 fixture. Then compare A0, A1, and A2 in a small failure-finding pilot before a separately frozen confirmation set.
+2. Freeze a complete safety-rule inventory with source hashes, dependencies, triggers, and both positive and boundary tests. The J-SF-028 repair is prepared in [job-shaped-v2.json](batteries/job-shaped-v2.json) with its [revision note](batteries/job-shaped-v2.md); freeze it with the remaining fixture repairs before new trials. Then compare A0, A1, and A2 in a small failure-finding pilot before a separately frozen confirmation set.
 3. A4 only if A2 misses the awareness bar.
 
 ## 4. Staged rollout
