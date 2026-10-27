@@ -84,7 +84,9 @@ Goals (operator direction):
 
 Non-goals:
 - Changing what any job decides or reports: its endpoints, outcome rules, silence
-  policy, or which machine runs it.
+  policy, or which machine runs it. The one exception is health-check's
+  notification policy (§5.4, F6): critical problems push at once, others after
+  6 hours and one investigation.
 - Changing cron cadences. They stay as they are, so before and after numbers
   compare like with like.
 - Changing how interactive sessions pick a model.
@@ -641,6 +643,11 @@ an in-flight slot or a script-cap slot.
 - Every other run goes into a cascade queue that keeps the latest run per slug.
   One Jev call runs at a time.
 
+**Trust-rejected runs are never triaged.** A run recorded `failed` with reason
+`script-untrusted` (§5.1) is excluded from the floor, the cascade, the backup
+check and every triage session: its script failed verification, so nothing
+built from its template runs. It alerts through the failure path only.
+
 **Which runs are triaged.** A run whose result is `success` with no anomaly lines
 and a summary on the template's declared bare-ok list (for example `ok healthy`)
 is `routine` by construction and is never sent anywhere; the canaries (§5.6.4),
@@ -709,15 +716,20 @@ is it routine?
   - Its provider is built in `server.ts` as: the Codex provider when Codex is
     available (its `fast` tier is GPT-6 Luna); otherwise the agent's default
     framework provider at `fast` (Haiku on Claude). It has its own breaker,
-    `timeoutMs` 20 s, at most one call in flight (the slot is held until the
-    underlying provider call settles, not when `askReferee`'s race returns; a
-    call still unsettled after 120 s is abandoned and opens the breaker), and
+    `timeoutMs` 20 s, at most one call in flight, and
     `jobs.scriptTriage.referee.maxCallsPerDay` (default 200 per machine).
   - `askReferee` gains an optional `attribution` argument whose fields are merged
     into the call's attribution (component `JobResultTriageReferee`,
     `jobSlug`, `machineId`, `runId`); the triage caller passes `deferrable:
     false` and `category: 'reflector'`. That is the only change to
     `JevCascade.ts`. A shed or deferred call counts as a referee failure.
+  - **The single slot is owned by a provider wrapper**, `SingleFlightProvider`,
+    that the referee (and the backup check) is given instead of the raw
+    provider. Its `evaluate` takes the slot, calls the real provider, and frees
+    the slot only when that call settles, so `askReferee` returning on its
+    timeout race cannot let a second call overlap one still running. A call
+    still unsettled after 120 s frees the slot and opens the wrapper's breaker.
+    A call made while the slot is taken fails at once (the floor decides).
   - Referee failure, timeout, cap or open breaker: the cascade answers nothing and
     the floor stands alone.
 - **What `needs_session` does: a triage session.** The scheduler spawns one
@@ -1243,8 +1255,9 @@ from §9.
   - the floor's streak comes from this machine's run rows (a standby fixture);
   - a `structured-only` slug never sends or quotes free text; undeclared or
     malformed `JOB_FIELD` lines are dropped and counted;
-  - a referee provider that ignores its timeout keeps the single slot until it
-    settles or is abandoned at 120 s;
+  - a referee provider that ignores its timeout keeps the `SingleFlightProvider`
+    slot until it settles or is abandoned at 120 s;
+  - repeated `script-untrusted` failures alert but never start a triage session;
   - a triage session is spawned with `omitAuthEnv` (no Bearer or origin token in
     its environment) and the fixed allowlist; an env-token agent records
     `refused: env-token-auth`;
