@@ -85,7 +85,7 @@ export interface UnactionablePost {
   category: string;
   priority: string;
   title: string;
-  reason: 'no-action' | 'no-public-url';
+  reason: 'no-action' | 'no-public-url' | 'button-refused' | 'peer-action-invalid';
 }
 
 /** One line per hub post that reached the operator with nothing to tap, so the producer can be fixed. */
@@ -99,4 +99,32 @@ export function recordUnactionablePost(logsDir: string | undefined, entry: Unact
     // Not silent: the post itself already went out; the audit line failing is reported here.
     console.warn(`[attention] could not record an unactionable post for ${entry.id}: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** Bounded memory of peer refusals already logged, so a polled pool read writes one line per bad action, not one per poll. */
+const loggedPeerRefusals = new Set<string>();
+
+/**
+ * The one tap for an attention item that came from ANOTHER machine (GET /attention?scope=pool).
+ * A peer's `action` is that machine's claim and is re-checked with the same validator as a
+ * local producer's: only a plain console hash path survives. A peer on older code (no
+ * `action` key) is stamped from the same rules as a local item; an explicit null stays null;
+ * anything else gets no tap and is recorded in logs/attention-unactionable.jsonl.
+ */
+export function peerItemAction(item: ItemLike & { priority?: string } | null | undefined, logsDir: string | undefined): AttentionAction | null {
+  if (!item || typeof item !== 'object') return null;
+  if (!('action' in item)) return attentionActionFor(item);
+  const a = item.action;
+  if (a === null || a === undefined) return null;
+  if (validAction(a)) return { kind: 'open', href: a.href, label: a.label };
+  const id = typeof item.id === 'string' ? item.id : '';
+  const key = `${id}\u0000${JSON.stringify(a).slice(0, 300)}`;
+  if (!loggedPeerRefusals.has(key)) {
+    if (loggedPeerRefusals.size >= 500) loggedPeerRefusals.clear();
+    loggedPeerRefusals.add(key);
+    recordUnactionablePost(logsDir, {
+      id, category: String(item.category || ''), priority: String(item.priority || ''), title: String(item.title || ''), reason: 'peer-action-invalid',
+    });
+  }
+  return null;
 }

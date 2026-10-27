@@ -418,7 +418,7 @@ import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
-import { attentionActionFor, validAction as validAttentionAction } from '../messaging/attentionAction.js';
+import { attentionActionFor, peerItemAction, validAction as validAttentionAction } from '../messaging/attentionAction.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -20553,7 +20553,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       const merged = await attentionPoolMerge(localItems, status);
       if (Array.isArray(merged.items)) {
-        merged.items = (merged.items as Array<Record<string, unknown>>).map((it) => ('action' in it ? it : { ...it, action: attentionActionFor(it as { id?: string }) }));
+        // A peer's action is re-checked with the local validator (peerItemAction): a
+        // foreign or malformed link never becomes a tap, and is logged instead.
+        const attnLogsDir = path.join(ctx.config.stateDir, 'logs');
+        merged.items = (merged.items as Array<Record<string, unknown>>).map((it) => ({ ...it, action: peerItemAction(it as { id?: string }, attnLogsDir) }));
       }
       if (limit === undefined) {
         res.json(merged);

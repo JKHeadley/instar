@@ -121,6 +121,42 @@ describe('GET /attention — pool-wide aggregation (WS4.1)', () => {
     expect(remote.remote).toBe(true);
   });
 
+  // fb-99bc2103-19b: a peer's `action` is that machine's claim. It is re-checked with the
+  // local validator; a foreign/malformed link never becomes a tap and is logged instead.
+  async function listenForgedPeer(items: Array<Record<string, unknown>>): Promise<string> {
+    const app = express();
+    app.get('/attention', (_req, res) => { res.json({ items, count: items.length }); });
+    peerServer = app.listen(0);
+    await new Promise((r) => peerServer!.once('listening', r));
+    return `http://127.0.0.1:${(peerServer!.address() as { port: number }).port}`;
+  }
+
+  it('a peer item with a valid console action keeps it; a foreign/malformed one gets no tap and is logged', async () => {
+    const peerUrl = await listenForgedPeer([
+      item({ id: 'ok', priority: 'HIGH', title: 'ok', action: { kind: 'open', href: '#/people/mandates?s=waiting', label: 'Open approvals' } }),
+      item({ id: 'evil', priority: 'HIGH', title: 'evil', action: { kind: 'open', href: 'https://evil.example/', label: 'Go' } }),
+      item({ id: 'js', priority: 'HIGH', title: 'js', action: { kind: 'open', href: 'javascript:alert(1)', label: 'Go' } }),
+      item({ id: 'none', priority: 'HIGH', title: 'none', action: null }),
+      item({ id: 'old', priority: 'HIGH', title: 'old', category: 'telegram-origin' }),
+    ]);
+    const app = mount(tmpDir, {
+      items: [], meshSelfId: 'm_a', capacities: { m_a: { online: true }, m_b: { online: true } },
+      peers: [{ machineId: 'm_b', url: peerUrl }],
+    });
+    const res = await request(app).get('/attention').query({ scope: 'pool' }).set(auth());
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.body.items.map((i: { id: string }) => [i.id, i]));
+    expect(byId.ok.action).toEqual({ kind: 'open', href: '#/people/mandates?s=waiting', label: 'Open approvals' });
+    expect(byId.evil.action).toBeNull();
+    expect(byId.js.action).toBeNull();
+    expect(byId.none.action).toBeNull();
+    expect(byId.old.action).toMatchObject({ kind: 'open', label: 'Review held replies' });
+    const log = path.join(tmpDir, '.instar', 'logs', 'attention-unactionable.jsonl');
+    const rows = fs.readFileSync(log, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows.map((r: { id: string }) => r.id).sort()).toEqual(['evil', 'js']);
+    expect(rows.every((r: { reason: string }) => r.reason === 'peer-action-invalid')).toBe(true);
+  });
+
   it('P17: same-key NORMAL items across machines coalesce into ONE row (machines listed)', async () => {
     // Both machines raised the SAME episode (same sourceContext).
     const peerUrl = await listenPeer([item({ id: 'p', sourceContext: 'guard-tripwire-X' })], 'm_b');

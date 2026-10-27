@@ -1586,6 +1586,9 @@ export class TelegramAdapter implements MessagingAdapter {
        *  reply_markup; a relayed send cannot carry markup, so each button's URL is
        *  appended to the text instead — the link always reaches the reader. */
       urlButtons?: Array<{ text: string; url: string }>;
+      /** Called when Telegram refused the send WITH its buttons and it was then
+       *  delivered without them (sendPlainKeepingText). The text always goes out. */
+      onButtonRefused?: (err: unknown) => void;
     },
   ): Promise<SendResult> {
     // NOT the chokepoint, and this comment is the correction of a claim that stood here.
@@ -1705,7 +1708,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
-        result = await this.apiCall('sendMessage', params) as { message_id: number };
+        result = await this.sendPlainKeepingText(params, { ...params, parse_mode: 'HTML', _formatMode: 'html' }, options?.onButtonRefused);
       }
     } else {
       try {
@@ -1734,7 +1737,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
-        result = await this.apiCall('sendMessage', params) as { message_id: number };
+        result = await this.sendPlainKeepingText(params, { ...params, parse_mode: 'Markdown' }, options?.onButtonRefused);
       }
     }
 
@@ -4835,6 +4838,14 @@ export class TelegramAdapter implements MessagingAdapter {
     // place where the operator acts. No possible action (or no public URL to put
     // on a phone) is logged so the producer can be fixed — the post still goes out.
     const urlButtons = this.attentionButtons(item);
+    // Telegram refused the button but the text went out: record it, so a bad
+    // console link is fixed at the source instead of silently losing the tap.
+    const onButtonRefused = (err: unknown) => {
+      console.warn(`[attention] hub post for ${item.id} delivered without its button (Telegram refused it): ${err instanceof Error ? err.message : String(err)}`);
+      recordUnactionablePost(path.join(this.botStateDir, 'logs'), {
+        id: item.id, category: item.category, priority: item.priority, title: item.title, reason: 'button-refused',
+      });
+    };
 
     let injected: number | null | undefined;
     try {
@@ -4846,7 +4857,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (typeof injected === 'number' && injected > 0) {
       try {
-        await this.sendToTopic(injected, detail, { formatMode: 'html', silent: item.silent === true, urlButtons });
+        await this.sendToTopic(injected, detail, { formatMode: 'html', silent: item.silent === true, urlButtons, onButtonRefused });
         markPosted();
         return injected;
       } catch (err) {
@@ -4874,10 +4885,58 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true, urlButtons })
+    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true, urlButtons, onButtonRefused })
       .then(markPosted)
       .catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
     return topicId;
+  }
+
+  /**
+   * The plain-text retry after a formatted send failed. Telegram refuses the WHOLE
+   * request when an inline button is bad (an unreachable URL, a malformed
+   * reply_markup), so a retry that re-sends the same reply_markup fails the same way
+   * and the message is lost (fb-99bc2103-19b). Without buttons this is exactly the
+   * old single retry. With buttons: plain WITH buttons (the formatting may have been
+   * the problem); only if Telegram REFUSED that (HTTP 400), the formatted text WITHOUT
+   * buttons, then plain without them —
+   * the text always gets its chance, and `onButtonRefused` is told the button was
+   * dropped so the caller can record it.
+   */
+  private async sendPlainKeepingText(
+    params: Record<string, unknown>,
+    formatted: Record<string, unknown>,
+    onButtonRefused?: (err: unknown) => void,
+  ): Promise<{ message_id: number }> {
+    if (!params.reply_markup) return await this.apiCall('sendMessage', params) as { message_id: number };
+    let buttonErr: unknown;
+    try {
+      return await this.apiCall('sendMessage', params) as { message_id: number };
+    } catch (err) {
+      if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+      // Only Telegram's own refusal (HTTP 400 — e.g. BUTTON_URL_INVALID) proves the request was
+      // rejected. A timeout or network error may already have delivered the message, so
+      // re-sending it without buttons would risk a duplicate: that stays the caller's failure,
+      // exactly as the old single retry left it.
+      if (!/\(400\):/.test(err instanceof Error ? err.message : String(err))) throw err;
+      buttonErr = err;
+    }
+    const strip = (p: Record<string, unknown>): Record<string, unknown> => {
+      const { reply_markup: _dropped, ...rest } = p;
+      return rest;
+    };
+    let result: { message_id: number };
+    try {
+      result = await this.apiCall('sendMessage', strip(formatted)) as { message_id: number };
+    } catch (err) {
+      if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+      result = await this.apiCall('sendMessage', strip(params)) as { message_id: number };
+    }
+    try {
+      onButtonRefused?.(buttonErr);
+    } catch {
+      // @silent-fallback-ok — the message was delivered; a failing recorder must not turn that into a failure.
+    }
+    return result;
   }
 
   /**

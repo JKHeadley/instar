@@ -22,3 +22,8 @@ Everything I bring to you now comes with one button. On the console's Home, each
 ## Evidence
 
 Unit: `console-actionable.test.ts` (both sides of each kind's action, the no-action ⇒ not-needs-you invariant, jsdom render of the buttons, the approve flow through the PIN sheet, deep-link landing), `attention-action.test.ts` (rules, URL safety, the real TelegramAdapter hub post with and without a button, the unactionable log, the relay path), `PostUpdateMigrator-attentionActionable.test.ts`. Integration: `attention-actionable.test.ts` (GET stamps, POST validation), `green-pr-automerge-routes.test.ts`. E2E: `console-home-lifecycle.test.ts` (every counted needs-you item carries an actionable tap through the real stack).
+
+## Follow-up in the same release: a refused button never costs the alert (fb-99bc2103-19b)
+
+- `TelegramAdapter.sendToTopic`: when a send carrying `urlButtons` is refused, the fallback no longer re-sends the same `reply_markup`. It tries plain with the button, then the formatted text without it, then plain without it; a send without buttons keeps the old single retry. A post delivered without its button is logged to `logs/attention-unactionable.jsonl` with `reason: "button-refused"` (new `onButtonRefused` option).
+- `GET /attention?scope=pool`: a peer item's `action` is re-validated with the same rule as a local producer's (`peerItemAction`); a non-console target gets `action: null` and one `reason: "peer-action-invalid"` log line. Evidence: `attention-action.test.ts` (refused → delivered without markup + logged; accepted → unchanged; peer valid/invalid), `attention-pool-scope.test.ts` (forged peer over real HTTP).
