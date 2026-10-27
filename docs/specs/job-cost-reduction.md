@@ -195,7 +195,9 @@ Counts:
   - `getDefaultJobs()` entries gain `runner: 'script'`, `script: '<slug>.mjs'`
     and, where needed, `anomalies: [<kind>, …]` (§5.3).
   - `frontmatterFor()` emits these keys.
-  - `ALLOWED_FRONTMATTER_KEYS` adds `runner`, `script` and `anomalies`.
+  - `ALLOWED_FRONTMATTER_KEYS` adds `runner`, `script`, `anomalies`,
+    `scriptTimeoutMinutes`, `scriptSupervision`, `triageEvidence`, and the
+    bare-ok / bare-skipped lists (`triageBareOk`, `triageBareSkipped`).
 - **Where scripts live and how they ship.**
   - Scripts live in `src/scaffold/templates/jobs/instar/scripts/<slug>.mjs`. They
     are node ESM and use built-in modules only, so they run on macOS and Linux.
@@ -259,8 +261,11 @@ Counts:
     with reason `script-cap` and goes through the existing retry path (retried
     one minute later).
   - Each slug gets a fixed start offset of 0–20 s.
-  - Converted templates set `expectedDurationMinutes` to their real bound. The
-    timeout is twice that.
+  - Converted templates set `scriptTimeoutMinutes` to the script's real bound;
+    the script timeout is twice that. `expectedDurationMinutes` keeps its
+    original session value, so the rollback session (§8.4) and a triage session
+    get today's session limit, not the script's. A unit test pins that a
+    rollback spawn uses `expectedDurationMinutes`.
 
 ### 5.2 Script protocol
 
@@ -630,8 +635,15 @@ failure still gives the second one its session.
 `structured-only`, because their output can carry fleet users' report text: for
 them both the Jev input and the triage session's prompt carry only structured
 fields (result, reason code, server reason codes, counts, ids), never the
-free-text tail. health-check and commitment-checkin-reminder are `full`. A test
-pins that a `structured-only` slug never sends or quotes free text.
+free-text tail. health-check and commitment-checkin-reminder are `full`.
+
+This is **one evidence projection per run**, `triageEvidenceFor(run)`, and every
+model consumer reads only it: Jev, the referee, the triage session prompt, the
+backup check (§5.6.3), and the daily review's `recentOutputs` for script jobs
+(§5.6.5). A triage session's final output for a `structured-only` slug is shown
+to the daily review only as its first line, clamped to 200 characters. Each
+consumer has a test pinning that a `structured-only` slug's free text never
+reaches it.
 
 **The question.** Does this result need a real session with real intelligence, or
 is it routine?
@@ -737,9 +749,10 @@ is it routine?
   with the bare-ok and fingerprint rules the expected count is a small fraction
   of it. Jev calls are recorded in `featureMetrics` as `job-result-triage`,
   `framework: typesafe-api`.
-- **Egress.** With Jev on, the scrubbed, clamped run summary of a triaged run
-  leaves the machine to TypeSafe. For the feedback-factory jobs that text can
-  include fleet users' report text. So `jobs.scriptTriage.jev.enabled` is
+- **Egress.** With Jev on, the evidence projection of a triaged run (below)
+  leaves the machine to TypeSafe: for `full` templates the scrubbed, clamped
+  output tail; for `structured-only` templates only structured fields. Even so,
+  sending any job data to a third party is a fleet-wide decision, so `jobs.scriptTriage.jev.enabled` is
   **omitted** and rides the development-agent gate: on for development agents
   (the operator's decision covers his own agents), dark on the fleet, where the
   floor, the referee and the backup check still run. Turning Jev triage on for
@@ -755,8 +768,8 @@ model reading these results.
 - **It reads a sample, and says so.** For each `triage`-class slug it takes the
   runs since its cursor whose decision was `routine` (by any decider, bare-ok
   included), dedupes them by output fingerprint, orders them non-ok and
-  anomaly-bearing first, then oldest unseen first, and reads at most 12, each
-  scrubbed and clamped to 1,000 characters. It records `considered` and
+  anomaly-bearing first, then oldest unseen first, and reads at most 12: each
+  run's evidence projection (§5.6.2), clamped to 1,000 characters. It records `considered` and
   `unread: N` per slug per pass. health-check makes ~72 runs in 6 hours, so most
   of its identical healthy runs collapse to one fingerprint; distinct ones beyond
   12 are counted as unread, never claimed as reviewed.
@@ -1174,11 +1187,12 @@ from §9.
   - an answer in the unsure band, or `cannot_tell`, goes to the referee;
   - the served-model mismatch, HTTP error, timeout, no key and daily cap each fall
     to the deterministic rule, and the rule gives `needs_session` exactly for a
-    non-server-managed failure or a critical anomaly (both sides tested);
+    second consecutive failure or a critical anomaly (both sides tested: a first
+    failure and a recoverable anomaly give `routine`);
   - the referee failing also falls to the deterministic rule;
   - `deterministic`-class jobs and canary runs are never triaged;
-  - `needs_session` starts one session with the fixed preamble and the job's
-    own allowlist; in-flight, cooldown and daily cap each suppress, and the cap
+  - `needs_session` starts one session with the investigator prompt and the
+    fixed allowlist; in-flight, cooldown and daily cap each suppress, and the cap
     raises one calm item per day;
   - the daily cap and cooldown survive a restart (seeded from state);
   - the state sent to Jev is scrubbed and clamped; the audit row carries no
