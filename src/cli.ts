@@ -397,6 +397,9 @@ program
   .option('-d, --dir <path>', 'Project directory (default: current directory)')
   .option('--port <port>', 'Server port (default: 4040)', (v: string) => parseInt(v, 10))
   .option('--standalone', 'Create a standalone agent at ~/.instar/agents/<name>/')
+  .option('--autostart', 'Allow the agent to install its own start-on-login job even though init runs without a terminal')
+  .option('--expires-in <duration>', 'Make this a throwaway agent that tears itself down after a duration (e.g. 30m, 6h, 2d)')
+  .option('--keep', 'Never expire this agent, even if it lives in a temporary folder')
   .option(
     '--framework <name>',
     `AI runtime to target: ${SUPPORTED_FRAMEWORKS.join(', ')}, or both (claude-code default)`,
@@ -1958,14 +1961,20 @@ autostartCmd
   .command('install')
   .description('Install auto-start so your agent starts on login')
   .option('-d, --dir <path>', 'Project directory')
+  .option('--force', 'Install even for a throwaway agent (temporary folder, sandboxed HOME, or expired)')
   .action(async (opts) => {
     const { loadConfig } = await import('./core/Config.js');
     const { installAutoStart, takeLastLingerOutcome, describeLingerOutcome, currentSystemdUser } =
       await import('./commands/setup.js');
+    const { markAutoStartExplicit, takeLastAutoStartRefusal } = await import('./core/ThrowawayAgentGuard.js');
     const config = loadConfig(opts.dir);
     const hasTelegram = config.messaging?.some((m: { type: string }) => m.type === 'telegram') ?? false;
-    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
+    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram, { force: opts.force === true });
+    const refusal = takeLastAutoStartRefusal();
     if (installed) {
+      // The explicit request: the startup self-heals may maintain it from now on.
+      markAutoStartExplicit(config.projectDir, { forced: opts.force === true });
+      if (opts.force === true) console.log(pc.yellow('Auto-start installed with --force (throwaway safeguards bypassed for this install).'));
       console.log(pc.green(`Auto-start installed for "${config.projectName}".`));
       // On Linux, "installed" and "starts at boot" are different facts: an
       // enabled user service only runs while that user holds a login session
@@ -1979,6 +1988,8 @@ autostartCmd
       } else {
         console.log(pc.dim('Your agent will start automatically when you log in.'));
       }
+    } else if (refusal) {
+      console.log(pc.yellow(`Auto-start not installed: ${refusal}`));
     } else {
       console.log(pc.red('Failed to install auto-start.'));
       console.log(pc.dim(`Platform: ${process.platform} — auto-start supports macOS and Linux.`));

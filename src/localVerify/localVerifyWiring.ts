@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
-import { LocalVerifyService, appendLocalVerifyAudit, type UpdatePendingState } from './LocalVerifyService.js';
+import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
 import { computeVerifierVersion } from './verifierVersion.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { buildDefaultServiceSeams, scrubbedEnv } from './serviceSeams.js';
@@ -40,6 +40,36 @@ export interface LocalVerifyConfigBlock {
 }
 
 /** Late-bound hooks: the service is built before the reconciler that consumes these. */
+/**
+ * The attention item for a local-verify signal. A starved PR is `upsert`: `createAttentionItem`
+ * returns an existing row unchanged (a RESOLVED one too), which would hide a later queue
+ * episode of the same PR; `upsertAttentionItem` reopens it. Within one stay in the queue
+ * `starvedRaised` already limits the signal to once.
+ */
+export function localVerifyAttentionItem(key: string, detail: Record<string, unknown>): {
+  id: string; title: string; summary: string; priority: 'HIGH' | 'MEDIUM'; mode: 'upsert' | 'create';
+} {
+  const id = typeof detail.head === 'string' && key === 'local-verify:mirror-pending' ? `${key}:${detail.head}` : key;
+  if (key.startsWith('local-verify:starved:')) {
+    const n = String(detail.interruptions ?? 0);
+    const waited = String(detail.waitedMinutes ?? '?');
+    return {
+      id, mode: 'upsert', priority: 'MEDIUM',
+      title: `Local Verify: PR #${String(detail.pr)} cannot finish its check`,
+      summary: detail.reason === 'interrupted'
+        ? `Server restarts killed this PR's check ${n} times before it could finish (waiting ${waited} min). The merge line is stuck behind it.`
+        : `This PR has waited ${waited} min for its check without finishing (killed by restarts ${n} times). The merge line is stuck behind it.`,
+    };
+  }
+  return {
+    id, mode: 'create',
+    title: `local-verify: ${key.replace(/^local-verify:/, '')}`,
+    // A signal that carries a plain-words `note` (the main-red hold item) reads as that note.
+    summary: (typeof detail.note === 'string' ? detail.note : JSON.stringify(detail)).slice(0, 900),
+    priority: ['local-verify:no-required-checks', 'local-verify:main-red', 'local-verify:required-but-not-posting'].includes(key) ? 'HIGH' : 'MEDIUM',
+  };
+}
+
 export interface LocalVerifyHooks {
   onRecord?(record: LocalVerifyRecord): void;
   onMainHealthChange?(snap: MainHealthSnapshot, prev: MainHealthSnapshot): void;
@@ -60,7 +90,8 @@ export interface LocalVerifyWiringOpts {
   /** The agent home (`.worktrees/.verify/` lives under it). */
   agentHome: string;
   machineId: string;
-  onStarved?: (info: { pr: number; headSha: string; waitedMs: number }) => void;
+  /** Absent ⇒ the starved signal goes to `hooks.signal` as `local-verify:starved:<pr>` (one attention item per PR). */
+  onStarved?: LocalVerifyServiceSeams['onStarved'];
   /** Override the child entry (tests running from source point at the built dist). */
   mainEntry?: string;
   hooks?: LocalVerifyHooks;
@@ -112,7 +143,13 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
     },
     {
       ...seams,
-      onStarved: opts.onStarved,
+      // The starved signal used to reach only the audit log (nothing was wired to it), so a
+      // queue whose head could never finish stayed invisible. It is an attention signal now.
+      // one item per PR (`starvedRaised` is kept across a push, so the PR alarms once per stay in the queue).
+      onStarved: opts.onStarved ?? ((i) => opts.hooks?.signal?.(`local-verify:starved:${i.pr}`, {
+        pr: i.pr, headSha: i.headSha, waitedMinutes: Math.round(i.waitedMs / 60_000),
+        reason: i.reason ?? 'waited', interruptions: i.interruptions ?? 0,
+      })),
       onRecord: (r) => opts.hooks?.onRecord?.(r),
       onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
       signal: (k, d) => opts.hooks?.signal?.(k, d),
@@ -367,4 +404,19 @@ export async function buildStatusReconciler(opts: StatusReconcilerWiringOpts): P
     actionsFloor: floor.actionsFloor, evaluate: floor.evaluate,
   }, seams, floorGate, opts.service);
   return { reconciler, floorGate, reason: null };
+}
+
+/**
+ * The live switches the server reads at each decision (absent ⇒ on):
+ * `monitoring.localVerify.mainRedHold` (CMT-1033), `monitoring.localVerify.failFast` and
+ * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults).
+ */
+export function wireLocalVerifySwitches(
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards'>,
+  liveConfig: { get<T>(key: string, fallback: T): T },
+): void {
+  svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
+  svc.setFailFastEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.failFast', true) !== false);
+  // Processes per slow lane, e.g. { "integration": 1, "e2e": 2 } to return to the pre-2026-10-27 split.
+  svc.setLaneShards(() => liveConfig.get<unknown>('monitoring.localVerify.laneShards', null));
 }

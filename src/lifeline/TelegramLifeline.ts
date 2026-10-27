@@ -1,4 +1,5 @@
 import { withDeterministicOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
+import { checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 /**
  * Telegram Lifeline — minimal persistent process that owns the Telegram connection.
@@ -336,6 +337,25 @@ export class TelegramLifeline {
       process.exit(2);
     }
 
+    // Test-agent leak guard (docs/specs/test-agent-leak-guard.md): an expired
+    // throwaway tears down its own autostart and exits (or idles when the
+    // unload is quarantined) before starting anything — no server, no polling.
+    {
+      let startup: ReturnType<typeof throwawayStartupDecision> = { decision: 'run', check: { expired: false, marker: null }, backfilled: null };
+      try {
+        startup = throwawayStartupDecision(this.projectConfig.projectName, this.projectConfig.projectDir);
+      } catch (err) {
+        console.warn(pc.yellow(`[Lifeline] Throwaway-agent check failed (continuing): ${err instanceof Error ? err.message : String(err)}`));
+      }
+      if (startup.decision !== 'run') {
+        console.log(pc.yellow(`[Lifeline] ${describeExpiry(startup.check)}`));
+        if (startup.decision === 'exit') process.exit(0);
+        console.log(pc.yellow('[Lifeline] Teardown could not unload the auto-start job after 5 attempts; idling instead of restart-looping.'));
+        setInterval(() => { /* quarantined: hold the process, start nothing */ }, 60 * 60 * 1000);
+        return;
+      }
+    }
+
     // Acquire exclusive lock — prevent multiple lifeline instances
     if (!acquireLockFile(this.lockPath)) {
       console.error(pc.red('[Lifeline] Another lifeline instance is already running. Exiting.'));
@@ -501,11 +521,20 @@ export class TelegramLifeline {
     // The user must always be able to reach their agent remotely — this is non-negotiable.
     try {
       if (!this.isAutostartInstalled()) {
-        // Dynamic import — setup.ts uses @inquirer/prompts which requires Node 20.12+
-        const { installAutoStart } = await import('../commands/setup.js');
-        const installed = installAutoStart(this.projectConfig.projectName, this.projectConfig.projectDir, true);
-        if (installed) {
-          console.log(pc.green(`  Auto-start self-healed: installed ${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}`));
+        // Test-agent leak guard: a non-interactive / throwaway init recorded
+        // autoInstall:false — never install a missing unit on our own.
+        if (this.projectConfig.autostart?.autoInstall === false) {
+          console.log(pc.dim('  Auto-start not installed: this agent was created without asking for it (run `instar autostart install` to add it).'));
+        } else {
+          // Dynamic import — setup.ts uses @inquirer/prompts which requires Node 20.12+
+          const { installAutoStart } = await import('../commands/setup.js');
+          const installed = installAutoStart(this.projectConfig.projectName, this.projectConfig.projectDir, true);
+          const refusal = takeLastAutoStartRefusal();
+          if (installed) {
+            console.log(pc.green(`  Auto-start self-healed: installed ${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}`));
+          } else if (refusal) {
+            console.log(pc.yellow(`  Auto-start not installed: ${refusal}`));
+          }
         }
       } else {
         // Self-healing: validate plist uses boot wrapper, not a hardcoded Node path.
@@ -542,16 +571,32 @@ export class TelegramLifeline {
 
     process.on('SIGINT', externalShutdown);
     process.on('SIGTERM', externalShutdown);
+
+    // Test-agent leak guard: re-check expiry every 60s. A server the supervisor
+    // restarts inside that window stops at the expired marker on its own.
+    const throwawayTimer = setInterval(() => {
+      try {
+        const check = checkThrowawayExpiry(this.projectConfig.projectName, this.projectConfig.projectDir);
+        if (!check.expired) return;
+        clearInterval(throwawayTimer);
+        console.log(pc.yellow(`[Lifeline] ${describeExpiry(check)}`));
+        void this.quiesceEverything().finally(() => process.exit(0));
+      } catch (err) {
+        console.error(`[Lifeline] throwaway expiry check failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 60 * 1000);
+    throwawayTimer.unref?.();
   }
 
   /**
    * Stop all in-flight / scheduled mutation sources so the queue snapshot
    * is consistent when persisted.
    */
-  private async quiesceEverything(): Promise<void> {
+  private async quiesceEverything(opts: { keepServer?: boolean } = {}): Promise<void> {
+    // Synchronous teardown FIRST: the orchestrator bounds this whole function (quiesce
+    // budget), so anything after an await may never run. Timers, the registry entry,
+    // the lock and the supervisor's grip on the server are settled before the first await.
     this.polling = false;
-    try { await this.telegramOriginBoot?.close(); }
-    catch (error) { console.error('[telegram-origin] lifeline shutdown cleanup incomplete', error); }
     if (this.pollTimeout) clearTimeout(this.pollTimeout);
     if (this.replayInterval) { clearInterval(this.replayInterval); this.replayInterval = null; }
     if (this.restartSignalInterval) { clearInterval(this.restartSignalInterval); this.restartSignalInterval = null; }
@@ -563,7 +608,19 @@ export class TelegramLifeline {
     // (registry lost-update race; same shape as the server-side fix).
     try { unregisterAgent(this.projectConfig.projectDir + '-lifeline', { onlyIfPid: process.pid }); } catch { /* non-critical */ }
     try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
-    try { await this.supervisor.stop(); } catch { /* best-effort */ }
+    const keepServer = opts.keepServer === true;
+    if (keepServer) {
+      // A lifeline-only restart: the server is already on the current code, so it keeps
+      // running (with whatever it is doing) and the next lifeline adopts it. Detached
+      // before any await so no supervisor callback can still reach the server.
+      console.log('[Lifeline] lifeline-only restart — leaving the server running for the next lifeline to adopt');
+      try { this.supervisor.detach(); } catch { /* @silent-fallback-ok: detach only clears timers; a throw here must not stop the exit */ }
+    }
+    try { await this.telegramOriginBoot?.close(); }
+    catch (error) { console.error('[telegram-origin] lifeline shutdown cleanup incomplete', error); }
+    if (!keepServer) {
+      try { await this.supervisor.stop(); } catch { /* @silent-fallback-ok: the process is exiting; a failed stop is found by the successor's orphan handling */ }
+    }
   }
 
   /**
@@ -583,7 +640,7 @@ export class TelegramLifeline {
     const isSupervised = detectLaunchdSupervised();
 
     this.orchestrator = new RestartOrchestrator({
-      quiesce: () => this.quiesceEverything(),
+      quiesce: (req) => this.quiesceEverything({ keepServer: req?.keepServer === true }),
       persistAll: async () => {
         // Each persist is best-effort; Promise.all so they run in parallel.
         await Promise.all([
@@ -596,6 +653,8 @@ export class TelegramLifeline {
         ]);
       },
       exitFn: (code) => process.exit(code),
+      // A stop request that arrived during a keep-server quiesce still stops the server.
+      stopServer: () => this.supervisor.stop({ evenIfDetached: true }),
       isSupervised,
       isShadowInstallUpdating: () => {
         // Shadow-install sibling path: `.instar/shadow-install/.updating`.
@@ -652,10 +711,14 @@ export class TelegramLifeline {
               console.warn(`[Lifeline] DriftPromoter wanted to restart (reason=${reason}) but no orchestrator installed`);
               return;
             }
+            // Patch drift is the LIFELINE being behind: the server already runs the current
+            // code, so this restart leaves it up (stopping it killed in-flight server work,
+            // e.g. a 23-minute local verify on 2026-10-26).
             await this.orchestrator.requestRestart({
               reason,
               bucket: 'versionSkew',
               context: { source: 'drift-auto-promote' },
+              keepServer: true,
             });
           },
           recordPendingNotice: (info) => this.writeDriftRestartPendingMarker(info),

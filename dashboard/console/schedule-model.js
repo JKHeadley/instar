@@ -91,7 +91,7 @@ export function resultWord(r) { return RESULT_WORD[r] || (r ? String(r).replace(
 
 const SKIP_WORD = {
   disabled: 'switched off', paused: 'the scheduler was paused', quota: 'usage limit', 'memory-pressure': 'low memory', capacity: 'no free session slot',
-  claimed: 'another machine took it', 'machine-scope': 'not this machine', 'already-running': 'already running', 'role-guard': 'this machine was standby', gate: 'nothing to do, by its pre-flight check',
+  claimed: 'another machine took it', 'machine-scope': 'not this machine', 'already-running': 'already running', 'role-guard': 'this machine was standby', 'throwaway-agent': 'test agent in a temporary folder', gate: 'nothing to do, by its pre-flight check',
 };
 export function skipWords(reason) { return `skipped (${reason ? (SKIP_WORD[reason] || String(reason).replace(/[-_]/g, ' ')) : 'no reason recorded'})`; }
 

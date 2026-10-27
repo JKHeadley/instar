@@ -1174,6 +1174,10 @@ export function loadConfig(projectDir?: string): InstarConfig {
     },
     authToken: fileConfig.authToken as string | undefined,
     projectName,
+    // Test-agent leak guard override (docs/specs/test-agent-leak-guard.md).
+    // Built field-by-field like the rest of this object, so an unlisted key
+    // would be silently dropped and the override could never take effect.
+    ...(fileConfig.scheduler?.allowOnThrowawayAgent === true ? { allowOnThrowawayAgent: true } : {}),
   };
 
   // Auto-generate contextSigningKey if not present (persists to config file)
