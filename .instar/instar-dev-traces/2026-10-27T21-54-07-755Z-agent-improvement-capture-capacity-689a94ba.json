@@ -25,5 +25,14 @@
   "eli16Path": "docs/specs/agent-improvement-pipeline.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/agent-improvement-capture-capacity.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Existing correction-class-review-outcomes controller is capped at 50 open artifacts and one per semantic class; cap-held Attention uses a stable coalesced ID, so sustained corrections cannot mint unbounded work or notices."
+    }
+  }
 }

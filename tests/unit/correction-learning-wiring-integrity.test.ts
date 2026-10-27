@@ -36,6 +36,36 @@ const AUTH = 'corr-wiring-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 
 describe('Correction-learning wiring integrity (Slice 1b)', () => {
+  it('AgentServer routes class-review disposition to the real Telegram Attention adapter', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'corr-attention-wire-'));
+    try {
+      fs.mkdirSync(path.join(dir, '.instar', 'state', 'sessions'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.instar', 'state', 'jobs'), { recursive: true });
+      const createAttentionItem = vi.fn(async () => ({ id: 'attention-1' }));
+      const config = {
+        projectName: 'corr-attention-wire', agentName: 'Wiring', projectDir: dir,
+        stateDir: path.join(dir, '.instar'), port: 0, authToken: AUTH, developmentAgent: true,
+        monitoring: { correctionLearning: { enabled: true }, correctionClassReview: { enabled: true, dryRun: false } },
+      } as InstarConfig;
+      const server = new AgentServer({ config, sessionManager: createMockSessionManager() as any,
+        state: new StateManager(path.join(dir, '.instar')),
+        telegram: { createAttentionItem } as any,
+        intelligence: { evaluate: async () => JSON.stringify({
+          standardReview: { verdict: 'not-applicable', isPolicyRelaxation: false },
+          processReview: { verdict: 'process-gap', proposedDelta: 'fix the review process' },
+          rationale: 'Needs a human disposition', confidence: 'low',
+        }) } as any });
+      const response = await request(server.getApp()).post('/corrections').set(auth())
+        .set('X-Instar-Request', '1').send({ learning: 'Please improve this process', kind: 'infra-gap' });
+      expect(response.status).toBe(201);
+      await vi.waitFor(() => expect(createAttentionItem).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Correction class review needs disposition', sourceContext: 'correction-class-review',
+      })));
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'corr-attention-wiring' });
+    }
+  });
+
   describe('CorrectionLedger constructed IFF enabled (production AgentServer boot path)', () => {
     let onDir: string, offDir: string;
     let onServer: AgentServer, offServer: AgentServer;
