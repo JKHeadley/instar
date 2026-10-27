@@ -191,6 +191,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | StandardsConformanceReviewer ×2 | src/core/reviewers/standards-conformance.ts:206/256 | spec-vs-standards / fit | B | OC(capable) | ✅ |
 | JobReflector | src/core/JobReflector.ts:207 | reflect on job outcome | B/D | OC(capable) | ✅ |
 | ScriptJobSupervisor | src/scheduler/ScriptJobSupervisor.ts:209 | daily review of pool-wide script-job outputs (job-cost-reduction §5.6.5) | B | OC(balanced) | ✅ |
+| JobTriageBackupCheck | src/scheduler/JobTriageBackupCheck.ts:167 | outage-only sample: does a routine script result need investigation? | A/B | configured default provider (fast Haiku or Luna) | ✅ runs only when Jev is unavailable; 6-hour cadence and 12-result cap |
 | JobAnomalyNarrator | src/scheduler/JobAnomalyNarrator.ts:148 | one-sentence wording for a job-anomaly push (wording only) | D | OC(fast) | ✅ |
 | ContextualEvaluator ×3 | src/core/ContextualEvaluator.ts:121/354/414 | accept/reject a dispatch | A/B | OC(fast) | ~ |
 | TreeTriage ×2 | src/knowledge/TreeTriage.ts:373/435 | score node/layer relevance | A | OC(fast) | ⚠ |

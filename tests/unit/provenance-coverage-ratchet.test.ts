@@ -121,6 +121,7 @@ const PENDING_BASELINE = [
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
   'script-job-supervision::ScriptJobSupervisor::backlog:decision-quality-enrolment',
+  'script-job-outage-backup::JobTriageBackupCheck::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',

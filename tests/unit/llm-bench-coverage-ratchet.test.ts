@@ -40,6 +40,7 @@ const PENDING_BASELINE = [
   'FeedbackTriageArbiter', 'FeedbackTriageSecondOpinion',
   // job-cost-reduction §5.6.5 (2026-10-26): the daily script-job review; graded by its must-flag canary until a bench task lands.
   'ScriptJobSupervisor',
+  'JobTriageBackupCheck', // outage-only sampled classifier pending a dedicated bench task
 ].sort();
 
 const EXEMPT_BASELINE = [

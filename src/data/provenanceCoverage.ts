@@ -818,10 +818,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Daily review of every machine\'s recent script-job outputs (job-cost-reduction §5.6.5); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
+    decisionPoint: 'script-job-outage-backup',
+    component: 'JobTriageBackupCheck',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Outage-only model decision over sampled script-result evidence (job-cost-reduction §5.6.3); enrollment is queued in the uniform-provenance retrofit backlog.',
+  },
+  {
     decisionPoint: 'job-anomaly-narration',
     component: 'JobAnomalyNarrator',
     status: 'exempt:no-decision-content',
-    contentClass: 'metadata',
+    contentClass: 'content-bearing', // the operator-authored job body is bounded but still prompt content
     reason:
       'Wording-only (job-cost-reduction §5.4): one plain sentence beside a verbatim evidence block; the push, its reasons and its timing are decided deterministically before the model is called, and nothing parses its reply.',
   },

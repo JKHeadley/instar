@@ -260,6 +260,7 @@ export class ScriptCanaryRunner {
       fs.mkdirSync(path.dirname(this.markerPath()), { recursive: true });
       fs.writeFileSync(this.markerPath(), JSON.stringify({ lastRunAt: new Date(at).toISOString() }));
     } catch (err) {
+      // @silent-fallback-ok: failure to write the cadence marker is logged; the next tick retries the canary.
       console.warn('[ScriptCanaryRunner] could not write the daily marker:', err instanceof Error ? err.message : String(err));
     }
   }

@@ -38,7 +38,9 @@ const LLM_CALL_RE = /\.evaluate\(\s*(prompt|systemPrompt|simplePrompt|classifier
 
 // Infrastructure that IMPLEMENTS evaluate() (the router + provider adapters) — not a
 // gate that could "fall back to a heuristic". They ARE the swap/circuit machinery.
-const EXCLUDE_RE = /IntelligenceRouter|providers[\\/]adapters[\\/]|anthropic-interactive-pool/;
+// SingleFlightProvider is also provider plumbing: it implements evaluate(),
+// refuses busy/open-breaker calls, and propagates the inner provider's errors.
+const EXCLUDE_RE = /IntelligenceRouter|SingleFlightProvider|providers[\\/]adapters[\\/]|anthropic-interactive-pool/;
 
 // Any one of these in a callsite file satisfies the standard:
 //  - DegradationReporter — the degradation is reported (not silent)

@@ -137,6 +137,16 @@ changed but the shipped `health-check.md` was still an agentmd template and
 fields; a shipped-template test checks their manifest and body. Their
 `mcpAccess: none` restriction is preserved for rollback sessions.
 
+The full-suite pass also exposed wiring boundaries that focused tests missed.
+Audit and supervision logs now use the top-level project directory, which is
+present even in production-shaped configs without a `sessions` block. The
+outage backup has its own registered LLM attribution and a parsed-output
+contract, with provenance enrollment explicitly tracked as pending. Job-body
+text reaching the anomaly narrator is classified as
+untrusted file content. The unrelated shared script protocol is excluded with
+a reason from the Stage-B delivery fingerprint; the certified hashes and
+signed delivery evidence remain unchanged.
+
 The self-action convergence pass models one persistent anomaly episode and a
 continuing Jev outage. A durable spawned episode settles after one triage
 session, including after reconstruction. Outage backup passes are separated by

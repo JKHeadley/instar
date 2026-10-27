@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "slug": "job-cost-reduction",
+  "sessionId": "151db862-f0e5-4985-9614-540e5687e3fe",
+  "timestamp": "2026-10-27T05:55:39.040Z",
+  "artifactPath": "upgrades/side-effects/job-cost-reduction.md",
+  "artifactSha256": "1c96578bd637aca422f7de178f8169d0a112b26fec454643e97c17e55ded211d",
+  "specPath": "docs/specs/job-cost-reduction.md",
+  "coveredFiles": [
+    "docs/LLM-ROUTING-REGISTRY.md",
+    "src/core/componentCategories.ts",
+    "src/data/llmBenchCoverage.ts",
+    "src/data/provenanceCoverage.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "src/scheduler/JobAnomalyNarrator.ts",
+    "src/scheduler/JobAnomalyPusher.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/ScriptCanaryRunner.ts",
+    "src/scheduler/ScriptJobSupervisor.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/doorway-scan-job-template.test.ts",
+    "tests/unit/feedback-triage-job-templates.test.ts",
+    "tests/unit/jev-audit-wiring.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "tests/unit/llm-bench-coverage-ratchet.test.ts",
+    "tests/unit/llm-decision-grading-job-template.test.ts",
+    "tests/unit/no-silent-llm-fallback.test.ts",
+    "tests/unit/parser-contract-classification-ratchet.test.ts",
+    "tests/unit/provenance-coverage-ratchet.test.ts",
+    "upgrades/side-effects/job-cost-reduction.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Large scheduler path with durable triage and migration; development rollout is gated, while review and all three test tiers remain required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-cost-reduction-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "One durable anomaly episode settles after one triage spawn across restarts; outage backup checks retain a durable six-hour interval and bounded sample under sustained Jev failure."
+    }
+  }
+}

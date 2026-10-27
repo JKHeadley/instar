@@ -2937,6 +2937,7 @@ export class JobScheduler {
       this.saveJobTopicMapping(live.slug, topic.topicId);
       return topic.topicId;
     } catch (err) {
+      // @silent-fallback-ok: the anomaly pusher receives null, records no-topic, and retains delivery custody.
       console.error(`[scheduler] Failed to create topic for ${live.slug}: ${err}`);
       return null;
     }

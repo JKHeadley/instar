@@ -167,6 +167,7 @@ export class JobAnomalyNarrator {
           };
         }
       } catch (err) {
+        // @silent-fallback-ok: a fixed, attributed fallback message is returned and its source/reason is audited.
         const msg = (err as Error)?.message ?? '';
         result = fallback(msg === 'narrator-timeout' ? 'timeout' : 'provider-error');
       } finally {

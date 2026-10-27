@@ -109,6 +109,7 @@ const ARGUED_FALSE_BASELINE = [
   'IntegrationGate',
   'CoherenceGate',
   'JobReflector',
+  'JobAnomalyNarrator', // wording-only narration; no verdict is parsed from its output
   'crossModelReviewer',
   'SelfKnowledgeTree',
   'TreeTriage',

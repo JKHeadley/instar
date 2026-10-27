@@ -5036,7 +5036,7 @@ export class AgentServer {
     const anomalyStore = options.scheduler
       ? new JobAnomalyEpisodeStore({ filePath: JobAnomalyEpisodeStore.defaultPath(options.config.stateDir) })
       : null;
-    const triageAuditPath = path.join(options.config.sessions.projectDir, 'logs', 'job-triage.jsonl');
+    const triageAuditPath = path.join(options.config.projectDir, 'logs', 'job-triage.jsonl');
     const bootJobsConfig = (options.config as typeof options.config & { jobs?: unknown }).jobs;
     const getTriageConfig = buildScriptTriageConfigGetter({
       readLiveJobs: () => routeCtx.liveConfig?.get('jobs', bootJobsConfig) ?? bootJobsConfig,
@@ -5114,7 +5114,7 @@ export class AgentServer {
       const telegram = options.telegram;
       const scheduler = options.scheduler;
       const anomalyAudit = new BoundedJsonlAudit({
-        file: path.join(options.config.sessions.projectDir, 'logs', 'job-anomaly.jsonl'),
+        file: path.join(options.config.projectDir, 'logs', 'job-anomaly.jsonl'),
       });
       const anomalyPusher = new JobAnomalyPusher({
         store: anomalyStore,
@@ -5160,7 +5160,7 @@ export class AgentServer {
         history: scheduler.getRunHistory(),
         machineId: canaryMachineId,
         stateDir: options.config.stateDir,
-        logsDir: path.join(options.config.sessions.projectDir, 'logs'),
+        logsDir: path.join(options.config.projectDir, 'logs'),
         raiseAttention: item => telegram.createAttentionItem({
           id: item.id, conditionKey: item.conditionKey, title: item.title,
           summary: item.summary, description: item.summary,
@@ -5209,7 +5209,7 @@ export class AgentServer {
           },
           intelligence: options.intelligence,
           machineId: this.meshSelfId ?? 'local',
-          logsDir: path.join(options.config.sessions.projectDir, 'logs'),
+          logsDir: path.join(options.config.projectDir, 'logs'),
           raiseAttention: item => options.telegram!.createAttentionItem({
             id: item.id, conditionKey: item.conditionKey, title: item.title,
             summary: item.summary, description: item.summary, priority: item.priority,
@@ -7247,7 +7247,7 @@ export class AgentServer {
       try {
         this.tokenLedger.close();
       } catch {
-        // best-effort
+        // @silent-fallback-ok: shutdown cleanup is best-effort; no runtime fallback follows.
       }
       this.tokenLedger = null;
     }
@@ -7255,7 +7255,7 @@ export class AgentServer {
       try {
         this.apprenticeshipCycleStore.close();
       } catch {
-        // best-effort
+        // @silent-fallback-ok: shutdown cleanup is best-effort; no runtime fallback follows.
       }
       this.apprenticeshipCycleStore = null;
     }

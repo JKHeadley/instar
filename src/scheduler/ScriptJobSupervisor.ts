@@ -103,7 +103,7 @@ export function parseSupervisionOutput(raw: string, known: { slugs: Set<string>;
   if (fence) text = fence[1].trim();
   if (!text.startsWith('{') || !text.endsWith('}')) return null;
   let obj: unknown;
-  try { obj = JSON.parse(text); } catch { return null; }
+  try { obj = JSON.parse(text); } catch { return null; /* @silent-fallback-ok: invalid model output is a parse failure, surfaced by the caller. */ }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
   const keys = Object.keys(obj as object);
   if (keys.length !== 1 || keys[0] !== 'flags') return null;

@@ -295,7 +295,7 @@ export class JobAnomalyPusher implements ScriptRunObserver {
   /** Serialize only external side effects; state observation above never waits behind a send. */
   dispatchPrepared(prepared: PreparedAnomalyRun): Promise<RunReport> {
     const next = this.chain.then(() => this.processPrepared(prepared));
-    this.chain = next.catch(() => undefined);
+    this.chain = next.catch(() => undefined); // @silent-fallback-ok: the caller receives the rejection; only the next queued dispatch is unblocked.
     return next;
   }
 
@@ -571,6 +571,7 @@ export class JobAnomalyPusher implements ScriptRunObserver {
           ...(typeof first.body.decisionRef === 'string' ? { toneAdvisoryDecisionRef: first.body.decisionRef } : {}),
         } }, narration.author, logicalSendId);
       } catch {
+        // @silent-fallback-ok: undelivered is returned to the durable retry path; no send is claimed.
         return { delivered: false, path };
       }
       if (verdict.delivered) return { delivered: true, path };
