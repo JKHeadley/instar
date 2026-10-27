@@ -74,3 +74,9 @@ The scheduling change is narrow and reversible. Independent review found that cl
 ## Class-Closure Declaration
 
 This changes an existing self-triggered verifier scheduling path, rather than adding a new action loop. The control-loop edge is `pump` publishing a claim, then checking for a runnable start. The steady-state bound is one suite holder per host, at most 64 live claim keys, and a two-minute claim lease. The settling brake is a clear at child spawn and lane-slot acquisition, plus hold, pause, empty queue, shutdown, or process death. Unit tests exercise both claim and release sides. No agent-authored prompt, hook, config, skill, or standards-text defect is being repaired; the class-closure registry declaration is not applicable.
+
+## Merge reconciliation review
+
+**Reviewer:** Independent Codex read-only reviewer (/root/priority_review).
+
+The branch was merged with `origin/main` after the verify queue reported a conflict. The resolution combines the new suite-priority seam with main's starvation callback and preserves both E2E lifecycle tests. Independent Codex review of the staged merge found no remaining conflict-resolution error. The full Local Verify run on the merged head remains the merge authority.

@@ -12,7 +12,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
-  LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, MERGE_LINE,
+  LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, decideStarved, INTERRUPTION_LIMITS, MERGE_LINE,
   MERGE_THROUGHPUT_LABEL, QUEUE_PRIORITY, THROUGHPUT_AGING_MS, effectivePriority, prPriority,
   type LocalVerifyServiceSeams, type PrView, type InFlightIntent, type MergeHandoffResult,
 } from '../../../src/localVerify/LocalVerifyService.js';
@@ -451,7 +451,7 @@ describe('single flight and starvation', () => {
     s.advance(2000);
     await s.svc.tick();
     await s.svc.tick();
-    expect(s.starved).toEqual([{ pr: 1, headSha: sha('a'), waitedMs: LOCAL_VERIFY_LIMITS.starvedAfterMs + 1000 }]);
+    expect(s.starved).toEqual([{ pr: 1, headSha: sha('a'), waitedMs: LOCAL_VERIFY_LIMITS.starvedAfterMs + 1000, interruptions: 0, reason: 'waited' }]);
   });
 });
 
@@ -633,7 +633,173 @@ describe('shutdown', () => {
     expect(s.svc.restartHolds(3_600_000)).toEqual([]);
     expect(await s.svc.request(3)).toEqual({ ok: false, code: 'stopping' });
     const q = JSON.parse(fs.readFileSync(s.svc.queuePath, 'utf-8'));
-    expect(q.entries.map((e: { pr: number; attempts: number }) => [e.pr, e.attempts])).toEqual([[1, 0], [2, 0]]);
+    // The killed run stays counted (attempt 1) and is recorded as an interruption.
+    expect(q.entries.map((e: { pr: number; attempts: number; interruptions?: number }) => [e.pr, e.attempts, e.interruptions ?? 0])).toEqual([[1, 1, 1], [2, 0, 0]]);
+    expect(q.entries[0].resumeFirst).toBe(true);
+  });
+});
+
+describe('decideStarved', () => {
+  const H = 60 * 60_000;
+  it('by the clock: past starvedAfterMs, once', () => {
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false }, 3 * H + 1)).toMatchObject({ raise: true, reason: 'waited' });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false }, 3 * H)).toMatchObject({ raise: false, reason: null });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: true }, 9 * H)).toMatchObject({ raise: false });
+  });
+  it('by interruptions: at INTERRUPTION_LIMITS.starvedAfter, without waiting for the clock', () => {
+    expect(INTERRUPTION_LIMITS.starvedAfter).toBe(2);
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false, interruptions: 1 }, H)).toMatchObject({ raise: false });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: false, interruptions: 2 }, H)).toMatchObject({ raise: true, reason: 'interrupted' });
+    expect(decideStarved({ firstQueuedAt: 0, starvedRaised: true, interruptions: 5 }, H)).toMatchObject({ raise: false });
+  });
+});
+
+describe('interrupted runs (2026-10-26: restarts killed PR 2350 four times with 0 recorded attempts)', () => {
+  const watermark = (dir: string, state: 'healthy' | 'main-suspect' | 'main-red') => {
+    fs.writeFileSync(path.join(dir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
+      v: 1, machineId: 'm1', state, redHead: state === 'main-red' ? sha('8') : null, lastGreenHead: null, reason: state === 'healthy' ? 'green' : 'boot-unknown', updatedAt: '2026-10-21T00:00:00.000Z',
+    }));
+  };
+  /** Run PR 1, stop the server mid-run, boot a fresh service on the same state dir. */
+  const interruptOnce = async (stateDir?: string) => {
+    const s = setup({ views: { 1: view() }, ...(stateDir ? { stateDir } : {}) });
+    if (stateDir) await s.svc.boot();
+    await s.svc.request(1);
+    await s.svc.tick();
+    s.svc.shutdown();
+    await s.finish(s.spawned.length - 1, null);
+    return s;
+  };
+
+  it('a stop records an interruption and keeps the attempt; the boot restores both', async () => {
+    const s = await interruptOnce();
+    const audit = fs.readFileSync(s.svc.auditPath, 'utf-8');
+    expect(audit).toContain('"event":"interrupted"');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().queue[0]).toMatchObject({ pr: 1, attempts: 1, interruptions: 1, resumeFirst: true });
+  });
+
+  it('one interruption does not raise starved; the second does, at once, with reason interrupted', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.starved).toHaveLength(0);
+    expect(s2.spawned).toHaveLength(1); // it resumed
+    s2.svc.shutdown();
+    await s2.finish(0, null);
+    const s3 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s3.svc.boot();
+    await s3.svc.tick();
+    expect(s3.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2, reason: 'interrupted' })]);
+    await s3.svc.tick();
+    expect(s3.starved).toHaveLength(1); // once per entry
+  });
+
+  it('an interrupted PR starts ahead of a main verify queued at boot (main suspect)', async () => {
+    const s = await interruptOnce();
+    watermark(s.stateDir, 'main-suspect');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    s2.svc.noteMainHead(sha('9'));
+    await s2.svc.settle();
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(1);
+    expect(s2.spawned[0].args.join(' ')).not.toContain(sha('9'));
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+    expect(s2.svc.snapshot().queue.map((e) => e.kind ?? e.pr)).toEqual(['main']);
+  });
+
+  it('without an interruption, the same boot starts main first (the suspect repair path is unchanged)', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.setHolders([1]); // queued, never started
+    await s.svc.request(1);
+    s.svc.shutdown();
+    watermark(s.stateDir, 'main-suspect');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    s2.svc.noteMainHead(sha('9'));
+    await s2.svc.settle();
+    await s2.svc.tick();
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ kind: 'main' });
+  });
+
+  it('with main known red, main keeps priority even over an interrupted PR', async () => {
+    const s = await interruptOnce();
+    watermark(s.stateDir, 'main-red');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    s2.svc.noteMainHead(sha('9'));
+    await s2.svc.settle();
+    await s2.svc.tick();
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ kind: 'main' });
+  });
+
+  it('resumeFirst is cleared once it starts (it does not keep jumping ahead)', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(1);
+    const saved = JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8'));
+    expect(saved.entries[0].resumeFirst).toBeUndefined();
+    expect(saved.entries[0].interruptions).toBe(1);
+  });
+
+  it('a twice-interrupted PR alarms at boot, before a main observation can start it ahead of the first tick', async () => {
+    const s = await interruptOnce();
+    const s2 = await interruptOnce(s.stateDir);
+    const s3 = setup({ stateDir: s2.stateDir, views: { 1: view() } });
+    await s3.svc.boot();
+    expect(s3.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2, reason: 'interrupted' })]);
+    expect(JSON.parse(fs.readFileSync(s3.svc.queuePath, 'utf-8')).entries[0]).toMatchObject({ pr: 1, starvedRaised: true });
+    s3.svc.noteMainHead(sha('9')); // pumps at once: the interrupted PR starts before any tick
+    await s3.svc.settle();
+    expect(s3.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+    await s3.svc.tick();
+    expect(s3.starved).toHaveLength(1); // once
+  });
+
+  it('the running entry is part of the starved check (an entry that reached two interruptions while in flight)', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+    // Simulate the count crossing the threshold while it runs (a second interruption recorded on the live entry).
+    const live = (s2.svc as unknown as { inFlight: { entry: { interruptions?: number } } }).inFlight.entry;
+    live.interruptions = 2;
+    await s2.svc.tick();
+    expect(s2.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2 })]);
+  });
+
+  it('a push while an interrupted PR waits keeps its turn (resumeFirst) and starts its interruptions over', async () => {
+    const s = await interruptOnce();
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    s2.setHolders([1]); // a foreign suite holds the slot: nothing starts, the entry stays queued
+    await s2.svc.boot();
+    s2.views[1] = view({ headRefOid: sha('c') });
+    await s2.svc.request(1); // the new head takes the old entry's slot
+    const e = s2.svc.snapshot().queue.find((q) => q.pr === 1)!;
+    expect(e).toMatchObject({ headSha: sha('c'), resumeFirst: true });
+    expect(e.interruptions).toBeUndefined();
+  });
+
+  it('a second unclean exit raises starved before the entry is dropped with its error record', async () => {
+    const s = setup({ views: { 1: view() } });
+    fs.writeFileSync(s.svc.queuePath, JSON.stringify({ v: 1, entries: [{ pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main', firstQueuedAt: Date.parse('2026-10-21T11:00:00.000Z'), attempts: 2, errorRetries: 1, starvedRaised: false, interruptions: 1, inFlight: true }] }));
+    await s.svc.boot();
+    expect(s.svc.snapshot().queue).toHaveLength(0);
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toMatchObject({ outcome: 'error', errorStep: 'server-restarted' });
+    expect(s.starved).toEqual([expect.objectContaining({ pr: 1, interruptions: 2, reason: 'interrupted' })]);
+  });
+
+  it('an unclean exit (server died mid-run) also counts as an interruption', async () => {
+    const s = setup({ views: { 1: view() } });
+    fs.writeFileSync(s.svc.queuePath, JSON.stringify({ v: 1, entries: [{ pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main', firstQueuedAt: Date.parse('2026-10-21T11:00:00.000Z'), attempts: 1, errorRetries: 0, starvedRaised: false, inFlight: true }] }));
+    await s.svc.boot();
+    expect(s.svc.snapshot().queue[0]).toMatchObject({ pr: 1, interruptions: 1, resumeFirst: true, errorRetries: 1 });
   });
 });
 
@@ -1560,5 +1726,47 @@ describe('closed PRs are skipped', () => {
     const rows = audit.trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(rows.some((r) => r.event === 'dequeued' && r.pr === 2 && r.reason === 'closed')).toBe(true);
     expect(rows.some((r) => r.event === 'dequeued' && r.pr === 3)).toBe(false);
+  });
+});
+
+describe('fail-fast switch (monitoring.localVerify.failFast)', () => {
+  const inputOf = (s: ReturnType<typeof setup>) => JSON.parse(fs.readFileSync(s.spawned[0].args[s.spawned[0].args.indexOf('--input') + 1], 'utf-8'));
+  it('a PR verify carries failFast when the switch is absent (on by default)', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    expect(inputOf(s).failFast).toBe(true);
+  });
+  it('the switch read false turns it off at the next start', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setFailFastEnabled(() => false);
+    await s.svc.request(1);
+    expect(inputOf(s).failFast).toBeUndefined();
+  });
+  it('an unreadable switch reads as off (every lane runs)', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setFailFastEnabled(() => { throw new Error('config unreadable'); });
+    await s.svc.request(1);
+    expect(inputOf(s).failFast).toBeUndefined();
+  });
+});
+
+describe('lane shard setting (monitoring.localVerify.laneShards)', () => {
+  const inputOf = (s: ReturnType<typeof setup>) => JSON.parse(fs.readFileSync(s.spawned[0].args[s.spawned[0].args.indexOf('--input') + 1], 'utf-8'));
+  it('absent ⇒ no override in the run input (the policy defaults apply)', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toBeUndefined();
+  });
+  it('valid counts pass through; invalid ones are dropped', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => ({ integration: 1, e2e: 7 }));
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toEqual({ integration: 1 });
+  });
+  it('an unreadable setting means the defaults', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => { throw new Error('nope'); });
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toBeUndefined();
   });
 });

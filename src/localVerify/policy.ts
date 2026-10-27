@@ -51,7 +51,13 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
    * shard has its own TMPDIR and tmux server. Measured on the Studio 2026-10-22: one
    * e2e process 23-25 min; two shards 11 and 20 min, beside the other two lanes.
    */
-  e2eShards: 2,
+  e2eShards: 3,
+  /**
+   * The integration lane runs as this many processes (spec "Balanced shards"). Each has its
+   * own TMPDIR and tmux server, and stays at one worker inside, so the in-process port-reuse
+   * race the single worker avoids cannot cross processes.
+   */
+  integrationShards: 2,
   /** Unit-lane workers while the lanes run at once (pinned in the lane's env). */
   unitWorkersParallel: 4,
   /** Oldest queued entry waiting longer than this (capacity waits included) raises `local-verify:starved`. */
@@ -86,6 +92,7 @@ export function computePolicyHash(): string {
     toolchain: { packages: TOOLCHAIN_PACKAGES, scopes: TOOLCHAIN_SCOPES },
     deadlines: LOCAL_VERIFY_DEADLINES,
     e2eShards: LOCAL_VERIFY_LIMITS.e2eShards,
+    integrationShards: LOCAL_VERIFY_LIMITS.integrationShards,
     unitWorkersParallel: LOCAL_VERIFY_LIMITS.unitWorkersParallel,
   };
   return crypto.createHash('sha256').update(stable(policy)).digest('hex');
