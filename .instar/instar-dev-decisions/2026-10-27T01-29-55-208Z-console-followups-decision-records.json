@@ -1,0 +1,38 @@
+{
+  "ts": "2026-10-27T01:29:55.208Z",
+  "slug": "console-followups-decision-records",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 12,
+  "loc": 559,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/PreferencesListView.ts",
+      "src/core/liveTailRedaction.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/attentionAction.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 548,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
