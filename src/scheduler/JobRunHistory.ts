@@ -391,10 +391,9 @@ export class JobRunHistory {
     const total = filtered.length;
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
-    const runs = filtered.slice(offset, offset + limit).map(r => ({
-      ...r,
-      routeBasis: r.routeBasis ?? 'unknown' as const,
-    }));
+    // Preserve the exact capped row. Adding a default field after persistence
+    // can push a 2 KB row over its bound; absent provenance means unknown.
+    const runs = filtered.slice(offset, offset + limit);
 
     return { runs, total };
   }
