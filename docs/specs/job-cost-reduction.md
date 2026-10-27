@@ -14,7 +14,7 @@ related:
   - docs/LLM-SUPERVISED-EXECUTION.md
   - docs/specs/jev-job-supervision.md
 single-run-completable: true
-frontloaded-decisions: 15
+frontloaded-decisions: 18
 cheap-to-change-tags: 1
 contested-then-cleared: 3
 ---
@@ -417,8 +417,11 @@ reason:
   with the reason recorded and named in the push. One push, combined with any
   others due on that run. It states only observations: "<reason> on <machine>
   has persisted for 6 hours; an investigation <ran and it is still present |
-  could not start: <reason>>". It never says "the fix failed". The latency this
-  adds is bounded by the session's duration cap (30 minutes). With
+  could not start: <reason> | ran at <time> (cooldown)>". It never says "the fix
+  failed". **Hard deadline:** the push goes out no later than episode opened +
+  6 h + the session cap (30 minutes) + one cron interval, whether or not the
+  attempt was seen to end (a restart purge or a missed completion), saying
+  "investigation outcome unknown". With
   `jobs.scriptTriage.enabled: false` the attempt is recorded at once as
   `refused: triage-disabled` and the push goes out at 6 hours, as it would
   without triage.
@@ -523,13 +526,28 @@ file, which is cluster-shared and written only by the lease holder
     that the cold-start lifeline notice uses. It carries just reason ids and the
     machine nickname, and ends: "details on the Jobs tab".
   - No text the gate refused is ever sent around it.
-- Normal delivery uses the scheduler's job-notification path, and respects
+- **Delivery goes through the automation reply chokepoint, not `sendToTopic`.**
+  `JobScheduler.notifyJobComplete` calls `telegram.sendToTopic` directly, which
+  runs neither the tone gate nor the credential-exposure guard. A push therefore
+  goes through `sendAutomationReply` (built on `postOriginAutomationReply`),
+  producer `job-anomaly/<slug>`, author contract `actual-call` naming the model
+  that answered (or the fixed-template contract for the fallback sentence),
+  injected into the scheduler from `server.ts`. The producer is added to the
+  origin certificate inventory. "Pushed" (above) means that call returned a
+  confirmed delivery. The destination is the job's existing one and respects
+  `telegramNotify`. Spec 2 needs the same injected helper for its passes;
+  whichever spec is built first adds it, and the other reuses it.
+- **Ordering at 5% free.** The origin record is written before dispatch, so the
+  "push before writing" rule above applies to this spec's own episode and audit
+  writes, not the send path's. At 5% free that write still succeeds; below it,
+  the honest limit above applies.
   `telegramNotify`.
 
 ### 5.5 Cost on the healthy path
 
 A healthy run costs zero session tokens. A `deterministic`-class run costs zero
-model tokens; a `triage`-class run costs one Jev call (§5.6.2). Each pushed
+model tokens; a non-trivial `triage`-class run costs one Jev call, and a
+bare-ok one nothing (§5.6.2). Each pushed
 episode costs one narrator call of about 1–2k tokens. Status lines cost nothing;
 they are deterministic text. A triage session costs what a job session costs
 today, at most 6 a day per machine.
@@ -597,13 +615,23 @@ an in-flight slot or a script-cap slot.
 **Which runs are triaged.** A run whose result is `success` with no anomaly lines
 and a summary on the template's declared bare-ok list (for example `ok healthy`)
 is `routine` by construction and is never sent anywhere; the canaries (§5.6.4),
-not a model reading "ok", carry the false-healthy duty. Every other run (a
+not a model reading "ok", carry the false-healthy duty. Likewise a `skipped` run
+whose reason is on the template's declared bare-skipped list (for example
+`feature-dark` for a 503) is routine and not sent. Every other run (a
 `failure`, a `skipped`, any anomaly line, any other summary) is triaged. A run
 whose triage input has the same fingerprint (sha256 of the clamped, scrubbed
-input) as one triaged for the same slug within the cooldown window reuses the
+input) as one triaged for the same slug within `sessionCooldownHours` reuses the
 **cascade's** answer with no call. The floor and the admission checks are always
 recomputed for the run itself, so identical output on a first and a second
 failure still gives the second one its session.
+
+**Evidence policy per template.** A `triage` template declares
+`triageEvidence: full | structured-only`. The three feedback-factory jobs are
+`structured-only`, because their output can carry fleet users' report text: for
+them both the Jev input and the triage session's prompt carry only structured
+fields (result, reason code, server reason codes, counts, ids), never the
+free-text tail. health-check and commitment-checkin-reminder are `full`. A test
+pins that a `structured-only` slug never sends or quotes free text.
 
 **The question.** Does this result need a real session with real intelligence, or
 is it routine?
@@ -613,8 +641,11 @@ is it routine?
   miscalibrated Jev can therefore only cost bounded extra sessions, never hide a
   failure.
 - **The deterministic floor.** `needs_session` when the run recorded `failure` on
-  the second consecutive failure of the streak (one transient timeout spends no
-  session), or emitted a **critical** anomaly (§5.3). On an agent with no Jev, no
+  the second consecutive failure (one transient timeout spends no session), or
+  emitted a **critical** anomaly (§5.3). The streak is computed from **this
+  machine's own** `job-runs.jsonl` rows for the slug (they carry `machineId`),
+  skipping `skipped`, `script-canary` and `origin: triage` rows, never from the
+  cluster-shared `JobState`, which only the lease holder writes. On an agent with no Jev, no
   referee and no other provider, the floor alone decides (G4). (Server-managed
   outcomes are already `ok`/`skipped` by §5.2, so they never reach this rule.)
 - **Jev (the cascade, `src/core/JevCascade.ts`).**
@@ -645,7 +676,9 @@ is it routine?
     `jobs.scriptTriage.referee.maxCallsPerDay` (default 200 per machine).
   - `askReferee` gains an optional `attribution` argument whose fields are merged
     into the call's attribution (component `JobResultTriageReferee`,
-    `jobSlug`, `machineId`, `runId`). That is the only change to `JevCascade.ts`.
+    `jobSlug`, `machineId`, `runId`); the triage caller passes `deferrable:
+    false` and `category: 'reflector'`. That is the only change to
+    `JevCascade.ts`. A shed or deferred call counts as a referee failure.
   - Referee failure, timeout, cap or open breaker: the cascade answers nothing and
     the floor stands alone.
 - **What `needs_session` does: a triage session.** The scheduler spawns one
@@ -660,12 +693,23 @@ is it routine?
   - It is a derived `agentmd` `JobDefinition`: slug tag `triage:<slug>` (so the
     job's own `already-running` guard never skips the job's next runs while it
     lives), a **fixed allowlist** `["Read", "Grep", "Glob", "Bash"]` (never the
-    template's `*`), the job's model tier, no `telegramNotify`, and an
-    environment stamp `INSTAR_SENDER_CLASS=triage-session`, which the Telegram
-    relay script refuses. Bash still runs under the agent's normal
-    dangerous-command guards. Honest limit: Bash can reach the local API, so the
-    "no messaging, no trigger" rule is enforced by the prompt, the relay refusal
-    and the narrowed tools, not by an OS sandbox.
+    template's `*`), **the agent's default framework and default model** (not
+    the template's `model: haiku`: the operator asked for "a real session with
+    real intelligence"; spec 2's pins do not apply to it), and no
+    `telegramNotify`.
+  - **It cannot message the operator, enforced on the server.** `SessionManager`
+    gains a `senderClass` spawn option (today it hardcodes
+    `INSTAR_SENDER_CLASS=llm-session` for every `jobSlug` spawn); a triage
+    session is spawned with `triage-session`. The session's origin preparation
+    credential is bound to that class, and `/telegram/reply` and origin
+    preparation refuse a `triage-session` credential (403
+    `triage-session-cannot-send`). The relay script's sender-class case also
+    refuses it, as a second layer; that script change rides the existing relay
+    migration (§8). Honest limit: Bash can still reach other local API routes, so
+    "do not re-run the trigger" rests on the prompt and the narrowed tools, not an
+    OS sandbox. Bash runs under the agent's normal dangerous-command guards.
+  - The in-flight check keys on the run-history tag `triage:<slug>` (the tmux
+    name, `triage-<slug>-<id>`, is display only).
   - It is admitted by `admitTriageSpawn()`, which runs the same read-only, quota,
     session-capacity and work-admission checks `triggerJob` runs. A refusal is
     logged with its reason and never queued.
@@ -681,7 +725,7 @@ is it routine?
 
   | Brake | Value |
   |---|---|
-  | in flight | at most one triage session per slug per machine |
+  | in flight | at most one triage session per slug per machine. The pending set holds at most one entry per `<slug>:<reason set>`; a duplicate merges into it |
   | cooldown | one per `<slug>:<reason set>` per 6 h (`jobs.scriptTriage.sessionCooldownHours`). The reason set is the sorted anomaly ids, or `failure:<reason>`. A critical reason bypasses the cooldown (not the caps). Before spawning, the cooldown is also checked against the pool (`GET /jobs/triage?scope=pool`), so a claim move does not start a second session for the same condition; if that read fails, the local check decides |
   | caps | 6 per machine per day across all slugs (`maxSessionsPerDay`), and 3 per slug per day (`maxSessionsPerSlugPerDay`). Over a cap, one calm item per day (`job-triage-cap:<machineId>`); a floor-required session refused by a cap is also written onto the open episode or failure alert, and into the daily review's input |
   | duration | the job's `expectedDurationMinutes` × 2, at most 30 minutes |
@@ -943,11 +987,15 @@ must settle these constraints, carried forward from here:
    to the frontmatter allowlist. The rollback holds together because:
    - the body is still the full runnable prompt (§5.1);
    - no user file was rewritten.
-5. **Loader compatibility.** The closed set of allowed frontmatter keys is checked
+5. **Relay and session spawn.** The relay script's `triage-session` refusal
+   rides the existing SHA-based relay migration (customised copies are skipped,
+   which is why the server-side refusal in §5.6.2 is the real enforcement).
+   `SessionManager`'s `senderClass` option is code, shipped with the package.
+6. **Loader compatibility.** The closed set of allowed frontmatter keys is checked
    wherever a body is loaded. Templates and loader ship in the same package
    version, and a test pins that every shipped template loads under the same
    version's loader with no entry skipped.
-6. **Agent Awareness.** `generateClaudeMd()` and `migrateClaudeMd()` (guarded by a
+7. **Agent Awareness.** `generateClaudeMd()` and `migrateClaudeMd()` (guarded by a
    content check) add a short section saying:
    - most scheduled jobs now run as scripts with no session;
    - health-check pushes critical problems at once;
@@ -958,8 +1006,9 @@ must settle these constraints, carried forward from here:
      results every 6 hours and one daily review looks across all jobs;
    - where to look: `GET /jobs` (per run: `runner`, `lockTrust`, `tokens`,
      `triage`), `GET /jobs/triage` (recent triage decisions) and `GET /jobs/cost`.
-7. **Dashboard.** The Jobs tab shows each job's runner, its last result, and its
-   7-day token use against the baseline.
+8. **Dashboard.** The Jobs tab shows each job's runner, its last result, its
+   7-day token use against the baseline, and its last day's triage decisions and
+   triage sessions.
 
 ## 9. Measurement
 
@@ -1148,6 +1197,11 @@ from §9.
     session's row is excluded from stats and streak; JobState is untouched;
   - triage runs after the claim is released and holds no script-cap slot;
   - the relay script refuses `INSTAR_SENDER_CLASS=triage-session`;
+  - the floor's streak comes from this machine's run rows (a standby fixture);
+  - a `structured-only` slug never sends or quotes free text;
+  - `/telegram/reply` refuses a `triage-session` credential;
+  - the push's hard deadline fires with "outcome unknown" when the session's end
+    is never seen;
   - the 6-hour push waits for one triage attempt, or names its refusal, and
     with triage disabled records `refused: triage-disabled` and pushes at 6 h;
   - identical output on a first and second failure: the second still gets a
@@ -1346,8 +1400,8 @@ from §9.
   `script-cap` and retried after 1 minute. Each slug gets a fixed start offset of
   0–20 seconds and has one run in flight at a time.
 - **F9 Health-check heal authority:** none in v1. Owners heal; health-check only
-  observes and reports. A triage session (§5.6.2) has the job's own tool
-  allowlist and nothing more.
+  observes and reports. A triage session (§5.6.2) has the fixed allowlist
+  `Read, Grep, Glob, Bash` (F13) and nothing more.
 - **F10 Triage classes:** as in the §5.6.1 table: five `triage`, thirteen
   `deterministic` (mentor-onboarding included, for its two-hats boundary). Not
   cheap to change: moving a job to `triage` turns on third-party egress and
@@ -1371,6 +1425,12 @@ from §9.
   breaker. `askReferee` gains an optional attribution argument.
 - **F15 Jev order reconciliation:** the forward order tests the band; if the two
   orders' labels differ, the referee decides.
+- **F16 Triage session model:** the agent's default framework and model, not
+  the template's tier. Worst case 6 sessions a day per machine, as §10 counts.
+- **F17 Evidence policy:** the feedback-factory jobs are `triageEvidence:
+  structured-only`; the others `full`.
+- **F18 Send helper:** pushes use the injected `sendAutomationReply`; the first
+  of this spec and spec 2 to be built adds it.
 
 ## 16. Open questions
 
