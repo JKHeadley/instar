@@ -392,7 +392,11 @@ the relay. If the send fails, or its outcome is unknown, the episode stays
 unpushed and is retried on the next run. It uses the same idempotency key
 (`<episode id>:<push kind>`), so the send path's existing duplicate suppression
 drops a repeat of an attempt that actually landed. A failed attempt can never
-permanently silence an alarm.
+permanently silence an alarm. **Brakes on the retry:** the retry waits a growing
+number of runs (1, 2, 4, 8, then at most hourly); after 6 failed attempts for one
+episode, one attention item (`job-anomaly-undelivered:<machineId>`, high,
+`source: "agent"`) says a push could not be delivered, and retries continue
+hourly while the episode is open. Every attempt is audited.
 
 **Critical pushes go out before anything is written to disk.** `disk-critical`
 means writes may already be failing. So for a critical reason, the push goes out
@@ -1257,6 +1261,8 @@ from §9.
   - episodes close only after the required clean runs;
   - the recurrence push and its 24-hour mute work, and critical reasons are
     never muted;
+  - a failing push retries with growing spacing, and the sixth failure raises
+    one undelivered item;
   - the fixed template is sent when the model fails, and when the tone gate
     holds the narration;
   - `boundedTail` leaves its marker.
