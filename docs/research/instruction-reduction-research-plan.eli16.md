@@ -1,6 +1,12 @@
 # Instruction Reduction — Plain-Language Version
 
-**The problem.** Every Echo session starts by reading one big instruction file, about 100,000 tokens. Job sessions also run start-up add-ons and end up around 240,000. That costs money and time, and it crowds out room for real work.
+**The problem.** Every Echo session starts by reading one big instruction file, measured at about 147,000 tokens. Job sessions also run start-up add-ons and end up around 240,000. That costs money and time, and it crowds out room for real work.
+
+**First result.** Slim instructions for scheduled jobs, even with a one-line list
+of every feature, failed the agreed no-degradation test. They saved about 65%
+of input tokens, but missed the worktree reaper's authority in all five sampled
+cases and regressed on two feature-use cases. Echo's live instructions have not
+changed. The seed and automatic-loading ideas remain research candidates.
 
 **What is in the file.** We measured it. Most of it (about 70%) is a reference manual: "here is feature X, here is how to call it". More than a third describes features that are switched off on most agents. About 15% is history: the story of why a rule exists. The core rules, such as "never paste a live password", "always reply on Telegram" and "don't quit because the conversation is long", are a small part.
 
