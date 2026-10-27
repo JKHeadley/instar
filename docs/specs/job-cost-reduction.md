@@ -84,9 +84,12 @@ Goals (operator direction):
 
 Non-goals:
 - Changing what any job decides or reports: its endpoints, outcome rules, silence
-  policy, or which machine runs it. The one exception is health-check's
-  notification policy (§5.4, F6): critical problems push at once, others after
-  6 hours and one investigation.
+  policy, or which machine runs it. The exceptions, each user-visible (F6):
+  health-check's notification policy (§5.4: critical problems push at once,
+  others after 6 hours and one investigation), commitment-checkin-reminder's
+  same-run push for undelivered reminders, and one new high-priority item per
+  machine when must-fail canaries fail. Triage calm items are low priority and
+  held out of the operator's topic.
 - Changing cron cadences. They stay as they are, so before and after numbers
   compare like with like.
 - Changing how interactive sessions pick a model.
@@ -539,10 +542,10 @@ file, which is cluster-shared and written only by the lease holder
   summary becomes the fixed sentence "<job> on <machine>: <reasons>." The push
   then sends normally, with its evidence block.
 - **If the tone gate answers with an advisory** (`422 tone-gate-advisory`), the
-  push is re-sent once, unchanged, with `toneAdvisoryAck` set to the named rule,
+  push is re-sent once with the same text, with `toneAdvisoryAck` set to the named rule,
   `toneAdvisoryAckReason` "deterministic evidence block the operator must see
   verbatim", and the returned `toneAdvisoryDecisionRef`, under a freshly issued
-  automation grant (the body changed, so the first grant does not apply). The evidence block is
+  automation grant (the request's metadata changed, so the first grant does not apply). The evidence block is
   degradation strings word for word and routinely carries config keys, paths and
   feature ids, which the advisory rules flag; an advisory is a signal, and this
   records its grade honestly instead of treating it as a stop.
@@ -674,7 +677,8 @@ tail. health-check and commitment-checkin-reminder are `full`.
 This is **one evidence projection per run**, `triageEvidenceFor(run)`, and every
 model consumer reads only it: Jev, the referee, the triage session prompt, the
 backup check (§5.6.3), and the daily review's `recentOutputs` for script jobs
-(§5.6.5). A triage session's final output for a `structured-only` slug is shown
+(§5.6.5). The claim is scoped to prompts and model inputs: a triage session
+with Read can still open run history itself. A triage session's final output for a `structured-only` slug is shown
 to the daily review only as its first line, clamped to 200 characters. Each
 consumer has a test pinning that a `structured-only` slug's free text never
 reaches it.
@@ -727,12 +731,15 @@ is it routine?
     false` and `category: 'reflector'`. That is the only change to
     `JevCascade.ts`. A shed or deferred call counts as a referee failure.
   - **The single slot is owned by a provider wrapper**, `SingleFlightProvider`,
-    that the referee (and the backup check) is given instead of the raw
-    provider. Its `evaluate` takes the slot, calls the real provider, and frees
+    that the referee is given instead of the raw provider. The backup check gets
+    its own instance, so neither fails the other. Its `evaluate` takes the slot, calls the real provider, and frees
     the slot only when that call settles, so `askReferee` returning on its
     timeout race cannot let a second call overlap one still running. A call
-    still unsettled after 120 s frees the slot and opens the wrapper's breaker.
-    A call made while the slot is taken fails at once (the floor decides).
+    still unsettled after 120 s frees the slot and opens that instance's
+    breaker for 10 minutes (longer than any abandoned call can run), after which
+    one test call is let through; success closes it, failure re-opens it for 10
+    minutes. A referee call made while the slot is taken fails at once (the
+    floor decides); the backup check waits up to 60 s for its own slot.
   - Referee failure, timeout, cap or open breaker: the cascade answers nothing and
     the floor stands alone.
 - **What `needs_session` does: a triage session.** The scheduler spawns one
@@ -779,11 +786,17 @@ is it routine?
     session under `subscriptionPath.mode: force` and asserts no
     `INSTAR_AUTH_TOKEN`, `INSTAR_ORIGIN_TOKEN` or GitHub token in its
     environment, and the 30-minute lifetime.
-  - **Tools.** Headless Claude launches skip permission prompts, so an
-    `--allowedTools` list does not remove the other tools. The triage session
-    therefore passes a removing flag (`--disallowedTools` for everything except
-    `Read, Grep, Glob, Bash`) on Claude. Codex has no tool flag; on Codex the
-    narrowing does not hold, and the spec claims it only for Claude.
+  - **Tools.** On Claude the triage session uses the positive, existing
+    confinement form (`CLAUDE_CONFINED_PERMISSION_ARGS` in
+    `credentialEnvNames.ts`, as the message triage session and the feedback
+    executor do): no `--dangerously-skip-permissions`; `--permission-mode
+    dontAsk --tools Read,Grep,Glob,Bash --no-chrome`; and
+    `--strict-mcp-config --mcp-config {}`, so none of the agent's MCP servers
+    (Threadline, the browser) load. This applies on both the headless and the
+    rerouted interactive lane, with an assert that fails the spawn if the mode
+    was not applied (as `applyClaudeConfinement` does). Codex has no tool flag;
+    on Codex the narrowing does not hold, and the spec claims it only for
+    Claude.
   - The in-flight check keys on the run-history tag `triage:<slug>` (the tmux
     name, `triage-<slug>-<id>`, is display only).
   - It is admitted by `admitTriageSpawn()`, which runs the same read-only, quota,
@@ -803,7 +816,7 @@ is it routine?
   | Brake | Value |
   |---|---|
   | in flight | at most one triage session per slug per machine. The pending set holds at most one entry per `<slug>:<reason set>`; a duplicate merges into it |
-  | per episode | where a health-check episode exists, admission is keyed on the episode id: **one** triage session per episode, shared by per-run triage and the 6-hour heal attempt, critical or not. A new reason (for example `disk-low` rising to `disk-critical`) is a new episode and may get its own |
+  | per episode | where a health-check episode exists, admission (per-run triage and the 6-hour request alike) is keyed on the episode id: **one** triage session per episode, shared by per-run triage and the 6-hour heal attempt, critical or not. A new reason (for example `disk-low` rising to `disk-critical`) is a new episode and may get its own |
   | cooldown | for runs with no episode (the other triage jobs), one per `<slug>:<reason set>` per 6 h (`jobs.scriptTriage.sessionCooldownHours`). The reason set is the sorted anomaly ids, or `failure:<reason>`. A critical reason bypasses the cooldown once per reason set per day (not the caps). Before spawning, the cooldown is also checked against the pool (`GET /jobs/triage?scope=pool`), so a claim move does not start a second session for the same condition; if that read fails, the local check decides |
   | caps | 6 per machine per day across all slugs (`maxSessionsPerDay`), and 3 per slug per day (`maxSessionsPerSlugPerDay`). Over a cap, one calm item per day (`job-triage-cap:<machineId>`); a floor-required session refused by a cap is also written onto the open episode or failure alert, and into the daily review's input |
   | duration | the job's `expectedDurationMinutes` × 2, at most 30 minutes |
@@ -909,12 +922,14 @@ in its unit test. It does not prove that every real failure is detected.
 - **Results.** Each result is recorded in **this machine's own run history**
   (`job-runs.jsonl` already stores `machineId`, `JobRunHistory.ts:63`) as a
   `script-canary` run, and is audited in `logs/job-anomaly.jsonl` with its
-  `runId`. A script whose canary did not fail as expected raises one attention
-  item:
+  `runId`. Canary runs go through the same just-before-execution hash check as
+  normal runs; a mismatch records `script-untrusted` without running. Failed
+  canaries raise **one** attention item per machine, never one per job:
   - `priority: high` and `source: "agent"` (the agent's own safety check failed),
     so it reaches the operator;
-  - `conditionKey: script-canary:<machineId>:<slug>`;
-  - it is cleared by the next passing canary.
+  - `conditionKey: script-canary:<machineId>`, listing the failing jobs; it is
+    refreshed as that list changes and cleared when every canary passes;
+  - per-job detail stays in run history and `GET /jobs`.
 
   This works on every machine, including standbys, because it never writes the
   cluster-shared job state.
@@ -1274,6 +1289,9 @@ from §9.
     session's row is excluded from stats and streak; JobState is untouched;
   - triage runs after the claim is released and holds no script-cap slot;
   - the floor's streak comes from this machine's run rows (a standby fixture);
+  - the triage spawn carries the confinement arguments and loads no MCP server,
+    on both lanes;
+  - all canaries failing raise one item per machine, not one per job;
   - a persistent critical episode gets one triage session, not one per run after
     each session ends;
   - a `structured-only` slug never sends or quotes free text; undeclared or
