@@ -316,7 +316,7 @@ describe('Package completeness', () => {
     // which mutates the working tree and trips ci.yml's integrity check.
     const needsBuild = binPaths.some(b => !fsDyn.existsSync(path.join(ROOT, b)));
     if (needsBuild) {
-      execSync('npx tsc && chmod 0755 dist/cli.js', { cwd: ROOT, stdio: 'pipe' });
+      execSync('node node_modules/typescript-native/bin/tsc && chmod 0755 dist/cli.js', { cwd: ROOT, stdio: 'pipe' });
     }
 
     const tmpDir = fsDyn.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-mode-'));
