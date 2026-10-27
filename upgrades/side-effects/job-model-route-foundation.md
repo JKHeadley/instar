@@ -75,6 +75,8 @@ The reviewer found that a Codex rate-limit swap could execute on one model while
 
 `tests/unit/JobModelRoute.test.ts` and `tests/unit/scheduler/JobScheduler.agentmd-dispatch.test.ts`: 23 focused tests passed. TypeScript check passed. Existing manifest-loader and run-history tests: 127 passed.
 
+The first full Local Verify found a stale source-shape assertion in `modelTier-launchMechanisms.test.ts` after the corrected launch-model recording. The assertion now checks the resolved `launchModel`; its companion behavioral test checks the value saved in the session. The same run reported one failure in `detector-canary-cleanup.test.ts`; both affected files passed together on a targeted rerun (38 tests). The full rerun on the updated PR head remains the authority.
+
 ## Class-Closure Declaration
 
 This adds a guarded scheduler route but no new autonomous trigger, loop or retry. No agent-authored-artifact defect is being fixed — not applicable.
