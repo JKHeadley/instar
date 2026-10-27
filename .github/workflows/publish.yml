@@ -198,6 +198,7 @@ jobs:
         continue-on-error: false
 
       - name: Publish to npm
+        id: publish
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         run: npm publish --provenance --access public
         env:
@@ -208,7 +209,13 @@ jobs:
         run: node scripts/post-publish-smoke.mjs "${{ steps.bump.outputs.version }}"
 
       - name: Commit version bump & tag
-        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
+        # Runs whenever the publish itself succeeded, even if the smoke test
+        # failed: once a version is on npm it is shipped, and skipping this step
+        # leaves main without its release commit, tag and upgrade guide
+        # (run 38361433934: 1.3.1348 published, smoke timed out on registry lag,
+        # main stayed at 1.3.1347 with no tag). The smoke failure still fails
+        # the job.
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
         env:
           HUSKY: '0'
         run: |
