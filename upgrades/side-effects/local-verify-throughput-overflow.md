@@ -70,6 +70,8 @@ No self-triggered action added: admission of an explicitly requested verify.
 
 ## Second-pass review
 
+**Reviewer:** Codex independent second-pass reviewer (/root/priority_review), confirming PR #2397 at e7f2bef48.
+
 Concurred. Independent cross-model reviewer (Codex, read-only), three rounds:
 - Round 1 BLOCKED: (1) a pushed head re-queued in its kept place could be refused while the overflow was in use — a kept-place re-queue is now never refused for capacity; (2) a restart with a run in flight and the overflow full dropped one entry — the restore bound is cap + overflow + 1; (3) a labelled repair lost its `queue-full-repair-admitted` audit — repairs are classified first; (4) the re-run pass and its bounds needed tests.
 - Round 2 BLOCKED: routing the re-run pass through `request()` past the ordinary cap could spend a PR's one re-run on a refusal — the pass keeps its original ordinary-cap skip.

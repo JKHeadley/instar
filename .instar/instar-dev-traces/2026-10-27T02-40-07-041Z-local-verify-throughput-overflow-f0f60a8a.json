@@ -4,7 +4,7 @@
   "sessionId": "62b13b7f-084e-44ac-9c3a-a985249271f5",
   "timestamp": "2026-10-27T02:40:07.041Z",
   "artifactPath": "upgrades/side-effects/local-verify-throughput-overflow.md",
-  "artifactSha256": "f7d2091d64a9f119faa64ab749396e1995fb0982ac5832b2f2f87a9d724d2d77",
+  "artifactSha256": "bed85bb7f543610eb7007360aa345ca6c0447790a8d090ae3b95abf53c60c9aa",
   "coveredFiles": [
     "docs/specs/local-verify-merge-authority.md",
     "docs/specs/local-verify-throughput-overflow.eli16.md",
