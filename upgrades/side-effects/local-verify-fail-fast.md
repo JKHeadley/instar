@@ -81,6 +81,8 @@ Safe to ship: no merge decision changes, the stop only shortens already-failed r
 
 ## Second-pass review
 
+**Reviewer:** Independent cross-model reviewer (Codex read-only; five rounds, final concurrence).
+
 Concurred after five rounds; see below.
 Independent cross-model reviewer (Codex `codex exec --sandbox read-only`, a different model family from the author), five rounds over the staged change:
 - Round 1 BLOCKED: (1) `laneFailedFinally` treated a null exit as failure while `evaluateRun` accepts a clean report with a null exit (fail-fast could turn a success into a failure) — fixed to mirror `evaluateRun`; (2) a stop signalled only the direct child, so a descendant holding the pipes could keep a lane waiting forever — fixed with a descendant-tree stop and a bounded close; (3) interleaving tests missing — added.

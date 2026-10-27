@@ -4,7 +4,7 @@
   "sessionId": "62b13b7f-084e-44ac-9c3a-a985249271f5",
   "timestamp": "2026-10-27T01:39:27.068Z",
   "artifactPath": "upgrades/side-effects/local-verify-fail-fast.md",
-  "artifactSha256": "a5c0eadf953ed59fd84863741c1abcd7bb77638a4a9d7822e67ec2589b1b060c",
+  "artifactSha256": "c8ef30af72f14780fdfde0f763478e0a1b395fd874d8bbf61c1912db7eb9fb9a",
   "coveredFiles": [
     "docs/specs/local-verify-fail-fast.eli16.md",
     "docs/specs/local-verify-merge-authority.md",
