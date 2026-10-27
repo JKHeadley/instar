@@ -720,6 +720,10 @@ export class LocalVerifyService {
     try { return this.mergeLineEnabled ? this.mergeLineEnabled() !== false : true; } catch { return true; } // @silent-fallback-ok: an unreadable switch reads as on (today's default)
   }
 
+  /** Called once each time a verify run ends (its restart hold is gone). */
+  private runEnded: (() => void) | null = null;
+  setRunEndedListener(fn: (() => void) | null): void { this.runEnded = fn; }
+
   /** The live setting for processes per slow lane (read at each start; invalid values are ignored). */
   setLaneShards(fn: (() => unknown) | null): void { this.laneShardsSetting = fn; }
 
@@ -2101,6 +2105,8 @@ export class LocalVerifyService {
     }
     this.clearInFlight();
     if (this.inFlight === f) this.inFlight = null;
+    // The restart hold this run held is gone: let a waiting update restart now, not at its next re-check.
+    try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ }
     const result = this.readResult(f.resultPath);
     this.removeRunFiles(f);
     if (f.entry.peerAttempt) {
