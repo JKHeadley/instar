@@ -541,18 +541,21 @@ file, which is cluster-shared and written only by the lease holder
 - **If the tone gate answers with an advisory** (`422 tone-gate-advisory`), the
   push is re-sent once, unchanged, with `toneAdvisoryAck` set to the named rule,
   `toneAdvisoryAckReason` "deterministic evidence block the operator must see
-  verbatim", and the returned `toneAdvisoryDecisionRef`. The evidence block is
+  verbatim", and the returned `toneAdvisoryDecisionRef`, under a freshly issued
+  automation grant (the body changed, so the first grant does not apply). The evidence block is
   degradation strings word for word and routinely carries config keys, paths and
   feature ids, which the advisory rules flag; an advisory is a signal, and this
   records its grade honestly instead of treating it as a stop.
 - **If the gate blocks** (`tone-gate-blocked`, including where the advisory
   migration is dark and B-rules are hard blocks, as on the fleet today; the
   credential wall; or `advisoryUnavailable`), the evidence block is dropped.
-  - The evidence is put on a private view, and the fixed sentence plus that view
-    link is sent through the deterministic topic-send path that the cold-start
+  - The evidence is put on a private view (`PrivateViewer.create()`; the tunnel
+    URL helper is extracted from `routes.ts` into a shared `viewTunnelUrl()`),
+    and the fixed sentence plus that view link is sent through the deterministic topic-send path that the cold-start
     lifeline notice uses. It carries just reason ids and the machine nickname.
-    For a credential-wall block, the view is not made (the evidence held a live
-    credential) and the sentence ends "details on the Jobs tab".
+    With no tunnel, or for a credential-wall block (the evidence held a live
+    credential), no link is sent and the sentence ends "details on the Jobs
+    tab".
   - No text the gate refused is ever sent around it.
   - A test pushes a degradation string containing a config key and asserts the
     ack path on an advisory and the view-link path on a block.
@@ -733,7 +736,9 @@ is it routine?
   - Referee failure, timeout, cap or open breaker: the cascade answers nothing and
     the floor stands alone.
 - **What `needs_session` does: a triage session.** The scheduler spawns one
-  session through a new `spawnTriageSession(job, triageRow)`:
+  session through a new `spawnJobTriageSession(job, triageRow)` (named apart
+  from the existing `SessionManager.spawnTriageSession`, which serves the
+  message triage orchestrator):
   - **Its prompt is a fixed investigator prompt shipped in code**, never the job
     body as instruction. It names the job and its description, gives the run's
     structured fields (result, reason, anomaly ids, server reason codes), quotes
@@ -762,8 +767,23 @@ is it routine?
     job runs a full-tools session holding the token every 5 minutes; a triage
     session has strictly less. An OS-confined investigator is not built in v1.
     `omitAuthEnv` refuses when the agent authenticates Claude with an
-    environment token; that is recorded as an admission refusal
-    (`refused: env-token-auth`), which the 6-hour push names.
+    environment token; `admitTriageSpawn()` pre-checks `anthropicApiKey` and
+    records `refused: env-token-auth`, which the 6-hour push names.
+  - **Build item: `omitAuthEnv` on the rerouted interactive lane.** Today
+    `spawnReroutedInteractive` (the subscription-path lane taken under
+    `intelligence.subscriptionPath.mode: force|auto`) blanks credentials only
+    when `confinement` is set, keeps the GitHub and fencing tokens, skips the
+    credential-shaped-variable blanking, and uses its own 45-minute lifetime. It
+    is changed to key the token blanking and the credential-variable blanking on
+    `omitAuthEnv`, and to honour `maxDurationMinutes`. A test spawns a triage
+    session under `subscriptionPath.mode: force` and asserts no
+    `INSTAR_AUTH_TOKEN`, `INSTAR_ORIGIN_TOKEN` or GitHub token in its
+    environment, and the 30-minute lifetime.
+  - **Tools.** Headless Claude launches skip permission prompts, so an
+    `--allowedTools` list does not remove the other tools. The triage session
+    therefore passes a removing flag (`--disallowedTools` for everything except
+    `Read, Grep, Glob, Bash`) on Claude. Codex has no tool flag; on Codex the
+    narrowing does not hold, and the spec claims it only for Claude.
   - The in-flight check keys on the run-history tag `triage:<slug>` (the tmux
     name, `triage-<slug>-<id>`, is display only).
   - It is admitted by `admitTriageSpawn()`, which runs the same read-only, quota,
