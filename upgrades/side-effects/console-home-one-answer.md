@@ -7,6 +7,8 @@
 
 ## Summary of the change
 
+Also updates `docs/specs/console-makeover.md` (§1 card table and block specifics) so the spec matches: What needs you now includes waiting promises and the headline counts that card alone; Home shows no internal text.
+
 Operator report (topic 127504): the console Home headline said "One thing needs you." while the "What needs you" card said "Nothing needs you", and the card printed "No answer from m_a804869356b259820b3236e7c5a2ae7d. 420 routine notices kept in the log." Cause: `headline()` summed attention items needing the operator plus promises waiting on the operator; the card counted only the attention queue. Fix: `combineNeeds()` folds waiting promises into the card and `headline()` counts the combined card alone; machines are named from `/pool` or described ("a machine with no name on file"), never shown by id; internal wording replaced. A new unit test scans every Home builder's rendered text for raw ids, placeholders and known internal phrases.
 
 Tier 1 (dashboard display only; a revert fully undoes it). Size: 2 dashboard files (~90 LOC), 1 new test file, 1 test file updated. Effort: no spec review rounds (Tier 1), first commit attempt.
