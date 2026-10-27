@@ -9,3 +9,5 @@ The first repair in this change saves a detected correction in the existing smal
 The larger pipeline is recorded in the companion technical plan. It still needs a recovery pass for reviews held when the work queue is full, a clear decision about whether a correction is local or applies to Instar generally, linked work items for both destinations, and checks that prove the fixes are live. The first repair makes the input and capacity accounting trustworthy; it does not claim that the whole improvement pipeline is finished.
 
 The decision for this first repair is whether preserving busy-time corrections and counting actual work items are the right initial changes. Both are reversible code changes, and unit, HTTP, and production-path tests cover the observed failures.
+
+The full-suite check also exposed a console test whose sample dates were fixed to October 25 while the displayed page uses the real clock. The test began expecting “hours ago” after its sample had become two days old. Its browser-level sample dates now use the current time; the fixed-clock model tests stay fixed. This changes the test fixture, not the console's behavior.

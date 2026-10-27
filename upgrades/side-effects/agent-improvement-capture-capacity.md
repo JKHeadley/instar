@@ -77,6 +77,7 @@ The independent reviewer found two initial code concerns: a partially admitted r
 - Live capture audit: topic `130715`, 2026-10-27T20:33:21Z, `decision=shed`.
 - Live class-review state: 108 open receipts and one linked open artifact at 2026-10-27T21:40Z.
 - Unit, integration, and E2E test files changed in this branch; targeted unit and TypeScript checks passed. Broader checks are queued behind the shared merge test slot.
+- The M5 full-suite run at commit `774a86e1` found one time-sensitive console test failure: its fixed October 25 fixture was rendered against the real October 27 clock. The browser-level fixture now uses `Date.now()`; the model-level deterministic fixtures remain fixed. `tests/unit/console-costs.test.ts` passes all 22 cases locally after the correction. This test-only change has no runtime, API, migration, or multi-machine side effect; revert restores the stale fixture and its time-dependent failure.
 
 ## Class-Closure Declaration (display-only mirror)
 
