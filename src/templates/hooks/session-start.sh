@@ -222,6 +222,33 @@ except Exception:
 " <<< "$ACTIVE_COMMITMENTS" 2>/dev/null
 fi
 
+# Evolution fast-track forcing function.
+# A slipped commitment already reaches the 4-hourly evolution-overdue-check job,
+# which can complete, cancel or escalate it out of band. It never reached the
+# session that could actually resolve it. This block is that half: overdue rows
+# are auto-enrolled (no tag needed), rows tagged `fast-track` surface before
+# their deadline too, and both re-appear every session until resolved. Text is
+# rendered server-side so every hook copy says the same thing. Silent when the
+# lane is empty — a block that prints "all clear" every session teaches you to
+# skip it. Fail-open: a dead server, a timeout or a parse error prints nothing.
+FAST_TRACK_BRIEF=$(curl -s --max-time 5 -H "Authorization: Bearer ${AUTH_TOKEN}" -H "X-Instar-AgentId: ${AGENT_ID}" \
+  "http://localhost:${PORT}/evolution/session-brief" 2>/dev/null)
+if [ -n "$FAST_TRACK_BRIEF" ]; then
+  python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    lines = d.get('lines') or []
+    if isinstance(lines, list) and lines:
+        for line in lines[:12]:
+            if isinstance(line, str):
+                print(line.replace(chr(10), ' ').replace(chr(13), ' '))
+        print()
+except Exception:
+    pass
+" <<< "$FAST_TRACK_BRIEF" 2>/dev/null
+fi
+
 # Soul.md fallback injection — until the Being layer is in the self-knowledge tree,
 # inject Personality Seed + Core Values at session start for identity grounding.
 if [ -f "$INSTAR_DIR/soul.md" ]; then
