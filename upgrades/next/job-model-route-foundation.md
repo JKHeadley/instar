@@ -1,0 +1,18 @@
+# Job model routing foundation
+
+## What Changed
+
+Job manifests can carry an optional framework and exact model, and job run records can explain whether a benchmark route or the normal route ran. The scheduler has a tested safety decision for current benchmark evidence, provider availability, Codex hook trust and a current deny canary. A code-owned audit gate keeps the new route inactive until per-call records and outcome grading are complete. No shipped job template carries a pin in this change.
+
+## What to Tell Your User
+
+The next job-cost improvement is being built. The scheduler now has a safe place to choose a benchmark-backed model and explain its fallback, but it will keep using the existing route until the audit and machine-safety checks are fully connected and tested.
+
+## Summary of New Capabilities
+
+- Optional job pin fields and route explanations in run records.
+- A code-gated route decision that keeps jobs running when benchmark or machine evidence is missing.
+
+## Evidence
+
+Focused route and scheduler tests passed (23 tests), along with 127 existing manifest-loader and run-history tests. TypeScript passed. The full three-tier verification and live audit wiring are required before a model pin can be activated.

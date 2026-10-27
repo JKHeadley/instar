@@ -252,6 +252,13 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       enabled: existingEnabled !== undefined ? existingEnabled : frontmatter.enabled !== 'false',
       execute,
       model: frontmatter.model != null && String(frontmatter.model).trim() ? (String(frontmatter.model) as ModelTier) : undefined,
+      framework: typeof frontmatter.framework === 'string' && frontmatter.framework.trim()
+        ? frontmatter.framework as import('../core/intelligenceProviderFactory.js').IntelligenceFramework
+        : undefined,
+      frameworkModel: typeof frontmatter.frameworkModel === 'string' && frontmatter.frameworkModel.trim()
+        ? frontmatter.frameworkModel
+        : undefined,
+      leanContext: coerceBool(frontmatter.leanContext),
       tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
       unrestrictedTools: coerceBool(frontmatter.unrestrictedTools),
       gate: frontmatter.gate != null ? String(frontmatter.gate) : undefined,

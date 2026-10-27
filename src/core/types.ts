@@ -8,6 +8,7 @@
 // Type-only import (erased at compile time — types.ts stays runtime-import-free).
 import type { DecisionProvenanceBlock } from './decisionQualityTypes.js';
 import type { AnomalyDecl } from '../scheduler/jobScriptProtocol.js';
+import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 
 // ── Provider Credentials ────────────────────────────────────────────
 
@@ -506,6 +507,12 @@ export interface JobDefinition {
   expectedDurationMinutes: number;
   /** Model tier to use */
   model: ModelTier;
+  /** Benchmark-backed session pin. Both fields must be present; otherwise the
+   *  job stays on its existing default model and framework. */
+  framework?: IntelligenceFramework;
+  frameworkModel?: string;
+  /** Opt-in to reviewed, non-safety session-start context omissions. */
+  leanContext?: boolean;
   /** Whether this job is currently enabled */
   enabled: boolean;
   /** The skill or prompt to execute */
