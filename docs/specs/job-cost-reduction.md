@@ -418,7 +418,10 @@ reason:
   others due on that run. It states only observations: "<reason> on <machine>
   has persisted for 6 hours; an investigation <ran and it is still present |
   could not start: <reason>>". It never says "the fix failed". The latency this
-  adds is bounded by the session's duration cap (30 minutes).
+  adds is bounded by the session's duration cap (30 minutes). With
+  `jobs.scriptTriage.enabled: false` the attempt is recorded at once as
+  `refused: triage-disabled` and the push goes out at 6 hours, as it would
+  without triage.
 - **Once per episode.** The notice is sent once per episode and is never
   repeated.
 - **Owners that escalate are not duplicated.** Where an owner already raised its
@@ -579,10 +582,17 @@ spec and also Jev-gated by spec 2. The ownership table is in §5.6.6.
 #### 5.6.2 Layer 1: per-run triage (Jev, with the cascade, over a deterministic floor)
 
 After a `triage`-class script run is parsed and recorded (§5.2), and after its
-claim is released, the scheduler queues the run for a server-side
-`JobResultTriage` pass. Triage never holds the claim, an in-flight slot or a
-script-cap slot. The queue keeps the latest run per slug; one Jev call runs at a
-time.
+claim is released, the scheduler evaluates the **floor** for that run at once (a
+pure function of the result, the streak and the anomaly classes) and then queues
+the run for a server-side `JobResultTriage` pass. Triage never holds the claim,
+an in-flight slot or a script-cap slot.
+
+- A run the floor marks `needs_session` goes into a **pending set** keyed by
+  `<slug>:<reason set>` and is never coalesced away: a later healthy run cannot
+  replace it. Its session admission outcome (spawned, suppressed, refused) is
+  recorded against it.
+- Every other run goes into a cascade queue that keeps the latest run per slug.
+  One Jev call runs at a time.
 
 **Which runs are triaged.** A run whose result is `success` with no anomaly lines
 and a summary on the template's declared bare-ok list (for example `ok healthy`)
@@ -590,8 +600,10 @@ is `routine` by construction and is never sent anywhere; the canaries (§5.6.4),
 not a model reading "ok", carry the false-healthy duty. Every other run (a
 `failure`, a `skipped`, any anomaly line, any other summary) is triaged. A run
 whose triage input has the same fingerprint (sha256 of the clamped, scrubbed
-input) as one triaged for the same slug within the cooldown window reuses that
-verdict with no call.
+input) as one triaged for the same slug within the cooldown window reuses the
+**cascade's** answer with no call. The floor and the admission checks are always
+recomputed for the run itself, so identical output on a first and a second
+failure still gives the second one its session.
 
 **The question.** Does this result need a real session with real intelligence, or
 is it routine?
@@ -1136,7 +1148,11 @@ from §9.
     session's row is excluded from stats and streak; JobState is untouched;
   - triage runs after the claim is released and holds no script-cap slot;
   - the relay script refuses `INSTAR_SENDER_CLASS=triage-session`;
-  - the 6-hour push waits for one triage attempt, or names its refusal.
+  - the 6-hour push waits for one triage attempt, or names its refusal, and
+    with triage disabled records `refused: triage-disabled` and pushes at 6 h;
+  - identical output on a first and second failure: the second still gets a
+    session (the fingerprint reuses only the cascade answer);
+  - a floor-required run is not displaced by a later healthy run in the queue.
 - The backup check: runs every 6 h with or without Jev; reads only `routine`
   runs since its cursor, deduped and prioritised, at most 12, and records
   `unread`; a strict-parse failure is `backup-failed` and the same ids are
@@ -1286,12 +1302,21 @@ from §9.
     one is needed; a backup Haiku-or-Luna check every 6 hours; deterministic
     must-fail canaries every day; one high-level daily review; and the existing
     consecutive-failure alerts.
-  - The registry article's `Fails` clause allows a pipeline without per-run LLM
-    validation only when "a separately ratified deterministic safe rung governs
-    it". The deterministic floor (§5.6.2), always applied, and the canaries are
-    that rung, ratified by the operator's decision of 2026-10-26 19:04. These
-    script jobs are not declared critical pipelines.
-  - The standard's tier table gains a "script job" line in the same change.
+  - `docs/LLM-SUPERVISED-EXECUTION.md` makes every scheduled job critical by
+    default, and these stay critical: v1 does not declare them otherwise. Their
+    Tier-1 supervision is layered rather than per-run: an LLM classifier (Jev,
+    with the referee) reads every non-trivial result; bare-ok results are covered
+    by the 6-hourly backup sample and the daily review, and their ability to fail
+    is proven by the canaries rather than by a model reading "ok".
+  - The registry article's `Fails` clause (when the supervisor is unavailable,
+    do not run the pipeline "unless a separately ratified deterministic safe rung
+    governs it"): the always-applied deterministic floor and the canaries are that
+    rung, ratified by the operator's decision of 2026-10-26 19:04. With no Jev and
+    no referee the job still runs, governed by the floor, and the backup check and
+    daily review still read it on the default framework.
+  - The standard's tier table gains a "script job (layered Tier 1)" line and the
+    critical-pipeline section a sentence naming this layering, in the same
+    change.
     `docs/LLM-SUPERVISED-EXECUTION.md` is not under CODEOWNERS (only
     `STANDARDS-REGISTRY.md` and `.github/CODEOWNERS` are), so no operator
     approval is needed for it.
