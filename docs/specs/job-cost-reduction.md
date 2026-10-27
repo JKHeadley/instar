@@ -13,6 +13,17 @@ related:
   - docs/specs/benchmark-divergence-detector.md
   - docs/LLM-SUPERVISED-EXECUTION.md
   - docs/specs/jev-job-supervision.md
+review-convergence: "2026-10-27T02:37:40.367Z"
+review-iterations: 6
+review-completed-at: "2026-10-27T02:37:40.367Z"
+review-report: "docs/specs/reports/job-cost-reduction-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+approved: true
+approved-by: "justin (operator decision, Telegram topic 130742, 2026-10-26 19:04 PDT)"
+approval-basis: >
+  Justin set the supervision design this revision implements ("leverage Jev ... with haiku or
+  Luna as a backup ... then a single high-level daily review") and the build was directed to
+  proceed after re-convergence. Recorded transparently by Echo, not silently self-granted.
 single-run-completable: true
 frontloaded-decisions: 19
 cheap-to-change-tags: 1
