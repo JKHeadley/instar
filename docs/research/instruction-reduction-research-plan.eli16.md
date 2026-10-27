@@ -24,3 +24,5 @@ Graders don't know which version they are scoring. We run each safety test hundr
 **How we roll it out.** Offline tests first. Then a "shadow" run, where the new version watches real conversations without acting, for at least a week. Then a few low-risk jobs. Then one conversation, then all of Echo, and the wider fleet last. One setting switches everything back to the full file. Any safety slip switches it back automatically.
 
 **When we stop.** We drop an option if it breaks a safety rule twice. We drop the whole effort if nothing saves at least 40% while passing every test. We pause if real-world grading shows a problem the tests missed.
+
+**Two decisions Justin made.** First, no drop allowed: a slimmer version passes only if it finds and uses the agent's features at least as well as the full file does. Second, features that are switched off stay listed, with what they do and how to turn them on, so the agent can still offer to switch one on. Only the long how-to text is loaded when needed.

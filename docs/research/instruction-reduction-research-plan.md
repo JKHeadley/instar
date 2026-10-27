@@ -46,7 +46,7 @@ Each is an arm in the experiment. **A0 is the control:** today's full file.
 - **A2 — Seed + hook-triggered injection.** A1 plus a `UserPromptSubmit` hook that matches the incoming message against the index triggers and injects matching sections before the agent reasons. Moves "remembering to look" from willpower to structure, consistent with Structure > Willpower.
 - **A3 — Per-job minimal context.** Scheduled jobs and helpers get the seed plus only the sections their job definition declares (a `contextSections` field). Largest saving per session (the ~240k job case); lowest risk because jobs are narrow.
 - **A4 — Jev-ranked retrieval.** A1 plus a JevMemoryPicker-style ranker that scores sections against topic and recent messages at session start and on each turn, with pinned sections always loaded and failure falling back to the full file.
-- **A5 — Prune without restructuring.** Keep one file but drop dark-feature detail on agents where it is dark, and move history to linked notes. Cheapest; tests how much of the gain needs no retrieval at all.
+- **A5 — Prune without restructuring.** Keep one file but shorten dark-feature detail on agents where it is dark to an awareness line (what it does and how to switch it on, see Section 6), and move history to linked notes. Cheapest; tests how much of the gain needs no retrieval at all.
 
 ## 3. Experiment design
 
@@ -64,7 +64,7 @@ Each is an arm in the experiment. **A0 is the control:** today's full file.
 - **Blind grading.** Graders (a cross-family model panel plus a human sample of ≥10%) see transcripts with all instruction text stripped and arm labels replaced by random ids. Deterministic checks (did it call the route, did it send the ack) are scored mechanically first; judgment scores only where needed.
 - **Trials and confidence bar.**
   - Safety set: each scenario run ≥5 times per arm (≥300 runs). **Pass bar: zero failures in the candidate arm on any scenario where A0 passes**, and no scenario where the candidate fails more often than A0. With 300 runs and zero failures, the 95% upper bound on the failure rate is ≈1% (rule of three); to claim <0.5% at 95% we extend to 600 runs before any rollout beyond shadow.
-  - Awareness and work quality: non-inferiority test, margin 2 percentage points, one-sided 97.5% confidence (Wilson / Newcombe intervals, the divergence detector's formulas). Roughly 1,000 graded trials per arm for awareness; per-scenario failures are reviewed even when the average passes.
+  - Awareness and work quality: **no drop allowed**. The candidate's pass rate must be at least A0's, judged with a one-sided 97.5% confidence interval (Wilson / Newcombe, the divergence detector's formulas), and every scenario the candidate fails is reviewed by hand even when the totals pass. Showing "no worse" with no margin needs more trials than a margin would, so trial counts are sized to reach that bar, not the other way round.
   - Coherence: no increase in post-compaction recall failures; each failure examined by hand.
 - **Regression is judged per scenario, not on average.** A candidate that is better overall but loses one safety scenario fails.
 - **Live evidence (shadow, Section 4)** is graded by the Decision Quality Meter and compared with the battery prediction, so a battery that is easy to pass cannot hide a live regression.
@@ -87,11 +87,11 @@ The Agent Awareness Standard still holds: every new feature must get an index li
 
 ## 5. When to stop
 
-- **Stop the strategy** if any safety scenario regresses after two design iterations, or if awareness fails the non-inferiority bar after two iterations.
+- **Stop the strategy** if any safety scenario regresses after two design iterations, or if awareness fails the no-drop bar after two iterations.
 - **Stop the whole effort** if no arm saves at least 40% of loaded tokens while passing every bar; a smaller saving does not justify the risk and the rollout cost.
 - **Stop and roll back** at any stage if live shadow or decision-quality grades show a regression the batteries did not predict; that means the batteries are not measuring what matters and must be fixed before continuing.
 
-## 6. Open questions for Justin
+## 6. Decisions (Justin, 2026-10-26)
 
-- Is a 2-point non-inferiority margin on awareness acceptable, or should it be zero?
-- Should dark features be in the seed index at all on agents where they are dark?
+- **No drop in awareness or work quality.** A slimmer instruction set passes only if it does at least as well as the full file (Section 3). No percentage-point margin.
+- **Switched-off features stay visible.** On an agent where a feature is dark, the seed index still lists it, with what it does and how to switch it on, so the agent can offer that option. Only the detailed how-to is loaded on demand. The awareness battery includes scenarios where the right answer is "this exists but is off here; want me to turn it on?"
