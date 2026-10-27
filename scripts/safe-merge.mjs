@@ -1030,12 +1030,114 @@ function reviewPrecheck({ repo, pr, view, args }) {
   // require_code_owner_review: a PR touching a CODEOWNERS-owned path (the constitution)
   // waits for the code owner — never try a merge GitHub will refuse.
   if (reviewPolicy.codeOwnerReviewRequired === true && view.reviewDecision !== 'APPROVED') {
-    const owned = fetchCodeOwnedFiles(repo, pr, view.baseRefName || 'main');
+    const { ownedFiles: owned, rules } = fetchCodeOwnership(repo, pr, view.baseRefName || 'main');
     if (codeOwnerReviewPending({ policy: reviewPolicy, ownedFiles: owned, reviewDecision: view.reviewDecision })) {
+      // GitHub leaves reviewDecision EMPTY when the ruleset's required approving count is 0,
+      // even after the code owner approves (PR #2389, 2026-10-26) — so an empty decision is
+      // "GitHub did not say", not "unapproved". Decide from the reviews themselves, and only then.
+      if (isEmptyReviewDecision(view.reviewDecision)) {
+        const reviews = fetchPrReviews(repo, pr);
+        const verdict = codeOwnerApprovalFromReviews({
+          ownedFiles: owned, rules, reviews, headSha: pinnedHeadFor(view, args),
+          excludeLogins: [view.author?.login, fetchViewerLogin()],
+          canWrite: (login) => hasWriteAccess(repo, login),
+        });
+        if (verdict.satisfied) {
+          console.log(`safe-merge: code-owner review satisfied by reviews on head ${String(pinnedHeadFor(view, args)).slice(0, 12)} (approved by ${verdict.approvedBy.join(', ')}; GitHub left reviewDecision empty).`);
+          return protection;
+        }
+        refuseApprovalRequired({ repo, pr, view, args, policy: { ...reviewPolicy, codeOwnedFiles: owned.slice(0, 10), reviewsVerdict: verdict }, via: 'code-owner-review' });
+      }
       refuseApprovalRequired({ repo, pr, view, args, policy: { ...reviewPolicy, codeOwnedFiles: owned.slice(0, 10) }, via: 'code-owner-review' });
     }
   }
   return protection;
+}
+
+/** GitHub's "no decision": null, undefined or "" (gh prints "" when the field is unset). */
+export function isEmptyReviewDecision(reviewDecision) {
+  return reviewDecision === null || reviewDecision === undefined || reviewDecision === '';
+}
+
+function pinnedHeadFor(view, args) {
+  return args?.matchHeadCommit ?? view?.headRefOid ?? null;
+}
+
+/** The CODEOWNERS owners of one file: the LAST matching rule wins (GitHub semantics). */
+export function ownersForFile(file, rules) {
+  let owners = [];
+  for (const r of rules ?? []) if (r.re.test(file)) owners = r.owners;
+  return owners;
+}
+
+/**
+ * Pure: is the code-owner review satisfied by the PR's reviews, for the CURRENT head?
+ * Used only when GitHub leaves reviewDecision empty. Conservative by construction:
+ *  - a reviewer's state is their LATEST APPROVED / CHANGES_REQUESTED / DISMISSED review
+ *    (COMMENTED does not change it, as on GitHub);
+ *  - an approval counts only if it was submitted on `headSha` (an approval on an older
+ *    commit never counts, whatever dismiss_stale_reviews_on_push says — stricter than
+ *    GitHub when that setting is off, which is the safe direction);
+ *  - the PR author and the account running this merge never count;
+ *  - an approver must have write access (`canWrite`), as GitHub ignores a code owner
+ *    without it — this precheck is the ONLY gate on the --admin path, so it must not
+ *    count what GitHub would not; `canWrite` defaults to "no";
+ *  - every code-owned file needs an approval from at least one of ITS user owners;
+ *  - a team (@org/team) or email owner cannot be resolved here, so a file whose only
+ *    owners are teams/emails is unsatisfied and the verdict names it.
+ */
+export function codeOwnerApprovalFromReviews({ ownedFiles, rules, reviews, headSha, excludeLogins = [], canWrite = () => false }) {
+  if (!headSha) return { satisfied: false, reason: 'head-unknown', approvedBy: [], unsatisfiedFiles: [...(ownedFiles ?? [])], unresolvableOwners: [] };
+  const excluded = new Set(excludeLogins.filter(Boolean).map(l => String(l).toLowerCase()));
+  const latest = new Map();
+  const sorted = [...(Array.isArray(reviews) ? reviews : [])]
+    .filter(r => r && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state) && r.user?.login)
+    .sort((a, b) => String(a.submitted_at ?? '').localeCompare(String(b.submitted_at ?? '')));
+  for (const r of sorted) latest.set(String(r.user.login).toLowerCase(), r);
+  const approvers = new Set();
+  for (const [login, r] of latest) {
+    if (excluded.has(login)) continue;
+    if (r.state === 'APPROVED' && r.commit_id === headSha && canWrite(r.user.login) === true) approvers.add(login);
+  }
+  const unsatisfiedFiles = [];
+  const unresolvable = new Set();
+  const approvedBy = new Set();
+  for (const f of ownedFiles ?? []) {
+    const owners = ownersForFile(f, rules);
+    const users = [];
+    for (const o of owners) {
+      const m = /^@([A-Za-z0-9-]+)$/.exec(o);
+      if (m) users.push(m[1].toLowerCase());
+      else unresolvable.add(o);
+    }
+    const hit = users.find(u => approvers.has(u));
+    if (hit) approvedBy.add(hit);
+    else unsatisfiedFiles.push(f);
+  }
+  const satisfied = (ownedFiles ?? []).length > 0 && unsatisfiedFiles.length === 0;
+  let reason = 'approved-on-head';
+  if (!satisfied) {
+    const onlyTeams = unsatisfiedFiles.some(f => ownersForFile(f, rules).every(o => !/^@[A-Za-z0-9-]+$/.test(o)));
+    reason = onlyTeams ? 'owner-unresolvable' : 'no-current-owner-approval';
+  }
+  return { satisfied, reason, approvedBy: [...approvedBy], unsatisfiedFiles, unresolvableOwners: [...unresolvable] };
+}
+
+function fetchPrReviews(repo, pr) {
+  const pages = ghJson(['api', `repos/${repo}/pulls/${pr}/reviews?per_page=100`, '--paginate', '--slurp']);
+  return (Array.isArray(pages) ? pages : [pages]).flat();
+}
+
+/** GitHub counts a code owner's approval only with write access. Unreadable → false (refuse). */
+function hasWriteAccess(repo, login) {
+  const r = gh(['api', `repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`, '--jq', '.permission'], { allowFail: true });
+  return r.status === 0 && ['admin', 'maintain', 'write'].includes(String(r.stdout || '').trim());
+}
+
+/** The account running this merge (it pushed the branch). Unreadable → null (author still excluded). */
+function fetchViewerLogin() {
+  const r = gh(['api', 'user', '--jq', '.login'], { allowFail: true });
+  return r.status === 0 ? String(r.stdout || '').trim() || null : null;
 }
 
 /** Pure: the code-owner review GitHub requires is still outstanding for these owned files. */
@@ -1043,8 +1145,8 @@ export function codeOwnerReviewPending({ policy, ownedFiles, reviewDecision }) {
   return !reviewPrecheckPasses({ policy, reviewDecision, codeOwnedTouched: (ownedFiles ?? []).length > 0 });
 }
 
-/** The PR's changed files a CODEOWNERS rule (read from the base branch) owns. Throws when unreadable. */
-function fetchCodeOwnedFiles(repo, pr, base) {
+/** The PR's changed files a CODEOWNERS rule (read from the base branch) owns, plus the rules. Throws when unreadable. */
+function fetchCodeOwnership(repo, pr, base) {
   const co = gh(['api', `repos/${repo}/contents/.github/CODEOWNERS?ref=${encodeURIComponent(base)}`, '-H', 'Accept: application/vnd.github.raw'], { allowFail: true });
   let rules;
   if (co.status === 0) rules = parseCodeowners(co.stdout);
@@ -1052,7 +1154,7 @@ function fetchCodeOwnedFiles(repo, pr, base) {
   if (!rules) throw new Error(`CODEOWNERS unverifiable: ${(co.stderr || '').slice(0, 200)}`);
   const pages = ghJson(['api', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--paginate', '--slurp']);
   const files = (Array.isArray(pages) ? pages : [pages]).flat().map(f => String(f?.filename ?? '')).filter(Boolean);
-  return codeOwnedFiles(files, rules);
+  return { ownedFiles: codeOwnedFiles(files, rules), rules };
 }
 
 /** The head-pinned merge plus the independent confirmation (B10). Always exits. */
