@@ -56,8 +56,14 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: r.main }), r.sub ? el('span', { class: 'row-sub', text: r.sub }) : null),
         el('span', { class: 'row-end' }, document.createTextNode(r.end || ''), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })),
       );
+      if (r.item != null) b.setAttribute('data-item', String(r.item));
       b.addEventListener('click', () => onRow && onRow(r));
       body.insertBefore(b, more);
+      // Every Ask Is Actionable: a needs-you row carries its one tap right under it.
+      if (r.action && actionControlFor) {
+        const act = actionControlFor(r.action);
+        if (act) body.insertBefore(el('div', { class: 'row-action' }, act), more);
+      }
     }
     shown += next.length;
     more.hidden = shown >= rows.length;
@@ -72,6 +78,10 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
   wrap.append(head, body);
   return wrap;
 }
+
+// actions.js imports ui.js, so section() reaches actionControl through this hook (set by actions.js).
+let actionControlFor = null;
+export function setActionRenderer(fn) { actionControlFor = fn; }
 
 /** 3. Detail sheet: bottom sheet on a phone, side panel on desktop. */
 let openSheet = null;

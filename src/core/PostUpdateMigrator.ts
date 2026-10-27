@@ -11298,6 +11298,18 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added attention lifecycle (close-on-cause + expiry) bullet');
     }
 
+    // Every Ask Is Actionable (operator rule 2026-10-26): deployed agents learn that
+    // an item they raise for the user must carry its one tap, how to name it on the
+    // POST, and where unactionable posts are logged. Sniff: 'attention-unactionable'.
+    if (content.includes('**Attention Queue**') && !content.includes('attention-unactionable')) {
+      const actionableBullet = `- **Every ask carries one tap (Every Ask Is Actionable).** Anything brought to the user must be one tap from acting: an Attention hub post carries a button to the exact console place, and every "needs you" row in the console carries an Approve / Answer / Review button. When you raise an item the user must act on, name the place: add \`"action":{"kind":"open","href":"#/<console page>?s=<section>","label":"<button words>"}\` to the POST (a console hash path only; anything else is refused with 400). Known kinds get one automatically (sign-ins, held replies, safety checks, machines, feedback, shipping); an item with no possible action is NOT counted as needing the user and is logged to \`logs/attention-unactionable.jsonl\` when it reaches Telegram — fix it at the source. **When to use** (PROACTIVE): the user asks "where do I tap for this?" or an Attention post arrived without a button → read \`logs/attention-unactionable.jsonl\` and give the item a real action.\n`;
+      const proactive = /^- \*\*Proactive use\*\*: queue an item only[^\n]*\n/m;
+      if (proactive.test(content)) content = content.replace(proactive, (m) => `${m}${actionableBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${actionableBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Every Ask Is Actionable (attention action) bullet');
+    }
+
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
     // A deployed agent whose CLAUDE.md already carries the Job Scheduler
     // section gets the ?scope=pool bullet inserted after the /jobs View line.

@@ -7,8 +7,9 @@
 
 import {
   failure, buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
-  buildAccountNeeds, buildPrNeeds,
+  buildAccountNeeds, buildPrNeeds, withAgentOwned,
 } from './home-model.js';
+import { actionControl } from './actions.js';
 import { GROUPS, icon, tabHref, hubTiles, hoodTiles, movedList } from './nav-model.js';
 import { renderPromises } from './promises.js';
 import { renderMachines } from './machines.js';
@@ -316,6 +317,9 @@ function paintCard(def, model, repaint = false) {
         });
         rows.append(row, d);
       } else rows.append(row);
+      // Every Ask Is Actionable: a needs-you row carries its one tap right under it.
+      const act = r.action ? actionControl(r.action, { onDone: () => setTimeout(() => { if (location.hash.startsWith('#/home')) loadHome(); }, 1500) }) : null;
+      if (act) rows.append(el('div', { class: 'row-action', 'data-focus-key': `${def.id}:${r.key || r.main}:action` }, act));
     }
     body.append(rows);
   }
@@ -385,16 +389,25 @@ async function loadHome() {
   // from that card only.
   let attn = { state: 'loading' };
   const extra = { accounts: { state: 'loading', items: [] }, prs: { state: 'loading', items: [] } };
+  let doingRaw = null;
+  const paintDoing = () => {
+    if (!doingRaw) return;
+    const owned = models.needs && Array.isArray(models.needs.agentOwned) ? models.needs.agentOwned : [];
+    models.doing = paintCard(CARDS.find((c) => c.id === 'doing'), withAgentOwned(doingRaw, owned)) || doingRaw;
+  };
   const paintNeeds = () => {
     const model = combineNeeds(attn, models.promised, extra);
     if (model.state === 'loading') { models.needs = model; return; }   // keep the skeleton until a source answers
     models.needs = paintCard(CARDS.find((c) => c.id === 'needs'), model) || model;
+    paintDoing();
   };
   const set = (id, model) => {
     if (id === 'needs') {
       // Keep the last good queue reading, labelled, when a refresh of it fails.
       if (model.state === 'unknown' && lastGood.attention) attn = { ...lastGood.attention.model, state: 'stale' };
       else { attn = model; if (model.state !== 'unknown') lastGood.attention = { model, at: Date.now() }; }
+    } else if (id === 'doing') {
+      doingRaw = model; paintDoing();
     } else {
       models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model;
     }

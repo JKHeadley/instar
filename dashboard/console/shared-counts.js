@@ -44,6 +44,33 @@ export function readState(res) {
   return res.status === 503 || /switched off/.test(res.reason || '') ? 'off' : 'failed';
 }
 
+// ═══ Actions (Every Ask Is Actionable) ═════════════════════════════════════
+// The operator's rule (2026-10-26): anything brought to the operator is immediately
+// actionable — one tap that either gives the approval in place or opens the exact
+// console place where they are needed. Every needs-you item carries an `action`:
+//   { kind: 'open', href: '#/<page>?…', label }                 a console deep link
+//   { kind: 'open', href: 'https://github.com/…', label, external: true }  a GitHub review (new tab)
+//   { kind: 'approve', path: '/…', body, label, confirm?, pin?: 'session' }  POST in place
+// An item with no buildable action is NOT counted as needing the operator: needsYou()
+// reports it under `agentOwned` (shown with the agent's work), never drops it.
+
+const HASH_HREF = /^#\/[a-z0-9/_-]+(\?[A-Za-z0-9_.:%=&+-]*)?$/;
+const GITHUB_HREF = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+(\/files)?$/;
+
+/** True when `a` is an action the console can render as one tap. */
+export function isActionable(a) {
+  if (!a || typeof a !== 'object' || typeof a.label !== 'string' || !a.label.trim()) return false;
+  if (a.kind === 'open') return typeof a.href === 'string' && (a.external ? GITHUB_HREF.test(a.href) : HASH_HREF.test(a.href));
+  if (a.kind === 'approve') return typeof a.path === 'string' && /^\/[A-Za-z0-9/_-]+$/.test(a.path) && (a.body == null || typeof a.body === 'object');
+  return false;
+}
+
+/** A console deep link with its query (values encoded). */
+export function deepLink(path, params = {}) {
+  const q = Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&');
+  return `#/${path}${q ? '?' + q : ''}`;
+}
+
 // ═══ Promises ══════════════════════════════════════════════════════════════
 /** A promise the operator must answer or approve before the agent can move. */
 export function waitsOnOperator(c) {
@@ -206,6 +233,8 @@ export function promiseNeed(c, now = Date.now(), { stale = false, brief = null }
     detail: promiseFull(c),
     expandable: true,
     record: c,
+    // The promise's own sheet on Promises: its conversation link answers it.
+    action: c.id ? { kind: 'open', href: deepLink('work/promises', { s: 'waiting', item: c.id }), label: kind === 'approval' ? 'Open to approve' : 'Answer' } : null,
   };
 }
 
@@ -257,6 +286,8 @@ export function attentionNeeds(items, now = Date.now(), { brief = null } = {}) {
     const stale = !g.items.some(neverStale) && now - g.last > STALE_DAYS * DAY;
     const title = String(top.title || top.summary || '').trim();
     const main = (brief ? brief(title) : title) || 'Untitled item';
+    // The tap the server stamped (src/messaging/attentionAction.ts); the top item's first, else any copy's.
+    const action = [top, ...g.items].map((i) => i.action).find(isActionable) || null;
     return {
       kind: 'attention', ids: g.items.map((i) => i.id).filter(Boolean),
       key: `attention:${groupKey(top)}`, stale, last: g.last, prio: PRIORITY[top.priority] ?? 9,
@@ -268,6 +299,7 @@ export function attentionNeeds(items, now = Date.now(), { brief = null } = {}) {
         ? [main !== title ? title : null, top.description || top.body || '', top.id ? `Item ${top.id}` : null].filter(Boolean).join('\n\n')
         : (top.description || top.body || ''),
       expandable: true,
+      action,
     };
   }).sort((a, b) => Number(a.stale) - Number(b.stale) || a.prio - b.prio || b.last - a.last);
   return { all, current: all.filter((g) => !g.stale), stale: all.filter((g) => g.stale), routine: open.length - mine.length };
@@ -304,6 +336,23 @@ export function cellRepair(row, episode, { unavailable = false, now = Date.now()
 }
 
 /**
+ * The one tap for a sign-in cell that waits on the operator: the repair is approved
+ * in place (POST /subscription-relogin/repair-cell, which needs a recent PIN unlock —
+ * the existing PIN sheet). Without an episode to approve, the exact cell on Accounts.
+ */
+export function accountAction(r, ep, machine) {
+  // The relogin store admits an approval from both states (SubscriptionReloginStore: suggested |
+  // waiting-operator-only → approved), the same call the Accounts page's Repair button makes.
+  if (ep && (ep.state === 'suggested' || ep.state === 'waiting-operator-only')) {
+    return { kind: 'approve', label: 'Approve repair', path: '/subscription-relogin/repair-cell', pin: 'session',
+      body: { accountId: r.id, machineId: r.machineId, episodeId: ep.id || null, action: 'approve' },
+      confirm: `Start the automatic sign-in repair for ${r.nickname || r.id} on ${machine}?`,
+      done: `The repair is running on ${machine}. It usually takes a few minutes.` };
+  }
+  return { kind: 'open', label: 'Open sign-in', href: deepLink('capacity/accounts', { s: 'needs', item: `${r.id}:${r.machineId}` }) };
+}
+
+/**
  * Every account×machine cell with an expired sign-in, split into the ones that
  * need the operator's tap and the ones that are the agent's chore.
  * rows: /subscription-pool?scope=pool accounts; episodes: /subscription-relogin?scope=pool episodes;
@@ -324,10 +373,11 @@ export function accountNeeds(rows, episodes = [], { unavailable = [], now = Date
     const item = {
       kind: 'account', key: `account:${r.id}:${r.machineId}`, accountId: r.id, machineId: r.machineId, machine,
       email: (r.email || '').toLowerCase() || null, name: r.nickname || r.id, framework: r.framework,
-      repair: st, episode: ep, episodeId: ep ? ep.id : null, action: st.action || null, remote: Boolean(r.remote),
+      repair: st, episode: ep, episodeId: ep ? ep.id : null, repairAction: st.action || null, remote: Boolean(r.remote),
       last: Date.parse((ep && ep.updatedAt) || r.lastRefreshAt) || 0, prio: 4,
       main: `Sign in ${r.nickname || r.id} on ${machine}`,
       sub: st.label, end: '', tone: st.needsTap ? 'attn' : 'unknown', stale: false,
+      action: st.needsTap ? accountAction(r, ep, machine) : null,
     };
     (st.needsTap ? tap : expired).push(item);
   }
@@ -355,16 +405,28 @@ export function prsNeedingYou(w, now = Date.now()) {
   if (!w || typeof w !== 'object') return [];
   const out = [];
   const seen = new Set();
+  const repo = typeof w.repo === 'string' ? w.repo : (w.configuration && typeof w.configuration.repo === 'string' ? w.configuration.repo : null);
+  const act = (pr) => prAction(repo, pr);
   const entries = Array.isArray(w.snapshot && w.snapshot.entries) ? w.snapshot.entries : [];
   for (const e of entries) if (e && e.kind === 'code-owner-review' && !seen.has(e.pr)) {
     seen.add(e.pr);
-    out.push({ kind: 'pr', key: `pr:${e.pr}`, pr: e.pr, why: 'waiting for your code-owner review on GitHub', at: w.snapshot.at || null, record: e, last: Date.parse(w.snapshot.at) || 0, prio: 3, main: `Pull request #${e.pr}`, sub: 'Waiting for your code-owner review on GitHub', end: w.snapshot.at ? ago(w.snapshot.at, now) : '', tone: 'attn', stale: false });
+    out.push({ kind: 'pr', key: `pr:${e.pr}`, pr: e.pr, why: 'waiting for your code-owner review on GitHub', at: w.snapshot.at || null, record: e, last: Date.parse(w.snapshot.at) || 0, prio: 3, main: `Pull request #${e.pr}`, sub: 'Waiting for your code-owner review on GitHub', end: w.snapshot.at ? ago(w.snapshot.at, now) : '', tone: 'attn', stale: false, action: act(e.pr) });
   }
   for (const ep of Array.isArray(w.episodes) ? w.episodes : []) if (ep && ep.lastOutcome === 'refused:approval-required' && !seen.has(ep.pr)) {
     seen.add(ep.pr);
-    out.push({ kind: 'pr', key: `pr:${ep.pr}`, pr: ep.pr, why: 'waiting for your approval on GitHub', at: ep.lastAttemptAt || null, record: ep, last: Date.parse(ep.lastAttemptAt) || 0, prio: 3, main: `Pull request #${ep.pr}`, sub: 'Waiting for your approval on GitHub', end: ep.lastAttemptAt ? ago(ep.lastAttemptAt, now) : '', tone: 'attn', stale: false });
+    out.push({ kind: 'pr', key: `pr:${ep.pr}`, pr: ep.pr, why: 'waiting for your approval on GitHub', at: ep.lastAttemptAt || null, record: ep, last: Date.parse(ep.lastAttemptAt) || 0, prio: 3, main: `Pull request #${ep.pr}`, sub: 'Waiting for your approval on GitHub', end: ep.lastAttemptAt ? ago(ep.lastAttemptAt, now) : '', tone: 'attn', stale: false, action: act(ep.pr) });
   }
   return out;
+}
+
+/**
+ * A PR waiting on the operator: GitHub's "Files changed" page (Review changes → Approve),
+ * in a new tab. Without the repository name, the PR's row on Development instead.
+ */
+export function prAction(repo, pr) {
+  if (!Number.isInteger(Number(pr)) || Number(pr) <= 0) return null;
+  if (typeof repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(repo)) return { kind: 'open', external: true, label: 'Review on GitHub', href: `https://github.com/${repo}/pull/${Number(pr)}/files` };
+  return { kind: 'open', label: 'Open', href: deepLink('work/development', { s: 'shipping', item: Number(pr) }) };
 }
 
 // ═══ Safety checks (guards) ════════════════════════════════════════════════
@@ -645,7 +707,9 @@ function kindLabel(item) {
  * Each source is { state: 'ok'|'loading'|'failed'|'off', items, reason? }. A promise
  * that names the PR, attention item or account another item already covers is
  * folded into that item (its `also` list), so the same thing is never counted twice.
- * Returns { count, items, stale, byKind, label, pending, failed, off, complete }.
+ * Every counted item carries an actionable `action`; one without lands in `agentOwned`
+ * (the agent's work, shown there) and is never counted.
+ * Returns { count, items, stale, agentOwned, byKind, label, pending, failed, off, complete }.
  */
 export function needsYou(sources = {}, now = Date.now()) {
   const src = (k) => sources[k] || { state: 'loading', items: [] };
@@ -653,18 +717,21 @@ export function needsYou(sources = {}, now = Date.now()) {
   const items = (k) => (state(k) === 'ok' && Array.isArray(src(k).items) ? src(k).items : []);
   const current = [];
   const stale = [];
+  const agentOwned = [];
   const byKey = new Map();
   const add = (it) => { const slot = it.stale ? stale : current; slot.push(it); byKey.set(it.key, it); for (const id of it.ids || []) byKey.set(`attention:${id}`, it); if (it.kind === 'account' && it.email) byKey.set(`email:${it.email}:${String(it.machine || '').toLowerCase()}`, it); };
-  for (const it of items('attention')) add(it);
-  for (const it of items('prs')) add({ ...it, stale: false });
-  for (const it of items('accounts')) add({ ...it, stale: false });
+  // Every Ask Is Actionable: an item with nothing for the operator to tap is the agent's, not an ask.
+  const take = (it) => { if (isActionable(it.action)) return true; agentOwned.push({ ...it, action: null }); return false; };
+  for (const it of items('attention')) if (take(it)) add(it);
+  for (const it of items('prs')) if (take(it)) add({ ...it, stale: false });
+  for (const it of items('accounts')) if (take(it)) add({ ...it, stale: false });
   for (const p of items('promises')) {
     const refs = p.refs || { prs: [], attentionIds: [], emails: [] };
     const keys = [...refs.prs.map((n) => `pr:${n}`), ...refs.attentionIds.map((id) => `attention:${id}`)];
     for (const e of refs.emails) for (const it of [...current, ...stale]) if (it.kind === 'account' && it.email === e && new RegExp(String(it.machine).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(p.main || '')) keys.push(it.key);
     const host = keys.map((k) => byKey.get(k)).find((it) => it && it.kind !== 'promise');
     if (host) { host.also = [...(host.also || []), p]; host.sub = [host.sub, 'also a promise of mine'].filter(Boolean).join(' · '); continue; }
-    add(p);
+    if (take(p)) add(p);
   }
   const order = (a, b) => (a.kind === 'attention' && a.prio === 0 ? -1 : 0) - (b.kind === 'attention' && b.prio === 0 ? -1 : 0) || (b.last || 0) - (a.last || 0);
   current.sort(order); stale.sort(order);
@@ -677,7 +744,7 @@ export function needsYou(sources = {}, now = Date.now()) {
   const pending = ['attention', 'promises', 'accounts', 'prs'].filter((k) => state(k) === 'loading');
   const failed = ['attention', 'promises', 'accounts', 'prs'].filter((k) => state(k) === 'failed').map((k) => ({ source: k, what: SOURCE_WORDS[k], why: src(k).reason || 'no answer' }));
   const off = ['attention', 'promises', 'accounts', 'prs'].filter((k) => state(k) === 'off');
-  return { count: current.length, items: current, stale, byKind, label, pending, failed, off, complete: pending.length === 0 && failed.length === 0 };
+  return { count: current.length, items: current, stale, agentOwned, byKind, label, pending, failed, off, complete: pending.length === 0 && failed.length === 0 };
 }
 
 /** The items of one page's kind from the one list (its tile says 0 only when this is empty). */

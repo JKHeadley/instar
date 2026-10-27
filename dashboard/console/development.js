@@ -13,7 +13,8 @@ import {
   buildShipping, buildPace, buildFeedback, developmentHeadline, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
 } from './development-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, askPin } from './ui.js';
+import { consumeItem } from './actions.js';
 import { legacyHref } from './nav-model.js';
 
 const EYEBROW = 'Work · Development';
@@ -105,12 +106,18 @@ export async function renderDevelopment(main, ctx) {
   paint();
 }
 
+/** The repository the merge watcher reports (GET /green-pr-automerge → configuration.repo), when Pace did not answer. */
+function watcherRepo(w) {
+  const r = w && w.ok && w.data && w.data.configuration && w.data.configuration.repo;
+  return typeof r === 'string' && /^[\w.-]+\/[\w.-]+$/.test(r) ? r : null;
+}
+
 function paint() {
   const { res, main, ctx } = last;
   const now = Date.now();
   const pace = buildPace(res.pace, { days: view.days, person: view.person }, now);
   const promised = res.promises && res.promises.ok && Array.isArray(res.promises.data && res.promises.data.commitments) ? res.promises.data.commitments : null;
-  const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || null, promises: promised });
+  const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || watcherRepo(res.watcher), promises: promised });
   const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain }, now);
   const h = developmentHeadline({ shipping, feedback, pace });
   const refresh = () => renderDevelopment(main, ctx);
@@ -136,6 +143,10 @@ function paint() {
   ));
   const sec = main.querySelector(`#sec-${view.open}`);
   if (sec && new URLSearchParams((location.hash.split('?')[1] || '')).get('s') === view.open) sec.scrollIntoView({ block: 'start' });
+  // A needs-you tap lands on the exact pull request: its sheet opens.
+  const item = sheetIsOpen() ? null : consumeItem();
+  const hit = item && shipping.rows ? shipping.rows.find((r) => String(r.pr) === String(item)) : null;
+  if (hit) openPr(hit, shipping, deps);
 }
 
 /** One of the three sections: a one-line summary that opens in place; one open at a time. */

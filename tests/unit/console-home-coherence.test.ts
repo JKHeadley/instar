@@ -37,8 +37,8 @@ const LOADING = { state: 'loading' };
 const routine = Array.from({ length: 357 }, (_, n) => ({ id: `r${n}`, title: `Worktree scan ${n}`, status: 'OPEN', priority: 'LOW', category: 'worktree', createdAt: minsAgo(n) }));
 const attentionEmpty = ok({ items: routine, pool: { failed: [] } });
 const attentionTwo = ok({ items: [...routine,
-  { id: 'a1', title: 'Approve the deploy', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: minsAgo(4) },
-  { id: 'a2', title: 'Rotate the leaked token', status: 'OPEN', priority: 'URGENT', category: 'security', createdAt: minsAgo(40) },
+  { id: 'a1', title: 'Approve the deploy', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: minsAgo(4), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } },
+  { id: 'a2', title: 'Rotate the leaked token', status: 'OPEN', priority: 'URGENT', category: 'security', createdAt: minsAgo(40), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } },
 ], pool: { failed: [] } });
 const attentionPartial = ok({ items: routine, pool: { failed: [{ nickname: 'Laptop' }] } });
 
@@ -223,7 +223,7 @@ describe('Cross-page coherence: one shared source for every count', () => {
   // ── attention: 293 routine HIGH notices + one agent-raised approval (the one a promise names) ──
   const attentionRes = ok({ items: [
     ...Array.from({ length: 293 }, (_, n) => ({ id: `n${n}`, title: `Worktree scan ${n}`, status: 'OPEN', priority: 'HIGH', createdAt: minsAgo(n) })),
-    { id: 'agent:echo-disk-cleanup-2026-10-23', title: 'Approve clearing 51 reap-eligible worktrees (~27 GB)', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: daysAgo(3) },
+    { id: 'agent:echo-disk-cleanup-2026-10-23', title: 'Approve clearing 51 reap-eligible worktrees (~27 GB)', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: daysAgo(3), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } },
   ], pool: { failed: [] } });
   // ── accounts: 13 accounts × 4 machines; 11 expired cells (Mac Mini 5, Mama PC 6); ONE repair offered for a tap ──
   const machinesList = [['m1', 'Mac Studio'], ['m2', 'Mac Mini'], ['m3', 'Laptop'], ['m4', 'Mama PC']];

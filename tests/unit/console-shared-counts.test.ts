@@ -63,10 +63,10 @@ describe('attention: who needs the operator, repeats folded', () => {
   it('routine notices never count; URGENT, agent-raised and decision categories do; 14+ untouched days is stale (security never)', () => {
     const items = [
       ...Array.from({ length: 5 }, (_, i) => ({ id: `r${i}`, title: 'Worktree scan', status: 'OPEN', priority: 'HIGH', createdAt: iso(i) })),
-      { id: 'a', title: 'Approve the cleanup', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: iso(10) },
-      { id: 'a2', title: 'Approve the cleanup', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: iso(12), machineNickname: 'Mac Mini' },
-      { id: 'u', title: 'Disk full', status: 'OPEN', priority: 'URGENT', createdAt: iso(20 * DAY) },
-      { id: 's', title: 'Token leaked', status: 'OPEN', priority: 'HIGH', category: 'security', createdAt: iso(30 * DAY) },
+      { id: 'a', title: 'Approve the cleanup', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: iso(10), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } },
+      { id: 'a2', title: 'Approve the cleanup', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: iso(12), machineNickname: 'Mac Mini', action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } },
+      { id: 'u', title: 'Disk full', status: 'OPEN', priority: 'URGENT', createdAt: iso(20 * DAY), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } },
+      { id: 's', title: 'Token leaked', status: 'OPEN', priority: 'HIGH', category: 'security', createdAt: iso(30 * DAY), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } },
       { id: 'd', title: 'Done thing', status: 'DONE', priority: 'URGENT', createdAt: iso(1) },
     ];
     const a = attentionNeeds(items, NOW);
@@ -186,7 +186,7 @@ describe('problems: identical ones fold, repeating means seen more than once', (
 describe('needsYou: one deduplicated list across sources', () => {
   const promise = (over: Record<string, unknown>) => promiseNeed(c({ owner: 'user', blockedOn: 'user-authorization', ...over }), NOW);
   it('folds a promise into the PR, attention item or account cell it is about; labels a mixed list by kind', () => {
-    const attention = attentionNeeds([{ id: 'agent:echo-disk-cleanup-2026-10-23', title: 'Approve clearing 51 worktrees', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: iso(30) }], NOW).all;
+    const attention = attentionNeeds([{ id: 'agent:echo-disk-cleanup-2026-10-23', title: 'Approve clearing 51 worktrees', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: iso(30), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }], NOW).all;
     const prs = prsNeedingYou({ snapshot: { at: NOW, entries: [{ pr: 2350, kind: 'code-owner-review' }] } }, NOW);
     const accounts = accountNeeds([{ id: 'luna', email: 'luna@x.io', nickname: 'Luna', status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Mini' }], [{ accountId: 'luna', machineId: 'm2', state: 'suggested', mode: 'approval', updatedAt: iso(1) }], { now: NOW }).tap;
     const promises = [

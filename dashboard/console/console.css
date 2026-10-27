@@ -1074,3 +1074,13 @@ a.moved-row { color: inherit; }
 .profile-now .row-sub { grid-column: 1; grid-row: 2; white-space: normal; }
 .profile-now .btn-quiet { grid-column: 2; grid-row: 1 / span 2; }
 .sheet .seg { grid-template-columns: 1fr; }
+
+/* Every Ask Is Actionable: the one tap under a needs-you row, and a deep-link landing. */
+.row-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 var(--s-2) var(--s-2) 30px; }
+.row-action .need-action { height: 40px; padding: 0 16px; font-size: 14px; }
+.need-action-box { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.need-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.need-confirm .confirm-text { flex-basis: 100%; }
+.card-details .card-note { white-space: pre-line; }
+.landed { outline: 2px solid var(--attn, currentColor); outline-offset: 2px; border-radius: var(--r-sm); }
+.list-row-action { display: flex; justify-content: flex-end; padding: 0 var(--s-2) var(--s-2); }

@@ -21,6 +21,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   buildReach, buildNeeds, combineNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
 } from '../../dashboard/console/home-model.js';
+import { isActionable } from '../../dashboard/console/shared-counts.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
 import { buildAccountsPage } from '../../dashboard/console/accounts-model.js';
@@ -148,6 +149,11 @@ describe('Console Home E2E (feature is alive)', () => {
     expect(cards.promised.waitingCount).toBe(1);
     expect(cards.needs.all.some((r: { main: string }) => r.main === 'waiting for your yes')).toBe(true);
     expect(cards.needs.count).toBeGreaterThanOrEqual(1);
+    // Every Ask Is Actionable: each counted item carries its one tap through the real stack;
+    // the waiting promise's tap opens that exact promise.
+    for (const r of cards.needs.all as Array<{ action: unknown }>) expect(isActionable(r.action)).toBe(true);
+    const waitingRow = cards.needs.all.find((r: { main: string }) => r.main === 'waiting for your yes') as { action: { href: string }; id: string };
+    expect(waitingRow.action.href).toBe(`#/work/promises?s=waiting&item=${encodeURIComponent(waitingRow.id)}`);
     const h = headline(cards);
     expect(h.text).toBe(cards.needs.count === 1 ? 'One thing needs you.' : `${cards.needs.count} things need you.`);
   });

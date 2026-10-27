@@ -191,7 +191,10 @@ export function combineNeeds(attn, prom, extra = {}) {
   ].filter(Boolean);
   const all = [...list.items, ...list.stale];
   const byKind = list.byKind;
-  const base = { count, pending, rows: list.items.slice(0, MAX_ROWS), all, details, byKind, label: list.label,
+  // Items with nothing for the operator to tap are the agent's (Every Ask Is Actionable):
+  // listed with "What I'm doing", never counted here and never dropped.
+  const agentOwned = list.agentOwned || [];
+  const base = { count, pending, rows: list.items.slice(0, MAX_ROWS), all, details, byKind, label: list.label, agentOwned,
     fromQueue: list.items.filter((r) => r.kind === 'attention').length, fromPromises: list.items.filter((r) => r.kind === 'promise').length,
     fromAccounts: list.items.filter((r) => r.kind === 'account').length, fromPrs: list.items.filter((r) => r.kind === 'pr').length };
   // Face line: only what changes what the operator should conclude. A mixed list says what
@@ -263,6 +266,19 @@ export function buildDoing(res, now = Date.now(), names = null) {
     rows,
     more: live.length > MAX_ROWS ? live.length - MAX_ROWS : 0,
   };
+}
+
+/**
+ * "What I'm doing" also carries the items with nothing for the operator to tap
+ * (needs model's agentOwned): they are the agent's to handle, so they are listed
+ * with the agent's work, one tap deeper, never counted as needing the operator.
+ */
+export function withAgentOwned(doing, agentOwned) {
+  if (!doing || doing.state === 'loading' || !Array.isArray(agentOwned) || agentOwned.length === 0) return doing;
+  const shown = agentOwned.slice(0, 5).map((it) => `· ${it.main}`);
+  const more = agentOwned.length > 5 ? [`· and ${agentOwned.length - 5} more`] : [];
+  const line = `${plural(agentOwned.length, 'notice')} I'm handling myself (nothing for you to tap):`;
+  return { ...doing, agentOwned, details: [...(doing.details || []), [line, ...shown, ...more].join('\n')] };
 }
 
 // ── 4. What I've promised ─────────────────────────────────────────────────

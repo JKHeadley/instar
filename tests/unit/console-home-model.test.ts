@@ -58,7 +58,7 @@ describe('Can I reach you', () => {
 });
 
 describe('What needs you', () => {
-  const item = (over: Record<string, unknown>) => ({ id: Math.random().toString(36), title: 'T', status: 'OPEN', priority: 'HIGH', createdAt: minsAgo(5), ...over });
+  const item = (over: Record<string, unknown>) => ({ id: Math.random().toString(36), title: 'T', status: 'OPEN', priority: 'HIGH', createdAt: minsAgo(5), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' }, ...over });
 
   it('fails honestly', () => {
     expect(buildNeeds(failure('the server answered 500'), NOW).state).toBe('unknown');
@@ -297,12 +297,12 @@ describe('headline()', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), allowed: card('attn', '70 of 99 on') }).text).toBe('One area needs a look.');
   });
   it('a known total from an incomplete card says there may be more', () => {
-    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }, { id: 'b', title: 'U', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [] } }), NOW);
+    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }, { id: 'b', title: 'U', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }], pool: { failed: [] } }), NOW);
     const p = buildPromised(failure('x'), NOW);
     expect(headline({ needs: combineNeeds(n, p), promised: p }).sub).toBe('There may be more.');
   });
   it('a partial queue keeps its known urgency in the headline (round-4 blocker)', () => {
-    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
+    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1), action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
     expect(n.state).toBe('partial');
     const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
     expect(h.text).toBe('One thing needs you.');

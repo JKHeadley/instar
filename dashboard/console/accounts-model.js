@@ -125,13 +125,13 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
     sub: c.repair.needsTap
       ? (c.episode && c.episode.state === 'waiting-operator-only' ? `The repair on ${c.machine} is waiting for a step only you can do.` : `An automatic repair is ready to run on ${c.machine}.`)
       : c.repair.state === 'scheduled' ? `Its sign-in on ${c.machine} has expired; the repair retries on its own.` : `Its sign-in on ${c.machine} has expired; no repair is running.`,
-    action: c.action, episodeId: c.episodeId, remote: c.remote, repair: c.repair,
+    action: c.repairAction, tap: c.action || null, episodeId: c.episodeId, remote: c.remote, repair: c.repair,
   });
   const taps = sn.tap.map(cellItem);
   // A repair the agent is running right now is neither: its cell already says "signing in".
   const expired = sn.expired.filter((c) => c.repair.state !== 'working').map(cellItem);
   const promised = Array.isArray(promises) ? promisesAbout(promises, 'sign-in', now).filter((p) => !taps.some((t) => p.refs.emails.includes(String(t.label.split(' · ')[1] || '').toLowerCase()) && new RegExp(String(t.machine).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(p.main))) : [];
-  const needs = [...taps, ...promised.map((p) => ({ kind: 'promise', key: p.key, label: p.main, sub: p.subKind === 'approval' ? 'A promise of mine, waiting on your approval.' : 'A promise of mine, waiting on your answer.', action: 'promise', promise: p }))];
+  const needs = [...taps, ...promised.map((p) => ({ kind: 'promise', key: p.key, label: p.main, sub: p.subKind === 'approval' ? 'A promise of mine, waiting on your approval.' : 'A promise of mine, waiting on your answer.', action: 'promise', tap: p.action || null, promise: p }))];
   // Scope words: "usable on <this machine>" when we know which machine this is, else "usable somewhere".
   const selfId = self && self.machineId ? self.machineId : null;
   const selfName = (self && self.nickname) || (selfId && (extraNames[selfId])) || null;

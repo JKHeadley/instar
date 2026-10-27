@@ -33,7 +33,7 @@ const ROUTES: Record<string, { status?: number; body: unknown }> = {
   '/sessions': { body: { sessions: [] } },
   '/health': { body: { project: { name: 'echo' }, telegramOrigin: { heldForward: { count: 0, observedAt: NOW, expiredUnreported: 0 } }, multiMachine: { syncStatus: { ropeHealth: [] } } } },
   '/pool': { body: { enabled: true, selfMachineId: 'm1', router: { holder: 'm1' }, machines } },
-  '/attention?scope=pool': { body: { items: [{ id: 'agent:echo-disk-cleanup-2026-10-23', title: 'Clean up 51 reap-eligible worktrees (~27 GB) on thread 5b0959f4 after Justin approves attention item agent:echo-disk-cleanup-2026-10-23', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: ago(30), description: 'the long story' }], pool: { failed: [{ machineId: 'm2', nickname: 'Mama PC' }] } } },
+  '/attention?scope=pool': { body: { items: [{ id: 'agent:echo-disk-cleanup-2026-10-23', title: 'Clean up 51 reap-eligible worktrees (~27 GB) on thread 5b0959f4 after Justin approves attention item agent:echo-disk-cleanup-2026-10-23', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: ago(30), description: 'the long story', action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } }], pool: { failed: [{ machineId: 'm2', nickname: 'Mama PC' }] } } },
   '/commitments?scope=mesh': { body: { enabled: true, scope: 'mesh', commitments: [
     promise({ id: 'CMT-2', owner: 'user', blockedOn: 'user-authorization', agentResponse: 'Told Dawn (thread-3e84d9ed) I will report when the pairing reads mutual-verified (21:03Z 2026-10-25); merge PR 2350 only after Justin confirms in topic 9210.' }),
     promise({ id: 'CMT-3', status: 'violated', agentResponse: 'Changing the schedule now' }),

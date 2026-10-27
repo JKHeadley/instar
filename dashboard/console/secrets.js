@@ -12,6 +12,7 @@ import {
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { promisesAbout } from './shared-counts.js';
+import './actions.js'; // registers the needs-you row control used by section()
 
 const RECORD_KEYS = ['token', 'topicId', 'createdAt', 'expiresAt'];
 
@@ -78,7 +79,7 @@ export async function renderSecrets(main, ctx) {
   if (vaultBroken(keys, sync)) parts.push(el('section', { class: 'incident', role: 'alert' }, el('span', { class: 'incident-title', text: 'Saved keys can’t be opened' }), el('p', { class: 'incident-text', text: VAULT_BROKEN_WORDS })));
   const sections = [];
   sections.push(waitingBlock(requests, deps, multi));
-  if (promised.length) sections.push(section({ id: 'promised', title: 'Promised, waiting on you', tone: 'attn', rows: promised.map((p) => ({ key: p.key, main: p.main, sub: p.sub, end: p.end, tone: 'attn' })), onRow: () => { location.hash = '#/work/promises?s=waiting'; } }));
+  if (promised.length) sections.push(section({ id: 'promised', title: 'Promised, waiting on you', tone: 'attn', rows: promised.map((p) => ({ key: p.key, main: p.main, sub: p.sub, end: p.end, tone: 'attn', action: p.action, item: p.id })), onRow: (r) => { location.hash = r.action ? r.action.href : '#/work/promises?s=waiting'; } }));
   sections.push(el('div', { class: 'page-primary' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: '+ Ask someone for one', 'data-ask': '1', onclick: () => askSheet(deps) })));
   sections.push(keysBlock(keys));
   if (requests.ok) sections.push(section({ id: 'expired', title: 'Expired', rows: requests.expired.map((c) => ({ key: c.key, main: c.label, sub: c.sub, tone: 'unknown', card: c })), collapsed: true, empty: 'No request has expired.', onRow: (r) => openRequest(r.card, deps) }));

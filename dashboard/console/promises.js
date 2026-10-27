@@ -4,6 +4,7 @@
 import { buildPromisesPage, storyOf, actionsFor } from './promises-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { consumeItem } from './actions.js';
 
 const MISSED_SHOWN = 5; // the most recent missed promises on the first screen; "Show all N" for the rest
 const RAW_KEYS = ['id', 'status', 'owner', 'blockedOn', 'actionClass', 'topicId', 'createdAt', 'nextUpdateDueAt', 'hardDeadlineAt', 'checkInAt', 'lastHeartbeatAt', 'heartbeatCount', 'cadenceMs', 'beaconEnabled', 'beaconPaused', 'beaconPausedReason', 'resolvedAt', 'resolution', 'originMachineId', 'viewSource', 'stalenessMs'];
@@ -61,6 +62,12 @@ export async function renderPromises(main, ctx) {
     const head = sec && sec.querySelector('button.list-head[aria-expanded="false"]');
     if (head) head.click();
     if (sec) sec.scrollIntoView({ block: 'start' });
+  }
+  // A needs-you tap (Home, Telegram) lands on the exact promise: its sheet opens.
+  const item = sheetIsOpen() ? null : consumeItem();
+  if (item) {
+    const hit = Object.values(s).flat().find((r) => r && r.id === item);
+    if (hit) open(hit);
   }
 }
 

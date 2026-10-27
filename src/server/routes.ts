@@ -418,6 +418,7 @@ import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { attentionActionFor, validAction as validAttentionAction } from '../messaging/attentionAction.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -20289,9 +20290,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const sticky = req.body.sticky === true ? true : undefined;
+    // Every Ask Is Actionable: a producer may name the one tap for its item (a console
+    // hash path + button words). Anything else is refused rather than stored.
+    if (req.body.action !== undefined && req.body.action !== null && !validAttentionAction(req.body.action)) {
+      res.status(400).json({ error: '"action" must be { kind: "open", href: "#/<console page>?…", label: "<button words, ≤40 chars>" }' });
+      return;
+    }
+    const action = req.body.action ? { kind: 'open' as const, href: String(req.body.action.href), label: String(req.body.action.label) } : undefined;
 
     try {
       const create = ctx.telegram.createAttentionItem({
+        action,
         id,
         title,
         summary,
@@ -20515,10 +20524,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const selfNickname = selfMachineId
       ? ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? undefined
       : undefined;
+    // Every Ask Is Actionable: each item carries the one tap the operator has for
+    // it (or null — then it is the agent's, not an ask). Peer items from an older
+    // version are stamped below after the merge, from the same rule.
     const localItems = ctx.telegram.getAttentionItems(status).map((it) => ({
       ...it,
       machineId: it.machineId ?? selfMachineId ?? undefined,
       machineNickname: selfNickname,
+      action: attentionActionFor(it),
     }));
 
     // scope=pool (WS4.1, MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.1): merge every
@@ -20539,6 +20552,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       }
       const merged = await attentionPoolMerge(localItems, status);
+      if (Array.isArray(merged.items)) {
+        merged.items = (merged.items as Array<Record<string, unknown>>).map((it) => ('action' in it ? it : { ...it, action: attentionActionFor(it as { id?: string }) }));
+      }
       if (limit === undefined) {
         res.json(merged);
       } else {

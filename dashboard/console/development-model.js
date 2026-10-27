@@ -18,7 +18,7 @@
 //     it is never a release inventory.
 
 import { ago } from './home-model.js';
-import { prsNeedingYou, promisesAbout } from './shared-counts.js';
+import { prsNeedingYou, promisesAbout, prAction } from './shared-counts.js';
 
 export const DEV_TOOLS_KEY = 'instar_console_dev_tools';   // per-browser "show developer tools" switch
 export const WATCHER_CADENCE_MS = 600000;                  // GreenPrAutoMerger tickIntervalMs default (10 min)
@@ -125,12 +125,13 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   if (w) {
     const episodes = Array.isArray(w.episodes) ? w.episodes : [];
     const seen = new Set();
-    for (const p of prsNeedingYou(w, now)) { seen.add(p.pr); rows.push(shippingRow('needs', p.pr, p.why, p.at ? ago(p.at, now) : '', 'attn', p.record, repo, 'passed')); }
+    // Every Ask Is Actionable: each needs-you row carries its one tap (GitHub's review page).
+    for (const p of prsNeedingYou(w, now)) { seen.add(p.pr); rows.push({ ...shippingRow('needs', p.pr, p.why, p.at ? ago(p.at, now) : '', 'attn', p.record, repo, 'passed'), item: p.pr, action: repo ? prAction(repo, p.pr) : p.action }); }
     for (const p of promised) {
       const pr = p.refs.prs.find((n) => seen.has(n));
       if (pr) { const r = rows.find((x) => x.group === 'needs' && x.pr === pr); r.sub = `${r.sub} · also a promise of mine: ${p.main.slice(0, 80)}`; continue; }
       const n = p.refs.prs[0] || null;
-      rows.push({ key: `needs:${p.key}`, pr: n, group: 'needs', main: n ? `#${n}` : 'A pull request', sub: `${p.main} · ${p.subKind === 'approval' ? 'waiting on your approval' : 'waiting on your answer'}`, end: p.end, tone: 'attn', record: p.record, href: n ? prHref(repo, n) : null, stage: 'passed', stages: STAGES, promise: true });
+      rows.push({ key: `needs:${p.key}`, pr: n, group: 'needs', main: n ? `#${n}` : 'A pull request', sub: `${p.main} · ${p.subKind === 'approval' ? 'waiting on your approval' : 'waiting on your answer'}`, end: p.end, tone: 'attn', record: p.record, href: n ? prHref(repo, n) : null, stage: 'passed', stages: STAGES, promise: true, item: n, action: p.action });
     }
     const needsN = rows.filter((r) => r.group === 'needs').length;
     tiles.push(tile('needs', 'Needs you', needsN, needsN ? 'attn' : null));

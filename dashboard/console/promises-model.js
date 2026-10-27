@@ -5,7 +5,7 @@
 // and this page can never disagree on what is open.
 
 import { waitsOnOperator, isMissed, lastTouched, REPLICA_FRESH_MS, ago, failure, briefOf } from './home-model.js';
-import { sortPromises, looksLikePromise, normText, nextDue, DUE_SOON_MS, CLOSED_WINDOW_MS } from './shared-counts.js';
+import { sortPromises, looksLikePromise, normText, nextDue, DUE_SOON_MS, CLOSED_WINDOW_MS, promiseNeed } from './shared-counts.js';
 
 export { failure };
 
@@ -113,6 +113,8 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
     return dupes.length ? { ...r, dupes, sub: `${r.sub} · said ${dupes.length + 1} times` } : { ...r, dupes };
   };
   const sections = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map((c) => said(c, toRow(c, now, names)))]));
+  // Waiting on you: each row carries the same one tap Home shows (shared-counts.promiseNeed).
+  sections.waiting = sections.waiting.map((r) => ({ ...r, action: promiseNeed(r.record, now).action }));
   const counts = { ...Object.fromEntries(Object.entries(sections).map(([k, v]) => [k, v.length])), open: p.counts.open, older: p.counts.older, olderWaiting: p.counts.olderWaiting };
 
   const replicas = list.filter((c) => c && c.viewSource === 'replica');

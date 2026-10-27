@@ -5,6 +5,7 @@
 import { buildMessagesPage, displayModel } from './messages-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, operatorSession, forgetOperatorSession, fold } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { consumeItem, landOn } from './actions.js';
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -61,6 +62,10 @@ export async function renderMessages(main, ctx) {
       page.notReady.length ? section({ id: 'recording', title: 'Recording details', rows: page.notReady, collapsed: true, empty: 'Every part of message recording is ready.' }) : null,
     ),
     el('p', { class: 'foot-note' }, el('a', { href: legacyHref('origins'), text: 'The full message log (who wrote each message) is in the legacy Message origins tab' }))));
+  // An Attention tap lands on the held reply it is about (or on the held list).
+  const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
+  const item = consumeItem();
+  if (!landOn(main, item) && want === 'held') { const sec = main.querySelector('#sec-held'); if (sec) sec.scrollIntoView({ block: 'start' }); }
 }
 
 function legacyLink() {

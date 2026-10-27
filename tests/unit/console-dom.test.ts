@@ -13,7 +13,7 @@ const NOW = new Date().toISOString();
 const ROUTES: Record<string, unknown> = {
   '/sessions': { sessions: [] },
   '/health': { project: { name: 'echo' }, telegramOrigin: { heldForward: { count: 0, observedAt: Date.now(), expiredUnreported: 0 } } },
-  '/attention?scope=pool': { items: [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, title: `Item ${n}`, status: 'OPEN', priority: 'URGENT', createdAt: NOW, description: `Detail ${n}` })), pool: { failed: [] } },
+  '/attention?scope=pool': { items: [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, title: `Item ${n}`, status: 'OPEN', priority: 'URGENT', createdAt: NOW, description: `Detail ${n}`, action: { kind: 'open', href: '#/settings/allowed?s=guards', label: 'Open' } })), pool: { failed: [] } },
   '/commitments?scope=mesh': { enabled: true, scope: 'mesh', commitments: [] },
   '/sessions?scope=pool': { sessions: [{ name: 'Fix it', status: 'running', startedAt: NOW, machineNickname: 'Mac Studio' }], pool: { failed: [] } },
   '/pool': { machines: [{ machineId: 'm1', nickname: 'Mac Studio', isSelf: true, online: true, routerReceivedAt: NOW, loadAvg: 1, hardware: { cpuCores: 16 } }] },

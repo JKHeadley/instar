@@ -9,6 +9,7 @@
 import { buildAccountsPage, frameworkName } from './accounts-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { actionControl, consumeItem, landOn } from './actions.js';
 
 async function postJson(path, body, headers = {}) {
   const token = (() => { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } })();
@@ -39,14 +40,17 @@ export async function renderAccounts(main, ctx) {
 
   // One row per account, naming the machines it waits on. One machine → its button; several → the account sheet lists them.
   const byId = new Map(page.accounts.map((a) => [a.id, a]));
-  const accountRows = (rows, dot) => el('div', { class: 'rows' }, rows.map((g) => el('div', { class: 'row' },
+  // A needs-you row's button is the same one tap Home shows (shared-counts action); an expired
+  // row (the agent's chore) keeps its own Sign in / Try again.
+  const tapOf = (g) => (g.single && g.single.tap ? actionControl(g.single.tap, { onDone: () => setTimeout(refresh, 2000) }) : null);
+  const accountRows = (rows, dot) => el('div', { class: 'rows' }, rows.map((g) => el('div', { class: 'row', 'data-item': g.single && g.single.accountId ? `${g.single.accountId}:${g.single.machineId}` : null, 'data-account': g.accountId || null },
     el('span', { class: `dot ${dot}` }),
     el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: g.label }), el('span', { class: 'row-sub', text: g.sub })),
-    el('span', { class: 'row-end' }, g.single && g.single.action === 'promise'
+    el('span', { class: 'row-end' }, tapOf(g) || (g.single && g.single.action === 'promise'
       ? el('a', { class: 'btn-quiet btn-small', href: '#/work/promises?s=waiting', text: 'Open' })
       : g.single
       ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: g.single.action === 'start' ? 'Sign in' : g.single.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(g.single, refresh) })
-      : el('button', { class: 'btn-quiet btn-small', type: 'button', text: `${g.machines.length} machines ›`, onclick: () => { const a = byId.get(g.accountId); if (a) openAccount(a, refresh); } })))));
+      : el('button', { class: 'btn-quiet btn-small', type: 'button', text: `${g.machines.length} machines ›`, onclick: () => { const a = byId.get(g.accountId); if (a) openAccount(a, refresh); } }))))));
   const needs = page.needsRows.length ? el('section', { class: 'page-sections', id: 'sec-needs' },
     el('h2', { class: 'eyebrow', text: 'Needs you' }),
     el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: page.needsRows.length === 1 ? 'One sign-in is waiting for you' : `${page.needsRows.length} sign-ins are waiting for you` }), accountRows(page.needsRows, 'attn'))) : null;
@@ -87,6 +91,13 @@ export async function renderAccounts(main, ctx) {
     needs, expired, list, legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs' && needs) needs.scrollIntoView({ block: 'start' });
+  // A needs-you tap lands on the exact sign-in: its row (one machine) or its account sheet (several).
+  const item = consumeItem();
+  if (item && !landOn(main, item)) {
+    const acct = String(item).split(':')[0];
+    const a = byId.get(acct);
+    if (a) openAccount(a, refresh);
+  }
   if (want === 'expired' && expired) { expired.querySelector('.list-head').click(); expired.scrollIntoView({ block: 'start' }); }
 }
 
