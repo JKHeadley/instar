@@ -636,6 +636,11 @@ So v1 has four layers. Each script job is classed for the layers it needs.
 | `triage` | its non-trivial results go to Jev (§5.6.2); only during a Jev outage does the slower replacement (§5.6.3) sample routine results | health-check, commitment-checkin-reminder, feedback-factory-triage, feedback-factory-process, feedback-factory-execute |
 | `deterministic` | the script's verdict is the whole answer: the endpoint it triggers owns every decision and raises its own attention items, the job is itself an instrument, or (mentor-onboarding) its spec forbids anything outside the server reading its subject | mentor-onboarding, llm-decision-grading, correction-class-review-backstop, feedback-factory-action-list, release-readiness-check, jev-completion-audit, review-canary-battery, benchmark-divergence-analysis, doorway-scan, stall-matrix-live-check, routing-price-refresh, routing-price-web-verify, script-job-supervisor |
 
+This class describes whether the script result needs a separate triage model. It
+does not certify that the server endpoint itself is model-free: correction-class
+backfill can invoke an LLM and remains on its session runner until benchmark
+coverage is certified.
+
 The class is a new template key, `scriptSupervision: triage | deterministic`,
 emitted by `frontmatterFor()` and added to `ALLOWED_FRONTMATTER_KEYS`. A script
 job without it is `deterministic`. The existing `supervision` field keeps its
@@ -1076,8 +1081,7 @@ Its implementation must settle these constraints, carried forward from here:
    never a whole-block write), so a later default change reaches agents that
    never set the key:
    - `jobs.scriptRunners.disabledSlugs` initially contains every converted
-     slug except `llm-decision-grading` and
-     `correction-class-review-backstop`; `script-job-supervisor` is installed but
+     slug except `llm-decision-grading`; `script-job-supervisor` is installed but
      stays inactive until its LLM call has benchmark and decision-quality audit
      coverage. A later wave removes entries through
      an idempotent migration after its 48-hour review. `jobs.scriptRunners.enabled` is
@@ -1227,8 +1231,10 @@ from §9.
 
 **Audit certification added 2026-10-27 (Justin, topic 130742).** Every new Jev
 or LLM call must join the benchmark and decision-quality audit system before
-activation. The first two deterministic script conversions may run without a
-new model call. Later conversions, Jev triage, outage replacement, anomaly
+activation. Only `llm-decision-grading` may convert in the first wave: its
+grading endpoint is deterministic. `correction-class-review-backstop` remains a
+session because its backfill endpoint can invoke `correction-class-review`,
+whose benchmark task is still pending. Later conversions, Jev triage, outage replacement, anomaly
 narration and the daily supervisor remain code-gated until each call family has
 a stable decision-point and prompt identity, actual model and cost/latency
 records, scrubbed provenance, outcome grading or an explicit unknown, and a
@@ -1241,8 +1247,9 @@ retrofit work; this rollout does not claim fleet-wide audit completeness.
 2. **Runner, no conversions yet.** Land the runner, the loader branch, the lock
    file and the claim-ordering fix. `jobs.scriptRunners.enabled` rides the
    development-agent gate.
-3. **First conversions, on development agents.** Convert llm-decision-grading and
-   correction-class-review-backstop.
+3. **First conversion, on development agents.** Convert llm-decision-grading.
+   Keep correction-class-review-backstop on its session path until the existing
+   `correction-class-review` decision point has benchmark certification.
    - **Pass bar for this step and step 4, over 48 h.** These numbers are inputs to
      a human read of the runs, not an automatic gate:
      - the same number of runs, allowing for cron skips;

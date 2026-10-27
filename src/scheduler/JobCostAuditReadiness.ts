@@ -13,8 +13,7 @@ export const JOB_COST_AUDIT_READY = Object.freeze({
   dailySupervision: false,
 });
 
-/** The two first-wave jobs only call existing deterministic server endpoints. */
+/** The grading pass is deterministic; correction-class backfill can call an LLM. */
 export const AUDIT_READY_SCRIPT_SLUGS: ReadonlySet<string> = new Set([
   'llm-decision-grading',
-  'correction-class-review-backstop',
 ]);

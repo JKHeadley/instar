@@ -98,6 +98,7 @@ describe('job-cost production lifecycle', () => {
       expect(scriptScheduler.getRunHistory().query({ slug: 'script-job-supervisor', limit: 1 }).runs).toEqual([]);
       scriptScheduler.setConfigReader(() => ({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } }));
       expect(scriptScheduler.scriptRunnersActiveFor('health-check')).toBe(false);
+      expect(scriptScheduler.scriptRunnersActiveFor('correction-class-review-backstop')).toBe(false);
       expect(scriptScheduler.scriptRunnersActiveFor('script-job-supervisor')).toBe(false);
       expect(scriptScheduler.scriptRunnersActiveFor('llm-decision-grading')).toBe(true);
       expect(await scriptScheduler.triggerJob('script-job-supervisor', 'dev-e2e')).toBe('skipped');

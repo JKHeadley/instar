@@ -19,6 +19,7 @@ import { DEFAULT_TIER_ESCALATION_CONFIG } from '../core/ModelTierEscalation.js';
 /** The first script wave is a runtime default too, including before migration writes config. */
 export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
   'benchmark-divergence-analysis', 'commitment-checkin-reminder',
+  'correction-class-review-backstop',
   'doorway-scan', 'feedback-factory-action-list', 'feedback-factory-execute',
   'feedback-factory-process', 'feedback-factory-triage', 'health-check',
   'jev-completion-audit', 'mentor-onboarding', 'release-readiness-check',
@@ -2364,8 +2365,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // overwritten and a later default change reaches agents that never set it.
   jobs: {
     scriptRunners: {
-      // §11 first wave: only llm-decision-grading and
-      // correction-class-review-backstop run as scripts initially. The
+      // §11 first wave: only deterministic llm-decision-grading runs as a
+      // script initially. Correction-class backfill can invoke an LLM. The
       // supervisor is installed but code-gated inactive until its model call
       // has benchmark and decision-quality audit coverage. Later waves
       // need an explicit idempotent migration; add-missing defaults alone

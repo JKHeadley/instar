@@ -189,7 +189,9 @@ every Jev and LLM call. The new model calls in this change have cost and local
 decision logs, but their benchmark and decision-quality enrollment is not yet
 complete. `JobCostAuditReadiness` therefore keeps them inactive in production
 code until a reviewed change certifies each call family. The only active
-first-wave script jobs invoke existing deterministic server operations.
+first-wave script invokes the deterministic decision-grading endpoint. A source
+audit found that correction-class backfill can invoke an LLM and its benchmark
+task is pending; it stays on its existing session path.
 
 **Decision points.** The scheduler's script-versus-session choice now checks
 code-owned audit readiness before config. Triage's effective config is disabled
@@ -204,9 +206,11 @@ existing jobs retain their session path and the new supervisor has no prior
 session behavior to preserve.
 
 **2. Under-block.** The gate covers these four *new* job model families. It
-does not certify all older Instar LLM callsites or prove that existing server
-endpoints invoked by the two deterministic scripts have complete audits. That
-inventory and retrofit remain necessary; this change makes no global claim.
+does not certify all older Instar LLM callsites. Correction-class review is a
+known older callsite with wired provenance and an unknown-capable grading rule,
+but its benchmark task is pending. Its existing session path is preserved;
+the wider inventory and retrofit remain necessary. This change makes no global
+claim.
 
 **3. Level of abstraction.** A code-owned readiness map is the correct layer
 for a build certification invariant. Config still controls rollout within an
@@ -227,7 +231,7 @@ dispatch is skipped by the same scheduler check. The narrator's deterministic
 fallback keeps anomaly notification available without a model call. No new
 state or retry loop is introduced.
 
-**6. External surfaces.** Development agents see only two first-wave script
+**6. External surfaces.** Development agents see only one first-wave script
 conversions. `GET /jobs` reports the other jobs on their session path and the
 supervisor inactive; manual supervisor POSTs return 503. Fleet agents retain
 their prior session behavior. There is no new operator action or URL. The
@@ -236,12 +240,12 @@ release note and installed awareness text state this posture.
 **7. Multi-machine posture.** The gate is replicated as shipped code on every
 machine. Each machine applies its own config only after the same readiness
 check, so an old saved opt-in on one peer cannot create an unaudited call.
-The two script jobs keep the existing job claim and pooled cost read path.
+The grading script keeps the existing job claim and pooled cost read path.
 No user-facing notice, new durable state, or machine-specific URL is added.
 
 **8. Rollback.** Reverting this addendum's code would reopen model calls that
 lack required audit coverage, so that is not an acceptable operational
-rollback. If the two deterministic scripts misbehave, the live
+rollback. If the grading script misbehaves, the live
 `jobs.scriptRunners.enabled: false` switch restores their session path. No
 data migration or agent-state repair is needed. Later certification opens
 each call family in a reviewed code change, with its own rollback switch.
@@ -249,11 +253,17 @@ each call family in a reviewed code change, with its own rollback switch.
 **Conclusion.** This narrows the first rollout and avoids claiming the
 projected savings have arrived. Targeted unit tests cover saved opt-in and
 effective triage disable; the production-shaped E2E verifies a first-wave
-script still runs while health-check and the supervisor stay closed. The
+script still runs while correction-class backfill, health-check and the
+supervisor stay closed. The
 Local Verify queue supplies the full merged-head check.
 
-**Second pass.** GPT-6 Astra independently reviewed the completed artifact and
-diff and concurred: the production wiring closes Jev, backup, investigator,
-narrator and supervisor model paths despite saved opt-ins; manual supervisor
-requests return 503; the two first-wave scripts remain available. It agreed
-that older endpoint audit coverage is not certified by this change.
+**Second pass (earlier gate revision).** GPT-6 Astra independently reviewed the
+previous gate and concurred that the production wiring closed Jev, backup,
+investigator, narrator and supervisor model paths despite saved opt-ins. The
+subsequent source audit found the correction-class backfill gap above, narrowing
+the first wave from two scripts to one. In a focused second pass, GPT-6 Astra
+concurred with this narrower gate: the backfill route can schedule
+`CorrectionClassReview.fill()`, whose model call has wired provenance but
+pending benchmark coverage; the grading endpoint itself uses deterministic
+rules and marks missing evidence unknown. It noted that existing session and
+manual backfill calls remain global audit debt outside this conversion.

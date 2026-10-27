@@ -339,7 +339,7 @@ describe('rollback projection (§8.4)', () => {
     expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
     expect(s.scriptRunnersActiveFor('feedback-factory-process')).toBe(false);
     expect(s.scriptRunnersActiveFor('llm-decision-grading')).toBe(true);
-    expect(s.scriptRunnersActiveFor('correction-class-review-backstop')).toBe(true);
+    expect(s.scriptRunnersActiveFor('correction-class-review-backstop')).toBe(false);
     setCfg({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } });
     expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
   });

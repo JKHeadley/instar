@@ -63,8 +63,10 @@ problem, because they all use the same built-in job templates.
   support regular bulk reviews of cost, performance and accuracy. Until the new
   job calls have benchmark cases, decision records and outcome grading, code
   keeps Jev triage, its fallback, the model-written anomaly sentence and the
-  daily model review off. Saved settings cannot override this. The first two
-  deterministic scripts still run on development agents, while the other jobs
+  daily model review off. Saved settings cannot override this. Only the
+  deterministic grading job runs as a script on development agents; the
+  correction-class backfill can make a model call and stays a session until its
+  benchmark coverage is complete. Other jobs
   keep their current session behavior. This means the large projected savings
   remain a target, not an achieved result.
 
@@ -77,7 +79,7 @@ problem, because they all use the same built-in job templates.
   backup check until a later change turns it on for them and says so.
 - Script jobs themselves also start on development agents only; everywhere else
   the jobs keep running exactly as today until a later change switches them.
-  The first development-agent wave includes two jobs; their model-backed
+  The first development-agent wave includes one job; its model-backed
   supervisor stays inactive until the audit gate opens.
   On an agent where this rollout is off, the new supervisor stays inactive; it
   does not start a new AI session just because its script is disabled.
