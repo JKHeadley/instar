@@ -22,7 +22,11 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
+import { PlacementExecutor } from '../core/PlacementExecutor.js';
+import type { MachineCapacity } from '../core/types.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
@@ -2685,6 +2689,77 @@ const overloadAdmissionSelfHelp: SelfActionController = {
 };
 
 /**
+ * overload-shed — trustworthy-machine-load Part D (D1–D4). The real
+ * OverloadShedPlanner under the pinned worst case: this machine's admission is
+ * closed and enforced on every sample, forever; a healthy peer always has room;
+ * and the peer NEVER claims a proposed topic (every move expires). Brakes, all in
+ * the planner: one live move at a time (10 min entry TTL), 2 moves per hour, a
+ * 30 min per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
+ * at most MAX_REFUNDS_PER_TOPIC (2) refunds for proposals whose transfer never
+ * started (the worst case modelled here). The episode never ends under pressure,
+ * so the total settles at 4 × the topics (5 topics → 20 proposals) and the
+ * per-topic count at 4, independent of the horizon. The reconciler (the actuator)
+ * additionally initiates at most ONE transfer per topic per episode. The episode,
+ * attempt and refund counts are durable, so a restart continues the same episode.
+ */
+function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  let statePath = f.durableState.get('overload-shed-state-path') as string | undefined;
+  if (!statePath) {
+    statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'instar-overload-shed-model-')), 'state.json');
+    f.durableState.set('overload-shed-state-path', statePath);
+  }
+  const topics = Array.from({ length: 5 }, (_, i) => ({ sessionKey: String(1001 + i), pinned: false }));
+  const nowIso = () => new Date(f.clock.nowMs()).toISOString();
+  const planner = new OverloadShedPlanner({
+    config: () => ({ ...DEFAULT_OVERLOAD_SHED, enabled: true, dryRun: false }),
+    selfMachineId: () => 'm-self',
+    admission: () => ({ acceptingWork: false, enforced: true }),
+    capacities: () => [
+      { machineId: 'm-self', online: true, maxSessions: 10, activeSessionCount: 10, loadVerdict: 'saturated' },
+      { machineId: 'm-peer', online: true, maxSessions: 100, activeSessionCount: 1, loadVerdict: 'ok',
+        liveness: { state: 'live', evidenceAgeMs: 5_000, evidenceAt: nowIso(), source: 'direct' } },
+    ] as MachineCapacity[],
+    ownedTopics: () => topics,
+    ownerOf: () => 'm-self', // the peer never claims: every proposed move expires
+    // Worst case for the refund path: the transfer is never even started, so every
+    // expiry is refundable — capped at MAX_REFUNDS_PER_TOPIC per topic per episode.
+    statusOf: () => ({ status: 'active' }),
+    placement: new PlacementExecutor(),
+    statePath,
+    now: () => f.clock.nowMs(),
+  });
+  let proposedSeen = 0; // per-process counter (the planner's counters are in memory)
+  return {
+    tick() {
+      sink.considered += 1;
+      planner.tick();
+      const proposed = (planner.status() as { counters: { proposed: number } }).counters.proposed;
+      const live = planner.overloadMoves()[0];
+      if (proposed > proposedSeen && live) {
+        proposedSeen = proposed;
+        sink.emit({ verb: 'converge-overload-transfer', target: live.sessionKey });
+      }
+    },
+  };
+}
+
+const overloadShed: SelfActionController = {
+  id: 'overload-shed',
+  actionVerb: 'converge-overload-transfer',
+  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 30 min topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
+  modelsPath: 'src/core/OverloadShedPlanner.ts',
+  boundK: 20,
+  perTargetBoundK: 4,
+  ticks: 4 * 60 * 16, // 16 hours of 15 s samples (enough for 20 proposals at 2/hour)
+  tickMs: 15_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return makeOverloadShedPlanner(f, sink); },
+  },
+  makeUnderPressure(f, sink) { return makeOverloadShedPlanner(f, sink); },
+};
+
+/**
  * attention-lifecycle-pass — the hourly attention reconciliation pass
  * (src/messaging/TelegramAdapter.ts runAttentionLifecyclePass; spec
  * docs/specs/attention-lifecycle-close-on-cause.md §3.4): supersede duplicate
@@ -2794,6 +2869,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   overloadAdmissionSelfHelp,
+  overloadShed,
   feedbackTriageTick,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,

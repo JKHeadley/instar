@@ -1,0 +1,34 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+**Trustworthy machine load, phase 3 — moving existing work off a machine that stays overloaded** (spec: `docs/specs/trustworthy-machine-load-and-mesh-floor.md`, Part D, plus C3 carried from phase 2; incident: `docs/issues/stale-machine-claims-and-overload.md`).
+
+- **D1 — a transient move input, separate from pins.** `src/core/OverloadShedPlanner.ts` proposes moves; the `OwnershipReconciler` gains an `overloadMoves()` input (topic → target, episode id) processed AFTER pins at lower precedence, through its existing cooperative-transfer path. A pinned topic is never overload-moved and nothing is written to the pin store. The target is chosen by `RebalancePlanner` + `PlacementExecutor.decide`, which now threads the conversation's channel scope (the channel gap the spec labels CMT-1568) and accepts `isSource` / `targetEligible` overrides.
+- **D2 — who sheds, where to.** A machine is a source once its own admission has stayed closed for 3 minutes. A target must have direct evidence under 2 minutes, verdict `ok`, not be refusing work, and keep at least 2 free session slots after what this machine has already reserved on it. Only Telegram topics move in this version (the shared chat is served by every machine; a Slack conversation's workspace is not on the ownership record, so it stays). Topics with a live autonomous run are never proposed.
+- **D3 — brakes.** One live move at a time per machine, at most 2 per hour (checked before proposing), at most 2 tries per topic per overload episode (durable, so a restart continues the episode), a 30-minute same-topic cooldown, and a machine seen refusing work in the last 30 minutes never receives moved work. Every move rides the SelfActionGovernor class `overload-shed` (observe-only) and is audited to `logs/overload-shed.jsonl`.
+- **D4 — moves finish or cancel.** Each move takes a durable capacity reservation (`state/overload-shed.json`, TTL), released on claim, expiry or TTL. The reconciler now drives UNPINNED `transferring` records too: the target claims, and the source aborts past the transfer deadline whether or not the target looks online — so a started move outlives its proposal (a restart, an expiry).
+- **D5 — honest stale-owner wording.** Stale-owner notices describe an owner that answers slowly as "struggling" and one turning requests away as "refusing connections", instead of as gone.
+- **C3 — session priority (from phase 2).** While overload admission is enforced, each session's process group (and everything it starts afterwards: test runners, helpers) runs at `nice 5`; the agent server and lifeline stay at normal priority. Reported as `sessionPriority` in `GET /work-admission`.
+- **Posture.** Dev-gated (`monitoring.overloadShed`, omitted ⇒ live on a development agent, dark on the fleet) and **dry-run first**: it audits each move it WOULD make and proposes nothing, and it also proposes nothing while overload admission is in dry-run (peers would send the work straight back). Unpinned-transfer driving rides the same gate. Status: `GET /overload-shed`. The CLAUDE.md template gains the "overload shed" line; existing agents receive it through the update migration.
+
+## What to Tell Your User
+
+When one of my machines stays overloaded for a few minutes, it can now hand some of its existing conversations to a machine that is doing fine, one at a time and never more than twice an hour. Conversations you pinned to a machine, and ones in the middle of an autonomous run, stay where they are. For now this runs in "watch mode" on development agents: it writes down which conversation it would move and where, and moves nothing, so you will not see any change until it is switched on deliberately.
+
+## Summary of New Capabilities
+
+- `GET /overload-shed` → `{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, maxMovesPerHour, recentlyRefusingPeers, lastTickAt, counters: { ticks, proposed, wouldMove, claimed, expired, breakerHeld, governorHeld, noTarget } }` (503 when dark).
+- `GET /work-admission` → new `sessionPriority: { active, nice, lowered, failed, tracked }`.
+- `ReconcileTickReport` gains `overloadTransfers`, `unpinnedClaims`, `unpinnedAborts`.
+- New machine-local files: `logs/overload-shed.jsonl` (registered `audit-overload-shed`, 2 MiB + one kept segment) and `state/overload-shed.json` (registered `overload-shed-state`).
+- New SelfActionGovernor class `overload-shed` (observe-only).
+
+## Evidence
+
+- Observed before (2026-10-25, live): the Laptop ran at a load average of 64–74 with its conversations still on it; nothing moved existing work off an overloaded machine, and a transfer whose proposal vanished could sit in `transferring` because only pinned transfers were driven.
+- Reproduced in tests: `tests/unit/overload-shed.test.ts` (source after 3 min only, every target rule both sides, dry-run and non-enforced admission propose nothing, pinned/Slack/autonomous topics stay, one live move, 2/hour breaker, 2 tries per topic per episode with a target that never claims, claim releases the reservation, restart mid-move keeps the move and breaker, corrupt state file, two concurrent overloaded machines, reconciler precedence/pacing/defer gates, unpinned claim and abort-past-deadline, the end-to-end abort of an unclaimed overload move, CMT-1568 channel threading, D5 wording); `tests/unit/session-priority.test.ts`; `tests/unit/self-action-convergence.test.ts` (new `overload-shed` controller settles at 10 moves for 5 topics, horizon-independent); `tests/integration/overload-shed-route.test.ts` (401/503/200 through the real route + auth); `tests/e2e/overload-shed-lifecycle.test.ts` (real WorkAdmission → real MachinePoolRegistry → real planner → real reconciler turns the move into a `transferring` record; `GET /overload-shed` answers 200 after production-shaped init).
+- Real machine check: `renice 5 -g <pane pid>` on a live tmux pane sets the pane process group to nice 5 on macOS (exit 0).
+- After (expected on deploy, dry-run on the dev agents): `GET /overload-shed` shows `enabled:true, dryRun:true`, and `counters.wouldMove` plus `would-move` audit rows during the next overload episode — the evidence for the `dryRun:false` flip.

@@ -209,6 +209,21 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Overload shed (trustworthy-machine-load D3): moving existing conversations off a
+    // machine that stayed overloaded. Telemetry first: the planner's own breaker
+    // (2 moves/hour, one live move at a time, 30 min per-topic cooldown) binds it in code.
+    controllerId: 'overload-shed',
+    actionVerb: 'converge-overload-transfer',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 2,
+    totalCountCeiling: 4,
+    windowMs: 60 * 60_000,
+    rateBucket: { ratePerWindow: 4, windowMs: 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Slow automatic retry of a failed sign-in repair (spec
     // relogin-unattended-agent-session-and-slow-retry). Telemetry first: the durable per-incident
     // cap (slowRetryCount ≤ 3) and the 6 h / 24 h delays bind it in code.

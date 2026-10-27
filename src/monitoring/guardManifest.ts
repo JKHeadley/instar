@@ -827,6 +827,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session; dry-run logs would-refuse only.',
   },
   {
+    key: 'monitoring.overloadShed.enabled',
+    kind: 'config',
+    configPath: 'monitoring.overloadShed.enabled',
+    defaultEnabled: false, // dark on the fleet; ON (dry-run) for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'OverloadShedPlanner',
+    description: 'Overload shed (trustworthy-machine-load Part D): moves existing conversations off a machine that has stayed overloaded, one at a time with a 2/hour breaker; dry-run logs would-move only.',
+  },
+  {
     key: 'monitoring.processFootprintMonitor.enabled',
     kind: 'config',
     configPath: 'monitoring.processFootprintMonitor.enabled',

@@ -50,6 +50,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: the state machine, audit and advert run on the real verdict feed but nothing is refused and peers keep placing work here until a deliberate dryRun:false. Even live it only DEFERS automatic work (jobs retry, inbound messages stay in the durable queue) and always leaves an operator session a slot; no LLM, no spend, no kills, no credential or state mutation.',
   },
   {
+    name: 'overloadShed',
+    configPath: 'monitoring.overloadShed.enabled',
+    description: 'Overload shed (trustworthy-machine-load Part D): once this machine has refused new work for 3 minutes, proposes moving one existing Telegram conversation at a time to a healthy machine through the ownership reconciler, and drives started transfers to claim or abort independently of pins.',
+    justification: 'Ships dryRun:true: it logs each move it WOULD make and proposes nothing, and it also proposes nothing while overload admission itself is in dry-run. Even live, a move is a cooperative ownership transfer (the reconciler in its own dry-run performs no CAS), pinned topics and topics with a live autonomous run are never moved, and a breaker caps it at 2 moves per hour with 2 tries per topic per episode; no LLM, no spend, no kills.',
+  },
+  {
     name: 'identityReannounce',
     configPath: 'multiMachine.identityReannounce.enabled',
     description: 'Challenge-bound machine signing-key recovery with recovery-key continuity and exact epochs.',
