@@ -196,7 +196,7 @@ Counts:
     and, where needed, `anomalies: [<kind>, …]` (§5.3).
   - `frontmatterFor()` emits these keys.
   - `ALLOWED_FRONTMATTER_KEYS` adds `runner`, `script`, `anomalies`,
-    `scriptTimeoutMinutes`, `scriptSupervision`, `triageEvidence`, and the
+    `scriptTimeoutMinutes`, `scriptSupervision`, `triageEvidence`, `triageFields`, and the
     bare-ok / bare-skipped lists (`triageBareOk`, `triageBareSkipped`).
 - **Where scripts live and how they ship.**
   - Scripts live in `src/scaffold/templates/jobs/instar/scripts/<slug>.mjs`. They
@@ -277,7 +277,19 @@ JOB_RESULT ok <short summary>
 JOB_RESULT skipped <reason>               # e.g. feature dark (503), prober absent
 JOB_RESULT failed <reason>                # also exit code ≠ 0
 JOB_ANOMALY <kind> <severity 1-3> <evidence ≤ 300 chars>
+JOB_FIELD <key> <value>                   # structured evidence, any number
 ```
+
+`JOB_FIELD` is the structured-evidence transport. A template declares its
+allowed keys (`triageFields`, for example `outcome`, `http_status`,
+`server_reason`, `processed`, `attempt_id`). The parser accepts a line only when
+the key is declared and matches `^[a-z][a-z0-9_]{0,31}$`, and the value matches
+`^[A-Za-z0-9_.:/-]{1,64}$` (no spaces, so no prose); at most 16 fields a run.
+Any other `JOB_FIELD` line is dropped and counted in the run's
+`droppedFields`. A `structured-only` evidence projection (§5.6.2) is exactly:
+slug, result, the result reason code (the first token of the reason, same value
+rule), anomaly ids and severities without their evidence text, and the accepted
+fields. Each feedback-factory script's unit test pins its emitted fields.
 
 A **new parser** in `runScriptJob` (it parses neither line today) maps each result:
 
@@ -646,8 +658,8 @@ failure still gives the second one its session.
 `triageEvidence: full | structured-only`. The three feedback-factory jobs are
 `structured-only`, because their output can carry fleet users' report text: for
 them both the Jev input and the triage session's prompt carry only structured
-fields (result, reason code, server reason codes, counts, ids), never the
-free-text tail. health-check and commitment-checkin-reminder are `full`.
+fields, as defined by the `JOB_FIELD` transport (§5.2), never the free-text
+tail. health-check and commitment-checkin-reminder are `full`.
 
 This is **one evidence projection per run**, `triageEvidenceFor(run)`, and every
 model consumer reads only it: Jev, the referee, the triage session prompt, the
@@ -697,7 +709,9 @@ is it routine?
   - Its provider is built in `server.ts` as: the Codex provider when Codex is
     available (its `fast` tier is GPT-6 Luna); otherwise the agent's default
     framework provider at `fast` (Haiku on Claude). It has its own breaker,
-    `timeoutMs` 20 s, at most one call in flight, and
+    `timeoutMs` 20 s, at most one call in flight (the slot is held until the
+    underlying provider call settles, not when `askReferee`'s race returns; a
+    call still unsettled after 120 s is abandoned and opens the breaker), and
     `jobs.scriptTriage.referee.maxCallsPerDay` (default 200 per machine).
   - `askReferee` gains an optional `attribution` argument whose fields are merged
     into the call's attribution (component `JobResultTriageReferee`,
@@ -722,19 +736,22 @@ is it routine?
     the template's `model: haiku`: the operator asked for "a real session with
     real intelligence"; spec 2's pins do not apply to it), and no
     `telegramNotify`.
-  - **It holds no credentials, structurally.** It is spawned with the existing
-    `omitAuthEnv: true` spawn option (the feedback executor's confined sessions
-    use it, `buildFeedbackExecutor.ts`), which blanks the Bearer, origin, bind,
-    GitHub and fencing tokens. Every authenticated route is therefore closed to
-    it: it cannot message the operator, raise an `agent` attention item, call
-    the job's trigger, change config or kill sessions. It can read and edit
-    files under the agent home and reach the unauthenticated `/health`; the
-    structured fields in its prompt stand in for the API reads it cannot make.
+  - **It carries no credentials in its environment, and is still a trusted
+    agent.** It is spawned with the existing `omitAuthEnv: true` spawn option
+    (the feedback executor's confined sessions use it), which blanks the Bearer,
+    origin, bind, GitHub and fencing tokens from its environment, so nothing in
+    its context hands it a credential and the relay script cannot send for it.
+    This is **not** an isolation boundary: with Read and Bash it can find the
+    auth token in `.instar/config.json` and use any route. So it is treated as
+    what it is, a trusted agent session with residual authority, and the bounds
+    that actually hold are: the investigator prompt; the narrowed tool set; the
+    agent's dangerous-command guards; the in-flight, cooldown and caps; and the
+    daily review reading every session's output. For comparison, today the same
+    job runs a full-tools session holding the token every 5 minutes; a triage
+    session has strictly less. An OS-confined investigator is not built in v1.
     `omitAuthEnv` refuses when the agent authenticates Claude with an
     environment token; that is recorded as an admission refusal
-    (`refused: env-token-auth`), which the 6-hour push names. Bash still runs
-    under the agent's dangerous-command guards; file edits are the residual
-    authority, bounded by the narrowed tool set and the caps.
+    (`refused: env-token-auth`), which the 6-hour push names.
   - The in-flight check keys on the run-history tag `triage:<slug>` (the tmux
     name, `triage-<slug>-<id>`, is display only).
   - It is admitted by `admitTriageSpawn()`, which runs the same read-only, quota,
@@ -795,8 +812,9 @@ model reading these results.
   Answer per run id." The reply is parsed strictly (a JSON object keyed by the
   given run ids, boolean values); anything else is `backup-failed`.
 - A run the backup marks `true` gets a triage session under the same bounds. The
-  disagreement is logged as `backup-disagrees` with both verdicts. These rows are
-  graded evidence for tuning Jev's band later; they never change it.
+  disagreement is logged as `backup-disagrees` with both verdicts. These are
+  disagreement samples, not correct answers; they become calibration labels only
+  after a person or a later outcome settles them, and they never change the band.
 - **Cursor and retry.** The selected run ids are written to the triage state
   before the call. On success the cursor moves past every run considered. On
   failure the same ids are retried next pass. Two failed passes in a row raise one
@@ -1223,9 +1241,13 @@ from §9.
     session's row is excluded from stats and streak; JobState is untouched;
   - triage runs after the claim is released and holds no script-cap slot;
   - the floor's streak comes from this machine's run rows (a standby fixture);
-  - a `structured-only` slug never sends or quotes free text;
+  - a `structured-only` slug never sends or quotes free text; undeclared or
+    malformed `JOB_FIELD` lines are dropped and counted;
+  - a referee provider that ignores its timeout keeps the single slot until it
+    settles or is abandoned at 120 s;
   - a triage session is spawned with `omitAuthEnv` (no Bearer or origin token in
-    its environment); an env-token agent records `refused: env-token-auth`;
+    its environment) and the fixed allowlist; an env-token agent records
+    `refused: env-token-auth`;
   - the push's hard deadline fires with "outcome unknown" when the session's end
     is never seen;
   - the 6-hour push waits for one triage attempt, or names its refusal, and
