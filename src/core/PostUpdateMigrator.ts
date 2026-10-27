@@ -66,6 +66,7 @@ import {
   READINESS_STALL_NOTICE_BULLET,
   READINESS_STALL_NOTICE_MARKER,
   REAPER_BACKGROUND_WORK_BULLET,
+  REAPER_PRESSURE_BULLET,
   REAPER_BACKGROUND_WORK_MARKER,
   REROUTED_LOGIN_EXPIRED_BULLET,
   REROUTED_LOGIN_EXPIRED_MARKER,
@@ -88,6 +89,7 @@ import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { recordInstallProvenanceIfAbsent, hasInstallProvenanceRecord } from './ApprenticeshipStallGate.js';
 import { IdentityManager } from '../threadline/client/IdentityManager.js';
 import { installAutoStart, installBootWrapper, SYSTEMD_KILL_MODE_LINE } from '../commands/setup.js';
+import { autoStartRefusalReason, takeLastAutoStartRefusal } from './ThrowawayAgentGuard.js';
 import { installBuiltinJobs } from '../scheduler/InstallBuiltinJobs.js';
 import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
@@ -3838,8 +3840,13 @@ export class PostUpdateMigrator {
         this.config.projectDir,
         this.config.hasTelegram,
       );
+      const refusal = takeLastAutoStartRefusal();
       if (installed) {
         result.upgraded.push('boot-wrapper .cjs: regenerated plist to reference instar-boot.cjs');
+      } else if (refusal) {
+        // Test-agent leak guard: a throwaway agent's autostart is refused on
+        // purpose — a skip, not a migration error.
+        result.skipped.push(`boot-wrapper .cjs: ${refusal}`);
       } else {
         result.errors.push('boot-wrapper .cjs: installAutoStart returned false');
       }
@@ -4609,6 +4616,17 @@ export class PostUpdateMigrator {
   private migrateFleetWatchdog(result: MigrationResult): void {
     if (process.platform !== 'darwin') {
       result.skipped.push('fleet-watchdog: non-darwin platform');
+      return;
+    }
+
+    // Test-agent leak guard (docs/specs/test-agent-leak-guard.md). The fleet
+    // watchdog is a MACHINE-WIDE launchd job. A throwaway agent (temp-folder
+    // project, sandboxed HOME, recorded throwaway) must never rewrite or reload
+    // it: under a sandboxed HOME this would replace the machine's real watchdog
+    // with one pointing into a temp folder that is later deleted.
+    const throwawayRefusal = autoStartRefusalReason(this.config.projectDir);
+    if (throwawayRefusal) {
+      result.skipped.push(`fleet-watchdog: ${throwawayRefusal}`);
       return;
     }
 
@@ -10698,11 +10716,26 @@ CLI-created worktrees under \`~/.instar/agents/<agent>/.worktrees/\` accumulate 
     // and (b) a silent, reviewable decision trail + endpoint exists. Without this an
     // agent asked "what is the reaper considering / why isn't it acting under load?"
     // has no grounded answer. Idempotent via content-sniffing on the new route path.
+    // The NEW wording lives in ONE place — `REAPER_PRESSURE_BULLET` in templates.ts — so an
+    // agent initialized from the template and an agent patched by this migrator cannot drift
+    // apart. Two legacy forms are replaced in place, because a deployed agent carries whichever
+    // of the two wrote its CLAUDE.md (round-2 finding: keying only on the migrator's own old
+    // sentence left every template-initialized agent unpatched).
+    const REAPER_PRESSURE_SENTENCE = REAPER_PRESSURE_BULLET.replace(/^- /, '');
+    /** Form A: the sentence this migrator wrote before reaper-pressure-signals. */
+    const REAPER_PRESSURE_SENTENCE_LEGACY = `The idle-session reaper's pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`. \`GET /sessions/reaper\`'s \`pressure.inputs\` shows freePct, loadPerCore, and the memTier/cpuTier breakdown.`;
+    /**
+     * Form B: the FULL bullet an older `templates.ts` wrote at init — taken verbatim, not
+     * abbreviated. A prefix match would replace the first sentence and leave the stale
+     * "tune the CPU thresholds" sentence behind, so a migrated agent would read the new text
+     * and then be told the load-per-core knobs are the tuning controls (round-2 re-check).
+     */
+    const REAPER_PRESSURE_BULLET_LEGACY = `- Pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`.`;
     if (!content.includes('/sessions/reaper/audit')) {
       const section = `
 ## SessionReaper — CPU-aware pressure + decision audit
 
-The idle-session reaper's pressure is **CPU-aware**: the tier is the WORST of memory (free %) and CPU (1-min load ÷ cores), so a CPU-bound box raises pressure even when free RAM is fine. Tune the CPU thresholds in \`.instar/config.json\` → \`{"monitoring": {"sessionReaper": {"cpuModerateLoadPerCore": 1.0, "cpuCriticalLoadPerCore": 1.5}}}\`. \`GET /sessions/reaper\`'s \`pressure.inputs\` shows freePct, loadPerCore, and the memTier/cpuTier breakdown.
+${REAPER_PRESSURE_SENTENCE}
 
 A silent **decision audit** records every keep/kill decision *change* (logged on transition, not every tick) plus the reap-path events, each stamped with the pressure tier that drove it, to \`logs/reaper-audit.jsonl\`.
 - Read the tail: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/reaper/audit?limit=50"\` → \`{ entries: [...] }\`. Read-only, no notifications — purely for inspection.
@@ -10711,6 +10744,20 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added SessionReaper CPU-aware + decision-audit section');
+    } else if (!content.includes('cpuBusyPct') && (content.includes(REAPER_PRESSURE_SENTENCE_LEGACY) || content.includes(REAPER_PRESSURE_BULLET_LEGACY))) {
+      // Migration parity (reaper-pressure-signals): every deployed agent already carries the
+      // section, so the new wording is swapped IN PLACE — the install-if-missing branch above
+      // never reaches them and they would keep telling users the load average decides. Both
+      // legacy forms are handled; an operator-rewritten sentence matches neither and is left
+      // alone rather than clobbered.
+      if (content.includes(REAPER_PRESSURE_SENTENCE_LEGACY)) {
+        content = content.replace(REAPER_PRESSURE_SENTENCE_LEGACY, REAPER_PRESSURE_SENTENCE);
+      }
+      if (content.includes(REAPER_PRESSURE_BULLET_LEGACY)) {
+        content = content.replace(REAPER_PRESSURE_BULLET_LEGACY, REAPER_PRESSURE_BULLET);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: replaced the reaper pressure sentence in place (reaper-pressure-signals)');
     } else {
       result.skipped.push('CLAUDE.md: SessionReaper CPU-aware + decision-audit section already present');
     }
@@ -12403,6 +12450,22 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added TCC-protected path guard section');
+    }
+
+    // Test-agent leak guard (docs/specs/test-agent-leak-guard.md). OWN sniff key
+    // `Throwaway test agents` — content-sniffed for idempotency; the template
+    // emits the same section for new agents.
+    if (!content.includes('Throwaway test agents')) {
+      content += '\n\n' + `## Throwaway test agents (they cannot become permanent jobs on your login)
+
+An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folders\` and the like) or with a sandboxed \`HOME\` is a throwaway. On 2026-10-21 one such release-check agent installed itself into the operator's real launchd and ran scheduled jobs on the operator's Claude subscription for five days. Now, enforced in code:
+- **No self-installed auto-start.** A throwaway never installs a start-on-login job, and a non-interactive \`instar init\` records \`autostart.autoInstall: false\` so the server and lifeline do not install one on their own. \`instar autostart install\` is the explicit request (\`--force\` for a throwaway). The setup wizard already runs it.
+- **It expires.** \`init\` records \`throwawayAgent.expiresAt\` (24h by default; \`--expires-in 6h\`, or \`--keep\` to never expire). A temp-folder agent with no record gets one at its next boot. On expiry the server and lifeline remove their own auto-start (only the unit whose working directory is this agent) and exit; \`.instar/state/throwaway-expired.json\` says what was removed.
+- **No scheduled jobs.** A temp-folder or recorded throwaway refuses every scheduled job (skip reason \`throwaway-agent\`), because a session could reach the real login. \`scheduler.allowOnThrowawayAgent: true\` overrides it for a test that arranged its own login.
+- **When to use** (PROACTIVE): when you create a test agent, put it in a temp folder (or pass \`--expires-in\`) and never \`--force\` its auto-start; when the user asks "why don't this agent's jobs run?" or "why did this agent stop by itself?" read the skip ledger and the expired marker. Spec: \`docs/specs/test-agent-leak-guard.md\`.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Throwaway test agents section');
     }
 
     if (patched) {

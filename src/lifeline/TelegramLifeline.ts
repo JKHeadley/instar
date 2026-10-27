@@ -1,4 +1,5 @@
 import { withDeterministicOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
+import { checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 /**
  * Telegram Lifeline — minimal persistent process that owns the Telegram connection.
@@ -336,6 +337,25 @@ export class TelegramLifeline {
       process.exit(2);
     }
 
+    // Test-agent leak guard (docs/specs/test-agent-leak-guard.md): an expired
+    // throwaway tears down its own autostart and exits (or idles when the
+    // unload is quarantined) before starting anything — no server, no polling.
+    {
+      let startup: ReturnType<typeof throwawayStartupDecision> = { decision: 'run', check: { expired: false, marker: null }, backfilled: null };
+      try {
+        startup = throwawayStartupDecision(this.projectConfig.projectName, this.projectConfig.projectDir);
+      } catch (err) {
+        console.warn(pc.yellow(`[Lifeline] Throwaway-agent check failed (continuing): ${err instanceof Error ? err.message : String(err)}`));
+      }
+      if (startup.decision !== 'run') {
+        console.log(pc.yellow(`[Lifeline] ${describeExpiry(startup.check)}`));
+        if (startup.decision === 'exit') process.exit(0);
+        console.log(pc.yellow('[Lifeline] Teardown could not unload the auto-start job after 5 attempts; idling instead of restart-looping.'));
+        setInterval(() => { /* quarantined: hold the process, start nothing */ }, 60 * 60 * 1000);
+        return;
+      }
+    }
+
     // Acquire exclusive lock — prevent multiple lifeline instances
     if (!acquireLockFile(this.lockPath)) {
       console.error(pc.red('[Lifeline] Another lifeline instance is already running. Exiting.'));
@@ -501,11 +521,20 @@ export class TelegramLifeline {
     // The user must always be able to reach their agent remotely — this is non-negotiable.
     try {
       if (!this.isAutostartInstalled()) {
-        // Dynamic import — setup.ts uses @inquirer/prompts which requires Node 20.12+
-        const { installAutoStart } = await import('../commands/setup.js');
-        const installed = installAutoStart(this.projectConfig.projectName, this.projectConfig.projectDir, true);
-        if (installed) {
-          console.log(pc.green(`  Auto-start self-healed: installed ${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}`));
+        // Test-agent leak guard: a non-interactive / throwaway init recorded
+        // autoInstall:false — never install a missing unit on our own.
+        if (this.projectConfig.autostart?.autoInstall === false) {
+          console.log(pc.dim('  Auto-start not installed: this agent was created without asking for it (run `instar autostart install` to add it).'));
+        } else {
+          // Dynamic import — setup.ts uses @inquirer/prompts which requires Node 20.12+
+          const { installAutoStart } = await import('../commands/setup.js');
+          const installed = installAutoStart(this.projectConfig.projectName, this.projectConfig.projectDir, true);
+          const refusal = takeLastAutoStartRefusal();
+          if (installed) {
+            console.log(pc.green(`  Auto-start self-healed: installed ${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}`));
+          } else if (refusal) {
+            console.log(pc.yellow(`  Auto-start not installed: ${refusal}`));
+          }
         }
       } else {
         // Self-healing: validate plist uses boot wrapper, not a hardcoded Node path.
@@ -542,6 +571,21 @@ export class TelegramLifeline {
 
     process.on('SIGINT', externalShutdown);
     process.on('SIGTERM', externalShutdown);
+
+    // Test-agent leak guard: re-check expiry every 60s. A server the supervisor
+    // restarts inside that window stops at the expired marker on its own.
+    const throwawayTimer = setInterval(() => {
+      try {
+        const check = checkThrowawayExpiry(this.projectConfig.projectName, this.projectConfig.projectDir);
+        if (!check.expired) return;
+        clearInterval(throwawayTimer);
+        console.log(pc.yellow(`[Lifeline] ${describeExpiry(check)}`));
+        void this.quiesceEverything().finally(() => process.exit(0));
+      } catch (err) {
+        console.error(`[Lifeline] throwaway expiry check failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 60 * 1000);
+    throwawayTimer.unref?.();
   }
 
   /**

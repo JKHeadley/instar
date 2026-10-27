@@ -3,6 +3,7 @@
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
+import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * `instar server start|stop` — Manage the persistent agent server.
@@ -4202,6 +4203,28 @@ function setupServerLog(stateDir: string): void {
 
 export async function startServer(options: StartOptions): Promise<void> {
   const config = loadConfig(options.dir);
+  // Test-agent leak guard (docs/specs/test-agent-leak-guard.md) — FIRST, before
+  // any subsystem starts. An expired throwaway tears down its own autostart and
+  // exits (or idles when the unload is quarantined) without doing anything else.
+  {
+    let startup: ReturnType<typeof throwawayStartupDecision> = { decision: 'run', check: { expired: false, marker: null }, backfilled: null };
+    try {
+      startup = throwawayStartupDecision(config.projectName, config.projectDir);
+    } catch (err) {
+      // Never let the guard crash a boot; the scheduler gate still refuses a throwaway's jobs.
+      console.warn(pc.yellow(`  Throwaway-agent check failed (continuing): ${err instanceof Error ? err.message : String(err)}`));
+    }
+    if (startup.backfilled) {
+      console.log(pc.yellow(`  Throwaway agent (lives in a temporary folder): it will expire at ${startup.backfilled.expiresAt}.`));
+    }
+    if (startup.decision !== 'run') {
+      console.log(pc.yellow(`  ${describeExpiry(startup.check)}`));
+      if (startup.decision === 'exit') process.exit(0);
+      console.log(pc.yellow('  Teardown could not unload the auto-start job after 5 attempts; idling instead of restart-looping.'));
+      setInterval(() => { /* quarantined: hold the process, start nothing */ }, 60 * 60 * 1000);
+      return new Promise<void>(() => { /* never resolves */ });
+    }
+  }
   // Capture the guard substrate at the boot-config boundary, BEFORE the
   // PostUpdateMigrator or any later startup path can rewrite config.json.
   // The tripwire persists what THIS process booted from; later disk changes
@@ -7974,6 +7997,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
       guardRegistry.register('scheduler.enabled', () => scheduler!.guardStatus());
+      // Test-agent leak guard: a temp-folder / recorded throwaway refuses every
+      // scheduled job (it cannot prove its sessions avoid the real login).
+      const throwawayJobGuard = buildThrowawayJobGuard({
+        projectDir: config.projectDir,
+        allowOnThrowawayAgent: config.scheduler.allowOnThrowawayAgent,
+      });
+      scheduler.setThrowawayJobGuard(throwawayJobGuard);
+      {
+        const verdict = throwawayJobGuard();
+        if (verdict.refuse) console.log(pc.yellow(`  Scheduler: ${verdict.reason}`));
+      }
       // Wire machine identity for machine-scoped job filtering
       if (coordinator.identity) {
         scheduler.setMachineIdentity(coordinator.identity.machineId, coordinator.identity.name);
@@ -10459,6 +10493,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     const sharedPressureTier = (): 'normal' | 'moderate' | 'critical' => samplePressureShared({
       cpuModerateLoadPerCore: reaperPressureCfg?.cpuModerateLoadPerCore ?? 1.0,
       cpuCriticalLoadPerCore: reaperPressureCfg?.cpuCriticalLoadPerCore ?? 1.5,
+      cpuSignal: reaperPressureCfg?.cpuSignal,
+      cpuModerateBusyPct: reaperPressureCfg?.cpuModerateBusyPct,
+      cpuCriticalBusyPct: reaperPressureCfg?.cpuCriticalBusyPct,
     }).tier;
     sessionManager.setPressureTierProvider(sharedPressureTier);
 
@@ -17538,6 +17575,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             pressure: () => _sampleHostPressure({
               cpuModerateLoadPerCore: rcfg?.cpuModerateLoadPerCore ?? 1.0,
               cpuCriticalLoadPerCore: rcfg?.cpuCriticalLoadPerCore ?? 1.5,
+              cpuSignal: rcfg?.cpuSignal,
+              cpuModerateBusyPct: rcfg?.cpuModerateBusyPct,
+              cpuCriticalBusyPct: rcfg?.cpuCriticalBusyPct,
             }),
             // Author ONLY on the lease holder (multi-machine N× burn fix); single-machine ⇒ always holder.
             holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
@@ -21579,6 +21619,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           return sampleHostPressure({
             cpuModerateLoadPerCore: rcfg?.cpuModerateLoadPerCore ?? 1.0,
             cpuCriticalLoadPerCore: rcfg?.cpuCriticalLoadPerCore ?? 1.5,
+            cpuSignal: rcfg?.cpuSignal,
+            cpuModerateBusyPct: rcfg?.cpuModerateBusyPct,
+            cpuCriticalBusyPct: rcfg?.cpuCriticalBusyPct,
           });
         },
         terminate: (id, reason, opts) =>
@@ -30870,7 +30913,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       );
       let hasTelegramForInstall = false;
       const autostartInstalled = isAutostartInstalled(config.projectName);
-      let needsReinstall = !autostartInstalled;
+      // Test-agent leak guard: a non-interactive / throwaway init recorded
+      // autoInstall:false — this self-heal must not INSTALL a missing unit on
+      // its own (that is how a throwaway became a permanent launchd job). The
+      // regenerate-an-existing-unit branch below still runs, via the funnel.
+      const selfInstallAllowed = config.autostart?.autoInstall !== false;
+      let needsReinstall = !autostartInstalled && selfInstallAllowed;
+      if (!autostartInstalled && !selfInstallAllowed) {
+        console.log(pc.yellow(`  Auto-start is off for this agent: it was created without asking for it (${config.autostart?.reason ?? 'non-interactive init'}). Run \`instar autostart install\` to add it.`));
+      }
 
       // On macOS, keep node symlink fresh and check plist format
       if (process.platform === 'darwin') {
@@ -30880,7 +30931,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           ensureStableNodeSymlink(config.projectDir);
         } catch { /* non-critical */ }
 
-        if (!needsReinstall) {
+        if (!needsReinstall && autostartInstalled) {
           const { autoStartNeedsLifeline } = await import('./setup.js');
           const label = `ai.instar.${config.projectName}`;
           const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
@@ -30921,8 +30972,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (needsReinstall) {
         const { installAutoStart } = await import('./setup.js');
         const installed = installAutoStart(config.projectName, config.projectDir, !!telegram || hasTelegramForInstall);
+        const refusal = takeLastAutoStartRefusal();
         if (installed) {
           console.log(pc.green(`  Auto-start self-healed: installed ${process.platform === 'darwin' ? 'LaunchAgent (node + JS wrapper)' : 'systemd service'}`));
+        } else if (refusal) {
+          console.log(pc.yellow(`  Auto-start not installed: ${refusal}`));
         } else {
           console.log(pc.yellow(`  Auto-start not available on ${process.platform}`));
         }
@@ -31156,6 +31210,29 @@ export async function startServer(options: StartOptions): Promise<void> {
     // This ensures auto-update restarts close all resources (especially SQLite
     // databases) before exiting, preventing the "mutex lock failed" crash.
     restartWatcher.on('restartDetected', shutdown);
+
+    // Test-agent leak guard: a running throwaway re-checks its expiry every 5
+    // minutes (machine-local, so also on a read-only standby). On expiry it
+    // stops its scheduler and its own running sessions, tears down its own
+    // autostart (locked, idempotent), and exits through graceful shutdown. A
+    // quarantined teardown is honoured by the NEXT start (startup decision
+    // 'idle'), which is the single outcome handler.
+    const throwawayExpiryTimer = setInterval(() => {
+      try {
+        const check = checkThrowawayExpiry(config.projectName, config.projectDir);
+        if (!check.expired) return;
+        clearInterval(throwawayExpiryTimer);
+        console.log(pc.yellow(`  ${describeExpiry(check)}`));
+        try { scheduler?.stop(); } catch { /* @silent-fallback-ok — shutting down anyway */ }
+        try {
+          for (const sess of sessionManager.listRunningSessions()) sessionManager.killSession(sess.id);
+        } catch { /* @silent-fallback-ok — shutdown below still exits */ }
+        void shutdown();
+      } catch (err) {
+        console.error(`[throwaway-expiry] check failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 5 * 60 * 1000);
+    throwawayExpiryTimer.unref?.();
   } else {
     // Run in tmux background session
     const tmuxPath = detectTmuxPath();

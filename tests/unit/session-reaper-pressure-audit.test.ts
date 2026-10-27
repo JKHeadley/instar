@@ -1,7 +1,9 @@
 /**
  * RESPONSIBLE-RESOURCE-USAGE additions to the SessionReaper:
- *  1. computePressure — CPU-aware tier = WORST of memory (free %) and CPU
- *     (1-min load ÷ cores). Memory-only behavior preserved when cores unknown.
+ *  1. computePressure — CPU-aware tier = WORST of memory (free %) and CPU. Since
+ *     reaper-pressure-signals the CPU tier comes from sampled busy % by default; the
+ *     load-average grading below is pinned under `cpuSignal: 'load'`, the rollback lever,
+ *     so these cases keep guarding it. Memory-only behavior preserved when cores unknown.
  *  2. Decision audit — a `decision` row is emitted on first sight and on every
  *     (verdict, keptBy) CHANGE, never every tick (auditability without spam).
  *  3. reaperAuditSink / readReaperAudit — dedicated, silent, never-throws trail.
@@ -22,7 +24,14 @@ import {
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { Session } from '../../src/core/types.js';
 
-const CPU = { cpuModerateLoadPerCore: 1.0, cpuCriticalLoadPerCore: 1.5 };
+/**
+ * The legacy load-average grading, now reachable only through the rollback lever. Keeping
+ * these cases ON the lever is what makes `cpuSignal: 'load'` a tested promise rather than a
+ * named one (reaper-pressure-signals §7).
+ */
+const CPU = { cpuModerateLoadPerCore: 1.0, cpuCriticalLoadPerCore: 1.5, cpuSignal: 'load' as const };
+/** The DEFAULT signal: busy % decides, the load average is reported and inert. */
+const CPU_DEFAULT = { cpuModerateLoadPerCore: 1.0, cpuCriticalLoadPerCore: 1.5 };
 const IDLE_FRAME = 'some output\n? for shortcuts\n> ';
 const WORKING_FRAME = 'esc to interrupt\nWorking...';
 
@@ -53,8 +62,22 @@ describe('computePressure — CPU-aware tier', () => {
     expect(r.inputs).toMatchObject({ freePct: 80, loadPerCore: 1.2, memTier: 'normal', cpuTier: 'moderate' });
   });
 
+  it('REGRESSION (reaper-pressure-signals): under the DEFAULT signal the load average grades NOTHING', () => {
+    // The 2026-10-25 defect: loadPerCore 9.4 on a 36-44%-idle laptop graded `critical`.
+    // Every load value is now inert by default — the lever above is the only way back.
+    for (const loadPerCore of [1.0, 1.5, 3.0, 9.4]) {
+      const r = computePressure({ freePct: 80, loadPerCore }, CPU_DEFAULT);
+      expect(r.inputs?.cpuTier).toBe('normal');
+      expect(r.inputs?.loadPerCore).toBe(loadPerCore); // still reported
+      expect(r.inputs?.cpuSignal).toBe('busy');
+    }
+    // and the sampled busy % is what grades instead
+    expect(computePressure({ freePct: 80, loadPerCore: 0.1, cpuBusyPct: 95 }, CPU_DEFAULT).inputs?.cpuTier).toBe('critical');
+  });
+
   it('honors custom thresholds', () => {
-    const strict = { cpuModerateLoadPerCore: 0.5, cpuCriticalLoadPerCore: 0.8 };
+    // on the lever, like the other load-average cases above
+    const strict = { cpuModerateLoadPerCore: 0.5, cpuCriticalLoadPerCore: 0.8, cpuSignal: 'load' as const };
     expect(computePressure({ freePct: 90, loadPerCore: 0.6 }, strict).tier).toBe('moderate');
     expect(computePressure({ freePct: 90, loadPerCore: 0.9 }, strict).tier).toBe('critical');
   });

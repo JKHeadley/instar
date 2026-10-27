@@ -28,6 +28,7 @@ import type { MachineCapacity } from '../core/types.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import fs from 'node:fs';
 import os from 'node:os';
+import { checkThrowawayExpiry, MAX_TEARDOWN_ATTEMPTS } from '../core/ThrowawayAgentGuard.js';
 import path from 'node:path';
 import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
@@ -2895,6 +2896,45 @@ function makeAttentionLifecyclePassModel(f: PressureFixture, sink: ActionSink, d
 
 
 /**
+ * throwaway-expiry-teardown — test-agent-leak-guard (docs/specs/test-agent-leak-guard.md).
+ * An expired throwaway's server/lifeline runs the teardown at every start; if
+ * its own launchd job cannot be unloaded, launchd KeepAlive restarts it, so the
+ * teardown is re-attempted on every restart. Drives the REAL
+ * teardownExpiredThrowaway under the "unload always fails" pressure: each tick
+ * is one launchd restart. The attempt counter lives in the on-disk marker
+ * (survives restart), and after MAX_TEARDOWN_ATTEMPTS the outcome is
+ * `quarantined` (terminal) — no further unload attempts, horizon-independent.
+ */
+function makeThrowawayTeardownLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  let dir = f.durableState.get('throwaway-teardown-dir') as string | undefined;
+  if (!dir) {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'self-action-throwaway-'));
+    fs.mkdirSync(path.join(dir, '.instar', 'state'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.instar', 'config.json'), JSON.stringify({ projectName: 'sa', throwawayAgent: { createdAt: 'x', expiresAt: '2000-01-01T00:00:00Z' } }));
+    f.durableState.set('throwaway-teardown-dir', dir);
+  }
+  const projectDir = dir;
+  return {
+    tick() {
+      sink.considered += 1; // one launchd restart considered per tick
+      checkThrowawayExpiry('sa', projectDir, {
+        platform: 'darwin',
+        homes: [path.join(projectDir, 'nohome')],
+        uid: 501,
+        run: (_cmd, args) => {
+          if (args[0] === 'print') return `\tworking directory = ${projectDir}\n`;
+          if (args[0] === 'bootout') {
+            sink.emit({ verb: 'kill', target: 'ai.instar.sa' });
+            if (f.targetAlwaysRejects()) throw new Error('bootout refused');
+          }
+          return '';
+        },
+      });
+    },
+  };
+}
+
+/**
  * local-verify-interrupted-resume — a server stop that kills a running PR verify
  * (2026-10-26: the lifeline's drift restart killed PR 2350's run four times, each
  * time un-counted and re-queued behind a fresh `main` verify). Modelled: every tick
@@ -2971,8 +3011,25 @@ function makeInterruptedResume(f: PressureFixture, sink: ActionSink): { tick(): 
   };
 }
 
+const throwawayExpiryTeardown: SelfActionController = {
+  id: 'throwaway-expiry-teardown',
+  actionVerb: 'kill',
+  models: 'src/core/ThrowawayAgentGuard.ts (teardownExpiredThrowaway — durable attempt counter, quarantine after MAX_TEARDOWN_ATTEMPTS)',
+  modelsPath: 'src/core/ThrowawayAgentGuard.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeThrowawayTeardownLoop(f, sink),
+  },
+  boundK: MAX_TEARDOWN_ATTEMPTS,
+  perTargetBoundK: MAX_TEARDOWN_ATTEMPTS,
+  ticks: 40,
+  tickMs: 10_000, // launchd ThrottleInterval
+  eternalSentinel: undefined,
+  makeUnderPressure: (f, sink) => makeThrowawayTeardownLoop(f, sink),
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
-  interactiveLoginExpiredSwap,
+  throwawayExpiryTeardown,
   localVerifyInterruptedResume,
   attentionLifecyclePass,
   localVerifyFlakeRerun,
@@ -3034,4 +3091,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   agentIdentityCoherenceDetector,
   a2aPeerDarkRaise,
   threadlineConnectEnableRestart,
+  interactiveLoginExpiredSwap,
 ];
