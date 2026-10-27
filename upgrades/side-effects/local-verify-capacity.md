@@ -47,7 +47,7 @@ None added.
 ## 5. Interactions
 
 - Main-red hold: held entries are never dispatched. Merge line: an imported success is handed to the merge watcher like a local one. Fail-fast / balanced shards (#2392 / #2393): apply on the peer too once both are on main.
-- Restart hold: a peer run holds the peer's own restart like any run.
+- Restart hold: a peer run holds the peer's own restart like any run. When an update is waiting only for a verifier to finish, the coordinator makes no new hand-off, and the peer reports busy and accepts no new run. Both recheck after asynchronous reads. The peer receives the live fail-fast and lane-shard settings before boot.
 - Host test-runner bound: a peer run takes the peer's suite slot; the peer refuses as busy when a foreign suite holds it.
 - Closed-PR race: a close observation dequeues and cancels a reserved attempt. A result fetch already in progress rechecks both the attempt marker and the entry's continued queue membership before import, so a late success cannot reach the merge line.
 
@@ -77,6 +77,12 @@ Adds a second verifier with an exact import rule and bounded recovery; ships dar
 
 ## Second-pass review
 
+**Reviewer:** Independent Codex review agent (`/root/priority_review`), following the earlier cross-model review.
+
 The independent reviewer found a closed-PR race: a queued entry removed during a peer-result fetch could still be imported. The close path now cancels the attempt and persists the removal; the import path rechecks queue membership. A focused test closes the PR during the pending fetch and confirms the late success never enters the index or merge line. The reviewer rechecked the fix and concurred with the review, finding no other material concern in the signal and authority, lease, child lifecycle, or state retention paths.
 
 CI then exposed a metadata mismatch: the peer attempt snapshot was registered as an append-only A-class stream, although it is rewritten in place with one current attempt, 20 results, and seven-day tombstones. The registry now describes that retention directly. Runtime state and its safety rules did not change.
+
+After the branch was reconciled with newer main, a second independent review found that remote dispatch and peer admission could start another run while an Instar update was waiting for the current run to finish. Both paths now check the existing update-pause decision before admission and after awaited reads; the peer advertises a busy slot during the pause. Three focused cases cover a normal pause and pauses that begin during status or PR reads. The same review verified that the peer-only production path receives live lane settings and that the final merge preserves newer main features. The reviewer concurred after these fixes.
+
+The v1.3.1460 reconciliation kept the pending upgrade note in `upgrades/next/`. A final independent read of head `5f3ceb5da` and the three documentation edits confirmed that the pause guards, peer-only live settings, and newer main changes remain intact; the reviewer concurred with no release blocker. Full Local Verify still governs merge.

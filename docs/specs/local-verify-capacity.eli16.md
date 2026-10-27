@@ -14,6 +14,8 @@ Anything else is thrown away, and the pull request simply stays in the Studio's 
 
 **What happens when things go wrong.** If the Mini goes quiet, restarts, or takes too long, the Studio takes the pull request back after a set time and runs it itself. Each pull request is tried on the Mini at most twice. If the Mini keeps failing, the Studio stops using it for 30 minutes and raises one alert. The Studio never waits for the Mini before starting its own next run.
 
+When an Instar update is waiting for a test run to finish, both machines wait instead of starting another run. This lets the update complete without another test holding it back.
+
 **What this does not do.** It doesn't test several pull requests together in one run ("batching"). The review showed that, done simply, batching could let untested code onto main, and it would only speed things up by about 20% at today's pass rate.
 
 **Trust, stated plainly.** The Mini is treated like the Studio: if someone took over the Mini, they could fake a passing result, just as they could if they took over the Studio. That is the same trust that already covers all of the operator's machines.
