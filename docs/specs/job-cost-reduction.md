@@ -1,0 +1,990 @@
+---
+title: Job cost reduction — script jobs run without a model; judgment moves server-side
+slug: job-cost-reduction
+status: draft
+owner: echo
+author: echo
+requested-by: justin (Telegram topic 130742, 2026-10-26)
+eli16-overview: docs/specs/job-cost-reduction.eli16.md
+related:
+  - docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md
+  - docs/specs/jev-luna-referee-cascade.eli16.md
+  - docs/specs/provider-fallback-default-policy.md
+  - docs/specs/benchmark-divergence-detector.md
+  - docs/LLM-SUPERVISED-EXECUTION.md
+review-convergence: "2026-10-27T01:29:15.129Z"
+review-iterations: 6
+review-completed-at: "2026-10-27T01:29:15.129Z"
+review-report: "docs/specs/reports/job-cost-reduction-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 1
+contested-then-cleared: 3
+---
+
+# Job cost reduction
+
+## 1. Problem (measured)
+
+Measured on the Mac Studio for the week ending 2026-10-26, from Echo's transcripts:
+
+- Echo ran **~3,140 scheduled-job sessions in 7 days**, ~2.4 model calls each.
+- Each session loads **~240k weighted tokens** of context before doing anything
+  (CLAUDE.md + session-start hook output). The week cost **~756M weighted
+  tokens** (756M / 3,140 ≈ 241k per run).
+- Almost all of it came from five high-frequency jobs whose whole body is "run
+  this one fixed command, record the outcome":
+
+| Job | Cron | Runs/week (nominal) | What the model actually does |
+|---|---|---|---|
+| health-check | `*/5` | 2,016 | `curl /health`, `df -h`, relay any `degradationSummary` strings, stay silent if fine |
+| feedback-factory-triage | `*/15` | 672 | runs one fixed python block verbatim |
+| feedback-factory-process | `*/30` | 336 | runs one fixed python block verbatim |
+| feedback-factory-execute | `17,47` | 336 | runs one fixed python block verbatim |
+| llm-decision-grading | `0 *` | 168 | one `curl POST`, check three field types |
+
+The nominal total is 3,528 runs a week. The measured 3,140 is lower because
+gates and quota skips drop some fires. Bob, Cora, AI Guy, Luna and Monroe show
+the same pattern, because the cost comes from the shipped templates, not from
+Echo's own config.
+
+The waste is structural. Three of these templates say in their own body "Run the
+command below ONCE, exactly as written … Do not rewrite it". So a 240k-token
+session is being spawned to copy a script into a Bash tool call. The model adds
+nothing, and when it improvises it breaks things: one template records an
+incident where an improvised zsh loop recorded a failure as a success.
+
+**A gap in the measurement.** commitment-detection (`*/5`, enabled by default) is
+not among the measured five. Its gate is only `/health`, so on paper it fires
+~2,016 times a week. The §1 measurement did not count it separately, and per-job
+attribution does not exist yet (§9 adds it). Its cost is **unmeasured**, so §10
+leaves it out of the savings estimate rather than guessing.
+
+## 2. Goals and non-goals
+
+Goals (operator direction):
+
+- **G1.** These jobs become far more efficient. A job whose work is a fixed
+  command runs **with no LLM at all on the healthy path**. A model is called only
+  when the job finds a problem it could not fix itself and a person needs words.
+- **G2.** Work that genuinely needs a model runs on the **cheapest capable
+  model**, chosen from **Instar benchmark evidence** (e.g. Codex GPT-6 Luna),
+  with Claude as the fallback.
+- **G3.** Use **Jev (TypeSafe)** wherever the judgment is a classification. Use
+  the standing cascade: Jev's answer when it is confident; when it is unsure,
+  GPT-6 Luna decides (`src/core/JevCascade.ts`).
+- **G4.** **Single-provider floor.** An agent with only one provider, no Jev key
+  and no benchmark mirror stays fully functional. Jev, Codex and benchmark
+  routing are optimizations, never dependencies. The single-provider path is the
+  one measured first.
+- **G5.** Migration Parity: existing agents receive all of this on update.
+- **G6.** Savings are **measured** per job, before and after, not asserted.
+
+Non-goals:
+- Changing what any job decides or reports: its endpoints, outcome rules, silence
+  policy, or which machine runs it.
+- Changing cron cadences. They stay as they are, so before and after numbers
+  compare like with like.
+- Changing how interactive sessions pick a model.
+
+## 3. Inventory of shipped job templates
+
+Source of truth: `getDefaultJobs()` in `src/commands/init.ts`.
+`scripts/regen-default-job-templates.mjs` renders it into
+`src/scaffold/templates/jobs/instar/*.md`, which holds 37 templates at
+`origin/main` 7376810e2. The `.md` files are generated output, so every change
+in this spec is made in `getDefaultJobs()` and `frontmatterFor()`, then
+regenerated.
+
+Classes:
+- **script**: the body is a fixed command, or a thin trigger to a server endpoint
+  that owns every decision, plus a mechanical check of the result. Target: a
+  script job with zero LLM calls on the healthy path.
+- **judgment**: needs one bounded classification or short-text decision over
+  bounded input. Target: the decision moves into a **server-side pass** that
+  makes one bounded call (Jev cascade or the default framework). The job becomes
+  a script that triggers that pass.
+- **agent**: needs multi-step tool use, interpretation, or prose. It stays a
+  session in v1; routing it by benchmark evidence is §7 (phase 2).
+
+"Runs/wk" is the nominal count from the cron expression. "On" is the shipped
+`enabled` default.
+
+| Template | Cron | Runs/wk | On | Model | Class | Converted in v1 |
+|---|---|---|---|---|---|---|
+| health-check | */5 | 2016 | yes | haiku | script | **yes** |
+| commitment-detection | */5 | 2016 | yes | haiku | judgment | no: phase 2 (§6) |
+| commitment-checkin-reminder | */5 | 2016 | no | — | script | yes |
+| feedback-factory-triage | */15 | 672 | yes | haiku | script | **yes** |
+| mentor-onboarding | */15 | 672 | no | haiku | script | yes |
+| feedback-factory-process | */30 | 336 | yes | haiku | script | **yes** |
+| feedback-factory-execute | 17,47 | 336 | yes | haiku | script | **yes** |
+| llm-decision-grading | hourly | 168 | yes | haiku | script | **yes** |
+| evolution-overdue-check | 0 */4 | 42 | yes | haiku | agent | no: the body asks the model to complete, cancel or escalate each overdue item |
+| reflection-trigger | 0 */4 | 42 | yes | opus | agent | no |
+| evolution-proposal-evaluate | 0 */6 | 28 | yes | sonnet | agent | no |
+| overseer-guardian | 0 */6 | 28 | yes | sonnet | agent | no |
+| jev-completion-audit | 0 */6 | 28 | no | haiku | script | yes |
+| release-readiness-check | 0 */6 | 28 | no | haiku | script | yes |
+| evolution-proposal-implement | 1,7,13,19 | 28 | yes | opus | agent | no |
+| insight-harvest | 0 */8 | 21 | yes | opus | agent | no |
+| identity-review | daily 3 | 7 | yes | opus | agent | no |
+| overseer-maintenance | daily 2 | 7 | yes | sonnet | agent | no |
+| overseer-infrastructure | daily 6 | 7 | yes | haiku | agent | no |
+| overseer-development | daily 8 | 7 | yes | haiku | agent | no |
+| feedback-factory-action-list | daily 8 | 7 | yes | haiku | script | **yes**: the server writes and sends the message |
+| relationship-maintenance | daily 9 | 7 | yes | haiku | judgment | no (low volume) |
+| rope-health-digest | daily 9 | 7 | yes | haiku | agent | no: it delivers text it writes to a digest topic |
+| correction-class-review-backstop | daily 8:17 | 7 | yes | haiku | script | **yes** |
+| review-canary-battery | daily 6:15 | 7 | no | haiku | script | yes |
+| benchmark-divergence-analysis | daily 3:45 | 7 | no | — | script | yes |
+| overseer-learning | 3 */2 | ~3.5 | yes | sonnet | agent | no |
+| initiative-digest-review | Mon,Thu | 2 | yes | sonnet | agent | no |
+| correction-analyzer | Wed | 1 | no | haiku | judgment | no |
+| failure-analyzer | Wed | 1 | no | haiku | judgment | no |
+| docs-coverage-audit | Mon | 1 | no | haiku | agent | no |
+| org-intent-drift-audit | Mon | 1 | no | haiku | judgment | no |
+| doorway-scan | Mon | 1 | no | haiku | script | yes |
+| routing-price-refresh | Mon | 1 | no | haiku | script | yes |
+| stall-matrix-live-check | Mon | 1 | no | haiku | script | yes |
+| routing-price-web-verify | Tue | 1 | no | haiku | script | yes |
+| bench-refresh | monthly | ~0.25 | no | haiku | agent | no: it compares results against the routing registry and writes attention text |
+
+Counts:
+- **17 script**: all converted in v1.
+- **5 judgment**: none converted in v1 (§6, §7).
+- **15 agent**: unchanged in v1.
+
+## 4. Design overview
+
+1. **Script runner (§5).** A new frontmatter key, `runner: script`, makes a
+   manifest with `execute.type: 'script'` that points at a shipped node file. The
+   scheduler runs that file with no shell, under the job's normal machine claim,
+   with a guard against overlapping runs of the same job and a small cap on how
+   many scripts run at once.
+2. **Status line, then push (§5.3–5.4).** Each template declares the reasons
+   its script may report, each classed as recoverable or critical.
+   - A critical reason is pushed straight away.
+   - A recoverable reason gets a calm attention item on first sight, within the
+     registry's 300-second ceiling. It pushes only in two cases, each sent once:
+     the problem is still present after 6 hours, or it keeps recurring (3 times
+     in 6 hours). Both messages state only what was observed.
+   - The narrator writes a one-paragraph summary. The evidence is rendered
+     deterministically, and a fixed sentence is the fallback.
+3. **Supervision (§5.6).** Daily must-fail canaries prove that every script can
+   still fail. A daily advisory model pass reviews the run history.
+4. **Measurement first (§9):** per-job attribution, a frozen baseline, and a
+   before/after report.
+5. **Phase 2 (§7), a separate spec:**
+   - benchmark routing and lean context for the remaining agent-class jobs;
+   - Jev-first, event-driven commitment detection.
+
+## 5. Script jobs
+
+### 5.1 Template and loader
+
+- **Template keys.**
+  - `getDefaultJobs()` entries gain `runner: 'script'`, `script: '<slug>.mjs'`
+    and, where needed, `anomalies: [<kind>, …]` (§5.3).
+  - `frontmatterFor()` emits these keys.
+  - `ALLOWED_FRONTMATTER_KEYS` adds `runner`, `script` and `anomalies`.
+- **Where scripts live and how they ship.**
+  - Scripts live in `src/scaffold/templates/jobs/instar/scripts/<slug>.mjs`. They
+    are node ESM and use built-in modules only, so they run on macOS and Linux.
+  - `src/scaffold` is already in the package `files` list (package.json:111).
+  - `installBuiltinJobs()` copies `scripts/*.mjs` to
+    `.instar/jobs/instar/scripts/`, always overwriting, under the same contract as
+    the bodies.
+  - The installer writes `execute: { type: 'script', value: '<slug>.mjs' }`. That
+    value is a bare filename validated against `^[a-z0-9-]+\.mjs$`, never a
+    command line.
+- **Loader branch.** Today `AgentMdJobLoader` loads the body and frontmatter, and
+  applies lock-file trust, only for `agentmd` (l.353, l.1266). A new branch does
+  the same for manifests that are `origin: instar` with `execute.type: 'script'`:
+  - It loads the `.md` body and frontmatter and applies `applyLockFileTrust`.
+  - The body stays a **complete, runnable agent prompt**, unchanged in meaning.
+    It serves as the narrator's context and as the rollback path (§8.4).
+- **Lock file.** `sign-instar-lockfile.mjs` adds a `scriptHash` to every entry
+  that has a script. A script job counts as trusted only when both the body hash
+  and the script hash match.
+- **What happens at run time for each trust verdict:**
+  - `trusted`: the script runs.
+  - `untrusted-no-lockfile` (unsigned dev builds): the script runs. This matches
+    today, where an unsigned agentmd default runs with no allowlist
+    (`instar-no-allowlist`). Run history records `lockTrust`.
+  - `untrusted-bad-signature`, `untrusted-not-in-lockfile`, or a script-hash
+    mismatch: the script is **not run**, and **no session is started**. Starting
+    one would mean a read-only session that cannot do the work, at session cost.
+    The run is recorded as `failed` (reason `script-untrusted`), so the existing
+    consecutive-failure alert fires. One degradation report names it plainly,
+    for example: "health check not running: its script failed verification".
+  - The script hash is re-checked **immediately before every execution**, not
+    only at load, so a file changed after loading never runs.
+- **How a script is executed.**
+  - The scheduler rebuilds the absolute path from the slug
+    (`<stateDir>/jobs/instar/scripts/<slug>.mjs`) and runs it with
+    `execFile(process.execPath, [absPath, ...schedulerArgs])`: no shell. The
+    working directory is `path.dirname(stateDir)` (the agent root), as today. The
+    string stored in the manifest is never executed.
+  - The environment is a reduced allowlist: `PATH`, `HOME`, `INSTAR_AUTH_TOKEN`,
+    `INSTAR_AGENT_ID`, `INSTAR_PORT` (new), `INSTAR_JOB_SLUG`,
+    `INSTAR_MESSAGE_KIND=automated` and `INSTAR_SENDER_CLASS=script`. Child
+    probers (doorway-scan, stall-matrix, routing-price) inherit the same set. Their
+    current templates already read only these variables plus `.instar/config.json`;
+    a unit test runs each prober under the reduced environment.
+  - Output goes through the existing secret scrubber
+    (`src/core/durableSecretScrub.ts`) and is then capped at 64 KB per run. A run that goes over the cap is
+    recorded as `failed`, never cut silently.
+- **Who may use script runners.** User-origin `execute.type: 'script'` jobs keep
+  today's shell behaviour. `runner: script` is accepted only on instar-origin
+  templates in v1, so it grants no new user privilege.
+- **Ordering in `triggerJob`.** The script branch (today at l.917, before
+  `tryClaim` at l.950, so script jobs never take the claim) moves below the
+  claim. It stays **above** the session-capacity check, so script jobs are
+  governed only by the script cap below. That way health-check still runs, and
+  can report `sessions-exhausted`, when every session slot is full. Script jobs then take the same claim/lease as
+  session jobs. `perMachineIndependent` still skips the claim.
+- **Overlap and concurrency.**
+  - A per-slug `scriptInFlight` set skips a trigger (`skipLedger:
+    'already-running'`) while that slug's previous script is still running.
+  - No more than **3** scripts run at once per server. A fourth trigger is skipped
+    with reason `script-cap` and goes through the existing retry path (retried
+    one minute later).
+  - Each slug gets a fixed start offset of 0–20 s.
+  - Converted templates set `expectedDurationMinutes` to their real bound. The
+    timeout is twice that.
+
+### 5.2 Script protocol
+
+A script prints exactly one result line, and may also print anomaly lines of the
+kinds its template declares:
+
+```
+JOB_RESULT ok <short summary>
+JOB_RESULT skipped <reason>               # e.g. feature dark (503), prober absent
+JOB_RESULT failed <reason>                # also exit code ≠ 0
+JOB_ANOMALY <kind> <severity 1-3> <evidence ≤ 300 chars>
+```
+
+A **new parser** in `runScriptJob` (it parses neither line today) maps each result:
+
+| Script output | Recorded as |
+|---|---|
+| `ok` | `success` |
+| `skipped` | a new run result `skipped` (with reason): counted as neither success nor failure (see below) |
+| `failed`, a non-zero exit, a missing result line, or over the output cap | `failure` |
+| An anomaly of a kind the template did not declare | ignored and logged |
+
+**What `skipped` changes.**
+- It is a new value in `JobRunHistory`'s result type (l.57, l.241), and the
+  history routes accept it as a filter (routes.ts ~l.17802, l.17828).
+- Stats exclude it from both the numerator and the denominator. Today
+  `failures = completed.filter(r => r.result !== 'success')` (l.361) would count
+  it as a failure; that line changes.
+- It leaves `consecutiveFailures` unchanged, neither raising nor resetting it, so
+  a job that alternates failing and skipping still alerts.
+- It schedules no retry, and the Jev audit does not capture it.
+- CrashLoopPauser and TelemetryCollector already match `failure`/`spawn-error`
+  explicitly and need no change.
+
+Every failure path that the python ports used to bury under `sys.exit(0)` and
+`INSTAR_JOB_FAILURE_FILE` now prints `JOB_RESULT failed` and exits non-zero. (The
+script path never set that variable, so those failures were being recorded as
+successes.) Outcomes the server manages itself (the feedback jobs'
+`SELF_MANAGED` prefixes) stay `ok`/`skipped`, exactly as the server classifies
+them.
+
+Where a template body maps a prober's exit code to "silent", the script maps it
+to `skipped`. For example, stall-matrix's `ledger-unreachable` (exit 2) is a
+non-signal, so it becomes `skipped`. The mapping table for each script is part
+of that script's unit test.
+
+**Failures and anomalies never alert twice for the same thing.** A job that
+cannot do its work (server unreachable, bad response) reports `failed`, and
+failures alert only through the existing `alertOnConsecutiveFailures` path,
+unchanged. Anomaly kinds (§5.3) are things the job *observed* while working
+normally, and only the narrator handles them. No condition is both a failure and
+an anomaly.
+
+Scripts never message anyone and never call the Telegram relay. A job whose
+words are written by the server (feedback-factory-action-list,
+release-readiness, stall-matrix, doorway-scan) triggers the server or prober that
+writes and sends them, as it does today.
+
+### 5.3 Anomaly kinds
+
+Two templates declare anomalies in v1. Every other converted template's body was
+read: each either says "exit silently" or leaves signalling to its own server or
+prober.
+
+health-check works out a **reason set** on each run. Disk space comes from the
+script's own `fs.statfs` call on the volume that holds the agent's state directory (`<stateDir>`) (`/health` has no disk field).
+The other reasons come from the authenticated `/health` fields. Each reason is one `JOB_ANOMALY` line with a stable reason id:
+
+| Template | Kind / reason id | Observed when | Class | Owner of the heal |
+|---|---|---|---|---|
+| health-check | `disk-low` | free space < 10% on the agent volume | recoverable | none in v1 (no new deletion authority is added) |
+| health-check | `disk-critical` | free space < 5% | **critical** (writes start failing, so state is lost) | none in v1 |
+| health-check | `sessions-exhausted` | the session limit is reached | recoverable | the session reaper and the resume queue |
+| health-check | `llm-unreliable` | `llmReliability.status !== "ok"` | recoverable | the provider circuit breakers and the failure swap |
+| health-check | `degradation:<feature>` | one entry per degraded **feature**. Authed `/health` gains a `degradationFeatures` list (each event's stable `event.feature` id, beside the existing `degradationSummary` strings). The strings carry per-occurrence values, so they are evidence only, never the key | recoverable | the subsystem that reported it |
+| commitment-checkin-reminder | `undelivered-reminders` | the pass reports `gaveUp > 0` | **critical** (the reminder service's retries are already exhausted) | already exhausted |
+
+**What is deliberately not a reason.**
+- `consecutiveJobFailures ≥ 5`, which today also marks the server degraded. Each
+  failing job already alerts through `alertOnConsecutiveFailures`, so
+  health-check does not repeat that condition.
+- `/health` being unreachable or returning non-200. The job cannot do its work,
+  so the run records `failed` and alerts through the failure path.
+
+So a condition alerts through exactly one of the two paths, never both. A dead
+server is still the lifeline's and the fleet watchdog's case, as it is today.
+
+### 5.4 Status line, then push
+
+This section applies **Self-Heal Before Notify** with its own registry backstop:
+`standards.selfHealBeforeNotify.recoverableLatencyCeiling`, 300 s in
+`ConfigDefaults.ts`, read live, failing closed to 300 s if the key is missing.
+
+Only reasons that risk **lost data or an undelivered user promise** are critical:
+`disk-critical` and `undelivered-reminders`. That matches the standard's critical
+class (irreversible or data loss).
+
+**Critical reasons** are pushed on the same detection run, with no delay, and the
+owner's heal (if any) carries on at the same time. This is the standard's own
+rule for the critical class: an irreversible or data-loss condition escalates on
+the same detection tick and heals concurrently (notify-and-heal). It is not an
+exception to the standard.
+
+**"Pushed" means delivered.** An episode is marked pushed only when the
+notification path returns a confirmed delivery: for Telegram, a message id from
+the relay. If the send fails, or its outcome is unknown, the episode stays
+unpushed and is retried on the next run. It uses the same idempotency key
+(`<episode id>:<push kind>`), so the send path's existing duplicate suppression
+drops a repeat of an attempt that actually landed. A failed attempt can never
+permanently silence an alarm.
+
+**Critical pushes go out before anything is written to disk.** `disk-critical`
+means writes may already be failing. So for a critical reason, the push goes out
+first, and only then are the episode and audit records written; a failed write
+never blocks the push. When the store cannot be written, repeat pushes are
+limited by an in-memory, per-process record of pushed episodes. That record
+holds the same one-push-per-episode limit, and each failed write gets one line on
+stderr. A server restart while the disk is still full can therefore push once
+more. That is accepted, because a duplicate alarm is better than a silent one.
+
+**Honest limit: a disk that is completely full.** The send path writes its own
+records first (the Telegram origin record), and holds a message when it cannot.
+So once the disk is completely full, no in-server alarm can leave, in the same
+way that a dead server cannot report itself. This is why `disk-critical` fires
+at **5% free**: the alarm goes out while space remains. Below that, the server's
+own failed writes surface through the existing failure paths and the lifeline.
+Building a disk-independent alarm path is out of scope.
+
+**Recoverable reasons get a calm attention item first.** On the same run that
+first sees one (latency 0, well within the 300 s ceiling), health-check raises
+one **calm attention item**:
+
+- It reads "<reason> on <machine>: seen since <time>; owned by <owner, or \"no owner\">". It states only what was observed, never a heal state.
+- It carries `priority: low`, `source: "health-check"` and
+  `conditionKey: job-anomaly:<machineId>:<reason id>`.
+- The attention hub filter keeps automated low-priority items out of the
+  operator's topic and logs them to `logs/attention-hub-held.jsonl`. The item
+  still shows in the attention store, on the dashboard, and on the episode row in
+  `GET /jobs`.
+- It is closed with `POST /attention/clear` when the episode closes.
+
+Health-check never claims that an owner's heal has failed. It cannot see heal
+state, since `/health` carries none, and a lasting symptom is not proof of
+failure. Not every owner escalates on its own either. `llm-unreliable` is a
+24-hour error-rate figure that no breaker turns into an attention item, and
+`disk-low` has no owner at all. So one bounded rule covers every recoverable
+reason:
+
+- **Persistence notice.** If an episode stays open for **6 hours**, one push goes
+  out, combined with any others due on that run. It states only an observation:
+  "<reason> on <machine> has persisted for 6 hours". It never says "the fix
+  failed".
+- **Once per episode.** The notice is sent once per episode and is never
+  repeated.
+- **Owners that escalate are not duplicated.** Where an owner already raised its
+  own attention item for the same condition, that open item suppresses this
+  notice. A match means an open attention item whose `conditionKey` starts with
+  the reason's declared owner prefix: for example `degradation:<feature>` for the
+  DegradationReporter. A reason with no declared prefix is never suppressed.
+
+This is a deliberate change from today. Today's health-check messages the
+operator about any issue it sees. The new one pushes critical ones immediately, and
+any other condition only after 6 hours of persistence. That applies Self-Heal
+Before Notify and Near-Silent Notifications, and it still leaves nothing silent
+indefinitely. `disk-low` has no
+owner, so it stays a calm item until it becomes `disk-critical`, which pushes at
+once. F6 lists this as a user-visible change.
+
+**One message per run, never one per reason.** All the critical pushes from the
+same health-check run are combined into **one** message. It has one
+narrator summary and one evidence block listing every reason. A burst of
+degradation strings is one notification, within the Bounded Notification Surface
+rule.
+
+**Episodes** live in a new machine-local store,
+`.instar/state/job-anomaly-episodes.json`. It is deliberately not the job state
+file, which is cluster-shared and written only by the lease holder
+(`WriteDomainRegistry.ts:217`).
+- The store is written by one small `JobAnomalyEpisodeStore` module **directly
+  and atomically** (temp file, then rename). It never goes through
+  `StateManager.guardWrite`. Standbys therefore record and expire their own
+  episodes, as the `external-hog-arm` file is written today.
+- Its path is **added to git-sync's per-path exclusion list**
+  (`FileClassifier.ts` ~l.164–183) as a build item. The `.instar/state/` tree is
+  not excluded as a whole, so this entry is needed.
+- Its convergence story follows the `attentionStory` shape
+  (`WriteDomainRegistry.ts` ~l.248–253): `logical: pool-scope-read-merge`
+  (through `GET /jobs?scope=pool`), `onSharedGitSyncedPath: true`, and
+  `fileLevel: git-sync-excluded`.
+- **Key.** One episode per `<machineId>:<slug>:<reason id>`. Its stored fields
+  are first-seen, last-seen, status-line-sent, pushed, and narrated severity.
+- **Coverage across runs.** Coverage is rolling. A skipped or failed run is
+  neutral: it neither breaks nor advances an episode. A problem present in 3 runs
+  out of 4 therefore still reaches its window.
+- **Closing.** Only **3 clean runs in a row** close an episode.
+- **Expiry.** If this machine has not run the job for 3 cron intervals (for
+  example, its claim moved), its open episodes close as `stale: job no longer
+  runs here`, and their calm attention items are cleared. The check runs on
+  every scheduler tick and again whenever `buildLocalJobs` reads the store, so it
+  never waits on a run that will not come.
+- **Pool visibility.** Episodes are attached to each job row in `buildLocalJobs`,
+  so `GET /jobs?scope=pool` shows them.
+- **Re-push.** A reason that is new to an open health-check run gets its own
+  episode, so it gets its own calm attention item, and later its own place in that run's
+  combined push. Severity rising from `disk-low` to
+  `disk-critical` is a new reason, so it pushes at once.
+
+**Brakes (P19).**
+
+| Brake | Value |
+|---|---|
+| class | per reason, as in the §5.3 table |
+| remediation-actions | `[]` (an explicit empty list). This watcher is observe-and-report: the owners' heals run and audit themselves. The review records this as a deliberate declaration, not as passing the lint's floor. |
+| max-attempts | one calm attention item and one push per episode; re-pushes only for a new reason |
+| max-wall-clock | 15 s for the narrator call |
+| backoff | none needed: there is no retry loop, and the next observation is the next cron run |
+| dedupe-key | `<machineId>:<slug>:<reason id>` |
+| breaker (recurrence) | **Recurrence escalation is separate from the critical class.** A recoverable reason that opens 3 episodes inside 6 h gets **one** "keeps recurring" push. This is the only other exception to "recoverable reasons wait 6 h". After it, that reason's recurrence and persistence pushes are muted for 24 h. Calm items and the audit continue. Critical reasons are never muted: each new episode of `disk-critical` or `undelivered-reminders` pushes. |
+| max-notification-latency | 0 s to the calm attention item, within the 300 s registry ceiling. Critical reasons push on the same run. |
+| audit-location | `logs/job-anomaly.jsonl` (reason ids, classes, transitions; never raw output) |
+
+**What a push contains.** Two parts, assembled deterministically:
+
+1. **A one-paragraph summary from the narrator.** The narrator gets a fixed
+   instruction, shipped in code: "Tell the operator, in plain words, what this job
+   observed. Do not instruct. Do not speculate about causes you were not given."
+   The narrator call has no tools. Its input is the reason ids and classes, plus
+   the first 2,000 characters of the job body as context only (never as the
+   instruction), cut with a marker. Input is about 4,000 characters in total.
+2. **The evidence block, rendered deterministically and never sent through the
+   model.** Each reason's evidence and the degradation strings, word for word: up
+   to 20 strings of up to 300 characters each. Any overflow is shown as "and N
+   more: see the Jobs tab". Nothing the operator must see verbatim depends on the
+   model.
+
+**Routing and failure handling.**
+- The narrator is component `JobAnomalyNarrator` in `COMPONENT_CATEGORY` as
+  `reflector`. It runs off Claude when another framework is active, and on Claude
+  otherwise. Any narrator failure takes the fixed-sentence fallback below. (The
+  non-gating failure swap, `intelligence.nonGatingFailureSwap`, may also apply,
+  but the design does not depend on it.)
+- Each call carries `attribution` with `jobSlug`, `machineId` and the episode id.
+- **If the narrator fails** (error, timeout, empty reply, open circuit), the
+  summary becomes the fixed sentence "<job> on <machine>: <reasons>." The push
+  then sends normally, with its evidence block.
+- **If the tone gate holds the push**, whatever the reason (an advisory hold, a
+  self-stop, or a `credential-exposure-guard` block), the evidence block is
+  dropped.
+  - Only the fixed sentence is sent, through the deterministic topic-send path
+    that the cold-start lifeline notice uses. It carries just reason ids and the
+    machine nickname, and ends: "details on the Jobs tab".
+  - No text the gate refused is ever sent around it.
+- Normal delivery uses the scheduler's job-notification path, and respects
+  `telegramNotify`.
+
+### 5.5 Cost on the healthy path
+
+A healthy run costs zero model tokens. Each pushed episode costs one narrator call
+of about 1–2k tokens. Status lines cost nothing; they are deterministic text.
+
+### 5.6 Supervision: deterministic proof, plus a Tier-1 review
+
+`docs/LLM-SUPERVISED-EXECUTION.md` puts health checks at Tier 1, to "detect
+false-positive healthy reports". Today a Haiku session on every run pays for that
+duty. A model reading run summaries cannot actually *prove* that a check is able to
+fail, because a working check and a broken check that always reports success can
+produce identical summaries. So v1 splits the duty in two.
+
+**1. Regression checks: daily must-fail canaries, deterministic, one for every
+script job.** Each canary proves that its script's named failure paths still
+signal failure: the fixtures listed in its unit test. It does not prove that
+every real failure is detected.
+- **Who starts them.** Only the scheduler. No manifest, config or environment
+  variable can switch them on, and no canary state survives the run.
+- **The setup.** Once a day, the scheduler starts a loopback stub on an
+  ephemeral port. The stub answers with that script's **must-fail fixture**: a
+  500, a malformed body, or, for health-check, a degraded `/health`. The scheduler
+  then runs the script with `--server-url <stub>`.
+- **Isolation, declared per script.**
+  - Scripts that wrap a local prober (doorway-scan, stall-matrix-live-check,
+    routing-price-*) also get `--prober <path to a stub prober>`. The stub exits
+    with each of the real prober's exit codes, so the script's exit-code mapping
+    is what gets tested.
+  - The real prober never runs in canary mode.
+  - health-check gets `--disk-free-override`. The script rejects this flag, like
+    `--server-url`, unless the scheduler started it in canary mode, so the flag can
+    never hide a real low-disk reading.
+  - In canary mode a script refuses to write any file outside a temp directory.
+  - All of the script's server calls go to the stub, so no real pass, send or
+    model call can happen.
+  - Each script's unit test asserts its canary's side-effect list is empty.
+- **The URL flag is loopback only.** Only the scheduler passes it. The script
+  parses the URL and refuses any whose parsed hostname is not `127.0.0.1` or
+  `::1` (so `http://127.0.0.1@evil` is refused). The flag therefore cannot send
+  the auth token anywhere else.
+- **Assertions.** Every script must print `JOB_RESULT failed`, or its expected
+  `JOB_ANOMALY` lines. Two scripts get more:
+  - **health-check:** the scheduler then feeds its reason lines into the real
+    episode code with an injected clock, under the isolated namespace
+    `canary:<runId>:…`, so it can never collide with a real episode. It asserts
+    every transition: calm attention item, no push for a recoverable reason, critical push on the
+    same run, close after 3 clean runs, stale expiry, the 6-hour persistence
+    push, and the recurrence push followed by its 24-hour mute. It also asserts that the narrator was reached, in
+    `audit-only` mode bound to `runId`, which writes the push without sending it.
+  - **commitment-checkin-reminder:** its fixture exercises
+    `undelivered-reminders`.
+- **Results.** Each result is recorded in **this machine's own run history**
+  (`job-runs.jsonl` already stores `machineId`, `JobRunHistory.ts:63`) as a
+  `script-canary` run, and is audited in `logs/job-anomaly.jsonl` with its
+  `runId`. A script whose canary did not fail as expected raises one attention
+  item:
+  - `priority: high` and `source: "agent"` (the agent's own safety check failed),
+    so it reaches the operator;
+  - `conditionKey: script-canary:<machineId>:<slug>`;
+  - it is cleared by the next passing canary.
+
+  This works on every machine, including standbys, because it never writes the
+  cluster-shared job state.
+
+**2. Tier-1 review: a daily advisory model pass.**
+- **The endpoint.** `POST /jobs/script-supervision/pass`, Bearer auth, triggered
+  by the new shipped script job `script-job-supervisor`. The job is claim-gated
+  and runs on one machine.
+- **What it reads.** For script jobs, `GET /jobs` rows carry a new
+  `recentOutputs` field: the last 3 `outputSummary` values, each about 1,000
+  characters, already scrubbed. The pass reads the pool view (`?scope=pool`), so
+  one pass sees every machine's runs. That is about 51,000 characters a day, read
+  by a server pass, never a session.
+- **The call.** One bounded call per job: component `ScriptJobSupervisor`,
+  category `reflector`, input wrapped as untrusted data. The question: "anything
+  odd in these results that the deterministic checks would not catch?"
+- **What it may do.** It is **advisory log review**. It does not claim to detect
+  false healthy reports; the canaries do that.
+- **Gaps.** When the pool read returns `pool.failed` peers, the pass records
+  them as "not reviewed today" rather than silently skipping them.
+- **Where flags go.** To `logs/script-job-supervisor.jsonl`. A flag raises one
+  attention item per slug and machine
+  (`conditionKey: script-supervision:<machineId>:<slug>`). The pass keeps no
+  state of its own: each pass re-judges, and clears items that no longer apply.
+- **Cost.** The pass's calls and the canaries are attributed to the slug
+  `script-job-supervisor`.
+- **Not Jev.** The question is open-ended, and no Jev rule for it is calibrated.
+
+**Delivery proof, honestly scoped.** The canaries stop before the send. The send
+goes through the shared job-notification and topic-send path, which every job and
+alert uses. The existing delivery instruments prove that path at runtime: the
+Telegram origin detector canaries and the DeliveryFailureSentinel. A weekly real
+send to the operator would be the only stronger proof. It would be noise, so it
+is not added.
+
+## 6. Why v1 does not convert commitment-detection
+
+commitment-detection (`*/5`, enabled by default) is the one high-frequency
+judgment-class job. Round-2 review showed that moving it correctly is a design of
+its own:
+
+- Telegram message ids are per chat, and the issues group shares the log, so a
+  single numeric cursor skips messages.
+- `POST /evolution/actions` has no idempotency today.
+- Its local bookmark does not follow a lease move.
+- The active-active pool means messages land on more than one machine.
+
+It is also **disabled on Echo** (its last run was 2026-09-08), so its cost does
+not appear in the measured week. v1 therefore leaves it unchanged, and §9's
+baseline measures its fleet cost. It moves to phase 2 (§7), together with the
+Jev work.
+
+## 7. Phase 2 (a follow-up spec)
+
+What remains after v1:
+
+- **The 15 agent-class templates plus commitment-detection.** About 160 + up to
+  2,016 nominal runs a week, using the expensive models.
+- **The operator's goals G2 (benchmark routing) and G3 (Jev).** v1 meets them only
+  partly: v1's narrator and supervisor run off Claude when Codex is active, but no
+  benchmark evidence chooses the model yet, and Jev is not used yet.
+
+A Close-the-Loop commitment for the phase-2 spec is registered **when this spec is
+accepted**, not when v1 lands, so the deferral is tracked from day one. Phase 2
+must settle these constraints, carried forward from here:
+
+- **commitment detection becomes event-driven at message ingest**, following the
+  existing Jev Telegram shadows (JevCorrectionShadow): no cron cursor. It
+  classifies with the standing Jev → Luna cascade, falls back to the default
+  framework, and uses a new idempotency key `(chatId, messageId)` on evolution
+  actions. The job is retired or kept as a counts-only script. How Jev's authority
+  is phased in (the standing cascade directive, versus measuring before granting
+  authority) is decided there, on graded outcomes, never on agreement alone.
+- **Framework pin and routing.**
+  - Jobs gain a `framework` pin honoured by `SessionManager`. `framework: auto`
+    resolves a route from a fixed table: template → INSTAR-Bench task(s) in
+    `src/data/benchmarkPredictions.json` → pass-rate floor. Bench tasks for the
+    overseer and synthesis jobs are added first. A job with no row stays on the
+    default framework.
+  - Routes use subscription doors only, and only frameworks that enforce the job's
+    `toolAllowlist`.
+  - An open `divergent-worse` finding vetoes a route.
+  - Routes are sticky for 24 h per slug.
+  - Quota is read from cached pool state.
+- **Lean job context.** It may skip context digests, never safety hooks, and the
+  CLAUDE.md share is measured first.
+
+## 8. Migration parity
+
+1. **The installer already carries most of the change.**
+   `installBuiltinJobs()` runs on every update (`refreshHooksAndSettings`). It
+   always overwrites `.instar/jobs/instar/<slug>.md` and regenerates each per-slug
+   manifest, keeping `enabled` and `disabledAtBodyHash`. With §5.1's installer
+   change (copy `scripts/`, emit the script manifest), every updated agent moves to
+   script runners with no per-agent action.
+2. **Config.** `migrateConfig()` adds only the keys that are missing:
+   - `jobs.scriptRunners: { enabled: true, disabledSlugs: [] }`
+3. **User forks are reported, never rewritten.** Seamless Migration invariant 4
+   says the installer never touches `.instar/jobs/user/`, and this spec keeps
+   that. A user job whose slug matches a converted default is listed once in
+   `logs/job-runner-migration.jsonl` and flagged in `GET /jobs`
+   (`shadowsConvertedDefault: true`), so the operator can choose to drop the fork.
+   No hash history is needed.
+4. **Rollback switch.** `jobs.scriptRunners.enabled: false`, or a slug listed in
+   `disabledSlugs`, is read live at trigger time. With it set, the scheduler runs
+   a script job's body as an agentmd session: today's behaviour, with no file
+   changed. The rollback holds together because:
+   - the body is still the full runnable prompt (§5.1);
+   - no user file was rewritten.
+5. **Loader compatibility.** The closed set of allowed frontmatter keys is checked
+   wherever a body is loaded. Templates and loader ship in the same package
+   version, and a test pins that every shipped template loads under the same
+   version's loader with no entry skipped.
+6. **Agent Awareness.** `generateClaudeMd()` and `migrateClaudeMd()` (guarded by a
+   content check) add a short section saying:
+   - most scheduled jobs now run as scripts with no model;
+   - health-check pushes critical problems at once;
+   - other problems show as calm attention items, and send one message only if
+     they persist 6 hours or keep recurring;
+   - where to look: `GET /jobs` (per run: `runner`, `lockTrust`, `tokens`) and
+     `GET /jobs/cost`.
+7. **Dashboard.** The Jobs tab shows each job's runner, its last result, and its
+   7-day token use against the baseline.
+
+## 9. Measurement
+
+1. **Per-job attribution.**
+   - TokenLedger's `token_events` rows are keyed by the Claude transcript
+     `session_id`. A side table, `job_sessions(session_id, job_slug, machine_id,
+     started_at)`, is written when a job session starts and joined when the
+     ledger is read. It is pruned on the same schedule as `token_events`.
+   - Model calls made by the narrator and the supervision pass are attributed
+     through `featureMetrics`. Each carries `attribution.component` plus the
+     originating `jobSlug`, `machineId` and episode/run id, so per-slug totals
+     are exact.
+   - Script runs record `tokens: 0` in run history, so zero is a measured value
+     rather than a missing one.
+2. **Baseline.**
+   - Before any template flips, a 7-day baseline is frozen per job and per
+     machine.
+   - **How it is collected:** the `job_sessions` attribution ships first (rollout
+     step 1) and runs for **7 days of prospective collection** before any
+     conversion. A best-effort backfill from transcripts sits alongside it. That
+     is the §1 scan, which matches a session's first prompt against each job
+     body.
+   - Sessions the backfill cannot map are reported as an explicit `unmapped`
+     count, never dropped.
+   - The frozen baseline uses the prospective week. The backfill is shown only
+     for comparison.
+   - It uses the same scan and weighting as §1, with the weights written into
+     the file.
+   - It is stored at `.instar/state/job-cost-baseline.json`, together with the
+     method and the date range.
+   - It counts commitment-detection separately, which closes the §1 gap and
+     sizes phase 2.
+3. **Read surface.**
+   - `GET /jobs/cost?sinceDays=7` returns, per slug: runs, model calls, tokens
+     (in, out, cached), weighted tokens, the framework/model mix, narrations,
+     and the baseline.
+   - `?scope=pool` merges all machines.
+   - With no baseline, it answers `baseline: null` and gives the reason.
+4. **Rollout report.** Seven days after a slug flips on a machine, a one-time
+   report goes to the job log and the existing Updates topic. It:
+   - states before and after for that slug;
+   - flags for a human look (never as a verdict) any job whose failure or anomaly
+     count moved by more than 2× the baseline's daily standard deviation;
+   - quotes one raw run end-to-end.
+5. **Whether health-check still catches real problems.**
+   - **Old reporting as a baseline.** Health-check's old Telegram sends are a
+     *behavioural baseline* (what it used to report), not proof of every problem
+     that happened. The rollout report compares episodes plus failure alerts
+     after the flip against that baseline, for a human to read.
+   - **Deterministic proof.** The daily canary (§5.6) proves that detection and
+     episode logic still work, with deterministic assertions rather than a model's
+     reading.
+
+## 10. Expected savings (an estimate; §9 replaces it with measurements)
+
+**What was measured on Echo:**
+- 3,140 job sessions in one week, about 756M weighted tokens, roughly 241k per
+  session.
+- The operator's analysis found almost all of them came from the five jobs in §1.
+
+Per-job counts were not part of that measurement. So the split below assumes the
+remaining agent-class jobs ran close to their nominal ~160 runs; §9 replaces this
+with real per-job numbers.
+
+| Part of the week | Sessions (est.) | Weighted tokens (est.) | After v1 |
+|---|---|---|---|
+| The five jobs | ~2,980 | ~717M | under 1M: bounded narrator and supervisor calls, no sessions |
+| Remaining agent-class jobs | ~160 | ~39M | unchanged in v1; phase 2's target |
+| **Total** | **3,140** | **~756M** | **~40M (about a 95% cut)** |
+
+**Not in these numbers:**
+- feedback-factory-action-list and correction-class-review-backstop (about 14
+  sessions a week): their share sits inside the estimates above.
+- commitment-detection: it is disabled on Echo and unmeasured on the fleet.
+  Phase 2 sizes it from the baseline.
+
+These numbers are **Echo's**. Other agents on the shipped defaults (Bob, Cora,
+AI Guy, Luna, Monroe) run the same five jobs, so they should see a similar
+absolute saving on them. Their percentage depends on what else they run. In
+particular, commitment-detection is enabled by default and adds up to 2,016
+nominal sessions a week, which v1 does not touch. Each agent's real numbers come
+from §9.
+
+## 11. Rollout
+
+1. **Measurement.** Land §9.1–9.3. Collect 7 days of prospective per-job
+   attribution, then freeze the baselines. No behaviour change.
+2. **Runner, no conversions yet.** Land the runner, the loader branch, the lock
+   file and the claim-ordering fix. `jobs.scriptRunners.enabled` defaults to
+   true, but no template is converted yet.
+3. **First conversions, on development agents.** Convert llm-decision-grading and
+   correction-class-review-backstop.
+   - **Pass bar for this step and step 4, over 48 h.** These numbers are inputs to
+     a human read of the runs, not an automatic gate:
+     - the same number of runs, allowing for cron skips;
+     - no run recorded `success` where the server's own log shows that run's
+       outcome as a failure;
+     - zero model tokens;
+     - one raw run per slug, read end to end.
+4. **The rest, still on development agents.** Convert the three feedback-factory
+   jobs, health-check (with the canary passing daily) and action-list. The same
+   pass bar applies.
+   - The ten converted templates that ship **disabled** are each exercised on a
+     development agent with one triggered run against their fixtures. That
+     includes commitment-checkin-reminder's `undelivered-reminders` path. They
+     stay disabled by default, as today.
+5. **Fleet.** Ship a fleet release with every template marked "Converted in v1:
+   yes" in §3. Migration Parity (§8) carries it to existing agents.
+
+## 12. Tests (three tiers)
+
+**Unit tests:**
+- Each ported script against recorded endpoint fixtures:
+  - fixtures: 200, 503 dark, malformed body, timeout, server unreachable, the
+    self-managed outcomes, and the prober exit codes;
+  - each asserts the exact `JOB_RESULT` line and exit code;
+  - an unreachable server must give `failed`.
+- Each prober runs under the reduced environment.
+- The result-line parser:
+  - it maps every result line correctly, including a missing line;
+  - it fails a run whose output exceeds the cap;
+  - it ignores an anomaly kind the template did not declare.
+- The installer:
+  - it emits script manifests;
+  - it refuses a script name that is not a slug;
+  - it copies `scripts/`.
+- The loader and runner:
+  - the script branch;
+  - each trust verdict;
+  - re-hashing just before execution;
+  - an untrusted script records `failed` and starts no session.
+- `skipped` semantics: stats exclusion, failure streak unchanged, no retry, no
+  audit capture.
+- The lock file's `scriptHash`.
+- Overlap and concurrency: single-flight skips, `script-cap` skips with retry,
+  and the start offsets.
+- The anomaly path:
+  - critical reasons push on the same run;
+  - recoverable reasons raise a calm attention item, then one push after 6 hours
+    of persistence;
+  - an owner's own open item suppresses that push;
+  - a skipped or failed run is neutral for the rolling window;
+  - the episode store is written atomically outside `guardWrite`, its path is
+    excluded from git-sync, and stale episodes
+    expire;
+  - job-failure reasons are excluded;
+  - the evidence block is rendered verbatim, without going through the model;
+  - episode state persists across a restart;
+  - severity changes and new strings trigger re-narration;
+  - episodes close only after the required clean runs;
+  - the recurrence push and its 24-hour mute work, and critical reasons are
+    never muted;
+  - the fixed template is sent when the model fails, and when the tone gate
+    holds the narration;
+  - `boundedTail` leaves its marker.
+- The canaries:
+  - each script fails on its must-fail fixture;
+  - the URL flag refuses anything that is not loopback;
+  - the health-check episode run reaches each transition under the injected
+    clock;
+  - canaries cannot be enabled from the manifest, config or environment;
+  - they never touch a real episode.
+
+**Integration tests:**
+- A script job runs through `runScriptJob` with zero sessions. It takes and
+  releases the claim.
+- An anomaly produces exactly one narration per episode.
+- `POST /jobs/script-supervision/pass` and `GET /jobs/cost` work over HTTP.
+
+**E2E tests:**
+- The production init path installs the templates.
+- A fresh agent and an updated agent both end up with script manifests and
+  `scripts/`.
+- health-check fires on schedule with no session.
+- The rollback flag restores agentmd behaviour live.
+- The package contains `scripts/`.
+
+**Wiring tests:**
+- The narrator, the supervision pass and the job-session attribution are
+  non-null.
+- They delegate to the real intelligence provider, as wired in `server.ts`.
+
+## Maturation plan
+
+- **test-agent-live:** a throwaway agent on one machine with all 17 templates
+  converted. Run each script once on its normal fixture and once on its
+  must-fail fixture, and observe the job result, the run history and the zero
+  sessions. Fill a temp volume below 5% free and observe one critical push.
+- **dev-agent-live:** §11 steps 3 and 4 on the development agents (Echo first),
+  each for 48 hours. The flag is `jobs.scriptRunners.enabled`, which defaults to
+  true but with templates converted step by step. The step 3 pass bar applies.
+- **fleet:** a normal release with every "Converted in v1: yes" template, carried
+  by `installBuiltinJobs()` on update (§8). It ships only after the graduation
+  criterion holds on the development agents.
+- **graduation criterion:** over 7 days on Echo, each of the following is checked
+  in the job-cost report, never inferred:
+  - zero model tokens for the converted jobs;
+  - the same run count as the baseline, allowing for cron skips;
+  - no run recorded `success` where the server's log shows a failure;
+  - all must-fail canaries passing daily;
+  - one raw run per slug read end to end.
+
+  A zero count of runs is not a pass.
+- **dark-window:** at most 21 days from merge to the fleet decision. If the
+  criterion is not met by then, the reason and a new date are recorded on the
+  phase-2 tracking commitment. The feature is never left dark silently.
+
+## 13. Multi-machine posture
+
+- **Script job runs**: `unified`. They take the claim/lease like session jobs once
+  the §5.1 ordering fix lands.
+  - Jobs already marked `perMachineIndependent` keep that marking:
+    llm-decision-grading, doorway-scan, jev-completion-audit,
+    stall-matrix-live-check, routing-price-refresh, routing-price-web-verify.
+  - Each of these reads or writes only its own machine's local data.
+- **health-check**: `unified`. It is claim-gated, unchanged from today (the §2
+  non-goal), so it checks the disk of the machine holding the claim, and other
+  machines' disks are not checked. That is today's behaviour, and it is stated
+  here rather than left implied. The narration names the machine's nickname.
+- **Supervision pass**: `unified`. It is claim-gated, reads every machine's
+  script runs through `GET /jobs?scope=pool` (`recentOutputs` on each row), and
+  keeps no state of its own.
+- **Must-fail canaries**: each machine runs them for its own scripts, because a
+  canary proves *this machine's* script and scheduler code. Their only state is
+  audit rows. They pass or fail through the job result, which is visible through
+  the pool view.
+- **Anomaly episode store** (`.instar/state/job-anomaly-episodes.json`):
+  `machine-local`. `machine-local-justification: hardware-bound-resource`. An
+  episode describes this machine's disk, sessions and server, observed live, so a
+  copy on another machine would describe the wrong hardware. It is registered as
+  machine-local in `WriteDomainRegistry`. It is visible through
+  `GET /jobs?scope=pool`, and it expires when this machine stops running the job.
+- **Job cost baseline and `GET /jobs/cost`**: each machine keeps its own data,
+  merged when read with `?scope=pool`.
+
+## 14. Decision points touched
+
+| Decision point | Class | Justification / floor |
+|---|---|---|
+| Script result → success/failure (`JOB_RESULT`, exit code, prober-exit mapping) | invariant | fixed protocol, unit-tested per script |
+| Script emits a declared `JOB_ANOMALY` (§5.3 thresholds) | invariant | fixed numeric thresholds, both sides tested |
+| Reason class → push now (critical), or a calm item plus one push after 6 hours of persistence (recoverable); episode open, close, expire, re-push | invariant | fixed table and clock (§5.3–5.4) |
+| Narration wording | judgment-candidate | one bounded call; floor: fixed template on model failure or tone-gate hold, sent on the deterministic path |
+| Script trust verdict → run, or record `failed` with no session | invariant | lock-file hashes, re-checked immediately before execution |
+| Must-fail canary passed or not | invariant | deterministic assertion per script |
+| Supervision "anything odd?" | judgment-candidate | advisory flag only, no action; floor = no flag |
+| Rollback flag | invariant | operator switch, read live |
+
+## 15. Frontloaded Decisions
+
+- **F1 Script runtime:** node `.mjs`, built-in modules only, run through
+  `execFile(process.execPath)` with no shell, cwd set to the agent root.
+- **F2 Cadences:** unchanged.
+- **F3 Narrator and supervision category:** `reflector`.
+- **F4 Tier-1 supervision: a stated deviation, not "kept".**
+  - `docs/LLM-SUPERVISED-EXECUTION.md` defines Tier 1 as per-run LLM validation.
+  - Converted script jobs carry `supervision: tier0`.
+  - Per-run supervision is replaced by four things: deterministic result parsing
+    on every run, deterministic must-fail canaries every day, a daily advisory
+    model pass, and the existing consecutive-failure alerts.
+  - Reason: per-run model supervision of a fixed command was most of the cost,
+    and the canaries are stronger evidence that a check can still fail than a
+    model reading its output.
+  - The deviation is named to the operator in the summary, and the standard's
+    tier table gains a line for script jobs in the same change.
+- **F5 Scope:** v1 is §5, §8 and §9.
+  - Phase 2 is a separate spec covering benchmark routing, lean context, and
+    Jev-first commitment detection.
+  - Its commitment is registered when this spec is accepted.
+  - The partial delivery of G2/G3 in v1 is stated plainly in §7 and in the
+    summary to the operator.
+- **F6 Fleet default on** after the §11 pass bars.
+  - *Cheap to change later*, for the runner itself only: the flag restores
+    agentmd behaviour live, and no user file is rewritten.
+  - *Not cheap*, and not claimed to be:
+    - a user-visible change: health-check now pushes critical problems
+      immediately, and others only once they have persisted for 6 hours; until
+      then they appear as calm attention items;
+    - the new `GET /jobs` fields, `GET /jobs/cost` and the Jobs-tab surfaces;
+    - narrations already sent.
+  - These ship only after the §11 development-agent bar.
+- **F7 Reasons, classes and windows:** as in the §5.3 and §5.4 tables.
+  - A calm attention item is raised on first observation.
+  - A recoverable reason gets one push only if it persists for 6 hours, or one
+    if it recurs 3 times in 6 hours. Either push is skipped when an owner's own
+    open attention item already covers the same condition.
+  - Critical reasons are pushed immediately, and are never muted.
+- **F8 Concurrency:** 3 scripts per server; a fourth is skipped with reason
+  `script-cap` and retried after 1 minute. Each slug gets a fixed start offset of
+  0–20 seconds and has one run in flight at a time.
+- **F9 Health-check heal authority:** none in v1. Owners heal; health-check only
+  observes and reports.
+
+## 16. Open questions
+
+*(none)*
