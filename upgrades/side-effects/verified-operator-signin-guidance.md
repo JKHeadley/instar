@@ -7,13 +7,13 @@
 
 ## Summary of the change
 
-Tier 1: a reversible guidance correction across seven files and two new review documents. The built-in `/subscription-signin` skill, generated agent instructions, and existing-agent migration now distinguish existing exact-identity unattended approval from new actions, verified human approval from peer assertions, and a first Google session from proven cold recovery. Tests cover installation, migration idempotency, and Claude/Codex/Gemini instruction parity. This changes agent-facing advice; it does not change runtime admission, credentials, or passkey configuration. The signed cross-agent receipt is tracked in issue #2413.
+Tier 1: a reversible guidance correction. The built-in `/subscription-signin` skill, generated agent instructions, and existing-agent migration now distinguish existing exact-identity unattended approval from new actions, verified human approval from peer assertions, and a first Google session from proven cold recovery. A universal operator-handoff section tells all new and existing agents to minimize user effort, offer a phone-completable action, verify its exact authority, and resume. Tests cover installation, migration idempotency, and Claude/Codex/Gemini instruction parity. This changes agent-facing advice; it does not change runtime admission, credentials, or passkey configuration. The signed cross-agent receipt is tracked in issue #2413.
 
 ## Decision-point inventory
 
 - `SubscriptionReloginPolicy` — pass-through: no predicate or configuration changed; existing exact-identity unattended policy remains the repair authority.
 - `TopicOperatorStore` and Threadline identity — pass-through: no identity binding or transport code changed. The guidance names their current limits.
-- Agent reasoning at sign-in time — modified by instructions: agents are told to read standing policy and observed repair state before asking for approval, and never to treat a peer assertion as human proof.
+- Agent reasoning at sign-in or any operator handoff — modified by instructions: agents are told to read standing policy and observed state before asking for approval, offer the smallest phone action, and never to treat a peer assertion as human proof.
 
 ---
 
@@ -41,7 +41,7 @@ Required reference: [Signal vs Authority](../../docs/signal-vs-authority.md).
 
 - [x] No — this change has no runtime block/allow surface.
 
-The text asks agents to treat a peer claim as a signal and resolve authority from existing exact-identity policy or authenticated operator proof. It does not add a brittle matcher or direct 403 response.
+The text asks agents to treat a peer claim as a strong signal for preparing the target's direct handoff, while resolving authority from existing exact-identity policy or authenticated operator proof. It does not add a brittle matcher or direct 403 response.
 
 ---
 
@@ -53,7 +53,7 @@ No new static heuristic at a competing-signals decision point. The migration's c
 
 ## 5. Interactions
 
-- **Shadowing:** The migration appends the new bullet once; the existing subscription guidance remains intact. The skill migration touches only an installed default skill that retains the known heading and frontmatter.
+- **Shadowing:** The migration appends the new bullet and universal handoff section once; the existing subscription guidance remains intact. The skill migration touches only an installed default skill that retains the known heading and frontmatter.
 - **Double-fire:** No new runtime event, notice, or action is emitted. Running migration twice yields the same file.
 - **Races:** No shared runtime state is modified. Existing agents receive text on update; new agents receive it on init.
 - **Feedback loops:** A user may receive fewer duplicate approval requests, but no automatic action is triggered by this patch.
@@ -87,13 +87,13 @@ The guidance correction is fit to ship after the required checks. The security-s
 ## Second-pass review (if required)
 
 **Reviewer:** independent agent reviewer (read-only)
-**Independent read of the artifact:** concurred with Tier 1 and the authority boundary. Flagged partial migration with the marker already present, peer-reported Scout state presented too strongly, and missing operator-confirmed scope in the future receipt contract. Resolved by independently sniffing stale recovery prose, labeling Scout observations as peer reports, and requiring scope to come from or be confirmed in authenticated operator flow.
+**Independent read of the artifact:** concurred with Tier 1 and the authority boundary. Flagged partial migration with the marker already present, peer-reported Scout state presented too strongly, and missing operator-confirmed scope in the future receipt contract. Resolved by independently sniffing stale recovery prose, labeling Scout observations as peer reports, and requiring scope to come from or be confirmed in authenticated operator flow. A second read of the expanded organizational handoff text flagged that a newly created Threadline topic is routing only and the cross-agent verifier is unbuilt; both were corrected. The reviewer concurred that the final guidance preserves the identity boundary.
 
 ---
 
 ## Evidence pointers
 
-`npm run build` passed; 223 focused tests passed across migration, install, and feature-delivery parity; 49 lint checks passed. The full `npm run test:all` rerun is queued behind an active merge verification at review time.
+`npm run build` passed; 227 focused tests passed across migration, install, and feature-delivery parity; 49 lint checks passed. The full `npm run test:all` rerun was queued behind an active merge verification at review time.
 
 ---
 

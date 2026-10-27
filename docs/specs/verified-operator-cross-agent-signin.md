@@ -8,6 +8,12 @@ All Claude and Codex accounts designated for Echo are shared across Echo machine
 
 An approval received in one agent's authenticated operator conversation should be usable by another agent only when Instar can prove the same human authorized the exact operation. Threadline and Witness identify agents; their ordinary messages are not operator approval. If proof cannot be verified, the target requires a direct authenticated operator action or a PIN-authored scoped mandate.
 
+The trusted peer's report remains a strong lead: the target must use it to prepare the exact request, not discard it or make the person repeat the story. If direct approval is needed, the target agent initiates a phone-completable, prefilled request to the person in its own already authenticated operator conversation. A newly created or bound Threadline topic is a routing surface, not approval proof; the target must receive a fresh authenticated operator action there before authorizing anything. It then resumes the workflow after approval. The person should not have to find the agent, run commands, or perform agent-owned setup.
+
+## Organizational approval hierarchy
+
+An Instar agent operates as an employee with a defined role. The order is: (1) its own standing grant covers the work, so it acts; (2) another verified agent may approve in its own name only if an independently recorded delegation grants that peer the exact approval authority and its scope covers the action; (3) a peer may relay the operator's decision only with verifiable operator-origin proof bound to this request; (4) otherwise the target asks the operator directly using the smallest phone action. A trusted peer's report without one of those grants is useful context for preparing that request, not a veto or an authorization. Neither an agent nor a peer can expand its own grant, and the target verifies authority at the action doorway, not by trusting conversational prose. Current Instar does not yet provide the cross-agent receipt or a general delegated peer-approval verifier; those remain implementation work under issue #2413.
+
 ## Receipt contract
 
 The signed cross-agent receipt is tracked in [Instar issue #2413](https://github.com/JKHeadley/instar/issues/2413). <!-- tracked: #2413 -->

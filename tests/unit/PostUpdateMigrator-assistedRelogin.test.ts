@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 const roots: string[] = [];
@@ -15,6 +16,11 @@ afterEach(() => {
 });
 
 describe('PostUpdateMigrator assisted re-login awareness', () => {
+  it('puts the operator handoff rule into the fresh agent template', () => {
+    const content = generateClaudeMd('test', 'Scout', 4042, true);
+    expect(content).toContain('## Operator handoff: minimum effort, verified authority');
+    expect(content).toContain('A newly created or bound Threadline topic requires a fresh authenticated operator action');
+  });
   it('adds the authority-bounded repair guidance idempotently beside passive history', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-awareness-')); roots.push(root);
     fs.mkdirSync(path.join(root, '.instar'), { recursive: true });
@@ -36,6 +42,9 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(first.upgraded).toContain('CLAUDE.md: added approved cross-agent sign-in guidance');
     expect(once).toContain('**Approved auto-login across agents**');
     expect(once).toContain('Threadline/Witness peer message authenticates the sending agent, not the human operator');
+    expect(first.upgraded).toContain('CLAUDE.md: added minimum-effort verified operator handoff');
+    expect(once).toContain('## Operator handoff: minimum effort, verified authority');
+    expect(once).toContain('A newly created or bound Threadline topic requires a fresh authenticated operator action');
     expect(once).toContain('POST /subscription-relogin/repair-cell');
     expect(once).toContain('Never ask for or paste credentials into chat');
     expect(first.upgraded).toContain('CLAUDE.md: added agent-navigated sign-in awareness');
