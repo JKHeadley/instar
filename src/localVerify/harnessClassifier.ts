@@ -33,9 +33,13 @@ export const HARNESS_GLOBS: readonly string[] = Object.freeze([
   'scripts/fix-better-sqlite3.cjs',
 ]);
 
-/** Packages whose version change in a manifest or lockfile is a test-toolchain change. */
-export const TOOLCHAIN_PACKAGES: readonly string[] = Object.freeze(['vitest', 'typescript', 'tsx']);
-export const TOOLCHAIN_SCOPES: readonly string[] = Object.freeze(['@vitest/']);
+/**
+ * Packages whose version change in a manifest or lockfile is a test-toolchain change.
+ * `typescript-native` is the alias the build and lint scripts run the TypeScript 7
+ * compiler under; its per-platform binaries are the `@typescript/` scope.
+ */
+export const TOOLCHAIN_PACKAGES: readonly string[] = Object.freeze(['vitest', 'typescript', 'typescript-native', 'tsx']);
+export const TOOLCHAIN_SCOPES: readonly string[] = Object.freeze(['@vitest/', '@typescript/']);
 
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepare', 'preprepare', 'postprepare', 'prepublish'];
 

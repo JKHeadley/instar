@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "typescript-7-native-compiler",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-27T18:24:08.536Z",
+  "artifactPath": "upgrades/side-effects/typescript-7-native-compiler.md",
+  "artifactSha256": "7d97ea18e17b302f7c6436badb1af7508ced4f71ae9ed8da1cf2d5767a8dbc1c",
+  "coveredFiles": [
+    "docs/specs/typescript-7-native-compiler.eli16.md",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "src/localVerify/harnessClassifier.ts",
+    "tests/unit/localVerify/harnessClassifier.test.ts",
+    "upgrades/next/typescript-7-native-compiler.md",
+    "upgrades/side-effects/typescript-7-native-compiler.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dev-tooling swap with byte-identical shipped JavaScript plus a two-entry widening of the Local Verify toolchain list; a revert fully undoes it.",
+  "eli16Path": "docs/specs/typescript-7-native-compiler.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/typescript-7-native-compiler.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

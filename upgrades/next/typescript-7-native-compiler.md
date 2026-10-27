@@ -1,0 +1,20 @@
+# Type-check and build with the TypeScript 7 native compiler
+
+## What Changed
+
+- New devDependency `typescript-native` (`npm:typescript@7.0.2`, pinned). The `build`, `lint` (type-check step) and `dev` scripts now run `node node_modules/typescript-native/bin/tsc` by explicit path.
+- `typescript@^5.9.3` stays installed: TypeScript 7 does not ship the classic JavaScript compiler API that our lint scripts, several tests and `src/localVerify/skipRatchet.ts` load by the name `typescript`.
+- Local Verify's harness classifier now treats `typescript-native` and the `@typescript/` native binary packages as test toolchain, so a later bump of the compiler the build runs gets the independent second-pass review.
+- `pnpm-lock.yaml` updated so the frozen pnpm install in the UX gate still matches.
+
+## What to Tell Your User
+
+Nothing changes for an ordinary agent: the program instar ships is byte-for-byte the same. For people developing instar itself, type-checking and building are about four times faster.
+
+## Summary of New Capabilities
+
+- None for agents. Development tooling: type-check 68 s → 15 s, build 93 s → 23 s.
+
+## Evidence
+
+Same machine, same tree: type-check 68.0 s → 15.4 s; emit 92.9 s → 23.3 s; `npm run build` exit 0 in 24.3 s; full `npm run lint` exit 0. `dist/` comparison against the 5.9 build (repeated independently by the second-pass reviewer): 7,852 files each, every `.js` byte-identical; `.d.ts` differences are quote style and union order only; source maps keep identical `sources`. Positive control: a deliberate type error and a missing import each exit 1 with TS2322/TS2307. Classifier: 2 new tests fail on the old list and pass on the new one (38/38). Tests that read the scripts or use the TS API: 30 unit files (685 tests) and 3 integration files (16 tests) pass; threadline e2e 38 files (420 tests) pass.
