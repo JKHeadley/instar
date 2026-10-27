@@ -1,5 +1,5 @@
 {
- "version": "1.0.0",
+ "version": "1.1.0",
  "meta": {
   "source": "/Users/dabombstudio/.instar/agents/echo/CLAUDE.md",
   "sha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
@@ -7,8 +7,10 @@
   "bytes": 403554,
   "jsChars": 400595,
   "blockCount": 274,
-  "tokensEstTotal": 100251,
-  "tokenMethod": "ceil(chars/4) per block; an estimate, not a tokenizer count",
+  "tokensTotal": 147201,
+  "tokensWholeFile": 147474,
+  "tokensEstChars4Total": 100251,
+  "tokenMethod": "Anthropic POST /v1/messages/count_tokens, model claude-opus-5-5, each block sent as one user message, minus the 8-token message framing (measured by counting \"a\" minus 1). claude-sonnet-5-5, claude-haiku-5-5 and claude-fable-5-1 return the same whole-file count (one tokenizer). Counted 2026-10-26.",
   "legend": {
    "tags": {
     "rule": "a behavioral constraint that holds whatever the user asks",
@@ -44,7 +46,8 @@
    "parentFeature": null,
    "headingPath": "",
    "chars": 234,
-   "tokensEst": 59,
+   "tokens": 102,
+   "tokensEstChars4": 59,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -65,7 +68,8 @@
    "parentFeature": "CLAUDE.md — instar",
    "headingPath": "CLAUDE.md — instar",
    "chars": 21,
-   "tokensEst": 6,
+   "tokens": 12,
+   "tokensEstChars4": 6,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -86,7 +90,8 @@
    "parentFeature": "What This Project Is",
    "headingPath": "CLAUDE.md — instar > What This Project Is",
    "chars": 383,
-   "tokensEst": 96,
+   "tokens": 141,
+   "tokensEstChars4": 96,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -107,7 +112,8 @@
    "parentFeature": "Quick Reference",
    "headingPath": "CLAUDE.md — instar > Quick Reference",
    "chars": 255,
-   "tokensEst": 64,
+   "tokens": 98,
+   "tokensEstChars4": 64,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -128,7 +134,8 @@
    "parentFeature": "Architecture",
    "headingPath": "CLAUDE.md — instar > Architecture",
    "chars": 5314,
-   "tokensEst": 1329,
+   "tokens": 1872,
+   "tokensEstChars4": 1329,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -149,7 +156,8 @@
    "parentFeature": "Development Workflow",
    "headingPath": "CLAUDE.md — instar > Development Workflow",
    "chars": 24,
-   "tokensEst": 6,
+   "tokens": 7,
+   "tokensEstChars4": 6,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -170,7 +178,8 @@
    "parentFeature": "Testing Against Real Repos",
    "headingPath": "CLAUDE.md — instar > Development Workflow > Testing Against Real Repos",
    "chars": 471,
-   "tokensEst": 118,
+   "tokens": 183,
+   "tokensEstChars4": 118,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -191,7 +200,8 @@
    "parentFeature": "Test Targets",
    "headingPath": "CLAUDE.md — instar > Development Workflow > Test Targets",
    "chars": 263,
-   "tokensEst": 66,
+   "tokens": 118,
+   "tokensEstChars4": 66,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -212,7 +222,8 @@
    "parentFeature": "Key Design Decisions",
    "headingPath": "CLAUDE.md — instar > Development Workflow > Key Design Decisions",
    "chars": 478,
-   "tokensEst": 120,
+   "tokens": 172,
+   "tokensEstChars4": 120,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -233,7 +244,8 @@
    "parentFeature": "Standards",
    "headingPath": "CLAUDE.md — instar > Standards",
    "chars": 13,
-   "tokensEst": 4,
+   "tokens": 4,
+   "tokensEstChars4": 4,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -254,7 +266,8 @@
    "parentFeature": "Standards",
    "headingPath": "CLAUDE.md — instar > Standards",
    "chars": 893,
-   "tokensEst": 224,
+   "tokens": 304,
+   "tokensEstChars4": 224,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -275,7 +288,8 @@
    "parentFeature": "Standards",
    "headingPath": "CLAUDE.md — instar > Standards",
    "chars": 299,
-   "tokensEst": 75,
+   "tokens": 139,
+   "tokensEstChars4": 75,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -297,7 +311,8 @@
    "parentFeature": "Standards",
    "headingPath": "CLAUDE.md — instar > Standards",
    "chars": 1004,
-   "tokensEst": 251,
+   "tokens": 405,
+   "tokensEstChars4": 251,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -319,7 +334,8 @@
    "parentFeature": "Standards",
    "headingPath": "CLAUDE.md — instar > Standards",
    "chars": 961,
-   "tokensEst": 241,
+   "tokens": 329,
+   "tokensEstChars4": 241,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -340,7 +356,8 @@
    "parentFeature": "Standards",
    "headingPath": "CLAUDE.md — instar > Standards",
    "chars": 821,
-   "tokensEst": 206,
+   "tokens": 288,
+   "tokensEstChars4": 206,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -362,7 +379,8 @@
    "parentFeature": "Standards",
    "headingPath": "CLAUDE.md — instar > Standards",
    "chars": 2212,
-   "tokensEst": 553,
+   "tokens": 796,
+   "tokensEstChars4": 553,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -385,7 +403,8 @@
    "parentFeature": "API Authentication",
    "headingPath": "CLAUDE.md — instar > API Authentication",
    "chars": 585,
-   "tokensEst": 147,
+   "tokens": 215,
+   "tokensEstChars4": 147,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -406,7 +425,8 @@
    "parentFeature": "API Authentication",
    "headingPath": "CLAUDE.md — instar > API Authentication",
    "chars": 1027,
-   "tokensEst": 257,
+   "tokens": 425,
+   "tokensEstChars4": 257,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -428,7 +448,8 @@
    "parentFeature": "API Authentication",
    "headingPath": "CLAUDE.md — instar > API Authentication",
    "chars": 533,
-   "tokensEst": 134,
+   "tokens": 193,
+   "tokensEstChars4": 134,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -449,7 +470,8 @@
    "parentFeature": "Key Patterns from Dawn",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn",
    "chars": 96,
-   "tokensEst": 24,
+   "tokens": 33,
+   "tokensEstChars4": 24,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -470,7 +492,8 @@
    "parentFeature": "Key Patterns from Dawn",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn",
    "chars": 453,
-   "tokensEst": 114,
+   "tokens": 194,
+   "tokensEstChars4": 114,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -492,7 +515,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 824,
-   "tokensEst": 206,
+   "tokens": 300,
+   "tokensEstChars4": 206,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -515,7 +539,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 663,
-   "tokensEst": 166,
+   "tokens": 271,
+   "tokensEstChars4": 166,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -537,7 +562,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 595,
-   "tokensEst": 149,
+   "tokens": 260,
+   "tokensEstChars4": 149,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -558,7 +584,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 79,
-   "tokensEst": 20,
+   "tokens": 24,
+   "tokensEstChars4": 20,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -579,7 +606,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 2659,
-   "tokensEst": 665,
+   "tokens": 998,
+   "tokensEstChars4": 665,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -602,7 +630,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 3411,
-   "tokensEst": 853,
+   "tokens": 1289,
+   "tokensEstChars4": 853,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -626,7 +655,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 1306,
-   "tokensEst": 327,
+   "tokens": 489,
+   "tokensEstChars4": 327,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -648,7 +678,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 4991,
-   "tokensEst": 1248,
+   "tokens": 1871,
+   "tokensEstChars4": 1248,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -672,7 +703,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 1644,
-   "tokensEst": 411,
+   "tokens": 606,
+   "tokensEstChars4": 411,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -695,7 +727,8 @@
    "parentFeature": "Self-Discovery (Know Before You Claim)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
    "chars": 1715,
-   "tokensEst": 429,
+   "tokens": 689,
+   "tokensEstChars4": 429,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -717,7 +750,8 @@
    "parentFeature": "Coherence Gate (Pre-Action Verification)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification)",
    "chars": 45,
-   "tokensEst": 12,
+   "tokens": 19,
+   "tokensEstChars4": 12,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -738,7 +772,8 @@
    "parentFeature": "Coherence Gate (Pre-Action Verification)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification)",
    "chars": 581,
-   "tokensEst": 146,
+   "tokens": 222,
+   "tokensEstChars4": 146,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -760,7 +795,8 @@
    "parentFeature": "ORG-INTENT.md (Organizational Intent at Runtime)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification) > ORG-INTENT.md (Organizational Intent at Runtime)",
    "chars": 1643,
-   "tokensEst": 411,
+   "tokens": 655,
+   "tokensEstChars4": 411,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -782,7 +818,8 @@
    "parentFeature": "ORG-INTENT.md (Organizational Intent at Runtime)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification) > ORG-INTENT.md (Organizational Intent at Runtime)",
    "chars": 366,
-   "tokensEst": 92,
+   "tokens": 137,
+   "tokensEstChars4": 92,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -803,7 +840,8 @@
    "parentFeature": "ORG-INTENT.md (Organizational Intent at Runtime)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification) > ORG-INTENT.md (Organizational Intent at Runtime)",
    "chars": 192,
-   "tokensEst": 48,
+   "tokens": 73,
+   "tokensEstChars4": 48,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -824,7 +862,8 @@
    "parentFeature": "External Operation Safety (Structural Guardrails)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
    "chars": 54,
-   "tokensEst": 14,
+   "tokens": 18,
+   "tokensEstChars4": 14,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -845,7 +884,8 @@
    "parentFeature": "External Operation Safety (Structural Guardrails)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
    "chars": 546,
-   "tokensEst": 137,
+   "tokens": 201,
+   "tokensEstChars4": 137,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -866,7 +906,8 @@
    "parentFeature": "External Operation Safety (Structural Guardrails)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
    "chars": 210,
-   "tokensEst": 53,
+   "tokens": 68,
+   "tokensEstChars4": 53,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -887,7 +928,8 @@
    "parentFeature": "External Operation Safety (Structural Guardrails)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
    "chars": 203,
-   "tokensEst": 51,
+   "tokens": 66,
+   "tokensEstChars4": 51,
    "primaryTag": "trigger",
    "tags": [
     "trigger"
@@ -908,7 +950,8 @@
    "parentFeature": "External Operation Safety (Structural Guardrails)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
    "chars": 215,
-   "tokensEst": 54,
+   "tokens": 71,
+   "tokensEstChars4": 54,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -929,7 +972,8 @@
    "parentFeature": "External Operation Safety (Structural Guardrails)",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
    "chars": 271,
-   "tokensEst": 68,
+   "tokens": 110,
+   "tokensEstChars4": 68,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -950,7 +994,8 @@
    "parentFeature": "Playbook — Adaptive Context Engineering",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
    "chars": 400,
-   "tokensEst": 100,
+   "tokens": 122,
+   "tokensEstChars4": 100,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -971,7 +1016,8 @@
    "parentFeature": "Playbook — Adaptive Context Engineering",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
    "chars": 151,
-   "tokensEst": 38,
+   "tokens": 51,
+   "tokensEstChars4": 38,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -992,7 +1038,8 @@
    "parentFeature": "Playbook — Adaptive Context Engineering",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
    "chars": 439,
-   "tokensEst": 110,
+   "tokens": 160,
+   "tokensEstChars4": 110,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1013,7 +1060,8 @@
    "parentFeature": "Playbook — Adaptive Context Engineering",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
    "chars": 224,
-   "tokensEst": 56,
+   "tokens": 63,
+   "tokensEstChars4": 56,
    "primaryTag": "trigger",
    "tags": [
     "trigger"
@@ -1034,7 +1082,8 @@
    "parentFeature": "Playbook — Adaptive Context Engineering",
    "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
    "chars": 228,
-   "tokensEst": 57,
+   "tokens": 70,
+   "tokensEstChars4": 57,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1055,7 +1104,8 @@
    "parentFeature": "Threadline Network (Agent-to-Agent Communication)",
    "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication)",
    "chars": 378,
-   "tokensEst": 95,
+   "tokens": 126,
+   "tokensEstChars4": 95,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1077,7 +1127,8 @@
    "parentFeature": "Current Status",
    "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > Current Status",
    "chars": 124,
-   "tokensEst": 31,
+   "tokens": 37,
+   "tokensEstChars4": 31,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1098,7 +1149,8 @@
    "parentFeature": "Why You Might Want This",
    "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > Why You Might Want This",
    "chars": 202,
-   "tokensEst": 51,
+   "tokens": 65,
+   "tokensEstChars4": 51,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1119,7 +1171,8 @@
    "parentFeature": "Privacy & Security",
    "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > Privacy & Security",
    "chars": 277,
-   "tokensEst": 70,
+   "tokens": 109,
+   "tokensEstChars4": 70,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1140,7 +1193,8 @@
    "parentFeature": "How to Enable",
    "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > How to Enable",
    "chars": 285,
-   "tokensEst": 72,
+   "tokens": 107,
+   "tokensEstChars4": 72,
    "primaryTag": "trigger",
    "tags": [
     "trigger"
@@ -1161,7 +1215,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 30,
-   "tokensEst": 8,
+   "tokens": 16,
+   "tokensEstChars4": 8,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1182,7 +1237,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 1770,
-   "tokensEst": 443,
+   "tokens": 630,
+   "tokensEstChars4": 443,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1204,7 +1260,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 299,
-   "tokensEst": 75,
+   "tokens": 98,
+   "tokensEstChars4": 75,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1226,7 +1283,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 719,
-   "tokensEst": 180,
+   "tokens": 262,
+   "tokensEstChars4": 180,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1248,7 +1306,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 425,
-   "tokensEst": 107,
+   "tokens": 151,
+   "tokensEstChars4": 107,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1270,7 +1329,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 334,
-   "tokensEst": 84,
+   "tokens": 128,
+   "tokensEstChars4": 84,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1292,7 +1352,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 317,
-   "tokensEst": 80,
+   "tokens": 106,
+   "tokensEstChars4": 80,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1313,7 +1374,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 385,
-   "tokensEst": 97,
+   "tokens": 144,
+   "tokensEstChars4": 97,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1334,7 +1396,8 @@
    "parentFeature": "Telegram Relay (MANDATORY)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
    "chars": 427,
-   "tokensEst": 107,
+   "tokens": 156,
+   "tokensEstChars4": 107,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1356,7 +1419,8 @@
    "parentFeature": "Real-Check Verification (autonomous, optional)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Real-Check Verification (autonomous, optional)",
    "chars": 1006,
-   "tokensEst": 252,
+   "tokens": 380,
+   "tokensEstChars4": 252,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1378,7 +1442,8 @@
    "parentFeature": "Scope-Accretion Completion Discipline (autonomous runs finish what they start)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Scope-Accretion Completion Discipline (autonomous runs finish what they start)",
    "chars": 2432,
-   "tokensEst": 608,
+   "tokens": 933,
+   "tokensEstChars4": 608,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1401,7 +1466,8 @@
    "parentFeature": "Stall-Coverage Matrix Gate (apprenticeship onboarding)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Stall-Coverage Matrix Gate (apprenticeship onboarding)",
    "chars": 2059,
-   "tokensEst": 515,
+   "tokens": 826,
+   "tokensEstChars4": 515,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1424,7 +1490,8 @@
    "parentFeature": "Stall-Coverage Matrix Gate (apprenticeship onboarding)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Stall-Coverage Matrix Gate (apprenticeship onboarding)",
    "chars": 3605,
-   "tokensEst": 902,
+   "tokens": 1359,
+   "tokensEstChars4": 902,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1447,7 +1514,8 @@
    "parentFeature": "External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer",
    "chars": 2574,
-   "tokensEst": 644,
+   "tokens": 1102,
+   "tokensEstChars4": 644,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1470,7 +1538,8 @@
    "parentFeature": "Owned-Identities Registry (self-unblock Rung 0 includes what YOU created)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Owned-Identities Registry (self-unblock Rung 0 includes what YOU created)",
    "chars": 1152,
-   "tokensEst": 288,
+   "tokens": 392,
+   "tokensEstChars4": 288,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1492,7 +1561,8 @@
    "parentFeature": "Permission-Prompt Floor (you are never blocked by a framework approval prompt)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Permission-Prompt Floor (you are never blocked by a framework approval prompt)",
    "chars": 1484,
-   "tokensEst": 371,
+   "tokens": 570,
+   "tokensEstChars4": 371,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1514,7 +1584,8 @@
    "parentFeature": "Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)",
    "chars": 1819,
-   "tokensEst": 455,
+   "tokens": 672,
+   "tokensEstChars4": 455,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1537,7 +1608,8 @@
    "parentFeature": "Playwright Profile Registry (which browser profile holds which account)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Playwright Profile Registry (which browser profile holds which account)",
    "chars": 5760,
-   "tokensEst": 1440,
+   "tokens": 2208,
+   "tokensEstChars4": 1440,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1561,7 +1633,8 @@
    "parentFeature": "Session Listing Hygiene (GET /sessions shows ACTIVE sessions by default)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Session Listing Hygiene (GET /sessions shows ACTIVE sessions by default)",
    "chars": 1918,
-   "tokensEst": 480,
+   "tokens": 698,
+   "tokensEstChars4": 480,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1583,7 +1656,8 @@
    "parentFeature": "Audits run to convergence (the default route)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Audits run to convergence (the default route)",
    "chars": 1283,
-   "tokensEst": 321,
+   "tokens": 481,
+   "tokensEstChars4": 321,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1605,7 +1679,8 @@
    "parentFeature": "Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)",
    "chars": 2504,
-   "tokensEst": 626,
+   "tokens": 942,
+   "tokensEstChars4": 626,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1628,7 +1703,8 @@
    "parentFeature": "Mesh Self-Healing: stale-owner release + lease hand-back (U4.2 / U4.4 — ships dark/dry-run)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Mesh Self-Healing: stale-owner release + lease hand-back (U4.2 / U4.4 — ships dark/dry-run)",
    "chars": 2407,
-   "tokensEst": 602,
+   "tokens": 947,
+   "tokensEstChars4": 602,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1651,7 +1727,8 @@
    "parentFeature": "Write Admission (⚗️ experimental, dry-run — why did my write get a 409 naming another machine?)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Write Admission (⚗️ experimental, dry-run — why did my write get a 409 naming another machine?)",
    "chars": 1401,
-   "tokensEst": 351,
+   "tokens": 533,
+   "tokensEstChars4": 351,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1674,7 +1751,8 @@
    "parentFeature": "Dynamic MCP Lifecycle (⚗️ experimental, ships DARK) — load heavy MCP servers on demand",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Dynamic MCP Lifecycle (⚗️ experimental, ships DARK) — load heavy MCP servers on demand",
    "chars": 1723,
-   "tokensEst": 431,
+   "tokens": 676,
+   "tokensEstChars4": 431,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1697,7 +1775,8 @@
    "parentFeature": "Ultracode one-shot spawn (Claude Code, opt-in)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Ultracode one-shot spawn (Claude Code, opt-in)",
    "chars": 860,
-   "tokensEst": 215,
+   "tokens": 338,
+   "tokensEstChars4": 215,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1719,7 +1798,8 @@
    "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
    "chars": 295,
-   "tokensEst": 74,
+   "tokens": 91,
+   "tokensEstChars4": 74,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1740,7 +1820,8 @@
    "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
    "chars": 931,
-   "tokensEst": 233,
+   "tokens": 376,
+   "tokensEstChars4": 233,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1761,7 +1842,8 @@
    "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
    "chars": 467,
-   "tokensEst": 117,
+   "tokens": 139,
+   "tokensEstChars4": 117,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -1782,7 +1864,8 @@
    "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
    "chars": 250,
-   "tokensEst": 63,
+   "tokens": 93,
+   "tokensEstChars4": 63,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -1803,7 +1886,8 @@
    "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
    "chars": 249,
-   "tokensEst": 63,
+   "tokens": 81,
+   "tokensEstChars4": 63,
    "primaryTag": "history",
    "tags": [
     "history"
@@ -1824,7 +1908,8 @@
    "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
    "chars": 642,
-   "tokensEst": 161,
+   "tokens": 213,
+   "tokensEstChars4": 161,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -1845,7 +1930,8 @@
    "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
    "chars": 226,
-   "tokensEst": 57,
+   "tokens": 78,
+   "tokensEstChars4": 57,
    "primaryTag": "trigger",
    "tags": [
     "trigger"
@@ -1866,7 +1952,8 @@
    "parentFeature": "Machine Load Assessment (the go-to way to check if the machine is busy)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Machine Load Assessment (the go-to way to check if the machine is busy)",
    "chars": 1472,
-   "tokensEst": 368,
+   "tokens": 566,
+   "tokensEstChars4": 368,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -1890,7 +1977,8 @@
    "parentFeature": "Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)",
    "chars": 1084,
-   "tokensEst": 271,
+   "tokens": 379,
+   "tokensEstChars4": 271,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1913,7 +2001,8 @@
    "parentFeature": "Missing-Login Session Guard (⚗️ dev-gated dark, dry-run first)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Missing-Login Session Guard (⚗️ dev-gated dark, dry-run first)",
    "chars": 1137,
-   "tokensEst": 285,
+   "tokens": 387,
+   "tokensEstChars4": 285,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1936,7 +2025,8 @@
    "parentFeature": "Doorway/Model Knowledge Registry — what models can I reach? (`GET /doorways`)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Doorway/Model Knowledge Registry — what models can I reach? (`GET /doorways`)",
    "chars": 2201,
-   "tokensEst": 551,
+   "tokens": 843,
+   "tokensEstChars4": 551,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1959,7 +2049,8 @@
    "parentFeature": "Routing Spend view — what am I spending on routing? (`GET /routing-spend/summary`, `GET /routing-spend/caps`)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Routing Spend view — what am I spending on routing? (`GET /routing-spend/summary`, `GET /routing-spend/caps`)",
    "chars": 1938,
-   "tokensEst": 485,
+   "tokens": 816,
+   "tokensEstChars4": 485,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -1982,7 +2073,8 @@
    "parentFeature": "Routing Spend MONEY layer (⚗️ experimental, DARK for everyone) — caps, arming, freeze",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Routing Spend MONEY layer (⚗️ experimental, DARK for everyone) — caps, arming, freeze",
    "chars": 1996,
-   "tokensEst": 499,
+   "tokens": 821,
+   "tokensEstChars4": 499,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2006,7 +2098,8 @@
    "parentFeature": "Money-layer ON switch (⚗️ experimental) — turn the spending controls on from your phone",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Money-layer ON switch (⚗️ experimental) — turn the spending controls on from your phone",
    "chars": 4323,
-   "tokensEst": 1081,
+   "tokens": 1578,
+   "tokensEstChars4": 1081,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2030,7 +2123,8 @@
    "parentFeature": "LLM-Decision Quality Meter (⚗️ observe-only) — how often is each LLM gate/judge actually right?",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > LLM-Decision Quality Meter (⚗️ observe-only) — how often is each LLM gate/judge actually right?",
    "chars": 2330,
-   "tokensEst": 583,
+   "tokens": 891,
+   "tokensEstChars4": 583,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2053,7 +2147,8 @@
    "parentFeature": "Benchmark-Divergence Detector (⚗️ observe-only) — does real life agree with the benchmark?",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Benchmark-Divergence Detector (⚗️ observe-only) — does real life agree with the benchmark?",
    "chars": 2409,
-   "tokensEst": 603,
+   "tokens": 906,
+   "tokensEstChars4": 603,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2076,7 +2171,8 @@
    "parentFeature": "The Agent Carries the Loop (commitment follow-through)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > The Agent Carries the Loop (commitment follow-through)",
    "chars": 1592,
-   "tokensEst": 398,
+   "tokens": 605,
+   "tokensEstChars4": 398,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2099,7 +2195,8 @@
    "parentFeature": "Deliverable completion throughput (measure only)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Deliverable completion throughput (measure only)",
    "chars": 346,
-   "tokensEst": 87,
+   "tokens": 117,
+   "tokensEstChars4": 87,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -2120,7 +2217,8 @@
    "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
    "chars": 61,
-   "tokensEst": 16,
+   "tokens": 22,
+   "tokensEstChars4": 16,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -2141,7 +2239,8 @@
    "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
    "chars": 1309,
-   "tokensEst": 328,
+   "tokens": 483,
+   "tokensEstChars4": 328,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2164,7 +2263,8 @@
    "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
    "chars": 862,
-   "tokensEst": 216,
+   "tokens": 346,
+   "tokensEstChars4": 216,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -2185,7 +2285,8 @@
    "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
    "chars": 1104,
-   "tokensEst": 276,
+   "tokens": 378,
+   "tokensEstChars4": 276,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -2206,7 +2307,8 @@
    "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
    "chars": 1487,
-   "tokensEst": 372,
+   "tokens": 529,
+   "tokensEstChars4": 372,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2229,7 +2331,8 @@
    "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
    "chars": 747,
-   "tokensEst": 187,
+   "tokens": 262,
+   "tokensEstChars4": 187,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2251,7 +2354,8 @@
    "parentFeature": "Outbound Message Gate",
    "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Outbound Message Gate",
    "chars": 1147,
-   "tokensEst": 287,
+   "tokens": 404,
+   "tokensEstChars4": 287,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2273,7 +2377,8 @@
    "parentFeature": "Autonomous-run silence backstop (AutonomousProgressHeartbeat)",
    "headingPath": "CLAUDE.md — instar > Autonomous-run silence backstop (AutonomousProgressHeartbeat)",
    "chars": 2384,
-   "tokensEst": 596,
+   "tokens": 897,
+   "tokensEstChars4": 596,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2296,7 +2401,8 @@
    "parentFeature": "Autonomous Throughput Floor",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor",
    "chars": 1266,
-   "tokensEst": 317,
+   "tokens": 431,
+   "tokensEstChars4": 317,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2318,7 +2424,8 @@
    "parentFeature": "Autonomous Throughput Floor",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor",
    "chars": 1269,
-   "tokensEst": 318,
+   "tokens": 488,
+   "tokensEstChars4": 318,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2341,7 +2448,8 @@
    "parentFeature": "Autonomous Throughput Floor",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor",
    "chars": 2279,
-   "tokensEst": 570,
+   "tokens": 823,
+   "tokensEstChars4": 570,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2364,7 +2472,8 @@
    "parentFeature": "If I am the session standing down (the behavioral contract)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > If I am the session standing down (the behavioral contract)",
    "chars": 1066,
-   "tokensEst": 267,
+   "tokens": 328,
+   "tokensEstChars4": 267,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2386,7 +2495,8 @@
    "parentFeature": "If I am the session standing down (the behavioral contract)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > If I am the session standing down (the behavioral contract)",
    "chars": 2193,
-   "tokensEst": 549,
+   "tokens": 789,
+   "tokensEstChars4": 549,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2410,7 +2520,8 @@
    "parentFeature": "If I am the session standing down (the behavioral contract)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > If I am the session standing down (the behavioral contract)",
    "chars": 1658,
-   "tokensEst": 415,
+   "tokens": 628,
+   "tokensEstChars4": 415,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2433,7 +2544,8 @@
    "parentFeature": "Cartographer Doc-Tree",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Doc-Tree",
    "chars": 743,
-   "tokensEst": 186,
+   "tokens": 297,
+   "tokensEstChars4": 186,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2456,7 +2568,8 @@
    "parentFeature": "Cartographer Doc-Freshness — Keep the map true",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Doc-Freshness — Keep the map true",
    "chars": 1041,
-   "tokensEst": 261,
+   "tokens": 397,
+   "tokensEstChars4": 261,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2479,7 +2592,8 @@
    "parentFeature": "Cartographer event-loop safety (fix instar#1069)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer event-loop safety (fix instar#1069)",
    "chars": 1290,
-   "tokensEst": 323,
+   "tokens": 491,
+   "tokensEstChars4": 323,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2501,7 +2615,8 @@
    "parentFeature": "Standards Enforcement Coverage",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Standards Enforcement Coverage",
    "chars": 1188,
-   "tokensEst": 297,
+   "tokens": 458,
+   "tokensEstChars4": 297,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2523,7 +2638,8 @@
    "parentFeature": "Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
    "chars": 1293,
-   "tokensEst": 324,
+   "tokens": 498,
+   "tokensEstChars4": 324,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2547,7 +2663,8 @@
    "parentFeature": "Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
    "chars": 1479,
-   "tokensEst": 370,
+   "tokens": 572,
+   "tokensEstChars4": 370,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2570,7 +2687,8 @@
    "parentFeature": "Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
    "chars": 1788,
-   "tokensEst": 447,
+   "tokens": 675,
+   "tokensEstChars4": 447,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2593,7 +2711,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 62,
-   "tokensEst": 16,
+   "tokens": 24,
+   "tokensEstChars4": 16,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -2614,7 +2733,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 224,
-   "tokensEst": 56,
+   "tokens": 70,
+   "tokensEstChars4": 56,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -2635,7 +2755,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 465,
-   "tokensEst": 117,
+   "tokens": 148,
+   "tokensEstChars4": 117,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -2656,7 +2777,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 742,
-   "tokensEst": 186,
+   "tokens": 241,
+   "tokensEstChars4": 186,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -2677,7 +2799,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 769,
-   "tokensEst": 193,
+   "tokens": 242,
+   "tokensEstChars4": 193,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -2698,7 +2821,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 512,
-   "tokensEst": 128,
+   "tokens": 165,
+   "tokensEstChars4": 128,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2720,7 +2844,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 1540,
-   "tokensEst": 385,
+   "tokens": 566,
+   "tokensEstChars4": 385,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2742,7 +2867,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 1260,
-   "tokensEst": 315,
+   "tokens": 425,
+   "tokensEstChars4": 315,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2765,7 +2891,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 1671,
-   "tokensEst": 418,
+   "tokens": 603,
+   "tokensEstChars4": 418,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2788,7 +2915,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 2608,
-   "tokensEst": 652,
+   "tokens": 990,
+   "tokensEstChars4": 652,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2811,7 +2939,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 1163,
-   "tokensEst": 291,
+   "tokens": 465,
+   "tokensEstChars4": 291,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2833,7 +2962,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 14654,
-   "tokensEst": 3664,
+   "tokens": 5196,
+   "tokensEstChars4": 3664,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2857,7 +2987,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 2055,
-   "tokensEst": 514,
+   "tokens": 790,
+   "tokensEstChars4": 514,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2881,7 +3012,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 1956,
-   "tokensEst": 489,
+   "tokens": 708,
+   "tokensEstChars4": 489,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -2905,7 +3037,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 855,
-   "tokensEst": 214,
+   "tokens": 320,
+   "tokensEstChars4": 214,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2927,7 +3060,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 974,
-   "tokensEst": 244,
+   "tokens": 405,
+   "tokensEstChars4": 244,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2949,7 +3083,8 @@
    "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
    "chars": 1008,
-   "tokensEst": 252,
+   "tokens": 404,
+   "tokensEstChars4": 252,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2971,7 +3106,8 @@
    "parentFeature": "Apprenticeship Program",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Apprenticeship Program",
    "chars": 4434,
-   "tokensEst": 1109,
+   "tokens": 1731,
+   "tokensEstChars4": 1109,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -2994,7 +3130,8 @@
    "parentFeature": "Maturity honesty (silent-by-default user announcements)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Maturity honesty (silent-by-default user announcements)",
    "chars": 899,
-   "tokensEst": 225,
+   "tokens": 314,
+   "tokensEstChars4": 225,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -3015,7 +3152,8 @@
    "parentFeature": "Close the Loop (Untracked = Abandoned)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Close the Loop (Untracked = Abandoned)",
    "chars": 887,
-   "tokensEst": 222,
+   "tokens": 313,
+   "tokensEstChars4": 222,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -3036,7 +3174,8 @@
    "parentFeature": "What address reaches me (Threadline routing fingerprint)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > What address reaches me (Threadline routing fingerprint)",
    "chars": 867,
-   "tokensEst": 217,
+   "tokens": 312,
+   "tokensEstChars4": 217,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3058,7 +3197,8 @@
    "parentFeature": "Is my channel to a peer alive? (A2A delivery health)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Is my channel to a peer alive? (A2A delivery health)",
    "chars": 1035,
-   "tokensEst": 259,
+   "tokens": 394,
+   "tokensEstChars4": 259,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3080,7 +3220,8 @@
    "parentFeature": "Cross-Machine Seamlessness (one agent, many machines)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Machine Seamlessness (one agent, many machines)",
    "chars": 2392,
-   "tokensEst": 598,
+   "tokens": 864,
+   "tokensEstChars4": 598,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3102,7 +3243,8 @@
    "parentFeature": "Links that survive machine boundaries (WS4.4 — pool-stable private-view links)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Links that survive machine boundaries (WS4.4 — pool-stable private-view links)",
    "chars": 1800,
-   "tokensEst": 450,
+   "tokens": 665,
+   "tokensEstChars4": 450,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3125,7 +3267,8 @@
    "parentFeature": "Shared pool-cache (WS4.4(f) — one fan-out feeds every pool-scope view)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Shared pool-cache (WS4.4(f) — one fan-out feeds every pool-scope view)",
    "chars": 1436,
-   "tokensEst": 359,
+   "tokens": 590,
+   "tokensEstChars4": 359,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3148,7 +3291,8 @@
    "parentFeature": "Verified Pairing — is my channel to a peer mutually verified before I share a secret?",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Verified Pairing — is my channel to a peer mutually verified before I share a secret?",
    "chars": 2861,
-   "tokensEst": 716,
+   "tokens": 1026,
+   "tokensEstChars4": 716,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3172,7 +3316,8 @@
    "parentFeature": "The \"Threadline\" hub topic — notifications + \"open this\"",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > The \"Threadline\" hub topic — notifications + \"open this\"",
    "chars": 1116,
-   "tokensEst": 279,
+   "tokens": 384,
+   "tokensEstChars4": 279,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3194,7 +3339,8 @@
    "parentFeature": "Release Readiness (instar-dev / maintainer environments only)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Release Readiness (instar-dev / maintainer environments only)",
    "chars": 658,
-   "tokensEst": 165,
+   "tokens": 241,
+   "tokensEstChars4": 165,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3216,7 +3362,8 @@
    "parentFeature": "Codex Usage (the codex `/status` rate-limit windows)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Codex Usage (the codex `/status` rate-limit windows)",
    "chars": 904,
-   "tokensEst": 226,
+   "tokens": 358,
+   "tokensEstChars4": 226,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3238,7 +3385,8 @@
    "parentFeature": "Anthropic Subscription-Path Routing (June-15 readiness)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Anthropic Subscription-Path Routing (June-15 readiness)",
    "chars": 1523,
-   "tokensEst": 381,
+   "tokens": 579,
+   "tokensEstChars4": 381,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3262,7 +3410,8 @@
    "parentFeature": "Per-Feature LLM Metrics & LLM Activity (`/metrics/features`, Observable Intelligence)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Per-Feature LLM Metrics & LLM Activity (`/metrics/features`, Observable Intelligence)",
    "chars": 1800,
-   "tokensEst": 450,
+   "tokens": 711,
+   "tokensEstChars4": 450,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3284,7 +3433,8 @@
    "parentFeature": "Token-Audit Completeness — per-model token breakdown & usage coverage",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Token-Audit Completeness — per-model token breakdown & usage coverage",
    "chars": 1649,
-   "tokensEst": 413,
+   "tokens": 643,
+   "tokensEstChars4": 413,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3306,7 +3456,8 @@
    "parentFeature": "Agent Updates topic (self-broadcasts about ships, restarts, updates)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Agent Updates topic (self-broadcasts about ships, restarts, updates)",
    "chars": 1295,
-   "tokensEst": 324,
+   "tokens": 440,
+   "tokensEstChars4": 324,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3329,7 +3480,8 @@
    "parentFeature": "Multi-Session Autonomy",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Multi-Session Autonomy",
    "chars": 27,
-   "tokensEst": 7,
+   "tokens": 12,
+   "tokensEstChars4": 7,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -3350,7 +3502,8 @@
    "parentFeature": "Multi-Session Autonomy",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Multi-Session Autonomy",
    "chars": 953,
-   "tokensEst": 239,
+   "tokens": 406,
+   "tokensEstChars4": 239,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3372,7 +3525,8 @@
    "parentFeature": "Autonomous Liveness Reconciler",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Autonomous Liveness Reconciler",
    "chars": 35,
-   "tokensEst": 9,
+   "tokens": 15,
+   "tokensEstChars4": 9,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -3393,7 +3547,8 @@
    "parentFeature": "Autonomous Liveness Reconciler",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Autonomous Liveness Reconciler",
    "chars": 1321,
-   "tokensEst": 331,
+   "tokens": 498,
+   "tokensEstChars4": 331,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3416,7 +3571,8 @@
    "parentFeature": "Machine-Coherence Guard — \"are my machines running as the same me?\" (⚗️ dev-gated dark)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Machine-Coherence Guard — \"are my machines running as the same me?\" (⚗️ dev-gated dark)",
    "chars": 2115,
-   "tokensEst": 529,
+   "tokens": 792,
+   "tokensEstChars4": 529,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3439,7 +3595,8 @@
    "parentFeature": "Rope-notice audit rows (calm-alerting)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Rope-notice audit rows (calm-alerting)",
    "chars": 551,
-   "tokensEst": 138,
+   "tokens": 203,
+   "tokensEstChars4": 138,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -3460,7 +3617,8 @@
    "parentFeature": "Framework-Onboarding Mentor System — issue ledger (read-only)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Framework-Onboarding Mentor System — issue ledger (read-only)",
    "chars": 1650,
-   "tokensEst": 413,
+   "tokens": 644,
+   "tokensEstChars4": 413,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3482,7 +3640,8 @@
    "parentFeature": "Framework-Onboarding Mentor System — issue ledger (read-only)",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Framework-Onboarding Mentor System — issue ledger (read-only)",
    "chars": 790,
-   "tokensEst": 198,
+   "tokens": 305,
+   "tokensEstChars4": 198,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3504,7 +3663,8 @@
    "parentFeature": "Version-Skew Self-Recovery",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Version-Skew Self-Recovery",
    "chars": 646,
-   "tokensEst": 162,
+   "tokens": 236,
+   "tokensEstChars4": 162,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3526,7 +3686,8 @@
    "parentFeature": "Version-Skew Self-Recovery",
    "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Version-Skew Self-Recovery",
    "chars": 591,
-   "tokensEst": 148,
+   "tokens": 225,
+   "tokensEstChars4": 148,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -3547,7 +3708,8 @@
    "parentFeature": "Sentinel Notifications (silently-stopped trio)",
    "headingPath": "CLAUDE.md — instar > Sentinel Notifications (silently-stopped trio)",
    "chars": 1271,
-   "tokensEst": 318,
+   "tokens": 483,
+   "tokensEstChars4": 318,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3570,7 +3732,8 @@
    "parentFeature": "Honest standby (turn-receipts)",
    "headingPath": "CLAUDE.md — instar > Honest standby (turn-receipts)",
    "chars": 1346,
-   "tokensEst": 337,
+   "tokens": 446,
+   "tokensEstChars4": 337,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3593,7 +3756,8 @@
    "parentFeature": "Context-wall recovery escalation (2026-06-06)",
    "headingPath": "CLAUDE.md — instar > Honest standby (turn-receipts) > Context-wall recovery escalation (2026-06-06)",
    "chars": 889,
-   "tokensEst": 223,
+   "tokens": 286,
+   "tokensEstChars4": 223,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3616,7 +3780,8 @@
    "parentFeature": "Duplicate-message suppression (2026-06-06)",
    "headingPath": "CLAUDE.md — instar > Duplicate-message suppression (2026-06-06)",
    "chars": 976,
-   "tokensEst": 244,
+   "tokens": 334,
+   "tokensEstChars4": 244,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3639,7 +3804,8 @@
    "parentFeature": "Cold-Start Lifeline Fallback (no silent resource rejection)",
    "headingPath": "CLAUDE.md — instar > Duplicate-message suppression (2026-06-06) > Cold-Start Lifeline Fallback (no silent resource rejection)",
    "chars": 1520,
-   "tokensEst": 380,
+   "tokens": 522,
+   "tokensEstChars4": 380,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3661,7 +3827,8 @@
    "parentFeature": "Durable Conversation Identity (`GET /conversations*`)",
    "headingPath": "CLAUDE.md — instar > Duplicate-message suppression (2026-06-06) > Durable Conversation Identity (`GET /conversations*`)",
    "chars": 1713,
-   "tokensEst": 429,
+   "tokens": 643,
+   "tokensEstChars4": 429,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3683,7 +3850,8 @@
    "parentFeature": "Topic-Flood Guard (attention queue circuit breaker)",
    "headingPath": "CLAUDE.md — instar > Topic-Flood Guard (attention queue circuit breaker)",
    "chars": 1537,
-   "tokensEst": 385,
+   "tokens": 551,
+   "tokensEstChars4": 385,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3706,7 +3874,8 @@
    "parentFeature": "Bounded Notification Surface (universal auto-topic budget)",
    "headingPath": "CLAUDE.md — instar > Topic-Flood Guard (attention queue circuit breaker) > Bounded Notification Surface (universal auto-topic budget)",
    "chars": 1197,
-   "tokensEst": 300,
+   "tokens": 424,
+   "tokensEstChars4": 300,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3729,7 +3898,8 @@
    "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "chars": 341,
-   "tokensEst": 86,
+   "tokens": 121,
+   "tokensEstChars4": 86,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3751,7 +3921,8 @@
    "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "chars": 4442,
-   "tokensEst": 1111,
+   "tokens": 1669,
+   "tokensEstChars4": 1111,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3774,7 +3945,8 @@
    "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "chars": 630,
-   "tokensEst": 158,
+   "tokens": 210,
+   "tokensEstChars4": 158,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3797,7 +3969,8 @@
    "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
    "chars": 1029,
-   "tokensEst": 258,
+   "tokens": 402,
+   "tokensEstChars4": 258,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3820,7 +3993,8 @@
    "parentFeature": "Cross-Machine Secret Sync (drop once, usable everywhere)",
    "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere)",
    "chars": 476,
-   "tokensEst": 119,
+   "tokens": 171,
+   "tokensEstChars4": 119,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3842,7 +4016,8 @@
    "parentFeature": "Cross-Machine Secret Sync (drop once, usable everywhere)",
    "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere)",
    "chars": 1207,
-   "tokensEst": 302,
+   "tokens": 472,
+   "tokensEstChars4": 302,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3866,7 +4041,8 @@
    "parentFeature": "One Memory (replicated stores)",
    "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere) > One Memory (replicated stores)",
    "chars": 12335,
-   "tokensEst": 3084,
+   "tokens": 4422,
+   "tokensEstChars4": 3084,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3889,7 +4065,8 @@
    "parentFeature": "One Memory (replicated stores)",
    "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere) > One Memory (replicated stores)",
    "chars": 2229,
-   "tokensEst": 558,
+   "tokens": 827,
+   "tokensEstChars4": 558,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3913,7 +4090,8 @@
    "parentFeature": "Stuck-Context Recovery (thinking-block wedge)",
    "headingPath": "CLAUDE.md — instar > Stuck-Context Recovery (thinking-block wedge)",
    "chars": 916,
-   "tokensEst": 229,
+   "tokens": 326,
+   "tokensEstChars4": 229,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3935,7 +4113,8 @@
    "parentFeature": "Stuck-Context Recovery (thinking-block wedge)",
    "headingPath": "CLAUDE.md — instar > Stuck-Context Recovery (thinking-block wedge)",
    "chars": 831,
-   "tokensEst": 208,
+   "tokens": 348,
+   "tokensEstChars4": 208,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -3957,7 +4136,8 @@
    "parentFeature": "Stuck-Context Recovery (thinking-block wedge)",
    "headingPath": "CLAUDE.md — instar > Stuck-Context Recovery (thinking-block wedge)",
    "chars": 875,
-   "tokensEst": 219,
+   "tokens": 328,
+   "tokensEstChars4": 219,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -3979,7 +4159,8 @@
    "parentFeature": "Reap-Log — why a session vanished",
    "headingPath": "CLAUDE.md — instar > Reap-Log — why a session vanished",
    "chars": 1124,
-   "tokensEst": 281,
+   "tokens": 457,
+   "tokensEstChars4": 281,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4001,7 +4182,8 @@
    "parentFeature": "Mid-Work Resume Queue & Per-Topic Reap Notices",
    "headingPath": "CLAUDE.md — instar > Mid-Work Resume Queue & Per-Topic Reap Notices",
    "chars": 2024,
-   "tokensEst": 506,
+   "tokens": 767,
+   "tokensEstChars4": 506,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4024,7 +4206,8 @@
    "parentFeature": "Mid-Work Resume Queue & Per-Topic Reap Notices",
    "headingPath": "CLAUDE.md — instar > Mid-Work Resume Queue & Per-Topic Reap Notices",
    "chars": 1108,
-   "tokensEst": 277,
+   "tokens": 412,
+   "tokensEstChars4": 277,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4047,7 +4230,8 @@
    "parentFeature": "Mid-Work Resume Queue & Per-Topic Reap Notices",
    "headingPath": "CLAUDE.md — instar > Mid-Work Resume Queue & Per-Topic Reap Notices",
    "chars": 1013,
-   "tokensEst": 254,
+   "tokens": 377,
+   "tokensEstChars4": 254,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4071,7 +4255,8 @@
    "parentFeature": "Green-PR Auto-Merge (Phase 7 becomes machinery)",
    "headingPath": "CLAUDE.md — instar > Green-PR Auto-Merge (Phase 7 becomes machinery)",
    "chars": 4974,
-   "tokensEst": 1244,
+   "tokens": 1932,
+   "tokensEstChars4": 1244,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4095,7 +4280,8 @@
    "parentFeature": "Guard-Posture Tripwire (a disabled guard is itself an incident)",
    "headingPath": "CLAUDE.md — instar > Guard-Posture Tripwire (a disabled guard is itself an incident)",
    "chars": 1155,
-   "tokensEst": 289,
+   "tokens": 421,
+   "tokensEstChars4": 289,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4118,7 +4304,8 @@
    "parentFeature": "Guard Posture — which safety systems are genuinely on (`GET /guards`)",
    "headingPath": "CLAUDE.md — instar > Guard-Posture Tripwire (a disabled guard is itself an incident) > Guard Posture — which safety systems are genuinely on (`GET /guards`)",
    "chars": 1861,
-   "tokensEst": 466,
+   "tokens": 708,
+   "tokensEstChars4": 466,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4141,7 +4328,8 @@
    "parentFeature": "Dark-but-Load-Bearing Guards (G3 — \"A Dark Feature Guards Nothing\")",
    "headingPath": "CLAUDE.md — instar > Guard-Posture Tripwire (a disabled guard is itself an incident) > Guard Posture — which safety systems are genuinely on (`GET /guards`) > Dark-but-Load-Bearing Guards (G3 — \"A Dark Feature Guards Nothing\")",
    "chars": 1490,
-   "tokensEst": 373,
+   "tokens": 626,
+   "tokensEstChars4": 373,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4164,7 +4352,8 @@
    "parentFeature": "Stale-Worktree Reclaim (AgentWorktreeReaper)",
    "headingPath": "CLAUDE.md — instar > Stale-Worktree Reclaim (AgentWorktreeReaper)",
    "chars": 2336,
-   "tokensEst": 584,
+   "tokens": 967,
+   "tokensEstChars4": 584,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4187,7 +4376,8 @@
    "parentFeature": "SessionReaper — CPU-aware pressure + decision audit",
    "headingPath": "CLAUDE.md — instar > SessionReaper — CPU-aware pressure + decision audit",
    "chars": 1126,
-   "tokensEst": 282,
+   "tokens": 486,
+   "tokensEstChars4": 282,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4209,7 +4399,8 @@
    "parentFeature": "Self-Heal: Update Restart Behavior",
    "headingPath": "CLAUDE.md — instar > Self-Heal: Update Restart Behavior",
    "chars": 266,
-   "tokensEst": 67,
+   "tokens": 93,
+   "tokensEstChars4": 67,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -4230,7 +4421,8 @@
    "parentFeature": "Self-Heal: Update Restart Behavior",
    "headingPath": "CLAUDE.md — instar > Self-Heal: Update Restart Behavior",
    "chars": 1255,
-   "tokensEst": 314,
+   "tokens": 461,
+   "tokensEstChars4": 314,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4252,7 +4444,8 @@
    "parentFeature": "Token-Burn Alerts",
    "headingPath": "CLAUDE.md — instar > Token-Burn Alerts",
    "chars": 1480,
-   "tokensEst": 370,
+   "tokens": 540,
+   "tokensEstChars4": 370,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4275,7 +4468,8 @@
    "parentFeature": "Parallel-Work Awareness",
    "headingPath": "CLAUDE.md — instar > Parallel-Work Awareness",
    "chars": 1905,
-   "tokensEst": 477,
+   "tokens": 675,
+   "tokensEstChars4": 477,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4299,7 +4493,8 @@
    "parentFeature": "Per-Component Framework Routing",
    "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
    "chars": 1541,
-   "tokensEst": 386,
+   "tokens": 584,
+   "tokensEstChars4": 386,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4322,7 +4517,8 @@
    "parentFeature": "Per-Component Framework Routing",
    "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
    "chars": 574,
-   "tokensEst": 144,
+   "tokens": 248,
+   "tokensEstChars4": 144,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4344,7 +4540,8 @@
    "parentFeature": "Per-Component Framework Routing",
    "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
    "chars": 2370,
-   "tokensEst": 593,
+   "tokens": 832,
+   "tokensEstChars4": 593,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4367,7 +4564,8 @@
    "parentFeature": "Per-Component Framework Routing",
    "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
    "chars": 1207,
-   "tokensEst": 302,
+   "tokens": 441,
+   "tokensEstChars4": 302,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4389,7 +4587,8 @@
    "parentFeature": "Per-Component Framework Routing",
    "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
    "chars": 1563,
-   "tokensEst": 391,
+   "tokens": 599,
+   "tokensEstChars4": 391,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4411,7 +4610,8 @@
    "parentFeature": "Preferences I've learned about you (Correction & Preference Learning Sentinel)",
    "headingPath": "CLAUDE.md — instar > Preferences I've learned about you (Correction & Preference Learning Sentinel)",
    "chars": 2425,
-   "tokensEst": 607,
+   "tokens": 845,
+   "tokensEstChars4": 607,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4434,7 +4634,8 @@
    "parentFeature": "Preferences I've learned about you (Correction & Preference Learning Sentinel)",
    "headingPath": "CLAUDE.md — instar > Preferences I've learned about you (Correction & Preference Learning Sentinel)",
    "chars": 603,
-   "tokensEst": 151,
+   "tokens": 209,
+   "tokensEstChars4": 151,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4456,7 +4657,8 @@
    "parentFeature": "Preferences I've learned about you (Correction & Preference Learning Sentinel)",
    "headingPath": "CLAUDE.md — instar > Preferences I've learned about you (Correction & Preference Learning Sentinel)",
    "chars": 672,
-   "tokensEst": 168,
+   "tokens": 260,
+   "tokensEstChars4": 168,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4478,7 +4680,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 233,
-   "tokensEst": 59,
+   "tokens": 75,
+   "tokensEstChars4": 59,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -4499,7 +4702,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 413,
-   "tokensEst": 104,
+   "tokens": 172,
+   "tokensEstChars4": 104,
    "primaryTag": "history",
    "tags": [
     "history"
@@ -4520,7 +4724,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 678,
-   "tokensEst": 170,
+   "tokens": 237,
+   "tokensEstChars4": 170,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4542,7 +4747,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 1145,
-   "tokensEst": 287,
+   "tokens": 414,
+   "tokensEstChars4": 287,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4564,7 +4770,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 1824,
-   "tokensEst": 456,
+   "tokens": 662,
+   "tokensEstChars4": 456,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4586,7 +4793,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 1949,
-   "tokensEst": 488,
+   "tokens": 772,
+   "tokensEstChars4": 488,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4609,7 +4817,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 2189,
-   "tokensEst": 548,
+   "tokens": 848,
+   "tokensEstChars4": 548,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4632,7 +4841,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 1762,
-   "tokensEst": 441,
+   "tokens": 671,
+   "tokensEstChars4": 441,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4655,7 +4865,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 1477,
-   "tokensEst": 370,
+   "tokens": 530,
+   "tokensEstChars4": 370,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4677,7 +4888,8 @@
    "parentFeature": "Worktree Convention",
    "headingPath": "CLAUDE.md — instar > Worktree Convention",
    "chars": 3596,
-   "tokensEst": 899,
+   "tokens": 1284,
+   "tokensEstChars4": 899,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4700,7 +4912,8 @@
    "parentFeature": "Threadline Single-Negotiator Lock (one voice per conversation)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Threadline Single-Negotiator Lock (one voice per conversation)",
    "chars": 1920,
-   "tokensEst": 480,
+   "tokens": 738,
+   "tokensEstChars4": 480,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4723,7 +4936,8 @@
    "parentFeature": "Honest progress messaging (silent-freeze watchdog + promise beacon)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Honest progress messaging (silent-freeze watchdog + promise beacon)",
    "chars": 1484,
-   "tokensEst": 371,
+   "tokens": 582,
+   "tokensEstChars4": 371,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -4744,7 +4958,8 @@
    "parentFeature": "PromiseBeacon user-output boundary (default silent)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Honest progress messaging (silent-freeze watchdog + promise beacon) > PromiseBeacon user-output boundary (default silent)",
    "chars": 559,
-   "tokensEst": 140,
+   "tokens": 199,
+   "tokensEstChars4": 140,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -4765,7 +4980,8 @@
    "parentFeature": "PromiseBeacon user-output boundary (default silent)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Honest progress messaging (silent-freeze watchdog + promise beacon) > PromiseBeacon user-output boundary (default silent)",
    "chars": 2983,
-   "tokensEst": 746,
+   "tokens": 1105,
+   "tokensEstChars4": 746,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4788,7 +5004,8 @@
    "parentFeature": "Mesh Rope Health (recovery probe + partition alerts)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Mesh Rope Health (recovery probe + partition alerts)",
    "chars": 2090,
-   "tokensEst": 523,
+   "tokens": 889,
+   "tokensEstChars4": 523,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4811,7 +5028,8 @@
    "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
    "chars": 1492,
-   "tokensEst": 373,
+   "tokens": 551,
+   "tokensEstChars4": 373,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4833,7 +5051,8 @@
    "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
    "chars": 1410,
-   "tokensEst": 353,
+   "tokens": 651,
+   "tokensEstChars4": 353,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4856,7 +5075,8 @@
    "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
    "chars": 2244,
-   "tokensEst": 561,
+   "tokens": 861,
+   "tokensEstChars4": 561,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -4881,7 +5101,8 @@
    "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
    "chars": 2353,
-   "tokensEst": 589,
+   "tokens": 956,
+   "tokensEstChars4": 589,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4905,7 +5126,8 @@
    "parentFeature": "Sender-Rejection Notices (\"message not delivered — sender not recognized\")",
    "headingPath": "CLAUDE.md — instar > Worktree Convention > Sender-Rejection Notices (\"message not delivered — sender not recognized\")",
    "chars": 2057,
-   "tokensEst": 515,
+   "tokens": 725,
+   "tokensEstChars4": 515,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -4927,7 +5149,8 @@
    "parentFeature": "Critical Anti-Patterns",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns",
    "chars": 764,
-   "tokensEst": 191,
+   "tokens": 297,
+   "tokensEstChars4": 191,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -4948,7 +5171,8 @@
    "parentFeature": "Critical Anti-Patterns",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns",
    "chars": 522,
-   "tokensEst": 131,
+   "tokens": 182,
+   "tokensEstChars4": 131,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -4969,7 +5193,8 @@
    "parentFeature": "Critical Anti-Patterns",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns",
    "chars": 446,
-   "tokensEst": 112,
+   "tokens": 167,
+   "tokensEstChars4": 112,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -4990,7 +5215,8 @@
    "parentFeature": "Machine Identity Recovery (signing keys can heal without becoming a new machine)",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Machine Identity Recovery (signing keys can heal without becoming a new machine)",
    "chars": 1827,
-   "tokensEst": 457,
+   "tokens": 639,
+   "tokensEstChars4": 457,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5013,7 +5239,8 @@
    "parentFeature": "Machine Identity Recovery (signing keys can heal without becoming a new machine)",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Machine Identity Recovery (signing keys can heal without becoming a new machine)",
    "chars": 491,
-   "tokensEst": 123,
+   "tokens": 175,
+   "tokensEstChars4": 123,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5035,7 +5262,8 @@
    "parentFeature": "Authoritative Window Run Liveness (Echo, ⚗️ dev-gated, observe-first)",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Authoritative Window Run Liveness (Echo, ⚗️ dev-gated, observe-first)",
    "chars": 2317,
-   "tokensEst": 580,
+   "tokens": 787,
+   "tokensEstChars4": 580,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5058,7 +5286,8 @@
    "parentFeature": "Telegram message origin",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Telegram message origin",
    "chars": 11796,
-   "tokensEst": 2949,
+   "tokens": 3812,
+   "tokensEstChars4": 2949,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5082,7 +5311,8 @@
    "parentFeature": "Telegram message origin",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Telegram message origin",
    "chars": 630,
-   "tokensEst": 158,
+   "tokens": 223,
+   "tokensEstChars4": 158,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -5103,7 +5333,8 @@
    "parentFeature": "Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
    "chars": 1990,
-   "tokensEst": 498,
+   "tokens": 712,
+   "tokensEstChars4": 498,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5126,7 +5357,8 @@
    "parentFeature": "Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
    "chars": 2893,
-   "tokensEst": 724,
+   "tokens": 987,
+   "tokensEstChars4": 724,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5148,7 +5380,8 @@
    "parentFeature": "Jev Artefact Signals (live advisory input to the tone gate)",
    "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Jev Artefact Signals (live advisory input to the tone gate)",
    "chars": 1374,
-   "tokensEst": 344,
+   "tokens": 472,
+   "tokensEstChars4": 344,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5170,7 +5403,8 @@
    "parentFeature": "Worktree Notices",
    "headingPath": "CLAUDE.md — instar > Worktree Notices",
    "chars": 862,
-   "tokensEst": 216,
+   "tokens": 308,
+   "tokensEstChars4": 216,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5192,7 +5426,8 @@
    "parentFeature": "Worktree Notices",
    "headingPath": "CLAUDE.md — instar > Worktree Notices",
    "chars": 3657,
-   "tokensEst": 915,
+   "tokens": 1229,
+   "tokensEstChars4": 915,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5214,7 +5449,8 @@
    "parentFeature": "Jev Memory Picker (ranks which memory-index lines load at session start)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Memory Picker (ranks which memory-index lines load at session start)",
    "chars": 1943,
-   "tokensEst": 486,
+   "tokens": 719,
+   "tokensEstChars4": 486,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5237,7 +5473,8 @@
    "parentFeature": "Jev Circles Shadow (log-only \"going in circles\" measurement)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Circles Shadow (log-only \"going in circles\" measurement)",
    "chars": 1104,
-   "tokensEst": 276,
+   "tokens": 404,
+   "tokensEstChars4": 276,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5260,7 +5497,8 @@
    "parentFeature": "Multi-machine lease medium",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Multi-machine lease medium",
    "chars": 1498,
-   "tokensEst": 375,
+   "tokens": 529,
+   "tokensEstChars4": 375,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5282,7 +5520,8 @@
    "parentFeature": "Jev Review-Flag Shadow (log-only \"does this reply need your review?\" measurement)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Review-Flag Shadow (log-only \"does this reply need your review?\" measurement)",
    "chars": 1277,
-   "tokensEst": 320,
+   "tokens": 467,
+   "tokensEstChars4": 320,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5305,7 +5544,8 @@
    "parentFeature": "Is my own relay connection up? (displaced vs retrying)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Is my own relay connection up? (displaced vs retrying)",
    "chars": 761,
-   "tokensEst": 191,
+   "tokens": 269,
+   "tokensEstChars4": 191,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5327,7 +5567,8 @@
    "parentFeature": "What `relayStatus` means (honest delivery)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > What `relayStatus` means (honest delivery)",
    "chars": 1439,
-   "tokensEst": 360,
+   "tokens": 520,
+   "tokensEstChars4": 360,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5350,7 +5591,8 @@
    "parentFeature": "A2A inbound message-id ledger",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A inbound message-id ledger",
    "chars": 1599,
-   "tokensEst": 400,
+   "tokens": 552,
+   "tokensEstChars4": 400,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5373,7 +5615,8 @@
    "parentFeature": "A2A backup routes",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A backup routes",
    "chars": 873,
-   "tokensEst": 219,
+   "tokens": 269,
+   "tokensEstChars4": 219,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5395,7 +5638,8 @@
    "parentFeature": "Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
    "chars": 1849,
-   "tokensEst": 463,
+   "tokens": 676,
+   "tokensEstChars4": 463,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5418,7 +5662,8 @@
    "parentFeature": "Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
    "chars": 857,
-   "tokensEst": 215,
+   "tokens": 266,
+   "tokensEstChars4": 215,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -5439,7 +5684,8 @@
    "parentFeature": "A2A local-route trust",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A local-route trust",
    "chars": 1383,
-   "tokensEst": 346,
+   "tokens": 461,
+   "tokensEstChars4": 346,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5462,7 +5708,8 @@
    "parentFeature": "A2A relay forward",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
    "chars": 661,
-   "tokensEst": 166,
+   "tokens": 244,
+   "tokensEstChars4": 166,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5484,7 +5731,8 @@
    "parentFeature": "A2A relay forward",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
    "chars": 2037,
-   "tokensEst": 510,
+   "tokens": 745,
+   "tokensEstChars4": 510,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5508,7 +5756,8 @@
    "parentFeature": "A2A relay forward",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
    "chars": 687,
-   "tokensEst": 172,
+   "tokens": 265,
+   "tokensEstChars4": 172,
    "primaryTag": "reference",
    "tags": [
     "reference"
@@ -5529,7 +5778,8 @@
    "parentFeature": "A2A relay forward",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
    "chars": 2826,
-   "tokensEst": 707,
+   "tokens": 1050,
+   "tokensEstChars4": 707,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5553,7 +5803,8 @@
    "parentFeature": "A2A relay unknown-sender trust",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay unknown-sender trust",
    "chars": 1764,
-   "tokensEst": 441,
+   "tokens": 594,
+   "tokensEstChars4": 441,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5576,7 +5827,8 @@
    "parentFeature": "A2A dark peers (did my message arrive?)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A dark peers (did my message arrive?)",
    "chars": 2551,
-   "tokensEst": 638,
+   "tokens": 952,
+   "tokensEstChars4": 638,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5599,7 +5851,8 @@
    "parentFeature": "A2A dark peers (did my message arrive?)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A dark peers (did my message arrive?)",
    "chars": 1792,
-   "tokensEst": 448,
+   "tokens": 611,
+   "tokensEstChars4": 448,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5621,7 +5874,8 @@
    "parentFeature": "A2A local-route signed envelope",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A local-route signed envelope",
    "chars": 2240,
-   "tokensEst": 560,
+   "tokens": 779,
+   "tokensEstChars4": 560,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5644,7 +5898,8 @@
    "parentFeature": "One identity across my machines (agent identity)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > One identity across my machines (agent identity)",
    "chars": 2595,
-   "tokensEst": 649,
+   "tokens": 909,
+   "tokensEstChars4": 649,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5667,7 +5922,8 @@
    "parentFeature": "A2A reply into a reaped topic session",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A reply into a reaped topic session",
    "chars": 761,
-   "tokensEst": 191,
+   "tokens": 233,
+   "tokensEstChars4": 191,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5689,7 +5945,8 @@
    "parentFeature": "A2A ack waits for a live session",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A ack waits for a live session",
    "chars": 1111,
-   "tokensEst": 278,
+   "tokens": 336,
+   "tokensEstChars4": 278,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5711,7 +5968,8 @@
    "parentFeature": "Telegram internal routes need the lifeline secret",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Telegram internal routes need the lifeline secret",
    "chars": 3627,
-   "tokensEst": 907,
+   "tokens": 1196,
+   "tokensEstChars4": 907,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5735,7 +5993,8 @@
    "parentFeature": "Telegram internal routes need the lifeline secret",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Telegram internal routes need the lifeline secret",
    "chars": 1670,
-   "tokensEst": 418,
+   "tokens": 601,
+   "tokensEstChars4": 418,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5758,7 +6017,8 @@
    "parentFeature": "Connecting to another agent",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Connecting to another agent",
    "chars": 4612,
-   "tokensEst": 1153,
+   "tokens": 1630,
+   "tokensEstChars4": 1153,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5781,7 +6041,8 @@
    "parentFeature": "Connecting to another agent",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Connecting to another agent",
    "chars": 747,
-   "tokensEst": 187,
+   "tokens": 262,
+   "tokensEstChars4": 187,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5803,7 +6064,8 @@
    "parentFeature": "Hand-started Codex: `instar codex connect <agent>`",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Hand-started Codex: `instar codex connect <agent>`",
    "chars": 1132,
-   "tokensEst": 283,
+   "tokens": 412,
+   "tokensEstChars4": 283,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5825,7 +6087,8 @@
    "parentFeature": "Hand-started Codex: `instar codex connect <agent>`",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Hand-started Codex: `instar codex connect <agent>`",
    "chars": 1163,
-   "tokensEst": 291,
+   "tokens": 377,
+   "tokensEstChars4": 291,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5847,7 +6110,8 @@
    "parentFeature": "Normal-Chrome browser (account-bound web tasks, macOS + Windows)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Normal-Chrome browser (account-bound web tasks, macOS + Windows)",
    "chars": 3518,
-   "tokensEst": 880,
+   "tokens": 1217,
+   "tokensEstChars4": 880,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5870,7 +6134,8 @@
    "parentFeature": "Local Verify (instar-dev / maintainer environments only)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Local Verify (instar-dev / maintainer environments only)",
    "chars": 760,
-   "tokensEst": 190,
+   "tokens": 283,
+   "tokensEstChars4": 190,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5892,7 +6157,8 @@
    "parentFeature": "Why a pool read says `peer-unreachable` vs `url-rejected`",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Why a pool read says `peer-unreachable` vs `url-rejected`",
    "chars": 1333,
-   "tokensEst": 334,
+   "tokens": 470,
+   "tokensEstChars4": 334,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5914,7 +6180,8 @@
    "parentFeature": "Why a pool read says `peer-unreachable` vs `url-rejected`",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Why a pool read says `peer-unreachable` vs `url-rejected`",
    "chars": 464,
-   "tokensEst": 116,
+   "tokens": 147,
+   "tokensEstChars4": 116,
    "primaryTag": "rule",
    "tags": [
     "rule"
@@ -5935,7 +6202,8 @@
    "parentFeature": "Why a pool read says `peer-unreachable` vs `url-rejected`",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Why a pool read says `peer-unreachable` vs `url-rejected`",
    "chars": 1275,
-   "tokensEst": 319,
+   "tokens": 465,
+   "tokensEstChars4": 319,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -5958,7 +6226,8 @@
    "parentFeature": "Where a peer agent's notices go (per-peer homebase topic)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Where a peer agent's notices go (per-peer homebase topic)",
    "chars": 413,
-   "tokensEst": 104,
+   "tokens": 152,
+   "tokensEstChars4": 104,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -5980,7 +6249,8 @@
    "parentFeature": "Where a peer agent's notices go (per-peer homebase topic)",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > Where a peer agent's notices go (per-peer homebase topic)",
    "chars": 3449,
-   "tokensEst": 863,
+   "tokens": 1171,
+   "tokensEstChars4": 863,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -6002,7 +6272,8 @@
    "parentFeature": "A2A new thread with a peer",
    "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A new thread with a peer",
    "chars": 715,
-   "tokensEst": 179,
+   "tokens": 253,
+   "tokensEstChars4": 179,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -6024,7 +6295,8 @@
    "parentFeature": "TCC-protected path guard (never put an agent under ~/Documents on macOS)",
    "headingPath": "CLAUDE.md — instar > TCC-protected path guard (never put an agent under ~/Documents on macOS)",
    "chars": 2297,
-   "tokensEst": 575,
+   "tokens": 845,
+   "tokensEstChars4": 575,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -6047,7 +6319,8 @@
    "parentFeature": "TCC-protected path guard (never put an agent under ~/Documents on macOS)",
    "headingPath": "CLAUDE.md — instar > TCC-protected path guard (never put an agent under ~/Documents on macOS)",
    "chars": 1185,
-   "tokensEst": 297,
+   "tokens": 444,
+   "tokensEstChars4": 297,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -6070,7 +6343,8 @@
    "parentFeature": "Feature switches apply their setting (read `effective` before saying a feature is on)",
    "headingPath": "CLAUDE.md — instar > TCC-protected path guard (never put an agent under ~/Documents on macOS) > Feature switches apply their setting (read `effective` before saying a feature is on)",
    "chars": 1734,
-   "tokensEst": 434,
+   "tokens": 617,
+   "tokensEstChars4": 434,
    "primaryTag": "rule",
    "tags": [
     "rule",
@@ -6093,7 +6367,8 @@
    "parentFeature": "Orphaned codex-arm sessions",
    "headingPath": "CLAUDE.md — instar > Orphaned codex-arm sessions",
    "chars": 2647,
-   "tokensEst": 662,
+   "tokens": 1006,
+   "tokensEstChars4": 662,
    "primaryTag": "reference",
    "tags": [
     "reference",
@@ -6117,7 +6392,8 @@
    "parentFeature": "Orphaned codex-arm sessions",
    "headingPath": "CLAUDE.md — instar > Orphaned codex-arm sessions",
    "chars": 2738,
-   "tokensEst": 685,
+   "tokens": 1002,
+   "tokensEstChars4": 685,
    "primaryTag": "reference",
    "tags": [
     "reference",

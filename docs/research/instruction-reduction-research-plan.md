@@ -9,9 +9,9 @@ Measured on Echo's deployed `CLAUDE.md` (2026-10-26):
 
 | Measure | Value |
 |---|---|
-| Size | 403,554 chars ≈ **100k tokens** (chars/4) |
+| Size | 403,554 chars = **147,474 tokens** (counted with Anthropic's `count_tokens`; the first chars/4 estimate said ~100k) |
 | Structure | 1,900 lines, 146 headings, 501 paragraph blocks |
-| Session-start hook output (this session) | 33.5k chars ≈ 8k tokens more; job sessions with all hooks reach ~240k total |
+| Session-start hook output (this session) | 33.5k chars ≈ 8k tokens more (chars/4 estimate, not yet counted); job sessions with all hooks reach ~240k total (estimate) |
 
 Classification by paragraph block (keyword-based first pass; overlapping categories):
 

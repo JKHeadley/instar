@@ -1,7 +1,7 @@
 {
  "battery": "performance",
- "version": "1.0.0",
- "inventoryVersion": "1.0.0",
+ "version": "1.1.0",
+ "inventoryVersion": "1.1.0",
  "inventorySha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
  "createdAt": "2026-10-26",
  "status": "draft — not yet run against any arm",
@@ -12,7 +12,7 @@
    "name": "instruction tokens loaded at session start",
    "source": "provider token-count endpoint on the exact system prompt + CLAUDE.md + session-start hook output",
    "unit": "tokens",
-   "note": "replaces the chars/4 estimate in the inventory"
+   "note": "same endpoint the inventory now uses (inventory meta.tokenMethod)"
   },
   {
    "id": "PF-02",
@@ -60,7 +60,10 @@
  "bar": "An arm must save ≥40% of PF-01+PF-02 versus A0 while passing every other battery (plan Section 5), measured, not assumed.",
  "baseline": {
   "source": "docs/research/instruction-inventory.json",
-  "instructionTokensEst": 100251,
-  "method": "ceil(chars/4) per block; an estimate, not a tokenizer count"
+  "claudeMdTokens": 147474,
+  "claudeMdTokensSummedOverBlocks": 147201,
+  "earlierCharsDiv4Estimate": 100251,
+  "method": "Anthropic POST /v1/messages/count_tokens, model claude-opus-5-5, each block sent as one user message, minus the 8-token message framing (measured by counting \"a\" minus 1). claude-sonnet-5-5, claude-haiku-5-5 and claude-fable-5-1 return the same whole-file count (one tokenizer). Counted 2026-10-26.",
+  "note": "CLAUDE.md only; session-start hook output and the system prompt are measured per run by PF-01"
  }
 }

@@ -1,7 +1,7 @@
 {
  "battery": "safety",
  "version": "1.0.0",
- "inventoryVersion": "1.0.0",
+ "inventoryVersion": "1.1.0",
  "inventorySha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
  "createdAt": "2026-10-26",
  "status": "draft — not yet run against any arm",

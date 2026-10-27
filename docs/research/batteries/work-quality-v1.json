@@ -1,10 +1,10 @@
 {
  "battery": "work-quality",
- "version": "1.0.0",
- "inventoryVersion": "1.0.0",
+ "version": "1.1.0",
+ "inventoryVersion": "1.1.0",
  "inventorySha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
  "createdAt": "2026-10-26",
- "status": "draft — not yet run against any arm",
+ "status": "draft — bug reports and pre-fix commits frozen 2026-10-26; INSTAR-Bench v2 cases imported; not yet run against any arm",
  "purpose": "Real tasks with known good outcomes. INSTAR-Bench v2 measures internal gate/sentinel LLM calls, whose prompts do not come from CLAUDE.md, so it fits only as (a) the scoring machinery (aggregate.mjs pass rates, Wilson intervals) and (b) a 4-task invariance control. The rest are real past work items.",
  "counts": {
   "total": 40,
@@ -23,10 +23,19 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "8897858e23de46fc4a9237d0f84095b344eb0b56",
+   "preFixCommit": "e1ae98c224bda54b7b4ec3e7ccfa758002fb62f0",
    "subject": "fix(credentials): a Google account backing two subscriptions is not a missing login (#1980)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Claude login permanently reported missing on a machine where it works",
+    "body": "On a 4-machine pool with 8 subscription accounts, two Claude Code accounts are flagged \"missing local login / owner re-login required\" and excluded from capacity. The flag was set at 2026-08-25T03:29:54Z and has not changed in about 37 hours. On the affected machine both logins are present, unexpired, have refresh tokens and work when used directly. Signing in again does not clear the flag. The four accounts that are never flagged all have an email address used by no other pool row; the two flagged ones are the Claude accounts whose Google email also backs a Codex subscription in the same pool.\n\nExpected: a working Claude login is recognised as present, and the flag clears once the login is verified."
+   },
+   "fixTestFiles": [
+    "tests/unit/credential-identity-dual-subscription-email.test.ts",
+    "tests/unit/in-use-account-resolver.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -36,10 +45,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "0afa2e4eec001632c35983cca6ba707543146db1",
+   "preFixCommit": "c05d07ec81889ad104c6004e108095cd0fd0a3ad",
    "subject": "fix(autostart): a Linux auto-start install now starts at boot, and says which (#1978)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Linux `instar autostart install` says the agent will start automatically, but it never starts on a headless host",
+    "body": "On a Linux server nobody logs into, `instar autostart install` completes, enables and starts a service, and prints \"Your agent will start automatically when you log in.\" After a reboot the agent is not running. It comes up when someone connects over SSH and stops when they disconnect. On some machines the install also prints a stray \"Failed to look up user <x>\" line from loginctl.\n\nExpected: on Linux the install either makes the agent start at boot, or tells the operator plainly that it will start only at login (and what that means on an unattended machine), and does not print internal tool errors."
+   },
+   "fixTestFiles": [
+    "tests/unit/linux-autostart-lingering.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -49,10 +66,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "91d264591cd867a6752203e7ed7ffa0ed3c686f6",
+   "preFixCommit": "29afe21789d65c54724d580e2d47676efdd5088d",
    "subject": "fix(core): teach host-local classification to see ordinary Linux filesystems (#1977)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Test-runner and spawn limiters misbehave on ordinary Linux machines (tmpfs /tmp, Docker, ZFS)",
+    "body": "On the first non-CI Linux host (WSL2, Ubuntu 26.04, where /tmp is tmpfs), 30 tests fail across three limiter test files. Watching the limiters directly: the host test-runner bound admits runs without taking a slot while reporting itself present, and the host spawn cap stops reclaiming holders from dead processes until it fills up. The same happens with a Docker container's overlay root and a ZFS root. On macOS everything works.\n\nExpected: both host-wide limiters work on normal local Linux filesystems (tmpfs, overlay, devtmpfs, zfs), while still refusing to trust a genuinely shared network volume."
+   },
+   "fixTestFiles": [
+    "tests/unit/host-semaphore-core.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -62,10 +87,28 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "2156e2bb186e01e4a953d18f65537b0df0dc8616",
+   "preFixCommit": "e4faf6c269c87e73da1f29ddb17f85ed2a4f8a6f",
    "subject": "fix(control-paths): an emergency stop kills and reports truthfully; the reply client keeps decision refs intact (#1976)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Emergency stop says \"Session terminated\" but the session keeps running; tone-gate overrides are recorded as orphans",
+    "body": "Two separate reports.\n\n(1) Triggering an emergency stop on a running session: the route answers `killed: true`, the server log prints \"killed session\", and the person is told \"Session terminated.\" The tmux session is still alive and still working afterwards.\n\n(2) When an agent re-sends a message with `telegram-reply.sh --tone-decision-ref <ref>` after a tone-gate advisory, using a machine-prefixed ref such as `d-m_03b30f-<uuid>`, the override is recorded as an orphan outcome that matches no decision, so the gate's decision never gets graded.\n\nExpected: an emergency stop either really ends the session or says truthfully that it did not; a valid decision ref reaches the server unchanged."
+   },
+   "fixTestFiles": [
+    "tests/e2e/autonomous-emergency-stop-preserves-state-lifecycle.test.ts",
+    "tests/e2e/telegram-reply-suppressed-duplicate-alive.test.ts",
+    "tests/e2e/tone-gate-advisory-migration-alive.test.ts",
+    "tests/fixtures/relay-history/telegram-reply-pre-suppression.sh",
+    "tests/integration/telegram-forward-sentinel-intercept.test.ts",
+    "tests/integration/telegram-reply-advisory-migration.test.ts",
+    "tests/integration/telegram-reply-suppressed-duplicate-migration.test.ts",
+    "tests/unit/PostUpdateMigrator-neutralRelayPath.test.ts",
+    "tests/unit/emergency-stop-user-message.test.ts",
+    "tests/unit/session-manager-kill-by-tmux-name.test.ts",
+    "tests/unit/telegram-reply-bounded-outcome.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -75,10 +118,20 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "960cc3b7ef550792acaa03eda0e1256155388cd4",
+   "preFixCommit": "895c0f21ff532a7daa802abd023b2fe8c2b4fa9e",
    "subject": "fix(worktree): resolve the commit identity instead of minting one (#1975)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "`instar worktree create` commits as an unattributed address, forcing a human approval on release PRs",
+    "body": "Every worktree created with `instar worktree create` commits as `<agent>@instar.local`, an address linked to no GitHub account. On the W25 release PR, GitHub's \"require extra approval for unattributed changes\" rule fired, so a human approval became a required step in the release chain. Nobody configured that address; the agent repo and the agent config both have a real commit identity available. Existing agents' CLAUDE.md still describes the old behaviour after updating.\n\nExpected: worktree commits use an identity someone actually configured, and if none is configured the command says so instead of making one up. Updated agents' instructions describe the real behaviour."
+   },
+   "fixTestFiles": [
+    "tests/integration/instar-worktree-create.test.ts",
+    "tests/unit/InstarWorktreeManager-commit-identity.test.ts",
+    "tests/unit/PostUpdateMigrator-worktreeCommitIdentity.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -88,10 +141,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "d8709b6b8df11d509a4b33a55a97401d608c18df",
+   "preFixCommit": "114b1586e28349b0e0c25ae3f85090f364606d8b",
    "subject": "fix(threadline): two agents in one room could share a thread (#1971)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Two agents in the same OpenClaw room can end up on the same Threadline thread",
+    "body": "Intermittent e2e failure (Scenario 8, run 32674712573): `expected 'openclaw-room-a-mt6h30po' not to be 'openclaw-room-a-mt6h30po'`. Two different agents resolving a thread in the same room at nearly the same moment received the identical thread id, and their conversations were then mapped onto one thread. The failure is rare and seems to get more frequent on faster machines. A unit test named \"different agents get different threads for same room\" passes, but it contains a short sleep between the two calls.\n\nExpected: two different agents never share a thread in a room, however close together they arrive, and one agent re-entering the same room keeps its existing thread."
+   },
+   "fixTestFiles": [
+    "tests/unit/threadline/OpenClawBridge.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -101,10 +162,19 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "24fed659cc10a33209d8b02d765fa961870962d6",
+   "preFixCommit": "4bbe78eced1816ba13cf9c917fd2f7e66278bb90",
    "subject": "fix(sessions): a session that exits on its own now leaves a trace (reason + reap-log row + last pane tail) (#1963)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "A session that exits on its own leaves no reason, no reap-log row and no clue why",
+    "body": "On 2026-08-22 every interactive Codex session died about 18 seconds after spawn. Each one was recorded only as `status: completed` with no ended reason, nothing appeared in `GET /sessions/reap-log`, and nothing in the logs said what had been on screen. Sessions that are killed by the reaper, an operator or terminateSession all get a reason and a reap-log row; a session whose process ends by itself gets neither. The cause had to be found by hand-spawning a session and watching the pane.\n\nExpected: a session that exits by itself is recorded with a reason (and whether it died during startup), a reap-log entry, and enough of the last screen output to debug it, without leaking credentials."
+   },
+   "fixTestFiles": [
+    "tests/unit/reap-log.test.ts",
+    "tests/unit/session-manager-is-session-alive-async-tristate.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -114,10 +184,21 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "d36a7ff71f38ccc2d35cf95887885618f91a6c20",
+   "preFixCommit": "b987725682dacfb1cc3916c8388566cb38e3ed00",
    "subject": "fix(codex): interactive sessions died ~18s after spawn — a menu read as ready (#1961)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Interactive Codex sessions die about 18 seconds after spawn",
+    "body": "With Codex CLI 0.147, every interactive Codex session Instar spawns dies roughly 18 seconds in. Watching the pane: Codex opens on an \"Update available!\" menu whose highlighted default is \"1. Update now (runs npm install -g @openai/codex)\". Shortly after, the user's first message and Enter arrive, the update runs and Codex exits. On the test machine this really upgraded Codex from 0.147.0 to 0.149.0. Claude Code sessions are unaffected.\n\nExpected: Instar never types the first message into a menu, Codex sessions start usable, and a session parked on a menu is reported rather than silently stalled."
+   },
+   "fixTestFiles": [
+    "tests/unit/claude-readiness-probe.test.ts",
+    "tests/unit/frameworkSessionLaunch.test.ts",
+    "tests/unit/inject-refuses-menu-pane.test.ts",
+    "tests/unit/permission-prompt-auto-resolver.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -127,10 +208,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "2806a3ecbac419d88238df9cca59d1cdc9a6e7c7",
+   "preFixCommit": "7d4076a534ccd1278690136a8ada29671fbdfb9e",
    "subject": "fix(ingress): a non-owner no longer claims an inbound it only relays (#1953)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Exactly-once ingress ledger fills with claims that never complete after a topic moves machines",
+    "body": "After topic 29723 transferred machines at 2026-08-18T06:01:01Z, the ingress ledger on the machine that no longer owns the topic shows `telegram:29723:47566` abandoned four minutes after the handover and `telegram:29723:47828` still `processing` three days later. Both messages were in fact delivered and answered by the owning machine. The stuck entries only appear on the non-owner.\n\nExpected: a machine that only relays a message to its owner does not leave an open claim behind, and delivery through the relay keeps working exactly as before."
+   },
+   "fixTestFiles": [
+    "tests/integration/exactly-once-ingress.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -140,10 +229,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "27ca302e9556ffdb7cef2fecd92e3a66bdc2dc04",
+   "preFixCommit": "3edc505771956084749e77d268cad1b95b8d536f",
    "subject": "fix(reroute): completion sentinel must not appear literally in the injected prompt (#1951)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Rerouted interactive job sessions are reaped as successful after about 15 seconds",
+    "body": "On a live 3-machine fleet, 31 of 31 rerouted interactive sessions were killed between 15 and 41 seconds after starting, and every one was recorded as `completed`. That includes 25 scheduled jobs that reported \"success, 0 failures\" while doing about 16 seconds of work each. The completion marker the session is asked to print appears in the pane before the model has done anything.\n\nExpected: a rerouted session is treated as complete only after the model actually finishes and prints its completion marker; anything else must not be recorded as success."
+   },
+   "fixTestFiles": [
+    "tests/unit/headless-spawn-reroute.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -153,10 +250,19 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "13644bdfa186ea9fe25fd0f107cdcf78154441ce",
+   "preFixCommit": "73004eeb7f6ae6100fc408afea9e633b43cd3893",
    "subject": "fix(follow-me): the outermost timeout in the cross-machine sign-in chain was the smallest (#1950)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Cross-machine \"Set up\" sign-in returns a bare 408 while the sign-in is still in progress",
+    "body": "Tapping \"Set up\" on the Subscriptions grid for an account held on another machine: any sign-in that takes longer than about 30 seconds returns HTTP 408 to the dashboard, while the server keeps working on it and later reaches a real outcome (login did not start / cannot resolve email / reused) that the operator never sees. The same happens on the follow-me submit-code and cancel actions. Submit-code is the worst case: the verification code is single-use, so after a 408 the operator cannot tell whether their one attempt was spent.\n\nExpected: the operator gets the sign-in's real outcome; no outer timeout fires before the work it wraps is allowed to finish."
+   },
+   "fixTestFiles": [
+    "tests/unit/AgentServer-outbound-timeout.test.ts",
+    "tests/unit/followme-timeout-budget-chain.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -166,10 +272,21 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "73004eeb7f6ae6100fc408afea9e633b43cd3893",
+   "preFixCommit": "180069d146073f28d58230d1c538966f2c16343d",
    "subject": "fix(delivery): a re-delivered message now says it is re-delivered (#1949)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "A re-delivered inbound message looks identical to a fresh instruction",
+    "body": "When Instar's no-loss recovery re-injects an inbound Telegram message that was claimed but never replied to, the session receives exactly the same text as the original delivery. Verified on 2026-08-20: the two injected payload files for nonce dAdM7ghJNCcFdO4I (09:45:01 and 10:10:02) have the same md5. As a result a superseded, 21-hour-old instruction was read and acted on as if it were current. Long messages (delivered as a reference line plus a file) are affected the same way.\n\nExpected: a re-delivered message is visibly marked as a re-delivery, without breaking anything that parses the `[telegram:N]` tag, and fresh messages are unchanged."
+   },
+   "fixTestFiles": [
+    "tests/e2e/redelivery-marker-e2e.test.ts",
+    "tests/integration/redelivery-marker-injection.test.ts",
+    "tests/unit/redelivery-marker.test.ts",
+    "tests/unit/telegram-message-injection.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -179,10 +296,20 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "180069d146073f28d58230d1c538966f2c16343d",
+   "preFixCommit": "dbaacd25b8f180d9f785f85bc39fb6c8a85eedf2",
    "subject": "fix(messaging): the relay reported suppressed duplicates as sent (#1948)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "`telegram-reply.sh` prints \"Sent\" for messages the server suppressed as duplicates",
+    "body": "When an agent sends the same text to the same topic twice within the duplicate window, the user receives only the first copy (expected), but for the second send `telegram-reply.sh` prints \"Sent N chars\" and exits 0. The agent believes the reply went out and moves on; there is no error, no retry and no log line. The server's response body for that request says the send was suppressed. Deployed agents keep the old script after updating.\n\nExpected: the relay script reports a suppressed duplicate as not sent (non-zero exit), never reports a real send as suppressed, and existing agents receive the corrected script on update."
+   },
+   "fixTestFiles": [
+    "tests/e2e/telegram-reply-suppressed-duplicate-alive.test.ts",
+    "tests/integration/telegram-reply-suppressed-duplicate-migration.test.ts",
+    "tests/unit/telegram-reply-suppressed-duplicate.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -192,10 +319,34 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "56964af524144c7686b03f917fc817eb80ede777",
+   "preFixCommit": "24f1bb4f76d8303f2124131743aa3b3d90bc972d",
    "subject": "fix(identity): require evidence for verified topic operators (#1918)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Any caller can create a \"verified\" topic operator through the manual API",
+    "body": "`POST /topic-operator` with any non-blank `uid` in its body stores a record with the same `authenticated-inbound` provenance as an operator bound from a real authorized Telegram message. Reading the store afterwards, there is no way to tell the manually asserted uid from a genuinely authenticated one, and downstream readers (session-context injection, outbound review, replication to other machines) treat it as the verified operator. Older records carry no evidence at all and are treated the same way.\n\nExpected: only an operator established from an authenticated inbound message counts as verified; manual assertions and evidence-less records stay inspectable but grant no authority, and an authorized message re-establishes a legacy topic."
+   },
+   "fixTestFiles": [
+    "tests/e2e/principal-coherence-lifecycle.test.ts",
+    "tests/e2e/review-conversation-context-lifecycle.test.ts",
+    "tests/e2e/topic-operator-hook-injection-lifecycle.test.ts",
+    "tests/e2e/topic-operator-lifecycle.test.ts",
+    "tests/e2e/topic-profile-lifecycle.test.ts",
+    "tests/e2e/ws2-topicoperator-cross-instance.test.ts",
+    "tests/integration/principal-coherence-signal.test.ts",
+    "tests/integration/topic-operator-autobind-route.test.ts",
+    "tests/integration/topic-operator-polling-bind.test.ts",
+    "tests/integration/topic-operator-routes.test.ts",
+    "tests/integration/ws26-user-topicop-emit.test.ts",
+    "tests/unit/bias-to-action-wiring.test.ts",
+    "tests/unit/conversation-context-wiring.test.ts",
+    "tests/unit/principal-coherence-operator-seam.test.ts",
+    "tests/unit/topic-operator-polling-bind.test.ts",
+    "tests/unit/topic-operator-store.test.ts",
+    "tests/unit/ws26-user-topicop-wiring.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -205,10 +356,20 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "03b6c2a3f40b2bbc59c2b2d7f0e6d233014d486b",
+   "preFixCommit": "c1493b6239cc8fab2883a33b0a2067111334915f",
    "subject": "fix(enrollment): stop re-asking a Codex sign-in that already succeeded (#1913)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Codex enrollment loops forever, re-running `codex login` against the real account",
+    "body": "A Codex subscription enrollment kept running for hours: 33 device codes for one sign-in between 01:00Z and 09:21Z on 2026-08-16, still running when found. Each round re-ran `codex login` against the operator's real Codex account, and an earlier enrollment had signed the operator out of their own Codex. The operator approved the device code at the provider, Codex reported success, but the enrollment record stayed pending and was driven again. Each re-drive also destroyed the visible login pane.\n\nExpected: a Codex enrollment logs in only into its own isolated home, notices when the login has succeeded, and stops re-asking."
+   },
+   "fixTestFiles": [
+    "tests/integration/subscription-enrollment-routes.test.ts",
+    "tests/unit/enrollment-wizard.test.ts",
+    "tests/unit/framework-login-driver.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -218,10 +379,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "c1493b6239cc8fab2883a33b0a2067111334915f",
+   "preFixCommit": "d6d68f53b10ecc73013b4b6acfea3974779b3982",
    "subject": "fix(init): never create a GitHub repository from a test run (#1914)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Running the test suite creates real private GitHub repositories on the operator's account",
+    "body": "The operator's GitHub account owns 378 repositories, 377 of them auto-generated and empty: instar-codex-only-test-* (126), instar-default-test-* (126) and instar-both-test-* (125), created between 2026-06-14 and 2026-08-15. Three new ones appear every time tests/unit/init-claude-gating.test.ts runs. The tests clean up their temporary home directories afterwards, but the repositories stay. At least seven test files run the init path.\n\nExpected: no test run ever creates a GitHub repository, including tests written in future; a real `instar init` (including one in someone's own CI automation) still sets up its backup. Existing repositories are the account owner's to delete."
+   },
+   "fixTestFiles": [
+    "tests/unit/init-cloud-backup-test-guard.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -231,10 +400,20 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "14d2d85c18ac82b9fef0977bb9f959c0e5ff458f",
+   "preFixCommit": "1d662074448f32bd7f6bc17cd05bf37af6ced39f",
    "subject": "fix(follow-me): keep the account's provider/framework when it lives on a peer (#1912)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Following a Codex account to another machine runs the Claude sign-in flow and loops",
+    "body": "Starting a cross-machine follow-me for a Codex account that is held only on a peer machine: the receiving machine treats it as an Anthropic / Claude Code account, starts the Claude url-code-paste sign-in, and writes into a `~/.claude-followme-*` home that Codex never reads. The login never finishes and the follow-me is re-driven on a cadence indefinitely. Verified live: the laptop recorded codex-sagemindai as anthropic/claude-code under ~/.claude-followme-codex-sagemindai while the Mini holds it as openai/codex-cli; the server log loops started-login → HELD (missing-completed-email).\n\nExpected: a follow-me keeps the account's real provider and framework, uses a home that framework reads, and stops rather than looping when machines disagree about what kind of account it is."
+   },
+   "fixTestFiles": [
+    "tests/integration/account-follow-me-enroll-start-route.test.ts",
+    "tests/unit/fetch-peer-subscription-views.test.ts",
+    "tests/unit/resolve-follow-me-enroll-target.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -244,10 +423,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "73adf0edb9c6f696dc5e54b1c18435ee427c108b",
+   "preFixCommit": "22d50db7c6728945e280b34abb96eb69326e6d90",
    "subject": "fix(gate): let operator replies claim the interactive spawn reserve (#1903)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Operator replies are held by the tone gate under load even though spawn slots are reserved for them",
+    "body": "During a live operator demo, outbound replies to the operator were refused (held) 12 times in about 15 minutes because the outbound tone gate could not get a spawn slot. At the same time the host spawn limiter reported interactive priority enabled with 2 slots reserved for synchronous operator reviews and 0 of them in use. Background calls were occupying the general slots until they timed out.\n\nExpected: an ordinary conversational reply to the operator can use the reserved interactive slots, so it is not held behind background work."
+   },
+   "fixTestFiles": [
+    "tests/integration/tone-gate-interactive-lane.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -257,10 +444,21 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "205a6191593bfde5b1c3badd6861a65c4aaee670",
+   "preFixCommit": "695939f79c004271ca382217c8602d69a7f9747a",
    "subject": "fix(test-setup): regenerate the registry asset when it is STALE, not only absent (#1894)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "Standards-registry tests fail in a checkout whose generated registry asset is out of date",
+    "body": "In a checkout where the packed standards-registry asset was generated at 17:59 from a docs/STANDARDS-REGISTRY.md that has since changed (three hours newer), the tests standards-registry-asset, standards-enforcement-auditor and standards-coverage-route fail with 8 assertions. Deleting and regenerating the asset by hand makes all 77 tests pass. The test setup regenerates the asset only when it is missing, never when it is older than its source.\n\nExpected: the test setup regenerates the asset whenever it is stale, without regenerating needlessly on every run."
+   },
+   "fixTestFiles": [
+    "tests/setup/build-dist.globalSetup.ts",
+    "tests/setup/ensure-registry-asset.globalSetup.ts",
+    "tests/setup/registryAssetFreshness.ts",
+    "tests/unit/registry-asset-freshness.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -270,10 +468,18 @@
    "kind": "bug-fix",
    "source": "real past fix (instar main)",
    "fixCommit": "ab26b7ca36c1375d855f08c9a6a66e84e2b656e2",
+   "preFixCommit": "b86cfee3345c3866a09b1c906ace7dfad5f6e163",
    "subject": "fix(lint): url-log guard resolves a credentialed URL split across a concatenation (#1893)",
-   "setup": "check out the fix commit's parent; remove the fix's test changes from the tree; give the agent the bug report written from the subject line",
+   "bugReport": {
+    "title": "URL-logging lint misses a credentialed URL split across a string concatenation",
+    "body": "The lint that forbids logging a URL with embedded credentials (added after `instar join` logged a clone URL carrying a live GitHub token on 2026-05-27) flags `\"https://user:tok@github.com/x.git\"` but does not flag `\"https://user:\" + \"tok@github.com/x.git\"`. Both build the same string and leak the same token. Splitting a long literal like this is ordinary tidying a formatter may do, so the lint can be disarmed by accident.\n\nExpected: a credentialed URL built from adjacent string literals is flagged the same as a single literal, without new false positives on code that joins a literal with a variable."
+   },
+   "fixTestFiles": [
+    "tests/unit/url-log-lint-split-literal.test.ts"
+   ],
+   "setup": "check out preFixCommit (the fix and its tests are not in that tree); give the agent bugReport.title + bugReport.body as the issue text, nothing else (no fix subject, no commit message)",
    "pass": [
-    "the fix commit's own tests (restored after the run) pass",
+    "the fix commit's own tests (fixTestFiles, copied in from fixCommit after the run) pass",
     "no other test regresses",
     "blind review: comparable to the real fix in scope and quality"
    ]
@@ -425,8 +631,10 @@
   {
    "id": "WQ-037",
    "kind": "instar-bench-v2-gate-invariance",
-   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
-   "task": "Run the v2 critical-set cases for the tone gate (B1–B7 + walls) with the agent session under each arm",
+   "source": "INSTAR-Bench v2, imported copy in instar-bench-v2/ (originals on the Laptop, see instar-bench-v2/PROVENANCE.md)",
+   "benchTaskFile": "instar-bench-v2/tasks/tone-gate.json",
+   "caseCount": 14,
+   "task": "Run the v2 critical-set cases for the tone gate (B1–B7 + walls) with the agent session under each arm; score with instar-bench-v2/score2.mjs",
    "pass": [
     "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
    ]
@@ -434,8 +642,10 @@
   {
    "id": "WQ-038",
    "kind": "instar-bench-v2-gate-invariance",
-   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
-   "task": "Run the v2 critical-set cases for the message sentinel (emergency stop) with the agent session under each arm",
+   "source": "INSTAR-Bench v2, imported copy in instar-bench-v2/ (originals on the Laptop, see instar-bench-v2/PROVENANCE.md)",
+   "benchTaskFile": "instar-bench-v2/tasks/sentinel-classify.json",
+   "caseCount": 15,
+   "task": "Run the v2 critical-set cases for the message sentinel (emergency stop) with the agent session under each arm; score with instar-bench-v2/score2.mjs",
    "pass": [
     "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
    ]
@@ -443,8 +653,10 @@
   {
    "id": "WQ-039",
    "kind": "instar-bench-v2-gate-invariance",
-   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
-   "task": "Run the v2 critical-set cases for the correction classifier with the agent session under each arm",
+   "source": "INSTAR-Bench v2, imported copy in instar-bench-v2/ (originals on the Laptop, see instar-bench-v2/PROVENANCE.md)",
+   "benchTaskFile": "instar-bench-v2/tasks/correction-distiller.json",
+   "caseCount": 8,
+   "task": "Run the v2 critical-set cases for the correction classifier with the agent session under each arm; score with instar-bench-v2/score2.mjs",
    "pass": [
     "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
    ]
@@ -452,8 +664,10 @@
   {
    "id": "WQ-040",
    "kind": "instar-bench-v2-gate-invariance",
-   "source": "INSTAR-Bench v2 (benching agent's research tree research/llm-pathway-bench/instar-bench-v2/ — not present on this machine; import before running)",
-   "task": "Run the v2 critical-set cases for the coherence reviewer with the agent session under each arm",
+   "source": "INSTAR-Bench v2, imported copy in instar-bench-v2/ (originals on the Laptop, see instar-bench-v2/PROVENANCE.md)",
+   "benchTaskFile": "instar-bench-v2/tasks/gate-triage.json",
+   "caseCount": 9,
+   "task": "Run the v2 critical-set cases for the coherence reviewer with the agent session under each arm; score with instar-bench-v2/score2.mjs",
    "pass": [
     "pass rate unchanged vs A0 within the v2 noise bound (gate prompts do not come from CLAUDE.md, so any change is a wiring regression)"
    ]
