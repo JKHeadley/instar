@@ -6,7 +6,7 @@
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
+  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
@@ -343,14 +343,12 @@ function paintHeadline(models) {
     const words = h.text.split(' ');
     h1.append(document.createTextNode(words.slice(0, -1).join(' ') + (words.length > 1 ? ' ' : '')), el('span', { class: 'accent', text: words[words.length - 1] }));
   } else h1.textContent = h.text;
-  const parts = [];
-  if (models.needs && models.needs.count > 0) parts.push(`${models.needs.value} in the queue`);
-  if (models.promised && models.promised.count > 0) parts.push(`${models.promised.count} ${models.promised.count === 1 ? 'promise' : 'promises'} waiting on you`);
-  sub.textContent = h.tone === 'attn' && parts.length ? `${parts.join(' and ')}.${h.sub ? ' ' + h.sub : ''}` : (h.sub || '');
+  // The count itself is explained by the "What needs you" card underneath; the sub-line only qualifies it.
+  sub.textContent = h.sub || '';
   $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-function pooled(id, path, build, set) {
+function pooled(id, path, build, set, namesP) {
   const slow = setTimeout(() => {
     const card = $(`#card-${id}`);
     if (card && card.getAttribute('data-state') === 'loading') {
@@ -358,21 +356,33 @@ function pooled(id, path, build, set) {
       line.textContent = 'Still checking the other machines…';
     }
   }, TIMEOUT_MS);
-  get(path, POOL_TIMEOUT_MS).then((r) => { clearTimeout(slow); set(id, build(r)); });
+  Promise.all([get(path, POOL_TIMEOUT_MS), namesP]).then(([r, names]) => { clearTimeout(slow); set(id, build(r, Date.now(), names)); });
 }
 
 async function loadHome() {
   const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
-  const set = (id, model) => { models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model; paintHeadline(models); };
+  const raw = {};
+  const paint = (id) => {
+    // "What needs you" is the one answer: queue items plus promises waiting on the operator.
+    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised) : raw[id];
+    models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model;
+  };
+  const set = (id, model) => {
+    raw[id] = model;
+    paint(id);
+    if (id === 'promised' && raw.needs) paint('needs');
+    paintHeadline(models);
+  };
   // Each card fetches and renders on its own (spec §1): one slow source never blocks the rest.
-  pooled('needs', '/attention?scope=pool', buildNeeds, set);
-  get('/health').then((r) => set('reach', buildReach(r)));
   const poolP = get('/pool');
+  const namesP = poolP.then(machineNames);
+  pooled('needs', '/attention?scope=pool', buildNeeds, set, namesP);
+  get('/health').then((r) => set('reach', buildReach(r)));
   Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
     const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
     set('promised', buildPromised(r, Date.now(), peers));
   });
-  pooled('doing', '/sessions?scope=pool', buildDoing, set);
+  pooled('doing', '/sessions?scope=pool', buildDoing, set, namesP);
   poolP.then((r) => set('running', buildRunning(r)));
   Promise.all([get('/guards'), get('/mandate')]).then(([g, m]) => set('allowed', buildAllowed(g, m)));
 }

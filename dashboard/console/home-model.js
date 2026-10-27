@@ -39,6 +39,31 @@ export function duration(ts, now = Date.now()) {
 
 function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + 's')}`; }
 
+/**
+ * A machine's name for the operator. Never its internal id: a machine with no
+ * name on file is described, not identified by a code nobody can read.
+ */
+export function machineLabel(f, names = {}) {
+  if (!f) return 'a machine with no name on file';
+  return f.nickname || f.machineNickname || (f.machineId && names[f.machineId]) || 'a machine with no name on file';
+}
+
+/** "Couldn't reach Mac Mini, so its items may be missing." Empty when every machine answered. */
+export function unreachedLine(failed, names, what) {
+  if (!failed || failed.length === 0) return '';
+  const labels = [...new Set(failed.map((f) => machineLabel(f, names)))];
+  const list = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+  return `Couldn't reach ${list}, so ${failed.length === 1 ? 'its' : 'their'} ${what} may be missing.`;
+}
+
+/** Name map from a /pool answer: machineId → nickname. */
+export function machineNames(poolRes) {
+  const out = {};
+  const ms = poolRes && poolRes.ok && poolRes.data && Array.isArray(poolRes.data.machines) ? poolRes.data.machines : [];
+  for (const m of ms) if (m && m.machineId && (m.nickname || m.name)) out[m.machineId] = m.nickname || m.name;
+  return out;
+}
+
 // ── 1. Can I reach you ────────────────────────────────────────────────────
 export function buildReach(res, now = Date.now()) {
   if (!res.ok) return unknownCard(`Couldn't read delivery status: ${res.reason}.`);
@@ -84,7 +109,7 @@ export function groupKey(i) {
   return `${String(i.category || '')}|${String(i.title || i.summary || '').trim().toLowerCase().replace(/\s+/g, ' ')}`;
 }
 
-export function buildNeeds(res, now = Date.now()) {
+export function buildNeeds(res, now = Date.now(), names = {}) {
   if (!res.ok) return unknownCard(`Couldn't read the attention queue: ${res.reason}.`);
   const items = Array.isArray(res.data && res.data.items) ? res.data.items : null;
   if (!items) return unknownCard('The attention queue answered without a list.');
@@ -119,12 +144,11 @@ export function buildNeeds(res, now = Date.now()) {
   const rows = current.slice(0, MAX_ROWS);
   const failed = (res.data.pool && Array.isArray(res.data.pool.failed)) ? res.data.pool.failed : [];
   const partial = failed.length > 0;
-  const missing = failed.map((f) => f.nickname || f.machineNickname || f.machineId || 'a machine').join(', ');
   const tail = [
     stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days, listed separately.` : null,
-    routine > 0 ? `${plural(routine, 'routine notice')} kept in the log.` : null,
+    routine > 0 ? `${plural(routine, 'automatic notice')} ${routine === 1 ? 'needs' : 'need'} nothing from you.` : null,
   ].filter(Boolean).join(' ');
-  const partialLine = partial ? `No answer from ${missing}.` : '';
+  const partialLine = unreachedLine(failed, names, 'items');
   if (current.length === 0) {
     return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
   }
@@ -144,7 +168,7 @@ export function sessionLabel(s) {
   return name.length > 80 ? name.slice(0, 77) + '…' : name;
 }
 
-export function buildDoing(res, now = Date.now()) {
+export function buildDoing(res, now = Date.now(), names = {}) {
   if (!res.ok) return unknownCard(`Couldn't list sessions: ${res.reason}.`);
   const sessions = Array.isArray(res.data && res.data.sessions) ? res.data.sessions : null;
   if (!sessions) return unknownCard('The session list answered without sessions.');
@@ -161,7 +185,7 @@ export function buildDoing(res, now = Date.now()) {
       end: last || '',
     };
   });
-  const partialLine = failed.length ? `No answer from ${failed.map((f) => f.nickname || f.machineNickname || f.machineId).join(', ')}.` : '';
+  const partialLine = unreachedLine(failed, names, 'sessions');
   if (live.length === 0) {
     return { state: failed.length ? 'partial' : 'ok', value: 'Idle', line: partialLine || 'No sessions are running.', rows };
   }
@@ -242,14 +266,14 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     : "Only this machine's promises are visible.";
   const line = [
     yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
-    violated.length ? `${violated.length} missed.` : null,
-    rest > 0 ? `${plural(rest, 'other')} I'm carrying.` : null,
-    olderCarried + yoursStale > 0 ? `${olderCarried + yoursStale} older ones untouched for ${STALE_DAYS}+ days, listed separately.` : null,
+    violated.length ? `${violated.length} missed ${violated.length === 1 ? 'its' : 'their'} deadline.` : null,
+    rest > 0 ? `${rest} more I'm working on.` : null,
+    olderCarried + yoursStale > 0 ? `${olderCarried + yoursStale} older ${olderCarried + yoursStale === 1 ? 'one' : 'ones'} not touched in ${STALE_DAYS}+ days, listed separately.` : null,
   ].filter(Boolean).join(' ') || 'Nothing open.';
   const incomplete = origins.size === 0 || staleReplica || missingPeers === null || missingPeers > 0;
   const state = yours.length ? 'attn' : violated.length ? 'bad' : (incomplete ? 'partial' : 'ok');
   return {
-    state, count: yours.length, coverage: incomplete ? 'partial view' : null, value: yours.length ? `${yours.length} need you` : plural(open.length, 'open promise'),
+    state, count: yours.length, coverage: incomplete ? 'partial view' : null, value: yours.length ? `${yours.length} waiting on you` : plural(open.length, 'open promise'),
     line, note: coverage, rows: all.slice(0, MAX_ROWS), all,
   };
 }
@@ -360,6 +384,37 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
   };
 }
 
+// ── One answer to "what needs you" ────────────────────────────────────────
+/**
+ * The "What needs you" card is the single answer on the screen: queue items
+ * that need the operator AND promises waiting on the operator. The headline
+ * counts this card alone, so the two can never disagree.
+ */
+export function combineNeeds(needs, promised) {
+  if (!needs || !Number.isFinite(needs.count)) return needs; // loading or can't tell: say so as-is
+  if (!promised || promised.state === 'loading') return needs;
+  const pCount = Number.isFinite(promised.count) ? promised.count : 0;
+  const waiting = (promised.all || []).filter((r) => r.tone === 'attn').slice(0, pCount)
+    .map((r) => ({ ...r, sub: ['a promise', r.sub].filter(Boolean).join(' · ') }));
+  const promisesKnown = Number.isFinite(promised.count);
+  const count = needs.count + pCount;
+  const all = [...waiting, ...(needs.all || needs.rows || [])];
+  const notes = [
+    pCount ? `Includes ${plural(pCount, 'promise')} waiting on you.` : null,
+    promisesKnown ? null : "Couldn't check for promises waiting on you.",
+  ].filter(Boolean).join(' ');
+  const queueLine = needs.line === 'The queue is clear.' || needs.line === 'Waiting on you.' ? null : needs.line;
+  const line = [notes, queueLine].filter(Boolean).join(' ') || (count === 0 ? 'Nothing is waiting on you.' : 'Waiting on you.');
+  const partial = needs.state === 'partial' || !promisesKnown;
+  return {
+    ...needs, combined: true, count, all, rows: all.slice(0, MAX_ROWS), line,
+    coverage: partial ? 'partial view' : needs.coverage,
+    state: count > 0 ? (partial ? 'partial' : 'attn') : (partial ? 'partial' : 'ok'),
+    value: count > 0 ? plural(count, 'thing', 'things') : (partial ? 'Nothing here' : 'Nothing needs you'),
+    valueTone: count > 0 ? 'attn' : needs.valueTone,
+  };
+}
+
 // ── The headline ──────────────────────────────────────────────────────────
 /** One sentence over all six cards. Never says "all quiet" while a card can't tell. */
 export function headline(cards) {
@@ -372,7 +427,7 @@ export function headline(cards) {
   // Never announce a count, or "all quiet", before both counting cards answered.
   if (loading === list.length || (cards.needs && cards.needs.state === 'loading') || (cards.promised && cards.promised.state === 'loading')) return { text: 'Checking in…', tone: 'muted' };
   // A known action count survives incomplete coverage; the coverage qualification rides beside it.
-  const count = known(cards.needs) + known(cards.promised);
+  const count = cards.needs && cards.needs.combined ? known(cards.needs) : known(cards.needs) + known(cards.promised);
   const quals = [];
   if (bad) quals.push(`${plural(bad, 'area')} failing`);
   if (otherAttn) quals.push(`${plural(otherAttn, 'other area')} to look at`);

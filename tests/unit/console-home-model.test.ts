@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   failure, ago, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
   machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
+  combineNeeds, machineNames, machineLabel,
 } from '../../dashboard/console/home-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
@@ -71,7 +72,7 @@ describe('What needs you', () => {
     const m = buildNeeds(ok({ items: [item({ priority: 'URGENT' }), item({}), item({}), item({ status: 'DONE', priority: 'URGENT' })], pool: { failed: [] } }), NOW);
     expect(m.state).toBe('attn');
     expect(m.value).toBe('1 thing');
-    expect(m.line).toContain('2 routine notices');
+    expect(m.line).toContain('2 automatic notices need nothing from you');
   });
   it('shows at most three rows but keeps the full list for See all, newest first', () => {
     const items = [1, 2, 3, 4, 5].map((n) => item({ priority: 'URGENT', title: `i${n}`, createdAt: minsAgo(n * 10) }));
@@ -154,12 +155,12 @@ describe('What I have promised', () => {
   it('a promise waiting on the operator but untouched for 14+ days is not counted', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
     expect(m.count).toBe(0);
-    expect(m.line).toContain('untouched for 14+ days, listed separately');
+    expect(m.line).toContain('not touched in 14+ days, listed separately');
   });
   it('promises waiting on the operator lead', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);
     expect(m.state).toBe('attn');
-    expect(m.value).toBe('2 need you');
+    expect(m.value).toBe('2 waiting on you');
   });
   it('without replica rows it says only this machine is visible', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'own' })] }), NOW);
