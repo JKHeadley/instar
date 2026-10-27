@@ -17,7 +17,14 @@ function agent(cfg: Record<string, unknown>): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'tlg-cfg-'));
   dirs.push(d);
   fs.mkdirSync(path.join(d, '.instar'), { recursive: true });
-  fs.writeFileSync(path.join(d, '.instar', 'config.json'), JSON.stringify({ projectName: 'tlg', port: 4999, ...cfg }));
+  // loadConfig checks the selected CLI exists before returning. This test
+  // exercises config projection, so use an existing executable as its path;
+  // CI runners do not need the Claude CLI installed for this check.
+  fs.writeFileSync(path.join(d, '.instar', 'config.json'), JSON.stringify({
+    projectName: 'tlg', port: 4999,
+    sessions: { framework: 'claude-code', frameworkBinaryPaths: { 'claude-code': process.execPath } },
+    ...cfg,
+  }));
   return d;
 }
 
