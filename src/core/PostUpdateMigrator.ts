@@ -8533,6 +8533,15 @@ Rule: I do not state that work landed inside another agent's state unless I have
         patched = true;
         result.upgraded.push('CLAUDE.md: added slow automatic retry of failed sign-in repairs awareness');
       }
+      // A failed repair whose account is verified signed in again closes its own row (relogin self-heal).
+      const recoveredSentence = 'A failure whose account is then verified signed in again (pool active, matching identity, a live login check of ok: by a later repair, by hand, or by the provider) sends no failure notice and closes its own attention row with the resolution "signed in again (verified on this machine)"; the user asks "why did that sign-in alert disappear?" → this.';
+      const slowRetryEndForRecovered = 'When the user asks "why did that repair start again by itself?" \u2192 this.';
+      if (content.includes(slowRetryEndForRecovered) && !content.includes('why did that sign-in alert disappear?')) {
+        // Inserted BEFORE the bullet's closing sentence, which other migrations use as their anchor.
+        content = content.replace(slowRetryEndForRecovered, recoveredSentence + ' ' + slowRetryEndForRecovered);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
+      }
       // Last-resort sign-in model (spec relogin-last-resort-model) for existing agents.
       const slowRetryEnd = 'When the user asks "why did that repair start again by itself?" → this.';
       if (content.includes(slowRetryEnd) && !content.includes('Last-resort sign-in model (one-subscription agents)')) {

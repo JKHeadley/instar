@@ -71,6 +71,14 @@ export interface SubscriptionReloginServiceDeps {
    * `resolved-elsewhere` — the account was signed in another way. Absent ⇒ never closes.
    */
   cellHealthy?: (episode: SubscriptionReloginEpisode) => boolean;
+  /**
+   * Called when a FAILED or REFUSED repair's account×machine cell is verified healthy again
+   * (`cellHealthy`) and no other repair for that cell is still running: the sign-in condition
+   * the operator was (or would have been) told about is over. The server closes that condition's
+   * attention row through the existing `clearAttentionCondition` producer path. Called at most
+   * once per episode per process; must be idempotent (closing an already-closed row is a no-op).
+   */
+  onConditionCleared?: (episode: SubscriptionReloginEpisode) => Promise<void> | void;
   tickMs?: number;
   now?: () => number;
 }
@@ -97,6 +105,8 @@ export class SubscriptionReloginService {
   private ticking = false;
   private readonly inFlight = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
+  /** Episodes whose "condition over" this process already reported (onConditionCleared). */
+  private readonly clearedReported = new Set<string>();
 
   constructor(private readonly deps: SubscriptionReloginServiceDeps) {
     this.tickMs = Math.max(5_000, Math.min(15 * 60_000, Math.floor(deps.tickMs ?? 30_000)));
@@ -205,6 +215,7 @@ export class SubscriptionReloginService {
         }
       }
       this.closeResolvedElsewhere();
+      await this.reportRecoveredConditions();
       await this.slowRetryDue();
       const runnable = this.deps.store.list({ limit: 500 }).filter((episode) =>
         !['suggested', 'waiting-operator-only', 'succeeded', 'refused', 'cancelled', 'failed'].includes(episode.state));
@@ -255,6 +266,46 @@ export class SubscriptionReloginService {
       if (!healthy) continue;
       try { this.deps.store.resolveElsewhere(episode.id); }
       catch { /* @silent-fallback-ok — a concurrent transition won; the next tick re-reads */ }
+    }
+  }
+
+  /**
+   * True when a terminal FAILED / REFUSED repair no longer describes a live problem: the server
+   * has verified its account×machine cell healthy (pool active, identity matches, live login
+   * check ok) and no other repair for that cell is still in flight. Unmeasurable ⇒ false (the
+   * operator keeps hearing about it; a sign-in problem is never hidden on a guess).
+   */
+  private recoveredSinceFailure(episode: SubscriptionReloginEpisode): boolean {
+    if (!this.deps.cellHealthy) return false;
+    if (episode.state !== 'failed' && episode.state !== 'refused') return false;
+    const terminal = ['succeeded', 'refused', 'cancelled', 'failed'];
+    let sameCell: SubscriptionReloginEpisode[];
+    try { sameCell = this.deps.store.list({ accountId: episode.accountId, limit: 50 }).filter((e) => e.machineId === episode.machineId); }
+    catch { return false; } // @silent-fallback-ok — unreadable store ⇒ not proven recovered
+    if (sameCell.some((e) => !terminal.includes(e.state) || this.inFlight.has(e.id))) return false;
+    try { return this.deps.cellHealthy(episode) === true; }
+    catch { return false; } // @silent-fallback-ok — unmeasurable ⇒ not proven recovered
+  }
+
+  /**
+   * Self-Heal Before Notify, for the outcome side: a failed or refused repair whose account was
+   * signed in again afterwards (by a later repair, by hand, by the provider refreshing it) is no
+   * longer something the operator can or must fix. Report the condition over once, so its
+   * attention row closes itself with an honest resolution instead of waiting for a hand clear.
+   */
+  private async reportRecoveredConditions(): Promise<void> {
+    if (!this.deps.onConditionCleared || !this.deps.cellHealthy) return;
+    const seenCells = new Set<string>();
+    for (const episode of this.deps.store.list({ limit: 500 })) {
+      const cell = `${episode.accountId}:${episode.machineId}`;
+      if (seenCells.has(cell)) continue; // newest episode per cell only (list is newest first)
+      seenCells.add(cell);
+      if (this.clearedReported.has(episode.id)) continue;
+      if (!this.recoveredSinceFailure(episode)) continue;
+      try {
+        await this.deps.onConditionCleared(episode);
+        this.clearedReported.add(episode.id);
+      } catch { /* @silent-fallback-ok — not recorded as reported; the next tick tries again */ }
     }
   }
 
@@ -389,6 +440,15 @@ export class SubscriptionReloginService {
           // A terminal notice whose repair has since been restarted (a slow retry raced its delivery)
           // is stale: never send "repair ended" for a repair that is running again.
         }
+        else if (notification.kind === 'terminal' && this.recoveredSinceFailure(episode)) {
+          // The account is verified signed in again: the failure is no longer the operator's to
+          // fix, so the "repair ended in failed" notice is never sent. Its condition (and any
+          // earlier row for it, such as the suggestion) is reported over instead.
+          if (this.deps.onConditionCleared && !this.clearedReported.has(episode.id)) {
+            await this.deps.onConditionCleared(episode);
+            this.clearedReported.add(episode.id);
+          }
+        }
         else if (notification.kind === 'terminal' && episode.state === 'failed' && this.retryWillFollow(episode)) {
           // Held while a slow retry is still coming (Self-Heal Before Notify) — but only up to one
           // retry delay past the failure plus an hour: a retry kept deferred by refusals never
@@ -407,8 +467,12 @@ export class SubscriptionReloginService {
             continue;
           }
           await this.deps.onTerminal?.(episode, notification.deliveryKey);
+          this.clearedReported.delete(episode.id); // a row may exist now: a later recovery must close it
         }
-        else await this.deps.onTerminal?.(episode, notification.deliveryKey);
+        else {
+          await this.deps.onTerminal?.(episode, notification.deliveryKey);
+          if (episode) this.clearedReported.delete(episode.id);
+        }
         this.deps.store.completeNotification(notification.id);
       } catch {
         const delay = 5_000 * 2 ** Math.min(6, Math.max(0, notification.attemptCount - 1));
