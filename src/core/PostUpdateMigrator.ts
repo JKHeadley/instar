@@ -12443,6 +12443,17 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       }
     }
 
+    // A queued merge-gate verify now reserves the NEXT full-suite slot. Existing
+    // agents need the read surface and the reason an ad-hoc suite may wait with
+    // zero holders. The content sniff makes repeat migrations idempotent.
+    if (content.includes('Test-Runner Concurrency Bound') && !content.includes('mergeGatePriority.active')) {
+      const line = '- When Local Verify has runnable merge-gate work, it holds a short claim for the next full-suite slot. Ordinary full suites wait; small targeted tests keep their own lane. `GET /test-runner-limiter` → `mergeGatePriority.active` explains a wait with no current suite holder. The claim expires if the verifier stalls.\n';
+      const anchor = '- **"Why is my test run waiting?"';
+      content = content.includes(anchor) ? content.replace(anchor, line + anchor) : content + '\n' + line;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added merge-gate suite-slot priority');
+    }
+
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
     // Awareness + Migration Parity: an agent that doesn't know a "sender not
     // recognized" notice comes from the mesh sender re-validation will be confused

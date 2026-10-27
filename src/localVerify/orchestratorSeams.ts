@@ -261,8 +261,8 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
   };
 }
 
-/** How long the lane phase waits for its suite slot before re-queueing the verify. */
-const SUITE_SLOT_ACQUIRE_MS = 60_000;
+/** One already-running ordinary suite may finish before the verifier's lane phase. */
+const SUITE_SLOT_ACQUIRE_MS = 45 * 60_000;
 
 /**
  * One full-suite slot for a verify's lane phase, held by the verify child process
@@ -275,8 +275,23 @@ const SUITE_SLOT_ACQUIRE_MS = 60_000;
  */
 async function holdSuiteSlot(log: (event: Record<string, unknown>) => void): Promise<(() => void) | 'busy' | null> {
   const sem = getHostTestRunnerSemaphore();
+  const priorityKey = `local-verify-child:${process.pid}`;
+  let lastRenewedAt = 0;
+  const renewPriority = (): void => {
+    if (Date.now() - lastRenewedAt < 30_000) return;
+    try {
+      sem.setMergeGatePriority(priorityKey, true);
+      lastRenewedAt = Date.now();
+    } catch (e) {
+      log({ event: 'suite-priority-error', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+    }
+  };
+  renewPriority();
   try {
-    const out = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: SUITE_SLOT_ACQUIRE_MS });
+    const out = await sem.acquire({
+      lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: SUITE_SLOT_ACQUIRE_MS,
+      onWaitTick: renewPriority,
+    });
     if (out.kind !== 'acquired') {
       log({ event: 'suite-slot', outcome: 'fail-open-admit', cause: out.cause });
       return null;
@@ -301,5 +316,9 @@ async function holdSuiteSlot(log: (event: Record<string, unknown>) => void): Pro
     // a bound that keeps failing.
     log({ event: 'suite-slot', outcome: 'error', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
     return 'busy';
+  } finally {
+    try { sem.setMergeGatePriority(priorityKey, false); } catch (e) {
+      log({ event: 'suite-priority-error', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+    }
   }
 }

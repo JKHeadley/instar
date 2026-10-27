@@ -29,6 +29,8 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): Record<string
 
 export interface DefaultServiceSeamOpts {
   repo: string;
+  /** Stable per-agent claim key; absent in isolated tests. */
+  priorityKey?: string;
   /** The explicit per-agent GitHub environment (as MergeRunner uses); null = gh unavailable. */
   resolveGitHubEnv: () => NodeJS.ProcessEnv | null;
 }
@@ -45,6 +47,10 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
     }
   };
   return {
+    setSuitePriority(active: boolean): void {
+      if (!opts.priorityKey) return;
+      getHostTestRunnerSemaphore().setMergeGatePriority(opts.priorityKey, active);
+    },
     async prView(pr: number): Promise<PrView | null> {
       // title/body/files feed the main-red repair match (mainRedHold.ts); gh lists the first 100 files.
       // labels: `merge-throughput` ranks the PR ahead of ordinary PRs (prPriority).

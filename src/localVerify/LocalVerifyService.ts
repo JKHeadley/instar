@@ -185,6 +185,8 @@ export interface LocalVerifyServiceSeams {
   readProcessArgs(pid: number): Promise<string | null>;
   /** Live full-suite holders of the host test-runner bound. */
   foreignSuiteHolders(): Array<{ pid: number }>;
+  /** Publish/clear the merge-gate's short host-wide claim for the next suite slot. */
+  setSuitePriority?(active: boolean): void;
   onStarved?(info: { pr: number; headSha: string; waitedMs: number; interruptions?: number; reason?: 'waited' | 'interrupted' }): void;
   /** Called by the completion path after a record is journaled (status projection plugs in here later). */
   onRecord?(record: LocalVerifyRecord): void;
@@ -682,6 +684,7 @@ export class LocalVerifyService {
   /** Repair candidates seen this episode (kept after they leave the queue, until green). */
   private readonly repairSeen = new Map<number, RepairCandidate>();
   private holdIdleAudited: string | null = null;
+  private suitePriorityClaimed = false;
 
   constructor(cfg: LocalVerifyServiceConfig, seams: LocalVerifyServiceSeams) {
     this.cfg = cfg;
@@ -1761,6 +1764,7 @@ export class LocalVerifyService {
   shutdown(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.publishSuitePriority(false);
     const f = this.inFlight;
     if (f && !f.cancelled) {
       this.cancelInFlight('shutdown', { armKillTimer: false });
@@ -1871,20 +1875,24 @@ export class LocalVerifyService {
 
   private pump(): void {
     this.persistQueue();
-    if (this.cfg.peerOnly) return; // a peer-only service never starts its own work
+    if (this.cfg.peerOnly) { this.publishSuitePriority(false); return; } // a peer-only service never starts its own work
     this.scheduleDispatch();
-    // A merge hand-off holds the queue (bounded): the next PR is verified on top of the merge, not against it.
-    if (this.stopped || this.restoring || this.inFlight || this.starting || this.blockedBy || this.mergeHold || this.verifierHold || this.queue.length === 0) return;
-    if (this.notePause()) return; // an update is waiting only on us: let the running verify end, start nothing
-    const holders = this.seams.foreignSuiteHolders();
-    if (holders.length > 0) {
-      // A capacity wait: not an attempt, the entry keeps its place.
-      this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });
+    // The coordinator reserves the next slot only while waiting to start.
+    // Once the child starts, its lane-phase seam claims just before acquire;
+    // installs/builds must leave an idle suite slot usable by ordinary runs.
+    if (this.inFlight || this.starting) {
+      this.publishSuitePriority(false);
       return;
     }
+    // A merge hand-off holds the queue (bounded): the next PR is verified on top of the merge, not against it.
+    if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold || this.queue.length === 0) {
+      this.publishSuitePriority(false);
+      return;
+    }
+    if (this.notePause()) { this.publishSuitePriority(false); return; } // an update is waiting only on us
     // The files on disk must still be the verifier this server labels records with: an update
     // that landed under us holds the queue for the restart instead of spawning a child that refuses.
-    if (this.verifierChangedOnDisk()) return;
+    if (this.verifierChangedOnDisk()) { this.publishSuitePriority(false); return; }
     const now = this.now();
     // Stable: FIFO within a level. An ordinary PR that has waited THROUGHPUT_AGING_MS ranks with
     // the merge-throughput label, so the label can never hold an old PR back indefinitely.
@@ -1900,6 +1908,7 @@ export class LocalVerifyService {
       const held = new Set(hold.heldPrs.map((h) => h.pr));
       admissible = admissible.filter((e) => e.kind === 'main' || !held.has(e.pr));
       if (admissible.length === 0) {
+        this.publishSuitePriority(false);
         if (this.holdIdleAudited !== hold.redHead) {
           this.holdIdleAudited = hold.redHead;
           this.audit({ event: 'main-red-hold-idle', redHead: hold.redHead, held: hold.heldPrs.length, failingFiles: hold.failingFiles });
@@ -1911,18 +1920,37 @@ export class LocalVerifyService {
       foreignHolders: 0, queue: admissible, now: this.now(),
       fairShare: { mainHealthy: this.health.isHealthy(), mainRed: this.health.snapshot().state === 'main-red', oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, lastStartWasMain: this.lastStartWasMain },
     });
-    if (d.kind !== 'start') return;
+    if (d.kind !== 'start') { this.publishSuitePriority(false); return; }
+    // This claim is written BEFORE checking an occupied slot. Once that slot
+    // releases, ordinary suites yield and the next pump can start this verify.
+    this.publishSuitePriority(true);
+    const holders = this.seams.foreignSuiteHolders();
+    if (holders.length > 0) {
+      this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });
+      return;
+    }
     const next = admissible[d.index];
     if (next.kind !== 'main' && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
       // The verify tests the merge with TODAY's base: re-read it right before the start, and
       // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
       this.starting = next;
+      this.publishSuitePriority(false);
       void this.refreshBaseThenPump(next);
       return;
     }
     const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
     this.lastStartWasMain = entry.kind === 'main';
     this.start(entry);
+  }
+
+  private publishSuitePriority(active: boolean): void {
+    if (!active && !this.suitePriorityClaimed) return;
+    try {
+      this.seams.setSuitePriority?.(active);
+      this.suitePriorityClaimed = active;
+    } catch (err) {
+      this.audit({ event: 'suite-priority-error', detail: err instanceof Error ? err.message.slice(0, 200) : String(err) });
+    }
   }
 
   /**
@@ -2076,6 +2104,7 @@ export class LocalVerifyService {
     intent.pid = handle.pid;
     intent.pgid = handle.pid;
     this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt };
+    this.publishSuitePriority(false);
     const mine = this.inFlight;
     handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
     this.writeInFlight(intent);

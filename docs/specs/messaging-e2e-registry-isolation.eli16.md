@@ -1,0 +1,7 @@
+# Isolate the multi-agent messaging test registry
+
+The multi-agent messaging E2E test starts two real test servers and sends messages between them. Each send looks up the destination in Instar's agent registry. The test was using the same registry file as live agents and other test runs on the machine. When another process held that registry's file lock, a valid message could fail with HTTP 400. That made the full verification suite fail on unrelated pull requests and slowed the merge queue.
+
+The test now creates a temporary registry directory before either server starts, points the existing registry and token code at it for this test process, and registers only its two agents there. A first test asserts that the directory and discovered agents are the expected ones. Each pair also has unique names so its message drop files do not collide with another run. Cleanup restores the prior environment setting and removes the temporary directory even when agent shutdown fails. Three send assertions now print the response body if a future HTTP 400 occurs, which will make a different underlying cause visible.
+
+Production messaging behavior, its registry, and its API do not change. The test remains a full path test with real servers, registry lookups, HTTP routing, and storage. CI and the merge verifier still run it as part of the ordinary E2E suite. A revert restores the old fixture behavior and leaves no production state to migrate.

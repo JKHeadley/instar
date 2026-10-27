@@ -28,6 +28,32 @@ contested-then-cleared: 2
 
 # Test-Runner Concurrency Bound — a host-wide vitest semaphore (Bounded Blast Radius)
 
+## 2026-10-26 operational extension — merge-gate priority
+
+Between about 20:47 and 23:42 PDT, Local Verify started no real runs while
+ad-hoc full suites repeatedly occupied the Studio's only suite slot. Local
+Verify correctly requeued on each overlap, but the limiter admitted the next
+ad-hoc waiter before the merge gate could start. The queue was full throughout.
+
+When a coordinator has a runnable Local Verify entry, it publishes a
+host-local, per-agent claim for the next full-suite slot before checking the
+current holder. It clears that claim as soon as the child starts, so an idle
+suite slot remains usable while the child installs, builds, and lints. Just
+before the lane phase, the child publishes its own claim and waits up to 45
+minutes for the current holder to finish. It clears that claim on acquisition
+or error. Claims renew while waiting and expire after two minutes without
+renewal; dead-owner, expired, corrupt, and foreign-host claims are ignored.
+An ordinary suite waits while a live claim exists, even if the current holder
+has just released. The Local Verify child is the only caller that requests
+`priority: 'merge-gate'`, so it can acquire that slot. Targeted tests keep
+their separate lane. A paused, held, stopped, or empty verifier clears its
+claim; shutdown clears it too. The 45-minute ordinary suite acquire budget
+and fail-open behavior on persistent limiter uncertainty remain in force.
+
+`GET /test-runner-limiter` reports `mergeGatePriority.active`, so a wait with
+zero holders has a visible reason. The claim store is bounded to 64 stable
+per-agent files under `~/.instar/host-test-runner-priority/`.
+
 ## Constitutional fit
 
 This spec implements the **Bounded Blast Radius** constitutional standard (the same standard that mandates the fork-bomb LLM-spawn cap). An unbounded per-actor resource-spawn pattern whose host-wide aggregate is catastrophic is precisely what that standard exists to prevent; the test-runner storm is the second instance of that class (the first, LLM subprocesses, is already bounded). It also serves **Responsible Resource Usage** (OS resource hygiene) and directly closes the load-stall kill cascade documented in the 2026-07-02 respawn root-cause analysis.

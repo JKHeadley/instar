@@ -15,6 +15,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { _resetHostTestRunnerSemaphoreForTest, getHostTestRunnerSemaphore } from '../../src/core/hostTestRunnerSemaphore.js';
 import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireLocalVerifyPeers, wireLocalVerifySwitches, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
 import type { LocalVerifyServiceSeams } from '../../src/localVerify/LocalVerifyService.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
@@ -92,6 +93,31 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0 });
     built.service!.shutdown();
+  });
+
+  it('production wiring publishes and clears a real host priority claim', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const previous = process.env.INSTAR_HOST_TEST_BASE_DIR;
+    process.env.INSTAR_HOST_TEST_BASE_DIR = path.join(home, 'host-limiter');
+    _resetHostTestRunnerSemaphoreForTest();
+    try {
+      const built = buildLocalVerifyService({
+        config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+        repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+      });
+      expect(built.service).not.toBeNull();
+      const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+      expect(typeof seams.setSuitePriority).toBe('function');
+      seams.setSuitePriority!(true);
+      expect(getHostTestRunnerSemaphore().hasMergeGatePriority()).toBe(true);
+      seams.setSuitePriority!(false);
+      expect(getHostTestRunnerSemaphore().hasMergeGatePriority()).toBe(false);
+      built.service!.shutdown();
+    } finally {
+      _resetHostTestRunnerSemaphoreForTest();
+      if (previous === undefined) delete process.env.INSTAR_HOST_TEST_BASE_DIR;
+      else process.env.INSTAR_HOST_TEST_BASE_DIR = previous;
+    }
   });
 
   it('the starved signal is wired through the production function to hooks.signal (it used to reach only the audit log)', async () => {

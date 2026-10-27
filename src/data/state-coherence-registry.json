@@ -5,6 +5,21 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "host-test-runner-merge-priority",
+      "description": "Per-agent, host-local short leases that give a queued merge-gate verify the next full-suite slot. Expired, dead-owner and foreign-host claims have no authority.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["~/.instar/host-test-runner-priority/*.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 64,
+        "note": "One replace-in-place claim per agent and machine, at most 64 host-wide. A new writer prunes dead or expired claims at the ceiling; a live claim expires after 2 minutes without renewal."
+      }
+    },
+    {
       "category": "telegram-origin-session-custody",
       "description": "Machine-bound preparation credential verifiers and the owner-only notice IPC socket. Raw credentials are never persisted. Session liveness and incarnation must still be current; a copied verifier or stale socket never grants delivery authority. Excluded structurally from git sync and replicated backup.",
       "scope": "machine-local", "freshness": "real-time", "conflictShape": "single-writer", "transport": "none",
