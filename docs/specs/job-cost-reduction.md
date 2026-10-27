@@ -446,11 +446,11 @@ reason:
   without triage.
 - **Once per episode.** The notice is sent once per episode and is never
   repeated.
-- **Owners that escalate are not duplicated.** Where an owner already raised its
-  own attention item for the same condition, that open item suppresses this
-  notice. A match means an open attention item whose `conditionKey` starts with
-  the reason's declared owner prefix: for example `degradation:<feature>` for the
-  DegradationReporter. A reason with no declared prefix is never suppressed.
+- **No suppression by another item.** An owner's own attention item never
+  suppresses this notice: nothing here can confirm that item reached the
+  operator (the hub filter may have held it), and prefix matching cannot prove it
+  is the same condition on the same machine. The cost is at most one possible
+  duplicate per episode, after 6 hours; a silent miss would be worse.
 
 This is a deliberate change from today. Today's health-check messages the
 operator about any issue it sees. The new one pushes critical ones immediately, and
@@ -803,7 +803,8 @@ is it routine?
   | Brake | Value |
   |---|---|
   | in flight | at most one triage session per slug per machine. The pending set holds at most one entry per `<slug>:<reason set>`; a duplicate merges into it |
-  | cooldown | one per `<slug>:<reason set>` per 6 h (`jobs.scriptTriage.sessionCooldownHours`). The reason set is the sorted anomaly ids, or `failure:<reason>`. A critical reason bypasses the cooldown (not the caps). Before spawning, the cooldown is also checked against the pool (`GET /jobs/triage?scope=pool`), so a claim move does not start a second session for the same condition; if that read fails, the local check decides |
+  | per episode | where a health-check episode exists, admission is keyed on the episode id: **one** triage session per episode, shared by per-run triage and the 6-hour heal attempt, critical or not. A new reason (for example `disk-low` rising to `disk-critical`) is a new episode and may get its own |
+  | cooldown | for runs with no episode (the other triage jobs), one per `<slug>:<reason set>` per 6 h (`jobs.scriptTriage.sessionCooldownHours`). The reason set is the sorted anomaly ids, or `failure:<reason>`. A critical reason bypasses the cooldown once per reason set per day (not the caps). Before spawning, the cooldown is also checked against the pool (`GET /jobs/triage?scope=pool`), so a claim move does not start a second session for the same condition; if that read fails, the local check decides |
   | caps | 6 per machine per day across all slugs (`maxSessionsPerDay`), and 3 per slug per day (`maxSessionsPerSlugPerDay`). Over a cap, one calm item per day (`job-triage-cap:<machineId>`); a floor-required session refused by a cap is also written onto the open episode or failure alert, and into the daily review's input |
   | duration | the job's `expectedDurationMinutes` × 2, at most 30 minutes |
   | audit | `logs/job-triage.jsonl` through `BoundedJsonlAudit` (14 days, size-capped): slug, run id, result, decider (`floor`, `jev`, `referee`, `fingerprint-reuse`), probabilities, decision, action (`spawned`, `suppressed-cooldown`, `suppressed-cap`, `refused:<reason>`). Never output text |
@@ -1152,7 +1153,7 @@ with real per-job numbers.
 
 | Part of the week | Sessions (est.) | Weighted tokens (est.) | After v1 |
 |---|---|---|---|
-| The five jobs | ~2,980 | ~717M | under ~12M: Jev calls (billed by TypeSafe, not in this column), bounded narrator, referee, backup and daily-review calls, plus at most 6 triage sessions a day (~1.4M weighted tokens each day at worst, usually none) |
+| The five jobs | ~2,980 | ~717M | about 12M on average assumptions: Jev calls (billed by TypeSafe, not in this column), bounded narrator, referee, backup and daily-review calls, plus at most 6 triage sessions a day per machine (at the historical ~241k average that is ~1.4M weighted tokens a day if the cap is hit; a triage session uses the default model and may cost more, so its real cost is measured separately in §9, `origin: triage`) |
 | Remaining agent-class jobs | ~160 | ~39M | unchanged in v1; phase 2's target |
 | **Total** | **3,140** | **~756M** | **~40–51M (about a 93–95% cut)** |
 
@@ -1229,7 +1230,7 @@ from §9.
   - critical reasons push on the same run;
   - recoverable reasons raise a calm attention item, then one push after 6 hours
     of persistence;
-  - an owner's own open item suppresses that push;
+  - an owner's open item for the same condition does not suppress that push;
   - a skipped or failed run is neutral for the rolling window;
   - the episode store is written atomically outside `guardWrite`, its path is
     excluded from git-sync, and stale episodes
@@ -1273,6 +1274,8 @@ from §9.
     session's row is excluded from stats and streak; JobState is untouched;
   - triage runs after the claim is released and holds no script-cap slot;
   - the floor's streak comes from this machine's run rows (a standby fixture);
+  - a persistent critical episode gets one triage session, not one per run after
+    each session ends;
   - a `structured-only` slug never sends or quotes free text; undeclared or
     malformed `JOB_FIELD` lines are dropped and counted;
   - a referee provider that ignores its timeout keeps the `SingleFlightProvider`
