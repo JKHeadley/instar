@@ -68,6 +68,9 @@ The change closes the observed preparation race while preserving the existing su
 
 ## Second-pass review (if required)
 
+**Reviewer:** priority_review
+**Independent read of the artifact: concur**
+
 The first independent pass identified that keeping the claim through the entire run would over-block hosts configured with more than one suite slot. The service now clears its claim when it observes the child's acquired slot. The independent re-review concurred: the holder PID latch closes that concern, and no remaining release concern was found.
 
 ## Evidence pointers
