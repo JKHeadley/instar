@@ -14,7 +14,7 @@ related:
   - docs/LLM-SUPERVISED-EXECUTION.md
   - docs/specs/jev-job-supervision.md
 single-run-completable: true
-frontloaded-decisions: 18
+frontloaded-decisions: 19
 cheap-to-change-tags: 1
 contested-then-cleared: 3
 ---
@@ -524,18 +524,29 @@ file, which is cluster-shared and written only by the lease holder
 - **If the narrator fails** (error, timeout, empty reply, open circuit), the
   summary becomes the fixed sentence "<job> on <machine>: <reasons>." The push
   then sends normally, with its evidence block.
-- **If the tone gate holds the push**, whatever the reason (an advisory hold, a
-  self-stop, or a `credential-exposure-guard` block), the evidence block is
-  dropped.
-  - Only the fixed sentence is sent, through the deterministic topic-send path
-    that the cold-start lifeline notice uses. It carries just reason ids and the
-    machine nickname, and ends: "details on the Jobs tab".
+- **If the tone gate answers with an advisory** (`422 tone-gate-advisory`), the
+  push is re-sent once, unchanged, with `toneAdvisoryAck` set to the named rule,
+  `toneAdvisoryAckReason` "deterministic evidence block the operator must see
+  verbatim", and the returned `toneAdvisoryDecisionRef`. The evidence block is
+  degradation strings word for word and routinely carries config keys, paths and
+  feature ids, which the advisory rules flag; an advisory is a signal, and this
+  records its grade honestly instead of treating it as a stop.
+- **If the gate blocks** (`tone-gate-blocked`, including where the advisory
+  migration is dark and B-rules are hard blocks, as on the fleet today; the
+  credential wall; or `advisoryUnavailable`), the evidence block is dropped.
+  - The evidence is put on a private view, and the fixed sentence plus that view
+    link is sent through the deterministic topic-send path that the cold-start
+    lifeline notice uses. It carries just reason ids and the machine nickname.
+    For a credential-wall block, the view is not made (the evidence held a live
+    credential) and the sentence ends "details on the Jobs tab".
   - No text the gate refused is ever sent around it.
+  - A test pushes a degradation string containing a config key and asserts the
+    ack path on an advisory and the view-link path on a block.
 - **Delivery goes through the automation reply chokepoint, not `sendToTopic`.**
   `JobScheduler.notifyJobComplete` calls `telegram.sendToTopic` directly, which
   runs neither the tone gate nor the credential-exposure guard. A push therefore
   goes through `sendAutomationReply` (built on `postOriginAutomationReply`),
-  producer `job-anomaly/<slug>`, author contract `actual-call` naming the model
+  producer `job-anomaly` (the slug in metadata), author contract `actual-call` naming the model
   that answered (or the fixed-template contract for the fallback sentence),
   injected into the scheduler from `server.ts`. The producer is added to the
   origin certificate inventory. "Pushed" (above) means that call returned a
@@ -546,7 +557,8 @@ file, which is cluster-shared and written only by the lease holder
   "push before writing" rule above applies to this spec's own episode and audit
   writes, not the send path's. At 5% free that write still succeeds; below it,
   the honest limit above applies.
-  `telegramNotify`.
+- **Topic.** The push needs a `topicId`; health-check's on-alert topic is created
+  first when missing, as `notifyJobComplete` does today.
 
 ### 5.5 Cost on the healthy path
 
@@ -656,7 +668,8 @@ is it routine?
   the second consecutive failure (one transient timeout spends no session), or
   emitted a **critical** anomaly (§5.3). The streak is computed from **this
   machine's own** `job-runs.jsonl` rows for the slug (they carry `machineId`),
-  skipping `skipped`, `script-canary` and `origin: triage` rows, never from the
+  skipping `skipped`, `script-canary` and `origin: triage` rows (a row without
+  `machineId` counts as local only on a single-machine agent), never from the
   cluster-shared `JobState`, which only the lease holder writes. On an agent with no Jev, no
   referee and no other provider, the floor alone decides (G4). (Server-managed
   outcomes are already `ok`/`skipped` by §5.2, so they never reach this rule.)
@@ -709,26 +722,29 @@ is it routine?
     the template's `model: haiku`: the operator asked for "a real session with
     real intelligence"; spec 2's pins do not apply to it), and no
     `telegramNotify`.
-  - **It cannot message the operator, enforced on the server.** `SessionManager`
-    gains a `senderClass` spawn option (today it hardcodes
-    `INSTAR_SENDER_CLASS=llm-session` for every `jobSlug` spawn); a triage
-    session is spawned with `triage-session`. The session's origin preparation
-    credential is bound to that class, and `/telegram/reply` and origin
-    preparation refuse a `triage-session` credential (403
-    `triage-session-cannot-send`). The relay script's sender-class case also
-    refuses it, as a second layer; that script change rides the existing relay
-    migration (§8). Honest limit: Bash can still reach other local API routes, so
-    "do not re-run the trigger" rests on the prompt and the narrowed tools, not an
-    OS sandbox. Bash runs under the agent's normal dangerous-command guards.
+  - **It holds no credentials, structurally.** It is spawned with the existing
+    `omitAuthEnv: true` spawn option (the feedback executor's confined sessions
+    use it, `buildFeedbackExecutor.ts`), which blanks the Bearer, origin, bind,
+    GitHub and fencing tokens. Every authenticated route is therefore closed to
+    it: it cannot message the operator, raise an `agent` attention item, call
+    the job's trigger, change config or kill sessions. It can read and edit
+    files under the agent home and reach the unauthenticated `/health`; the
+    structured fields in its prompt stand in for the API reads it cannot make.
+    `omitAuthEnv` refuses when the agent authenticates Claude with an
+    environment token; that is recorded as an admission refusal
+    (`refused: env-token-auth`), which the 6-hour push names. Bash still runs
+    under the agent's dangerous-command guards; file edits are the residual
+    authority, bounded by the narrowed tool set and the caps.
   - The in-flight check keys on the run-history tag `triage:<slug>` (the tmux
     name, `triage-<slug>-<id>`, is display only).
   - It is admitted by `admitTriageSpawn()`, which runs the same read-only, quota,
     session-capacity and work-admission checks `triggerJob` runs. A refusal is
     logged with its reason and never queued.
   - It never touches the slug's `JobState`, failure streak or failure-alert
-    state. Its run-history row has `origin: triage`, trigger `triage:<runId>`,
+    state. Its run-history row has a new `origin: triage` field, trigger `triage:<runId>`,
     and is excluded from the slug's stats, streak and CrashLoopPauser.
-  - When it ends, its final output (scrubbed, 2,000 characters) is attached to
+  - Its end is caught by a `triage:` branch in the completion handler ahead of the
+    `this.jobs` lookup (a `triage:` tag is not a registered job). When it ends, its final output (scrubbed, 2,000 characters) is attached to
     the triage row and shown in one calm attention item
     (`conditionKey: job-triage:<machineId>:<slug>`, `source: "job-triage"`,
     priority low), and, for health-check, to the open episode. What reaches the
@@ -1000,15 +1016,11 @@ must settle these constraints, carried forward from here:
    to the frontmatter allowlist. The rollback holds together because:
    - the body is still the full runnable prompt (§5.1);
    - no user file was rewritten.
-5. **Relay and session spawn.** The relay script's `triage-session` refusal
-   rides the existing SHA-based relay migration (customised copies are skipped,
-   which is why the server-side refusal in §5.6.2 is the real enforcement).
-   `SessionManager`'s `senderClass` option is code, shipped with the package.
-6. **Loader compatibility.** The closed set of allowed frontmatter keys is checked
+5. **Loader compatibility.** The closed set of allowed frontmatter keys is checked
    wherever a body is loaded. Templates and loader ship in the same package
    version, and a test pins that every shipped template loads under the same
    version's loader with no entry skipped.
-7. **Agent Awareness.** `generateClaudeMd()` and `migrateClaudeMd()` (guarded by a
+6. **Agent Awareness.** `generateClaudeMd()` and `migrateClaudeMd()` (guarded by a
    content check) add a short section saying:
    - most scheduled jobs now run as scripts with no session;
    - health-check pushes critical problems at once;
@@ -1019,7 +1031,7 @@ must settle these constraints, carried forward from here:
      results every 6 hours and one daily review looks across all jobs;
    - where to look: `GET /jobs` (per run: `runner`, `lockTrust`, `tokens`,
      `triage`), `GET /jobs/triage` (recent triage decisions) and `GET /jobs/cost`.
-8. **Dashboard.** The Jobs tab shows each job's runner, its last result, its
+7. **Dashboard.** The Jobs tab shows each job's runner, its last result, its
    7-day token use against the baseline, and its last day's triage decisions and
    triage sessions.
 
@@ -1210,10 +1222,10 @@ from §9.
   - a failing script plus its triage session still alerts on schedule; the
     session's row is excluded from stats and streak; JobState is untouched;
   - triage runs after the claim is released and holds no script-cap slot;
-  - the relay script refuses `INSTAR_SENDER_CLASS=triage-session`;
   - the floor's streak comes from this machine's run rows (a standby fixture);
   - a `structured-only` slug never sends or quotes free text;
-  - `/telegram/reply` refuses a `triage-session` credential;
+  - a triage session is spawned with `omitAuthEnv` (no Bearer or origin token in
+    its environment); an env-token agent records `refused: env-token-auth`;
   - the push's hard deadline fires with "outcome unknown" when the session's end
     is never seen;
   - the 6-hour push waits for one triage attempt, or names its refusal, and
@@ -1432,8 +1444,8 @@ from §9.
   that states it in the Agent Awareness text and the release notes.
 - **F13 Triage sessions:** a fixed investigator prompt shipped in code (the job
   body is reference only), the fixed allowlist `Read, Grep, Glob, Bash`, slug tag
-  `triage:<slug>`, `INSTAR_SENDER_CLASS=triage-session` refused by the relay,
-  no `telegramNotify`, an `origin: triage` run row outside the slug's stats.
+  `triage:<slug>`, spawned with `omitAuthEnv` (no credentials), no
+  `telegramNotify`, an `origin: triage` run row outside the slug's stats.
 - **F14 Referee and backup provider:** Codex (`fast` = GPT-6 Luna) when
   available, else the default framework at `fast` (Haiku on Claude); its own
   breaker. `askReferee` gains an optional attribution argument.
@@ -1445,6 +1457,8 @@ from §9.
   structured-only`; the others `full`.
 - **F18 Send helper:** pushes use the injected `sendAutomationReply`; the first
   of this spec and spec 2 to be built adds it.
+- **F19 Advisory holds:** an advisory is acknowledged with a fixed reason and
+  re-sent once; a block drops the evidence to a private view link.
 
 ## 16. Open questions
 
