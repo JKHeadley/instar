@@ -13070,6 +13070,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Only disabled if explicitly set to tunnel.enabled = false
     const tunnelEnabled = config.tunnel?.enabled !== false;
     let tunnel: TunnelManager | undefined;
+    // Attention hub posts link to the console through the tunnel (Every Ask Is Actionable).
+    telegram?.setPublicBaseUrlResolver(() => tunnel?.url ?? null);
     if (tunnelEnabled) {
       // Persist tunnel config if it wasn't in config.json yet (existing agents)
       if (!config.tunnel) {
