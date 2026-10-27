@@ -40,7 +40,7 @@ Correction recorded: the "80 MB per session" first quoted counted shared file-ba
 
 The probe is a floor: a real port carrying HTTP, TLS and Ed25519 signing would be a few MB more. So a Rust helper would save roughly **15–40 MB private memory and ~150 ms start-up per session** — at the price of a second implementation of identity, signing and registry-auth code in a second language, plus native binaries for every platform in the npm package.
 
-**Better option (Node only, recommended):** serve the Threadline MCP tools over MCP's HTTP transport from the agent server that is already running. Sessions then reference a URL instead of starting a helper, removing **100 %** of the per-session cost (more than Rust's ~95 %) with one implementation. This is a Tier-2 change (new authenticated route, session config migration) and needs its own spec; it is queued as a proposal, not built in this run.
+**Better option (Node only, recommended):** serve the Threadline MCP tools over MCP's streamable HTTP transport from the agent server that is already running. Sessions then reference a URL instead of starting a helper, removing **100 %** of the per-session cost (more than Rust's ~95 %) with one implementation. This is **already designed** in `docs/specs/THREADLINE-NETWORK-INTEROP-SPEC.md` §3.2 (stdio / SSE / HTTP-streamable transports, scoped bearer tokens via `instar mcp-server token create`), which is at Proposal status and not built — no HTTP MCP transport exists under `src/` today. These measurements are new evidence for prioritising that design, not a new design; the queued feedback item points at it.
 
 ## Trial 2 — the per-action hook scripts
 
