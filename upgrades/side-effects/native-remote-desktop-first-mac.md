@@ -56,6 +56,24 @@ Set `remoteDesktop.enabled` false and restart Echo: admission and streams close.
 
 The revised first-Mac design is appropriate for a controlled operator test after PIN-to-stream, frame, input and revoke checks pass. It cannot be described as all-machine access or as independent human identity verification. The code preserves a generic host adapter seam for the Windows/WSL and Linux work tracked in topic 131439.
 
+## 2026-10-28 phone quality pass
+
+Justin's first phone run exposed short connections, a small viewer, and difficult pointer motion. The stream now accepts increasing encrypted frame sequence numbers when the sender drops a frame under pressure. It retries isolated capture failures, coalesces pointer motion and scroll input while preserving clicks and typing, and uses one persistent native input helper. The active phone viewer fills the dynamic viewport, prevents document scrolling, provides relative trackpad and direct modes, and renders a local pointer. Stop fences browser input synchronously before target revocation. Capture remains screenshot based, so this pass does not establish video-class frame rate or latency. The ten-minute grant and two-minute input inactivity expiry still apply.
+
+**Over-block:** A large burst of discrete commands still closes the stream at its bounded queue limit. A viewing-only session reaches the two-minute inactivity expiry; heartbeat traffic is not counted as operator input.
+
+**Under-block:** The preview package can still be replaced by an auto-update before this branch merges. Browser gesture behavior has been checked in emulated Chrome, while physical Safari and Android behavior require device evidence. The remote desktop is local to the Mac; Windows and Linux adapters are not yet present.
+
+**Layer and authority:** Queue pressure and capture retry stay in the stream layer. Grant validity, PIN session, and revocation remain in the target authority. Gesture heuristics are presentation only and cannot mint a grant. The native helper has no network listener and exits when its input pipe closes.
+
+**Interactions and external surface:** The public viewer gains fullscreen controls. A local cursor replaces the embedded delayed cursor. A scoped cursor readback is admitted only for the active PIN session. The new CSS asset version follows its content hash so an updated script cannot be paired with stale cached layout. A page Stop can race with pending encrypted input, but the browser fence drops queued input; target revoke remains authoritative. Any socket close or permission loss stops without replay.
+
+**Multi-machine and rollback:** This remains machine-local by design, with one viewer per target and no replicated image or grant. Disabling `remoteDesktop.enabled` and restarting the target revokes access. Reverting this change restores the prior first-Mac viewer; no persisted grant migration is needed.
+
+**Second-pass code review:** Astra found stale native-helper callbacks, duplicate right click, a swipe-to-tap misclassification, duplicate cursor rendering, initial cursor placement, Stop's input window, and notch overlap. The implementation now guards child identity, uses one click dispatch, tracks maximum gesture displacement, captures without an embedded cursor, paints the initial cursor on image load, fences input on Stop, and applies the top safe area. Astra also confirmed the heartbeat does not extend the grant's input inactivity clock; this review records that limit explicitly.
+
+**Live evidence:** A public HTTPS Chrome phone-emulation run at 390×844 stayed connected for eight active minutes, updated the frame at every 30-second sample, rejected page scrolling during touch, and cleared the frame on Stop. The redacted target audit records start at 12:52:44 UTC and Stop at 13:00:46 UTC. A ten-second browser count observed 24 displayed frames, about 2.4 fps; this first pass addresses disconnection and control ergonomics but does not establish smooth video. Physical phone evidence and continuous capture remain open acceptance criteria in `docs/specs/native-remote-desktop-quality.md`.
+
 ## Second-pass review
 
 **Original reviewer:** desktop_side_effects_review. **Independent read: concur with condition.** This review covered the earlier Telegram design. Justin superseded its approval flow after live UX feedback; Astra's review found the PIN-only direction consistent with the dashboard surface standard if the loss of independent-factor assurance is recorded and session, revocation, audit, and PIN limits remain enforced. A code review of the revised path is still required before claiming it verified. Before deployment, preserve installed 1.3.1482 changes and verify the installed package version after overlay.
@@ -72,4 +90,6 @@ The full integration suite exposed a dark-feature shutdown mock without `setDesk
 
 ## Class-Closure Declaration
 
-No agent-authored-artifact defect and no self-triggered controller — not applicable.
+No agent-authored-artifact defect or recurring autonomous controller was introduced.
+
+`unbounded-self-action`: **guard**. The stream may retry a failed capture on its own, but `DesktopStreamManager` stops after three consecutive failures and releases the session once. `tests/unit/DesktopStreamManager.test.ts` proves the exact cap and release count; the unit test is the ratchet for this bounded retry. This is an in-session screen retry, not an agent-authored artifact or a recurring autonomous controller.

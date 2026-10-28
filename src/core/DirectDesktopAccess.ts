@@ -280,6 +280,18 @@ export class DirectDesktopAccess {
       : { status: row.status };
   }
 
+  async cursor(requestId: string, operatorSessionToken: string): Promise<{ x: number; y: number }> {
+    const row = this.requests.get(requestId);
+    if (!row) throw new Error('desktop request unavailable');
+    this.assertViewer(row, operatorSessionToken);
+    if (!this.validGrant(row) || !this.host.cursor) throw new Error('desktop cursor unavailable');
+    const point = await this.host.cursor();
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)
+      || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1
+      || !this.validGrant(row)) throw new Error('desktop cursor unavailable');
+    return point;
+  }
+
   ticket(requestId: string, operatorSessionToken: string, nonce: string, signature: string): string {
     const row = this.requests.get(requestId);
     if (!row) throw new Error('desktop request unavailable');

@@ -27,6 +27,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   const host = {
     probe: async () => ({ screenPermission: true, inputPermission: true, displayCount: 1, sessionActive: true }),
     capture: async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    cursor: async () => ({ x: 0.25, y: 0.75 }),
     input: async () => {},
     cancelInput: () => { cancelled++; },
     startIndicator: async (onExit: () => void) => { indicatorExit = onExit; },
@@ -57,6 +58,14 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
 }
 
 describe('DirectDesktopAccess', () => {
+  it('reads the current pointer only for an active grant and its PIN session', async () => {
+    const f = fixture('pin');
+    const { requestId } = await f.begin();
+    await expect(f.authority.cursor(requestId, 'wrong-proof')).rejects.toThrow('dashboard operator session');
+    await expect(f.authority.cursor(requestId, 'dashboard-proof')).resolves.toEqual({ x: 0.25, y: 0.75 });
+    f.authority.revoke(requestId, 'dashboard-proof');
+    await expect(f.authority.cursor(requestId, 'dashboard-proof')).rejects.toThrow('cursor unavailable');
+  });
   it('opens from a fresh dashboard PIN session without Telegram and revokes when that session ends', async () => {
     const f = fixture('pin');
     f.setBinding(false);

@@ -141,3 +141,5 @@ Unit: action ranking and floors both ways; provisional-send/settle crash windows
 ## Open questions
 
 *(none)*
+
+The phone quality and transport upgrade after the first Mac test is specified in [native-remote-desktop-quality.md](native-remote-desktop-quality.md).

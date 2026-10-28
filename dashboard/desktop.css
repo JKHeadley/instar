@@ -7,6 +7,18 @@ button{background:#38bdf8;color:#082f49;border:0;cursor:pointer;font-weight:650}
 button:disabled{opacity:.45;cursor:not-allowed}
 input,select{background:#0f172a;color:#f8fafc;border:1px solid #64748b}
 label{display:block;margin:.6rem 0}.row{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}
-#screen{width:100%;max-height:70vh;object-fit:contain;background:#020617;border:1px solid #475569;touch-action:none}
+#screen{width:100%;height:100%;object-fit:contain;background:#020617;pointer-events:none;user-select:none}
 #screen[hidden],section[hidden]{display:none}#status{min-height:1.5rem}
 .danger{background:#fb7185;color:#4c0519}.muted{color:#94a3b8}
+body.desktop-live{position:fixed;inset:0;max-width:none;width:100%;height:100dvh;margin:0;padding:0;overflow:hidden;overscroll-behavior:none}
+body.desktop-live>#control{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;box-sizing:border-box;width:100%;height:100dvh;margin:0;padding:0;border:0;border-radius:0;background:#020617;overflow:hidden}
+.desktop-bar,.desktop-tools{display:flex;align-items:center;gap:.45rem;padding:.45rem max(.5rem,env(safe-area-inset-right)) .45rem max(.5rem,env(safe-area-inset-left));background:#111827;flex:0 0 auto}
+.desktop-bar{padding-top:max(.45rem,env(safe-area-inset-top))}
+.desktop-bar strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.desktop-bar #liveStatus{margin-left:auto;font-size:.8rem;color:#94a3b8}.desktop-bar button{margin-left:auto}
+.desktop-tools{overflow-x:auto;white-space:nowrap;padding-bottom:max(.45rem,env(safe-area-inset-bottom))}
+.desktop-tools button{flex:0 0 auto;padding:.5rem .65rem}.type-label{display:flex;align-items:center;gap:.4rem;margin:0;font-size:.8rem;flex:0 0 auto}.type-label input{width:min(32vw,14rem);padding:.5rem}
+#surface{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;touch-action:none;overscroll-behavior:contain;user-select:none;background:#020617;cursor:none}
+#localCursor{position:absolute;left:50%;top:50%;width:18px;height:18px;pointer-events:none;z-index:2;transform:translate(-2px,-2px);filter:drop-shadow(0 1px 2px #000);background:#fff;clip-path:polygon(0 0,0 100%,25% 75%,43% 100%,58% 92%,40% 67%,75% 67%);display:none}
+body.desktop-live #localCursor{display:block}
+.gesture-help{margin:0;padding:.2rem .65rem;background:#111827;font-size:.72rem;line-height:1.2;text-align:center}
+@media (max-width:600px){.desktop-bar{font-size:.85rem}.desktop-bar button{padding:.45rem .65rem}.gesture-help{font-size:.68rem}}

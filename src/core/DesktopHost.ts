@@ -3,6 +3,7 @@
 export type DesktopInput =
   | { kind: 'move'; x: number; y: number }
   | { kind: 'click'; x: number; y: number; button: 'left' | 'right' }
+  | { kind: 'scroll'; dx: number; dy: number }
   | { kind: 'type'; text: string };
 
 export interface DesktopProbe {
@@ -15,6 +16,7 @@ export interface DesktopProbe {
 export interface DesktopHost {
   probe(): Promise<DesktopProbe>;
   capture(): Promise<Buffer>;
+  cursor?(): Promise<{ x: number; y: number }>;
   input(action: DesktopInput): Promise<void>;
   cancelInput(): void;
   startIndicator(onUnexpectedExit: () => void): Promise<void>;

@@ -18,7 +18,7 @@ export interface DesktopStreamSession {
 
 export type DesktopStreamAdmission = (request: IncomingMessage) => Promise<DesktopStreamSession>;
 
-const FRAME_INTERVAL_MS = 500;
+const FRAME_INTERVAL_MS = 250;
 const MAX_BUFFERED_BYTES = 1_000_024;
 const MAX_FRAME_BYTES = 625_000;
 const VIDEO_BYTES_PER_SECOND = 625_000; // 5 Mbps per host
@@ -66,8 +66,9 @@ export class DesktopStreamManager {
     let lastActivity = Date.now();
     let videoBudget = MAX_FRAME_BYTES;
     let lastBudgetAt = Date.now();
-    let inputChain = Promise.resolve();
-    let queuedInputs = 0;
+    const pendingInputs: Array<{ type: 'input'; action: DesktopInput }> = [];
+    let drainingInputs = false;
+    let captureFailures = 0;
     const close = () => {
       if (closed) return;
       closed = true;
@@ -84,7 +85,19 @@ export class DesktopStreamManager {
         if (closed) return;
         // A slow browser never causes a queue of screen images to accumulate.
         if (ws.bufferedAmount < MAX_BUFFERED_BYTES) {
-          const frame = await session.captureEncrypted();
+          let frame: Buffer;
+          try {
+            frame = await session.captureEncrypted();
+            captureFailures = 0;
+          } catch {
+            // A single ScreenCaptureKit timeout is a lost frame. Admission and
+            // OS readiness are checked again on the next tick; revocation
+            // itself closes this socket through closeGrant immediately.
+            if (++captureFailures >= 3) { close(); return; }
+            timer = setTimeout(() => { void nextFrame(); }, FRAME_INTERVAL_MS);
+            timer.unref?.();
+            return;
+          }
           await session.assertActive();
           const now = Date.now();
           videoBudget = Math.min(MAX_FRAME_BYTES,
@@ -103,26 +116,48 @@ export class DesktopStreamManager {
         timer.unref?.();
       }
     };
-    ws.on('message', (data, isBinary) => {
-      queuedInputs++;
-      if (queuedInputs > 8) { close(); return; }
-      inputChain = inputChain.then(async () => {
-        if (closed || !isBinary || !Buffer.isBuffer(data) || data.length > 4_096) { close(); return; }
-        try {
+    const drainInputs = async () => {
+      if (drainingInputs) return;
+      drainingInputs = true;
+      try {
+        while (!closed && pendingInputs.length > 0) {
+          const command = pendingInputs.shift()!;
           await session.assertActive();
           if (closed) return;
-          const command = session.decryptCommand(data);
-          if (command.type === 'stop') {
-            await session.revoke();
-            close();
-          } else if (command.type === 'ping') {
-            lastActivity = Date.now();
-          } else if (command.type === 'input' && command.action) {
-            await session.input(command.action);
-            lastActivity = Date.now();
-          } else close();
-        } catch { close(); }
-      }).catch(close).finally(() => { queuedInputs--; });
+          await session.input(command.action);
+          lastActivity = Date.now();
+        }
+      } catch { close(); }
+      finally { drainingInputs = false; }
+    };
+    ws.on('message', (data, isBinary) => {
+      if (closed || !isBinary || !Buffer.isBuffer(data) || data.length > 4_096) { close(); return; }
+      let command: ReturnType<DesktopStreamSession['decryptCommand']>;
+      try { command = session.decryptCommand(data); }
+      catch { close(); return; }
+      if (command.type === 'stop') {
+        pendingInputs.length = 0;
+        void session.revoke().then(close, close);
+        return;
+      }
+      if (command.type === 'ping') { lastActivity = Date.now(); return; }
+      if (command.type !== 'input' || !command.action) { close(); return; }
+      const last = pendingInputs.at(-1);
+      if (command.action.kind === 'move' && last?.action.kind === 'move') {
+        last.action = command.action;
+      } else if (command.action.kind === 'scroll' && last?.action.kind === 'scroll') {
+        last.action = { kind: 'scroll',
+          dx: Math.max(-1_000, Math.min(1_000, last.action.dx + command.action.dx)),
+          dy: Math.max(-1_000, Math.min(1_000, last.action.dy + command.action.dy)) };
+      } else if (pendingInputs.length < 32) {
+        pendingInputs.push({ type: 'input', action: command.action });
+      } else if (command.action.kind !== 'move') {
+        // Discrete commands cannot be dropped or reordered. Refuse an abusive
+        // producer rather than accumulate unbounded clicks or keystrokes.
+        close();
+        return;
+      }
+      void drainInputs();
     });
     ws.on('close', close);
     ws.on('error', close);

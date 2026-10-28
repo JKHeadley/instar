@@ -12,7 +12,7 @@ import ScreenCaptureKit
 struct InstarDesktopHost {
     static func main() async {
         guard CommandLine.arguments.count == 2 else {
-            fputs("usage: instar-desktop-host probe|capture|cursor|input|release|indicator\n", stderr)
+            fputs("usage: instar-desktop-host probe|capture|cursor|input|input-stream|release|indicator\n", stderr)
             exit(64)
         }
         switch CommandLine.arguments[1] {
@@ -48,7 +48,9 @@ struct InstarDesktopHost {
                 let configuration = SCStreamConfiguration()
                 configuration.width = min(display.width, 1920)
                 configuration.height = min(display.height, 1080)
-                configuration.showsCursor = true
+                // The browser draws one low-latency cursor locally. Embedding
+                // the host cursor in delayed JPEG frames makes two pointers.
+                configuration.showsCursor = false
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
                 let bitmap = NSBitmapImageRep(cgImage: image)
                 var jpeg: Data?
@@ -89,78 +91,101 @@ struct InstarDesktopHost {
             print("{\"ok\":true}")
         case "input":
             do {
-                guard activeSession() else { throw HostError.sessionUnavailable }
-                guard AXIsProcessTrusted() else { throw HostError.inputPermissionMissing }
-                let data = FileHandle.standardInput.readDataToEndOfFile()
-                guard data.count > 0, data.count <= 4_096,
-                      let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let kind = raw["kind"] as? String else {
-                    throw HostError.invalidInput
-                }
-                switch kind {
-                case "move", "click":
-                    guard let x = raw["x"] as? Double, let y = raw["y"] as? Double,
-                          x.isFinite, y.isFinite, x >= 0, x <= 1, y >= 0, y <= 1 else {
-                        throw HostError.invalidInput
-                    }
-                    let bounds = CGDisplayBounds(CGMainDisplayID())
-                    guard bounds.width > 0, bounds.height > 0 else { throw HostError.noMainDisplay }
-                    // CGEvent expects desktop points, not backing pixels. Pixel
-                    // coordinates overshoot on Retina displays and displays whose
-                    // origin is not (0, 0).
-                    let point = CGPoint(x: bounds.minX + x * (bounds.width - 1),
-                                        y: bounds.minY + y * (bounds.height - 1))
-                    if kind == "move" {
-                        guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                                                  mouseCursorPosition: point, mouseButton: .left) else {
-                            throw HostError.inputUnavailable
-                        }
-                        event.post(tap: .cghidEventTap)
-                    } else {
-                        let button = raw["button"] as? String ?? "left"
-                        guard button == "left" || button == "right" else { throw HostError.invalidInput }
-                        let mouseButton: CGMouseButton = button == "left" ? .left : .right
-                        let downType: CGEventType = button == "left" ? .leftMouseDown : .rightMouseDown
-                        let upType: CGEventType = button == "left" ? .leftMouseUp : .rightMouseUp
-                        guard let down = CGEvent(mouseEventSource: nil, mouseType: downType,
-                                                 mouseCursorPosition: point, mouseButton: mouseButton),
-                              let up = CGEvent(mouseEventSource: nil, mouseType: upType,
-                                               mouseCursorPosition: point, mouseButton: mouseButton) else {
-                            throw HostError.inputUnavailable
-                        }
-                        // Every click releases in the same operation; a process
-                        // crash cannot leave a button held across a session stop.
-                        down.post(tap: .cghidEventTap)
-                        up.post(tap: .cghidEventTap)
-                    }
-                case "type":
-                    guard let text = raw["text"] as? String, !text.isEmpty,
-                          text.utf16.count <= 1_024, !text.contains("\0") else {
-                        throw HostError.invalidInput
-                    }
-                    for scalar in text.unicodeScalars {
-                        guard activeSession() else { throw HostError.sessionUnavailable }
-                        let units = Array(String(scalar).utf16)
-                        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                              let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
-                            throw HostError.inputUnavailable
-                        }
-                        down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-                        up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-                        down.post(tap: .cghidEventTap)
-                        up.post(tap: .cghidEventTap)
-                    }
-                default:
-                    throw HostError.invalidInput
-                }
+                try performInput(FileHandle.standardInput.readDataToEndOfFile())
                 print("{\"ok\":true}")
             } catch {
                 fputs("input unavailable: \(error)\n", stderr)
                 exit(69)
             }
+        case "input-stream":
+            while let line = readLine(strippingNewline: true) {
+                do {
+                    try performInput(Data(line.utf8))
+                    print("{\"ok\":true}")
+                    fflush(stdout)
+                } catch {
+                    fputs("input unavailable: \(error)\n", stderr)
+                    exit(69)
+                }
+            }
         default:
             fputs("unknown desktop-host command\n", stderr)
             exit(64)
+        }
+    }
+
+    private static func performInput(_ data: Data) throws {
+        guard activeSession() else { throw HostError.sessionUnavailable }
+        guard AXIsProcessTrusted() else { throw HostError.inputPermissionMissing }
+        guard data.count > 0, data.count <= 4_096,
+              let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let kind = raw["kind"] as? String else {
+            throw HostError.invalidInput
+        }
+        switch kind {
+        case "scroll":
+            guard let dx = raw["dx"] as? Double, let dy = raw["dy"] as? Double,
+                  dx.isFinite, dy.isFinite, abs(dx) <= 1_000, abs(dy) <= 1_000,
+                  let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                      wheelCount: 2, wheel1: Int32((-dy).rounded()),
+                                      wheel2: Int32((-dx).rounded()), wheel3: 0) else {
+                throw HostError.invalidInput
+            }
+            event.post(tap: .cghidEventTap)
+        case "move", "click":
+            guard let x = raw["x"] as? Double, let y = raw["y"] as? Double,
+                  x.isFinite, y.isFinite, x >= 0, x <= 1, y >= 0, y <= 1 else {
+                throw HostError.invalidInput
+            }
+            let bounds = CGDisplayBounds(CGMainDisplayID())
+            guard bounds.width > 0, bounds.height > 0 else { throw HostError.noMainDisplay }
+            // CGEvent expects desktop points, not backing pixels. Pixel
+            // coordinates overshoot on Retina displays and displays whose
+            // origin is not (0, 0).
+            let point = CGPoint(x: bounds.minX + x * (bounds.width - 1),
+                                y: bounds.minY + y * (bounds.height - 1))
+            if kind == "move" {
+                guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                          mouseCursorPosition: point, mouseButton: .left) else {
+                    throw HostError.inputUnavailable
+                }
+                event.post(tap: .cghidEventTap)
+            } else {
+                let button = raw["button"] as? String ?? "left"
+                guard button == "left" || button == "right" else { throw HostError.invalidInput }
+                let mouseButton: CGMouseButton = button == "left" ? .left : .right
+                let downType: CGEventType = button == "left" ? .leftMouseDown : .rightMouseDown
+                let upType: CGEventType = button == "left" ? .leftMouseUp : .rightMouseUp
+                guard let down = CGEvent(mouseEventSource: nil, mouseType: downType,
+                                         mouseCursorPosition: point, mouseButton: mouseButton),
+                      let up = CGEvent(mouseEventSource: nil, mouseType: upType,
+                                       mouseCursorPosition: point, mouseButton: mouseButton) else {
+                    throw HostError.inputUnavailable
+                }
+                // Every click releases in the same operation; a process
+                // crash cannot leave a button held across a session stop.
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
+        case "type":
+            guard let text = raw["text"] as? String, !text.isEmpty,
+                  text.utf16.count <= 1_024, !text.contains("\0") else {
+                throw HostError.invalidInput
+            }
+            for scalar in text.unicodeScalars {
+                guard activeSession() else { throw HostError.sessionUnavailable }
+                let units = Array(String(scalar).utf16)
+                guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+                      let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+                    throw HostError.inputUnavailable
+                }
+                down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
+        default:
+            throw HostError.invalidInput
         }
     }
 

@@ -33,6 +33,7 @@ function fakeAccess(): DirectDesktopAccess {
     probe: async () => ({ ready: true, screenPermission: true, inputPermission: true, displayCount: 1 }),
     begin: async input => { expect(input.operatorUid).toBe('dashboard-pin'); return { requestId: 'request-1' }; },
     status: () => ({ status: 'approved', connectionNonce: 'nonce-1' }),
+    cursor: async () => ({ x: 0.25, y: 0.75 }),
     ticket: () => 'ticket-1',
     revoke: () => {},
   } as unknown as DirectDesktopAccess;
@@ -73,6 +74,11 @@ describe('remote desktop HTTP routes', () => {
     expect(created.body.requestId).toBe('request-1');
     const status = await request(server).get('/desktop/requests/request-1').set(headers);
     expect(status.body.status).toBe('approved');
+    expect((await request(server).get('/desktop/requests/request-1/cursor')
+      .set({ Authorization: `Bearer ${AUTH}` })).status).toBe(403);
+    const cursor = await request(server).get('/desktop/requests/request-1/cursor').set(headers);
+    expect(cursor.status).toBe(200);
+    expect(cursor.body).toEqual({ x: 0.25, y: 0.75 });
     const ticket = await request(server).post('/desktop/requests/request-1/ticket')
       .set({ ...headers, 'X-Instar-Request': '1' }).send({ connectionNonce: 'nonce-1', signature: 'fixture' });
     expect(ticket.body).toMatchObject({ ticket: 'ticket-1', machineId: 'machine-1' });

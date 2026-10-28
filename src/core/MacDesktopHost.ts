@@ -22,6 +22,10 @@ function validInput(action: MacDesktopInput): boolean {
       || action.x < 0 || action.x > 1 || action.y < 0 || action.y > 1) return false;
     return action.kind === 'move' || action.button === 'left' || action.button === 'right';
   }
+  if (action.kind === 'scroll') {
+    return Number.isFinite(action.dx) && Number.isFinite(action.dy)
+      && Math.abs(action.dx) <= 1_000 && Math.abs(action.dy) <= 1_000;
+  }
   return action.kind === 'type' && typeof action.text === 'string'
     && action.text.length > 0 && action.text.length <= 1_024 && !action.text.includes('\0');
 }
@@ -29,11 +33,21 @@ function validInput(action: MacDesktopInput): boolean {
 export class MacDesktopHost implements DesktopHost {
   private readonly inputChildren = new Set<{ kill(signal?: NodeJS.Signals): boolean }>();
   private indicatorChild: ChildProcessWithoutNullStreams | null = null;
+  private inputStream: ChildProcessWithoutNullStreams | null = null;
+  private inputReply = '';
+  private pendingInput: { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   constructor(private readonly binary = DEFAULT_HOST) {}
 
   /** Local kill switch: stop any native input still running when a grant ends. */
   cancelInput(): void {
     for (const child of this.inputChildren) child.kill('SIGKILL');
+    this.inputStream?.kill('SIGKILL');
+    this.inputStream = null;
+    if (this.pendingInput) {
+      clearTimeout(this.pendingInput.timer);
+      this.pendingInput.reject(new Error('mac-desktop-host-input-cancelled'));
+      this.pendingInput = null;
+    }
     // A native click or Unicode key sequence can be interrupted between down
     // and up. Release held input after fencing the child processes.
     void this.run('release').catch(() => {});
@@ -175,9 +189,67 @@ export class MacDesktopHost implements DesktopHost {
 
   async input(action: MacDesktopInput): Promise<void> {
     if (!validInput(action)) throw new Error('mac-desktop-host-input-invalid');
-    const result = await this.run('input', Buffer.from(JSON.stringify(action)));
-    if (result.toString('utf8').trim() !== '{"ok":true}') {
-      throw new Error('mac-desktop-host-input-unconfirmed');
-    }
+    if (!this.inputStream) this.startInputStream();
+    const child = this.inputStream!;
+    if (this.pendingInput) throw new Error('mac-desktop-host-input-busy');
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingInput?.timer !== timer) return;
+        this.pendingInput = null;
+        if (this.inputStream === child) this.inputStream = null;
+        child.kill('SIGKILL');
+        reject(new Error('mac-desktop-host-input-timeout'));
+      }, 2_000);
+      timer.unref?.();
+      this.pendingInput = { resolve, reject, timer };
+      child.stdin.write(JSON.stringify(action) + '\n', error => {
+        if (error && this.pendingInput?.timer === timer) {
+          clearTimeout(timer);
+          this.pendingInput = null;
+          if (this.inputStream === child) this.inputStream = null;
+          child.kill('SIGKILL');
+          reject(new Error('mac-desktop-host-input-unavailable'));
+        }
+      });
+    });
+  }
+
+  private startInputStream(): void {
+    const child = spawn(this.trustedBinary(), ['input-stream'], {
+      stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    });
+    this.inputStream = child;
+    this.inputReply = '';
+    const fail = () => {
+      // A killed old helper may emit close after a new grant has spawned its
+      // replacement. Its late callbacks must never touch the new command.
+      if (this.inputStream !== child) return;
+      this.inputStream = null;
+      const pending = this.pendingInput;
+      if (pending) {
+        this.pendingInput = null;
+        clearTimeout(pending.timer);
+        pending.reject(new Error('mac-desktop-host-input-unavailable'));
+      }
+    };
+    child.stderr.resume();
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (this.inputStream !== child) return;
+      this.inputReply += chunk.toString('utf8');
+      if (this.inputReply.length > 128) { child.kill('SIGKILL'); fail(); return; }
+      const newline = this.inputReply.indexOf('\n');
+      if (newline < 0) return;
+      const reply = this.inputReply.slice(0, newline).trim();
+      this.inputReply = this.inputReply.slice(newline + 1);
+      const pending = this.pendingInput;
+      if (!pending || reply !== '{"ok":true}' || this.inputReply.length > 0) {
+        child.kill('SIGKILL'); fail(); return;
+      }
+      this.pendingInput = null;
+      clearTimeout(pending.timer);
+      pending.resolve();
+    });
+    child.on('error', fail);
+    child.on('close', fail);
   }
 }

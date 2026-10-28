@@ -1311,14 +1311,21 @@ export class AgentServer {
       })[character] ?? character);
       const html = fs.readFileSync(path.join(dashboardDir, 'desktop.html'), 'utf8')
         .replace('__INSTAR_DESKTOP_TARGET_NAME__', escaped)
-        .replace('__INSTAR_DESKTOP_ASSET_VERSION__',
-          createHash('sha256').update(fs.readFileSync(path.join(dashboardDir, 'desktop.js'))).digest('hex').slice(0, 16));
+        .replaceAll('__INSTAR_DESKTOP_ASSET_VERSION__',
+          createHash('sha256')
+            .update(fs.readFileSync(path.join(dashboardDir, 'desktop.js')))
+            .update(fs.readFileSync(path.join(dashboardDir, 'desktop.css')))
+            .digest('hex').slice(0, 16));
       res.setHeader('Cache-Control', 'no-store');
       res.type('html').send(html);
     });
     this.app.get('/dashboard/desktop.js', (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(dashboardDir, 'desktop.js'), { cacheControl: false });
+    });
+    this.app.get('/dashboard/desktop.css', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(path.join(dashboardDir, 'desktop.css'), { cacheControl: false });
     });
     this.app.use('/dashboard', express.static(dashboardDir, DASHBOARD_STATIC_OPTIONS));
 

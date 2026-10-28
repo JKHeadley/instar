@@ -74,4 +74,65 @@ describe('DesktopStreamManager', () => {
     await once(ws, 'close');
     expect(ws.readyState).toBe(WebSocket.CLOSED);
   });
+
+  it('survives a burst of pointer moves while preserving discrete clicks', async () => {
+    const actions: Array<{ kind: string; x?: number }> = [];
+    const { ws } = await connect(async () => ({
+      grantId: 'burst', assertActive: async () => {},
+      captureEncrypted: async () => Buffer.alloc(32),
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async action => {
+        await new Promise(resolve => setTimeout(resolve, 8));
+        actions.push(action);
+      },
+      revoke: async () => {}, release: () => {},
+    }));
+    await once(ws, 'open');
+    for (let i = 0; i < 100; i++) {
+      ws.send(Buffer.from(JSON.stringify({ type: 'input', action: { kind: 'move', x: i / 99, y: 0.5 } })));
+    }
+    for (let i = 0; i < 3; i++) {
+      ws.send(Buffer.from(JSON.stringify({ type: 'input', action: { kind: 'click', x: i / 3, y: 0.5, button: 'left' } })));
+    }
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    expect(actions.filter(action => action.kind === 'click')).toHaveLength(3);
+    expect(actions.filter(action => action.kind === 'move').at(-1)?.x).toBe(1);
+    ws.send(Buffer.from(JSON.stringify({ type: 'stop' })));
+    await once(ws, 'close');
+  });
+
+  it('drops one transient capture error and resumes frames', async () => {
+    let captures = 0;
+    const { ws } = await connect(async () => ({
+      grantId: 'capture-retry', assertActive: async () => {},
+      captureEncrypted: async () => {
+        if (++captures === 1) throw new Error('transient screenshot timeout');
+        return Buffer.alloc(32, 5);
+      },
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async () => {}, revoke: async () => {}, release: () => {},
+    }));
+    await once(ws, 'open');
+    const [frame] = await once(ws, 'message') as [Buffer];
+    expect(Buffer.from(frame)).toEqual(Buffer.alloc(32, 5));
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.send(Buffer.from(JSON.stringify({ type: 'stop' })));
+    await once(ws, 'close');
+  });
+
+  it('stops after three consecutive capture failures', async () => {
+    let captures = 0;
+    let releases = 0;
+    const { ws } = await connect(async () => ({
+      grantId: 'capture-failure-cap', assertActive: async () => {},
+      captureEncrypted: async () => { captures++; throw new Error('screen capture unavailable'); },
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async () => {}, revoke: async () => {}, release: () => { releases++; },
+    }));
+    await once(ws, 'open');
+    await once(ws, 'close');
+    expect(captures).toBe(3);
+    expect(releases).toBe(1);
+  });
 });

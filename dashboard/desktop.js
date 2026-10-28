@@ -14,8 +14,15 @@ let machineId = '';
 let socket;
 let frameUrl = '';
 let lastMoveAt = 0;
+let pendingMove = null;
+let moveFrame = 0;
+let heartbeat = 0;
+let inputEnabled = false;
+let trackpad = matchMedia('(pointer: coarse)').matches;
+let cursor = { x: 0.5, y: 0.5 };
+const pointers = new Map();
 
-function status(message) { $('status').textContent = message; }
+function status(message) { $('status').textContent = message; $('liveStatus').textContent = message; }
 const encoder = new TextEncoder();
 const bytesToBase64 = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes)));
 const base64ToBytes = text => Uint8Array.from(atob(text), character => character.charCodeAt(0));
@@ -59,6 +66,7 @@ async function verifyTarget(result) {
 }
 function sendCommand(command) {
   sendChain = sendChain.then(async () => {
+    if (!inputEnabled && command.type === 'input') return;
     if (socket?.readyState !== WebSocket.OPEN || !aesKey) return;
     const sequence = ++inputSequence;
     const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM',
@@ -75,7 +83,10 @@ async function receiveFrame(recordBuffer) {
     || recordBuffer.byteLength > 1_000_024) throw new Error('Encrypted frame invalid.');
   const record = new Uint8Array(recordBuffer);
   const sequence = new DataView(recordBuffer).getBigUint64(0);
-  if (sequence !== frameSequence + 1n) throw new Error('Remote frame sequence invalid.');
+  // The target may drop an already-encrypted frame under backpressure. A
+  // strictly increasing nonce still rejects replay/reordering without treating
+  // an intentional video drop as a broken session.
+  if (sequence <= frameSequence) throw new Error('Remote frame sequence invalid.');
   const frame = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: recordIv('frame', sequence),
     additionalData: recordAad('frame') }, aesKey, record.subarray(8));
   frameSequence = sequence;
@@ -90,8 +101,14 @@ function clearFrame() {
   $('screen').removeAttribute('src');
 }
 function leave(message) {
+  inputEnabled = false;
   if (socket) { socket.close(); socket = undefined; }
+  if (heartbeat) { clearInterval(heartbeat); heartbeat = 0; }
+  if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
+  pendingMove = null;
+  pointers.clear();
   clearFrame();
+  document.body.classList.remove('desktop-live', 'trackpad');
   $('control').hidden = true;
   if (token) $('request').hidden = false;
   status(message);
@@ -204,6 +221,10 @@ async function requestDesktop() {
     requestId = result.requestId;
     const approved = await api(`/desktop/requests/${encodeURIComponent(requestId)}`);
     if (approved.status !== 'approved') throw new Error('Desktop access was not granted.');
+    try {
+      const point = await api(`/desktop/requests/${encodeURIComponent(requestId)}/cursor`);
+      if (Number.isFinite(point.x) && Number.isFinite(point.y)) cursor = point;
+    } catch { /* A missing cursor readback cannot grant input or bypass host checks. */ }
     await openStream(approved);
   } catch (error) {
     if (requestId) {
@@ -240,23 +261,36 @@ async function openStream(result) {
     ['instar-desktop-v1', `ticket.${ticket.ticket}`]);
   socket.binaryType = 'arraybuffer';
   socket.addEventListener('open', () => {
+    inputEnabled = true;
     $('request').hidden = true;
     $('control').hidden = false;
+    document.body.classList.add('desktop-live');
+    document.body.classList.toggle('trackpad', trackpad);
+    $('modeButton').textContent = trackpad ? 'Trackpad' : 'Direct';
+    $('modeButton').setAttribute('aria-pressed', String(trackpad));
+    updateCursor();
     $('machineName').textContent = ticket.label;
     status('Remote desktop is live.');
+    heartbeat = setInterval(() => sendCommand({ type: 'ping' }), 30_000);
   });
   socket.addEventListener('message', event => {
     receiveChain = receiveChain.then(() => receiveFrame(event.data))
       .catch(() => leave('Encrypted remote display failed.'));
   });
-  socket.addEventListener('close', () => leave('Remote desktop stopped.'));
-  socket.addEventListener('error', () => leave('Remote desktop connection failed.'));
+  const streamSocket = socket;
+  socket.addEventListener('close', () => {
+    if (socket === streamSocket) leave('Connection interrupted. Open the desktop again.');
+  });
+  socket.addEventListener('error', () => {
+    if (socket === streamSocket) leave('Remote desktop connection failed.');
+  });
 }
 
 function send(action) {
+  if (!inputEnabled) return;
   sendCommand({ type: 'input', action });
 }
-function position(event) {
+function imageArea() {
   const rect = $('screen').getBoundingClientRect();
   const image = $('screen');
   if (!image.naturalWidth || !image.naturalHeight || !rect.width || !rect.height) return null;
@@ -265,26 +299,110 @@ function position(event) {
   const height = image.naturalHeight * scale;
   const left = rect.left + (rect.width - width) / 2;
   const top = rect.top + (rect.height - height) / 2;
-  return { x: Math.min(1, Math.max(0, (event.clientX - left) / width)),
-    y: Math.min(1, Math.max(0, (event.clientY - top) / height)) };
+  return { left, top, width, height };
 }
-$('screen').addEventListener('pointermove', event => {
-  if (Date.now() - lastMoveAt < 80) return;
-  lastMoveAt = Date.now();
-  const at = position(event);
-  if (at) send({ kind: 'move', ...at });
+function clamp(value) { return Math.min(1, Math.max(0, value)); }
+function position(event) {
+  const area = imageArea();
+  return area ? { x: clamp((event.clientX - area.left) / area.width),
+    y: clamp((event.clientY - area.top) / area.height) } : null;
+}
+function updateCursor() {
+  const area = imageArea();
+  if (!area) return;
+  const rect = $('surface').getBoundingClientRect();
+  $('localCursor').style.left = `${area.left - rect.left + cursor.x * area.width}px`;
+  $('localCursor').style.top = `${area.top - rect.top + cursor.y * area.height}px`;
+}
+function queueMove(at) {
+  pendingMove = at;
+  if (!moveFrame) moveFrame = requestAnimationFrame(flushMove);
+}
+function flushMove(time) {
+  if (time - lastMoveAt < 33) { moveFrame = requestAnimationFrame(flushMove); return; }
+  moveFrame = 0;
+  lastMoveAt = time;
+  if (pendingMove) { send({ kind: 'move', ...pendingMove }); pendingMove = null; }
+}
+function moveCursor(dx, dy) {
+  const area = imageArea();
+  if (!area) return;
+  cursor = { x: clamp(cursor.x + dx * 1.3 / area.width),
+    y: clamp(cursor.y + dy * 1.3 / area.height) };
+  updateCursor();
+  queueMove(cursor);
+}
+function clickCursor(button = 'left') { send({ kind: 'click', ...cursor, button }); }
+$('modeButton').addEventListener('click', () => {
+  trackpad = !trackpad;
+  pointers.clear();
+  document.body.classList.toggle('trackpad', trackpad);
+  $('modeButton').textContent = trackpad ? 'Trackpad' : 'Direct';
+  $('modeButton').setAttribute('aria-pressed', String(trackpad));
 });
-$('screen').addEventListener('click', event => { const at = position(event); if (at) send({ kind: 'click', ...at, button: 'left' }); });
-$('screen').addEventListener('contextmenu', event => { event.preventDefault(); const at = position(event); if (at) send({ kind: 'click', ...at, button: 'right' }); });
+$('rightButton').addEventListener('click', () => clickCursor('right'));
+$('surface').addEventListener('contextmenu', event => event.preventDefault());
+$('surface').addEventListener('pointerdown', event => {
+  event.preventDefault();
+  $('surface').setPointerCapture(event.pointerId);
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY,
+    startX: event.clientX, startY: event.clientY, maxDistance: 0,
+    at: Date.now(), multi: pointers.size > 0 });
+  if (pointers.size > 1) for (const state of pointers.values()) state.multi = true;
+  if (!trackpad || event.pointerType === 'mouse') {
+    const at = position(event);
+    if (at) { cursor = at; updateCursor(); queueMove(at); }
+  }
+});
+$('surface').addEventListener('pointermove', event => {
+  const state = pointers.get(event.pointerId);
+  if (!state) {
+    if (event.pointerType === 'mouse') { const at = position(event); if (at) { cursor = at; updateCursor(); queueMove(at); } }
+    return;
+  }
+  event.preventDefault();
+  const dx = event.clientX - state.x, dy = event.clientY - state.y;
+  state.x = event.clientX; state.y = event.clientY;
+  state.maxDistance = Math.max(state.maxDistance,
+    Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
+  if (pointers.size > 1 && event.pointerType !== 'mouse') {
+    if (dx || dy) send({ kind: 'scroll', dx: Math.max(-200, Math.min(200, dx * 1.5)),
+      dy: Math.max(-200, Math.min(200, dy * 1.5)) });
+  } else if (state.multi && event.pointerType !== 'mouse') {
+    // Do not turn the trailing finger of a scroll gesture into pointer motion.
+  } else if (trackpad && event.pointerType !== 'mouse') moveCursor(dx, dy);
+  else { const at = position(event); if (at) { cursor = at; queueMove(at); } }
+});
+$('surface').addEventListener('pointerup', event => {
+  const state = pointers.get(event.pointerId);
+  if (!state) return;
+  event.preventDefault();
+  pointers.delete(event.pointerId);
+  const distance = Math.max(state.maxDistance,
+    Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
+  if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
+    if (!trackpad || event.pointerType === 'mouse') { const at = position(event); if (at) cursor = at; }
+    clickCursor(event.button === 2 ? 'right' : 'left');
+  }
+});
+$('surface').addEventListener('pointercancel', event => { pointers.delete(event.pointerId); });
+window.addEventListener('resize', updateCursor);
+$('screen').addEventListener('load', updateCursor);
 $('typeButton').addEventListener('click', () => {
   const text = $('typeText').value;
   if (text) send({ kind: 'type', text });
   $('typeText').value = '';
 });
 $('stopButton').addEventListener('click', async () => {
+  inputEnabled = false;
+  if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
+  pendingMove = null;
+  pointers.clear();
   sendCommand({ type: 'stop' });
+  const stoppingRequestId = requestId;
+  status('Stopping remote desktop…');
   let message = 'Remote desktop stopped.';
-  try { await api(`/desktop/requests/${encodeURIComponent(requestId)}/revoke`, 'POST', {}); }
+  try { await api(`/desktop/requests/${encodeURIComponent(stoppingRequestId)}/revoke`, 'POST', {}); }
   catch { message = 'The viewer closed, but the target has not confirmed revocation. Access expires automatically.'; }
   leave(message);
 });
