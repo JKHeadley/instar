@@ -130,8 +130,9 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
     // Read-tier verbs the AgentWorktreeReaper needs (pure reads, no mutation):
     expect(SOURCE_TREE_READ_TIER_VERBS.has('status')).toBe(true);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('cherry')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('ls-files')).toBe(true);
     // Bounded — adding to this set requires a spec edit + side-effects review.
-    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(12);
+    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(13);
   });
 
   it('readSync path honors sourceTreeReadOk — diff on a source tree passes', () => {

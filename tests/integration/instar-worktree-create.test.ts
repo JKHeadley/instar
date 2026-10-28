@@ -116,6 +116,81 @@ describe('createWorktree (integration)', () => {
   beforeEach(() => { fix = makeFixture(); });
   afterEach(() => cleanup(fix));
 
+  it('refuses at the physical directory cap before adding a git worktree', async () => {
+    const root = path.join(fix.agentHome, '.worktrees');
+    fs.mkdirSync(root);
+    for (let i = 0; i < 500; i++) fs.mkdirSync(path.join(root, `old-${i}`));
+    await expect(createWorktree({
+      branch: 'spec/over-cap',
+      shareNodeModules: false,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    })).rejects.toThrow(/worktree-capacity: 500 directories/);
+    expect(git(['worktree', 'list', '--porcelain'], fix.bareRepo).match(/^worktree /gm)).toHaveLength(1);
+  });
+
+  it('serializes concurrent creates at 499 directories', async () => {
+    const root = path.join(fix.agentHome, '.worktrees');
+    fs.mkdirSync(root);
+    for (let i = 0; i < 499; i++) fs.mkdirSync(path.join(root, `old-${i}`));
+    const opts = (branch: string) => ({
+      branch,
+      shareNodeModules: false,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    });
+    const outcomes = await Promise.allSettled([
+      createWorktree(opts('spec/race-a')),
+      createWorktree(opts('spec/race-b')),
+    ]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((o) => o.status === 'rejected')).toHaveLength(1);
+    expect(fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory())).toHaveLength(500);
+    expect(fs.existsSync(path.join(fix.agentHome, '.instar', 'local', 'worktree-create.lock'))).toBe(false);
+  });
+
+  it('refuses a symlinked worktree container before chmod or lock creation', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'iwm-outside-'));
+    try {
+      fs.chmodSync(outside, 0o755);
+      fs.symlinkSync(outside, path.join(fix.agentHome, '.worktrees'));
+      await expect(createWorktree({
+        branch: 'spec/symlinked-container',
+        shareNodeModules: false,
+        resolveAgentHomeOpts: {
+          env: { INSTAR_AGENT_HOME: fix.agentHome },
+          instarHome: fix.instarHome,
+          registryLookup: fix.registryLookup,
+        },
+        resolveInstarRepoOpts: {
+          env: { INSTAR_REPO: fix.bareRepo },
+          fallbackChain: [],
+          urlAllowlist: fix.repoAllowlist,
+        },
+      })).rejects.toThrow(/path-containment/);
+      expect(fs.statSync(outside).mode & 0o777).toBe(0o755);
+      expect(fs.existsSync(path.join(fix.agentHome, '.instar', 'local', 'worktree-create.lock'))).toBe(false);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('happy path: places worktree under <agent_home>/.worktrees, sets identity, writes ledger + audit mirror', async () => {
     const result = await createWorktree({
       branch: 'spec/integ-foo',

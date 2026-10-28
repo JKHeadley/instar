@@ -1809,6 +1809,8 @@ Beyond the tone gate, a response-review pipeline (nine specialist reviewers driv
 
 Create worktrees for collaborator repos with \`instar worktree create <branch>\` — it resolves your agent's home automatically. Never hardcode another agent's name or place worktrees inside the shared checkout.
 
+If creation reports \`worktree-capacity\`, inspect registered checkouts and shared links before reclaiming verified clean idle work; preserve unique commits and files. The CLI stops at 500 directories under your agent's \`.worktrees/\`. A \`worktree-create-busy\` error means another create is active or its lock needs inspection before retrying.
+
 **Why:** the macOS sandbox can revoke filesystem access to anything outside the agent home mid-session, with no in-session recovery path. The agent home (\`~/.instar/agents/<agent>/\`) is the one location the sandbox cannot revoke. \`instar worktree create\` places the worktree at \`~/.instar/agents/<agent>/.worktrees/<slug>/\` and refuses any other destination. Spec: \`docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md\`.
 
 **Caveat — git identity env vars:** the CLI sets per-worktree \`user.name\` / \`user.email\` to \`Instar Agent (<name>)\` / \`<name>@instar.local\`. \`GIT_AUTHOR_NAME\` / \`GIT_COMMITTER_EMAIL\` in the calling environment override that local config. Agents that care about commit attribution must avoid exporting those vars.

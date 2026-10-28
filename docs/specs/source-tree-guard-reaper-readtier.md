@@ -59,8 +59,9 @@ for arbitrary callers:
 3. **Worktree-manager allowlist extended** (`isAllowedWorktreeManagerSubcommand`,
    gated by `sourceTreeWorktreeManagerOk`): in addition to `add`/`prune`, allow
    `list` (read) and `remove` — but **`remove` only in its non-forced form**.
-   `git worktree remove` without `--force` refuses to delete a worktree with
-   uncommitted changes or a lock, so it cannot destroy in-flight work. `--force`
+   `git worktree remove` without `--force` refuses tracked or untracked changes
+   and a lock, but it can still delete ignored files. The later preservation
+   check described below closes that gap. `--force`
    / `-f` is explicitly denied and still trips the guard.
 
 The reaper's git wrapper (`agentWorktreeGit.ts`) now passes `sourceTreeReadOk`
@@ -92,6 +93,17 @@ on the non-forced `worktree remove`.
   (fake-git) suite lacked, which is exactly why the bug shipped.
 - Live: deploy to echo, then `GET /worktrees/agent-reaper` reports non-zero
   reclaimable instead of 0.
+
+## 2026-10-28 preservation addendum
+
+A disposable real-Git probe showed that non-forced `git worktree remove` deletes
+ignored files that ordinary `git status --porcelain` does not show. Before
+calling remove, the reaper now runs `git ls-files --others --ignored
+--exclude-standard --directory -z` and keeps the checkout if it finds any
+ignored path or if the read fails. The source-tree read tier adds only the
+read-only `ls-files` verb (bounded membership 12 → 13); the destructive
+worktree-manager allowance is unchanged. The side-effects review is
+`upgrades/side-effects/worktree-capacity-preservation.md`.
 
 ## Rollback
 

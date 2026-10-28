@@ -12212,6 +12212,13 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.skipped.push('CLAUDE.md: Worktree Convention section already present');
     }
 
+    if (content.includes('## Worktree Convention') && !content.includes('worktree-capacity')) {
+      const heading = '## Worktree Convention';
+      content = content.replace(heading, `${heading}\n\nIf creation reports \`worktree-capacity\`, inspect registered checkouts and shared links before reclaiming verified clean idle work; preserve unique commits and files. The CLI stops at 500 directories under your agent's \`.worktrees/\`. A \`worktree-create-busy\` error means another create is active or its lock needs inspection before retrying.`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added worktree capacity guidance');
+    }
+
     // Worktree Notices (announce-on-change): tells the agent why worktree
     // notices went quiet and where the live findings are, so silence is not
     // read as "fixed". Idempotent via content-sniffing on the heading.
