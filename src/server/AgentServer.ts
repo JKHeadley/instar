@@ -7232,7 +7232,7 @@ export class AgentServer {
    */
   async stop(): Promise<void> {
     this.directDesktopAccess?.killSwitch();
-    this.telegramAdapter?.setDesktopApprovalHandler(null);
+    if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }

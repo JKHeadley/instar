@@ -51,6 +51,8 @@ The first-Mac design is appropriate for a controlled operator test after the ful
 
 **Reviewer:** desktop_side_effects_review. **Independent read: concur with condition.** The reviewer found no concrete grant, input, browser-key or Telegram admission bypass. Before deployment, preserve installed 1.3.1481 changes, especially the WorktreeCreate/WorktreeRemove hook removal in `4c1251ab5`; verify the installed package version after overlay. The reviewer also required the Telegram-topic-visibility clarification above.
 
+The full integration suite exposed a dark-feature shutdown mock without `setDesktopApprovalHandler`. Shutdown now clears the handler only when desktop access was initialized and the adapter offers that method. Grant revocation still runs first. The same reviewer checked this teardown fix and concurred.
+
 ## Evidence pointers
 
 `tests/unit/DirectDesktopAccess.test.ts`, `tests/integration/desktop-routes.test.ts`, `tests/e2e/desktop-boot-lifecycle.test.ts`; live Mac test command used `DESKTOP_LIVE_TEST=1` and exercised real ScreenCaptureKit capture, CGEvent pointer movement and revoke.
