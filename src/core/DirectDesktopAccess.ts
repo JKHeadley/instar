@@ -29,7 +29,12 @@ interface DirectRequest {
   operatorSessionToken?: string;
   codeHash: Buffer;
   createdAt: number;
-  status: 'pending' | 'approved' | 'revoked';
+  status: 'pending' | 'approved' | 'interrupted' | 'revoked';
+  interruptedAt?: number;
+  resumeCount?: number;
+  resumeAttemptId?: string;
+  resumePayloadHash?: string;
+  admitPending?: Promise<void>;
   grantId?: string;
   grantSignature?: Buffer;
   targetSignature?: Buffer;
@@ -40,6 +45,8 @@ interface DirectRequest {
   desktopKey?: Buffer;
   aead?: DesktopAead;
   ticketHash?: string;
+  ticketPlaintext?: string;
+  ticketProofHash?: string;
   ticketExpiresAt?: number;
   ticketUsed?: boolean;
   connected?: boolean;
@@ -234,7 +241,7 @@ export class DirectDesktopAccess {
     return this.approveRow(row);
   }
 
-  private approveRow(row: DirectRequest): boolean {
+  private approveRow(row: DirectRequest, preserveDeadline = false): boolean {
     if (this.activeGrantId) {
       const active = [...this.requests.values()].find(other => other.grantId === this.activeGrantId);
       if (active && this.validGrant(active)) return false;
@@ -244,9 +251,15 @@ export class DirectDesktopAccess {
     try {
       row.status = 'approved';
       row.grantId = crypto.randomUUID();
-      row.approvedAt = this.now();
-      row.lastActivity = row.approvedAt;
+      row.approvedAt = preserveDeadline ? row.approvedAt : this.now();
+      row.lastActivity = preserveDeadline ? row.lastActivity : row.approvedAt;
       row.connectionNonce = crypto.randomBytes(24).toString('base64url');
+      row.ticketHash = undefined;
+      row.ticketPlaintext = undefined;
+      row.ticketProofHash = undefined;
+      row.ticketExpiresAt = undefined;
+      row.ticketUsed = false;
+      row.connected = false;
       const ecdh = deriveDesktopKey(Buffer.from(row.browserEcdhPublicKey, 'base64'), row.id, row.machineId);
       row.desktopKey = ecdh.key;
       row.targetEcdhPublicKey = ecdh.targetPublicKey.toString('base64');
@@ -271,6 +284,7 @@ export class DirectDesktopAccess {
     this.assertViewer(row, operatorSessionToken);
     if (row.status === 'pending' && this.now() - row.createdAt >= CHALLENGE_MS) row.status = 'revoked';
     if (row.status === 'approved' && !this.validGrant(row)) this.revokeRow(row);
+    if (row.status === 'interrupted' && !this.validInterrupted(row)) this.revokeRow(row);
     return row.status === 'approved'
       ? { status: 'approved', connectionNonce: row.connectionNonce,
         targetEcdhPublicKey: row.targetEcdhPublicKey, salt: row.salt,
@@ -278,6 +292,75 @@ export class DirectDesktopAccess {
         targetSignature: row.targetSignature?.toString('base64'), machineId: row.machineId,
         expiresAt: (row.approvedAt ?? 0) + GRANT_MS }
       : { status: row.status };
+  }
+
+  private validInterrupted(row: DirectRequest): boolean {
+    return !this.disabled && row.status === 'interrupted' && !!row.approvedAt
+      && this.now() >= row.approvedAt && this.now() < row.approvedAt + GRANT_MS
+      && !!row.lastActivity && this.now() - row.lastActivity < IDLE_MS
+      && !!row.interruptedAt && this.now() - row.interruptedAt < 30_000
+      && (row.resumeCount ?? 0) < 3 && !!row.operatorSessionToken
+      && this.isDashboardOperatorSession(row.operatorSessionToken);
+  }
+
+  /** Same logical session and original deadlines; one idempotent replacement per attempt. */
+  async resume(requestId: string, token: string, input: Pick<DirectDesktopRequestInput,
+    'browserPublicKey' | 'browserEcdhPublicKey' | 'browserNonce'>, attemptId: string,
+    previousConnectionNonce: string, previousSignature: string): Promise<ReturnType<DirectDesktopAccess['status']>> {
+    const row = this.requests.get(requestId);
+    if (!row) throw new Error('desktop request unavailable');
+    this.assertViewer(row, token);
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(attemptId)) throw new Error('resume attempt invalid');
+    const resumePayload = Buffer.from(JSON.stringify(['desktop-resume-v1', requestId,
+      previousConnectionNonce, attemptId, input.browserPublicKey, input.browserEcdhPublicKey, input.browserNonce]));
+    const payloadHash = crypto.createHash('sha256').update(resumePayload).digest('hex');
+    if (row.status === 'approved' && row.resumeAttemptId === attemptId) {
+      if (row.resumePayloadHash !== payloadHash) throw new Error('desktop resume attempt changed');
+      return this.status(requestId, token);
+    }
+    if (this.approvalMode !== 'pin' || (row.resumeCount ?? 0) >= 3 || !(this.validInterrupted(row)
+      || (row.connected && this.validGrant(row)))) throw new Error('desktop resume unavailable');
+    if (previousConnectionNonce !== row.connectionNonce) throw new Error('desktop resume generation changed');
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(input.browserNonce)) throw new Error('browser nonce invalid');
+    let browserKey: crypto.KeyObject;
+    try { browserKey = crypto.createPublicKey({ key: Buffer.from(input.browserPublicKey, 'base64'), format: 'der', type: 'spki' }); }
+    catch { throw new Error('browser key invalid'); }
+    if (browserKey.asymmetricKeyType !== 'ed25519') throw new Error('browser key invalid');
+    const browserEcdh = Buffer.from(input.browserEcdhPublicKey, 'base64');
+    if (browserEcdh.length !== 65 || browserEcdh[0] !== 4) throw new Error('browser ECDH key invalid');
+    try { const check = crypto.createECDH('prime256v1'); check.generateKeys(); check.computeSecret(browserEcdh); }
+    catch { throw new Error('browser ECDH key invalid'); }
+    const previousBrowserKey = row.browserPublicKey;
+    let previousProofValid = false;
+    try {
+      const key = crypto.createPublicKey({ key: Buffer.from(previousBrowserKey, 'base64'), format: 'der', type: 'spki' });
+      previousProofValid = key.asymmetricKeyType === 'ed25519'
+        && crypto.verify(null, resumePayload, key, Buffer.from(previousSignature, 'base64'));
+    } catch { previousProofValid = false; }
+    if (!previousProofValid) throw new Error('previous browser proof invalid');
+    // A ticket may have been consumed while the local indicator is still
+    // starting. Do not replace that generation until admission settles.
+    if (row.admitPending) await row.admitPending.catch(() => {});
+    if (!(await this.probe()).ready) throw new Error('desktop host is not ready');
+    // The probe yields. Recheck both authority and the revocation state before activation.
+    this.assertViewer(row, token);
+    if (row.status === 'approved' && row.resumeAttemptId === attemptId) {
+      if (row.resumePayloadHash !== payloadHash) throw new Error('desktop resume attempt changed');
+      return this.status(requestId, token);
+    }
+    if ((row.resumeCount ?? 0) >= 3 || row.browserPublicKey !== previousBrowserKey
+      || row.connectionNonce !== previousConnectionNonce) throw new Error('desktop resume unavailable');
+    if (row.connected && this.validGrant(row)) this.interruptRow(row);
+    if (!this.validInterrupted(row)) throw new Error('desktop resume unavailable');
+    row.browserPublicKey = input.browserPublicKey;
+    row.browserEcdhPublicKey = input.browserEcdhPublicKey;
+    row.browserNonce = input.browserNonce;
+    row.resumeAttemptId = attemptId;
+    row.resumePayloadHash = payloadHash;
+    row.resumeCount = (row.resumeCount ?? 0) + 1;
+    row.interruptedAt = undefined;
+    if (!this.approveRow(row, true)) throw new Error('desktop resume unavailable');
+    return this.status(requestId, token);
   }
 
   async cursor(requestId: string, operatorSessionToken: string): Promise<{ x: number; y: number }> {
@@ -296,7 +379,7 @@ export class DirectDesktopAccess {
     const row = this.requests.get(requestId);
     if (!row) throw new Error('desktop request unavailable');
     this.assertViewer(row, operatorSessionToken);
-    if (!this.validGrant(row) || row.connected || row.ticketHash || nonce !== row.connectionNonce) {
+    if (!this.validGrant(row) || row.connected || nonce !== row.connectionNonce) {
       throw new Error('desktop grant or browser challenge unavailable');
     }
     let browserProofValid = false;
@@ -307,8 +390,17 @@ export class DirectDesktopAccess {
         && crypto.verify(null, payload, browserKey, Buffer.from(signature, 'base64'));
     } catch { browserProofValid = false; }
     if (!browserProofValid) throw new Error('browser possession proof invalid');
+    const proofHash = this.sessionHash(signature);
+    if (row.ticketHash) {
+      if (!row.ticketUsed && row.ticketExpiresAt && this.now() < row.ticketExpiresAt
+        && row.ticketProofHash === proofHash && row.ticketPlaintext
+        && this.sessionHash(row.ticketPlaintext) === row.ticketHash) return row.ticketPlaintext;
+      throw new Error('desktop ticket unavailable');
+    }
     const ticket = crypto.randomBytes(32).toString('base64url');
     row.ticketHash = this.sessionHash(ticket);
+    row.ticketPlaintext = ticket;
+    row.ticketProofHash = proofHash;
     row.ticketExpiresAt = this.now() + TICKET_MS;
     return ticket;
   }
@@ -337,18 +429,31 @@ export class DirectDesktopAccess {
     if (!row || !row.ticketExpiresAt || this.now() >= row.ticketExpiresAt
       || row.ticketUsed || row.connected || !this.validGrant(row)) throw new Error('desktop ticket invalid');
     row.ticketUsed = true;
+    row.ticketPlaintext = undefined;
+    row.ticketProofHash = undefined;
     row.connected = true;
+    const admittedGrantId = row.grantId!;
+    const admittedAead = row.aead!;
+    const indicatorPending = this.host.startIndicator(() => {
+      if (row.grantId === admittedGrantId) this.revokeRow(row);
+    });
+    row.admitPending = indicatorPending;
     try {
-      await this.host.startIndicator(() => this.revokeRow(row));
-      this.audit?.record({ kind: 'start', grantId: row.grantId!, machineId: row.machineId,
+      await indicatorPending;
+      if (row.grantId !== admittedGrantId || !this.validGrant(row)) throw new Error('desktop grant unavailable');
+      this.audit?.record({ kind: 'start', grantId: admittedGrantId, machineId: row.machineId,
         operatorUid: row.operatorUid, authMethod: this.approvalMode });
     }
-    catch { this.revokeRow(row); throw new Error('desktop local indicator unavailable'); }
+    catch {
+      if (row.grantId === admittedGrantId) this.revokeRow(row);
+      throw new Error('desktop local indicator unavailable');
+    }
+    finally { if (row.admitPending === indicatorPending) row.admitPending = undefined; }
     let lastHostProbeAt = -Infinity;
     let hostProbe: Promise<boolean> | null = null;
     const assertActive = async () => {
-      if (!this.validGrant(row)) {
-        this.revokeRow(row);
+      if (row.grantId !== admittedGrantId || !this.validGrant(row)) {
+        if (row.grantId === admittedGrantId) this.revokeRow(row);
         throw new Error('desktop grant unavailable');
       }
       // The native capture and input helpers check the OS session at each
@@ -360,8 +465,8 @@ export class DirectDesktopAccess {
           .finally(() => { hostProbe = null; });
       }
       const ready = await hostProbe;
-      if (!ready || !this.validGrant(row)) {
-        this.revokeRow(row);
+      if (!ready || row.grantId !== admittedGrantId || !this.validGrant(row)) {
+        if (row.grantId === admittedGrantId) this.revokeRow(row);
         throw new Error('desktop grant unavailable');
       }
       lastHostProbeAt = performance.now();
@@ -369,21 +474,22 @@ export class DirectDesktopAccess {
     let lastQueuedFrameDigest: Buffer | null = null;
     let candidateFrameDigest: Buffer | null = null;
     return {
-      grantId: row.grantId!, assertActive,
+      grantId: admittedGrantId, assertActive,
       captureEncrypted: async () => {
         await assertActive();
         const image = await this.host.capture();
         const digest = crypto.createHash('sha256').update(image).digest();
         if (lastQueuedFrameDigest?.equals(digest)) return null;
         candidateFrameDigest = digest;
-        return row.aead!.encryptFrame(image);
+        return admittedAead.encryptFrame(image);
       },
       frameQueued: () => {
         if (candidateFrameDigest) lastQueuedFrameDigest = candidateFrameDigest;
         candidateFrameDigest = null;
       },
       decryptCommand: (record: Buffer) => {
-        const value = row.aead!.decryptInput(record);
+        if (row.grantId !== admittedGrantId) throw new Error('desktop grant unavailable');
+        const value = admittedAead.decryptInput(record);
         if (!value || typeof value !== 'object' || !['stop', 'ping', 'input'].includes((value as { type?: string }).type ?? '')) {
           throw new Error('desktop command invalid');
         }
@@ -393,13 +499,17 @@ export class DirectDesktopAccess {
         await assertActive();
         // The OS probe above yields. Recheck synchronously at the native spawn
         // boundary so a revoke during that probe cannot launch late input.
-        if (!this.validGrant(row)) throw new Error('desktop grant unavailable');
+        if (row.grantId !== admittedGrantId || !this.validGrant(row)) throw new Error('desktop grant unavailable');
         await this.host.input(action);
         row.inputCount = (row.inputCount ?? 0) + 1;
         row.lastActivity = this.now();
       },
-      revoke: async () => { this.revokeRow(row); },
-      release: () => { this.revokeRow(row); },
+      revoke: async () => { if (row.grantId === admittedGrantId) this.revokeRow(row); },
+      release: reason => {
+        if (row.grantId !== admittedGrantId) return;
+        if (reason === 'transport-lost' && this.validGrant(row)) this.interruptRow(row);
+        else this.revokeRow(row);
+      },
     };
   }
 
@@ -422,6 +532,8 @@ export class DirectDesktopAccess {
     row.status = 'revoked';
     row.operatorSessionToken = undefined;
     row.ticketHash = undefined;
+    row.ticketPlaintext = undefined;
+    row.ticketProofHash = undefined;
     const ownsActiveHost = !!row.grantId && this.activeGrantId === row.grantId;
     if (ownsActiveHost) {
       this.host.cancelInput();
@@ -438,5 +550,32 @@ export class DirectDesktopAccess {
       if (ownsActiveHost) this.activeGrantId = null;
       this.closeGrant(row.grantId);
     }
+  }
+
+  private interruptRow(row: DirectRequest): void {
+    if (!this.validGrant(row) || !row.grantId) { this.revokeRow(row); return; }
+    const oldGrantId = row.grantId;
+    const count = row.inputCount ?? 0;
+    const inputBucket = count === 0 ? 'none' : count < 10 ? '1-9' : count < 100 ? '10-99' : '100+';
+    row.status = 'interrupted';
+    row.interruptedAt = this.now();
+    row.connected = false;
+    row.ticketHash = undefined;
+    row.ticketPlaintext = undefined;
+    row.ticketProofHash = undefined;
+    row.ticketUsed = true;
+    this.host.cancelInput();
+    this.host.stopIndicator();
+    row.desktopKey?.fill(0);
+    row.desktopKey = undefined;
+    row.aead = undefined;
+    row.grantSignature = undefined;
+    row.targetSignature = undefined;
+    row.grantId = undefined;
+    this.activeGrantId = null;
+    try { this.audit?.record({ kind: 'stop', grantId: oldGrantId, machineId: row.machineId,
+      operatorUid: row.operatorUid, authMethod: this.approvalMode, inputBucket }); }
+    catch { /* @silent-fallback-ok — containment takes priority over audit failure */ }
+    this.closeGrant(oldGrantId);
   }
 }

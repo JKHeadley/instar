@@ -15,7 +15,7 @@ export interface DesktopStreamSession {
   decryptCommand(record: Buffer): { type: 'stop' | 'ping' | 'input'; action?: DesktopInput };
   input(action: DesktopInput): Promise<void>;
   revoke(): Promise<void>;
-  release(): void;
+  release(reason?: 'transport-lost' | 'terminal'): void;
 }
 
 export type DesktopStreamAdmission = (request: IncomingMessage) => Promise<DesktopStreamSession>;
@@ -29,6 +29,8 @@ const IDLE_MS = 2 * 60_000;
 export class DesktopStreamManager {
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 4_096, perMessageDeflate: false });
   private readonly sockets = new Map<string, WebSocket>();
+  private readonly terminalGrants = new Set<string>();
+  private shuttingDown = false;
 
   constructor(private readonly admit: DesktopStreamAdmission) {}
 
@@ -44,17 +46,19 @@ export class DesktopStreamManager {
     try {
       this.wss.handleUpgrade(request, socket, head, ws => this.serve(ws, session));
     } catch {
-      session.release();
+      session.release('terminal');
       socket.destroy();
     }
   }
 
   /** Called after a target-confirmed revocation or local kill switch. */
   closeGrant(grantId: string): void {
-    this.sockets.get(grantId)?.terminate();
+    const socket = this.sockets.get(grantId);
+    if (socket) { this.terminalGrants.add(grantId); socket.terminate(); }
   }
 
   closeAll(): void {
+    this.shuttingDown = true;
     for (const ws of this.sockets.values()) ws.terminate();
     this.wss.close();
   }
@@ -71,17 +75,20 @@ export class DesktopStreamManager {
     const pendingInputs: Array<{ type: 'input'; action: DesktopInput }> = [];
     let drainingInputs = false;
     let captureFailures = 0;
-    const close = () => {
+    const close = (reason = 'unknown') => {
       if (closed) return;
       closed = true;
+      // Reason code only: never log the grant, operator, screen, or input.
+      console.warn(`[DesktopStream] closed: ${reason}`);
       if (timer) clearTimeout(timer);
       if (this.sockets.get(session.grantId) === ws) this.sockets.delete(session.grantId);
-      session.release();
+      const terminal = this.shuttingDown || this.terminalGrants.delete(session.grantId);
+      session.release(!terminal && reason === 'transport-lost' ? 'transport-lost' : 'terminal');
       ws.terminate();
     };
     const nextFrame = async () => {
       if (closed) return;
-      if (Date.now() - lastActivity >= IDLE_MS) { close(); return; }
+      if (Date.now() - lastActivity >= IDLE_MS) { close('idle'); return; }
       try {
         await session.assertActive();
         if (closed) return;
@@ -95,7 +102,7 @@ export class DesktopStreamManager {
             // A single ScreenCaptureKit timeout is a lost frame. Admission and
             // OS readiness are checked again on the next tick; revocation
             // itself closes this socket through closeGrant immediately.
-            if (++captureFailures >= 3) { close(); return; }
+            if (++captureFailures >= 3) { close('capture-failed'); return; }
             timer = setTimeout(() => { void nextFrame(); }, FRAME_INTERVAL_MS);
             timer.unref?.();
             return;
@@ -109,11 +116,11 @@ export class DesktopStreamManager {
             && frame.length <= videoBudget
             && ws.bufferedAmount + frame.length <= MAX_BUFFERED_BYTES) {
             videoBudget -= frame.length;
-            ws.send(frame, { binary: true }, error => { if (error) close(); });
+            ws.send(frame, { binary: true }, error => { if (error) close('transport-lost'); });
             session.frameQueued?.();
           }
         }
-      } catch { close(); return; }
+      } catch { close('authority-failed'); return; }
       if (!closed) {
         timer = setTimeout(() => { void nextFrame(); }, FRAME_INTERVAL_MS);
         timer.unref?.();
@@ -130,21 +137,21 @@ export class DesktopStreamManager {
           await session.input(command.action);
           lastActivity = Date.now();
         }
-      } catch { close(); }
+      } catch { close('input-failed'); }
       finally { drainingInputs = false; }
     };
     ws.on('message', (data, isBinary) => {
-      if (closed || !isBinary || !Buffer.isBuffer(data) || data.length > 4_096) { close(); return; }
+      if (closed || !isBinary || !Buffer.isBuffer(data) || data.length > 4_096) { close('protocol'); return; }
       let command: ReturnType<DesktopStreamSession['decryptCommand']>;
       try { command = session.decryptCommand(data); }
-      catch { close(); return; }
+      catch { close('decrypt-failed'); return; }
       if (command.type === 'stop') {
         pendingInputs.length = 0;
-        void session.revoke().then(close, close);
+        void session.revoke().then(() => close('stop'), () => close('stop-error'));
         return;
       }
       if (command.type === 'ping') { lastActivity = Date.now(); return; }
-      if (command.type !== 'input' || !command.action) { close(); return; }
+      if (command.type !== 'input' || !command.action) { close('protocol'); return; }
       const last = pendingInputs.at(-1);
       if (command.action.kind === 'move' && last?.action.kind === 'move') {
         last.action = command.action;
@@ -157,13 +164,15 @@ export class DesktopStreamManager {
       } else if (command.action.kind !== 'move') {
         // Discrete commands cannot be dropped or reordered. Refuse an abusive
         // producer rather than accumulate unbounded clicks or keystrokes.
-        close();
+        close('input-overflow');
         return;
       }
       void drainInputs();
     });
-    ws.on('close', close);
-    ws.on('error', close);
+    ws.on('close', code => close(!this.shuttingDown && code === 1006 ? 'transport-lost' : `socket-close-${code}`));
+    // ws also emits parser and maxPayload errors here. A close-only 1006 is
+    // transport loss; an error event is terminal unless a bounded send failed.
+    ws.on('error', () => close('socket-error'));
     void nextFrame();
   }
 }

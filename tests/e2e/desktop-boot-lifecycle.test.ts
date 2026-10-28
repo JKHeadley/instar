@@ -185,6 +185,58 @@ describe('native desktop production boot', () => {
         }
         expect(Math.abs(observed.x - target.x)).toBeLessThan(0.02);
         expect(Math.abs(observed.y - target.y)).toBeLessThan(0.02);
+        const originalExpiry = status.body.expiresAt;
+        const lost = once(ws, 'close');
+        ws.terminate();
+        await lost;
+        let interrupted;
+        for (let attempt = 0; attempt < 50; attempt++) {
+          interrupted = await request(app).get(`/desktop/requests/${requestId}`).set(headers);
+          if (interrupted.body.status === 'interrupted') break;
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        expect(interrupted?.body.status).toBe('interrupted');
+        const resumedEd = crypto.generateKeyPairSync('ed25519');
+        const resumedEcdh = crypto.createECDH('prime256v1'); resumedEcdh.generateKeys();
+        const resumeAttemptId = 'live-resume-attempt-123456';
+        const resumedBrowserNonce = 'fedcba9876543210';
+        const resumedBrowserPublicKey = resumedEd.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+        const resumedBrowserEcdhPublicKey = resumedEcdh.getPublicKey().toString('base64');
+        const resumeSignature = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-resume-v1',
+          requestId, status.body.connectionNonce, resumeAttemptId, resumedBrowserPublicKey,
+          resumedBrowserEcdhPublicKey, resumedBrowserNonce])), ed.privateKey).toString('base64');
+        const resumed = await request(app).post(`/desktop/requests/${requestId}/resume`).set(headers).send({
+          attemptId: resumeAttemptId, browserNonce: resumedBrowserNonce,
+          browserPublicKey: resumedBrowserPublicKey, browserEcdhPublicKey: resumedBrowserEcdhPublicKey,
+          previousConnectionNonce: status.body.connectionNonce, previousSignature: resumeSignature,
+        });
+        expect(resumed.status).toBe(200);
+        expect(resumed.body.expiresAt).toBe(originalExpiry);
+        const resumedProof = crypto.sign(null, Buffer.from(JSON.stringify([
+          'desktop-browser-possession-v1', requestId, resumed.body.connectionNonce])),
+        resumedEd.privateKey).toString('base64');
+        const resumedTicket = await request(app).post(`/desktop/requests/${requestId}/ticket`).set(headers).send({
+          connectionNonce: resumed.body.connectionNonce, signature: resumedProof,
+        });
+        expect(resumedTicket.status).toBe(200);
+        ws = new WebSocket(`ws://127.0.0.1:${port}/desktop-stream`,
+          ['instar-desktop-v1', `ticket.${resumedTicket.body.ticket}`],
+          { origin: `http://127.0.0.1:${port}` });
+        const resumedFrame = once(ws, 'message');
+        await once(ws, 'open');
+        const [resumedRecord] = await resumedFrame as [Buffer];
+        const resumedKey = Buffer.from(crypto.hkdfSync('sha256',
+          resumedEcdh.computeSecret(Buffer.from(resumed.body.targetEcdhPublicKey, 'base64')),
+          Buffer.from(resumed.body.salt, 'base64'),
+          Buffer.from(`instar-desktop-aead-v1:${requestId}:${machineId}`), 32));
+        const resumedSequence = Buffer.from(resumedRecord).readBigUInt64BE(0);
+        const resumedIv = Buffer.alloc(12); resumedIv.writeUInt32BE(1, 0); resumedIv.writeBigUInt64BE(resumedSequence, 4);
+        const resumedDecipher = crypto.createDecipheriv('aes-256-gcm', resumedKey, resumedIv);
+        resumedDecipher.setAAD(Buffer.from(JSON.stringify(['instar-desktop-aead-v1', requestId, 'frame'])));
+        resumedDecipher.setAuthTag(Buffer.from(resumedRecord).subarray(resumedRecord.length - 16));
+        const resumedJpeg = Buffer.concat([resumedDecipher.update(Buffer.from(resumedRecord).subarray(8,
+          resumedRecord.length - 16)), resumedDecipher.final()]);
+        expect(resumedJpeg.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
         const closed = once(ws, 'close');
         const revoke = await request(app).post(`/desktop/requests/${requestId}/revoke`).set(headers).send({});
         expect(revoke.body.revoked).toBe(true);

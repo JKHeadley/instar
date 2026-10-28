@@ -11,6 +11,7 @@ let sendChain = Promise.resolve();
 let receiveChain = Promise.resolve();
 let requestId = '';
 let machineId = '';
+let connectionNonce = '';
 let socket;
 let frameUrl = '';
 let lastMoveAt = 0;
@@ -18,6 +19,15 @@ let pendingMove = null;
 let moveFrame = 0;
 let heartbeat = 0;
 let inputEnabled = false;
+let streamEpoch = 0;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+let reconnectTimer = 0;
+let resumeGeneration = 0;
+let resumeAttempt = null;
+let resumeSetupFailures = 0;
+const resumeControllers = new Set();
+let stopping = false;
 let trackpad = matchMedia('(pointer: coarse)').matches;
 let cursor = { x: 0.5, y: 0.5 };
 const pointers = new Map();
@@ -65,7 +75,9 @@ async function verifyTarget(result) {
   if (!pinned) localStorage.setItem(pinName, bytesToBase64(publicBytes));
 }
 function sendCommand(command) {
+  const epoch = streamEpoch;
   sendChain = sendChain.then(async () => {
+    if (epoch !== streamEpoch) return;
     if (!inputEnabled && command.type === 'input') return;
     if (socket?.readyState !== WebSocket.OPEN || !aesKey) return;
     const sequence = ++inputSequence;
@@ -75,11 +87,12 @@ function sendCommand(command) {
     const record = new Uint8Array(8 + ciphertext.length);
     new DataView(record.buffer).setBigUint64(0, sequence);
     record.set(ciphertext, 8);
+    if (epoch !== streamEpoch || socket?.readyState !== WebSocket.OPEN) return;
     socket.send(record);
-  }).catch(() => leave('Encrypted remote input failed.'));
+  }).catch(() => { if (epoch === streamEpoch) leave('Encrypted remote input failed.'); });
 }
-async function receiveFrame(recordBuffer) {
-  if (!inputEnabled) return;
+async function receiveFrame(recordBuffer, epoch) {
+  if (!inputEnabled || epoch !== streamEpoch) return;
   if (!aesKey || !(recordBuffer instanceof ArrayBuffer) || recordBuffer.byteLength < 28
     || recordBuffer.byteLength > 1_000_024) throw new Error('Encrypted frame invalid.');
   const record = new Uint8Array(recordBuffer);
@@ -90,7 +103,7 @@ async function receiveFrame(recordBuffer) {
   if (sequence <= frameSequence) throw new Error('Remote frame sequence invalid.');
   const frame = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: recordIv('frame', sequence),
     additionalData: recordAad('frame') }, aesKey, record.subarray(8));
-  if (!inputEnabled) return;
+  if (!inputEnabled || epoch !== streamEpoch) return;
   frameSequence = sequence;
   const old = frameUrl;
   frameUrl = URL.createObjectURL(new Blob([frame], { type: 'image/jpeg' }));
@@ -103,6 +116,7 @@ function clearFrame() {
   $('screen').removeAttribute('src');
 }
 function leave(message) {
+  streamEpoch++;
   inputEnabled = false;
   if (socket) { socket.close(); socket = undefined; }
   if (heartbeat) { clearInterval(heartbeat); heartbeat = 0; }
@@ -115,18 +129,155 @@ function leave(message) {
   if (token) $('request').hidden = false;
   status(message);
 }
-async function api(path, method = 'GET', body) {
-  const response = await fetch(path, {
+function unexpectedDisconnect(streamSocket) {
+  if (socket !== streamSocket || stopping) return;
+  leave('Connection interrupted. Checking whether access can resume…');
+  if (!token || !operatorSession || !requestId) return;
+  // Stop remains reachable while the target decides whether this interruption
+  // may resume. The browser cannot create a new grant on its own.
+  $('request').hidden = true;
+  $('control').hidden = false;
+  document.body.classList.add('desktop-live');
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    status('Connection interrupted. Stop access, then open the desktop again.');
+    return;
+  }
+  const generation = ++resumeGeneration;
+  resumeSetupFailures = 0;
+  scheduleResume(generation, 500);
+}
+function scheduleResume(generation, delay) {
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = 0;
+    if (!stopping && generation === resumeGeneration) void resumeDesktop(generation);
+  }, delay);
+}
+function abortResumeRequests() {
+  for (const controller of resumeControllers) controller.abort();
+  resumeControllers.clear();
+}
+async function resumeApi(path, method = 'GET', body) {
+  const controller = new AbortController();
+  resumeControllers.add(controller);
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try { return await api(path, method, body, controller.signal); }
+  finally { clearTimeout(timer); resumeControllers.delete(controller); }
+}
+async function resumeDesktop(generation) {
+  const current = () => !stopping && generation === resumeGeneration && !!requestId;
+  if (!current()) return;
+  let activated = false;
+  try {
+    const state = await resumeApi(`/desktop/requests/${encodeURIComponent(requestId)}`);
+    if (!current()) return;
+    if (state.status === 'revoked') throw Object.assign(new Error('Desktop access ended. Open it again when needed.'), { terminal: true });
+    if (state.status === 'approved') {
+      if (resumeAttempt?.generation === generation && state.connectionNonce !== resumeAttempt.body.previousConnectionNonce) {
+        resumeAttempt.approved = true;
+        activated = true;
+        await openStream(state, generation);
+        return;
+      }
+    }
+    if (state.status !== 'interrupted' && state.status !== 'approved') throw Object.assign(new Error('Desktop access cannot resume.'), { terminal: true });
+    if (resumeAttempt?.approved) resumeAttempt = null;
+    if (!resumeAttempt) {
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) throw Object.assign(new Error('Connection interrupted. Open the desktop again.'), { terminal: true });
+      reconnectAttempts++;
+      const previousKeyPair = keyPair;
+      const previousConnectionNonce = connectionNonce;
+      if (!previousKeyPair || !previousConnectionNonce || (state.status === 'approved'
+        && state.connectionNonce !== previousConnectionNonce)) throw Object.assign(
+          new Error('Desktop connection identity changed.'), { terminal: true });
+      keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+      ecdhKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+      if (!current()) return;
+      const publicKey = await crypto.subtle.exportKey('spki', keyPair.publicKey);
+      const ecdhPublicKey = await crypto.subtle.exportKey('raw', ecdhKeyPair.publicKey);
+      const attemptId = crypto.randomUUID().replaceAll('-', '');
+      const browserNonce = crypto.randomUUID().replaceAll('-', '');
+      const browserPublicKey = bytesToBase64(publicKey);
+      const browserEcdhPublicKey = bytesToBase64(ecdhPublicKey);
+      const proof = await crypto.subtle.sign('Ed25519', previousKeyPair.privateKey,
+        encoder.encode(JSON.stringify(['desktop-resume-v1', requestId, previousConnectionNonce,
+          attemptId, browserPublicKey, browserEcdhPublicKey, browserNonce])));
+      if (!current()) return;
+      resumeAttempt = { generation, approved: false, body: {
+        attemptId, previousConnectionNonce, previousSignature: bytesToBase64(proof),
+        browserPublicKey, browserEcdhPublicKey, browserNonce,
+      } };
+    }
+    const resumeBody = resumeAttempt.body;
+    let approved;
+    for (let retry = 0; retry < 3 && current(); retry++) {
+      try {
+        approved = await resumeApi(`/desktop/requests/${encodeURIComponent(requestId)}/resume`, 'POST', resumeBody);
+        break;
+      } catch (error) {
+        if (!current()) return;
+        if (error.httpStatus === 403) throw error;
+        // A lost HTTP response may follow a successful server activation.
+        const observed = await resumeApi(`/desktop/requests/${encodeURIComponent(requestId)}`);
+        if (observed.status === 'approved' && observed.connectionNonce !== resumeBody.previousConnectionNonce) {
+          approved = observed; break;
+        }
+        if (observed.status !== 'interrupted' && observed.status !== 'approved') throw Object.assign(error, { terminal: true });
+        await new Promise(resolve => setTimeout(resolve, 500 * 2 ** retry));
+      }
+    }
+    if (!current()) return;
+    if (!approved || approved.status !== 'approved') throw new Error('Desktop access could not resume.');
+    resumeAttempt.approved = true;
+    activated = true;
+    await openStream(approved, generation);
+  } catch (error) {
+    if (!current()) return;
+    if (activated && (error.transportFailure || error.transportSetup || error.httpStatus === 403)
+      && ++resumeSetupFailures <= 3) {
+      scheduleResume(generation, 500 * resumeSetupFailures);
+      return;
+    }
+    // Only a temporary transport read failure may be retried. A target refusal
+    // or expired PIN session is terminal for this automatic path.
+    if (!activated && !error.httpStatus && !error.terminal && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
+      scheduleResume(generation, 500 * 2 ** (reconnectAttempts - 1));
+      return;
+    }
+    resumeAttempt = null;
+    leave(error.message || 'Desktop access cannot resume.');
+  }
+}
+async function api(path, method = 'GET', body, signal) {
+  let response;
+  try { response = await fetch(path, {
     method, cache: 'no-store', credentials: 'same-origin',
+    ...(signal ? { signal } : {}),
     headers: {
       Authorization: `Bearer ${token}`,
       'X-Instar-Operator-Session': operatorSession,
       ...(method !== 'GET' ? { 'Content-Type': 'application/json', 'X-Instar-Request': '1' } : {}),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || `Server answered ${response.status}`);
+  }); } catch (error) {
+    if (signal) error.transportFailure = true;
+    throw error;
+  }
+  let result;
+  try { result = await response.json(); }
+  catch (error) {
+    if (signal && (error.name === 'AbortError' || error instanceof TypeError)) {
+      error.transportFailure = true;
+      throw error;
+    }
+    if (signal) throw error;
+    result = {};
+  }
+  if (!response.ok) {
+    const error = new Error(result.error || `Server answered ${response.status}`);
+    error.httpStatus = response.status;
+    throw error;
+  }
   return result;
 }
 
@@ -206,9 +357,22 @@ $('retryButton').addEventListener('click', async () => {
 });
 
 async function requestDesktop() {
+  reconnectAttempts = 0;
+  stopping = false;
+  resumeGeneration++;
+  resumeAttempt = null;
+  abortResumeRequests();
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
   $('requestButton').disabled = true;
+  const previousRequestId = requestId;
   requestId = '';
   try {
+    if (previousRequestId) {
+      // A lost WebSocket can remain half-open at the target. Revoke it before
+      // seeking a fresh grant; the target's controller lock also fences overlap.
+      try { await api(`/desktop/requests/${encodeURIComponent(previousRequestId)}/revoke`, 'POST', {}); }
+      catch { /* A stale or unreachable grant is still fenced by the controller lock. */ }
+    }
     keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
     ecdhKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
     const publicKey = await crypto.subtle.exportKey('spki', keyPair.publicKey);
@@ -246,23 +410,53 @@ async function requestDesktop() {
 }
 $('requestButton').addEventListener('click', requestDesktop);
 
-async function openStream(result) {
+async function openStream(result, resume = null) {
   await verifyTarget(result);
+  if (stopping || (resume !== null && resume !== resumeGeneration)) return;
+  // Keep the verified key and grant generation together even if the WebSocket
+  // upgrade never reaches its open event. A later target interruption must be
+  // signed by this generation, not by the already-replaced predecessor.
+  connectionNonce = result.connectionNonce;
   aesKey = await deriveAesKey(result.targetEcdhPublicKey, result.salt);
+  if (stopping || (resume !== null && resume !== resumeGeneration)) return;
   inputSequence = 0n;
   frameSequence = 0n;
   const payload = new TextEncoder().encode(JSON.stringify(['desktop-browser-possession-v1', requestId, result.connectionNonce]));
   const proof = await crypto.subtle.sign('Ed25519', keyPair.privateKey, payload);
-  const ticket = await api(`/desktop/requests/${encodeURIComponent(requestId)}/ticket`, 'POST', {
+  const ticket = await (resume === null ? api : resumeApi)(`/desktop/requests/${encodeURIComponent(requestId)}/ticket`, 'POST', {
     connectionNonce: result.connectionNonce,
     signature: bytesToBase64(proof),
   });
+  if (stopping || (resume !== null && resume !== resumeGeneration)) return;
   if (ticket.machineId !== machineId || typeof ticket.ticket !== 'string') throw new Error('Target identity changed.');
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
   socket = new WebSocket(`${scheme}//${location.host}/desktop-stream`,
     ['instar-desktop-v1', `ticket.${ticket.ticket}`]);
+  const streamSocket = socket;
+  const epoch = ++streamEpoch;
+  sendChain = Promise.resolve();
+  receiveChain = Promise.resolve();
   socket.binaryType = 'arraybuffer';
+  return new Promise((resolve, reject) => {
+  let opened = false;
+  let settled = false;
+  const failSetup = () => {
+    if (settled || opened) return;
+    settled = true;
+    clearTimeout(setupTimer);
+    reject(Object.assign(new Error('Remote desktop connection could not open.'), { transportSetup: true }));
+  };
+  const setupTimer = setTimeout(() => {
+    if (!opened) { try { streamSocket.close(); } catch { /* close may already be in flight */ } }
+    failSetup();
+  }, 5_000);
   socket.addEventListener('open', () => {
+    if (socket !== streamSocket || stopping || (resume !== null && resume !== resumeGeneration)) {
+      streamSocket.close(); failSetup(); return;
+    }
+    opened = true;
+    settled = true;
+    clearTimeout(setupTimer);
     inputEnabled = true;
     $('request').hidden = true;
     $('control').hidden = false;
@@ -273,18 +467,25 @@ async function openStream(result) {
     updateCursor();
     $('machineName').textContent = ticket.label;
     status('Remote desktop is live.');
-    heartbeat = setInterval(() => sendCommand({ type: 'ping' }), 30_000);
+    if (resume !== null) resumeAttempt = null;
+    heartbeat = setInterval(() => {
+      sendCommand({ type: 'ping' });
+    }, 30_000);
+    resolve();
   });
   socket.addEventListener('message', event => {
-    receiveChain = receiveChain.then(() => receiveFrame(event.data))
-      .catch(() => leave('Encrypted remote display failed.'));
+    if (socket !== streamSocket || epoch !== streamEpoch) return;
+    receiveChain = receiveChain.then(() => receiveFrame(event.data, epoch))
+      .catch(() => { if (socket === streamSocket && epoch === streamEpoch) leave('Encrypted remote display failed.'); });
   });
-  const streamSocket = socket;
   socket.addEventListener('close', () => {
-    if (socket === streamSocket) leave('Connection interrupted. Open the desktop again.');
+    if (!opened) { failSetup(); return; }
+    unexpectedDisconnect(streamSocket);
   });
   socket.addEventListener('error', () => {
-    if (socket === streamSocket) leave('Remote desktop connection failed.');
+    if (!opened) { failSetup(); return; }
+    unexpectedDisconnect(streamSocket);
+  });
   });
 }
 
@@ -396,6 +597,12 @@ $('typeButton').addEventListener('click', () => {
   $('typeText').value = '';
 });
 $('stopButton').addEventListener('click', async () => {
+  stopping = true;
+  resumeGeneration++;
+  resumeAttempt = null;
+  abortResumeRequests();
+  reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
   inputEnabled = false;
   if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
   pendingMove = null;
@@ -413,6 +620,7 @@ $('stopButton').addEventListener('click', async () => {
   leave(message);
 });
 window.addEventListener('beforeunload', () => {
+  stopping = true;
   sendCommand({ type: 'stop' });
   clearFrame();
 });

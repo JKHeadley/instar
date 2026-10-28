@@ -13033,6 +13033,18 @@ export function createRoutes(ctx: RouteContext): Router {
     try { res.json(ctx.directDesktopAccess.status(req.params.id, desktopOperatorSession(req))); }
     catch { res.status(403).json({ error: 'Desktop request unavailable' }); }
   });
+  router.post('/desktop/requests/:id/resume', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res) || !desktopIntent(req, res)) return;
+    try {
+      res.json(await ctx.directDesktopAccess.resume(req.params.id, desktopOperatorSession(req), {
+        browserPublicKey: req.body?.browserPublicKey,
+        browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
+        browserNonce: req.body?.browserNonce,
+      }, req.body?.attemptId, req.body?.previousConnectionNonce, req.body?.previousSignature));
+    } catch { res.status(403).json({ error: 'Desktop resume unavailable' }); }
+  });
   router.get('/desktop/requests/:id/cursor', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }

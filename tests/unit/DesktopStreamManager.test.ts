@@ -60,6 +60,7 @@ describe('DesktopStreamManager', () => {
   });
 
   it('closes the screen when the grant is revoked externally', async () => {
+    const releases: string[] = [];
     const { ws, manager } = await connect(async () => ({
       grantId: 'grant-2',
       assertActive: async () => {},
@@ -67,12 +68,44 @@ describe('DesktopStreamManager', () => {
       decryptCommand: data => JSON.parse(data.toString()),
       input: async () => {},
       revoke: async () => {},
-      release: () => {},
+      release: reason => { releases.push(reason ?? 'none'); },
     }));
     await once(ws, 'open');
     manager.closeGrant('grant-2');
     await once(ws, 'close');
     expect(ws.readyState).toBe(WebSocket.CLOSED);
+    expect(releases).toEqual(['terminal']);
+  });
+
+  it('marks an unexpected client transport loss resumable exactly once', async () => {
+    const releases: string[] = [];
+    const { ws } = await connect(async () => ({
+      grantId: 'lost-transport', assertActive: async () => {},
+      captureEncrypted: async () => Buffer.alloc(32),
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async () => {}, revoke: async () => {},
+      release: reason => { releases.push(reason ?? 'none'); },
+    }));
+    await once(ws, 'open');
+    ws.terminate();
+    await once(ws, 'close');
+    for (let i = 0; i < 20 && releases.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(releases).toEqual(['transport-lost']);
+  });
+
+  it('treats WebSocket parser rejection as terminal', async () => {
+    const releases: string[] = [];
+    const { ws } = await connect(async () => ({
+      grantId: 'parser-error', assertActive: async () => {},
+      captureEncrypted: async () => Buffer.alloc(32),
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async () => {}, revoke: async () => {},
+      release: reason => { releases.push(reason ?? 'none'); },
+    }));
+    await once(ws, 'open');
+    ws.send(Buffer.alloc(5_000)); // exceeds the server's WebSocket maxPayload
+    await once(ws, 'close');
+    expect(releases).toEqual(['terminal']);
   });
 
   it('survives a burst of pointer moves while preserving discrete clicks', async () => {

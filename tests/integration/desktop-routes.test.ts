@@ -33,6 +33,7 @@ function fakeAccess(): DirectDesktopAccess {
     probe: async () => ({ ready: true, screenPermission: true, inputPermission: true, displayCount: 1 }),
     begin: async input => { expect(input.operatorUid).toBe('dashboard-pin'); return { requestId: 'request-1' }; },
     status: () => ({ status: 'approved', connectionNonce: 'nonce-1' }),
+    resume: async (_id, _token, _input, attemptId) => ({ status: 'approved', connectionNonce: attemptId }),
     cursor: async () => ({ x: 0.25, y: 0.75 }),
     ticket: () => 'ticket-1',
     revoke: () => {},
@@ -74,6 +75,12 @@ describe('remote desktop HTTP routes', () => {
     expect(created.body.requestId).toBe('request-1');
     const status = await request(server).get('/desktop/requests/request-1').set(headers);
     expect(status.body.status).toBe('approved');
+    expect((await request(server).post('/desktop/requests/request-1/resume')
+      .set(headers).send({ attemptId: 'attempt-1234567890' })).status).toBe(403);
+    const resumed = await request(server).post('/desktop/requests/request-1/resume')
+      .set({ ...headers, 'X-Instar-Request': '1' }).send({ attemptId: 'attempt-1234567890' });
+    expect(resumed.status).toBe(200);
+    expect(resumed.body.connectionNonce).toBe('attempt-1234567890');
     expect((await request(server).get('/desktop/requests/request-1/cursor')
       .set({ Authorization: `Bearer ${AUTH}` })).status).toBe(403);
     const cursor = await request(server).get('/desktop/requests/request-1/cursor').set(headers);
