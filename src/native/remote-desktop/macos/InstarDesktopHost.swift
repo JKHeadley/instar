@@ -57,6 +57,9 @@ private final class LatestScreenFrame: NSObject, SCStreamOutput, SCStreamDelegat
 @available(macOS 14.0, *)
 @main
 struct InstarDesktopHost {
+    // This state belongs to the one grant-owned input-stream process. Its pipe
+    // closing ends the process; the controller then posts release events.
+    private static var heldButton: String? = nil
     static func main() async {
         guard CommandLine.arguments.count == 2 else {
             fputs("usage: instar-desktop-host probe|capture|capture-stream|cursor|input|input-stream|release|indicator\n", stderr)
@@ -152,6 +155,7 @@ struct InstarDesktopHost {
                 exit(69)
             }
         case "input-stream":
+            defer { releaseHeldButton() }
             while let line = readLine(strippingNewline: true) {
                 do {
                     try performInput(Data(line.utf8))
@@ -166,6 +170,16 @@ struct InstarDesktopHost {
             fputs("unknown desktop-host command\n", stderr)
             exit(64)
         }
+    }
+
+    private static func releaseHeldButton() {
+        guard let button = heldButton, activeSession(), AXIsProcessTrusted() else { return }
+        let point = CGEvent(source: nil)?.location ?? CGPoint.zero
+        let mouseButton: CGMouseButton = button == "right" ? .right : .left
+        let type: CGEventType = button == "right" ? .rightMouseUp : .leftMouseUp
+        CGEvent(mouseEventSource: nil, mouseType: type,
+                mouseCursorPosition: point, mouseButton: mouseButton)?.post(tap: .cghidEventTap)
+        heldButton = nil
     }
 
     private static func performInput(_ data: Data) throws {
@@ -186,7 +200,7 @@ struct InstarDesktopHost {
                 throw HostError.invalidInput
             }
             event.post(tap: .cghidEventTap)
-        case "move", "click":
+        case "move", "click", "buttonDown", "buttonUp":
             guard let x = raw["x"] as? Double, let y = raw["y"] as? Double,
                   x.isFinite, y.isFinite, x >= 0, x <= 1, y >= 0, y <= 1 else {
                 throw HostError.invalidInput
@@ -199,27 +213,40 @@ struct InstarDesktopHost {
             let point = CGPoint(x: bounds.minX + x * (bounds.width - 1),
                                 y: bounds.minY + y * (bounds.height - 1))
             if kind == "move" {
-                guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                                          mouseCursorPosition: point, mouseButton: .left) else {
+                let dragType: CGEventType = heldButton == "left" ? .leftMouseDragged
+                    : heldButton == "right" ? .rightMouseDragged : .mouseMoved
+                let dragButton: CGMouseButton = heldButton == "right" ? .right : .left
+                guard let event = CGEvent(mouseEventSource: nil, mouseType: dragType,
+                                          mouseCursorPosition: point, mouseButton: dragButton) else {
                     throw HostError.inputUnavailable
                 }
                 event.post(tap: .cghidEventTap)
             } else {
                 let button = raw["button"] as? String ?? "left"
                 guard button == "left" || button == "right" else { throw HostError.invalidInput }
+                // Refuse a second down or an unmatched up. A malformed command
+                // must not silently change the host's held-button state.
+                if kind == "buttonDown" && heldButton != nil { throw HostError.invalidInput }
+                if kind == "buttonUp" && heldButton != button { throw HostError.invalidInput }
                 let mouseButton: CGMouseButton = button == "left" ? .left : .right
                 let downType: CGEventType = button == "left" ? .leftMouseDown : .rightMouseDown
                 let upType: CGEventType = button == "left" ? .leftMouseUp : .rightMouseUp
-                guard let down = CGEvent(mouseEventSource: nil, mouseType: downType,
-                                         mouseCursorPosition: point, mouseButton: mouseButton),
-                      let up = CGEvent(mouseEventSource: nil, mouseType: upType,
-                                       mouseCursorPosition: point, mouseButton: mouseButton) else {
-                    throw HostError.inputUnavailable
+                if kind == "click" && heldButton != nil { throw HostError.invalidInput }
+                let up = kind == "buttonDown" ? nil : CGEvent(mouseEventSource: nil, mouseType: upType,
+                    mouseCursorPosition: point, mouseButton: mouseButton)
+                if kind != "buttonDown" && up == nil { throw HostError.inputUnavailable }
+                if kind != "buttonUp" {
+                    guard let down = CGEvent(mouseEventSource: nil, mouseType: downType,
+                                             mouseCursorPosition: point, mouseButton: mouseButton) else {
+                        throw HostError.inputUnavailable
+                    }
+                    down.post(tap: .cghidEventTap)
+                    if kind == "buttonDown" { heldButton = button }
                 }
-                // Every click releases in the same operation; a process
-                // crash cannot leave a button held across a session stop.
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
+                if let up {
+                    up.post(tap: .cghidEventTap)
+                    heldButton = nil
+                }
             }
         case "type":
             guard let text = raw["text"] as? String, !text.isEmpty,

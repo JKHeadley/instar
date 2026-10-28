@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { DirectDesktopAccess } from '../../src/core/DirectDesktopAccess.js';
 import type { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import type { DesktopInput } from '../../src/core/DesktopHost.js';
 import type { RemoteStepUpLockoutPort } from '../../src/core/RemoteStepUpLockouts.js';
 
 function resumeProof(browser: crypto.KeyPairKeyObjectResult, requestId: string,
@@ -19,6 +20,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   let sessionValid = true;
   let challenge = '';
   let cancelled = 0;
+  let heldButton: string | null = null;
   let indicatorExit: (() => void) | null = null;
   let indicatorStops = 0;
   let probes = 0;
@@ -40,8 +42,11 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
     probe: async () => { probes++; await probeGate; return { screenPermission: true, inputPermission: true, displayCount: 1, sessionActive: true }; },
     capture: async () => image,
     cursor: async () => ({ x: 0.25, y: 0.75 }),
-    input: async () => {},
-    cancelInput: () => { cancelled++; },
+    input: async (action: DesktopInput) => {
+      if (action.kind === 'buttonDown') heldButton = action.button;
+      if (action.kind === 'buttonUp') heldButton = null;
+    },
+    cancelInput: () => { cancelled++; heldButton = null; },
     startIndicator: async (onExit: () => void) => { await indicatorGate; indicatorExit = onExit; },
     stopIndicator: () => { indicatorStops++; },
   } as unknown as MacDesktopHost;
@@ -66,7 +71,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
     setNow: (value: number) => { now = value; }, setBinding: (value: boolean) => { binding = value; },
     setSessionValid: (value: boolean) => { sessionValid = value; },
     setFrame: (value: Buffer) => { image = value; },
-    cancelled: () => cancelled, indicatorStops: () => indicatorStops,
+    cancelled: () => cancelled, heldButton: () => heldButton, indicatorStops: () => indicatorStops,
     probes: () => probes,
     setProbeGate: (gate: Promise<void> | null) => { probeGate = gate; },
     setIndicatorGate: (gate: Promise<void> | null) => { indicatorGate = gate; },
@@ -112,8 +117,11 @@ describe('DirectDesktopAccess', () => {
       url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
     };
     const old = await connect(f.browser);
+    await old.input({ kind: 'buttonDown', x: 0.3, y: 0.4, button: 'left' });
+    expect(f.heldButton()).toBe('left');
     const previousNonce = f.authority.status(requestId, 'dashboard-proof').connectionNonce!;
     old.release('transport-lost');
+    expect(f.heldButton()).toBeNull();
     expect(f.authority.status(requestId, 'dashboard-proof')).toEqual({ status: 'interrupted' });
     await expect(old.assertActive()).rejects.toThrow('grant');
     const browser = crypto.generateKeyPairSync('ed25519');
@@ -130,7 +138,9 @@ describe('DirectDesktopAccess', () => {
     expect(first.expiresAt).toBe(start + 600_000);
     const replacement = await connect(browser);
     expect(replacement.grantId).not.toBe(old.grantId);
+    await replacement.input({ kind: 'buttonDown', x: 0.4, y: 0.5, button: 'left' });
     f.authority.revoke(requestId, 'dashboard-proof');
+    expect(f.heldButton()).toBeNull();
     await expect(replacement.assertActive()).rejects.toThrow('grant');
     await expect(f.authority.resume(requestId, 'dashboard-proof', input, 'attempt-other-123456', previousNonce,
       resumeProof(f.browser, requestId, previousNonce, 'attempt-other-123456', input))).rejects.toThrow('resume unavailable');
@@ -146,6 +156,8 @@ describe('DirectDesktopAccess', () => {
     const old = await f.authority.admit({ headers: { origin: 'https://instar.example', host: 'instar.example',
       'x-forwarded-proto': 'https', 'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
     url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    await old.input({ kind: 'buttonDown', x: 0.2, y: 0.3, button: 'left' });
+    expect(f.heldButton()).toBe('left');
     const newBrowser = crypto.generateKeyPairSync('ed25519');
     const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys();
     const input = { browserPublicKey: newBrowser.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
@@ -156,6 +168,7 @@ describe('DirectDesktopAccess', () => {
       initial.connectionNonce!, 'bad')).rejects.toThrow('previous browser proof');
     const replacement = await f.authority.resume(requestId, 'dashboard-proof', input, attempt,
       initial.connectionNonce!, proof);
+    expect(f.heldButton()).toBeNull();
     expect(replacement.connectionNonce).not.toBe(initial.connectionNonce);
     expect(f.closed).toContain(old.grantId);
     await expect(old.assertActive()).rejects.toThrow('grant');

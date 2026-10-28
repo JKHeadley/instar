@@ -65,6 +65,14 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
     host.cancelInput();
   });
 
+  it('accepts bounded button events and rejects malformed drag coordinates before native input', async () => {
+    const host = helper('input-closes-stdin');
+    await expect(host.input({ kind: 'buttonDown', x: -0.1, y: 0.5, button: 'left' }))
+      .rejects.toThrow('mac-desktop-host-input-invalid');
+    await host.input({ kind: 'buttonDown', x: 0.5, y: 0.5, button: 'left' });
+    host.cancelInput();
+  });
+
   it.each(['zero', 'oversize', 'trailing', 'midframe'])(
     'rejects %s replies and cancels the native child', async reply => {
       const host = helper(reply);

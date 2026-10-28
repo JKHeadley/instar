@@ -17,7 +17,7 @@ const DEFAULT_HOST = path.basename(path.dirname(MODULE_DIR)) === 'src'
 
 function validInput(action: MacDesktopInput): boolean {
   if (!action || typeof action !== 'object') return false;
-  if (action.kind === 'move' || action.kind === 'click') {
+  if (action.kind === 'move' || action.kind === 'click' || action.kind === 'buttonDown' || action.kind === 'buttonUp') {
     if (!Number.isFinite(action.x) || !Number.isFinite(action.y)
       || action.x < 0 || action.x > 1 || action.y < 0 || action.y > 1) return false;
     return action.kind === 'move' || action.button === 'left' || action.button === 'right';

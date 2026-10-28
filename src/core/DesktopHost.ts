@@ -3,6 +3,7 @@
 export type DesktopInput =
   | { kind: 'move'; x: number; y: number }
   | { kind: 'click'; x: number; y: number; button: 'left' | 'right' }
+  | { kind: 'buttonDown' | 'buttonUp'; x: number; y: number; button: 'left' | 'right' }
   | { kind: 'scroll'; dx: number; dy: number }
   | { kind: 'type'; text: string };
 

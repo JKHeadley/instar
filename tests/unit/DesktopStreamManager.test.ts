@@ -12,10 +12,10 @@ describe('DesktopStreamManager', () => {
     for (const server of servers.splice(0)) await new Promise<void>(resolve => server.close(() => resolve()));
   });
 
-  async function connect(admit: () => Promise<DesktopStreamSession>) {
+  async function connect(admit: () => Promise<DesktopStreamSession>, heldInputLivenessMs?: number) {
     const server = http.createServer();
     servers.push(server);
-    const manager = new DesktopStreamManager(admit);
+    const manager = new DesktopStreamManager(admit, heldInputLivenessMs);
     managers.push(manager);
     server.on('upgrade', (request, socket, head) => { void manager.handleUpgrade(request, socket, head); });
     server.listen(0, '127.0.0.1');
@@ -133,6 +133,54 @@ describe('DesktopStreamManager', () => {
     expect(actions.filter(action => action.kind === 'move').at(-1)?.x).toBe(1);
     ws.send(Buffer.from(JSON.stringify({ type: 'stop' })));
     await once(ws, 'close');
+  });
+
+  it('preserves button boundaries and the last drag position through move coalescing', async () => {
+    const actions: Array<{ kind: string; x?: number }> = [];
+    const { ws } = await connect(async () => ({
+      grantId: 'drag-order', assertActive: async () => {},
+      captureEncrypted: async () => null,
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async action => {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        actions.push(action);
+      },
+      revoke: async () => {}, release: () => {},
+    }));
+    await once(ws, 'open');
+    const sendAction = (action: object) => ws.send(Buffer.from(JSON.stringify({ type: 'input', action })));
+    sendAction({ kind: 'buttonDown', x: 0.1, y: 0.5, button: 'left' });
+    for (let i = 0; i < 20; i++) sendAction({ kind: 'move', x: i / 20, y: 0.5 });
+    sendAction({ kind: 'buttonUp', x: 0.95, y: 0.5, button: 'left' });
+    sendAction({ kind: 'click', x: 0.9, y: 0.5, button: 'right' });
+    for (let i = 0; i < 50 && actions.length < 4; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(actions.map(action => action.kind)).toEqual(['buttonDown', 'move', 'buttonUp', 'click']);
+    expect(actions[1].x).toBe(0.95);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.send(Buffer.from(JSON.stringify({ type: 'stop' })));
+    await once(ws, 'close');
+  });
+
+  it('releases a held button by ending a half-open stream after missed authenticated liveness', async () => {
+    const releases: string[] = [];
+    const actions: string[] = [];
+    const { ws } = await connect(async () => ({
+      grantId: 'held-half-open', assertActive: async () => {}, captureEncrypted: async () => null,
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async action => { actions.push(action.kind); },
+      revoke: async () => {}, release: reason => { releases.push(reason ?? 'none'); },
+    }), 120);
+    await once(ws, 'open');
+    ws.send(Buffer.from(JSON.stringify({ type: 'input', action: {
+      kind: 'buttonDown', x: 0.4, y: 0.5, button: 'left',
+    } })));
+    for (let i = 0; i < 20 && !actions.length; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(actions).toEqual(['buttonDown']);
+    ws.send(Buffer.from(JSON.stringify({ type: 'ping' })));
+    await new Promise(resolve => setTimeout(resolve, 70));
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    await once(ws, 'close');
+    expect(releases).toEqual(['terminal']);
   });
 
   it('drops one transient capture error and resumes frames', async () => {

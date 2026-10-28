@@ -32,6 +32,43 @@ let stopping = false;
 let trackpad = matchMedia('(pointer: coarse)').matches;
 let cursor = { x: 0.5, y: 0.5 };
 const pointers = new Map();
+let heldButton = null;
+let heldPhase = 'none';
+let holdHeartbeat = 0;
+
+function setHeldButton(button, phase = button ? 'sent' : 'none') {
+  heldButton = button;
+  heldPhase = phase;
+  if (holdHeartbeat) { clearInterval(holdHeartbeat); holdHeartbeat = 0; }
+  if (button) holdHeartbeat = setInterval(() => { if (inputEnabled) void sendCommand({ type: 'ping' }); }, 1_000);
+  $('dragButton').textContent = button ? 'Release' : 'Drag';
+  $('dragButton').setAttribute('aria-pressed', String(!!button));
+}
+function flushPendingMove() {
+  if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
+  if (pendingMove) { send({ kind: 'move', ...pendingMove }); pendingMove = null; }
+}
+function releaseButton() {
+  if (!heldButton || heldPhase === 'releasing' || heldPhase === 'unknown') return;
+  flushPendingMove();
+  const button = heldButton;
+  heldPhase = 'releasing';
+  void send({ kind: 'buttonUp', ...cursor, button }).then(sent => {
+    if (heldButton !== button || heldPhase !== 'releasing') return;
+    if (sent) setHeldButton(null);
+    else { heldPhase = 'unknown'; unexpectedDisconnect(socket); }
+  });
+}
+function beginHold(button) {
+  if (heldButton) return;
+  flushPendingMove();
+  setHeldButton(button, 'pending');
+  void send({ kind: 'buttonDown', ...cursor, button }).then(sent => {
+    if (heldButton !== button || heldPhase !== 'pending') return;
+    if (sent) heldPhase = 'sent';
+    else { heldPhase = 'unknown'; unexpectedDisconnect(socket); }
+  });
+}
 
 function status(message) { $('status').textContent = message; $('liveStatus').textContent = message; }
 const encoder = new TextEncoder();
@@ -78,9 +115,9 @@ async function verifyTarget(result) {
 function sendCommand(command) {
   const epoch = streamEpoch;
   sendChain = sendChain.then(async () => {
-    if (epoch !== streamEpoch) return;
-    if (!inputEnabled && command.type === 'input') return;
-    if (socket?.readyState !== WebSocket.OPEN || !aesKey) return;
+    if (epoch !== streamEpoch) return false;
+    if (!inputEnabled && command.type === 'input') return false;
+    if (socket?.readyState !== WebSocket.OPEN || !aesKey) return false;
     const sequence = ++inputSequence;
     const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM',
       iv: recordIv('input', sequence), additionalData: recordAad('input') }, aesKey,
@@ -88,9 +125,11 @@ function sendCommand(command) {
     const record = new Uint8Array(8 + ciphertext.length);
     new DataView(record.buffer).setBigUint64(0, sequence);
     record.set(ciphertext, 8);
-    if (epoch !== streamEpoch || socket?.readyState !== WebSocket.OPEN) return;
+    if (epoch !== streamEpoch || socket?.readyState !== WebSocket.OPEN) return false;
     socket.send(record);
-  }).catch(() => { if (epoch === streamEpoch) leave('Encrypted remote input failed.'); });
+    return true;
+  }).catch(() => { if (epoch === streamEpoch) leave('Encrypted remote input failed.'); return false; });
+  return sendChain;
 }
 async function receiveFrame(recordBuffer, epoch) {
   if (!inputEnabled || epoch !== streamEpoch) return;
@@ -124,6 +163,7 @@ function leave(message) {
   if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
   pendingMove = null;
   pointers.clear();
+  setHeldButton(null);
   clearFrame();
   document.body.classList.remove('desktop-live', 'trackpad');
   $('control').hidden = true;
@@ -493,8 +533,8 @@ async function openStream(result, resume = null) {
 }
 
 function send(action) {
-  if (!inputEnabled) return;
-  sendCommand({ type: 'input', action });
+  if (!inputEnabled) return Promise.resolve(false);
+  return sendCommand({ type: 'input', action });
 }
 function imageArea() {
   const rect = $('screen').getBoundingClientRect();
@@ -538,13 +578,18 @@ function moveCursor(dx, dy) {
   updateCursor();
   queueMove(cursor);
 }
-function clickCursor(button = 'left') { send({ kind: 'click', ...cursor, button }); }
+function clickCursor(button = 'left') { if (!heldButton) send({ kind: 'click', ...cursor, button }); }
 $('modeButton').addEventListener('click', () => {
+  releaseButton();
   trackpad = !trackpad;
   pointers.clear();
   document.body.classList.toggle('trackpad', trackpad);
   $('modeButton').textContent = trackpad ? 'Trackpad' : 'Direct';
   $('modeButton').setAttribute('aria-pressed', String(trackpad));
+});
+$('dragButton').addEventListener('click', () => {
+  if (heldButton) { releaseButton(); return; }
+  beginHold('left');
 });
 $('rightButton').addEventListener('click', () => clickCursor('right'));
 $('surface').addEventListener('contextmenu', event => event.preventDefault());
@@ -558,6 +603,7 @@ $('surface').addEventListener('pointerdown', event => {
   if (!trackpad || event.pointerType === 'mouse') {
     const at = position(event);
     if (at) { cursor = at; updateCursor(); queueMove(at); }
+    if (event.pointerType === 'mouse' && at && !heldButton) beginHold(event.button === 2 ? 'right' : 'left');
   }
 });
 $('surface').addEventListener('pointermove', event => {
@@ -584,6 +630,12 @@ $('surface').addEventListener('pointerup', event => {
   if (!state) return;
   event.preventDefault();
   pointers.delete(event.pointerId);
+  if (event.pointerType === 'mouse' && heldButton) {
+    const at = position(event);
+    if (at) { cursor = at; queueMove(at); }
+    releaseButton();
+    return;
+  }
   const distance = Math.max(state.maxDistance,
     Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
   if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
@@ -591,7 +643,10 @@ $('surface').addEventListener('pointerup', event => {
     clickCursor(event.button === 2 ? 'right' : 'left');
   }
 });
-$('surface').addEventListener('pointercancel', event => { pointers.delete(event.pointerId); });
+function cancelGestures() { pointers.clear(); releaseButton(); }
+$('surface').addEventListener('pointercancel', cancelGestures);
+window.addEventListener('blur', cancelGestures);
+document.addEventListener('visibilitychange', () => { if (document.hidden) cancelGestures(); });
 window.addEventListener('resize', updateCursor);
 $('screen').addEventListener('load', updateCursor);
 $('typeButton').addEventListener('click', () => {
@@ -610,6 +665,7 @@ $('stopButton').addEventListener('click', async () => {
   if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
   pendingMove = null;
   pointers.clear();
+  setHeldButton(null);
   sendCommand({ type: 'stop' });
   const stoppingRequestId = requestId;
   // Blank the viewer immediately, even when the revoke HTTP request is slow.

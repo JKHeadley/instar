@@ -25,6 +25,7 @@ const MAX_BUFFERED_BYTES = 1_000_024;
 const MAX_FRAME_BYTES = 625_000;
 const VIDEO_BYTES_PER_SECOND = 1_250_000; // 10 Mbps per host
 const IDLE_MS = 2 * 60_000;
+const HELD_INPUT_LIVENESS_MS = 5_000;
 
 export class DesktopStreamManager {
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 4_096, perMessageDeflate: false });
@@ -32,7 +33,8 @@ export class DesktopStreamManager {
   private readonly terminalGrants = new Set<string>();
   private shuttingDown = false;
 
-  constructor(private readonly admit: DesktopStreamAdmission) {}
+  constructor(private readonly admit: DesktopStreamAdmission,
+    private readonly heldInputLivenessMs = HELD_INPUT_LIVENESS_MS) {}
 
   async handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
     let session: DesktopStreamSession;
@@ -75,12 +77,25 @@ export class DesktopStreamManager {
     const pendingInputs: Array<{ type: 'input'; action: DesktopInput }> = [];
     let drainingInputs = false;
     let captureFailures = 0;
+    let heldButton: 'left' | 'right' | null = null;
+    let holdTimer: ReturnType<typeof setTimeout> | undefined;
+    const refreshHoldLease = () => {
+      if (!heldButton) return;
+      if (holdTimer) clearTimeout(holdTimer);
+      // A half-open browser can leave a mouse button held even while the
+      // target still thinks the WebSocket is connected. An authenticated ping
+      // every second keeps legitimate long drags alive; missing liveness
+      // revokes the grant and cancelInput posts the native release.
+      holdTimer = setTimeout(() => close('input-hold-lost'), this.heldInputLivenessMs);
+      holdTimer.unref?.();
+    };
     const close = (reason = 'unknown') => {
       if (closed) return;
       closed = true;
       // Reason code only: never log the grant, operator, screen, or input.
       console.warn(`[DesktopStream] closed: ${reason}`);
       if (timer) clearTimeout(timer);
+      if (holdTimer) clearTimeout(holdTimer);
       if (this.sockets.get(session.grantId) === ws) this.sockets.delete(session.grantId);
       const terminal = this.shuttingDown || this.terminalGrants.delete(session.grantId);
       session.release(!terminal && reason === 'transport-lost' ? 'transport-lost' : 'terminal');
@@ -135,6 +150,11 @@ export class DesktopStreamManager {
           await session.assertActive();
           if (closed) return;
           await session.input(command.action);
+          if (command.action.kind === 'buttonDown') heldButton = command.action.button;
+          if (command.action.kind === 'buttonUp') {
+            heldButton = null;
+            if (holdTimer) { clearTimeout(holdTimer); holdTimer = undefined; }
+          } else refreshHoldLease();
           lastActivity = Date.now();
         }
       } catch { close('input-failed'); }
@@ -150,7 +170,7 @@ export class DesktopStreamManager {
         void session.revoke().then(() => close('stop'), () => close('stop-error'));
         return;
       }
-      if (command.type === 'ping') { lastActivity = Date.now(); return; }
+      if (command.type === 'ping') { lastActivity = Date.now(); refreshHoldLease(); return; }
       if (command.type !== 'input' || !command.action) { close('protocol'); return; }
       const last = pendingInputs.at(-1);
       if (command.action.kind === 'move' && last?.action.kind === 'move') {
