@@ -1131,7 +1131,7 @@ export class HostTestRunnerSemaphore {
   listSuiteWaiters(): SuiteWaiter[] {
     let names: string[];
     try { names = fs.readdirSync(this.waiterDir()).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)); }
-    catch { return []; }
+    catch { return []; /* @silent-fallback-ok: no waiter dir means no waiters; admission barges. */ }
     const out: SuiteWaiter[] = [];
     for (const name of names.slice(0, SUITE_WAITER_MAX_TICKETS)) {
       const w = this.readWaiterTicket(path.join(this.waiterDir(), name));

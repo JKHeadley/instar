@@ -82,3 +82,7 @@ No agent-authored-artifact defect, and no self-triggered controller added (ticke
 **Independent read of the artifact: concur**
 
 The reviewer found no deadlock: the ordering is total and aging only moves forward. No slot sits idle while a live waiter could take it, apart from the 60 s lease case for a stuck waiter. Tickets cannot leak or block. Dry-run never writes tickets, and the 10-26 race stays closed. They noted one minor gap: a winner could be counted twice (as both holder and ticket) until its `finally` ran, costing at most one poll at cap >1. That is fixed: the ticket is now cleared under the lock at admission.
+
+## Follow-up commit
+
+The full unit run's No Silent Fallbacks check counted one new unmarked fallback: `listSuiteWaiters` returns `[]` when the waiter directory is missing. That is the intended barging fallback, so it now carries `@silent-fallback-ok`. No behavior change.
