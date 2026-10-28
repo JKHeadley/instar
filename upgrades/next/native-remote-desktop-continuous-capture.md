@@ -14,6 +14,7 @@ Open the same Remote desktop page and enter the dashboard PIN. The Mac should up
 
 - Continuous native Mac screen capture with bounded frame and bandwidth use.
 - Dropped changed frames are offered again without requiring another screen change.
+- Wake recovery checks the current public tunnel before restarting it, preserving reachable desktop sessions.
 
 ## Evidence
 

@@ -17078,6 +17078,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     let _machineLoadSampler: import('../core/machineLoadReport.js').MachineLoadSampler | null = null;
     let _workAdmission: import('../core/workAdmission.js').WorkAdmission | null = null;
     let _eventLoopLagReader: (() => number | null) | null = null;
+    let wakeTunnelRecoveryInFlight = false;
+    let wakeTunnelRestartTask: Promise<void> | null = null;
     const _tmuxAsyncHotPathWakeGuard = resolveDevAgentGate(
       config.monitoring?.tmuxResilience?.asyncHotPath?.enabled,
       config,
@@ -17146,59 +17148,96 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.warn('[SleepWake] tmux check failed after wake');
       }
 
-      // Restart tunnel if configured — disable auto-reconnect first to prevent
-      // a cascade of competing reconnection attempts, then forceStop to handle
-      // zombie cloudflared processes that may be hung after sleep.
-      if (tunnel) {
+      // Serialize wake recovery. A later wake must not apply an old probe
+      // result to a connector already being repaired by this handler.
+      if (tunnel && wakeTunnelRecoveryInFlight) {
+        console.log('[SleepWake] Tunnel recovery already in progress');
+      } else if (tunnel) {
+        wakeTunnelRecoveryInFlight = true;
         try {
-          await Promise.race([
-            (async () => {
-              tunnel.disableAutoReconnect();
-              await tunnel.forceStop(5000);
-              tunnel.enableAutoReconnect();
-              const tunnelUrl = await tunnel.start();
-              console.log(`[SleepWake] Tunnel restarted: ${tunnelUrl}`);
+          const observedGeneration = tunnel.connectionGeneration;
+          // Timer drift can look like sleep while a public desktop session is healthy.
+          // Verify the current URL reaches THIS agent before replacing the connector;
+          // a half-open or local-only desktop socket never suppresses recovery.
+          const { probeCurrentTunnelIdentity } = await import('../tunnel/probeCurrentTunnelIdentity.js');
+          const tunnelReachable = await probeCurrentTunnelIdentity({
+            url: tunnel.url,
+            agentId: config.projectName,
+            port: config.port,
+            authToken: config.authToken,
+          });
+          if (observedGeneration !== tunnel.connectionGeneration) {
+            console.log('[SleepWake] Tunnel changed during probe; leaving the replacement intact');
+          } else if (tunnelReachable) {
+            console.log('[SleepWake] Current tunnel reached this agent; keeping active connections');
+          } else {
+            // Disable auto-reconnect first to prevent competing attempts, then
+            // forceStop to handle a zombie cloudflared process after a true sleep.
+            try {
+              const restartTask = (async () => {
+                  tunnel.disableAutoReconnect();
+                  await tunnel.forceStop(5000);
+                  tunnel.enableAutoReconnect();
+                  const tunnelUrl = await tunnel.start();
+                  console.log(`[SleepWake] Tunnel restarted: ${tunnelUrl}`);
 
-              // Re-advertise the mesh URL — a quick tunnel gets a NEW URL after a
-              // sleep/wake restart, so the previously-advertised lastKnownUrl is
-              // now stale; peers must learn the new one or cross-machine routing
-              // silently breaks post-wake.
-              if (coordinator.enabled && coordinator.identity) {
-                const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
-                advertiseSelfMeshUrl(
-                  coordinator.managers.identityManager,
-                  coordinator.identity.machineId,
-                  cfUrl,
-                  (m) => console.log(pc.dim(m)),
-                );
-                // multi-transport-mesh-comms — re-advertise endpoints post-wake.
-                await advertiseSelfMeshEndpointsNow(
-                  coordinator.managers.identityManager,
-                  coordinator.identity.machineId,
-                  config,
-                  cfUrl,
-                );
-              }
+                  // Re-advertise the mesh URL — a quick tunnel gets a NEW URL after a
+                  // sleep/wake restart, so the previously-advertised lastKnownUrl is
+                  // now stale; peers must learn the new one or cross-machine routing
+                  // silently breaks post-wake.
+                  if (coordinator.enabled && coordinator.identity) {
+                    const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
+                    advertiseSelfMeshUrl(
+                      coordinator.managers.identityManager,
+                      coordinator.identity.machineId,
+                      cfUrl,
+                      (m) => console.log(pc.dim(m)),
+                    );
+                    // multi-transport-mesh-comms — re-advertise endpoints post-wake.
+                    await advertiseSelfMeshEndpointsNow(
+                      coordinator.managers.identityManager,
+                      coordinator.identity.machineId,
+                      config,
+                      cfUrl,
+                    );
+                  }
 
-              // Re-broadcast dashboard URL after tunnel restart (quick tunnels get new URL)
-              if (tunnelUrl) {
-                const tunnelType = config.tunnel?.type || 'quick';
-                if (telegram) {
-                  await telegram.broadcastDashboardUrl(tunnelUrl, tunnelType as 'quick' | 'named').catch(() => {});
-                }
-                if (_slackAdapter) {
-                  await _slackAdapter.broadcastDashboardUrl(tunnelUrl).catch(() => {});
-                }
+                  // Re-broadcast dashboard URL after tunnel restart (quick tunnels get new URL)
+                  if (tunnelUrl) {
+                    const tunnelType = config.tunnel?.type || 'quick';
+                    if (telegram) {
+                      await telegram.broadcastDashboardUrl(tunnelUrl, tunnelType as 'quick' | 'named').catch(() => {});
+                    }
+                    if (_slackAdapter) {
+                      await _slackAdapter.broadcastDashboardUrl(tunnelUrl).catch(() => {});
+                    }
+                  }
+              })().finally(() => tunnel.enableAutoReconnect());
+              wakeTunnelRestartTask = restartTask;
+              await Promise.race([
+                restartTask,
+                new Promise<void>((_, reject) =>
+                  setTimeout(() => reject(new Error('Tunnel restart timed out after 15s')), 15_000)
+                ),
+              ]);
+            } catch (err) {
+              console.error(`[SleepWake] Tunnel restart failed:`, err);
+              // The restart task owns auto-reconnect and the singleflight lock
+              // even if this 15-second reporting window expires first.
+            }
+          }
+        } finally {
+          const pendingRestart = wakeTunnelRestartTask;
+          if (pendingRestart) {
+            void pendingRestart.then(() => {}, () => {}).finally(() => {
+              if (wakeTunnelRestartTask === pendingRestart) {
+                wakeTunnelRestartTask = null;
+                wakeTunnelRecoveryInFlight = false;
               }
-            })(),
-            new Promise<void>((_, reject) =>
-              setTimeout(() => reject(new Error('Tunnel restart timed out after 15s')), 15_000)
-            ),
-          ]);
-        } catch (err) {
-          console.error(`[SleepWake] Tunnel restart failed:`, err);
-          // Re-enable auto-reconnect even on failure so it can self-heal
-          tunnel.enableAutoReconnect();
+            });
+          } else {
+            wakeTunnelRecoveryInFlight = false;
+          }
         }
       }
 

@@ -66,6 +66,12 @@ async function runWakeGuard(opts: {
   tmuxPath: string | null;
   // injected effect sinks (spies)
   tunnelForceStop: (() => Promise<void>) | null;
+  tunnelIdentityReachable?: boolean;
+  activeDesktopStream?: boolean;
+  tunnelGeneration?: () => number;
+  probeTunnel?: () => Promise<boolean>;
+  tunnelRecoveryState?: { inFlight: boolean; restartTask?: Promise<void> };
+  restartReportTimeoutMs?: number;
   execFileAsync: (file: string, args: string[], o: Record<string, unknown>) => Promise<{ stdout: string }>;
   execFileSyncLegacy: (file: string, args: string[], o: Record<string, unknown>) => string;
   notify: (lane: string, source: string, text: string) => void;
@@ -105,10 +111,37 @@ async function runWakeGuard(opts: {
 
   // Tunnel recovery cascade (the heavy block the short-circuit avoids).
   if (opts.tunnelForceStop) {
-    try {
-      await opts.tunnelForceStop();
-    } catch {
-      /* swallowed */
+    const recovery = opts.tunnelRecoveryState ?? { inFlight: false };
+    if (!recovery.inFlight) {
+      recovery.inFlight = true;
+      try {
+        const observed = opts.tunnelGeneration?.() ?? 0;
+        const reachable = opts.probeTunnel ? await opts.probeTunnel() : !!opts.tunnelIdentityReachable;
+        if (!reachable && observed === (opts.tunnelGeneration?.() ?? 0)) {
+          const task = opts.tunnelForceStop();
+          recovery.restartTask = task;
+          if (opts.restartReportTimeoutMs !== undefined) {
+            await Promise.race([
+              task,
+              new Promise<void>((_, reject) => setTimeout(() => reject(Error('report timeout')), opts.restartReportTimeoutMs)),
+            ]);
+          } else {
+            await task;
+          }
+        }
+      } catch {
+        /* swallowed */
+      } finally {
+        const task = recovery.restartTask;
+        if (task) {
+          void task.then(() => {}, () => {}).finally(() => {
+            if (recovery.restartTask === task) {
+              recovery.restartTask = undefined;
+              recovery.inFlight = false;
+            }
+          });
+        } else recovery.inFlight = false;
+      }
     }
   }
 
@@ -224,6 +257,52 @@ describe('wake-handler amplifier #1 — guard behavior via the faithful harness 
     expect(tunnelForceStop).toHaveBeenCalledTimes(1);
   });
 
+  it.each([true, false])('keeps a verified public tunnel regardless of desktop socket count (%s)', async (activeDesktopStream) => {
+    const r = await runWakeGuard(base({ activeDesktopStream, tunnelIdentityReachable: true }));
+    expect(r.shortCircuited).toBe(false);
+    expect(execFileAsync).toHaveBeenCalledTimes(1);
+    expect(tunnelForceStop).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('repairs an unreachable tunnel regardless of desktop socket count (%s)', async (activeDesktopStream) => {
+    const r = await runWakeGuard(base({ activeDesktopStream, tunnelIdentityReachable: false }));
+    expect(r.shortCircuited).toBe(false);
+    expect(tunnelForceStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not stop a replacement when a stale probe fails after its connection generation changes', async () => {
+    const state = { inFlight: false };
+    let generation = 1;
+    let finishProbe!: (reachable: boolean) => void;
+    const probeTunnel = () => new Promise<boolean>(resolve => { finishProbe = resolve; });
+    const opts = base({ tunnelRecoveryState: state, tunnelGeneration: () => generation, probeTunnel });
+    const first = runWakeGuard(opts);
+    await vi.waitFor(() => expect(state.inFlight).toBe(true));
+    await runWakeGuard(opts); // overlapping wake does not launch a second repair
+    generation++; // auto-reconnect replaced the handle, even if URL stayed the same
+    finishProbe(false);
+    await first;
+    expect(tunnelForceStop).not.toHaveBeenCalled();
+    expect(state.inFlight).toBe(false);
+  });
+
+  it('holds the restart lock after the 15-second report timeout until the actual restart settles', async () => {
+    const state = { inFlight: false, restartTask: undefined as Promise<void> | undefined };
+    let finishRestart!: () => void;
+    const tunnelForceStop = vi.fn(() => new Promise<void>(resolve => { finishRestart = resolve; }));
+    const opts = base({ tunnelForceStop, tunnelRecoveryState: state, tunnelIdentityReachable: false, restartReportTimeoutMs: 15 });
+    await runWakeGuard(opts);
+    expect(state.inFlight).toBe(true);
+    await runWakeGuard(opts);
+    expect(tunnelForceStop).toHaveBeenCalledTimes(1);
+    finishRestart();
+    await vi.waitFor(() => expect(state.inFlight).toBe(false));
+    await runWakeGuard(opts);
+    expect(tunnelForceStop).toHaveBeenCalledTimes(2);
+    finishRestart();
+    await vi.waitFor(() => expect(state.inFlight).toBe(false));
+  });
+
   it('runs the cascade when the marker is STALE (gate LIVE) — a stale marker never short-circuits', async () => {
     const ancient = Date.now() - (STALE_TTL_FACTOR * DEFAULT_SYNC_OP_TIMEOUT_MS + 60_000);
     writeMarker(stateDir, { depth: 1, setAtMs: ancient });
@@ -312,6 +391,16 @@ describe('wake-handler amplifier #1 — source-grounded wiring assertions (C)', 
 
   it('the tmux re-validation uses async execFileAsync with timeout:9000 + killSignal:SIGKILL under the guard', () => {
     expect(src).toMatch(/execFileAsync\(tmuxPath, \['list-sessions'\][\s\S]{0,160}timeout: 9000[\s\S]{0,80}killSignal: 'SIGKILL'/);
+  });
+
+  it('a verified current tunnel identity guards wake-time forceStop', () => {
+    expect(src).toMatch(/probeCurrentTunnelIdentity\(/);
+    expect(src).toMatch(/wakeTunnelRecoveryInFlight\s*=\s*true/);
+    expect(src).toMatch(/observedGeneration !== tunnel\.connectionGeneration/);
+    expect(src).toMatch(/else if \(tunnelReachable\)/);
+    expect(src).toMatch(/tunnel\.forceStop\(5000\)/);
+    expect(src).toMatch(/wakeTunnelRestartTask = restartTask/);
+    expect(src).toMatch(/pendingRestart\.then\(\(\) => \{\}, \(\) => \{\}\)\.finally/);
   });
 
   it('the OFF path keeps the legacy sync execFileSync list-sessions with timeout 5000', () => {

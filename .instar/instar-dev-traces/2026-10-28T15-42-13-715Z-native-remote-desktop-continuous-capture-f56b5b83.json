@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-continuous-capture",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T15:42:13.715Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-continuous-capture.md",
+  "artifactSha256": "949e63921a8fc440238f9db993ad0aac144a8530b17fb44712d3b0227c23f133",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-quality.md",
+    "src/commands/server.ts",
+    "src/tunnel/TunnelManager.ts",
+    "src/tunnel/probeCurrentTunnelIdentity.ts",
+    "tests/unit/TunnelManager.test.ts",
+    "tests/unit/probeCurrentTunnelIdentity.test.ts",
+    "tests/unit/wake-handler-amplifier-guard.test.ts",
+    "upgrades/next/native-remote-desktop-continuous-capture.md",
+    "upgrades/side-effects/native-remote-desktop-continuous-capture.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Wake recovery changes a production tunnel lifecycle used by remote desktop, so it needs independent identity and concurrency review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "astra_ux",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/wake-handler-amplifier-guard.test.ts",
+      "howCaught": "Wake recovery probes one authenticated current tunnel, drops stale generation results, serializes overlapping wakes, and keeps the lock through a delayed restart task; tests exercise both reachability outcomes and delayed overlap."
+    }
+  }
+}
