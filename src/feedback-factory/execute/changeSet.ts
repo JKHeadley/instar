@@ -36,6 +36,16 @@ export class ChangeSetError extends Error {
 const ROOT_SKIP = new Set(['.git', 'node_modules', EVIDENCE_FILE, PREVIOUS_REVIEW_FILE, RESULT_FILE]);
 /** Build and cache output the session's own runs may leave behind (never published). */
 const OUTPUT_SKIP = [/^dist\//, /^coverage\//, /(^|\/)\.vitest\//, /(^|\/)\.DS_Store$/, /\.tsbuildinfo$/, /(^|\/)\.eslintcache$/, /\.log$/];
+/** Exact untracked files written by the repository's build, lint and safe-operation checks. */
+const GENERATED_OUTPUT_SKIP = new Set([
+  '.instar/audit/destructive-ops.jsonl',
+  '.instar/standards-coverage.json',
+  'src/data/standards-guard-index.json',
+  'src/data/standards-guard-index.meta.json',
+  'src/data/standards-registry.meta.json',
+]);
+// Match a generated output name; this is not a path used to read the standards registry.
+const GENERATED_REGISTRY_OUTPUT = /^src\/data\/standards-registry\.md$/;
 
 /**
  * A name git would treat as `.git` on a case-insensitive or Unicode-normalising filesystem
@@ -136,7 +146,7 @@ export function buildChangeSet(workspace: string, publishClone: string): ChangeS
   const base = walk(publishClone, { skipClaude: true });
   const entries: ChangeEntry[] = [];
   let totalBytes = 0;
-  const skipOutput = (rel: string) => OUTPUT_SKIP.some((re) => re.test(rel));
+  const skipOutput = (rel: string) => GENERATED_OUTPUT_SKIP.has(rel) || GENERATED_REGISTRY_OUTPUT.test(rel) || OUTPUT_SKIP.some((re) => re.test(rel));
   for (const [rel, w] of ws) {
     const b = base.get(rel);
     if (w.kind === 'link') {
