@@ -79,6 +79,7 @@ function sendCommand(command) {
   }).catch(() => leave('Encrypted remote input failed.'));
 }
 async function receiveFrame(recordBuffer) {
+  if (!inputEnabled) return;
   if (!aesKey || !(recordBuffer instanceof ArrayBuffer) || recordBuffer.byteLength < 28
     || recordBuffer.byteLength > 1_000_024) throw new Error('Encrypted frame invalid.');
   const record = new Uint8Array(recordBuffer);
@@ -89,6 +90,7 @@ async function receiveFrame(recordBuffer) {
   if (sequence <= frameSequence) throw new Error('Remote frame sequence invalid.');
   const frame = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: recordIv('frame', sequence),
     additionalData: recordAad('frame') }, aesKey, record.subarray(8));
+  if (!inputEnabled) return;
   frameSequence = sequence;
   const old = frameUrl;
   frameUrl = URL.createObjectURL(new Blob([frame], { type: 'image/jpeg' }));
@@ -400,6 +402,10 @@ $('stopButton').addEventListener('click', async () => {
   pointers.clear();
   sendCommand({ type: 'stop' });
   const stoppingRequestId = requestId;
+  // Blank the viewer immediately, even when the revoke HTTP request is slow.
+  // Input was disabled above; late video frames are ignored by receiveFrame.
+  clearFrame();
+  $('control').hidden = true;
   status('Stopping remote desktop…');
   let message = 'Remote desktop stopped.';
   try { await api(`/desktop/requests/${encodeURIComponent(stoppingRequestId)}/revoke`, 'POST', {}); }

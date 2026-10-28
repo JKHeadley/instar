@@ -17,4 +17,4 @@ Open the same Remote desktop page and enter the dashboard PIN. The Mac should up
 
 ## Evidence
 
-Focused unit tests pass. A local 12-second motion check observed 145 distinct native images from 213 requests with no capture errors. HTTP integration, production-boot, public-browser, and full-suite results are recorded in `upgrades/side-effects/native-remote-desktop-continuous-capture.md` before release.
+Focused unit tests and the live Mac production-boot check pass. A local 12-second motion check observed 145 distinct native images from 213 requests with no capture errors. A short public phone-emulated browser check measured about 15.4 image loads per second, and an eight-minute local browser connection stayed open. Long public-tunnel and full-suite results remain release checks and are tracked in `upgrades/side-effects/native-remote-desktop-continuous-capture.md`.

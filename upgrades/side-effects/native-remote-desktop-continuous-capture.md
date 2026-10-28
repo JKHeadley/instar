@@ -30,9 +30,7 @@ The sender rechecks the grant after asynchronous capture and before queueing a f
 
 ## 6. External and operator surfaces
 
-The same full-screen dashboard viewer and PIN-only flow are used; there is no new operator action or extra setup. Screen bytes remain in volatile memory and are not logged. The capture helper's window may appear in the macOS screen-capture indicator while active. Native CPU and bandwidth load increase with visible motion. The public viewer's phone-emulated touch and pointer burst passed on the preceding reliability build; the continuous build must pass its own public-browser check before its performance can be claimed.
-
-No dashboard markup or script changes are part of this slice, so the operator-surface quality section is not applicable.
+The same full-screen dashboard viewer and PIN-only flow are used; there is no new operator action or extra setup. Screen bytes remain in volatile memory and are not logged. The capture helper's window may appear in the macOS screen-capture indicator while active. Native CPU and bandwidth load increase with visible motion. The viewer now blanks the screen and hides controls as soon as Stop is pressed, while the target revocation request completes. Late decrypted frames cannot refill the stopped view. A public phone-emulated touch and pointer burst check passed on this build.
 
 ## 7. Multi-machine posture
 
@@ -45,6 +43,8 @@ Disable `remoteDesktop.enabled` and restart the target to revoke all access imme
 ## Evidence and independent review
 
 Build and lint pass. Focused unit checks cover dropped-frame retry, transport-budget commitment, fragmented/invalid native replies, child exit, cancellation and timeout. The native helper returned a valid local JPEG and zero-length unchanged replies. A 12-second Core Animation motion check yielded 145 distinct native images from 213 requests at the 60 fps capture-source setting, with no capture errors; that is about 12.1 distinct images per second at the native boundary, not public-browser FPS. HTTP integration, production-boot, full-suite and public-browser checks are required before release. Astra's first pass found premature digest commitment and missing native-pipe boundary tests. Its second pass found an uncaught `EPIPE` when a helper closes stdin; the parent now listens for stdin errors across capture and input helpers. Revised tests send one valid frame or input reply, close helper stdin, then verify the second write rejects without crashing. Astra's final review concurred that the P1 is closed and identified no remaining concern in this path.
+
+The live Mac production-boot check passed PIN, encrypted frame, input, and revoke. A public Chrome phone viewport received 193 images in 12.5 seconds, about 15.4 per second. The public touch and pointer burst passed, and the immediate Stop view was checked after the UI correction. A local phone-emulated viewer stayed connected for eight minutes with changed images at 13 of 16 checks; its target stop was audited, although the original viewer kept the image visible while the HTTP response was slow, which led to the immediate-blank correction. Long public-tunnel stability and the full suite remain open.
 
 ## Class-Closure Declaration
 
