@@ -14,6 +14,22 @@ let machineId = '';
 let connectionNonce = '';
 let socket;
 let frameUrl = '';
+let videoCodec = 'jpeg';
+let activeVideoCodec = 'jpeg';
+let decoder = null;
+let decoderGeneration = 0;
+let decoderWidth = 0;
+let decoderHeight = 0;
+let needsVideoKeyframe = true;
+let lastKeyframeRequestAt = 0;
+let videoFallbackCount = 0;
+const H264_CODEC = 'avc1.42001F';
+const H264_CONFIG = { codec: H264_CODEC, codedWidth: 960, codedHeight: 540,
+  optimizeForLatency: true };
+function videoContract(codec) {
+  return codec === 'h264' ? 'desktop-video-v1:annexb:avc1.42001F:960x540:g1'
+    : 'desktop-video-v1:jpeg:g1';
+}
 let lastMoveAt = 0;
 let pendingMove = null;
 let moveFrame = 0;
@@ -187,6 +203,8 @@ async function deriveAesKey(targetPublic, salt) {
   { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 async function verifyTarget(result) {
+  const expectedVideoCodec = resumeAttempt?.body.videoCodec ?? videoCodec;
+  if (result.videoCodec !== expectedVideoCodec) throw new Error('Remote video configuration changed.');
   if (result.machineId !== machineId || !Number.isSafeInteger(result.expiresAt)
     || result.expiresAt <= Date.now() || result.expiresAt > Date.now() + 10 * 60_000 + 2000) {
     throw new Error('Remote target identity or lease changed.');
@@ -196,7 +214,8 @@ async function verifyTarget(result) {
   const payload = encoder.encode(JSON.stringify(['desktop-target-key-v1', requestId, machineId,
     bytesToBase64(await crypto.subtle.exportKey('spki', keyPair.publicKey)),
     bytesToBase64(await crypto.subtle.exportKey('raw', ecdhKeyPair.publicKey)),
-    result.targetEcdhPublicKey, result.salt, result.expiresAt]));
+    result.targetEcdhPublicKey, result.salt, result.videoCodec,
+    videoContract(result.videoCodec), result.connectionNonce, result.expiresAt]));
   const valid = await crypto.subtle.verify('Ed25519', publicKey,
     base64ToBytes(result.targetSignature), payload);
   if (!valid) throw new Error('Remote target signature did not verify.');
@@ -224,6 +243,101 @@ function sendCommand(command) {
   }).catch(() => { if (epoch === streamEpoch) leave('Encrypted remote input failed.'); return false; });
   return sendChain;
 }
+function resetVideoDecoder() {
+  decoderGeneration++;
+  try { decoder?.close(); } catch { /* It may already have failed. */ }
+  decoder = null;
+  decoderWidth = 0;
+  decoderHeight = 0;
+  needsVideoKeyframe = true;
+  $('videoCanvas').hidden = true;
+}
+function requestVideoKeyframe() {
+  const now = Date.now();
+  if (now - lastKeyframeRequestAt < 500) return;
+  lastKeyframeRequestAt = now;
+  if (inputEnabled) void sendCommand({ type: 'keyframe' });
+}
+function fallbackVideo(epoch) {
+  if (epoch !== streamEpoch || activeVideoCodec !== 'h264') return;
+  resetVideoDecoder();
+  activeVideoCodec = 'jpeg';
+  if (++videoFallbackCount > 1) { leave('Remote video decoder unavailable.'); return; }
+  void sendCommand({ type: 'video-fallback' });
+  status('Video switched to compatibility mode.');
+}
+function nalTypes(bytes) {
+  const types = new Set();
+  for (let i = 0; i + 4 < bytes.length; i++) {
+    if (bytes[i] === 0 && bytes[i + 1] === 0 && bytes[i + 2] === 0 && bytes[i + 3] === 1) {
+      types.add(bytes[i + 4] & 31);
+      i += 4;
+    }
+  }
+  return types;
+}
+function receiveH264(bytes, epoch) {
+  if (activeVideoCodec !== 'h264' || bytes.length < 23 || bytes.length > 600_018
+    || String.fromCharCode(...bytes.subarray(0, 4)) !== 'IDV1' || bytes[4] !== 1
+    || (bytes[5] !== 0 && bytes[5] !== 1)) throw new Error('H.264 packet invalid.');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint16(6);
+  const height = view.getUint16(8);
+  if (width < 2 || width > 960 || width % 2 || height < 2 || height > 540 || height % 2) {
+    throw new Error('H.264 geometry invalid.');
+  }
+  const data = bytes.subarray(18);
+  if (data[0] !== 0 || data[1] !== 0 || data[2] !== 0 || data[3] !== 1) {
+    throw new Error('H.264 Annex B invalid.');
+  }
+  const keyframe = bytes[5] === 1;
+  const types = nalTypes(data);
+  if (keyframe ? !(types.has(7) && types.has(8) && types.has(5)) : !types.has(1)) {
+    throw new Error('H.264 access unit invalid.');
+  }
+  if (decoder && (decoderWidth !== width || decoderHeight !== height)) resetVideoDecoder();
+  if (needsVideoKeyframe && !keyframe) { requestVideoKeyframe(); return; }
+  if (!decoder) {
+    if (!keyframe) { requestVideoKeyframe(); return; }
+    const generation = ++decoderGeneration;
+    decoderWidth = width;
+    decoderHeight = height;
+    decoder = new VideoDecoder({
+      output: frame => {
+        try {
+          if (epoch !== streamEpoch || generation !== decoderGeneration || !inputEnabled) return;
+          if (frame.displayWidth !== decoderWidth || frame.displayHeight !== decoderHeight
+            || frame.displayWidth > 960 || frame.displayHeight > 540) {
+            throw new Error('Decoded video geometry invalid.');
+          }
+          const canvas = $('videoCanvas');
+          if (canvas.width !== frame.displayWidth) canvas.width = frame.displayWidth;
+          if (canvas.height !== frame.displayHeight) canvas.height = frame.displayHeight;
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('Canvas unavailable.');
+          context.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          canvas.hidden = false;
+          $('screen').hidden = true;
+          updateCursor();
+        } catch { fallbackVideo(epoch); }
+        finally { frame.close(); }
+      },
+      error: () => fallbackVideo(epoch),
+    });
+    decoder.configure({ codec: H264_CODEC, codedWidth: width, codedHeight: height,
+      optimizeForLatency: true });
+  }
+  if (decoder.decodeQueueSize >= 3) {
+    resetVideoDecoder();
+    requestVideoKeyframe();
+    return;
+  }
+  const timestamp = Number(view.getBigUint64(10)) * 1000;
+  if (!Number.isSafeInteger(timestamp)) throw new Error('H.264 timestamp invalid.');
+  decoder.decode(new EncodedVideoChunk({ type: keyframe ? 'key' : 'delta',
+    timestamp, data }));
+  needsVideoKeyframe = false;
+}
 async function receiveFrame(recordBuffer, epoch) {
   if (!inputEnabled || epoch !== streamEpoch) return;
   if (!aesKey || !(recordBuffer instanceof ArrayBuffer) || recordBuffer.byteLength < 28
@@ -238,15 +352,29 @@ async function receiveFrame(recordBuffer, epoch) {
     additionalData: recordAad('frame') }, aesKey, record.subarray(8));
   if (!inputEnabled || epoch !== streamEpoch) return;
   frameSequence = sequence;
+  const bytes = new Uint8Array(frame);
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    try { receiveH264(bytes, epoch); }
+    catch { fallbackVideo(epoch); }
+    return;
+  }
+  if (activeVideoCodec === 'h264') {
+    resetVideoDecoder();
+    activeVideoCodec = 'jpeg';
+    status('Video switched to compatibility mode.');
+  }
   const old = frameUrl;
   frameUrl = URL.createObjectURL(new Blob([frame], { type: 'image/jpeg' }));
   $('screen').src = frameUrl;
+  $('screen').hidden = false;
   if (old) URL.revokeObjectURL(old);
 }
 function clearFrame() {
+  resetVideoDecoder();
   if (frameUrl) URL.revokeObjectURL(frameUrl);
   frameUrl = '';
   $('screen').removeAttribute('src');
+  $('screen').hidden = false;
 }
 function leave(message) {
   streamEpoch++;
@@ -338,13 +466,16 @@ async function resumeDesktop(generation) {
       const browserNonce = crypto.randomUUID().replaceAll('-', '');
       const browserPublicKey = bytesToBase64(publicKey);
       const browserEcdhPublicKey = bytesToBase64(ecdhPublicKey);
+      const nextVideoCodec = activeVideoCodec;
       const proof = await crypto.subtle.sign('Ed25519', previousKeyPair.privateKey,
         encoder.encode(JSON.stringify(['desktop-resume-v1', requestId, previousConnectionNonce,
-          attemptId, browserPublicKey, browserEcdhPublicKey, browserNonce])));
+          attemptId, browserPublicKey, browserEcdhPublicKey, browserNonce,
+          videoCodec, nextVideoCodec])));
       if (!current()) return;
       resumeAttempt = { generation, approved: false, body: {
         attemptId, previousConnectionNonce, previousSignature: bytesToBase64(proof),
         browserPublicKey, browserEcdhPublicKey, browserNonce,
+        previousVideoCodec: videoCodec, videoCodec: nextVideoCodec,
       } };
     }
     const resumeBody = resumeAttempt.body;
@@ -518,11 +649,19 @@ async function requestDesktop() {
     const publicKey = await crypto.subtle.exportKey('spki', keyPair.publicKey);
     const ecdhPublicKey = await crypto.subtle.exportKey('raw', ecdhKeyPair.publicKey);
     machineId = $('machine').value;
+    videoCodec = 'jpeg';
+    if (window.VideoDecoder?.isConfigSupported) {
+      try {
+        if ((await VideoDecoder.isConfigSupported(H264_CONFIG)).supported) videoCodec = 'h264';
+      } catch { /* JPEG remains available. */ }
+    }
+    activeVideoCodec = videoCodec;
     const result = await api('/desktop/requests', 'POST', {
       machineId,
       browserPublicKey: bytesToBase64(publicKey),
       browserEcdhPublicKey: bytesToBase64(ecdhPublicKey),
       browserNonce: crypto.randomUUID().replaceAll('-', ''),
+      videoCodec,
     });
     requestId = result.requestId;
     const approved = await api(`/desktop/requests/${encodeURIComponent(requestId)}`);
@@ -553,6 +692,10 @@ $('requestButton').addEventListener('click', requestDesktop);
 async function openStream(result, resume = null) {
   await verifyTarget(result);
   if (stopping || (resume !== null && resume !== resumeGeneration)) return;
+  videoCodec = result.videoCodec;
+  activeVideoCodec = videoCodec;
+  videoFallbackCount = 0;
+  resetVideoDecoder();
   // Keep the verified key and grant generation together even if the WebSocket
   // upgrade never reaches its open event. A later target interruption must be
   // signed by this generation, not by the already-replaced predecessor.
@@ -635,12 +778,14 @@ function send(action) {
   return sendCommand({ type: 'input', action });
 }
 function imageArea() {
-  const rect = $('screen').getBoundingClientRect();
-  const image = $('screen');
-  if (!image.naturalWidth || !image.naturalHeight || !rect.width || !rect.height) return null;
-  const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
-  const width = image.naturalWidth * scale;
-  const height = image.naturalHeight * scale;
+  const source = $('videoCanvas').hidden ? $('screen') : $('videoCanvas');
+  const rect = source.getBoundingClientRect();
+  const sourceWidth = source === $('screen') ? source.naturalWidth : source.width;
+  const sourceHeight = source === $('screen') ? source.naturalHeight : source.height;
+  if (!sourceWidth || !sourceHeight || !rect.width || !rect.height) return null;
+  const scale = Math.min(rect.width / sourceWidth, rect.height / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
   const left = rect.left + (rect.width - width) / 2;
   const top = rect.top + (rect.height - height) / 2;
   return { left, top, width, height };

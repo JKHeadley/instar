@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DesktopHost, DesktopInput, DesktopProbe } from './DesktopHost.js';
+import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
@@ -41,6 +42,7 @@ export class MacDesktopHost implements DesktopHost {
   private readonly retiringInputStreams = new Set<ChildProcessWithoutNullStreams>();
   private readonly closedInputStreams = new WeakSet<ChildProcessWithoutNullStreams>();
   private captureStream: ChildProcessWithoutNullStreams | null = null;
+  private captureMode: 'jpeg' | 'h264' | null = null;
   private captureReply = Buffer.alloc(0);
   private captureLastFrame: Buffer | null = null;
   private pendingCapture: { resolve(frame: Buffer): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -242,8 +244,10 @@ export class MacDesktopHost implements DesktopHost {
     return value as MacDesktopProbe;
   }
 
-  async capture(): Promise<Buffer> {
-    if (!this.captureStream) this.startCaptureStream();
+  private async capturePacket(mode: 'jpeg' | 'h264', forceKeyframe = false): Promise<Buffer> {
+    if (this.captureMode !== mode) this.cancelCapture();
+    const fresh = !this.captureStream;
+    if (fresh) this.startCaptureStream(mode);
     const child = this.captureStream!;
     if (this.pendingCapture) throw new Error('mac-desktop-host-capture-busy');
     const frame = await new Promise<Buffer>((resolve, reject) => {
@@ -256,7 +260,7 @@ export class MacDesktopHost implements DesktopHost {
       }, 4_000);
       timer.unref?.();
       this.pendingCapture = { resolve, reject, timer };
-      child.stdin.write('n', error => {
+      child.stdin.write(mode === 'h264' && (forceKeyframe || fresh) ? 'k' : 'n', error => {
         if (error && this.pendingCapture?.timer === timer) {
           clearTimeout(timer);
           this.pendingCapture = null;
@@ -266,11 +270,21 @@ export class MacDesktopHost implements DesktopHost {
         }
       });
     });
+    return frame;
+  }
+
+  async capture(): Promise<Buffer> {
+    const frame = await this.capturePacket('jpeg');
     if (frame.length < 4 || frame[0] !== 0xff || frame[1] !== 0xd8
       || frame[frame.length - 2] !== 0xff || frame[frame.length - 1] !== 0xd9) {
       throw new Error('mac-desktop-host-frame-invalid');
     }
     return frame;
+  }
+
+  async captureH264(forceKeyframe: boolean): Promise<DesktopH264Frame | null> {
+    const packet = await this.capturePacket('h264', forceKeyframe);
+    return packet.length ? parseNativeH264(packet) : null;
   }
 
   private cancelCapture(): void {
@@ -285,13 +299,15 @@ export class MacDesktopHost implements DesktopHost {
     child?.kill('SIGKILL');
     this.captureReply = Buffer.alloc(0);
     this.captureLastFrame = null;
+    this.captureMode = null;
   }
 
-  private startCaptureStream(): void {
-    const child = spawn(this.trustedBinary(), ['capture-stream'], {
+  private startCaptureStream(mode: 'jpeg' | 'h264'): void {
+    const child = spawn(this.trustedBinary(), [mode === 'h264' ? 'capture-stream-h264' : 'capture-stream'], {
       stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
     });
     this.captureStream = child;
+    this.captureMode = mode;
     this.captureReply = Buffer.alloc(0);
     this.captureLastFrame = null;
     const fail = () => {
@@ -317,7 +333,9 @@ export class MacDesktopHost implements DesktopHost {
       if (this.captureReply.length < size + 4) return;
       const pending = this.pendingCapture;
       if (!pending || this.captureReply.length !== size + 4) { fail(); return; }
-      const frame = size === 0 ? this.captureLastFrame : this.captureReply.subarray(4);
+      const frame = size === 0
+        ? (mode === 'h264' ? Buffer.alloc(0) : this.captureLastFrame)
+        : this.captureReply.subarray(4);
       if (!frame) { fail(); return; }
       if (size > 0) this.captureLastFrame = frame;
       this.captureReply = Buffer.alloc(0);

@@ -5,13 +5,14 @@ import { DirectDesktopAccess } from '../../src/core/DirectDesktopAccess.js';
 import type { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
 import type { DesktopInput } from '../../src/core/DesktopHost.js';
 import type { RemoteStepUpLockoutPort } from '../../src/core/RemoteStepUpLockouts.js';
+import { desktopVideoContract } from '../../src/core/DesktopVideo.js';
 
 function resumeProof(browser: crypto.KeyPairKeyObjectResult, requestId: string,
   previousConnectionNonce: string, attemptId: string,
   input: { browserPublicKey: string; browserEcdhPublicKey: string; browserNonce: string }): string {
   return crypto.sign(null, Buffer.from(JSON.stringify(['desktop-resume-v1', requestId,
     previousConnectionNonce, attemptId, input.browserPublicKey, input.browserEcdhPublicKey,
-    input.browserNonce])), browser.privateKey).toString('base64');
+    input.browserNonce, 'jpeg', 'jpeg'])), browser.privateKey).toString('base64');
 }
 
 function fixture(mode: 'telegram' | 'pin' = 'telegram') {
@@ -67,12 +68,12 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   const browserEcdh = crypto.createECDH('prime256v1');
   browserEcdh.generateKeys();
   const browserPublicKey = browser.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
-  const begin = () => authority.begin({ machineId: 'machine-1', topicId: 131439,
+  const begin = (videoCodec?: 'jpeg' | 'h264') => authority.begin({ machineId: 'machine-1', topicId: 131439,
     operatorUid: '7812716706', operatorSessionToken: 'dashboard-proof',
     browserPublicKey, browserEcdhPublicKey: browserEcdh.getPublicKey().toString('base64'),
-    browserNonce: '0123456789abcdef', scopeConfirmed: true });
+    browserNonce: '0123456789abcdef', scopeConfirmed: true, videoCodec });
   const code = () => /\/desktop [0-9a-f-]{36} (\d{6})/.exec(challenge)?.[1] ?? '';
-  return { authority, begin, code, browser, browserEcdh, closed, failures,
+  return { authority, begin, code, browser, browserEcdh, browserPublicKey, host, closed, failures,
     setNow: (value: number) => { now = value; }, setBinding: (value: boolean) => { binding = value; },
     setSessionValid: (value: boolean) => { sessionValid = value; },
     setFrame: (value: Buffer) => { image = value; },
@@ -84,6 +85,49 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
 }
 
 describe('DirectDesktopAccess', () => {
+  it('binds the negotiated AVC contract and connection generation to the target signature', async () => {
+    const f = fixture('pin');
+    const { requestId } = await f.begin('h264');
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    expect(state.videoCodec).toBe('h264');
+    const payload = Buffer.from(JSON.stringify(['desktop-target-key-v1', requestId, 'machine-1',
+      f.browserPublicKey, f.browserEcdh.getPublicKey().toString('base64'),
+      state.targetEcdhPublicKey, state.salt, 'h264', desktopVideoContract('h264'),
+      state.connectionNonce, state.expiresAt]));
+    const publicKey = crypto.createPublicKey({ key: Buffer.from(state.targetSigningPublicKey!, 'base64'),
+      format: 'der', type: 'spki' });
+    expect(crypto.verify(null, payload, publicKey, Buffer.from(state.targetSignature!, 'base64'))).toBe(true);
+    const altered = Buffer.from(payload.toString().replace('960x540', '1920x1080'));
+    expect(crypto.verify(null, altered, publicKey, Buffer.from(state.targetSignature!, 'base64'))).toBe(false);
+  });
+  it('requires a fresh H.264 keyframe after sender drop and switches to JPEG once', async () => {
+    const f = fixture('pin');
+    const requestedKeys: boolean[] = [];
+    f.host.captureH264 = async forceKeyframe => {
+      requestedKeys.push(forceKeyframe);
+      return { keyframe: forceKeyframe, width: 960, height: 540,
+        data: Buffer.from([0, 0, 0, 1, forceKeyframe ? 0x65 : 0x41]) };
+    };
+    const { requestId } = await f.begin('h264');
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    const proof = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-browser-possession-v1',
+      requestId, state.connectionNonce])), f.browser.privateKey).toString('base64');
+    const ticket = f.authority.ticket(requestId, 'dashboard-proof', state.connectionNonce!, proof);
+    const stream = await f.authority.admit({ headers: { origin: 'https://instar.example',
+      host: 'instar.example', 'x-forwarded-proto': 'https',
+      'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
+    url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
+    stream.frameQueued?.();
+    expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
+    stream.frameDropped?.();
+    expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
+    expect(requestedKeys).toEqual([true, false, true]);
+    stream.fallbackVideo?.();
+    expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
+    expect(requestedKeys).toEqual([true, false, true]);
+    stream.release('terminal');
+  });
   it('reads the current pointer only for an active grant and its PIN session', async () => {
     const f = fixture('pin');
     const { requestId } = await f.begin();

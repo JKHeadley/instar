@@ -13,7 +13,7 @@ function touch(window: Window, surface: HTMLElement, type: string, pointerId: nu
 describe('desktop touch gestures', () => {
   it('scrolls with two fingers without clicking and releases a cancelled drag', async () => {
     const dom = new JSDOM(`<!doctype html><body>
-      <div id="surface"></div><img id="screen"><div id="localCursor"></div>
+      <div id="surface"></div><img id="screen"><canvas id="videoCanvas" hidden></canvas><div id="localCursor"></div>
       <button id="modeButton"></button><button id="dragButton"></button><button id="rightButton"></button>
       <button id="typeButton"></button><button id="stopButton"></button><input id="typeText">
       <button id="unlockButton"></button><button id="retryButton"></button><button id="requestButton"></button>

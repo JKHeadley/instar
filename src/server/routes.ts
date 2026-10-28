@@ -13021,7 +13021,8 @@ export function createRoutes(ctx: RouteContext): Router {
         operatorUid: telegramStepUp ? operator!.uid : 'dashboard-pin',
         operatorSessionToken: session, browserPublicKey: req.body?.browserPublicKey,
         browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
-        browserNonce: req.body?.browserNonce, scopeConfirmed: req.body?.scopeConfirmed,
+        browserNonce: req.body?.browserNonce, videoCodec: req.body?.videoCodec,
+        scopeConfirmed: req.body?.scopeConfirmed,
       });
       res.status(201).json(result);
     } catch (error) { res.status(403).json({ error: (error as Error).message }); }
@@ -13042,6 +13043,8 @@ export function createRoutes(ctx: RouteContext): Router {
         browserPublicKey: req.body?.browserPublicKey,
         browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
         browserNonce: req.body?.browserNonce,
+        videoCodec: req.body?.videoCodec,
+        previousVideoCodec: req.body?.previousVideoCodec,
       }, req.body?.attemptId, req.body?.previousConnectionNonce, req.body?.previousSignature));
     } catch { res.status(403).json({ error: 'Desktop resume unavailable' }); }
   });

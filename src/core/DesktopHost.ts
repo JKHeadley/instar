@@ -22,6 +22,7 @@ export interface DesktopProbe {
 export interface DesktopHost {
   probe(): Promise<DesktopProbe>;
   capture(): Promise<Buffer>;
+  captureH264?(forceKeyframe: boolean): Promise<import('./DesktopVideo.js').DesktopH264Frame | null>;
   cursor?(): Promise<{ x: number; y: number }>;
   input(action: DesktopInput): Promise<void>;
   cancelInput(): void;

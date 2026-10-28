@@ -278,4 +278,26 @@ describe('DesktopStreamManager', () => {
     expect(captures).toBe(3);
     expect(releases).toBe(1);
   });
+
+  it('bounds authenticated keyframe and fallback floods without resetting idle activity', async () => {
+    let keyframes = 0;
+    let fallbacks = 0;
+    const { ws } = await connect(async () => ({
+      grantId: 'video-command-bounds', assertActive: async () => {}, captureEncrypted: async () => null,
+      decryptCommand: data => JSON.parse(data.toString()),
+      requestKeyframe: () => { keyframes++; }, fallbackVideo: () => { fallbacks++; },
+      input: async () => {}, revoke: async () => {}, release: () => {},
+    }));
+    await once(ws, 'open');
+    const send = (type: string) => ws.send(Buffer.from(JSON.stringify({ type })));
+    for (let i = 0; i < 100; i++) send('keyframe');
+    for (let i = 0; i < 100; i++) send('video-fallback');
+    for (let i = 0; i < 100; i++) send('keyframe');
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(keyframes).toBe(1);
+    expect(fallbacks).toBe(1);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    send('stop');
+    await once(ws, 'close');
+  });
 });

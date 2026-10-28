@@ -264,7 +264,7 @@ describe('native desktop production boot', () => {
         const resumedBrowserEcdhPublicKey = resumedEcdh.getPublicKey().toString('base64');
         const resumeSignature = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-resume-v1',
           requestId, status.body.connectionNonce, resumeAttemptId, resumedBrowserPublicKey,
-          resumedBrowserEcdhPublicKey, resumedBrowserNonce])), ed.privateKey).toString('base64');
+          resumedBrowserEcdhPublicKey, resumedBrowserNonce, 'jpeg', 'jpeg'])), ed.privateKey).toString('base64');
         const resumed = await request(app).post(`/desktop/requests/${requestId}/resume`).set(headers).send({
           attemptId: resumeAttemptId, browserNonce: resumedBrowserNonce,
           browserPublicKey: resumedBrowserPublicKey, browserEcdhPublicKey: resumedBrowserEcdhPublicKey,
@@ -316,6 +316,105 @@ describe('native desktop production boot', () => {
         targetProcess?.kill('SIGKILL');
         await server.stop();
         SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop live lifecycle cleanup' });
+      }
+    });
+
+  it.skipIf(process.platform !== 'darwin' || process.env.DESKTOP_H264_LIVE_TEST !== '1')
+    ('negotiates, decrypts, and decodes a live hardware AVC keyframe through production boot', async context => {
+      const { server, dir, machineId } = await boot(true);
+      let ws: WebSocket | undefined;
+      let requestId = '';
+      let headers: Record<string, string> = {};
+      try {
+        // The suite lane can be acquired long after launch. Check occupancy
+        // immediately before opening the target grant.
+        const processes = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+        if (processes.status !== 0) throw new Error('cannot check live desktop occupancy');
+        const occupied = processes.stdout.split('\n').some(line => {
+          const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+          return !!match && Number(match[2]) !== process.pid
+            && /\/instar-desktop-host (indicator|capture-stream(?:-h264)?|input-stream)$/.test(match[3]);
+        });
+        if (occupied) context.skip('another desktop controller is using this Mac');
+        const idle = spawnSync('/usr/sbin/ioreg', ['-c', 'IOHIDSystem', '-d', '4'], { encoding: 'utf8' });
+        const idleNanos = idle.status === 0 ? idle.stdout.match(/"HIDIdleTime"\s*=\s*(\d+)/)?.[1] : undefined;
+        if (!idleNanos || Number(idleNanos) < 30_000_000_000) {
+          context.skip('the Mac is in use by a local user or HID idle state is unavailable');
+        }
+        const ffmpegLookup = spawnSync('/usr/bin/which', ['ffmpeg'], { encoding: 'utf8' });
+        if (ffmpegLookup.status !== 0 || !ffmpegLookup.stdout.trim()) {
+          context.skip('ffmpeg is unavailable for the live codec check');
+        }
+        const ffmpeg = ffmpegLookup.stdout.trim();
+        const app = server.getApp();
+        const unlock = await request(app).post('/dashboard/unlock').send({ pin: '123456' });
+        expect(unlock.status).toBe(200);
+        headers = { Authorization: 'Bearer desktop-e2e-token',
+          'X-Instar-Operator-Session': unlock.body.operatorSessionToken, 'X-Instar-Request': '1' };
+        const ed = crypto.generateKeyPairSync('ed25519');
+        const browserEcdh = crypto.createECDH('prime256v1'); browserEcdh.generateKeys();
+        const created = await request(app).post('/desktop/requests').set(headers).send({
+          machineId, videoCodec: 'h264',
+          browserPublicKey: ed.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+          browserEcdhPublicKey: browserEcdh.getPublicKey().toString('base64'),
+          browserNonce: '0123456789abcdef',
+        });
+        expect(created.status).toBe(201);
+        requestId = created.body.requestId;
+        const state = await request(app).get(`/desktop/requests/${requestId}`).set(headers);
+        expect(state.body.videoCodec).toBe('h264');
+        const key = Buffer.from(crypto.hkdfSync('sha256', browserEcdh.computeSecret(
+          Buffer.from(state.body.targetEcdhPublicKey, 'base64')),
+        Buffer.from(state.body.salt, 'base64'),
+        Buffer.from(`instar-desktop-aead-v1:${requestId}:${machineId}`), 32));
+        const proof = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-browser-possession-v1',
+          requestId, state.body.connectionNonce])), ed.privateKey).toString('base64');
+        const ticket = await request(app).post(`/desktop/requests/${requestId}/ticket`).set(headers)
+          .send({ connectionNonce: state.body.connectionNonce, signature: proof });
+        expect(ticket.status).toBe(200);
+        const port = (server as unknown as { server: { address(): { port: number } } }).server.address().port;
+        ws = new WebSocket(`ws://127.0.0.1:${port}/desktop-stream`,
+          ['instar-desktop-v1', `ticket.${ticket.body.ticket}`],
+          { origin: `http://127.0.0.1:${port}` });
+        const firstFrame = once(ws, 'message');
+        await once(ws, 'open');
+        const [data] = await firstFrame as [Buffer];
+        const record = Buffer.from(data);
+        const iv = Buffer.alloc(12); iv.writeUInt32BE(1); iv.writeBigUInt64BE(record.readBigUInt64BE(0), 4);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+        decipher.setAAD(Buffer.from(JSON.stringify(['instar-desktop-aead-v1', requestId, 'frame'])));
+        decipher.setAuthTag(record.subarray(record.length - 16));
+        const frame = Buffer.concat([decipher.update(record.subarray(8, -16)), decipher.final()]);
+        expect(frame.subarray(0, 6)).toEqual(Buffer.from([73, 68, 86, 49, 1, 1]));
+        const width = frame.readUInt16BE(6), height = frame.readUInt16BE(8);
+        expect(width).toBeGreaterThan(1); expect(width).toBeLessThanOrEqual(960);
+        expect(height).toBeGreaterThan(1); expect(height).toBeLessThanOrEqual(540);
+        const annexB = frame.subarray(18);
+        const nalTypes: number[] = [];
+        for (let i = 0; i + 4 < annexB.length; i++) {
+          if (annexB[i] === 0 && annexB[i + 1] === 0 && annexB[i + 2] === 0
+            && annexB[i + 3] === 1) nalTypes.push(annexB[i + 4] & 31);
+        }
+        expect(nalTypes).toEqual(expect.arrayContaining([7, 8, 5]));
+        const decoded = spawnSync(ffmpeg, ['-v', 'error', '-f', 'h264', '-i', 'pipe:0',
+          '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1'],
+        { input: annexB, maxBuffer: 4_000_000, timeout: 10_000 });
+        expect(decoded.status, decoded.stderr?.toString()).toBe(0);
+        expect(decoded.stdout.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+        expect(decoded.stdout.readUInt32BE(16)).toBe(width);
+        expect(decoded.stdout.readUInt32BE(20)).toBe(height);
+        expect(decoded.stdout.length).toBeGreaterThan(1_000);
+        const closed = once(ws, 'close');
+        const revoked = await request(app).post(`/desktop/requests/${requestId}/revoke`).set(headers).send({});
+        expect(revoked.body.revoked).toBe(true);
+        await closed;
+      } finally {
+        ws?.terminate();
+        if (requestId && headers.Authorization) {
+          await request(server.getApp()).post(`/desktop/requests/${requestId}/revoke`).set(headers).send({});
+        }
+        await server.stop();
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop H264 live lifecycle cleanup' });
       }
     });
 });

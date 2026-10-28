@@ -93,6 +93,31 @@ describe('remote desktop HTTP routes', () => {
       .set({ ...headers, 'X-Instar-Request': '1' }).send({})).body).toEqual({ revoked: true });
   });
 
+  it('passes the requested codec and signed resume downgrade through HTTP unchanged', async () => {
+    const access = fakeAccess();
+    let beginCodec: string | undefined;
+    let resumeCodecs: { videoCodec?: string; previousVideoCodec?: string } | undefined;
+    access.begin = async input => { beginCodec = input.videoCodec; return { requestId: 'request-1' }; };
+    access.resume = async (_id, _token, input, attemptId) => {
+      resumeCodecs = input;
+      return { status: 'approved', connectionNonce: attemptId };
+    };
+    const { server } = app(access);
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-Operator-Session': 'operator-proof',
+      'X-Instar-Request': '1' };
+    const created = await request(server).post('/desktop/requests').set(headers).send({
+      machineId: 'machine-1', browserPublicKey: 'fixture', browserNonce: '0123456789abcdef',
+      videoCodec: 'h264',
+    });
+    expect(created.status).toBe(201);
+    expect(beginCodec).toBe('h264');
+    const resumed = await request(server).post('/desktop/requests/request-1/resume').set(headers).send({
+      attemptId: 'attempt-1234567890', previousVideoCodec: 'h264', videoCodec: 'jpeg',
+    });
+    expect(resumed.status).toBe(200);
+    expect(resumeCodecs).toMatchObject({ previousVideoCodec: 'h264', videoCodec: 'jpeg' });
+  });
+
   it('explains a locked desktop after PIN verification', async () => {
     const access = fakeAccess();
     access.probe = async () => ({ ready: false, screenPermission: true,

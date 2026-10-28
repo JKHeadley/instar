@@ -12,7 +12,10 @@ export interface DesktopStreamSession {
   captureEncrypted(): Promise<Buffer | null>;
   /** Commit the latest frame only after ws.send accepts it into the bounded queue. */
   frameQueued?(): void;
-  decryptCommand(record: Buffer): { type: 'stop' | 'ping' | 'input'; action?: DesktopInput };
+  frameDropped?(): void;
+  requestKeyframe?(): void;
+  fallbackVideo?(): void;
+  decryptCommand(record: Buffer): { type: 'stop' | 'ping' | 'input' | 'keyframe' | 'video-fallback'; action?: DesktopInput };
   input(action: DesktopInput): Promise<void>;
   revoke(): Promise<void>;
   release(reason?: 'transport-lost' | 'terminal'): void;
@@ -20,12 +23,14 @@ export interface DesktopStreamSession {
 
 export type DesktopStreamAdmission = (request: IncomingMessage) => Promise<DesktopStreamSession>;
 
-const FRAME_INTERVAL_MS = 50;
+const FRAME_INTERVAL_MS = 67; // at most 15 video requests per second
 const MAX_BUFFERED_BYTES = 1_000_024;
+const MAX_VIDEO_BUFFERED_BYTES = 750_000; // leave room for control and transport framing
 const MAX_FRAME_BYTES = 625_000;
-const VIDEO_BYTES_PER_SECOND = 1_250_000; // 10 Mbps per host
+const VIDEO_BYTES_PER_SECOND = 625_000; // 5 Mbps per host
 const IDLE_MS = 2 * 60_000;
 const HELD_INPUT_LIVENESS_MS = 5_000;
+const KEYFRAME_REQUEST_INTERVAL_MS = 500;
 
 export class DesktopStreamManager {
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 4_096, perMessageDeflate: false });
@@ -77,6 +82,8 @@ export class DesktopStreamManager {
     const pendingInputs: Array<{ type: 'input'; action: DesktopInput }> = [];
     let drainingInputs = false;
     let captureFailures = 0;
+    let lastKeyframeRequestAt = -Infinity;
+    let videoFallbackAccepted = false;
     let heldButton: 'left' | 'right' | null = null;
     const heldKeys = new Set<string>();
     let holdTimer: ReturnType<typeof setTimeout> | undefined;
@@ -109,7 +116,7 @@ export class DesktopStreamManager {
         await session.assertActive();
         if (closed) return;
         // A slow browser never causes a queue of screen images to accumulate.
-        if (ws.bufferedAmount < MAX_BUFFERED_BYTES) {
+        if (ws.bufferedAmount < MAX_VIDEO_BUFFERED_BYTES) {
           let frame: Buffer | null;
           try {
             frame = await session.captureEncrypted();
@@ -130,11 +137,12 @@ export class DesktopStreamManager {
           lastBudgetAt = now;
           if (!closed && frame && frame.length >= 28 && frame.length <= MAX_FRAME_BYTES
             && frame.length <= videoBudget
+            && ws.bufferedAmount + frame.length <= MAX_VIDEO_BUFFERED_BYTES
             && ws.bufferedAmount + frame.length <= MAX_BUFFERED_BYTES) {
             videoBudget -= frame.length;
             ws.send(frame, { binary: true }, error => { if (error) close('transport-lost'); });
             session.frameQueued?.();
-          }
+          } else if (frame) session.frameDropped?.();
         }
       } catch { close('authority-failed'); return; }
       if (!closed) {
@@ -174,6 +182,21 @@ export class DesktopStreamManager {
         return;
       }
       if (command.type === 'ping') { lastActivity = Date.now(); refreshHoldLease(); return; }
+      if (command.type === 'keyframe') {
+        const now = Date.now();
+        if (!videoFallbackAccepted && now - lastKeyframeRequestAt >= KEYFRAME_REQUEST_INTERVAL_MS) {
+          lastKeyframeRequestAt = now;
+          session.requestKeyframe?.();
+        }
+        return;
+      }
+      if (command.type === 'video-fallback') {
+        if (!videoFallbackAccepted) {
+          videoFallbackAccepted = true;
+          session.fallbackVideo?.();
+        }
+        return;
+      }
       if (command.type !== 'input' || !command.action) { close('protocol'); return; }
       const last = pendingInputs.at(-1);
       if (command.action.kind === 'move' && last?.action.kind === 'move') {

@@ -8,6 +8,8 @@ import type { DesktopHost, DesktopInput } from './DesktopHost.js';
 import type { RemoteStepUpLockoutPort } from './RemoteStepUpLockouts.js';
 import type { DesktopStreamSession } from '../server/DesktopStreamManager.js';
 import { DesktopAead, deriveDesktopKey } from './DesktopAead.js';
+import { desktopVideoContract } from './DesktopVideo.js';
+import { encodeDesktopH264 } from './DesktopVideo.js';
 import type { DesktopAccessAudit } from './DesktopAccessAudit.js';
 import { isLoopbackPeer } from './desktopTransport.js';
 
@@ -25,6 +27,7 @@ interface DirectRequest {
   browserPublicKey: string;
   browserEcdhPublicKey: string;
   browserNonce: string;
+  videoCodec: 'jpeg' | 'h264';
   operatorSessionHash: string;
   operatorSessionToken?: string;
   codeHash: Buffer;
@@ -62,6 +65,8 @@ export interface DirectDesktopRequestInput {
   browserPublicKey: string;
   browserEcdhPublicKey: string;
   browserNonce: string;
+  videoCodec?: 'jpeg' | 'h264';
+  previousVideoCodec?: 'jpeg' | 'h264';
   scopeConfirmed: boolean;
 }
 
@@ -119,13 +124,15 @@ export class DirectDesktopAccess {
     return Buffer.from(JSON.stringify(['direct-desktop-grant-v1', row.grantId, row.id,
       row.operatorUid, row.topicId, row.machineId, row.browserPublicKey,
       row.browserEcdhPublicKey, row.targetEcdhPublicKey, row.salt,
-      row.browserNonce, row.approvedAt, (row.approvedAt ?? 0) + GRANT_MS]));
+      row.browserNonce, row.videoCodec, desktopVideoContract(row.videoCodec),
+      row.connectionNonce, row.approvedAt, (row.approvedAt ?? 0) + GRANT_MS]));
   }
 
   private targetPayload(row: DirectRequest): Buffer {
     return Buffer.from(JSON.stringify(['desktop-target-key-v1', row.id, row.machineId,
       row.browserPublicKey, row.browserEcdhPublicKey,
-      row.targetEcdhPublicKey, row.salt, (row.approvedAt ?? 0) + GRANT_MS]));
+      row.targetEcdhPublicKey, row.salt, row.videoCodec, desktopVideoContract(row.videoCodec),
+      row.connectionNonce, (row.approvedAt ?? 0) + GRANT_MS]));
   }
 
   private validGrant(row: DirectRequest): boolean {
@@ -156,7 +163,8 @@ export class DirectDesktopAccess {
         || !Number.isSafeInteger(input.topicId) || input.topicId <= 0
         || !/^\d{1,30}$/.test(input.operatorUid)
         || !this.isVerifiedOperator(input.topicId, input.operatorUid)))
-      || !/^[A-Za-z0-9_-]{16,128}$/.test(input.browserNonce)) {
+      || !/^[A-Za-z0-9_-]{16,128}$/.test(input.browserNonce)
+      || (input.videoCodec !== undefined && input.videoCodec !== 'jpeg' && input.videoCodec !== 'h264')) {
       throw new Error(this.requiresTelegramStepUp()
         ? 'verified operator and full desktop confirmation required'
         : 'recent dashboard PIN session required');
@@ -203,7 +211,8 @@ export class DirectDesktopAccess {
       topicId: this.requiresTelegramStepUp() ? input.topicId : 0, machineId: input.machineId,
       machineLabel: this.machineLabel, browserPublicKey: input.browserPublicKey,
       browserEcdhPublicKey: input.browserEcdhPublicKey,
-      browserNonce: input.browserNonce, operatorSessionHash: this.sessionHash(input.operatorSessionToken),
+      browserNonce: input.browserNonce, videoCodec: input.videoCodec ?? 'jpeg',
+      operatorSessionHash: this.sessionHash(input.operatorSessionToken),
       operatorSessionToken: this.requiresTelegramStepUp() ? undefined : input.operatorSessionToken,
       codeHash: Buffer.concat([salt, digest]), createdAt: this.now(), status: 'pending',
     };
@@ -283,6 +292,7 @@ export class DirectDesktopAccess {
   status(requestId: string, operatorSessionToken: string): {
     status: string; connectionNonce?: string; targetEcdhPublicKey?: string; salt?: string;
     targetSigningPublicKey?: string; targetSignature?: string; machineId?: string; expiresAt?: number;
+    videoCodec?: 'jpeg' | 'h264';
   } {
     const row = this.requests.get(requestId);
     if (!row) throw new Error('desktop request unavailable');
@@ -295,7 +305,7 @@ export class DirectDesktopAccess {
         targetEcdhPublicKey: row.targetEcdhPublicKey, salt: row.salt,
         targetSigningPublicKey: this.targetIdentity.publicKey.toString('base64'),
         targetSignature: row.targetSignature?.toString('base64'), machineId: row.machineId,
-        expiresAt: (row.approvedAt ?? 0) + GRANT_MS }
+        videoCodec: row.videoCodec, expiresAt: (row.approvedAt ?? 0) + GRANT_MS }
       : { status: row.status };
   }
 
@@ -310,14 +320,20 @@ export class DirectDesktopAccess {
 
   /** Same logical session and original deadlines; one idempotent replacement per attempt. */
   async resume(requestId: string, token: string, input: Pick<DirectDesktopRequestInput,
-    'browserPublicKey' | 'browserEcdhPublicKey' | 'browserNonce'>, attemptId: string,
+    'browserPublicKey' | 'browserEcdhPublicKey' | 'browserNonce' | 'videoCodec' | 'previousVideoCodec'>, attemptId: string,
     previousConnectionNonce: string, previousSignature: string): Promise<ReturnType<DirectDesktopAccess['status']>> {
     const row = this.requests.get(requestId);
     if (!row) throw new Error('desktop request unavailable');
     this.assertViewer(row, token);
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(attemptId)) throw new Error('resume attempt invalid');
+    const previousVideoCodec = input.previousVideoCodec ?? row.videoCodec;
+    const nextVideoCodec = input.videoCodec ?? row.videoCodec;
+    if ((previousVideoCodec !== 'jpeg' && previousVideoCodec !== 'h264')
+      || (nextVideoCodec !== 'jpeg' && nextVideoCodec !== 'h264')
+      || (previousVideoCodec === 'jpeg' && nextVideoCodec === 'h264')) throw new Error('desktop video codec invalid');
     const resumePayload = Buffer.from(JSON.stringify(['desktop-resume-v1', requestId,
-      previousConnectionNonce, attemptId, input.browserPublicKey, input.browserEcdhPublicKey, input.browserNonce]));
+      previousConnectionNonce, attemptId, input.browserPublicKey, input.browserEcdhPublicKey,
+      input.browserNonce, previousVideoCodec, nextVideoCodec]));
     const payloadHash = crypto.createHash('sha256').update(resumePayload).digest('hex');
     if (row.status === 'approved' && row.resumeAttemptId === attemptId) {
       if (row.resumePayloadHash !== payloadHash) throw new Error('desktop resume attempt changed');
@@ -325,6 +341,7 @@ export class DirectDesktopAccess {
     }
     if (this.approvalMode !== 'pin' || (row.resumeCount ?? 0) >= 3 || !(this.validInterrupted(row)
       || (row.connected && this.validGrant(row)))) throw new Error('desktop resume unavailable');
+    if (previousVideoCodec !== row.videoCodec) throw new Error('desktop video generation changed');
     if (previousConnectionNonce !== row.connectionNonce) throw new Error('desktop resume generation changed');
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(input.browserNonce)) throw new Error('browser nonce invalid');
     let browserKey: crypto.KeyObject;
@@ -360,6 +377,7 @@ export class DirectDesktopAccess {
     row.browserPublicKey = input.browserPublicKey;
     row.browserEcdhPublicKey = input.browserEcdhPublicKey;
     row.browserNonce = input.browserNonce;
+    row.videoCodec = nextVideoCodec;
     row.resumeAttemptId = attemptId;
     row.resumePayloadHash = payloadHash;
     row.resumeCount = (row.resumeCount ?? 0) + 1;
@@ -478,10 +496,32 @@ export class DirectDesktopAccess {
     };
     let lastQueuedFrameDigest: Buffer | null = null;
     let candidateFrameDigest: Buffer | null = null;
+    let activeCodec = row.videoCodec;
+    let forceKeyframe = true;
+    let candidateVideoKeyframe = false;
+    let lastQueuedGeometry = '';
+    let candidateGeometry = '';
     return {
       grantId: admittedGrantId, assertActive,
       captureEncrypted: async () => {
         await assertActive();
+        if (activeCodec === 'h264' && this.host.captureH264) {
+          try {
+            const frame = await this.host.captureH264(forceKeyframe);
+            if (!frame) return null;
+            candidateGeometry = `${frame.width}x${frame.height}`;
+            if ((forceKeyframe || (lastQueuedGeometry && candidateGeometry !== lastQueuedGeometry))
+              && !frame.keyframe) { forceKeyframe = true; return null; }
+            candidateVideoKeyframe = frame.keyframe;
+            return admittedAead.encryptFrame(encodeDesktopH264(frame));
+          } catch {
+            // Hardware encoding is optional. Downgrade this logical session
+            // without changing its controller lock or input authority.
+            activeCodec = 'jpeg';
+            candidateVideoKeyframe = false;
+            lastQueuedGeometry = '';
+          }
+        } else if (activeCodec === 'h264') activeCodec = 'jpeg';
         const image = await this.host.capture();
         const digest = crypto.createHash('sha256').update(image).digest();
         if (lastQueuedFrameDigest?.equals(digest)) return null;
@@ -489,16 +529,32 @@ export class DirectDesktopAccess {
         return admittedAead.encryptFrame(image);
       },
       frameQueued: () => {
+        if (activeCodec === 'h264') {
+          if (candidateVideoKeyframe) forceKeyframe = false;
+          if (candidateGeometry) lastQueuedGeometry = candidateGeometry;
+          candidateVideoKeyframe = false;
+          candidateGeometry = '';
+          return;
+        }
         if (candidateFrameDigest) lastQueuedFrameDigest = candidateFrameDigest;
         candidateFrameDigest = null;
       },
+      frameDropped: () => {
+        if (activeCodec === 'h264') forceKeyframe = true;
+        candidateVideoKeyframe = false;
+        candidateGeometry = '';
+        candidateFrameDigest = null;
+      },
+      requestKeyframe: () => { if (activeCodec === 'h264') forceKeyframe = true; },
+      fallbackVideo: () => { activeCodec = 'jpeg'; candidateFrameDigest = null; },
       decryptCommand: (record: Buffer) => {
         if (row.grantId !== admittedGrantId) throw new Error('desktop grant unavailable');
         const value = admittedAead.decryptInput(record);
-        if (!value || typeof value !== 'object' || !['stop', 'ping', 'input'].includes((value as { type?: string }).type ?? '')) {
+        if (!value || typeof value !== 'object'
+          || !['stop', 'ping', 'input', 'keyframe', 'video-fallback'].includes((value as { type?: string }).type ?? '')) {
           throw new Error('desktop command invalid');
         }
-        return value as { type: 'stop' | 'ping' | 'input'; action?: DesktopInput };
+        return value as { type: 'stop' | 'ping' | 'input' | 'keyframe' | 'video-fallback'; action?: DesktopInput };
       },
       input: async (action: DesktopInput) => {
         await assertActive();

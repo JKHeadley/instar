@@ -9,6 +9,7 @@ import CoreMedia
 import CoreVideo
 import Foundation
 import ScreenCaptureKit
+import VideoToolbox
 
 @available(macOS 14.0, *)
 private final class LatestScreenFrame: NSObject, SCStreamOutput, SCStreamDelegate {
@@ -55,6 +56,128 @@ private final class LatestScreenFrame: NSObject, SCStreamOutput, SCStreamDelegat
 }
 
 @available(macOS 14.0, *)
+private enum H264Error: Error { case unavailable, frameTooLarge }
+
+@available(macOS 14.0, *)
+private final class DesktopH264Encoder {
+    private let session: VTCompressionSession
+    private let lock = NSLock()
+    private var completed: (Data, Bool)?
+    private var completion = DispatchSemaphore(value: 0)
+    private var nextTime: Int64 = 0
+
+    init(width: Int, height: Int) throws {
+        var created: VTCompressionSession?
+        let specification: CFDictionary = [
+            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true
+        ] as CFDictionary
+        let status = VTCompressionSessionCreate(allocator: kCFAllocatorDefault,
+            width: Int32(width), height: Int32(height), codecType: kCMVideoCodecType_H264,
+            encoderSpecification: specification, imageBufferAttributes: nil,
+            compressedDataAllocator: nil, outputCallback: { _, source, status, _, sample in
+                guard let source else { return }
+                // Each encode owns its callback reference. A delayed callback
+                // from an old capture helper cannot complete a newer encoder.
+                let encoder = Unmanaged<DesktopH264Encoder>.fromOpaque(source).takeRetainedValue()
+                guard status == noErr, let sample else { return }
+                encoder.receive(sample)
+            }, refcon: nil, compressionSessionOut: &created)
+        guard status == noErr, let created else { throw H264Error.unavailable }
+        session = created
+        guard VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime,
+                                   value: kCFBooleanTrue) == noErr,
+              VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering,
+                                   value: kCFBooleanFalse) == noErr,
+              VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+                                   value: kVTProfileLevel_H264_Baseline_3_1) == noErr,
+              VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
+                                   value: 60 as CFNumber) == noErr,
+              VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
+                                   value: 2_500_000 as CFNumber) == noErr,
+              VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
+                                   value: 15 as CFNumber) == noErr else { throw H264Error.unavailable }
+        guard VTCompressionSessionPrepareToEncodeFrames(session) == noErr else {
+            throw H264Error.unavailable
+        }
+    }
+
+    deinit {
+        VTCompressionSessionInvalidate(session)
+    }
+
+    func encode(_ pixels: CVPixelBuffer, forceKeyframe: Bool) throws -> (Data, Bool) {
+        lock.lock()
+        completed = nil
+        completion = DispatchSemaphore(value: 0)
+        let wait = completion
+        lock.unlock()
+        let options: CFDictionary? = forceKeyframe
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
+        let time = CMTime(value: nextTime, timescale: 15)
+        nextTime += 1
+        let status = VTCompressionSessionEncodeFrame(session, imageBuffer: pixels,
+            presentationTimeStamp: time, duration: CMTime(value: 1, timescale: 15),
+            frameProperties: options, sourceFrameRefcon: Unmanaged.passRetained(self).toOpaque(),
+            infoFlagsOut: nil)
+        guard status == noErr, wait.wait(timeout: .now() + 2) == .success else {
+            throw H264Error.unavailable
+        }
+        lock.lock()
+        let result = completed
+        lock.unlock()
+        guard let result, result.0.count <= 600_000 else { throw H264Error.frameTooLarge }
+        return result
+    }
+
+    private func receive(_ sample: CMSampleBuffer) {
+        guard let block = CMSampleBufferGetDataBuffer(sample) else { return }
+        let length = CMBlockBufferGetDataLength(block)
+        guard length > 4, length <= 600_000 else { return }
+        var avcc = Data(count: length)
+        let status = avcc.withUnsafeMutableBytes { bytes in
+            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length,
+                                       destination: bytes.baseAddress!)
+        }
+        guard status == noErr else { return }
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false)
+        guard let first = (attachments as? [[CFString: Any]])?.first else { return }
+        let keyframe = (first[kCMSampleAttachmentKey_NotSync] as? Bool) != true
+        var annexB = Data()
+        let startCode = Data([0, 0, 0, 1])
+        if keyframe, let format = CMSampleBufferGetFormatDescription(sample) {
+            for index in 0..<2 {
+                var pointer: UnsafePointer<UInt8>?
+                var size = 0
+                var count = 0
+                var headerLength: Int32 = 0
+                guard CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format,
+                    parameterSetIndex: index, parameterSetPointerOut: &pointer,
+                    parameterSetSizeOut: &size, parameterSetCountOut: &count,
+                    nalUnitHeaderLengthOut: &headerLength) == noErr,
+                    let pointer, size > 0 else { return }
+                annexB.append(startCode)
+                annexB.append(pointer, count: size)
+            }
+        }
+        var offset = 0
+        while offset + 4 <= avcc.count {
+            let size = avcc[offset..<offset+4].reduce(0) { ($0 << 8) | Int($1) }
+            offset += 4
+            guard size > 0, offset + size <= avcc.count else { return }
+            annexB.append(startCode)
+            annexB.append(avcc[offset..<offset+size])
+            offset += size
+        }
+        guard offset == avcc.count, annexB.count <= 600_000 else { return }
+        lock.lock()
+        completed = (annexB, keyframe)
+        let wait = completion
+        lock.unlock()
+        wait.signal()
+    }
+}
+
+@available(macOS 14.0, *)
 @main
 struct InstarDesktopHost {
     // This state belongs to the one grant-owned input-stream process. Its pipe
@@ -70,7 +193,7 @@ struct InstarDesktopHost {
     ]
     static func main() async {
         guard CommandLine.arguments.count == 2 else {
-            fputs("usage: instar-desktop-host probe|capture|capture-stream|cursor|input|input-stream|release|indicator\n", stderr)
+            fputs("usage: instar-desktop-host probe|capture|capture-stream|capture-stream-h264|cursor|input|input-stream|release|indicator\n", stderr)
             exit(64)
         }
         switch CommandLine.arguments[1] {
@@ -132,6 +255,13 @@ struct InstarDesktopHost {
                 try await captureStream()
             } catch {
                 fputs("capture stream unavailable: \(error)\n", stderr)
+                exit(69)
+            }
+        case "capture-stream-h264":
+            do {
+                try await captureH264Stream()
+            } catch {
+                fputs("H264 stream unavailable: \(error)\n", stderr)
                 exit(69)
             }
         case "cursor":
@@ -395,6 +525,65 @@ struct InstarDesktopHost {
             FileHandle.standardOutput.write(header)
             FileHandle.standardOutput.write(jpeg)
             lastSentGeneration = currentGeneration
+        }
+    }
+
+    private static func captureH264Stream() async throws {
+        guard activeSession() else { throw HostError.sessionUnavailable }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
+            throw HostError.noMainDisplay
+        }
+        let scale = min(1.0, min(960.0 / Double(display.width), 540.0 / Double(display.height)))
+        let width = max(2, Int((Double(display.width) * scale).rounded()) & ~1)
+        let height = max(2, Int((Double(display.height) * scale).rounded()) & ~1)
+        let configuration = SCStreamConfiguration()
+        configuration.width = width
+        configuration.height = height
+        configuration.showsCursor = false
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        configuration.queueDepth = 3
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let frames = LatestScreenFrame()
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: frames)
+        try stream.addStreamOutput(frames, type: .screen,
+                                   sampleHandlerQueue: DispatchQueue(label: "instar.desktop.h264.frames"))
+        let encoder = try DesktopH264Encoder(width: width, height: height)
+        try await stream.startCapture()
+        defer { Task { try? await stream.stopCapture() } }
+        var lastSentGeneration: UInt64 = 0
+        var forceNext = true
+        while true {
+            let command = FileHandle.standardInput.readData(ofLength: 1)
+            if command.isEmpty { return }
+            guard (command == Data([0x6e]) || command == Data([0x6b])), activeSession() else {
+                throw HostError.sessionUnavailable
+            }
+            if command == Data([0x6b]) { forceNext = true }
+            var pixelBuffer: CVPixelBuffer?
+            var currentGeneration: UInt64 = 0
+            for _ in 0..<200 {
+                let (latest, generation, stopped) = frames.takeLatest()
+                if stopped { throw HostError.sessionUnavailable }
+                if let latest { pixelBuffer = latest; currentGeneration = generation; break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard let pixelBuffer else { throw HostError.inputUnavailable }
+            if currentGeneration == lastSentGeneration && !forceNext {
+                FileHandle.standardOutput.write(Data(repeating: 0, count: 4))
+                continue
+            }
+            let (annexB, keyframe) = try encoder.encode(pixelBuffer, forceKeyframe: forceNext)
+            guard annexB.count + 5 <= 600_000 else { throw HostError.frameTooLarge }
+            var payload = Data([keyframe ? 1 : 0,
+                                UInt8((width >> 8) & 0xff), UInt8(width & 0xff),
+                                UInt8((height >> 8) & 0xff), UInt8(height & 0xff)])
+            payload.append(annexB)
+            var length = UInt32(payload.count).bigEndian
+            FileHandle.standardOutput.write(withUnsafeBytes(of: &length) { Data($0) })
+            FileHandle.standardOutput.write(payload)
+            lastSentGeneration = currentGeneration
+            forceNext = !keyframe && forceNext
         }
     }
 
