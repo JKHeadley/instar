@@ -35,7 +35,10 @@ const pointers = new Map();
 let heldButton = null;
 let heldPhase = 'none';
 let holdHeartbeat = 0;
+let buttonOperationId = 0;
+let nextKeyOperationId = 0;
 const heldKeys = new Map();
+const keyOperationIds = new Map();
 const pendingKeyTaps = new Set();
 const remoteKeys = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
   'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
@@ -49,6 +52,7 @@ function syncHoldHeartbeat() {
 }
 
 function setHeldButton(button, phase = button ? 'sent' : 'none') {
+  if (!button) buttonOperationId++;
   heldButton = button;
   heldPhase = phase;
   syncHoldHeartbeat();
@@ -63,21 +67,29 @@ function releaseButton() {
   if (!heldButton || heldPhase === 'releasing' || heldPhase === 'unknown') return;
   flushPendingMove();
   const button = heldButton;
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++buttonOperationId;
   heldPhase = 'releasing';
   void send({ kind: 'buttonUp', ...cursor, button }).then(sent => {
-    if (heldButton !== button || heldPhase !== 'releasing') return;
+    if (epoch !== streamEpoch || operation !== buttonOperationId
+      || heldButton !== button || heldPhase !== 'releasing') return;
     if (sent) setHeldButton(null);
-    else { heldPhase = 'unknown'; unexpectedDisconnect(socket); }
+    else { heldPhase = 'unknown'; unexpectedDisconnect(streamSocket); }
   });
 }
 function beginHold(button) {
   if (heldButton) return;
   flushPendingMove();
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++buttonOperationId;
   setHeldButton(button, 'pending');
   void send({ kind: 'buttonDown', ...cursor, button }).then(sent => {
-    if (heldButton !== button || heldPhase !== 'pending') return;
+    if (epoch !== streamEpoch || operation !== buttonOperationId
+      || heldButton !== button || heldPhase !== 'pending') return;
     if (sent) heldPhase = 'sent';
-    else { heldPhase = 'unknown'; unexpectedDisconnect(socket); }
+    else { heldPhase = 'unknown'; unexpectedDisconnect(streamSocket); }
   });
 }
 function updateKeyButton(key) {
@@ -90,26 +102,37 @@ function updateKeyButton(key) {
 function beginKey(key) {
   if (!inputEnabled || !remoteKeys.has(key) || heldKeys.has(key)) return Promise.resolve(false);
   heldKeys.set(key, 'pending');
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++nextKeyOperationId;
+  keyOperationIds.set(key, operation);
   updateKeyButton(key);
   syncHoldHeartbeat();
   return send({ kind: 'keyDown', key }).then(sent => {
-    if (heldKeys.get(key) !== 'pending') return;
+    if (epoch !== streamEpoch || keyOperationIds.get(key) !== operation
+      || heldKeys.get(key) !== 'pending') return false;
     if (sent) heldKeys.set(key, 'sent');
-    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(socket); }
+    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(streamSocket); }
     return sent;
   });
 }
 async function tapKey(key) {
-  if (await beginKey(key)) await releaseKey(key);
+  const epoch = streamEpoch;
+  if (await beginKey(key) && epoch === streamEpoch) await releaseKey(key);
 }
 function releaseKey(key) {
   const phase = heldKeys.get(key);
   if (!phase || phase === 'releasing' || phase === 'unknown') return Promise.resolve(false);
   heldKeys.set(key, 'releasing');
+  const epoch = streamEpoch;
+  const streamSocket = socket;
+  const operation = ++nextKeyOperationId;
+  keyOperationIds.set(key, operation);
   return send({ kind: 'keyUp', key }).then(sent => {
-    if (heldKeys.get(key) !== 'releasing') return;
-    if (sent) { heldKeys.delete(key); updateKeyButton(key); syncHoldHeartbeat(); }
-    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(socket); }
+    if (epoch !== streamEpoch || keyOperationIds.get(key) !== operation
+      || heldKeys.get(key) !== 'releasing') return false;
+    if (sent) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); syncHoldHeartbeat(); }
+    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(streamSocket); }
     return sent;
   });
 }
@@ -212,7 +235,8 @@ function leave(message) {
   pendingMove = null;
   pointers.clear();
   setHeldButton(null);
-  for (const key of heldKeys.keys()) { heldKeys.delete(key); updateKeyButton(key); }
+  for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
+  pendingKeyTaps.clear();
   syncHoldHeartbeat();
   clearFrame();
   document.body.classList.remove('desktop-live', 'trackpad');
@@ -646,7 +670,12 @@ for (const button of document.querySelectorAll('[data-remote-key]')) {
   button.addEventListener('click', () => {
     const key = button.dataset.remoteKey;
     if (button.dataset.modifier) {
-      if (heldKeys.has(key)) void Promise.all([...pendingKeyTaps]).then(() => releaseKey(key));
+      if (heldKeys.has(key)) {
+        const epoch = streamEpoch;
+        void Promise.all([...pendingKeyTaps]).then(() => {
+          if (epoch === streamEpoch) return releaseKey(key);
+        });
+      }
       else beginKey(key);
     } else {
       const tap = tapKey(key);
@@ -748,7 +777,8 @@ $('stopButton').addEventListener('click', async () => {
   pendingMove = null;
   pointers.clear();
   setHeldButton(null);
-  for (const key of heldKeys.keys()) { heldKeys.delete(key); updateKeyButton(key); }
+  for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
+  pendingKeyTaps.clear();
   syncHoldHeartbeat();
   sendCommand({ type: 'stop' });
   const stoppingRequestId = requestId;

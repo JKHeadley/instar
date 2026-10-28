@@ -142,29 +142,33 @@ struct InstarDesktopHost {
             let y = (point.y - bounds.minY) / (bounds.height - 1)
             print("{\"x\":\(x),\"y\":\(y)}")
         case "release":
-            if activeSession() && AXIsProcessTrusted() {
-                let data = FileHandle.standardInput.readDataToEndOfFile()
-                guard data.count <= 512,
-                      let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let buttons = raw["buttons"] as? [String],
-                      let keys = raw["keys"] as? [String],
-                      buttons.count <= 2, keys.count <= keyCodes.count,
-                      buttons.allSatisfy({ $0 == "left" || $0 == "right" }),
-                      keys.allSatisfy({ keyCodes[$0] != nil }) else { exit(69) }
+            let data = FileHandle.standardInput.readDataToEndOfFile()
+            guard data.count <= 512,
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let buttons = raw["buttons"] as? [String],
+                  let keys = raw["keys"] as? [String],
+                  buttons.count <= 2, keys.count <= keyCodes.count,
+                  buttons.allSatisfy({ $0 == "left" || $0 == "right" }),
+                  keys.allSatisfy({ keyCodes[$0] != nil }) else { exit(69) }
+            if !buttons.isEmpty || !keys.isEmpty {
+                // A failed OS preflight is not proof that a held remote
+                // control was released. Keep the Node barrier failed closed.
+                guard activeSession(), AXIsProcessTrusted() else { exit(69) }
                 let point = CGEvent(source: nil)?.location ?? CGPoint.zero
                 for button in buttons {
                     let mouseButton: CGMouseButton = button == "left" ? .left : .right
                     let kind: CGEventType = button == "left" ? .leftMouseUp : .rightMouseUp
-                    CGEvent(mouseEventSource: nil, mouseType: kind,
-                            mouseCursorPosition: point, mouseButton: mouseButton)?.post(tap: .cghidEventTap)
+                    guard let event = CGEvent(mouseEventSource: nil, mouseType: kind,
+                                              mouseCursorPosition: point, mouseButton: mouseButton) else { exit(69) }
+                    event.post(tap: .cghidEventTap)
                 }
                 for key in keys {
                     guard let keyCode = keyCodes[key] else { continue }
-                    if let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
-                        if ["Meta", "Control", "Alt", "Shift"].contains(key) { event.type = .flagsChanged }
-                        event.flags = []
-                        event.post(tap: .cghidEventTap)
-                    }
+                    guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode,
+                                              keyDown: false) else { exit(69) }
+                    if ["Meta", "Control", "Alt", "Shift"].contains(key) { event.type = .flagsChanged }
+                    event.flags = []
+                    event.post(tap: .cghidEventTap)
                 }
             }
             print("{\"ok\":true}")
@@ -185,6 +189,7 @@ struct InstarDesktopHost {
                     fflush(stdout)
                 } catch {
                     fputs("input unavailable: \(error)\n", stderr)
+                    releaseHeldInput()
                     exit(69)
                 }
             }

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { AgentServer } from '../../src/server/AgentServer.js';
@@ -71,6 +72,8 @@ describe('native desktop production boot', () => {
       expect(viewer.text).toContain('Remote desktop: Echo Mac');
       expect(viewer.text).toContain('signed in and unlocked');
       expect(viewer.text).toContain('id="retryButton"');
+      expect(viewer.text).toContain('id="dragButton"');
+      expect(viewer.text).toContain('data-remote-key="Meta"');
       expect(viewer.text).toMatch(/desktop\.js\?v=[a-f0-9]{16}/);
       expect(viewer.text).toMatch(/desktop\.css\?v=[a-f0-9]{16}/);
       expect(viewer.headers['cache-control']).toBe('no-store');
@@ -79,6 +82,8 @@ describe('native desktop production boot', () => {
       expect(viewerScript.headers['cache-control']).toBe('no-store');
       expect(viewerScript.text).not.toContain("$('topic').replaceChildren()");
       expect(viewerScript.text).toContain("$('retryButton').addEventListener('click'");
+      expect(viewerScript.text).toContain('function beginKey(key)');
+      expect(viewerScript.text).toContain('function beginHold(button)');
       const viewerStyle = await request(server.getApp()).get('/dashboard/desktop.css');
       expect(viewerStyle.status).toBe(200);
       expect(viewerStyle.headers['cache-control']).toBe('no-store');
@@ -114,10 +119,52 @@ describe('native desktop production boot', () => {
   });
 
   it.skipIf(process.platform !== 'darwin' || process.env.DESKTOP_LIVE_TEST !== '1')
-    ('captures and controls the live Mac through the production boot path, then revokes', async () => {
+    ('captures and controls the live Mac through the production boot path, then revokes', async context => {
       const { server, dir, machineId, stateDir } = await boot(true);
       let ws: WebSocket | undefined;
+      let targetProcess: ReturnType<typeof spawn> | undefined;
       try {
+        const targetBinary = path.join(dir, 'desktop-live-target');
+        const compiled = spawnSync('swiftc', ['-o', targetBinary,
+          path.resolve('tests/fixtures/desktop-live-target.swift')], { encoding: 'utf8' });
+        expect(compiled.status, compiled.stderr).toBe(0);
+        targetProcess = spawn(targetBinary, [], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const targetEvents: string[] = [];
+        let targetReady: { x: number; y: number } | undefined;
+        let targetOutput = '';
+        targetProcess.stdout.on('data', (chunk: Buffer) => {
+          targetOutput += chunk.toString('utf8');
+          let newline = targetOutput.indexOf('\n');
+          while (newline >= 0) {
+            const line = JSON.parse(targetOutput.slice(0, newline)) as {
+              ready?: { x: number; y: number }; event?: string;
+            };
+            if (line.ready) targetReady = line.ready;
+            if (line.event) targetEvents.push(line.event);
+            targetOutput = targetOutput.slice(newline + 1);
+            newline = targetOutput.indexOf('\n');
+          }
+        });
+        const waitForEvents = async (events: string[]) => {
+          for (let attempt = 0; attempt < 50; attempt++) {
+            if (events.every(event => targetEvents.includes(event))) return;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          throw new Error(`live target events missing: ${events.join(', ')}; saw ${targetEvents.join(', ')}`);
+        };
+        const anotherControllerActive = () => {
+          const processes = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+          if (processes.status !== 0) throw new Error('cannot check live desktop occupancy');
+          return processes.stdout.split('\n').some(line => {
+            const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+            return !!match && Number(match[2]) !== process.pid
+              && /\/instar-desktop-host (indicator|capture-stream|input-stream)$/.test(match[3]);
+          });
+        };
+        for (let attempt = 0; attempt < 50 && !targetReady; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        expect(targetReady).toBeDefined();
         const app = server.getApp();
         const unlock = await request(app).post('/dashboard/unlock').send({ pin: '123456' });
         expect(unlock.status).toBe(200);
@@ -166,17 +213,22 @@ describe('native desktop production boot', () => {
         // previously closed during normal phone use.
         await new Promise(resolve => setTimeout(resolve, 3_500));
         expect(ws.readyState).toBe(WebSocket.OPEN);
-        const inputIv = Buffer.alloc(12); inputIv.writeUInt32BE(2, 0); inputIv.writeBigUInt64BE(1n, 4);
-        const cipher = crypto.createCipheriv('aes-256-gcm', key, inputIv);
-        cipher.setAAD(Buffer.from(JSON.stringify(['instar-desktop-aead-v1', requestId, 'input'])));
+        const sendLiveInput = (stream: WebSocket, streamKey: Buffer, sequence: bigint,
+          action: Record<string, unknown>) => {
+          const inputIv = Buffer.alloc(12); inputIv.writeUInt32BE(2, 0);
+          inputIv.writeBigUInt64BE(sequence, 4);
+          const cipher = crypto.createCipheriv('aes-256-gcm', streamKey, inputIv);
+          cipher.setAAD(Buffer.from(JSON.stringify(['instar-desktop-aead-v1', requestId, 'input'])));
+          const command = Buffer.from(JSON.stringify({ type: 'input', action }));
+          const encrypted = Buffer.concat([cipher.update(command), cipher.final()]);
+          const inputHeader = Buffer.alloc(8); inputHeader.writeBigUInt64BE(sequence);
+          stream.send(Buffer.concat([inputHeader, encrypted, cipher.getAuthTag()]));
+        };
         const host = new MacDesktopHost();
         const before = await host.cursor();
-        const target = { x: before.x < 0.8 ? before.x + 0.05 : before.x - 0.05,
-          y: before.y < 0.8 ? before.y + 0.05 : before.y - 0.05 };
-        const command = Buffer.from(JSON.stringify({ type: 'input', action: { kind: 'move', ...target } }));
-        const encrypted = Buffer.concat([cipher.update(command), cipher.final()]);
-        const inputHeader = Buffer.alloc(8); inputHeader.writeBigUInt64BE(1n);
-        ws.send(Buffer.concat([inputHeader, encrypted, cipher.getAuthTag()]));
+        const target = targetReady!;
+        if (anotherControllerActive()) context.skip('another desktop controller is using this Mac');
+        sendLiveInput(ws, key, 1n, { kind: 'move', ...target });
         let observed = before;
         for (let attempt = 0; attempt < 20; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -185,6 +237,14 @@ describe('native desktop production boot', () => {
         }
         expect(Math.abs(observed.x - target.x)).toBeLessThan(0.02);
         expect(Math.abs(observed.y - target.y)).toBeLessThan(0.02);
+        sendLiveInput(ws, key, 2n, { kind: 'buttonDown', ...target, button: 'left' });
+        sendLiveInput(ws, key, 3n, { kind: 'move', x: target.x + 0.015, y: target.y });
+        sendLiveInput(ws, key, 4n, { kind: 'buttonUp', x: target.x + 0.015, y: target.y, button: 'left' });
+        await waitForEvents(['down', 'drag', 'up']);
+        sendLiveInput(ws, key, 5n, { kind: 'keyDown', key: 'Meta' });
+        await waitForEvents(['metaDown']);
+        sendLiveInput(ws, key, 6n, { kind: 'keyUp', key: 'Meta' });
+        await waitForEvents(['metaUp']);
         const originalExpiry = status.body.expiresAt;
         const lost = once(ws, 'close');
         ws.terminate();
@@ -237,16 +297,23 @@ describe('native desktop production boot', () => {
         const resumedJpeg = Buffer.concat([resumedDecipher.update(Buffer.from(resumedRecord).subarray(8,
           resumedRecord.length - 16)), resumedDecipher.final()]);
         expect(resumedJpeg.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
+        targetEvents.length = 0;
+        if (anotherControllerActive()) context.skip('another desktop controller is using this Mac');
+        sendLiveInput(ws, resumedKey, 1n, { kind: 'buttonDown', ...target, button: 'left' });
+        sendLiveInput(ws, resumedKey, 2n, { kind: 'keyDown', key: 'Meta' });
+        await waitForEvents(['down', 'metaDown']);
         const closed = once(ws, 'close');
         const revoke = await request(app).post(`/desktop/requests/${requestId}/revoke`).set(headers).send({});
         expect(revoke.body.revoked).toBe(true);
         await closed;
+        await waitForEvents(['up', 'metaUp']);
         const after = await request(app).get(`/desktop/requests/${requestId}`).set(headers);
         expect(after.body.status).toBe('revoked');
         const auditFile = path.join(stateDir, 'logs', `desktop-access-${new Date().toISOString().slice(0, 10)}.jsonl`);
         expect(fs.readFileSync(auditFile, 'utf8')).toContain('"inputBucket":"1-9"');
       } finally {
         ws?.terminate();
+        targetProcess?.kill('SIGKILL');
         await server.stop();
         SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop live lifecycle cleanup' });
       }

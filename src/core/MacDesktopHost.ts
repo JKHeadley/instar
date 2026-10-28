@@ -48,11 +48,23 @@ export class MacDesktopHost implements DesktopHost {
   private readonly heldRemoteKeys = new Set<string>();
   private pendingControlAction: DesktopInput | null = null;
   private inputGeneration = 0;
+  private releaseBarrier: Promise<void> = Promise.resolve();
   constructor(private readonly binary = DEFAULT_HOST) {}
 
   /** Local kill switch: stop any native input still running when a grant ends. */
-  cancelInput(): void {
+  cancelInput(): Promise<void> {
     this.inputGeneration++;
+    const priorInputStream = this.inputStream;
+    const oldHelperExited = priorInputStream ? new Promise<void>((resolve, reject) => {
+      if (priorInputStream.exitCode !== null || priorInputStream.signalCode !== null) { resolve(); return; }
+      const timer = setTimeout(() => reject(new Error('mac-desktop-host-input-exit-unconfirmed')), 2_000);
+      timer.unref?.();
+      priorInputStream.once('close', () => { clearTimeout(timer); resolve(); });
+      priorInputStream.once('error', () => { clearTimeout(timer); reject(new Error('mac-desktop-host-input-exit-unconfirmed')); });
+    }) : Promise.resolve();
+    // Prior cleanup may already be failed, but the old-helper exit promise
+    // still needs its own rejection observer.
+    void oldHelperExited.catch(() => {});
     const buttons = new Set<string>();
     const keys = new Set(this.heldRemoteKeys);
     if (this.heldRemoteButton) buttons.add(this.heldRemoteButton);
@@ -65,7 +77,7 @@ export class MacDesktopHost implements DesktopHost {
     this.heldRemoteKeys.clear();
     this.pendingControlAction = null;
     for (const child of this.inputChildren) child.kill('SIGKILL');
-    this.inputStream?.kill('SIGKILL');
+    priorInputStream?.kill('SIGKILL');
     this.inputStream = null;
     if (this.pendingInput) {
       clearTimeout(this.pendingInput.timer);
@@ -76,10 +88,26 @@ export class MacDesktopHost implements DesktopHost {
     // an in-flight down whose acknowledgement may have been lost). It can
     // still overlap a local person's identical key; macOS has no ownership
     // token for a posted CGEvent.
-    if (buttons.size || keys.size) {
-      void this.run('release', Buffer.from(JSON.stringify({ buttons: [...buttons], keys: [...keys] })))
-        .catch(() => {});
+    if (priorInputStream || buttons.size || keys.size) {
+      const payload = buttons.size || keys.size
+        ? Buffer.from(JSON.stringify({ buttons: [...buttons], keys: [...keys] })) : null;
+      // A replacement grant cannot post input before the old grant's release
+      // has completed. Keep a rejected barrier rejected: uncertain release
+      // must fail subsequent input closed until this host is restarted.
+      this.releaseBarrier = this.releaseBarrier.then(async () => {
+        await oldHelperExited;
+        if (payload) {
+          const reply = await this.run('release', payload);
+          if (reply.toString('utf8').trim() !== '{"ok":true}') {
+            throw new Error('mac-desktop-host-release-invalid');
+          }
+        }
+      });
+      void this.releaseBarrier.catch(() => {
+        console.warn('[MacDesktopHost] scoped input release unconfirmed');
+      });
     }
+    return this.releaseBarrier;
   }
 
   private trustedBinary(): string {
@@ -300,6 +328,11 @@ export class MacDesktopHost implements DesktopHost {
 
   async input(action: MacDesktopInput): Promise<void> {
     if (!validInput(action)) throw new Error('mac-desktop-host-input-invalid');
+    const generation = this.inputGeneration;
+    try { await this.releaseBarrier; }
+    catch { throw new Error('mac-desktop-host-release-unconfirmed'); }
+    if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
+    if (this.pendingControlAction) throw new Error('mac-desktop-host-input-uncertain');
     if ((action.kind === 'keyDown' && this.heldRemoteKeys.has(action.key))
       || (action.kind === 'keyUp' && !this.heldRemoteKeys.has(action.key))
       || (action.kind === 'buttonDown' && this.heldRemoteButton !== null)
@@ -310,9 +343,8 @@ export class MacDesktopHost implements DesktopHost {
     if (!this.inputStream) this.startInputStream();
     const child = this.inputStream!;
     if (this.pendingInput) throw new Error('mac-desktop-host-input-busy');
-    const generation = this.inputGeneration;
     this.pendingControlAction = action;
-    try { await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pendingInput?.timer !== timer) return;
         this.pendingInput = null;
@@ -331,13 +363,13 @@ export class MacDesktopHost implements DesktopHost {
           reject(new Error('mac-desktop-host-input-unavailable'));
         }
       });
-    }); }
-    finally { if (this.inputGeneration === generation) this.pendingControlAction = null; }
+    });
     if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
     if (action.kind === 'buttonDown') this.heldRemoteButton = action.button;
     if (action.kind === 'buttonUp') this.heldRemoteButton = null;
     if (action.kind === 'keyDown') this.heldRemoteKeys.add(action.key);
     if (action.kind === 'keyUp') this.heldRemoteKeys.delete(action.key);
+    this.pendingControlAction = null;
   }
 
   private startInputStream(): void {
