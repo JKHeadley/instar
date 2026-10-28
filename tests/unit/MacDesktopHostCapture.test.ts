@@ -12,8 +12,15 @@ function helper(reply: string): MacDesktopHost {
   const filename = path.resolve('dist/native', `instar-desktop-capture-test-${process.pid}-${helperSerial++}`);
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const script = `#!${process.execPath}\nimport fs from 'node:fs';const reply = ${JSON.stringify(reply)};let count=0;if(process.argv[2]==='release'){let body='';process.stdin.on('data',chunk=>body+=chunk);process.stdin.on('end',()=>{if(reply==='release-fails')process.exit(69);const finish=()=>{if(reply.includes('record-release'))fs.writeFileSync(${JSON.stringify(filename + '.release')},body);if(reply!=='release-no-ack')process.stdout.write('{"ok":true}\\n');process.exit(0)};if(reply==='record-release-delayed')setTimeout(finish,150);else finish()});}else{\n` +
-    `process.stdin.on('data', () => { count++;\n` +
+    `process.stdin.on('data', command => { count++;\n` +
     `  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);\n` +
+    `  if (reply === 'h264' && process.argv[2] === 'capture-stream-h264') {\n` +
+    `    const payload=Buffer.from([1,3,192,2,28,0,0,0,1,0x67,1,0,0,0,1,0x68,2,0,0,0,1,0x65,3]);\n` +
+    `    const head=Buffer.alloc(4);head.writeUInt32BE(payload.length);\n` +
+    `    fs.appendFileSync(${JSON.stringify(filename + '.commands')},command.toString());\n` +
+    `    process.stdout.write(Buffer.concat([head,payload]));\n` +
+    `  }\n` +
+    `  if (reply === 'h264' && process.argv[2] === 'capture-stream') { const head=Buffer.alloc(4);head.writeUInt32BE(jpeg.length);process.stdout.write(Buffer.concat([head,jpeg])); }\n` +
     `  if (reply === 'fragmented') { process.stdout.write(Buffer.from([0, 0])); setTimeout(() => process.stdout.write(Buffer.from([0, 4, 0xff, 0xd8])), 5); setTimeout(() => process.stdout.write(Buffer.from([0xff, 0xd9])), 10); }\n` +
     `  if (reply === 'zero') process.stdout.write(Buffer.alloc(4));\n` +
     `  if (reply === 'oversize') { const h = Buffer.alloc(4); h.writeUInt32BE(625001); process.stdout.write(h); }\n` +
@@ -43,6 +50,9 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
       if (fs.existsSync(filename + '.fault')) SafeFsExecutor.safeUnlinkSync(filename + '.fault', {
         operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-fault',
       });
+      if (fs.existsSync(filename + '.commands')) SafeFsExecutor.safeUnlinkSync(filename + '.commands', {
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-commands',
+      });
     }
   });
 
@@ -56,6 +66,16 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
     const host = helper('cached');
     const first = await host.capture();
     expect(await host.capture()).toEqual(first);
+    host.stopIndicator();
+  });
+
+  it('parses a native AVC key unit, forces a fresh helper keyframe, and switches to JPEG', async () => {
+    const host = helper('h264');
+    const filename = helpers.at(-1)!;
+    expect(await host.captureH264(false)).toEqual({ keyframe: true, width: 960, height: 540,
+      data: Buffer.from([0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3]) });
+    expect(fs.readFileSync(filename + '.commands', 'utf8')).toBe('k');
+    expect(await host.capture()).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
     host.stopIndicator();
   });
 
