@@ -451,9 +451,15 @@ describe('Hook installation for external operation safety', () => {
 
     const requiredEvents = [
       'PostToolUse', 'Stop', 'SubagentStart', 'SubagentStop',
-      'WorktreeCreate', 'WorktreeRemove', 'TaskCompleted',
-      'SessionEnd', 'PreCompact',
+      'TaskCompleted', 'SessionEnd', 'PreCompact',
     ];
+
+    // A hook on WorktreeCreate/WorktreeRemove replaces Claude Code's own worktree
+    // handling and must print the path; the reporter must never be registered there.
+    for (const event of ['WorktreeCreate', 'WorktreeRemove']) {
+      const entries = (settings.hooks[event] ?? []) as Array<{ hooks?: Array<{ command?: string }> }>;
+      expect(entries.some((e) => e.hooks?.some((h) => h.command?.includes('hook-event-reporter')))).toBe(false);
+    }
 
     for (const event of requiredEvents) {
       const entries = settings.hooks[event] as Array<{ matcher: string; hooks: Array<{ command?: string }> }> | undefined;

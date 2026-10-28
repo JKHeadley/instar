@@ -7067,6 +7067,49 @@ if [[ "$ACTIVE" != "true" ]]; then`;
    * The hook-event-reporter.js script itself is installed by migrateHooks()
    * (always-overwrite pattern for built-in hooks).
    */
+  /**
+   * Remove the event reporter from WorktreeCreate / WorktreeRemove. Claude Code treats a hook
+   * on those events as the implementation of worktree creation/removal (it must print the
+   * path), so the reporter, which prints nothing, made `claude --worktree` and
+   * worktree-isolated subagents fail. Only reporter entries are removed; any other hook an
+   * operator put on those events is kept. Idempotent.
+   */
+  private removeWorktreeReporterHooks(
+    hooks: Record<string, unknown[]>,
+    result: MigrationResult,
+  ): boolean {
+    const isReporter = (h: unknown): boolean => {
+      if (typeof h !== 'object' || h === null) return false;
+      const o = h as Record<string, unknown>;
+      return (typeof o.command === 'string' && o.command.includes('hook-event-reporter.js'))
+        || (o.type === 'http' && typeof o.url === 'string' && o.url.includes('/hooks/events'));
+    };
+    let patched = false;
+    for (const event of ['WorktreeCreate', 'WorktreeRemove']) {
+      const entries = hooks[event];
+      if (!Array.isArray(entries)) continue;
+      const kept: unknown[] = [];
+      for (const entry of entries) {
+        if (typeof entry !== 'object' || entry === null) { kept.push(entry); continue; }
+        const e = entry as Record<string, unknown>;
+        if (Array.isArray(e.hooks)) {
+          const inner = (e.hooks as unknown[]).filter((h) => !isReporter(h));
+          if (inner.length !== (e.hooks as unknown[]).length) patched = true;
+          if (inner.length > 0) kept.push({ ...e, hooks: inner });
+        } else if (isReporter(e)) {
+          patched = true;
+        } else {
+          kept.push(entry);
+        }
+      }
+      if (kept.length > 0) hooks[event] = kept; else delete hooks[event];
+    }
+    if (patched) {
+      result.upgraded.push('.claude/settings.json: removed the event reporter from WorktreeCreate/WorktreeRemove (it broke Claude Code worktree creation)');
+    }
+    return patched;
+  }
+
   private migrateHttpHooksToCommandHooks(
     hooks: Record<string, unknown[]>,
     result: MigrationResult,
@@ -13870,6 +13913,12 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
 
     // Ensure event reporter hooks exist for observability events (session resume, telemetry).
     if (this.ensureHttpHooksExist(hooks, result)) {
+      patched = true;
+    }
+
+    // Must run after the two steps above: migrateHttpHooksToCommandHooks rewrites any
+    // reporter HTTP hook on any event, including the worktree events, into a command hook.
+    if (this.removeWorktreeReporterHooks(hooks, result)) {
       patched = true;
     }
 
