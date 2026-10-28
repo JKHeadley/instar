@@ -34,6 +34,10 @@ export class MacDesktopHost implements DesktopHost {
   private readonly inputChildren = new Set<{ kill(signal?: NodeJS.Signals): boolean }>();
   private indicatorChild: ChildProcessWithoutNullStreams | null = null;
   private inputStream: ChildProcessWithoutNullStreams | null = null;
+  private captureStream: ChildProcessWithoutNullStreams | null = null;
+  private captureReply = Buffer.alloc(0);
+  private captureLastFrame: Buffer | null = null;
+  private pendingCapture: { resolve(frame: Buffer): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   private inputReply = '';
   private pendingInput: { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   constructor(private readonly binary = DEFAULT_HOST) {}
@@ -95,6 +99,7 @@ export class MacDesktopHost implements DesktopHost {
         }
       });
       child.on('error', fail);
+      child.stdin.on('error', fail);
       child.on('close', () => {
         clearTimeout(timer);
         if (!ready) fail();
@@ -107,6 +112,7 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   stopIndicator(): void {
+    this.cancelCapture();
     const child = this.indicatorChild;
     this.indicatorChild = null;
     if (!child) return;
@@ -140,6 +146,7 @@ export class MacDesktopHost implements DesktopHost {
       // bytes must never reach durable logs through an error path.
       child.stderr.resume();
       child.on('error', () => fail('mac-desktop-host-launch-failed'));
+      child.stdin.on('error', () => fail('mac-desktop-host-unavailable'));
       child.on('close', code => {
         this.inputChildren.delete(child);
         clearTimeout(timer);
@@ -166,12 +173,91 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   async capture(): Promise<Buffer> {
-    const frame = await this.run('capture');
+    if (!this.captureStream) this.startCaptureStream();
+    const child = this.captureStream!;
+    if (this.pendingCapture) throw new Error('mac-desktop-host-capture-busy');
+    const frame = await new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pendingCapture?.timer !== timer) return;
+        this.pendingCapture = null;
+        if (this.captureStream === child) this.captureStream = null;
+        child.kill('SIGKILL');
+        reject(new Error('mac-desktop-host-capture-timeout'));
+      }, 4_000);
+      timer.unref?.();
+      this.pendingCapture = { resolve, reject, timer };
+      child.stdin.write('n', error => {
+        if (error && this.pendingCapture?.timer === timer) {
+          clearTimeout(timer);
+          this.pendingCapture = null;
+          if (this.captureStream === child) this.captureStream = null;
+          child.kill('SIGKILL');
+          reject(new Error('mac-desktop-host-capture-unavailable'));
+        }
+      });
+    });
     if (frame.length < 4 || frame[0] !== 0xff || frame[1] !== 0xd8
       || frame[frame.length - 2] !== 0xff || frame[frame.length - 1] !== 0xd9) {
       throw new Error('mac-desktop-host-frame-invalid');
     }
     return frame;
+  }
+
+  private cancelCapture(): void {
+    const child = this.captureStream;
+    this.captureStream = null;
+    if (this.pendingCapture) {
+      clearTimeout(this.pendingCapture.timer);
+      this.pendingCapture.reject(new Error('mac-desktop-host-capture-cancelled'));
+      this.pendingCapture = null;
+    }
+    child?.stdin.end();
+    child?.kill('SIGKILL');
+    this.captureReply = Buffer.alloc(0);
+    this.captureLastFrame = null;
+  }
+
+  private startCaptureStream(): void {
+    const child = spawn(this.trustedBinary(), ['capture-stream'], {
+      stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    });
+    this.captureStream = child;
+    this.captureReply = Buffer.alloc(0);
+    this.captureLastFrame = null;
+    const fail = () => {
+      if (this.captureStream !== child) return;
+      this.captureStream = null;
+      this.captureLastFrame = null;
+      const pending = this.pendingCapture;
+      this.pendingCapture = null;
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('mac-desktop-host-capture-unavailable'));
+      }
+      child.kill('SIGKILL');
+    };
+    child.stderr.resume();
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (this.captureStream !== child) return;
+      this.captureReply = Buffer.concat([this.captureReply, chunk]);
+      if (this.captureReply.length > FRAME_LIMIT + 4) { fail(); return; }
+      if (this.captureReply.length < 4) return;
+      const size = this.captureReply.readUInt32BE(0);
+      if ((size !== 0 && size < 4) || size > FRAME_LIMIT) { fail(); return; }
+      if (this.captureReply.length < size + 4) return;
+      const pending = this.pendingCapture;
+      if (!pending || this.captureReply.length !== size + 4) { fail(); return; }
+      const frame = size === 0 ? this.captureLastFrame : this.captureReply.subarray(4);
+      if (!frame) { fail(); return; }
+      if (size > 0) this.captureLastFrame = frame;
+      this.captureReply = Buffer.alloc(0);
+      this.pendingCapture = null;
+      clearTimeout(pending.timer);
+      pending.resolve(frame);
+    });
+    child.on('error', fail);
+    child.stdin.on('error', fail);
+    child.on('close', fail);
   }
 
   /** Local-only readback for the live input acceptance check. */
@@ -231,6 +317,7 @@ export class MacDesktopHost implements DesktopHost {
         clearTimeout(pending.timer);
         pending.reject(new Error('mac-desktop-host-input-unavailable'));
       }
+      child.kill('SIGKILL');
     };
     child.stderr.resume();
     child.stdout.on('data', (chunk: Buffer) => {
@@ -250,6 +337,7 @@ export class MacDesktopHost implements DesktopHost {
       pending.resolve();
     });
     child.on('error', fail);
+    child.stdin.on('error', fail);
     child.on('close', fail);
   }
 }

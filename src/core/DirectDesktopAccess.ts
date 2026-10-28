@@ -344,15 +344,44 @@ export class DirectDesktopAccess {
         operatorUid: row.operatorUid, authMethod: this.approvalMode });
     }
     catch { this.revokeRow(row); throw new Error('desktop local indicator unavailable'); }
+    let lastHostProbeAt = -Infinity;
+    let hostProbe: Promise<boolean> | null = null;
     const assertActive = async () => {
-      if (!this.validGrant(row) || !(await this.probe()).ready) {
+      if (!this.validGrant(row)) {
         this.revokeRow(row);
         throw new Error('desktop grant unavailable');
       }
+      // The native capture and input helpers check the OS session at each
+      // operation. Share the slower process-level readiness probe briefly so
+      // a 15 fps stream does not spawn three probes per frame.
+      if (performance.now() - lastHostProbeAt < 500) return;
+      if (!hostProbe) {
+        hostProbe = this.probe().then(result => result.ready, () => false)
+          .finally(() => { hostProbe = null; });
+      }
+      const ready = await hostProbe;
+      if (!ready || !this.validGrant(row)) {
+        this.revokeRow(row);
+        throw new Error('desktop grant unavailable');
+      }
+      lastHostProbeAt = performance.now();
     };
+    let lastQueuedFrameDigest: Buffer | null = null;
+    let candidateFrameDigest: Buffer | null = null;
     return {
       grantId: row.grantId!, assertActive,
-      captureEncrypted: async () => { await assertActive(); return row.aead!.encryptFrame(await this.host.capture()); },
+      captureEncrypted: async () => {
+        await assertActive();
+        const image = await this.host.capture();
+        const digest = crypto.createHash('sha256').update(image).digest();
+        if (lastQueuedFrameDigest?.equals(digest)) return null;
+        candidateFrameDigest = digest;
+        return row.aead!.encryptFrame(image);
+      },
+      frameQueued: () => {
+        if (candidateFrameDigest) lastQueuedFrameDigest = candidateFrameDigest;
+        candidateFrameDigest = null;
+      },
       decryptCommand: (record: Buffer) => {
         const value = row.aead!.decryptInput(record);
         if (!value || typeof value !== 'object' || !['stop', 'ping', 'input'].includes((value as { type?: string }).type ?? '')) {

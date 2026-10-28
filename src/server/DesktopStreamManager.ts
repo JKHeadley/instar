@@ -9,7 +9,9 @@ export interface DesktopStreamSession {
   grantId: string;
   /** Point-of-use grant, lease, revocation and OS-session check. */
   assertActive(): Promise<void>;
-  captureEncrypted(): Promise<Buffer>;
+  captureEncrypted(): Promise<Buffer | null>;
+  /** Commit the latest frame only after ws.send accepts it into the bounded queue. */
+  frameQueued?(): void;
   decryptCommand(record: Buffer): { type: 'stop' | 'ping' | 'input'; action?: DesktopInput };
   input(action: DesktopInput): Promise<void>;
   revoke(): Promise<void>;
@@ -18,10 +20,10 @@ export interface DesktopStreamSession {
 
 export type DesktopStreamAdmission = (request: IncomingMessage) => Promise<DesktopStreamSession>;
 
-const FRAME_INTERVAL_MS = 250;
+const FRAME_INTERVAL_MS = 50;
 const MAX_BUFFERED_BYTES = 1_000_024;
 const MAX_FRAME_BYTES = 625_000;
-const VIDEO_BYTES_PER_SECOND = 625_000; // 5 Mbps per host
+const VIDEO_BYTES_PER_SECOND = 1_250_000; // 10 Mbps per host
 const IDLE_MS = 2 * 60_000;
 
 export class DesktopStreamManager {
@@ -85,7 +87,7 @@ export class DesktopStreamManager {
         if (closed) return;
         // A slow browser never causes a queue of screen images to accumulate.
         if (ws.bufferedAmount < MAX_BUFFERED_BYTES) {
-          let frame: Buffer;
+          let frame: Buffer | null;
           try {
             frame = await session.captureEncrypted();
             captureFailures = 0;
@@ -103,11 +105,12 @@ export class DesktopStreamManager {
           videoBudget = Math.min(MAX_FRAME_BYTES,
             videoBudget + Math.max(0, now - lastBudgetAt) * VIDEO_BYTES_PER_SECOND / 1000);
           lastBudgetAt = now;
-          if (!closed && frame.length >= 28 && frame.length <= MAX_FRAME_BYTES
+          if (!closed && frame && frame.length >= 28 && frame.length <= MAX_FRAME_BYTES
             && frame.length <= videoBudget
             && ws.bufferedAmount + frame.length <= MAX_BUFFERED_BYTES) {
             videoBudget -= frame.length;
             ws.send(frame, { binary: true }, error => { if (error) close(); });
+            session.frameQueued?.();
           }
         }
       } catch { close(); return; }

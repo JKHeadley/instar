@@ -13,6 +13,8 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   let cancelled = 0;
   let indicatorExit: (() => void) | null = null;
   let indicatorStops = 0;
+  let probes = 0;
+  let image = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
   const closed: string[] = [];
   const failures = new Map<string, number>();
   const locks: RemoteStepUpLockoutPort = {
@@ -25,8 +27,8 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
     },
   };
   const host = {
-    probe: async () => ({ screenPermission: true, inputPermission: true, displayCount: 1, sessionActive: true }),
-    capture: async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    probe: async () => { probes++; return { screenPermission: true, inputPermission: true, displayCount: 1, sessionActive: true }; },
+    capture: async () => image,
     cursor: async () => ({ x: 0.25, y: 0.75 }),
     input: async () => {},
     cancelInput: () => { cancelled++; },
@@ -53,7 +55,9 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   return { authority, begin, code, browser, browserEcdh, closed, failures,
     setNow: (value: number) => { now = value; }, setBinding: (value: boolean) => { binding = value; },
     setSessionValid: (value: boolean) => { sessionValid = value; },
+    setFrame: (value: Buffer) => { image = value; },
     cancelled: () => cancelled, indicatorStops: () => indicatorStops,
+    probes: () => probes,
     crashIndicator: () => indicatorExit?.() };
 }
 
@@ -114,9 +118,22 @@ describe('DirectDesktopAccess', () => {
     await expect(f.authority.admit(remoteRequest)).rejects.toThrow('transport');
     const stream = await f.authority.admit(request);
     await expect(f.authority.admit(request)).rejects.toThrow('ticket');
-    const encrypted = await stream.captureEncrypted();
+    const probesBeforeFrames = f.probes();
+    const encrypted = (await stream.captureEncrypted())!;
     expect(encrypted.readBigUInt64BE(0)).toBe(1n);
     expect(encrypted.length).toBe(8 + 4 + 16);
+    // The transport drops this frame before enqueueing it. A static desktop
+    // must still offer it again on the next capture tick.
+    const retry = (await stream.captureEncrypted())!;
+    expect(retry.readBigUInt64BE(0)).toBe(2n);
+    stream.frameQueued?.();
+    expect(await stream.captureEncrypted()).toBeNull();
+    f.setFrame(Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]));
+    const nextFrame = (await stream.captureEncrypted())!;
+    expect(nextFrame.readBigUInt64BE(0)).toBe(3n);
+    stream.frameQueued?.();
+    expect(await stream.captureEncrypted()).toBeNull();
+    expect(f.probes() - probesBeforeFrames).toBe(1);
     await stream.revoke();
     await expect(stream.assertActive()).rejects.toThrow('grant');
     expect(f.closed).toEqual([stream.grantId]);

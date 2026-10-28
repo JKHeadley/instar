@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
@@ -119,6 +119,48 @@ describe('DesktopStreamManager', () => {
     expect(ws.readyState).toBe(WebSocket.OPEN);
     ws.send(Buffer.from(JSON.stringify({ type: 'stop' })));
     await once(ws, 'close');
+  });
+
+  it('keeps the stream open while a static desktop has no new frame', async () => {
+    let captures = 0;
+    const { ws } = await connect(async () => ({
+      grantId: 'static-screen', assertActive: async () => {},
+      captureEncrypted: async () => ++captures < 3 ? null : Buffer.alloc(32, 5),
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async () => {}, revoke: async () => {}, release: () => {},
+    }));
+    await once(ws, 'open');
+    const [frame] = await once(ws, 'message') as [Buffer];
+    expect(Buffer.from(frame)).toEqual(Buffer.alloc(32, 5));
+    expect(captures).toBeGreaterThanOrEqual(3);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.send(Buffer.from(JSON.stringify({ type: 'stop' })));
+    await once(ws, 'close');
+  });
+
+  it('commits only frames admitted by the bandwidth gate', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    try {
+      let captures = 0;
+      let queued = 0;
+      const { ws } = await connect(async () => ({
+        grantId: 'budget-drop', assertActive: async () => {},
+        captureEncrypted: async () => { captures++; return Buffer.alloc(625_000, 7); },
+        frameQueued: () => { queued++; },
+        decryptCommand: data => JSON.parse(data.toString()),
+        input: async () => {}, revoke: async () => {}, release: () => {},
+      }));
+      await once(ws, 'open');
+      await once(ws, 'message');
+      for (let i = 0; i < 30 && captures < 2; i++) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(captures).toBeGreaterThan(1);
+      expect(queued).toBe(1);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.send(Buffer.from(JSON.stringify({ type: 'stop' })));
+      await once(ws, 'close');
+    } finally { clock.mockRestore(); }
   });
 
   it('stops after three consecutive capture failures', async () => {

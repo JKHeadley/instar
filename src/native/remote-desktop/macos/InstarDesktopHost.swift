@@ -4,15 +4,62 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import CoreImage
+import CoreMedia
+import CoreVideo
 import Foundation
 import ScreenCaptureKit
+
+@available(macOS 14.0, *)
+private final class LatestScreenFrame: NSObject, SCStreamOutput, SCStreamDelegate {
+    private let lock = NSLock()
+    private var latest: CVPixelBuffer?
+    private var generation: UInt64 = 0
+    private var stopped = false
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+                of outputType: SCStreamOutputType) {
+        guard outputType == .screen, sampleBuffer.isValid else { return }
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            as? [[SCStreamFrameInfo: Any]],
+           let raw = attachments.first?[.status] as? Int,
+           let status = SCFrameStatus(rawValue: raw) {
+            if status == .blank || status == .stopped || status == .suspended {
+                lock.lock()
+                stopped = true
+                latest = nil
+                lock.unlock()
+                return
+            }
+            if status != .complete && status != .started { return }
+        }
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        lock.lock()
+        latest = buffer
+        generation &+= 1
+        lock.unlock()
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        lock.lock()
+        stopped = true
+        latest = nil
+        lock.unlock()
+    }
+
+    func takeLatest() -> (CVPixelBuffer?, UInt64, Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (latest, generation, stopped)
+    }
+}
 
 @available(macOS 14.0, *)
 @main
 struct InstarDesktopHost {
     static func main() async {
         guard CommandLine.arguments.count == 2 else {
-            fputs("usage: instar-desktop-host probe|capture|cursor|input|input-stream|release|indicator\n", stderr)
+            fputs("usage: instar-desktop-host probe|capture|capture-stream|cursor|input|input-stream|release|indicator\n", stderr)
             exit(64)
         }
         switch CommandLine.arguments[1] {
@@ -67,6 +114,13 @@ struct InstarDesktopHost {
                 FileHandle.standardOutput.write(jpeg)
             } catch {
                 fputs("capture unavailable: \(error)\n", stderr)
+                exit(69)
+            }
+        case "capture-stream":
+            do {
+                try await captureStream()
+            } catch {
+                fputs("capture stream unavailable: \(error)\n", stderr)
                 exit(69)
             }
         case "cursor":
@@ -186,6 +240,67 @@ struct InstarDesktopHost {
             }
         default:
             throw HostError.invalidInput
+        }
+    }
+
+    private static func captureStream() async throws {
+        guard activeSession() else { throw HostError.sessionUnavailable }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
+            throw HostError.noMainDisplay
+        }
+        let scale = min(1.0, min(960.0 / Double(display.width), 540.0 / Double(display.height)))
+        let configuration = SCStreamConfiguration()
+        configuration.width = max(1, Int((Double(display.width) * scale).rounded()))
+        configuration.height = max(1, Int((Double(display.height) * scale).rounded()))
+        configuration.showsCursor = false
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        configuration.queueDepth = 3
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let frames = LatestScreenFrame()
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: frames)
+        try stream.addStreamOutput(frames, type: .screen,
+                                   sampleHandlerQueue: DispatchQueue(label: "instar.desktop.frames"))
+        try await stream.startCapture()
+        defer { Task { try? await stream.stopCapture() } }
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+        var lastSentGeneration: UInt64 = 0
+        while true {
+            let command = FileHandle.standardInput.readData(ofLength: 1)
+            if command.isEmpty { return }
+            guard command == Data([0x6e]), activeSession() else { throw HostError.sessionUnavailable }
+            var pixelBuffer: CVPixelBuffer?
+            var currentGeneration: UInt64 = 0
+            for _ in 0..<200 {
+                let (latest, generation, stopped) = frames.takeLatest()
+                if stopped { throw HostError.sessionUnavailable }
+                if let latest { pixelBuffer = latest; currentGeneration = generation; break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard let pixelBuffer else { throw HostError.inputUnavailable }
+            if currentGeneration == lastSentGeneration {
+                FileHandle.standardOutput.write(Data(repeating: 0, count: 4))
+                continue
+            }
+            let image = CIImage(cvPixelBuffer: pixelBuffer)
+            guard let cgImage = context.createCGImage(image, from: image.extent) else {
+                throw HostError.inputUnavailable
+            }
+            let bitmap = NSBitmapImageRep(cgImage: cgImage)
+            var jpeg: Data?
+            for quality in [0.55, 0.4, 0.3, 0.2] {
+                if let encoded = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]),
+                   encoded.count <= 600_000 {
+                    jpeg = encoded
+                    break
+                }
+            }
+            guard let jpeg else { throw HostError.frameTooLarge }
+            var length = UInt32(jpeg.count).bigEndian
+            let header = withUnsafeBytes(of: &length) { Data($0) }
+            FileHandle.standardOutput.write(header)
+            FileHandle.standardOutput.write(jpeg)
+            lastSentGeneration = currentGeneration
         }
     }
 

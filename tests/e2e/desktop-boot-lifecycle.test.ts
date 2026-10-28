@@ -162,6 +162,10 @@ describe('native desktop production boot', () => {
         decipher.setAuthTag(record.subarray(record.length - 16));
         const jpeg = Buffer.concat([decipher.update(record.subarray(8, record.length - 16)), decipher.final()]);
         expect(jpeg[0]).toBe(0xff); expect(jpeg[1]).toBe(0xd8);
+        // A live stream must remain connected beyond the short sessions that
+        // previously closed during normal phone use.
+        await new Promise(resolve => setTimeout(resolve, 3_500));
+        expect(ws.readyState).toBe(WebSocket.OPEN);
         const inputIv = Buffer.alloc(12); inputIv.writeUInt32BE(2, 0); inputIv.writeBigUInt64BE(1n, 4);
         const cipher = crypto.createCipheriv('aes-256-gcm', key, inputIv);
         cipher.setAAD(Buffer.from(JSON.stringify(['instar-desktop-aead-v1', requestId, 'input'])));
