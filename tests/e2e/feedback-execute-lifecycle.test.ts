@@ -96,7 +96,9 @@ function executorEdge(root: string, clock: { now: number }) {
         // The (a) base-check clone still has the crashing source; every other tree has the fix.
         const atBase = /-base$/.test(cmd.cwd) && fs.readFileSync(path.join(cmd.cwd, 'src', 'scheduler.ts'), 'utf8').includes('crash');
         const ok = /better-sqlite3/.test(c) || /^git /.test(c) || c === 'npm run lint' || (/vitest/.test(c) && !atBase);
-        const out = /vitest/.test(c) && atBase ? 'FAIL tests/scheduler.test.ts\nAssertionError: expected crash not to be thrown' : '';
+        const out = /vitest/.test(c)
+          ? atBase ? 'FAIL tests/scheduler.test.ts\nAssertionError: expected crash not to be thrown' : ' Tests  1 passed (1)'
+          : '';
         return { exitCode: ok ? 0 : 1, signal: null, stdout: out, stderr: '', timedOut: false, outputCapped: false };
       },
     },
