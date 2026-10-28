@@ -7738,6 +7738,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added evolution action auto-expiry awareness');
     }
 
+    if (!content.includes('Auto-expiry review ledgers:')) {
+      content += '\n- **Auto-expiry review ledgers:** every `commitments.autoExpiry` and `evolutionActions.autoExpiry` sweep that finds eligible rows appends one row to `logs/commitments-auto-expiry.jsonl` / `logs/evolution-actions-auto-expiry.jsonl` with the exact ids it would expire (dry-run) or did expire, each with its age and class; a sweep whose set is unchanged writes a short `unchanged: true` row with the same `setHash`. The commitment rule skips any row blocked on someone (`blockedOn` not `none`), measures age from the latest dependency probe, and never claims completion: a row created with a `followThroughOptOutReason` cites it, any other says outcome unknown. The evolution rule keeps `high` and `critical` actions and dated actions overdue by less than the age bound. **When to use** (PROACTIVE): before turning either sweep\'s `dryRun` off, or when asked "what would auto-expiry close?", read the last full row of that ledger and check the ids, never guess from the counts.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added auto-expiry review ledger awareness (CMT-1118)');
+    }
+
     // Real-check verification (ACT-152 / autonomous-completion-real-checks). The existing
     // "Autonomous Completion Discipline" section is never edited in place (migrateClaudeMd only
     // APPENDS), so an existing agent learns about `verification_command` only via this appended
@@ -13118,6 +13124,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Codex quota is first-class in the pool:',
       '**Solo Codex load shedding is fail-safe:',
       '**Evolution action auto-expiry:',
+      '**Auto-expiry review ledgers:',
       // Durable Inbound Message Queue (CMT-1118): a Codex/Gemini agent that
       // never learns /pool/queue + the loss-notice semantics will guess at
       // "where did my message go" instead of reading the durable answer.

@@ -26,6 +26,7 @@ import type { LiveConfig } from '../config/LiveConfig.js';
 import type { ComponentHealth } from '../core/types.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { AutoExpiryLedger } from '../core/AutoExpiryLedger.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -487,7 +488,7 @@ export interface CommitmentAutoExpirySweepReport {
   /** §3.5 operator-wait branch: its own switches and counts. */
   operatorWait: { enabled: boolean; dryRun: boolean; maxAgeDays: number; eligible: number; expired: number };
   /** Per-row disposition for every row the sweep touched (or would touch). */
-  dispositions: Array<{ id: string; branch: 'agent' | 'operator-wait'; waitedDays: number; reason: string; applied: boolean }>;
+  dispositions: Array<{ id: string; branch: 'agent' | 'operator-wait'; waitedDays: number; reason: string; applied: boolean; class?: 'opted-out' | 'no-activity' }>;
 }
 
 // ── Implementation ────────────────────────────────────────────────
@@ -516,6 +517,8 @@ export class CommitmentTracker extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private autoExpiryInterval: ReturnType<typeof setInterval> | null = null;
   private autoExpiryInitialTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** CMT-1118: durable per-sweep record of would-expire / expired ids. */
+  private readonly autoExpiryLedger: AutoExpiryLedger;
   private nextId: number;
   /**
    * Coalesce the per-mutation full-store writes of a synchronous sweep into ONE
@@ -557,6 +560,7 @@ export class CommitmentTracker extends EventEmitter {
     this.config = config;
     this.storePath = path.join(config.stateDir, 'state', 'commitments.json');
     this.rulesPath = path.join(config.stateDir, 'state', 'commitment-rules.md');
+    this.autoExpiryLedger = new AutoExpiryLedger({ stateDir: config.stateDir, feature: 'commitments' });
     this.store = this.loadStore();
     this.nextId = this.computeNextId();
     this.backfillUnverifiableOneTimeActions();
@@ -1872,7 +1876,6 @@ export class CommitmentTracker extends EventEmitter {
     if (!config.enabled && !ow.enabled) return report;
 
     const targets: Array<{ id: string; reason: string; apply: boolean; branch: 'agent' | 'operator-wait' }> = [];
-    const agentReason = `auto-expired: aged out >${config.maxAgeDays}d, presumed completed-but-unclosed`;
     for (const commitment of this.store.commitments) {
       report.scanned++;
       // §3.5 — the operator-wait branch is judged FIRST so a user-owned row
@@ -1885,12 +1888,12 @@ export class CommitmentTracker extends EventEmitter {
         else report.capped = true;
         continue;
       }
-      if (!config.enabled || !this.isAutoExpiryEligible(commitment, now, config.maxAgeDays)) continue;
+      const agent = config.enabled ? this.autoExpiryDisposition(commitment, now, config.maxAgeDays) : null;
+      if (!agent) continue;
       report.eligible++;
-      const waitedDays = Math.floor((now.getTime() - Date.parse(commitment.createdAt)) / 86_400_000);
-      report.dispositions.push({ id: commitment.id, branch: 'agent', waitedDays, reason: agentReason, applied: !config.dryRun });
+      report.dispositions.push({ id: commitment.id, branch: 'agent', waitedDays: agent.waitedDays, reason: agent.reason, applied: !config.dryRun, class: agent.class });
       if (targets.length < AUTO_EXPIRY_SWEEP_CAP) {
-        targets.push({ id: commitment.id, reason: agentReason, apply: !config.dryRun, branch: 'agent' });
+        targets.push({ id: commitment.id, reason: agent.reason, apply: !config.dryRun, branch: 'agent' });
       } else {
         report.capped = true;
       }
@@ -1911,6 +1914,25 @@ export class CommitmentTracker extends EventEmitter {
         this.finishSaveBatch();
       }
     }
+
+    // CMT-1118: persist the would-expire (or expired) ids so the dry-run flip
+    // rule — review what it would expire — can actually be met.
+    this.autoExpiryLedger.record({
+      dryRun: report.dryRun,
+      extra: { agentEnabled: config.enabled, operatorWaitEnabled: ow.enabled, operatorWaitDryRun: ow.dryRun, operatorWaitMaxAgeDays: ow.maxAgeDays },
+      maxAgeDays: report.maxAgeDays,
+      scanned: report.scanned,
+      eligible: report.eligible + report.operatorWait.eligible,
+      expired: report.expired + report.operatorWait.expired,
+      capped: report.capped,
+      items: report.dispositions.map((d) => ({
+        id: d.id,
+        ageDays: d.waitedDays,
+        class: d.branch === 'operator-wait' ? 'operator-wait' : (d.class ?? 'no-activity'),
+        reason: d.reason,
+        applied: d.applied,
+      })),
+    });
 
     console.log(
       `[CommitmentTracker] Auto-expiry sweep: scanned=${report.scanned} eligible=${report.eligible} expired=${report.expired} dryRun=${report.dryRun} maxAgeDays=${report.maxAgeDays} capped=${report.capped}` +
@@ -2012,18 +2034,52 @@ export class CommitmentTracker extends EventEmitter {
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
   }
 
-  private isAutoExpiryEligible(commitment: Commitment, now: Date, maxAgeDays: number): boolean {
-    if (commitment.owner !== 'agent') return false;
-    if (commitment.status !== 'pending' && commitment.status !== 'violated') return false;
+  /**
+   * The agent-branch auto-expiry rule (CMT-1118). Only an UNBLOCKED, agent-owned,
+   * open, locally-originated row past the age bound qualifies:
+   *   - `blockedOn: 'external'` is owned by the external-block dead-letter path;
+   *     `user-input` / `user-authorization` belong to the operator-wait branch
+   *     (and stay open when that branch is off) — neither is "aged out".
+   *   - age runs from the later of creation and the last dependency probe, so a
+   *     row the agent is still actively checking is not aged out.
+   *   - the resolution never claims completion from age alone: a row created
+   *     with a `followThroughOptOutReason` cites that reason; any other row says
+   *     plainly that its outcome is unknown.
+   */
+  private autoExpiryDisposition(
+    commitment: Commitment,
+    now: Date,
+    maxAgeDays: number,
+  ): { waitedDays: number; reason: string; class: 'opted-out' | 'no-activity' } | null {
+    if (commitment.owner !== 'agent') return null;
+    if ((commitment.blockedOn ?? 'none') !== 'none') return null;
+    if (commitment.status !== 'pending' && commitment.status !== 'violated') return null;
+    if (this.config.originMachineId && commitment.originMachineId && commitment.originMachineId !== this.config.originMachineId) return null;
     const createdAtMs = Date.parse(commitment.createdAt);
-    if (!Number.isFinite(createdAtMs)) return false;
-    const ageMs = now.getTime() - createdAtMs;
-    if (ageMs <= maxAgeDays * 24 * 60 * 60 * 1000) return false;
+    if (!Number.isFinite(createdAtMs)) return null;
+    let activityMs = createdAtMs;
+    const probeMs = commitment.lastProbe ? Date.parse(commitment.lastProbe.at) : NaN;
+    if (Number.isFinite(probeMs) && probeMs > activityMs) activityMs = probeMs;
+    const ageMs = now.getTime() - activityMs;
+    if (ageMs <= maxAgeDays * 24 * 60 * 60 * 1000) return null;
     if (commitment.hardDeadlineAt) {
       const hardDeadlineMs = Date.parse(commitment.hardDeadlineAt);
-      if (Number.isFinite(hardDeadlineMs) && hardDeadlineMs > now.getTime()) return false;
+      if (Number.isFinite(hardDeadlineMs) && hardDeadlineMs > now.getTime()) return null;
     }
-    return true;
+    const waitedDays = Math.floor(ageMs / 86_400_000);
+    const optOut = typeof commitment.followThroughOptOutReason === 'string' ? commitment.followThroughOptOutReason.trim() : '';
+    if (optOut) {
+      return {
+        waitedDays,
+        class: 'opted-out',
+        reason: `auto-expired after ${waitedDays} days: created with no follow-through needed ("${optOut.slice(0, 200)}")`,
+      };
+    }
+    return {
+      waitedDays,
+      class: 'no-activity',
+      reason: `auto-expired after ${waitedDays} days with no recorded activity; outcome unknown (not confirmed completed). Re-open it if it still matters.`,
+    };
   }
 
   // ── Single-writer mutation ─────────────────────────────────────
