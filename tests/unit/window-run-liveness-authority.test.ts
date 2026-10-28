@@ -9,11 +9,12 @@ import {
   type WindowRunLivenessDocument,
   type WindowRunLivenessSample,
   resolveWindowRunSampleLifecycle,
+  windowRunRecoveryResultFromRefresh,
 } from '../../src/core/WindowRunLivenessAuthority.js';
 
 const BASE = Date.parse('2026-09-05T20:00:00.000Z');
 
-function harness(options: { dryRun?: boolean; recovery?: boolean; replacementExecutorId?: string; resumedTaskRef?: string; projectStatus?: (status: string) => string } = {}) {
+function harness(options: { dryRun?: boolean; recovery?: boolean; busy?: { healSample: boolean }; replacementExecutorId?: string; resumedTaskRef?: string; projectStatus?: (status: string) => string } = {}) {
   let nowMs = BASE;
   let sample: WindowRunLivenessSample = {
     sampledAt: new Date(nowMs).toISOString(),
@@ -31,6 +32,11 @@ function harness(options: { dryRun?: boolean; recovery?: boolean; replacementExe
     sample: () => structuredClone(sample),
     recover: async ({ attemptId, taskRef }) => {
       recoveryCalls++;
+      if (options.busy) {
+        // SessionRefresh refuses a mid-work session with code session-busy.
+        if (options.busy.healSample) sample.executor.heartbeatAt = new Date(nowMs).toISOString();
+        return { succeeded: false, detail: 'session-busy:in-flight work', receipt: `${attemptId}:session-busy`, executorBusy: true };
+      }
       if (options.recovery !== false) {
         if (options.replacementExecutorId) sample.executor.id = options.replacementExecutorId;
         sample.executor.running = true;
@@ -115,6 +121,66 @@ describe('WindowRunLivenessAuthority', () => {
     await h.authority.tick();
     expect(h.recoveryCalls).toBe(1);
     expect(h.notices).toHaveLength(1);
+  });
+
+  it('counts a heartbeat slightly newer than the sample time as fresh (clock-order tolerance)', async () => {
+    const h = harness();
+    // Production reads transcript mtime after stamping the sample time; the
+    // incident had a heartbeat 65 ms after the sample.
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 65).toISOString(); });
+    const state = await h.authority.tick();
+    expect(state?.predicates['heartbeat-fresh'].ok).toBe(true);
+    expect(state?.status).toBe('active');
+  });
+
+  it('still rejects a heartbeat far in the future of the sample time', async () => {
+    const h = harness({ dryRun: true });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 60_000).toISOString(); });
+    const state = await h.authority.tick();
+    expect(state?.predicates['heartbeat-fresh'].ok).toBe(false);
+    expect(state?.status).toBe('at-risk');
+  });
+
+  it('treats a session-busy recovery refusal as alive, not a failed recovery, and restores active on a green re-sample', async () => {
+    const h = harness({ busy: { healSample: true } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.advance(1_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const state = await h.authority.tick();
+    expect(h.recoveryCalls).toBe(1);
+    expect(state?.status).toBe('active');
+    expect(state?.recoveryAttempt).toMatchObject({ number: 1, outcome: 'executor-busy' });
+    expect(state?.transitions.at(-1)).toMatchObject({ to: 'active', reason: 'recovery-verified-executor-busy' });
+    expect(h.notices).toHaveLength(0);
+  });
+
+  it('keeps a busy-but-not-yet-green run at-risk, heals on a later green tick, and never re-attempts recovery', async () => {
+    const h = harness({ busy: { healSample: false } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.advance(1_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const state = await h.authority.tick();
+    expect(state?.status).toBe('at-risk');
+    expect(state?.recoveryAttempt?.outcome).toBe('executor-busy');
+    expect(h.notices).toHaveLength(0);
+    h.advance(60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 61_000).toISOString(); });
+    const healed = await h.authority.tick();
+    expect(healed?.status).toBe('active');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it('a busy executor that never turns green still fails at the recovery ceiling', async () => {
+    const h = harness({ busy: { healSample: false } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('at-risk');
+    h.advance(15 * 60_000);
+    const state = await h.authority.tick();
+    expect(state?.status).toBe('failed');
+    expect(state?.transitions.at(-1)?.reason).toBe('recovery-ceiling-exceeded');
+    expect(h.recoveryCalls).toBe(1);
   });
 
   it('persists an attributable replacement binding before recovery re-sampling', async () => {
@@ -477,5 +543,23 @@ describe('resolveWindowRunSampleLifecycle', () => {
       expect(resolveWindowRunSampleLifecycle({ state: ritual, ledger: ritualLedger, run: { runId: 'run-w32', endAt: run.endAt }, runIsOpen: true, ordinaryRunLifecycle: flag }))
         .toEqual({ lifecycleRunId: 'lifecycle-w32', state: 'closed_failed', admitted: true, expiresAt: run.endAt });
     }
+  });
+});
+
+describe('windowRunRecoveryResultFromRefresh (production recover wiring)', () => {
+  it('maps a session-busy refusal to an alive, busy executor', () => {
+    const result = windowRunRecoveryResultFromRefresh('att-1', 'task-3', { ok: false, code: 'session-busy', message: 'in-flight work' });
+    expect(result).toMatchObject({ succeeded: false, executorBusy: true, receipt: 'att-1:session-busy' });
+  });
+
+  it('keeps any other refusal a failed recovery', () => {
+    const result = windowRunRecoveryResultFromRefresh('att-1', 'task-3', { ok: false, code: 'session_not_found', message: 'gone' });
+    expect(result.succeeded).toBe(false);
+    expect(result.executorBusy).toBeUndefined();
+  });
+
+  it('maps a refresh to an attributable replacement binding', () => {
+    const result = windowRunRecoveryResultFromRefresh('att-1', 'task-3', { ok: true, newSessionName: 'echo-topic-2', topicId: 2 });
+    expect(result).toMatchObject({ succeeded: true, replacementExecutorId: 'echo-topic-2', resumedTaskRef: 'task-3' });
   });
 });

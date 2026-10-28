@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-28T06:23:47.395Z",
+  "slug": "window-run-liveness-clock-busy",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 66,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WindowRunLivenessAuthority.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

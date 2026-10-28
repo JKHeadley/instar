@@ -48,7 +48,7 @@ import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
-import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle } from '../core/WindowRunLivenessAuthority.js';
+import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle, windowRunRecoveryResultFromRefresh } from '../core/WindowRunLivenessAuthority.js';
 import { lifelinePollIsReachable as telegramLifelinePollIsReachable } from '../lifeline/TelegramPollOwnerLease.js';
 import { WindowRunCadenceExecutor, WindowRunCadenceStore, cadenceReportProducerPayload, signCadenceReportProducer } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
@@ -4493,9 +4493,7 @@ export class AgentServer {
               reason: `window-run-liveness:${attemptId}`,
               followUpPrompt: `Resume Window ${state.windowId} exactly once at server-bound task ${taskRef}. Do not skip or substitute another task.`,
             });
-            return result.ok
-              ? { succeeded: true, detail: `refreshed:${result.newSessionName}:${taskRef}`, receipt: `${attemptId}:${result.newSessionName}:${result.topicId}:${taskRef}`, replacementExecutorId: result.newSessionName, resumedTaskRef: taskRef }
-              : { succeeded: false, detail: `${result.code}:${result.message}`, receipt: `${attemptId}:${result.code}` };
+            return windowRunRecoveryResultFromRefresh(attemptId, taskRef, result);
           },
           notifyFailure: async (state, message) => {
             if (!options.telegram) return false;
