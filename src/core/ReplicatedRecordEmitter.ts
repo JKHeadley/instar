@@ -30,6 +30,7 @@
  */
 
 import type { HlcTimestamp } from './HybridLogicalClock.js';
+import type { JournalEmitOutcome } from './CoherenceJournal.js';
 import {
   isStoreEmissionEnabled,
   type ReplicatedKindRegistry,
@@ -39,8 +40,10 @@ import {
 /** The minimal journal seam the emitter needs (so it is unit-testable with a fake). */
 export interface ReplicatedRecordEmitterJournal {
   /** Append a built replicated-record envelope `data` for `kind` (no-op when the
-   *  kind is not a registered replicated kind; never throws). */
-  emitReplicatedRecord(kind: string, data: Record<string, unknown>): void;
+   *  kind is not a registered replicated kind; never throws). Returns what the journal
+   *  did with it; a seam that returns nothing (a test fake predating the outcome)
+   *  yields the `unconfirmed` emit outcome. */
+  emitReplicatedRecord(kind: string, data: Record<string, unknown>): JournalEmitOutcome | void;
 }
 
 /** The minimal HLC seam (only `tick()` is needed on the author side). */
@@ -86,6 +89,47 @@ export interface ReplicatedRecordEmitterSeams {
   log?: (event: string, detail: Record<string, unknown>) => void;
 }
 
+/** What one `emit` call did. `emitted` ⇔ the journal reported `accepted` (enqueued). */
+export type EmitOutcome =
+  | 'emitted'
+  /** The journal seam returned nothing (a test fake predating outcomes): counted as
+   *  emitted in the legacy stats, but never treated as confirmed acceptance. */
+  | 'unconfirmed'
+  | 'disabled'
+  | 'skipped'
+  | `dropped:${Exclude<JournalEmitOutcome, 'accepted'>}`
+  | 'error';
+
+export interface EmitResult {
+  outcome: EmitOutcome;
+  /** The HLC this emit ticked, present whenever the tick happened. */
+  hlc?: HlcTimestamp;
+}
+
+export interface EmitOptions {
+  /**
+   * When present, REPLACES the witness read: the emit carries exactly this `observed`
+   * (`null` ⇒ no witness, and no witness read at all). Used for a write discovered AFTER
+   * the fact (the replicated-store reconciler): `observed` claims what the author had
+   * seen when WRITING, and an out-of-process writer never saw peer records (they live
+   * only in the journal replica streams), so the emit-time witness could make a stale
+   * local write look sequential-after a newer peer version and silently win. With no
+   * witness every peer version is concurrent ⇒ flagged (or, when byte-identical,
+   * collapsed by the union), never silently superseded (§7.2 err-toward-flag).
+   */
+  observed?: HlcTimestamp | null;
+}
+
+/** One accepted own emit, reported to every registered observer. */
+export interface EmittedRecordEvent {
+  store: string;
+  recordKey: string;
+  op: 'put' | 'delete';
+  hlc: HlcTimestamp;
+  /** The exact built envelope `data` that was appended. */
+  data: Record<string, unknown>;
+}
+
 /** Lifetime counters for observability (mirrors the journal's degradation style). */
 export interface ReplicatedRecordEmitterStats {
   /** Records appended to the journal. */
@@ -96,6 +140,10 @@ export interface ReplicatedRecordEmitterStats {
   skipped: number;
   /** Builder/journal throws caught (never propagated to the manager). */
   errors: number;
+  /** The journal refused the record (rate cap, lock-out, schema, oversize, dedupe). */
+  dropped: number;
+  /** Emit observers that threw (caught; never affects the emit). */
+  observerErrors: number;
 }
 
 export class ReplicatedRecordEmitter {
@@ -105,7 +153,10 @@ export class ReplicatedRecordEmitter {
     storeDisabled: 0,
     skipped: 0,
     errors: 0,
+    dropped: 0,
+    observerErrors: 0,
   };
+  private readonly observers: Array<(ev: EmittedRecordEvent) => void> = [];
 
   constructor(seams: ReplicatedRecordEmitterSeams) {
     // Wiring-integrity preconditions: the seams MUST be real, not null/no-op.
@@ -125,6 +176,24 @@ export class ReplicatedRecordEmitter {
     this.seams = seams;
   }
 
+  /** The HLC clock this emitter ticks (the reconciler fences against the SAME instance). */
+  get clock(): ReplicatedRecordEmitterClock {
+    return this.seams.clock;
+  }
+
+  /**
+   * Register an observer told about EVERY accepted own emit (in-process hook or
+   * reconciler), synchronously, after the journal accepted it. Observer exceptions are
+   * caught and counted. Returns an unsubscribe function.
+   */
+  addEmitObserver(fn: (ev: EmittedRecordEvent) => void): () => void {
+    this.observers.push(fn);
+    return () => {
+      const i = this.observers.indexOf(fn);
+      if (i >= 0) this.observers.splice(i, 1);
+    };
+  }
+
   /** Read-only stats (for observability + the wiring-integrity assertions). */
   getStats(): Readonly<ReplicatedRecordEmitterStats> {
     return { ...this.stats };
@@ -137,48 +206,76 @@ export class ReplicatedRecordEmitter {
    *
    * Order (§4): dark gate → degenerate guard → witness → tick → build → append.
    */
-  emit(store: string, recordKey: string | null | undefined, build: BuildRecordData): void {
+  emit(store: string, recordKey: string | null | undefined, build: BuildRecordData, opts?: EmitOptions): EmitResult {
+    let hlc: HlcTimestamp | undefined;
     try {
       // 1. Dark gate (the default). A disabled store emits NOTHING — a strict no-op.
       if (!isStoreEmissionEnabled(this.seams.stores(), store)) {
         this.stats.storeDisabled++;
-        return;
+        return { outcome: 'disabled' };
       }
       // 2. Only a registered store has a journal kind to ride.
       const reg = this.seams.registry.getByStore(store);
       if (!reg) {
         this.stats.skipped++;
-        return;
+        return { outcome: 'skipped' };
       }
       // 3. Degenerate guard — a null/empty recordKey has no stable identity surface.
       if (typeof recordKey !== 'string' || recordKey.length === 0) {
         this.stats.skipped++;
-        return;
+        return { outcome: 'skipped' };
       }
       // 4. Witness BEFORE the tick — the HLC this machine had already merged for the
       //    key (own prior + applied peers). Best-effort; a witness read fault degrades
       //    to "no witness" (flag-on-conflict, the safe direction), never a throw.
+      //    An explicit `opts.observed` replaces the read (see EmitOptions).
       let observed: HlcTimestamp | undefined;
-      try {
-        observed = this.seams.loadWitness(store, recordKey);
-      } catch (e) { /* @silent-fallback-ok: a witness read fault degrades to no-witness ⇒ flag-on-conflict (the safe merge direction, §7.2); never blocks the emit. */
-        observed = undefined;
-        this.log('witness-read-failed', { store, error: (e as Error)?.message });
+      if (opts && 'observed' in opts) {
+        observed = opts.observed ?? undefined;
+      } else {
+        try {
+          observed = this.seams.loadWitness(store, recordKey);
+        } catch (e) { /* @silent-fallback-ok: a witness read fault degrades to no-witness ⇒ flag-on-conflict (the safe merge direction, §7.2); never blocks the emit. */
+          observed = undefined;
+          this.log('witness-read-failed', { store, error: (e as Error)?.message });
+        }
       }
       // 5. Tick AFTER the witness so hlc > observed (a clean sequential position).
-      const hlc = this.seams.clock.tick();
+      hlc = this.seams.clock.tick();
       // 6. Build the disclosure-minimized envelope data (store-specific).
       const data = build(hlc, this.seams.origin, observed);
       if (data === null || data === undefined) {
         this.stats.skipped++;
-        return;
+        return { outcome: 'skipped', hlc };
       }
       // 7. Append. The journal validates + op-key-dedupes + enqueues (non-blocking).
-      this.seams.journal.emitReplicatedRecord(reg.kind, data);
+      const journalOutcome = this.seams.journal.emitReplicatedRecord(reg.kind, data);
+      if (journalOutcome === undefined) {
+        this.stats.emitted++;
+        return { outcome: 'unconfirmed', hlc };
+      }
+      if (journalOutcome !== 'accepted') {
+        this.stats.dropped++;
+        return { outcome: `dropped:${journalOutcome}`, hlc };
+      }
       this.stats.emitted++;
+      this.notify({ store, recordKey, op: data.op === 'delete' ? 'delete' : 'put', hlc, data });
+      return { outcome: 'emitted', hlc };
     } catch (e) { /* @silent-fallback-ok: the manager's write must NEVER fail because replication did — a builder throw (e.g. over-cap) / journal fault is a counted no-op, surfaced via stats + the log, never propagated (Structure > Willpower: the safety is structural, not per-caller). */
       this.stats.errors++;
       this.log('emit-failed', { store, error: (e as Error)?.message });
+      return { outcome: 'error', ...(hlc ? { hlc } : {}) };
+    }
+  }
+
+  private notify(ev: EmittedRecordEvent): void {
+    for (const fn of this.observers) {
+      try {
+        fn(ev);
+      } catch (e) { /* @silent-fallback-ok: an observer is bookkeeping; its fault must never undo or fail an accepted emit. Counted + logged. */
+        this.stats.observerErrors++;
+        this.log('observer-failed', { store: ev.store, error: (e as Error)?.message });
+      }
     }
   }
 

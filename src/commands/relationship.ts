@@ -23,7 +23,7 @@ function getRelationshipsManager(): RelationshipManager | null {
     return null;
   }
 
-  return new RelationshipManager(relConfig);
+  return new RelationshipManager({ ...relConfig, deletionIntentStateDir: config.stateDir });
 }
 
 export async function listRelationships(options: { sort?: string }): Promise<void> {

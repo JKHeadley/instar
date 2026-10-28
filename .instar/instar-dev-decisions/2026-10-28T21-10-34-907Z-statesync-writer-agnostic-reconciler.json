@@ -1,0 +1,57 @@
+{
+  "ts": "2026-10-28T21:10:34.907Z",
+  "slug": "statesync-writer-agnostic-reconciler",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 23,
+  "loc": 1879,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/relationship.ts",
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/ConflictStore.ts",
+      "src/core/DeletionIntentLog.ts",
+      "src/core/KnowledgeReplicatedStore.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/RelationshipManager.ts",
+      "src/core/RelationshipsReplicatedStore.ts",
+      "src/core/ReplicatedPeerStreamReader.ts",
+      "src/core/ReplicatedRecordEmitter.ts",
+      "src/core/ReplicatedStoreReader.ts",
+      "src/core/ReplicatedStoreReconciler.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/UnionReader.ts",
+      "src/core/stableJson.ts",
+      "src/core/types.ts",
+      "src/knowledge/KnowledgeManager.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/users/UserManager.ts"
+    ],
+    "addedLines": 1836,
+    "deletedLines": 43
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The replicated-store-reconciler registry entry drives the real nextBreakerState under a permanently failing store read: 3 failures, then interval x 2^level waits capped at 60 min, then park after 24 h at the cap; total attempts settle at a fixed bound instead of growing with uptime."
+    }
+  },
+  "verdict": "blocked"
+}

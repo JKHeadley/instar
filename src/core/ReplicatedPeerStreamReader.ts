@@ -68,6 +68,16 @@ interface WitnessIndexEntry {
   hlc: HlcTimestamp;
 }
 
+/** One own-origin record as the reconciler seed sees it (envelope fields stripped). */
+export interface OwnOriginRecord {
+  op: 'put' | 'delete';
+  hlc: HlcTimestamp;
+  /** The validated store fields (reserved envelope fields already stripped). */
+  storeFields: Record<string, unknown>;
+  /** When the newest record is a delete: the newest PUT's store fields, if still readable. */
+  lastPutFields?: Record<string, unknown>;
+}
+
 interface RegisteredStreamRecord {
   store: string;
   recordKey: string;
@@ -165,6 +175,59 @@ export class ReplicatedPeerStreamReader {
   /** Every recordKey the store currently holds across ALL origins (for readAll). */
   listRecordKeys(store: string): string[] {
     return [...this.materialize(store).keys()];
+  }
+
+  /**
+   * Whether the derived witness index is trusted (rebuilt + parity-checked). While
+   * false, `loadWitness` falls back to a full synchronous scan per call.
+   */
+  isWitnessIndexTrusted(): boolean {
+    return this.witnessIndexTrusted;
+  }
+
+  /**
+   * The latest OWN-origin record per recordKey for `store` (a delete kept as a
+   * tombstone), folded by HLC-max over this machine's own stream files only —
+   * current + archives; peer replica files are never read. Uses the chunked async
+   * line reader so a large own stream never holds the event loop. The replicated-
+   * store reconciler seeds its "what have I already emitted" cache from this.
+   */
+  async loadOwnOriginRecordsAsync(store: string): Promise<Map<string, OwnOriginRecord>> {
+    const out = new Map<string, OwnOriginRecord>();
+    const newestPut = new Map<string, { hlc: HlcTimestamp; storeFields: Record<string, unknown> }>();
+    const reg = this.registry.getByStore(store);
+    if (!reg) return out;
+    const kind = reg.kind as JournalKind;
+    for (const file of this.ownStreamFiles(this.selfMachineId, kind)) {
+      await this.forEachJournalEntryInFileAsync(file, (entry) => {
+        if (entry.kind !== kind) return;
+        const data = entry.data;
+        if (!data || typeof data !== 'object') return;
+        const result = validateReplicatedEnvelope(data as Record<string, unknown>, reg.schema, NOOP_COUNTERS);
+        if (!result.ok || result.envelope.origin !== this.selfMachineId) return;
+        if (result.envelope.op === 'put') {
+          const p = newestPut.get(result.envelope.recordKey);
+          if (!p || HybridLogicalClock.compare(result.envelope.hlc, p.hlc) > 0) {
+            newestPut.set(result.envelope.recordKey, { hlc: result.envelope.hlc, storeFields: result.storeFields });
+          }
+        }
+        const prior = out.get(result.envelope.recordKey);
+        if (!prior || HybridLogicalClock.compare(result.envelope.hlc, prior.hlc) > 0) {
+          out.set(result.envelope.recordKey, {
+            op: result.envelope.op,
+            hlc: result.envelope.hlc,
+            storeFields: result.storeFields,
+          });
+        }
+      });
+    }
+    for (const [key, rec] of out) {
+      if (rec.op === 'delete') {
+        const p = newestPut.get(key);
+        if (p) rec.lastPutFields = p.storeFields;
+      }
+    }
+    return out;
   }
 
   // ── The emitter `observed`-witness seam (§7.2) ─────────────────────────────

@@ -528,9 +528,25 @@ export interface BuildRelationshipTombstoneInput {
 export function buildRelationshipTombstoneData(input: BuildRelationshipTombstoneInput): RelationshipRecordData | null {
   const recordKey = deriveRelationshipRecordKey(input.channels);
   if (recordKey === null) return null;
+  return buildRelationshipTombstoneFromKey({ ...input, recordKey });
+}
+
+/**
+ * The same tombstone built from an already-derived recordKey. A tombstone carries no
+ * identity beyond the key, so a deletion recorded without the identity (the replicated-
+ * store reconciler's deletion intents) builds exactly the record the identity-taking
+ * builder above would.
+ */
+export function buildRelationshipTombstoneFromKey(input: {
+  recordKey: string;
+  hlc: HlcTimestamp;
+  origin: string;
+  deletedAt: string;
+  observed?: HlcTimestamp;
+}): RelationshipRecordData {
   return {
     deletedAt: input.deletedAt,
-    recordKey,
+    recordKey: input.recordKey,
     hlc: input.hlc,
     op: 'delete' as ReplicatedOp,
     origin: input.origin,

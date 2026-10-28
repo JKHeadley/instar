@@ -1798,6 +1798,8 @@ export interface RouteContext {
    *  per-request PreferencesManager (the sole recordPreference writer) attaches to this so a
    *  learned preference replicates. Null/absent while dark ⇒ strict single-machine no-op. */
   replicatedRecordEmitter?: import('../core/ReplicatedRecordEmitter.js').ReplicatedRecordEmitter | null;
+  /** Writer-agnostic replication backstop (GET /state/reconcile). Null when the journal is dark. */
+  replicatedStoreReconciler?: import('../core/ReplicatedStoreReconciler.js').ReplicatedStoreReconciler | null;
   /** Replicated-store conflict ledger (multi-machine-replicated-store-foundation
    *  §7.2/§7.3) — backs GET /state/conflicts + POST /state/resolve-conflict.
    *  Null/absent while dark (the routes answer 503). */
@@ -22656,6 +22658,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //    foundation NEVER picks a conflict winner — POST /state/resolve-conflict is
   //    the OPERATOR's authority, surfaced.
 
+  /**
+   * GET /state/reconcile — the writer-agnostic replication reconciler's counters
+   * (docs/specs/statesync-writer-agnostic-reconciler.md §7). Counts, timestamps and fixed
+   * reason codes only — never a record key, identity or error text. 503 when the
+   * reconciler is not constructed (coherence journal dark).
+   */
+  router.get('/state/reconcile', (_req, res) => {
+    const r = ctx.replicatedStoreReconciler ?? null;
+    if (!r) {
+      res.status(503).json({ error: 'reconciler-not-constructed' });
+      return;
+    }
+    res.json(r.getStatus());
+  });
+
   // GET /state/conflicts — the open (unresolved) replicated-store conflicts the
   // union-reader flagged for operator resolution (§7.3 dashboard surface).
   router.get('/state/conflicts', (_req, res) => {
@@ -30213,12 +30230,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (ctx.replicatedRecordEmitter) {
         const _prefEmitter = ctx.replicatedRecordEmitter;
         const { PREF_STORE_KEY, buildPrefRecordData } = await import('../core/PreferencesReplicatedStore.js');
+        const { redactForLiveTail } = await import('../core/liveTailRedaction.js');
         prefs.setReplicationEmitter({
           emitPut: (entry) =>
             _prefEmitter.emit(
               PREF_STORE_KEY,
               entry.dedupeKey,
-              (hlc, origin, observed) => buildPrefRecordData({ entry, hlc, op: 'put', origin, observed }),
+              (hlc, origin, observed) => buildPrefRecordData({ entry, hlc, op: 'put', origin, observed, scrub: redactForLiveTail }),
             ),
         });
       }

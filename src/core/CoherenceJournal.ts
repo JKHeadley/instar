@@ -44,6 +44,22 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record';
 
+/**
+ * What happened to one `emit` call. Every branch of the private `emit` already
+ * existed and dropped silently; it now says which one ran so a caller that must
+ * know whether a record was accepted (the replicated-store reconciler) can tell.
+ * `accepted` means ENQUEUED for the flusher, not yet fsynced.
+ */
+export type JournalEmitOutcome =
+  | 'accepted'
+  | 'locked-out'
+  | 'rate-limited'
+  | 'schema-rejected'
+  | 'deduped'
+  | 'oversize'
+  | 'not-replicated-kind'
+  | 'error';
+
 export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
@@ -878,13 +894,14 @@ export class CoherenceJournal {
    * into the caller (the manager emit hooks are best-effort). A no-op when the
    * kind is not a registered replicated kind (the registry is the authority).
    */
-  emitReplicatedRecord(kind: JournalKind, data: Record<string, unknown>): void {
+  emitReplicatedRecord(kind: JournalKind, data: Record<string, unknown>): JournalEmitOutcome {
     try {
-      if (!this.replicatedRegistry?.isReplicatedKind(kind)) return; // not a registered replicated kind ⇒ no-op
+      if (!this.replicatedRegistry?.isReplicatedKind(kind)) return 'not-replicated-kind'; // not a registered replicated kind ⇒ no-op
       const opKey = this.replicatedOpKey(data);
-      this.emit(kind, undefined, data, opKey);
+      return this.emit(kind, undefined, data, opKey);
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       this.log('emit-record', `[coherence-journal] emitReplicatedRecord failed (swallowed): ${(e as Error)?.message}`);
+      return 'error';
     }
   }
 
@@ -915,14 +932,14 @@ export class CoherenceJournal {
    * assign a seq, enqueue, and RETURN. No synchronous file I/O on this stack —
    * the flusher does all of it. Never throws into the caller.
    */
-  private emit(kind: JournalKind, topic: number | undefined, rawData: Record<string, unknown>, opKey: string): void {
+  private emit(kind: JournalKind, topic: number | undefined, rawData: Record<string, unknown>, opKey: string): JournalEmitOutcome {
     try {
-      if (this.state !== 'active') return; // locked-out or closed: silent no-op (never block)
+      if (this.state !== 'active') return 'locked-out'; // locked-out or closed: silent no-op (never block)
 
       // Rate cap (token bucket) — over-cap emits drop + count.
       if (!this.takeToken(kind)) {
         this.degradation.rateLimited++;
-        return;
+        return 'rate-limited';
       }
 
       // Typed-schema validation: rejects free text, coerces enums, DROPS unknown
@@ -930,13 +947,13 @@ export class CoherenceJournal {
       const validated = this.validate(kind, rawData);
       if (!validated) {
         this.degradation.schemaRejects++;
-        return;
+        return 'schema-rejected';
       }
 
       // Op-key idempotency (restart-proof — the index is reconstructed on open).
       if (this.opKeys[kind].has(opKey)) {
         this.degradation.dedupeHits++;
-        return;
+        return 'deduped';
       }
 
       const seq = this.nextSeq[kind];
@@ -953,7 +970,7 @@ export class CoherenceJournal {
       // Per-entry size cap (8KB lifecycle / 80KB replicated record) — over-cap drop + count.
       if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytesForKind(kind)) {
         this.degradation.oversize++;
-        return;
+        return 'oversize';
       }
 
       // Commit to in-memory state: bump the counter, mark the op key, enqueue.
@@ -961,9 +978,11 @@ export class CoherenceJournal {
       this.opKeys[kind].add(opKey);
       this.trimOpKeys(kind);
       this.queue.push({ kind, line, seq });
+      return 'accepted';
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       // The journal never throws into its caller (§3.1).
       this.log('emit', `[coherence-journal] emit failed (swallowed): ${(e as Error)?.message}`);
+      return 'error';
     }
   }
 

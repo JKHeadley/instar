@@ -41,6 +41,7 @@ import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/lane
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
+import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -2758,6 +2759,44 @@ const overloadAdmissionSelfHelp: SelfActionController = {
  * needs-reauth and excluded, so successes are bounded by the pool size (not modelled: the fixture
  * refuses every swap).
  */
+/**
+ * replicated-store-reconciler — docs/specs/statesync-writer-agnostic-reconciler.md §4.5.
+ * Under the pinned worst case (the store read always fails), the real breaker
+ * arithmetic (nextBreakerState): 3 failures, then interval × 2^level waits capped at
+ * 60 min, then PARK after 24 h at the cap — no further attempts until a restart or a
+ * config change. The attempt count settles; it does not grow with uptime.
+ */
+const replicatedStoreReconcilerRetry: SelfActionController = {
+  id: 'replicated-store-reconciler',
+  actionVerb: 'reconcile-retry',
+  models: 'src/core/ReplicatedStoreReconciler.ts (noteFailure → nextBreakerState: backoff to 60 min, park after 24 h at the cap)',
+  modelsPath: 'src/core/ReplicatedStoreReconciler.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The breaker is in memory; a restart is the documented operator lever to retry a parked store, and nothing in this controller causes a restart.' },
+  boundK: 40,
+  perTargetBoundK: 40,
+  ticks: 600,
+  tickMs: 10 * 60_000, // the default reconcile interval
+  makeUnderPressure(f, sink) {
+    const TARGET = 'knowledge';
+    let state: { failures: number; level: number; capSince?: number } = { failures: 0, level: 0 };
+    let waitUntil = 0;
+    let parked = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (parked || now < waitUntil) return;
+        sink.emit({ verb: 'reconcile-retry', target: TARGET });
+        if (!f.targetAlwaysRejects()) { state = { failures: 0, level: 0 }; waitUntil = 0; return; }
+        const next = nextBreakerState(state, now, RECONCILE_LIMITS.defaultIntervalMs);
+        state = { failures: next.failures, level: next.level, capSince: next.capSince };
+        if (next.waitUntil) waitUntil = next.waitUntil;
+        if (next.park) parked = true;
+      },
+    };
+  },
+};
+
 const interactiveLoginExpiredSwap: SelfActionController = {
   id: 'interactive-login-expired-swap',
   actionVerb: 'account-swap',
@@ -3198,4 +3237,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   a2aPeerDarkRaise,
   threadlineConnectEnableRestart,
   interactiveLoginExpiredSwap,
+  replicatedStoreReconcilerRetry,
 ];

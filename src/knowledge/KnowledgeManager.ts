@@ -15,6 +15,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { recordDeletionPending, recordDeletionDone } from '../core/DeletionIntentLog.js';
+import { deriveKnowledgeRecordKey, KNOWLEDGE_STORE_KEY } from '../core/KnowledgeReplicatedStore.js';
 
 export interface KnowledgeSource {
   id: string;
@@ -74,6 +76,7 @@ export interface IngestResult {
 const EMPTY_CATALOG: KnowledgeCatalog = { sources: [] };
 
 export class KnowledgeManager {
+  private readonly stateDir: string;
   private readonly knowledgeDir: string;
   private readonly catalogPath: string;
 
@@ -85,6 +88,7 @@ export class KnowledgeManager {
   private knowledgeReplication: KnowledgeReplicationEmitter | null = null;
 
   constructor(stateDir: string) {
+    this.stateDir = stateDir;
     this.knowledgeDir = path.join(stateDir, 'knowledge');
     this.catalogPath = path.join(this.knowledgeDir, 'catalog.json');
     this.ensureDirectories();
@@ -186,6 +190,12 @@ export class KnowledgeManager {
     const source = catalog.sources[index];
     const fullPath = path.join(this.knowledgeDir, source.filePath);
 
+    // Deletion intent, phase 1 (before removal): lets this deletion replicate even from a
+    // CLI process with no emitter attached (writer-agnostic reconciler §4 step 4).
+    const deletedAt = new Date().toISOString();
+    const intentKey = deriveKnowledgeRecordKey(source.title, source.url, source.type);
+    if (intentKey !== null) recordDeletionPending(this.stateDir, KNOWLEDGE_STORE_KEY, intentKey, deletedAt);
+
     // Remove file if it exists
     if (fs.existsSync(fullPath)) {
       SafeFsExecutor.safeUnlinkSync(fullPath, { operation: 'src/knowledge/KnowledgeManager.ts:134' });
@@ -195,13 +205,16 @@ export class KnowledgeManager {
     catalog.sources.splice(index, 1);
     this.saveCatalog(catalog);
 
+    // Deletion intent, phase 2 (after the catalog rename is durable).
+    if (intentKey !== null) recordDeletionDone(this.stateDir, KNOWLEDGE_STORE_KEY, intentKey, deletedAt);
+
     // WS2.4 — best-effort tombstone emission (dark by default). CRITICAL (resurrection
     // guard): a removed source MUST emit an op:delete tombstone keyed on its content
     // fingerprint, else a peer re-replicates the locally-removed source forever. The
     // tombstone is built from the REMOVED source's stable identity (title/url/type).
     if (this.knowledgeReplication) {
       try {
-        this.knowledgeReplication.emitDelete(source.title, source.url, source.type, new Date().toISOString());
+        this.knowledgeReplication.emitDelete(source.title, source.url, source.type, deletedAt);
       } catch {
         // @silent-fallback-ok: a replication emit fault must never break a local
         // knowledge removal — the durable on-disk catalog is already persisted above.
@@ -277,6 +290,30 @@ export class KnowledgeManager {
         fs.mkdirSync(dir, { recursive: true });
       }
     }
+  }
+
+  /**
+   * Read the catalog from disk WITHOUT constructing a manager (no mkdir, no write).
+   * Unlike `loadCatalog`, a corrupt file THROWS instead of reading as empty, because
+   * the replicated-store reconciler must never mistake corruption for "every source
+   * was removed". A missing catalog ⇒ `present: false`. A source with no `title` or
+   * `type` string is counted in `skipped`.
+   */
+  static readCatalogStrict(stateDir: string): { sources: KnowledgeSource[]; skipped: number; present: boolean } {
+    const catalogPath = path.join(stateDir, 'knowledge', 'catalog.json');
+    if (!fs.existsSync(catalogPath)) return { sources: [], skipped: 0, present: false };
+    const parsed = JSON.parse(fs.readFileSync(catalogPath, 'utf-8')) as Partial<KnowledgeCatalog>;
+    if (!parsed || !Array.isArray(parsed.sources)) throw new Error('knowledge catalog has no sources array');
+    const sources: KnowledgeSource[] = [];
+    let skipped = 0;
+    for (const src of parsed.sources) {
+      if (!src || typeof src.title !== 'string' || typeof src.type !== 'string') {
+        skipped++;
+        continue;
+      }
+      sources.push(src);
+    }
+    return { sources, skipped, present: true };
   }
 
   private loadCatalog(): KnowledgeCatalog {

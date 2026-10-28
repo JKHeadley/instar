@@ -1399,6 +1399,12 @@ export interface InteractionSummary {
 export interface RelationshipManagerConfig {
   /** Directory to store relationship files */
   relationshipsDir: string;
+  /**
+   * The agent state dir. When set, every delete/merge appends a deletion intent under
+   * `<stateDir>/state/reconcile/intents/` so the deletion replicates even from a process
+   * with no replication emitter (writer-agnostic reconciler). Absent ⇒ no intent written.
+   */
+  deletionIntentStateDir?: string;
   /** Maximum recent interactions to keep per relationship */
   maxRecentInteractions: number;
   /**

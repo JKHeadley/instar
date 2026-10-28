@@ -848,6 +848,7 @@ export class AgentServer {
     /** WS2.1 SEND-SIDE: the journal-backed replicated-record emitter, forwarded to the
      *  RouteContext so the correction-loop's PreferencesManager can attach + emit. Absent while dark. */
     replicatedRecordEmitter?: import('../core/ReplicatedRecordEmitter.js').ReplicatedRecordEmitter;
+    replicatedStoreReconciler?: import('../core/ReplicatedStoreReconciler.js').ReplicatedStoreReconciler;
     /** Replicated-store conflict ledger (replicated-store-foundation §7.2/§7.3).
      *  Backs GET /state/conflicts + POST /state/resolve-conflict. Absent while dark. */
     conflictStore?: import('../core/ConflictStore.js').ConflictStore;
@@ -4894,6 +4895,7 @@ export class AgentServer {
       commitmentReplicaStore: options.commitmentReplicaStore ?? null,
       preferenceReplicaStore: options.preferenceReplicaStore ?? null,
       replicatedRecordEmitter: options.replicatedRecordEmitter ?? null,
+      replicatedStoreReconciler: options.replicatedStoreReconciler ?? null,
       conflictStore: options.conflictStore ?? null,
       rollbackUnmerge: options.rollbackUnmerge ?? null,
       droppedOriginRegistry: options.droppedOriginRegistry ?? null,
