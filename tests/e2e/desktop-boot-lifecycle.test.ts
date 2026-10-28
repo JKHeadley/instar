@@ -63,17 +63,21 @@ describe('native desktop production boot', () => {
         .set('Authorization', 'Bearer desktop-e2e-token')
         .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
       expect(listed.status).toBe(200);
-      expect(listed.body.machines).toEqual([{ machineId, label: 'Echo Mac', ready: expect.any(Boolean) }]);
+      expect(listed.body.machines).toEqual([{ machineId, label: 'Echo Mac', ready: expect.any(Boolean),
+        ...(listed.body.machines[0]?.ready ? {} : { unavailableReason: expect.any(String) }) }]);
       expect(listed.body.topics).toEqual([]);
       const viewer = await request(server.getApp()).get('/dashboard/desktop.html');
       expect(viewer.status).toBe(200);
       expect(viewer.text).toContain('Remote desktop: Echo Mac');
+      expect(viewer.text).toContain('signed in and unlocked');
+      expect(viewer.text).toContain('id="retryButton"');
       expect(viewer.text).toMatch(/desktop\.js\?v=[a-f0-9]{16}/);
       expect(viewer.headers['cache-control']).toBe('no-store');
       const viewerScript = await request(server.getApp()).get('/dashboard/desktop.js');
       expect(viewerScript.status).toBe(200);
       expect(viewerScript.headers['cache-control']).toBe('no-store');
       expect(viewerScript.text).not.toContain("$('topic').replaceChildren()");
+      expect(viewerScript.text).toContain("$('retryButton').addEventListener('click'");
       expect(viewer.headers['content-security-policy']).toContain("script-src 'self'");
       expect(viewer.headers['content-security-policy']).toContain('wss://');
       config.dashboardPin = '654321';
