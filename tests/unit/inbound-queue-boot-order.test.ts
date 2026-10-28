@@ -28,7 +28,7 @@ import path from 'node:path';
 
 const SERVER = path.join(process.cwd(), 'src/commands/server.ts');
 
-describe('Inbound-queue boot-order fix (engine constructs when configured)', () => {
+describe('Inbound-queue boot-order fix (engine constructs when configured, independent of rollout stage)', () => {
   const src = fs.readFileSync(SERVER, 'utf-8');
 
   // Anchor on the construction gate region: from the engine-construction comment
@@ -54,33 +54,44 @@ describe('Inbound-queue boot-order fix (engine constructs when configured)', () 
     expect(code).not.toContain('_sessionPoolStage()');
   });
 
-  it('the construction gate resolves the stage INLINE before gating', () => {
+  it('the construction gate resolves the pool switch INLINE before gating', () => {
     const region = constructionRegion();
     // Inline resolution computed at construction time (not the stale ref).
-    expect(region).toContain('_sessionPoolStageNow');
-    expect(region).toContain('resolveSessionPoolStage(');
+    expect(region).toContain('_sessionPoolEnabledNow');
+    expect(region).toContain('inboundQueuePoolGateOpen(');
     expect(region).toContain("liveConfig.get('multiMachine.sessionPool'");
-    // The gate now reads the inline value.
-    expect(region).toContain("_sessionPoolStageNow !== 'dark'");
+    expect(region).toContain('if (qcfg.enabled && _sessionPoolEnabledNow)');
+  });
+
+  it('the construction gate is DECOUPLED from the rollout stage (CMT-1117)', () => {
+    // A StageAdvancer revert to 'dark' must not switch off a graduated queue at
+    // the next boot: the gate reads the pool's enabled switch, never the stage.
+    const code = constructionRegion()
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('//'))
+      .join('\n');
+    expect(code).not.toMatch(/!==\s*'dark'/);
+    expect(code).not.toContain('resolveSessionPoolStage(');
+  });
+
+  it('the boot sweep gate is decoupled from the rollout stage too (no custody expiry on a revert)', () => {
+    const at = src.indexOf('const queueWillRun');
+    expect(at).toBeGreaterThan(0);
+    const region = src.slice(at, src.indexOf(': { run: true };', at));
+    expect(region).toContain('inboundQueuePoolGateOpenAtBoot(poolRaw)');
+    expect(region).not.toContain("stage ?? 'dark'");
   });
 
   it('the inline resolution sits BEFORE the gate it feeds (ordering correctness)', () => {
     const region = constructionRegion();
-    const resolveAt = region.indexOf('const _sessionPoolStageNow');
-    const gateAt = region.indexOf("if (qcfg.enabled && _sessionPoolStageNow !== 'dark')");
+    const resolveAt = region.indexOf('const _sessionPoolEnabledNow');
+    const gateAt = region.indexOf('if (qcfg.enabled && _sessionPoolEnabledNow)');
     expect(resolveAt).toBeGreaterThan(-1);
     expect(gateAt).toBeGreaterThan(resolveAt);
   });
 
-  it('BOTH stage resolvers (boot gate + live getter) route through the shared helper (no drift)', () => {
-    // The construction gate and the live _sessionPoolStage getter must both use
-    // resolveSessionPoolStage — that single source of truth is what prevents the
-    // original hand-duplicated divergence from recurring.
-    const helperUses = src.split('resolveSessionPoolStage(').length - 1;
-    // ≥2 callsites in server.ts (the boot-gate inline + the live getter); the
-    // import line carries the symbol name but not the `(` call form.
-    expect(helperUses).toBeGreaterThanOrEqual(2);
-    // The live getter is still wired (the original assignment survives the fix).
+  it('the live stage getter still routes through the shared helper', () => {
+    expect(src.split('resolveSessionPoolStage(').length - 1).toBeGreaterThanOrEqual(1);
     expect(src).toContain('_sessionPoolStage = () => {');
   });
 
@@ -89,5 +100,16 @@ describe('Inbound-queue boot-order fix (engine constructs when configured)', () 
     // onAccepted) legitimately close over the ref and see the wired impl when
     // they run AFTER boot. Only the SYNCHRONOUS boot-time read was buggy.
     expect(src).toContain("let _sessionPoolStage: () => string = () => 'dark'");
+  });
+
+  it('at stage dark the queue drain delivers on THIS machine only — no router, no forced re-place (CMT-1117 second pass)', () => {
+    const at = src.indexOf('_drainLocalDeliver = async (dmsg, handover) => {');
+    expect(at).toBeGreaterThan(0);
+    const drain = src.slice(at, at + 2500);
+    expect(drain).toContain("const poolDark = _sessionPoolStage() === 'dark';");
+    expect(drain).toMatch(/poolDark \? \{ action: 'handled-locally', acked: true \} : await _sessionRouter!\.route\(/);
+    const fr = src.indexOf('forceReplace: async (msg) => {');
+    expect(fr).toBeGreaterThan(0);
+    expect(src.slice(fr, fr + 600)).toContain("if (_sessionPoolStage() === 'dark') return false;");
   });
 });

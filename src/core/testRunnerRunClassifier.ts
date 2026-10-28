@@ -85,7 +85,9 @@ export function neutralizePoolShapingArgv(argv: string[]): { argv: string[]; rem
 
 const SUBCOMMANDS = new Set(['run', 'watch', 'list', 'related', 'bench', 'dev', 'typecheck', 'init']);
 /** Flags that do NOT disqualify a targeted classification (value-taking noted). */
-const SAFE_FLAGS_WITH_VALUE = new Set(['--config', '--reporter', '--root', '--dir']);
+// `--outputFile` only says where a reporter writes; it never changes which tests run
+// (CMT-1117: the session-pool failover runner reads a JSON report per run).
+const SAFE_FLAGS_WITH_VALUE = new Set(['--config', '--reporter', '--root', '--dir', '--outputFile', '--outputFile.json']);
 const SAFE_BOOLEAN_FLAGS = new Set(['--run', '--silent', '--no-color', '--color', '--globals', '--passWithNoTests', '--pass-with-no-tests', '--allowOnly', '--allow-only']);
 
 export interface ArgvAnalysis {

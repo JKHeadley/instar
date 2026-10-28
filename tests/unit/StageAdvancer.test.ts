@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { StageAdvancer, type SessionPoolStage } from '../../src/core/StageAdvancer.js';
+import { StageAdvancer, MAX_TARGET_REDS_PER_COMMIT, type SessionPoolStage } from '../../src/core/StageAdvancer.js';
 import { SessionPoolE2EResultStore } from '../../src/core/SessionPoolE2EResultStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -104,6 +104,88 @@ describe('StageAdvancer (§Rollout)', () => {
     store.recordResult(1, 'green', SHA, 'e');
     expect(advancer.reconcile()).toBe('shadow');
     expect(writes).toEqual([]);
+  });
+
+  describe('stale red superseded by a newer prior-stage green (CMT-1117 flap fix)', () => {
+    let clock: number;
+    beforeEach(() => {
+      clock = Date.parse('2026-10-28T16:47:55Z');
+      store = new SessionPoolE2EResultStore({ filePath: path.join(dir, 'clocked.json'), sign, verifySig, now: () => clock });
+      build();
+    });
+
+    it('advance on a fresh green is NOT undone by the older red at the advanced stage (the dark<->shadow flap)', () => {
+      stage = 'shadow';
+      store.recordResult(1, 'red', SHA, 'red-at-shadow'); // 16:47 — the shadow run that went red
+      expect(advancer.reconcile()).toBe('dark');           // a real revert, as before
+      clock += 3600_000;
+      store.recordResult(0, 'green', SHA, 'green-at-dark'); // 17:47 — a fresh green at dark
+      expect(advancer.advanceTo('shadow')).toMatchObject({ ok: true, stage: 'shadow' });
+      writes = [];
+      expect(advancer.reconcile()).toBe('shadow');         // the old red is superseded
+      expect(writes).toEqual([]);
+    });
+
+    it('a red recorded AFTER the promoting green still reverts', () => {
+      store.recordResult(0, 'green', SHA, 'green-at-dark');
+      clock += 1000;
+      store.recordResult(1, 'red', SHA, 'red-at-shadow');
+      stage = 'shadow';
+      expect(advancer.reconcile()).toBe('dark');
+      expect(writes).toEqual(['dark']);
+    });
+
+    it('a newer prior-stage RED does not supersede (only a green proves recovery)', () => {
+      store.recordResult(1, 'red', SHA, 'red-at-shadow');
+      clock += 1000;
+      store.recordResult(0, 'red', SHA, 'red-at-dark');
+      stage = 'shadow';
+      expect(advancer.reconcile()).toBe('dark');
+    });
+
+    it('a newer prior-stage green for a DIFFERENT commit does not supersede', () => {
+      store.recordResult(1, 'red', SHA, 'red-at-shadow');
+      clock += 1000;
+      store.recordResult(0, 'green', 'other-commit', 'green-other');
+      stage = 'shadow';
+      expect(advancer.reconcile()).toBe('dark');
+    });
+
+    it('re-promotion to a stage is bounded per build: refused after MAX_TARGET_REDS_PER_COMMIT verified reds there', () => {
+      for (let i = 0; i < MAX_TARGET_REDS_PER_COMMIT; i++) {
+        store.recordResult(1, 'red', SHA, `red-at-shadow-${i}`);
+        clock += 1000;
+      }
+      store.recordResult(0, 'green', SHA, 'green-at-dark');
+      stage = 'dark';
+      expect(advancer.advanceTo('shadow')).toMatchObject({ ok: false, reason: 'e2e-gate-not-passed', detail: `target-stage-red-limit:${MAX_TARGET_REDS_PER_COMMIT}` });
+      expect(writes).toEqual([]);
+    });
+
+    it('reds from an OLDER build do not count toward the re-promotion bound', () => {
+      for (let i = 0; i < MAX_TARGET_REDS_PER_COMMIT; i++) store.recordResult(1, 'red', 'old-build', `old-${i}`);
+      clock += 1000;
+      store.recordResult(0, 'green', SHA, 'green-at-dark');
+      stage = 'dark';
+      expect(advancer.advanceTo('shadow')).toMatchObject({ ok: true, stage: 'shadow' });
+    });
+
+    it('a green OLDER than the target stage\'s latest red does not promote (no same-tick re-promotion after a demotion)', () => {
+      store.recordResult(0, 'green', SHA, 'green-at-dark');
+      clock += 1000;
+      store.recordResult(1, 'red', SHA, 'red-at-shadow');
+      stage = 'dark';
+      expect(advancer.advanceTo('shadow')).toMatchObject({ ok: false, reason: 'e2e-gate-not-passed', detail: 'target-red-newer-than-green' });
+      clock += 1000;
+      store.recordResult(0, 'green', SHA, 'fresh-green-at-dark');
+      expect(advancer.advanceTo('shadow')).toMatchObject({ ok: true, stage: 'shadow' });
+    });
+
+    it('currentStage() reads the configured stage back without writing', () => {
+      stage = 'live-transfer';
+      expect(advancer.currentStage()).toBe('live-transfer');
+      expect(writes).toEqual([]);
+    });
   });
 
   it('reconcile() at dark (floor) is a no-op', () => {

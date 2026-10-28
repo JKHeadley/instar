@@ -3369,10 +3369,15 @@ export function wireTelegramRouting(
   _drainLocalDeliver = async (dmsg, handover) => {
     const topicId = Number(dmsg.sessionKey);
     if (!Number.isFinite(topicId)) return { kind: 'failed', error: new Error(`non-numeric sessionKey ${dmsg.sessionKey}`) };
-    if (!_sessionRouter) return { kind: 'un-routable', reason: 'router-not-constructed' };
+    // Stage 'dark' (CMT-1117): the queue engine now runs whenever the pool is
+    // enabled, but cross-machine routing is the failover machinery a red E2E
+    // demoted. At dark the drain delivers on THIS machine only, exactly like the
+    // live path, which skips the router at dark.
+    const poolDark = _sessionPoolStage() === 'dark';
+    if (!poolDark && !_sessionRouter) return { kind: 'un-routable', reason: 'router-not-constructed' };
 
     // Routing first — ownership may have moved while the entry waited.
-    const outcome = await _sessionRouter.route({
+    const outcome: import('../core/SessionRouter.js').RouteOutcome = poolDark ? { action: 'handled-locally', acked: true } : await _sessionRouter!.route({
       sessionKey: dmsg.sessionKey,
       messageId: dmsg.messageId,
       payload: dmsg.payload,
@@ -11689,10 +11694,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         sweepPis.list().records.filter((r) => String(r.telegramTopicId ?? '') === sessionKey);
       const qRaw = config.multiMachine?.sessionPool?.inboundQueue as { enabled?: boolean; dryRun?: boolean } | undefined;
       const poolRaw = config.multiMachine?.sessionPool as { enabled?: boolean; stage?: string } | undefined;
+      const { inboundQueuePoolGateOpen: inboundQueuePoolGateOpenAtBoot } = await import('../core/inboundQueueConfig.js');
       const queueWillRun: import('../core/inboundQueueBootSweep.js').BootSweepDeps['queueWillRun'] =
         qRaw?.enabled !== true ? { run: false, gateReason: 'feature-disabled' }
         : qRaw?.dryRun !== false ? { run: false, gateReason: 'dry-run' }
-        : (poolRaw?.enabled !== true || (poolRaw?.stage ?? 'dark') === 'dark') ? { run: false, gateReason: 'pool-dark' }
+        // Pool ENABLED, not its rollout stage: a StageAdvancer revert to 'dark'
+        // must not expire a graduated queue's custody (CMT-1117).
+        : !inboundQueuePoolGateOpenAtBoot(poolRaw) ? { run: false, gateReason: 'pool-dark' }
         : { run: true };
       const sweepRes = sweepMod.runInboundQueueBootSweep({
         stateDir: config.stateDir,
@@ -26999,30 +27007,29 @@ export async function startServer(options: StartOptions): Promise<void> {
             //
             // BOOT-ORDER FIX: do NOT consult `_sessionPoolStage()` here — at this
             // point in the synchronous boot flow it is still the line-~443 stub
-            // (`() => 'dark'`); the real impl is only assigned ~350 lines BELOW
-            // (the `_sessionPoolStage = () => { ... }` reassignment after the
-            // peer-presence puller is wired). Reading the stub made the gate
-            // ALWAYS false, so the inbound-queue engine never constructed even
-            // when correctly configured, and `/pool/queue` 503'd forever. Resolve
-            // the stage INLINE from config here — mirroring the line-~16045 impl
-            // exactly (liveConfig override with the static config block as the
-            // fallback) — instead of depending on the not-yet-wired ref.
-            const _sessionPoolStageNow = ((): string => {
+            // (`() => 'dark'`); the real impl is only assigned further BELOW.
+            // Resolve from config INLINE (liveConfig override with the static
+            // config block as the fallback) instead of the not-yet-wired ref.
+            //
+            // STAGE-DECOUPLED (CMT-1117): the gate reads the pool's `enabled`
+            // switch, NOT its rollout stage. StageAdvancer auto-reverts the stage
+            // to 'dark' on a red failover E2E; gating the queue on the stage let
+            // a rollout revert silently switch off a graduated queue at the next
+            // boot. The router's own queue paths still gate on the live stage.
+            const _sessionPoolEnabledNow = ((): boolean => {
               try {
                 const fallback = (config.multiMachine?.sessionPool ?? {}) as { enabled?: boolean; stage?: string };
                 const live = liveConfig.get('multiMachine.sessionPool', fallback) as { enabled?: boolean; stage?: string };
-                return iqcMod.resolveSessionPoolStage(live);
+                return iqcMod.inboundQueuePoolGateOpen(live);
               } catch {
-                // @silent-fallback-ok: a config-read failure resolves the stage
-                // to 'dark' (the inert default) → the queue simply does not
-                // construct this boot, byte-identical to the ships-dark default.
-                // This is the SAFE direction (fail-closed: no queue), not a
-                // degraded capability worth a DegradationReporter event. Mirrors
-                // the live _sessionPoolStage getter's identical guard below.
-                return 'dark';
+                // @silent-fallback-ok: a config-read failure resolves to "pool
+                // off" → the queue simply does not construct this boot, the
+                // ships-dark default (fail-closed: no queue). The boot sweep has
+                // already decided custody for this boot independently.
+                return false;
               }
             })();
-            if (qcfg.enabled && _sessionPoolStageNow !== 'dark') {
+            if (qcfg.enabled && _sessionPoolEnabledNow) {
               const inv = iqcMod.validateInboundQueueInvariants(qcfg, hcfg);
               if (!inv.ok) {
                 for (const v of inv.violations) {
@@ -27084,6 +27091,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                     return _drainLocalDeliver(msg, handover);
                   },
                   forceReplace: async (msg) => {
+                    // At stage 'dark' no forced cross-machine re-place (CMT-1117):
+                    // false ⇒ attempts-exhausted + the loss notice, never a
+                    // placement the demoted rollout forbids.
+                    if (_sessionPoolStage() === 'dark') return false;
                     if (!_sessionRouter) return false;
                     return _sessionRouter.forceReplace({
                       sessionKey: msg.sessionKey,
@@ -28728,6 +28739,22 @@ export async function startServer(options: StartOptions): Promise<void> {
               return;
             }
             const vitestBin = path.join(sourceRoot, 'node_modules', '.bin', 'vitest');
+            // Per-run JSON test report (CMT-1117): the exit code alone cannot tell
+            // "the failover test failed" from "vitest refused before any test ran"
+            // (a capacity refusal in globalSetup exits 1). The report is removed
+            // before the run so a stale one can never vouch for this run.
+            const reportPath = path.join(path.dirname(failoverLogPath), 'session-pool-failover-runner.report.json');
+            try { SafeFsExecutor.safeRmSync(reportPath, { force: true, operation: 'session-pool-failover-runner: clear previous run report' }); } catch { /* @silent-fallback-ok — an undeletable stale report is caught by the mtime check below */ }
+            const spawnedAtMs = Date.now();
+            const readReport = (): import('../core/sessionPoolFailoverCheck.js').FailoverTestReport | null => {
+              try {
+                const st = fs.statSync(reportPath);
+                if (st.mtimeMs < spawnedAtMs - 1000) return null; // older than this run — not ours
+                return failoverCheckMod.parseVitestJsonReport(fs.readFileSync(reportPath, 'utf8'));
+              } catch {
+                return null; // @silent-fallback-ok — no report ⇒ inconclusive, the check records nothing
+              }
+            };
             let logFd: number | null = null;
             try { fs.mkdirSync(path.dirname(failoverLogPath), { recursive: true }); logFd = fs.openSync(failoverLogPath, 'a'); } catch { logFd = null; /* @silent-fallback-ok — evidence log optional */ }
             const evidenceRef = `${failoverLogPath}@${new Date().toISOString()}`;
@@ -28739,7 +28766,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             };
             try {
               // The failover check is an e2e file; the default config is the unit lane only.
-              const child = cp.spawn(vitestBin, ['run', '--config', vitestConfigForTestPath(args.testPath), args.testPath, '--reporter=dot'], {
+              const child = cp.spawn(vitestBin, ['run', '--config', vitestConfigForTestPath(args.testPath), args.testPath, '--reporter=dot', '--reporter=json', `--outputFile.json=${reportPath}`], {
                 cwd: sourceRoot,
                 stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
                 env: { ...process.env },
@@ -28750,7 +28777,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               }, args.timeoutMs);
               if (killTimer.unref) killTimer.unref();
               child.on('error', () => { clearTimeout(killTimer); done({ ranToCompletion: false, exitCode: null, evidenceRef: `${evidenceRef} (spawn-error)` }); });
-              child.on('close', (code) => { clearTimeout(killTimer); done({ ranToCompletion: true, exitCode: code, evidenceRef }); });
+              child.on('close', (code) => { clearTimeout(killTimer); done({ ranToCompletion: true, exitCode: code, evidenceRef, testReport: readReport() }); });
             } catch {
               // @silent-fallback-ok — a spawn throw is an infra failure, NOT a
               // failover verdict; ranToCompletion:false → the check throws → nothing recorded.

@@ -35,6 +35,9 @@ import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/E
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
+import { StageAdvancer, MAX_TARGET_REDS_PER_COMMIT, type SessionPoolStage } from '../core/StageAdvancer.js';
+import { SessionPoolRolloutDriver } from '../core/SessionPoolRolloutDriver.js';
+import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionPoolE2EResultStore.js';
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
@@ -3130,7 +3133,67 @@ function jobSupervisionCensusModel(f: PressureFixture, sink: ActionSink): { tick
   } };
 }
 
+/**
+ * Session-pool stage promotion (CMT-1117) under a regression that shows ONLY at
+ * the target stage: every hourly runner pass records green while the pool sits
+ * at 'dark' and red while it sits at 'shadow'. Before the fix this flapped
+ * dark<->shadow once a minute (69 promotions in a day). Now a promotion needs a
+ * prior-stage green newer than the target's latest red, and stops after
+ * MAX_TARGET_REDS_PER_COMMIT reds at the target per build. Runs the REAL
+ * StageAdvancer + SessionPoolRolloutDriver; results and stage live in durable
+ * state (the real ones are a file and config), so they survive restart.
+ */
+const sessionPoolStagePromotion: SelfActionController = {
+  id: 'session-pool-stage-promotion',
+  actionVerb: 'retry-stage-promotion',
+  models: 'src/core/SessionPoolRolloutDriver.ts (auto-climb tick) over src/core/StageAdvancer.ts (advanceTo / reconcile)',
+  modelsPath: 'src/core/SessionPoolRolloutDriver.ts',
+  boundK: MAX_TARGET_REDS_PER_COMMIT,
+  perTargetBoundK: MAX_TARGET_REDS_PER_COMMIT,
+  ticks: 600,
+  tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => sessionPoolStagePromotionModel(f, sink) },
+  makeUnderPressure: (f, sink) => sessionPoolStagePromotionModel(f, sink),
+};
+
+function sessionPoolStagePromotionModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const ROWS = 'session-pool-stage:rows';
+  const STAGE = 'session-pool-stage:stage';
+  const SHA = 'build-under-pressure';
+  const rows = (): StageE2EResult[] => (f.durableState.get(ROWS) as StageE2EResult[] | undefined) ?? [];
+  const store = {
+    all: () => rows(),
+    getLatestForStage: (idx: number) => { let l: StageE2EResult | null = null; for (const r of rows()) if (r.stage === idx) l = r; return l; },
+    verify: () => true,
+  } as unknown as SessionPoolE2EResultStore;
+  const readStage = (): SessionPoolStage => (f.durableState.get(STAGE) as SessionPoolStage | undefined) ?? 'dark';
+  const driver = new SessionPoolRolloutDriver({
+    advancer: new StageAdvancer({
+      resultStore: store,
+      currentCommitSha: () => SHA,
+      readStage,
+      writeStageConfig: (st) => f.durableState.set(STAGE, st),
+    }),
+    enabled: () => true,
+    targetCeiling: () => 'shadow',
+  });
+  return {
+    tick() {
+      sink.considered += 1;
+      // The hourly runner records against the stage running now (every 60th tick).
+      if (Math.round(f.clock.nowMs() / 60_000) % 60 === 0) {
+        const stage = readStage();
+        const result: 'green' | 'red' = stage === 'dark' ? 'green' : 'red';
+        f.durableState.set(ROWS, [...rows(), { stage: stage === 'dark' ? 0 : 1, result, commitSha: SHA, ranAt: new Date(f.clock.nowMs()).toISOString(), evidenceRef: 'model', signature: 'model' }]);
+      }
+      const r = driver.tick();
+      if (r.advancedTo) sink.emit({ verb: 'retry-stage-promotion', target: r.advancedTo });
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  sessionPoolStagePromotion,
   jobSupervisionProviderRetry,
   jobSupervisionCensusRepair,
   throwawayExpiryTeardown,

@@ -114,6 +114,24 @@ export function resolveSessionPoolStage(
   return cfg?.enabled && cfg?.stage ? String(cfg.stage) : 'dark';
 }
 
+/**
+ * Should the durable inbound queue's engine run, as far as the session pool is
+ * concerned? Only the pool's own `enabled` switch matters here — NOT its rollout
+ * `stage`. The stage is owned by StageAdvancer, which auto-reverts it to 'dark'
+ * on a red failover E2E; tying the queue to the stage meant a rollout revert
+ * silently switched OFF a queue the operator had already graduated (the boot
+ * sweep then gate-expired its custody as 'pool-dark'). The queue's own
+ * `inboundQueue.enabled` / `dryRun` switches still decide the rest. With the
+ * stage at 'dark' the router's queue paths stay closed (they gate on the stage
+ * themselves), so the engine only takes custody where it already would at any
+ * stage (an overload admission refusal) and drains what it holds.
+ */
+export function inboundQueuePoolGateOpen(
+  cfg: { enabled?: boolean } | null | undefined,
+): boolean {
+  return cfg?.enabled === true;
+}
+
 /** Σbackoff: total worst-case backoff across maxAttempts (capped curve). */
 export function sumBackoffMs(cfg: Pick<InboundQueueConfig, 'baseBackoffMs' | 'maxBackoffMs' | 'maxAttempts'>): number {
   let sum = 0;

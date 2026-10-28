@@ -1,0 +1,19 @@
+## What Changed
+
+- **A busy machine no longer demotes the multi-machine session pool.** The hourly failover self-test recorded "red" whenever the test runner refused to start because the machine was at its test limit (`INSTAR_TEST_CAPACITY_TIMEOUT`). The failover test never ran, but each of those runs demoted the pool (25 of 29 reds on one day). A run where no failover test executed is now inconclusive: nothing is recorded. The runner reads a small vitest JSON report to tell the two apart (a refused run leaves an empty report; a failure inside the test still counts as red). The test-runner limit now treats vitest's `--outputFile` as a harmless reporting flag, so this one-file check keeps using the small-run lane.
+- **No more dark/shadow flapping.** After a demotion, the old red stayed on the books for the higher stage, so each promotion on a fresh green was undone a minute later (69 times in a day). A red is now superseded by a newer green for the same build at the stage below; a red recorded after that green still demotes, a promotion needs a green newer than the higher stage's latest red, and after two reds at the same stage for one build the pool stops trying that stage until the next release.
+- **"rollout-advanced" means it advanced.** The rollout driver logs it only when the stage reads back as the new stage (`rollout-advance-not-applied` otherwise).
+- **The durable inbound message queue follows its own switch.** It used to start only when the pool's rollout stage was above dark, so a demotion silently disabled it at the next restart and expired the messages it held. It now runs whenever the queue and the pool are enabled; while the pool is demoted to dark, saved messages are delivered on the same machine only, never moved to another one.
+
+## What to Tell Your User
+
+If you run your agent on more than one machine: the setting that lets conversations move between machines will stop switching itself off when a machine is merely busy, and messages saved while a machine is overloaded stay saved across restarts. Nothing to do.
+
+## Evidence
+
+- Unit: `sessionPoolFailoverCheck` (exit 75, no report, zero executed tests → inconclusive; executed failing test or failed suite → red; executed passing → green; report parser), `StageAdvancer` (stale red superseded; newer red still reverts; prior-stage red or other-commit green does not supersede), `SessionPoolRolloutDriver` (not-applied vs advanced), `inbound-queue-boot-order` and `resolve-session-pool-stage` (gate decoupled from stage).
+- Side-effects review: `upgrades/side-effects/session-pool-rollout-honest-verdicts.md`.
+
+## Summary of New Capabilities
+
+- No new capability. The session-pool rollout gate reads more honest evidence, and the inbound queue is no longer switched off by a rollout demotion.
