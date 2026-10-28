@@ -1,8 +1,8 @@
 # Side-Effects Review — native desktop release package
 
-**Version / slug:** `native-remote-desktop-publish-package`  
-**Date:** 2026-10-28  
-**Author:** Echo  
+**Version / slug:** `native-remote-desktop-publish-package`
+**Date:** 2026-10-28
+**Author:** Echo
 **Second-pass reviewer:** not required (release artifact validation, no agent decision path)
 
 ## Summary of the change
