@@ -12966,13 +12966,23 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(403).json({ error: 'X-Instar-Request: 1 required' });
     return false;
   };
+  const desktopReadiness = async (): Promise<{ ready: boolean; unavailableReason?: string }> => {
+    try {
+      const probe = await ctx.directDesktopAccess!.probe();
+      if (probe.ready) return { ready: true };
+      if (!probe.sessionActive && probe.screenPermission && probe.inputPermission && probe.displayCount > 0) {
+        return { ready: false, unavailableReason: 'This Mac’s desktop is locked or inactive. This version cannot unlock macOS. Unlock it, then choose Check again.' };
+      }
+    } catch {
+      // @silent-fallback-ok — probe uncertainty denies desktop access and returns an explicit unavailable reason.
+    }
+    return { ready: false, unavailableReason: 'Remote desktop is not ready on this machine.' };
+  };
   router.get('/desktop/availability', async (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     const target = ctx.directDesktopAccess.targetInfo();
-    let ready = false;
-    try { ready = (await ctx.directDesktopAccess.probe()).ready; } catch { /* unavailable OS session */ }
-    res.json({ ...target, ready });
+    res.json({ ...target, ...await desktopReadiness() });
   });
   router.get('/desktop/targets', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -12988,9 +12998,7 @@ export function createRoutes(ctx: RouteContext): Router {
         const name = ctx.telegram?.getTopicName(Number(id))?.trim();
         return { topicId: Number(id), label: name || `Telegram topic ${id}` };
       });
-    let ready = false;
-    try { ready = (await ctx.directDesktopAccess.probe()).ready; } catch { /* OS permission absent: target remains unavailable */ }
-    res.json({ machines: [{ ...target, ready }], topics });
+    res.json({ machines: [{ ...target, ...await desktopReadiness() }], topics });
   });
   router.post('/desktop/requests', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');

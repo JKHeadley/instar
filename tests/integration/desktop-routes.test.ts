@@ -79,4 +79,17 @@ describe('remote desktop HTTP routes', () => {
     expect((await request(server).post('/desktop/requests/request-1/revoke')
       .set({ ...headers, 'X-Instar-Request': '1' }).send({})).body).toEqual({ revoked: true });
   });
+
+  it('explains a locked desktop after PIN verification', async () => {
+    const access = fakeAccess();
+    access.probe = async () => ({ ready: false, screenPermission: true,
+      inputPermission: true, displayCount: 1, sessionActive: false });
+    const { server } = app(access);
+    const listed = await request(server).get('/desktop/targets')
+      .set('Authorization', `Bearer ${AUTH}`)
+      .set('X-Instar-Operator-Session', 'operator-proof');
+    expect(listed.status).toBe(200);
+    expect(listed.body.machines[0]).toMatchObject({ ready: false,
+      unavailableReason: expect.stringContaining('locked or inactive') });
+  });
 });

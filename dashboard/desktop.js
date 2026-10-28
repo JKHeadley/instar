@@ -111,6 +111,49 @@ async function api(path, method = 'GET', body) {
   return result;
 }
 
+function requirePinAgain() {
+  token = '';
+  operatorSession = '';
+  $('retryButton').hidden = true;
+  $('request').hidden = true;
+  $('unlock').hidden = false;
+  status('Your dashboard session ended. Enter your PIN again.');
+}
+
+async function loadTargetsAndMaybeOpen() {
+  const targets = await api('/desktop/targets');
+  $('machine').replaceChildren();
+  for (const target of targets.machines || []) {
+    const option = document.createElement('option');
+    option.value = target.machineId;
+    option.textContent = target.label;
+    option.disabled = !target.ready;
+    $('machine').append(option);
+  }
+  const preferredMachine = new URLSearchParams(location.search).get('machineId');
+  const hasPreferredMachine = !!preferredMachine && [...$('machine').options]
+    .some(option => option.value === preferredMachine && !option.disabled);
+  if (hasPreferredMachine) $('machine').value = preferredMachine;
+  $('unlock').hidden = true;
+  const ready = [...$('machine').options].filter(option => !option.disabled);
+  if (ready.length === 0) {
+    $('request').hidden = true;
+    $('retryButton').hidden = false;
+    const reason = (targets.machines || []).find(target => target.unavailableReason)?.unavailableReason;
+    status(reason || 'This machine’s desktop is not available right now.');
+    return;
+  }
+  $('retryButton').hidden = true;
+  if (ready.length === 1 || hasPreferredMachine) {
+    if (ready.length === 1) $('machine').value = ready[0].value;
+    status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
+    await requestDesktop();
+  } else {
+    $('request').hidden = false;
+    status('Choose a machine to open.');
+  }
+}
+
 $('unlockButton').addEventListener('click', async () => {
   $('unlockButton').disabled = true;
   try {
@@ -126,37 +169,21 @@ $('unlockButton').addEventListener('click', async () => {
     token = result.token;
     operatorSession = result.operatorSessionToken;
     $('pin').value = '';
-    const targets = await api('/desktop/targets');
-    $('machine').replaceChildren();
-    for (const target of targets.machines || []) {
-      const option = document.createElement('option');
-      option.value = target.machineId;
-      option.textContent = target.label;
-      option.disabled = !target.ready;
-      $('machine').append(option);
-    }
-    const preferredMachine = new URLSearchParams(location.search).get('machineId');
-    const hasPreferredMachine = !!preferredMachine && [...$('machine').options]
-      .some(option => option.value === preferredMachine && !option.disabled);
-    if (hasPreferredMachine) {
-      $('machine').value = preferredMachine;
-    }
-    $('unlock').hidden = true;
-    const ready = [...$('machine').options].filter(option => !option.disabled);
-    if (ready.length === 0) {
-      $('unlock').hidden = false;
-      throw new Error('This machine’s desktop is not available right now.');
-    }
-    if (ready.length === 1 || hasPreferredMachine) {
-      if (ready.length === 1) $('machine').value = ready[0].value;
-      status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
-      await requestDesktop();
-    } else {
-      $('request').hidden = false;
-      status('Choose a machine to open.');
-    }
-  } catch (error) { status(error.message || 'Could not unlock.'); }
+    await loadTargetsAndMaybeOpen();
+  } catch (error) {
+    if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
+    else status(error.message || 'Could not unlock.');
+  }
   finally { $('unlockButton').disabled = false; }
+});
+
+$('retryButton').addEventListener('click', async () => {
+  $('retryButton').disabled = true;
+  try { await loadTargetsAndMaybeOpen(); }
+  catch (error) {
+    if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
+    else status(error.message || 'Could not check this machine.');
+  } finally { $('retryButton').disabled = false; }
 });
 
 async function requestDesktop() {
@@ -186,11 +213,7 @@ async function requestDesktop() {
     }
     const message = error.message || 'Could not open desktop.';
     if (/dashboard operator session|dashboard PIN session/i.test(message)) {
-      token = '';
-      operatorSession = '';
-      $('request').hidden = true;
-      $('unlock').hidden = false;
-      status('Your dashboard session ended. Enter your PIN again.');
+      requirePinAgain();
     } else {
       $('request').hidden = false;
       status(message);

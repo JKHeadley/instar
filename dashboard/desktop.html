@@ -10,7 +10,7 @@
 <body>
   <a href="/dashboard/">← Dashboard</a>
   <h1>Remote desktop: __INSTAR_DESKTOP_TARGET_NAME__</h1>
-  <p>Enter your dashboard PIN to see and control this machine’s desktop for up to ten minutes. Clicks and typing work in its open apps as if you were sitting there. You can change files or settings. Press Stop access at any time.</p>
+  <p>This first Mac version requires its desktop to be signed in and unlocked. Enter your dashboard PIN to see and control it for up to ten minutes. Clicks and typing work in its open apps as if you were sitting there. You can change files or settings. Press Stop access at any time.</p>
   <section id="unlock">
     <label>Dashboard PIN <input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
     <button id="unlockButton">Open desktop</button>
@@ -26,6 +26,7 @@
     <p class="muted">Click the desktop image to click remotely. Move the pointer over the image to move the remote pointer.</p>
   </section>
   <p id="status" role="status"></p>
+  <button id="retryButton" hidden>Check again</button>
   <script type="module" src="/dashboard/desktop.js?v=__INSTAR_DESKTOP_ASSET_VERSION__"></script>
 </body>
 </html>
