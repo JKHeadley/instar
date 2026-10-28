@@ -3548,6 +3548,9 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Operator-initiated native desktop access. Explicit opt-in on a
+   * development agent only; omitted and false both leave every route dark. */
+  remoteDesktop?: { enabled?: boolean };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;
   /** Project root directory */

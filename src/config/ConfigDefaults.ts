@@ -29,6 +29,12 @@ export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
 
 /** Fields shared across ALL agent types and contexts (init + migration) */
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  // Native operator desktop access is a privileged full-machine capability.
+  // Every new and existing agent stays dark until a deliberate local opt-in;
+  // production also requires the developmentAgent role and live host checks.
+  remoteDesktop: {
+    enabled: false,
+  },
   // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §9/§10). Ships DARK
   // fleet-wide (enabled:false, dryRun:true); dev agents (Echo/Codey) are
   // flipped by hand in the same ship, gated on the §5.3 pre-enable canary.

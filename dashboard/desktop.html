@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Remote desktop · Instar</title>
+  <link rel="stylesheet" href="/dashboard/desktop.css">
+</head>
+<body>
+  <a href="/dashboard/">← Dashboard</a>
+  <h1>Remote desktop</h1>
+  <p>Control the currently logged-in desktop of one machine. Your actions affect the whole machine. Access lasts at most ten minutes and stops when you press Stop.</p>
+  <section id="unlock">
+    <label>Dashboard PIN <input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
+    <button id="unlockButton">Unlock</button>
+  </section>
+  <section id="request" hidden>
+    <label>Machine <select id="machine"></select></label>
+    <label>Telegram approval topic <select id="topic"></select></label>
+    <label><input id="scope" type="checkbox"> I understand this gives me full control of the logged-in desktop.</label>
+    <button id="requestButton">Ask to open desktop</button>
+    <p class="muted">The code arrives in your private Telegram chat with the bot. Reply with the command in your verified Telegram topic. This page will wait for that reply.</p>
+  </section>
+  <section id="control" hidden>
+    <div class="row"><strong id="machineName"></strong><button id="stopButton" class="danger">Stop access</button></div>
+    <img id="screen" alt="Live desktop of the selected machine" draggable="false">
+    <div class="row"><label>Type remotely <input id="typeText" maxlength="64" autocomplete="off" spellcheck="false"></label><button id="typeButton">Send text</button></div>
+    <p class="muted">Click the desktop image to click remotely. Move the pointer over the image to move the remote pointer.</p>
+  </section>
+  <p id="status" role="status"></p>
+  <script type="module" src="/dashboard/desktop.js"></script>
+</body>
+</html>

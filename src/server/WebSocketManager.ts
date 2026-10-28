@@ -37,6 +37,7 @@ import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { StreamTicketStore } from './StreamTicketStore.js';
 import { PeerStreamProxy, type UpstreamTransport, type UpstreamHandlers } from './PeerStreamProxy.js';
 import type { SessionPlatformInfo } from './sessionPlatform.js';
+import type { DesktopStreamManager } from './DesktopStreamManager.js';
 
 /** Pool Dashboard Streaming §2.1: only tmux-safe session names ever reach tmux. */
 const SAFE_SESSION_NAME = /^[A-Za-z0-9_.:@-]+$/;
@@ -98,6 +99,7 @@ export class WebSocketManager {
     instarDir?: string;
     hookEventReceiver?: HookEventReceiver;
     streamTicketStore?: StreamTicketStore;
+    desktopStreamManager?: DesktopStreamManager;
     poolStreamAllowRemoteInput?: boolean;
     poolStreamConnector?: PoolStreamConnector;
     selfMachineId?: string;
@@ -126,6 +128,16 @@ export class WebSocketManager {
     // Handle upgrade manually for auth
     options.server.on('upgrade', (request, socket, head) => {
       const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+
+      if (url.pathname === '/desktop-stream') {
+        if (!options.desktopStreamManager) {
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        void options.desktopStreamManager.handleUpgrade(request, socket, head);
+        return;
+      }
 
       // ── /pool-stream: a PEER machine streaming a remote session (§2.3) ──
       // Authenticated by a single-use bearer ticket minted over the machine-

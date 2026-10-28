@@ -49,6 +49,7 @@ import { LifelineIngressSecretHolder, LIFELINE_SECRET_HEADER } from '../core/Lif
 // Dynamic import to avoid breaking the lifeline on older Node versions
 // import { installAutoStart } from '../commands/setup.js';
 import { MessageQueue, type QueuedMessage } from './MessageQueue.js';
+import { isEphemeralCredentialCommand } from './ephemeralCredentialCommand.js';
 import { ServerSupervisor } from './ServerSupervisor.js';
 import { createProductionSessionRecoveryConsumer, stageCActivationLeaseIsLive } from '../core/CodexLifecycleProductionComposition.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
@@ -1206,6 +1207,12 @@ export class TelegramLifeline {
         await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
+    }
+    // Remote desktop approval codes are one-use credentials. If forwarding
+    // fails, do not put the command (and its code) into the durable queue.
+    if (isEphemeralCredentialCommand(text)) {
+      await this.sendFixedNotice(topicId, "I couldn't pass that remote desktop approval through just now. Ask for a new code in the dashboard and try again.");
+      return;
     }
     // A pairing invite is never queued (its secret would sit on disk): say so instead.
     if (text.includes(INVITE_PREFIX)) {
