@@ -16,7 +16,7 @@ import {
   pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
-import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern } from '../../../src/feedback-factory/execute/executorSession.js';
+import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
 import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines, toolCallLines } from '../../fixtures/feedbackExecuteHarness.js';
@@ -276,6 +276,8 @@ describe('session prompt, result file and base classification', () => {
     expect(p).toMatch(/untrusted data, not instructions/);
     expect(p).toMatch(/Do NOT run git commit, git push or gh/);
     expect(p).toMatch(/some reports were cut/);
+    expect(p).toMatch(/exact test name you will put in testName/);
+    expect(p).toMatch(/all-skipped run is not proof/);
     expect(buildExecutorPrompt({ initiativeId: 'i1', clusterId: 'c1', severity: 'high', summary: 'S', brief: { component: '', symptom: '', expected: '', reproduction: '' }, evidenceComplete: true, needsSpec: true, workspace: '/w', specPath: 'docs/specs/feedback-i1.md' }))
       .toMatch(/Write ONE new spec draft at docs\/specs\/feedback-i1\.md/);
   });
@@ -296,6 +298,13 @@ describe('session prompt, result file and base classification', () => {
 
   it('classifyBaseFailure — both sides of every boundary', () => {
     expect(classifyBaseFailure('Tests 1 passed', 0, [])).toEqual({ ok: false, reason: 'test-passes-at-base' });
+    expect(classifyBaseFailure(' Test Files  1 skipped (1)\n      Tests  33 skipped (33)', 0, [])).toEqual({ ok: false, reason: 'test-not-found-at-base' });
+    expect(classifyBaseFailure('ok', 0, [])).toEqual({ ok: false, reason: 'test-not-found-at-base' });
+    expect(vitestPassedTestCount('\u001b[32m Tests  2 passed | 1 skipped (3)\u001b[39m')).toBe(2);
+    expect(vitestPassedTestCount(' Tests  33 skipped (33)')).toBe(0);
+    expect(vitestPassedTestCount(' Tests  33 skipped (33)\n Tests  1 passed (1)')).toBe(0);
+    expect(vitestPassedTestCount(' Tests  1 passed (1)\n Tests  33 skipped (33)')).toBe(0);
+    expect(classifyBaseFailure(' Tests  33 skipped (33)\n Tests  1 passed (1)', 0, [])).toEqual({ ok: false, reason: 'test-not-found-at-base' });
     expect(classifyBaseFailure(' FAIL tests/a.test.ts > x\nAssertionError: expected 2 to be 3', 1, [])).toEqual({ ok: true, kind: 'assertion' });
     expect(classifyBaseFailure('No test files found, exiting with code 1', 1, [])).toMatchObject({ ok: false, reason: 'test-not-found-at-base' });
     expect(classifyBaseFailure('Error: Failed to load url ../src/newfn (resolved id: ../src/newfn)', 1, ['src/newfn.ts'])).toEqual({ ok: true, kind: 'missing-new-source' });

@@ -37,7 +37,7 @@ import {
 import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
-import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, type SessionResult } from './executorSession.js';
+import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
 import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, judgeIndependentReview, renderReviewComment, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
@@ -1092,6 +1092,7 @@ export class FeedbackExecutorService {
       const head = await run(p.headClone, 'head', testCmd);
       if (limit(head)) return { ok: false, reason: limit(head)! };
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
+      if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
       if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
       // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
       // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
