@@ -4177,6 +4177,25 @@ export interface InstarConfig {
      * explicit false is the kill switch, read live. Needs the vault
      * `typesafe_api_key`.
      */
+    /**
+     * Model assessment of machine load (trustworthy-machine-load B4). ADVISORY,
+     * LOG-ONLY: when a machine's own load verdict and the outside view disagree,
+     * or its readings contradict, Jev (Luna referee when unsure) labels it and
+     * the label is graded 15 min later. Acts on nothing. `enabled` OMITTED ⇒ the
+     * development-agent gate decides; explicit false is the kill switch, read
+     * live. Needs the vault `typesafe_api_key`.
+     */
+    jevLoadAssessment?: {
+      enabled?: boolean;
+      /** Pinned Jev model id (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per Jev call (default 1500, max 10000). */
+      timeoutMs?: number;
+      /** Daily bound on attempted Jev calls (default 200). */
+      maxChecksPerDay?: number;
+      /** The Luna referee for unsure answers; on unless `enabled: false`. */
+      referee?: { enabled?: boolean; timeoutMs?: number };
+    };
     jevReviewFlagShadow?: {
       enabled?: boolean;
       /** Pinned model id — never an alias (default "jev-1.13.0"). */

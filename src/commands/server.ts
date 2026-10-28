@@ -22995,6 +22995,41 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(pc.yellow(`  [load-report] sampler unavailable: ${err instanceof Error ? err.message : String(err)}`));
         }
 
+        // trustworthy-machine-load B4 (P4): model assessment of machine load. Advisory
+        // and log-only — when a machine's own verdict and the outside view disagree, or
+        // its readings contradict, Jev (Luna referee when unsure) labels the snapshot and
+        // the label is graded 15 min later against what happened. Acts on nothing.
+        // Dev-gated (live on a development agent, dark on the fleet), read live per tick,
+        // asks only on the serving-lease holder, inert without the vault typesafe_api_key.
+        try {
+          const assessMod = await import('../core/MachineLoadAssessor.js');
+          const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+          const { SecretStore } = await import('../core/SecretStore.js');
+          let loadReferee: import('../core/types.js').IntelligenceProvider | null = null;
+          try {
+            const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+            const { buildIntelligenceProvider: buildLoadRefereeProvider } = await import('../core/intelligenceProviderFactory.js');
+            loadReferee = buildLoadRefereeProvider({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+          } catch { /* @silent-fallback-ok — no Codex CLI means no referee; Jev-only labels are recorded as such */ }
+          const registryForAssess = machinePoolRegistry;
+          const assessor = assessMod.buildMachineLoadAssessor({
+            readLiveIntelligence: () => liveConfig.get<Record<string, unknown>>('intelligence', undefined as never),
+            bootBlock: config.intelligence?.jevLoadAssessment,
+            developmentAgent: config.developmentAgent === true,
+            readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+            capacities: () => registryForAssess?.getCapacities() ?? [],
+            isAssessor: () => (_holdsLeaseForSpawn ? _holdsLeaseForSpawn() : true),
+            referee: loadReferee,
+            stateDir: config.stateDir,
+            metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+          });
+          assessMod.installMachineLoadAssessor(assessor);
+          assessor.start();
+        } catch (err) {
+          // @silent-fallback-ok (logged): without the assessor nothing is labelled (advisory only).
+          console.log(pc.yellow(`  [load-assessment] not constructed: ${err instanceof Error ? err.message : String(err)}`));
+        }
+
         // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
         // "Cutover discipline"). Wired HERE (not at setRoleGuard) because the
         // gate needs the machinePoolRegistry — declared after the scheduler is

@@ -728,6 +728,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the session\'s own transcript (path shape-checked), secret-scrubs the window before egress, bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
   },
   {
+    name: 'jevLoadAssessment',
+    configPath: 'intelligence.jevLoadAssessment.enabled',
+    description: 'Model assessment of machine load (trustworthy-machine-load B4): when a machine\'s own load verdict and the outside view disagree, or its readings contradict, Jev (Luna referee when unsure) labels it; the label is graded 15 min later against what happened.',
+    justification: 'Advisory and log-only — no placement, admission, shed, attention or message path reads its output. Asks only on the serving-lease holder, once per machine per 10-30 min, one call at a time under a fetch timeout and a daily cap of 200, metered; inert without the vault typesafe_api_key. Sends only load numbers, a machine nickname and fixed words, secret-scrubbed. Kill switch read live. No destructive action.',
+  },
+  {
     name: 'jevReviewFlagShadow',
     configPath: 'intelligence.jevReviewFlagShadow.enabled',
     description: 'Jev review-flag shadow (jev-review-flag-shadow.md): once a minute, asks Jev whether each new agent Telegram reply needs the operator\'s review and logs a content-free would-flag row.',

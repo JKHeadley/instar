@@ -3425,6 +3425,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * The numbers behind a memory-pressure refusal, so the message can be checked
+   * against other readings (trustworthy-machine-load, 2026-10-27: a refusal at
+   * ~80% used was misread as "41% free", a different macOS figure that counts
+   * compressible memory as free). Never throws.
+   */
+  private memoryPressureEvidence(deps: MemReadDeps = {}): string {
+    try {
+      const usedPercent = Math.round(100 - hostFreeMemPct(deps));
+      return `${usedPercent}% used, i.e. 100 minus free+inactive+purgeable, read just after the check; thresholds high 75%, critical 90%`;
+    } catch {
+      return 'reading unavailable'; // @silent-fallback-ok — evidence text for a message, never a decision input
+    }
+  }
+
+  /**
    * Current host memory-pressure tier (june15-headless-spawn-reroute PR2, O2).
    * Extracted from getSessionDiagnostics' inline computation so the reroute
    * pre-spawn gate and the diagnostics surface read ONE definition of pressure.
@@ -4227,7 +4242,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     const why = reroutedCount >= maxRerouted
       ? `rerouted-session cap reached (${reroutedCount}/${maxRerouted})`
-      : `host memory pressure is ${pressure}`;
+      : `host memory pressure is ${pressure} (${this.memoryPressureEvidence()})`;
     if (mode === 'force') {
       // Loud refusal — force-mode has no headless fallback. Report AND throw.
       DegradationReporter.getInstance().report({

@@ -66,6 +66,7 @@ import {
   jevJobCompletionAuditAwareness,
   jevMemoryPickerAwareness,
   jevReviewFlagShadowAwareness,
+  machineLoadAssessmentAwareness,
   jevSignalLiveAwareness,
   READINESS_PAUSE_ALARM_BULLET,
   READINESS_PAUSE_ALARM_MARKER,
@@ -7380,6 +7381,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev review-flag-shadow awareness card');
     }
 
+    if (!content.includes('### Machine Load Second Opinion')) {
+      content += machineLoadAssessmentAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added machine load second-opinion awareness card');
+    }
+
     if (!content.includes('Queued-message review pacing:')) {
       content += '\n' + telegramOriginRecoveryAwareness();
       patched = true;
@@ -12698,6 +12705,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // Jev circles shadow: a server-side log-only instrument whose summary any
       // framework's agent can read; the card says it measures Claude Code sessions.
       '### Jev Circles Shadow',
+      // Machine load second opinion (trustworthy-machine-load B4): a server-side
+      // advisory log over the pool view; any framework's agent can read its summary.
+      '### Machine Load Second Opinion',
       // Jev review-flag shadow: a server-side log-only instrument over the
       // Telegram history, framework-agnostic; any agent can read its summary.
       '### Jev Review-Flag Shadow',

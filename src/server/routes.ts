@@ -153,6 +153,7 @@ import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { getJevCorrectionShadow } from '../core/JevCorrectionShadow.js';
 import { getJevCirclesShadow } from '../core/JevCirclesShadow.js';
 import { getJevReviewFlagShadow } from '../core/JevReviewFlagShadow.js';
+import { getMachineLoadAssessor } from '../core/MachineLoadAssessor.js';
 import { PasskeyGrantStore, canonicalEmail as canonicalPasskeyEmail } from '../core/PasskeyGrantStore.js';
 import { PasskeyIssuerSet, type IssuerMachineStatus } from '../core/PasskeyIssuerSet.js';
 import { PasskeyNonceLedger } from '../core/PasskeyNonceLedger.js';
@@ -6338,6 +6339,19 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(shadow.summary());
+  });
+
+  // GET /load-assessment/summary — the trustworthy-machine-load B4 model assessment
+  // log, summarised: labels, who decided (Jev / Luna referee), the conflicts that
+  // triggered them, outcomes 15 min later and right/wrong grades. Read-only,
+  // content-free rows. 503 when the assessor is not constructed on this agent.
+  router.get('/load-assessment/summary', (_req, res) => {
+    const assessor = getMachineLoadAssessor();
+    if (!assessor) {
+      res.status(503).json({ error: 'machine load assessment not constructed on this agent' });
+      return;
+    }
+    res.json(assessor.summary());
   });
 
   // GET /jev-review-flag/summary — the jev-review-flag-shadow log, summarised
