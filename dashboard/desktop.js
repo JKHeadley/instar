@@ -26,6 +26,7 @@ let reconnectTimer = 0;
 let resumeGeneration = 0;
 let resumeAttempt = null;
 let resumeSetupFailures = 0;
+let resumeTransportFailures = 0;
 const resumeControllers = new Set();
 let stopping = false;
 let trackpad = matchMedia('(pointer: coarse)').matches;
@@ -144,6 +145,7 @@ function unexpectedDisconnect(streamSocket) {
   }
   const generation = ++resumeGeneration;
   resumeSetupFailures = 0;
+  resumeTransportFailures = 0;
   scheduleResume(generation, 500);
 }
 function scheduleResume(generation, delay) {
@@ -239,9 +241,8 @@ async function resumeDesktop(generation) {
     }
     // Only a temporary transport read failure may be retried. A target refusal
     // or expired PIN session is terminal for this automatic path.
-    if (!activated && !error.httpStatus && !error.terminal && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      reconnectAttempts++;
-      scheduleResume(generation, 500 * 2 ** (reconnectAttempts - 1));
+    if (!activated && !error.httpStatus && !error.terminal && ++resumeTransportFailures <= 3) {
+      scheduleResume(generation, 500 * 2 ** (resumeTransportFailures - 1));
       return;
     }
     resumeAttempt = null;
@@ -358,6 +359,7 @@ $('retryButton').addEventListener('click', async () => {
 
 async function requestDesktop() {
   reconnectAttempts = 0;
+  resumeTransportFailures = 0;
   stopping = false;
   resumeGeneration++;
   resumeAttempt = null;
@@ -468,6 +470,7 @@ async function openStream(result, resume = null) {
     $('machineName').textContent = ticket.label;
     status('Remote desktop is live.');
     if (resume !== null) resumeAttempt = null;
+    resumeTransportFailures = 0;
     heartbeat = setInterval(() => {
       sendCommand({ type: 'ping' });
     }, 30_000);
