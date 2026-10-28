@@ -90,7 +90,7 @@ async function openMachine(m, { get, health, guards, names }) {
       && (desktop.data.machineId === m.id || m.id === 'self')) {
       sb.insertBefore(block('Remote desktop',
         el('p', { class: 'card-line', text: 'Enter your dashboard PIN to open this machine’s signed-in desktop.' }),
-        el('a', { href: '/dashboard/desktop.html', text: 'Open this machine' })), after);
+        el('a', { href: `/dashboard/desktop.html?machineId=${encodeURIComponent(desktop.data.machineId)}`, text: 'Open this machine' })), after);
     }
   }
   if (m.id !== 'self') panel.querySelector('.sheet-body').append(renameBlock(m, get));
