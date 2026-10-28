@@ -12,7 +12,7 @@
 
 ## Evidence
 
-Focused unit tests, TypeScript, build, real-Git integration (10/10), and production-lifecycle E2E (2/2) passed. A full unit run found one closed-allowlist size assertion that still expected 12 read verbs; the test and its approved spec now account for the new read-only `ls-files` verb, and its 15 focused cases pass. The full suite is rerunning. Echo's six-hour cleaner has three successful launchd runs, and its live physical worktree count was 308 on 2026-10-28.
+Focused unit tests, TypeScript, build, real-Git integration (10/10), and production-lifecycle E2E (2/2) passed. A full unit run found one closed-allowlist size assertion that still expected 12 read verbs; the test and its approved spec now account for the new read-only `ls-files` verb. The complete rerun passed 52,820 unit, 4,930 integration, and 3,594 E2E tests with zero failures. Echo's six-hour cleaner has three successful launchd runs, and its live physical worktree count was 308 on 2026-10-28.
 
 ## What to Tell Your User
 

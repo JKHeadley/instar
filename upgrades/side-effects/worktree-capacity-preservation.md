@@ -42,4 +42,4 @@ Revert and release. A retained crash lock can be inspected and removed; it is ru
 
 ## Evidence
 
-Real-Git tests cover ignored unique files and generated-output directories. Unit tests cover the lock and count boundaries; integration covers the CLI path and concurrent calls (10/10 passed). Production-lifecycle E2E passed 2/2. The updated closed-read-tier test passed 15/15. The full suite is rerunning after this assertion correction. The live cleaner has three successful launchd runs and a 308-directory count, but the merged source guard is still pending.
+Real-Git tests cover ignored unique files and generated-output directories. Unit tests cover the lock and count boundaries; integration covers the CLI path and concurrent calls (10/10 passed). Production-lifecycle E2E passed 2/2. The updated closed-read-tier test passed 15/15. The complete local suite passed 52,820 unit, 4,930 integration, and 3,594 E2E tests with zero failures. The live cleaner has three successful launchd runs and a 308-directory count; PR merge is pending.
