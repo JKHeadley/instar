@@ -1533,7 +1533,7 @@ export class LocalVerifyService {
     if (this.notePause() || this.verifierChangedOnDisk()) return;
     // The pump has already given the local slot its first chance before this
     // scheduled dispatch runs. If another suite holds that slot, an idle peer
-    // can take a queued PR instead of waiting for the Studio to start one.
+    // can take a queued PR without a local verifier already in flight.
     const lease = this.leaseState();
     if (!lease.holds) return;
     this.dispatchRunning = true;

@@ -62,3 +62,7 @@ Two unit regression tests were red before the change and green after it. A follo
 **Independent read of the artifact:** The reviewer found that a durable remote reservation could leave a stale Studio suite claim, and that a closed PR dequeued during base refresh could do the same. Both paths now reconcile the claim immediately, with tests for release when only remote work remains and retention when main is queued. The reviewer concurred with the updated diff and found no further concrete over-block, under-block, lease, or hold issue. The production E2E was assessed as meaningful wiring coverage.
 
 The reviewer also checked the integration timing correction after Studio's second run. It waits for the exact accepted state asserted, retains separate no-local-start and one-peer-start assertions, and introduces no new issue.
+
+Studio's next full run passed but exposed a review-record mismatch: the artifact had changed after the original runtime trace, so its digest no longer matched; later traces covered only the files changed in those commits. A final comment clarification in the runtime file and this artifact are committed with one fresh trace that covers the flagged runtime path and pins the final artifact digest. This is a review-provenance repair, with no runtime behavior change.
+
+The reviewer independently checked this final comment and provenance repair and reconfirmed concurrence with the complete PR diff.
