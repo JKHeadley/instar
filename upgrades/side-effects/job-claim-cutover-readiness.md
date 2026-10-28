@@ -73,6 +73,8 @@ The review found a misleading earlier claim: a local epoch-fenced store was desc
 
 ## Evidence pointers
 
+The first full verify caught a hand-maintained line-number map in `lint-dev-agent-dark-gate.test.ts` that moved by two lines when the config comment was added. The map is updated to the actual source lines. The other failed file, `outbound-advisory-routes.test.ts`, passed twice locally, including against the rebased main branch; it is being rechecked by the next exact-head run.
+
 - `src/scheduler/JobLeaseClaimStore.ts` — `applyRemote` has no production caller.
 - `tests/e2e/scheduler-journal-lease-cutover-alive.test.ts` — coherent flag still selects bus while authority readiness is false.
 - `tests/unit/seamlessness-dev-gate-wiring.test.ts` — scheduler and heartbeat both use the readiness floor.
