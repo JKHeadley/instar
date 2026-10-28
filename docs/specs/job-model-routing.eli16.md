@@ -14,9 +14,10 @@ best-value model the agent can reach, picked from Instar's own benchmark results
 (for example OpenAI's GPT-6 Luna through Codex), with Claude as the fallback.
 Second, use Jev (TypeSafe's fast classifier) to skip empty work only after its
 answers have been validated. An uncertain answer lets the job proceed. After
-**every script finishes**, Jev checks its result and decides whether a full
-session is needed; Haiku or Luna takes over that check for each result when
-Jev is unavailable. This includes script and pass jobs added here. Those
+**every script finishes**, it gets a recorded supervision decision. Exact,
+proven routine shapes can use fixed rules; other results go to Jev, with
+Haiku or Luna taking over those checks when Jev is unavailable. This includes
+script and pass jobs added here. Those
 after-run checks are distinct from the two optional before-work checks in this
 spec. One rule sits over both: an agent with only
 one AI provider must still work

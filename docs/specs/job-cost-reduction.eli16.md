@@ -30,11 +30,11 @@ problem, because they all use the same built-in job templates.
    that owns the problem tries to fix it. If a smaller problem is still there
    after 6 hours, you get one message about it.
    You hear about each problem once, not every 5 minutes.
-3. **Jev decides when a job's result needs a real session.** After every script
-   run, Jev checks its result with one question: is this routine, or does it
-   need a real AI session to look into it? This includes plain "all fine" and
-   skipped results, so a false healthy report is reviewable. When Jev is unsure, a bounded
-   investigation session starts. Jev can only add
+3. **Every result gets a supervision decision.** The newer
+   `job-result-supervision-v2` design records a decision for every script run.
+   An exact, proven routine shape can use a fixed rule. New, changed, failed,
+   or unclear results go to Jev with one question: does this need a real AI
+   session? When Jev is unsure, a bounded investigation session starts. Jev can only add
    sessions: a fixed rule (a job that fails twice in a row, or a serious
    problem like a nearly full disk) always gets one, whatever Jev says.
    - A session started this way is an investigator: it gets a fixed brief, a
@@ -45,7 +45,7 @@ problem, because they all use the same built-in job templates.
    - This applies to the other script jobs too, even when their server-side
      work already raises its own alert.
 4. **Outage replacement, and one review a day.** Only while Jev is unavailable,
-   Luna or Haiku checks each result in its place. Once a day, a single review looks across all
+   Luna or Haiku checks each result Jev would have checked. Once a day, a single review looks across all
    the jobs. A daily practice check also feeds every script a fake broken server
    and checks that each one still notices the failure.
 5. **One request comes in a second step, with its own spec.**

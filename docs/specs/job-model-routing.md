@@ -36,28 +36,23 @@ spec (its §7):
 - **G2.** Jobs that genuinely need a model run on the best-value model the agent
   can reach, chosen from Instar benchmark evidence (for example Codex GPT-6
   Luna), with Claude as the fallback.
-- **G3.** Use Jev (TypeSafe) as the first check of every completed script
-  result. Haiku or Luna replaces Jev for each result only when Jev is
-  unavailable. An uncertain result requests an investigation session. The
-  optional before-work checks for selected jobs are described separately in
-  §6 and §7.
+- **G3.** Every completed script result gets a recorded supervision decision.
+  Exact, proven routine shapes can use fixed rules; results needing judgment
+  go to Jev (TypeSafe), with Haiku or Luna replacing it only when unavailable.
+  The after-run contract is owned by `job-result-supervision-v2.md`. The
+  optional before-work checks for selected jobs are in §6 and §7.
 
 Both are bounded by **G4, the single-provider floor**: an agent with one provider,
 no Jev key and no benchmark mirror stays fully functional. Jev, Codex and
 benchmark routing are optimizations only, and the one-provider path is measured
 first.
 
-**Clarified Jev-first rule (Justin, 2026-10-27).** After **every script run**, Jev
-checks the result and decides whether a full investigation session is needed.
-When Jev is unavailable, Haiku or Luna performs that check for **each result**;
-it is not a periodic sample. An uncertain answer starts an investigation
-session, subject to the existing safety and admission bounds. The fixed alert
-rules still report critical failures immediately, and a one-provider agent
-still works. This rule belongs to spec 1's result-supervision design and also
-applies to every script or pass job added by this spec. The separate Jev checks
-in §6 and §7 run *before* selected jobs do work; they do not replace the
-after-run result check. No live Jev result path is enabled until benchmark,
-per-call audit, outcome grading, and bulk review are proven.
+**After-run coverage.** `job-result-supervision-v2.md` applies to every script
+and pass job added here. Its fixed decisions are certified per result shape,
+not by a five-job allowlist. The Jev checks in §6 and §7 run *before* selected
+jobs do work; they do not replace the after-run supervision record. No live
+Jev result path is enabled until benchmark, per-call audit, outcome grading,
+and bulk review are proven.
 
 **G7, auditability of every model call.** Every Jev, Claude, Codex, referee,
 counterfactual, retry, and provider-swap call introduced here must enter the
@@ -127,7 +122,8 @@ into `src/scaffold/templates/jobs/instar/*.md` (spec 1 §3).
 
 Target classes:
 
-- **script**: spec 1's script runner; zero model calls.
+- **script**: spec 1's script runner; the job's own work makes no model call.
+  Its result still enters `job-result-supervision-v2.md`.
 - **pass**: a spec-1 script that triggers one server-side pass: deterministic
   gather, one routed bounded call, deterministic delivery through the reply
   checkpoint (§4).

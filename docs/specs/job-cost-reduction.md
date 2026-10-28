@@ -71,19 +71,17 @@ leaves it out of the savings estimate rather than guessing.
 Goals (operator direction):
 
 - **G1.** These jobs become far more efficient. A job whose work is a fixed
-  command runs **with no session at all**, and **with no model call on a bare
-  healthy run**. A model is called only to classify a non-trivial result (Jev,
-  §5.6.2), to word a push (§5.4), or on the outage backup and daily
-  reviews; a session starts only when triage says one is needed.
+  command runs **with no session at all**. A verified, certified healthy
+  result can avoid a model call; other results follow the supervision rule in
+  `job-result-supervision-v2.md`. A session starts only when the fixed floor
+  or judgment check says one is needed.
 - **G2.** Work that genuinely needs a model runs on the **cheapest capable
   model**, chosen from **Instar benchmark evidence** (e.g. Codex GPT-6 Luna),
   with Claude as the fallback.
-- **G3.** Use **Jev (TypeSafe)** wherever the judgment is a classification.
-  A confident Jev answer decides; uncertainty starts a bounded investigator.
-  Haiku or Luna replaces Jev only during an outage. In v1 that judgment is the
-  per-run question "does this result need a real session?" (§5.6.2), with a
-  slower Haiku-or-Luna replacement only while Jev is unavailable and one daily
-  review (operator decision and clarification, topic 130742, 2026-10-26 19:04–19:06).
+- **G3.** Use **Jev (TypeSafe)** for results that need judgment. A confident
+  Jev answer decides; uncertainty starts a bounded investigator. Haiku or
+  Luna replaces Jev only when unavailable, under the per-result contract in
+  `job-result-supervision-v2.md`. One daily review checks overall coverage.
 - **G4.** **Single-provider floor.** An agent with only one provider, no Jev key
   and no benchmark mirror stays fully functional. Jev, Codex and benchmark
   routing are optimizations, never dependencies. The single-provider path is the
@@ -605,39 +603,16 @@ today, at most 6 a day per machine.
 
 ### 5.6 Supervision: per-run Jev triage, an outage replacement, one daily review
 
-**Draft correction from Justin (2026-10-27).** The original text below limited
-Jev to five jobs and skipped plain-healthy, skipped, and cached results. It also
-sampled results only every six hours during a Jev outage. Those limits do **not**
-match Justin's intended first line of defense and are superseded by this
-paragraph and the replacement rule below. The older tables, cost estimates,
-tests, and frontloaded decisions in this merged spec still describe the prior
-design; they are not approval or implementation instructions for the new path.
-This correction stays in draft until the detailed design, benchmarks, tests,
-and cost estimate have been reconciled and reviewed. The live Jev path remains
-off behind the existing audit gate.
-
-**Replacement result rule.** Every completed script run produces one structured
-result record, including success, failure, skipped, and script trust rejection.
-Jev receives a bounded, scrubbed projection of each *trusted* result and
-answers whether a full investigation session is needed. A trust-rejected run
-gets an immediate local failure alert and a safe status-only result check;
-untrusted script text is never sent to Jev or another model. Plain-healthy and
-repeated results are checked too; a cached verdict cannot silently stand in for
-a new per-run check. When Jev is unavailable, Haiku or Luna checks each result
-in its place, using the same evidence projection and audit record. If that
-replacement is also unavailable, the single-provider agent uses its reachable
-model; if no model is reachable, deterministic alerts remain live, the result
-is marked `unchecked`, and the missing coverage is surfaced. Uncertain or
-malformed answers ask for an investigation session under the existing admission
-bounds. A fixed critical alert is delivered without waiting for any model.
-Every check, fallback, refusal, and later outcome is recorded for benchmark and
-bulk accuracy review. A cost cap may limit spending, but cannot turn a result
-into an unreported silent skip.
-
-**Prior design detail below is retained as history pending reconciliation.**
-Its narrower `triage`/`deterministic` classes, bare-ok exclusions, fingerprint
-reuse, six-hour outage sample, and related tests are superseded by the
-replacement result rule above.
+**Approved direction, pending converged detail (Justin, 2026-10-27 19:41 PDT):**
+The after-run supervision design is replaced by
+[`job-result-supervision-v2.md`](job-result-supervision-v2.md). Every result gets
+a recorded decision. Exact, proven routine shapes can be closed by fixed
+rules; results needing judgment go to Jev, with Haiku or Luna replacing it
+only when unavailable. Critical alerts and must-fail canaries remain. The
+older five-job table, bare-OK exclusions, fingerprint reuse, six-hour outage
+sample, cost estimates, tests, and frontloaded decisions below are historical
+design detail, not instructions to implement or a forecast for v2. The live
+Jev path remains off behind the audit gate until v2 converges and is proven.
 
 `docs/LLM-SUPERVISED-EXECUTION.md` puts health checks at Tier 1, to "detect
 false-positive healthy reports". Today a Haiku session on every run pays for that
