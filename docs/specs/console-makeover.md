@@ -109,8 +109,8 @@ fails, and keeps any opened row or list open across refreshes.
 Block specifics:
 
 - **What needs you** splits the open items: *waiting on you* (URGENT, items raised
-  by the agent, and decision/approval/review/security/sign-in categories) first,
-  then a count of routine automated items. The same notice raised again or on
+  by the agent, and decision/approval/review/security/sign-in categories); routine
+  automated items are not counted on Home (see "A calm front page"). The same notice raised again or on
   several machines (same category and title) is **one** entry ("27 copies ·
   Mac Studio, Mac Mini, Laptop"). An entry untouched for 14+ days moves to a
   visible "Older, still open" group that is listed but not counted (age is not evidence it was handled);
@@ -133,7 +133,7 @@ Block specifics:
 - **What I've promised** leads with promises *waiting on you* (owner user, or
   blocked on your input or authorization) touched in the last 14 days, then
   missed ones; older waiting promises are listed as "untouched 14+ days" but not
-  counted (47 → 11 on live data); then a count of the rest. Replica rows say they come from another machine and how old they are.
+  counted (47 → 11 on live data); the rest is not counted on Home (see "A calm front page"). Replica rows say they come from another machine and how old they are.
   Coverage is stated beside the value: no replica rows means "only this machine's
   promises are visible", a replica over 15 min old means "some of it is out of
   date"; either marks the card a partial view even when it also needs you.
@@ -147,6 +147,14 @@ Block specifics:
 - **What I'm allowed to do** shows guards on, watching only, off-where-they-should-
   be-on and off by design, from `/guards`' own summary, plus active mandates; a
   failed mandate read keeps the guard reading and marks the card a partial view.
+- **A calm front page** (operator, 2026-10-27: "still looks WAY too busy and hard
+  to understand"). Home shows only what asks something of the operator: no
+  count of routine notices, no count of promises carried or untouched for
+  weeks (they stay under See all), a miss untouched for 14+ days is history
+  rather than a red row, a promise waiting on the operator is listed once (in
+  What needs you), and when every machine is answering the machine list
+  collapses to that one line. The headline names the areas it cannot fully
+  see instead of counting them.
 - **No internal text on Home.** No card or headline shows an internal id, a
   placeholder value (undefined/null), an internal field name or bookkeeping
   phrasing; `tests/unit/console-home-one-answer.test.ts` scans every builder's
