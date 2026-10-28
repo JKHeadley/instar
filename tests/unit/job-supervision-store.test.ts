@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import Database from 'better-sqlite3';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { JobSupervisionStore, supervisionMembershipStatus } from '../../src/scheduler/JobSupervisionStore.js';
 
@@ -41,6 +42,39 @@ describe('JobSupervisionStore', () => {
     store.recordResult(id, { result: 'success', completedAt: new Date(t0 + 10).toISOString(), evidenceHash: 'evidence-v1' });
     expect(store.get(id)?.result).toBe('success');
     expect(() => store.recordResult(id, { result: 'failure', evidenceHash: 'evidence-v2' })).toThrow(/conflicting result/);
+  });
+
+  it('accepts only a matching server receipt for the grading script and preserves it across restart', () => {
+    const token = 'a'.repeat(64);
+    const id = store.register({ runId: 'grade-run', fireId: 'grade-fire', slug: 'llm-decision-grading',
+      evidencePolicy: 'structured-v1', receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex'), now: t0 });
+    expect(store.recordGradePassReceipt('missing-run', token, 4, 2, t0)).toBe(false);
+    expect(store.recordGradePassReceipt('grade-run', 'b'.repeat(64), 4, 2, t0)).toBe(false);
+    expect(store.recordGradePassReceipt('grade-run', token, -1, 2, t0)).toBe(false);
+    expect(store.recordGradePassReceipt('grade-run', token, 4, 2, t0)).toBe(true);
+    expect(store.recordGradePassReceipt('grade-run', token, 5, 2, t0)).toBe(false);
+    expect(store.gradePassSignal('grade-run', 'graded=5 decision-points=2')).toBeNull();
+    expect(store.gradePassSignal('grade-run', 'graded=4 decision-points=2')).toMatchObject({
+      source: 'decision-quality-grade-pass-receipt', status: 'healthy',
+      independentOfSlug: 'llm-decision-grading',
+    });
+    store.close();
+    store = new JobSupervisionStore(dir);
+    expect(store.gradePassSignal('grade-run', 'graded=4 decision-points=2')).not.toBeNull();
+    store.recordResult(id, { result: 'success', completedAt: new Date(t0 + 1).toISOString() });
+    expect(store.recordGradePassReceipt('grade-run', token, 4, 2, t0 + 2)).toBe(false);
+  });
+
+  it('adds the receipt-token column when opening an existing supervision journal', () => {
+    store.close();
+    const db = new Database(path.join(dir, 'ledger', 'job-supervision.db'));
+    db.exec('ALTER TABLE attempts DROP COLUMN receipt_token_hash');
+    db.close();
+    store = new JobSupervisionStore(dir);
+    const token = 'c'.repeat(64);
+    store.register({ runId: 'migrated-run', fireId: 'fire-1', slug: 'llm-decision-grading',
+      evidencePolicy: 'structured-v1', receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+    expect(store.recordGradePassReceipt('migrated-run', token, 0, 0)).toBe(true);
   });
 
   it('never promotes a dark-era result into a model call after the rollout changes', () => {

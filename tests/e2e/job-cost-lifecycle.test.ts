@@ -91,6 +91,13 @@ describe('job-cost production lifecycle', () => {
         res.writeHead(401).end();
         return;
       }
+      const runId = req.headers['x-instar-job-run-id'];
+      const receiptToken = req.headers['x-instar-job-receipt-token'];
+      if (typeof runId !== 'string' || typeof receiptToken !== 'string'
+        || !scriptScheduler?.getJobSupervisionStore().recordGradePassReceipt(runId, receiptToken, 0, 0)) {
+        res.writeHead(409).end();
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ graded: 0, byRule: {}, cursors: {} }));
     });
@@ -137,7 +144,7 @@ describe('job-cost production lifecycle', () => {
         .toMatchObject({ runner: 'script', result: 'success', tokens: 0 });
       expect(scriptScheduler.getJobSupervisionStore().findByRunId(
         scriptScheduler.getRunHistory().query({ slug: 'llm-decision-grading', limit: 1 }).runs[0].runId,
-      )).toMatchObject({ status: 'unchecked', reason: 'triage-dark' });
+      )).toMatchObject({ status: 'unchecked', reason: 'triage-dark', evidenceSufficient: true });
     } finally {
       scriptScheduler?.stop();
       if (endpoint.listening) await new Promise<void>(resolve => endpoint.close(() => resolve()));

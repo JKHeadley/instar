@@ -2094,6 +2094,7 @@ export class JobScheduler {
     }
     this.activeScriptRunIds.add(runId);
     let supervisionId: string;
+    const receiptToken = slug === 'llm-decision-grading' ? crypto.randomBytes(32).toString('hex') : null;
     const supervisionActiveAtStart = jobSupervisionRolloutState(this.readAgentConfig() ?? {}).active;
     const featureStateHash = crypto.createHash('sha256').update(JSON.stringify({
       supervisionActiveAtStart,
@@ -2111,6 +2112,7 @@ export class JobScheduler {
         featureStateHash,
         decisionEligible: supervisionActiveAtStart,
         evidencePolicy: SUPERVISION_EVIDENCE_POLICY,
+        receiptTokenHash: receiptToken ? crypto.createHash('sha256').update(receiptToken).digest('hex') : undefined,
       });
     } catch (error) {
       this.supervisionWriteFailed(slug, error);
@@ -2155,7 +2157,9 @@ export class JobScheduler {
           });
         }
       } else {
-        const exec = await this.executeScript(job, [], {});
+        const exec = await this.executeScript(job, [], receiptToken
+          ? { INSTAR_JOB_RUN_ID: runId, INSTAR_JOB_RECEIPT_TOKEN: receiptToken }
+          : { INSTAR_JOB_RUN_ID: runId });
         ({ parsed, scrubbed } = this.parseExec(job, exec));
       }
       this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart);
@@ -2196,8 +2200,10 @@ export class JobScheduler {
     const lastAssessment = parseInstrumentAssessment(scrubbed) ?? undefined;
     try {
       const result = parsed.result === 'success' || parsed.result === 'skipped' ? parsed.result : 'failure';
+      const independentSignal = slug === 'llm-decision-grading' && result === 'success'
+        ? this.getJobSupervisionStore().gradePassSignal(runId, parsed.summary) : null;
       const evidence = parsed.reasonCode === 'script-untrusted' ? { ok: false as const, reason: 'script-untrusted' }
-        : projectSupervisionEvidence({ job, parsed, scrubbedOutput: scrubbed });
+        : projectSupervisionEvidence({ job, parsed, scrubbedOutput: scrubbed, independentSignal });
       this.getJobSupervisionStore().recordResult(supervisionId, {
         result, completedAt: finishedAt,
         evidenceHash: evidence.ok ? evidence.hash : null,

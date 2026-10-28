@@ -20,6 +20,10 @@ script: llm-decision-grading.mjs
 scriptTimeoutMinutes: 2
 supervision: tier0
 scriptSupervision: deterministic
+triageEvidence: structured-only
+triageFields:
+  - graded
+  - decision_points
 ---
 Run one deterministic LLM-decision grading pass. This is a mechanical, near-silent cadence job — do NOT message the user (FD5: the quality meter is observe-only; grading writes grade rows, never messages, and never interprets the grades — interpretation belongs to the operator's read of GET /decision-quality). It exists because outcome evidence accrues continuously, but nothing grades it without a production trigger; this job IS that trigger on the hourly cadence the evidence windows are derived from.
 

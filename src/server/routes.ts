@@ -22165,6 +22165,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'decision-quality substrate unavailable (feature-metrics ledger not constructed)' });
       return;
     }
+    const scriptRunId = _req.get('X-Instar-Job-Run-Id');
+    const scriptReceiptToken = _req.get('X-Instar-Job-Receipt-Token');
+    const receiptStore = scriptRunId ? ctx.scheduler?.getJobSupervisionStore() : null;
+    if (scriptRunId) {
+      if (!scriptReceiptToken || !receiptStore?.canRecordGradePassReceipt(scriptRunId, scriptReceiptToken)) {
+        res.status(409).json({ error: 'grade-pass run receipt is not available' });
+        return;
+      }
+    }
     try {
       const q = ctx.config.provenance?.quality ?? {};
       const maxDecisionsPerPass = typeof q.maxDecisionsPerPass === 'number' && q.maxDecisionsPerPass > 0 ? q.maxDecisionsPerPass : 200;
@@ -22177,6 +22186,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         evidenceWindowMs: evidenceWindowHours * 3_600_000,
         now: Date.now,
       });
+      if (scriptRunId && !receiptStore?.recordGradePassReceipt(
+        scriptRunId, scriptReceiptToken!, result.graded, Object.keys(result.cursors).length)) {
+        res.status(500).json({ error: 'grade-pass receipt could not be recorded' });
+        return;
+      }
       res.json(result);
     } catch (err) {
       // @silent-fallback-ok: NOT silent — the failure is surfaced to the caller as

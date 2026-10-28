@@ -61,6 +61,8 @@ export interface RegisterSupervisionInput {
   /** Immutable run-start gate state; a dark-era result can never enter a later worker. */
   decisionEligible?: boolean;
   evidencePolicy: string;
+  /** Hash of a single-run receipt capability, never the bearer token itself. */
+  receiptTokenHash?: string;
   attemptId?: string;
   now?: number;
 }
@@ -206,7 +208,8 @@ export class JobSupervisionStore {
         evidence_policy TEXT NOT NULL,
         evidence_hash TEXT,
         evidence_sufficient INTEGER NOT NULL DEFAULT 0,
-        evidence_text TEXT
+        evidence_text TEXT,
+        receipt_token_hash TEXT
       );
       CREATE INDEX IF NOT EXISTS attempts_status_idx ON attempts(status, registered_at);
       CREATE INDEX IF NOT EXISTS attempts_slug_idx ON attempts(slug, registered_at);
@@ -264,6 +267,13 @@ export class JobSupervisionStore {
         PRIMARY KEY(attempt_id,evidence_id),
         FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id)
       );
+      CREATE TABLE IF NOT EXISTS grade_pass_receipts (
+        run_id TEXT PRIMARY KEY,
+        graded INTEGER NOT NULL CHECK(graded >= 0),
+        decision_points INTEGER NOT NULL CHECK(decision_points >= 0),
+        observed_at TEXT NOT NULL,
+        FOREIGN KEY(run_id) REFERENCES attempts(run_id)
+      );
       CREATE TABLE IF NOT EXISTS held_slugs (
         slug TEXT PRIMARY KEY,
         reason TEXT NOT NULL,
@@ -295,6 +305,9 @@ export class JobSupervisionStore {
     }
     if (!columns.some(c => c.name === 'decision_eligible')) {
       this.db.exec('ALTER TABLE attempts ADD COLUMN decision_eligible INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columns.some(c => c.name === 'receipt_token_hash')) {
+      this.db.exec('ALTER TABLE attempts ADD COLUMN receipt_token_hash TEXT');
     }
     const callColumns = this.db.pragma('table_info(calls)') as Array<{ name: string }>;
     if (!callColumns.some(c => c.name === 'error_reason')) {
@@ -368,15 +381,18 @@ export class JobSupervisionStore {
   }
 
   register(input: RegisterSupervisionInput): string {
+    if (input.receiptTokenHash && !/^[a-f0-9]{64}$/.test(input.receiptTokenHash)) {
+      throw new Error('invalid receipt token hash');
+    }
     const now = input.now ?? Date.now();
     const id = input.attemptId ?? attemptIdAt(now);
     const at = new Date(now).toISOString();
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO attempts
-        (attempt_id,run_id,fire_id,slug,machine_id,registered_at,status,template_digest,feature_state_hash,decision_eligible,evidence_policy)
-        VALUES (?,?,?,?,?,?,'pending',?,?,?,?)`).run(id, input.runId, input.fireId, input.slug,
+        (attempt_id,run_id,fire_id,slug,machine_id,registered_at,status,template_digest,feature_state_hash,decision_eligible,evidence_policy,receipt_token_hash)
+        VALUES (?,?,?,?,?,?,'pending',?,?,?,?,?)`).run(id, input.runId, input.fireId, input.slug,
         input.machineId ?? null, at, input.templateDigest ?? null, input.featureStateHash ?? null,
-        input.decisionEligible === true ? 1 : 0, input.evidencePolicy);
+        input.decisionEligible === true ? 1 : 0, input.evidencePolicy, input.receiptTokenHash ?? null);
       this.transition(id, at, 'attempt-registered', null, 0);
     })();
     return id;
@@ -407,7 +423,7 @@ export class JobSupervisionStore {
           throw new Error(`invalid evidence projection for supervision attempt: ${attemptId}`);
         }
       }
-      this.db.prepare(`UPDATE attempts SET completed_at=?, result=?, evidence_hash=?, evidence_sufficient=?, evidence_text=?, reason=? WHERE attempt_id=?`)
+      this.db.prepare(`UPDATE attempts SET completed_at=?, result=?, evidence_hash=?, evidence_sufficient=?, evidence_text=?, reason=?, receipt_token_hash=NULL WHERE attempt_id=?`)
         .run(at, input.result, input.evidenceHash ?? null, input.evidenceSufficient ? 1 : 0,
           input.evidenceText ?? null, input.reason ?? null, attemptId);
       this.transition(attemptId, at, 'result-recorded', input.reason ?? null, row.epoch);
@@ -598,6 +614,43 @@ export class JobSupervisionStore {
   outcomeGrades(attemptId: string): Array<Record<string, unknown>> {
     return this.db.prepare('SELECT * FROM outcome_grades WHERE attempt_id=? ORDER BY graded_at')
       .all(attemptId) as Array<Record<string, unknown>>;
+  }
+
+  /** Server-owned proof that the grading endpoint completed for this script run. */
+  canRecordGradePassReceipt(runId: string, token: string): boolean {
+    const attempt = this.findByRunId(runId);
+    if (!attempt || attempt.slug !== 'llm-decision-grading' || attempt.completedAt) return false;
+    const auth = this.db.prepare('SELECT receipt_token_hash FROM attempts WHERE run_id=?')
+      .get(runId) as { receipt_token_hash: string | null } | undefined;
+    if (!auth?.receipt_token_hash || !/^[a-f0-9]{64}$/.test(auth.receipt_token_hash)
+      || !/^[a-f0-9]{64}$/.test(token)) return false;
+    return crypto.timingSafeEqual(crypto.createHash('sha256').update(token).digest(),
+      Buffer.from(auth.receipt_token_hash, 'hex'));
+  }
+
+  /** Server-owned proof that the grading endpoint completed for this script run. */
+  recordGradePassReceipt(runId: string, token: string, graded: number, decisionPoints: number, now = Date.now()): boolean {
+    if (!Number.isSafeInteger(graded) || graded < 0 || !Number.isSafeInteger(decisionPoints) || decisionPoints < 0) return false;
+    return this.db.transaction(() => {
+      if (!this.canRecordGradePassReceipt(runId, token)) return false;
+      const existing = this.db.prepare('SELECT graded,decision_points FROM grade_pass_receipts WHERE run_id=?')
+        .get(runId) as { graded: number; decision_points: number } | undefined;
+      if (existing) return existing.graded === graded && existing.decision_points === decisionPoints;
+      this.db.prepare('INSERT INTO grade_pass_receipts(run_id,graded,decision_points,observed_at) VALUES(?,?,?,?)')
+        .run(runId, graded, decisionPoints, new Date(now).toISOString());
+      return true;
+    })();
+  }
+
+  /** The script cannot create this row; compare its claim with the server receipt. */
+  gradePassSignal(runId: string, summary: string): { source: string; observedAt: string; independentOfSlug: string; status: 'healthy' } | null {
+    const match = /^graded=(\d+) decision-points=(\d+)$/.exec(summary);
+    if (!match) return null;
+    const receipt = this.db.prepare('SELECT graded,decision_points,observed_at FROM grade_pass_receipts WHERE run_id=?')
+      .get(runId) as { graded: number; decision_points: number; observed_at: string } | undefined;
+    if (!receipt || receipt.graded !== Number(match[1]) || receipt.decision_points !== Number(match[2])) return null;
+    return { source: 'decision-quality-grade-pass-receipt', observedAt: receipt.observed_at,
+      independentOfSlug: 'llm-decision-grading', status: 'healthy' };
   }
 
   expireLeases(now = Date.now()): number {

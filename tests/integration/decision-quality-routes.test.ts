@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
+import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
 import {
   ExternalHogDecisionStore,
   HOG_SUSTAINED_RIGHT_RULE_ID,
@@ -39,6 +41,7 @@ function ctxWith(opts: {
   developmentAgent?: boolean;
   peers?: Array<{ machineId: string; url: string }>;
   hogStore?: ExternalHogDecisionStore | null;
+  supervisionStore?: JobSupervisionStore;
 }): RouteContext {
   return {
     config: {
@@ -50,6 +53,7 @@ function ctxWith(opts: {
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     featureMetricsLedger: opts.ledger,
+    scheduler: opts.supervisionStore ? ({ getJobSupervisionStore: () => opts.supervisionStore } as any) : null,
     externalHogSentinel: opts.hogStore ? ({ decisionStoreRef: () => opts.hogStore } as any) : undefined,
     resolvePeerUrls: opts.peers ? () => opts.peers! : undefined,
     startTime: new Date(),
@@ -322,6 +326,35 @@ describe('GET /decision-quality censusDebt — pending-tracker adjudication', ()
 });
 
 describe('POST /decision-quality/grade-pass (integration)', () => {
+  it('writes a server receipt for a registered script run before reporting success', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-receipt-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'a'.repeat(64);
+      supervisionStore.register({ runId: 'grade-run', fireId: 'fire-1', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const app = appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore }));
+      const forged = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'unknown-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(forged.status).toBe(409);
+      const wrongToken = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'grade-run')
+        .set('X-Instar-Job-Receipt-Token', 'b'.repeat(64)).send({});
+      expect(wrongToken.status).toBe(409);
+      const response = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'grade-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(supervisionStore.gradePassSignal('grade-run',
+        `graded=${response.body.graded} decision-points=${Object.keys(response.body.cursors).length}`))
+        .toMatchObject({ status: 'healthy' });
+      expect(supervisionStore.gradePassSignal('grade-run', 'graded=99 decision-points=99')).toBeNull();
+    } finally { supervisionStore.close(); }
+  });
+
   it('turns a matured Phase B backlog row into one visible known outcome through the real routes', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     installDecisionQualityRecorder(new DecisionQualityRecorderImpl({

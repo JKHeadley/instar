@@ -151,7 +151,7 @@ async function call(method, route, { body, headers, timeoutMs = 60_000 } = {}) {
 }
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const isCount = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+const isCount = (v) => Number.isSafeInteger(v) && v >= 0;
 
 /** The common failure for a call that got no usable answer. */
 function failNoAnswer(what, r) {
@@ -166,14 +166,23 @@ process.on('unhandledRejection', (err) => finish('failed', `script-error ${clean
 // ── end of shared prelude ────────────────────────────────────────────────────
 
 async function main() {
-  const r = await call('POST', '/decision-quality/grade-pass', { body: {}, timeoutMs: 60_000 });
+  const runId = process.env.INSTAR_JOB_RUN_ID;
+  const receiptToken = process.env.INSTAR_JOB_RECEIPT_TOKEN;
+  const r = await call('POST', '/decision-quality/grade-pass', {
+    body: {}, timeoutMs: 60_000,
+    headers: runId && receiptToken
+      ? { 'X-Instar-Job-Run-Id': runId, 'X-Instar-Job-Receipt-Token': receiptToken } : {},
+  });
   if (r.status === 503) finish('skipped', 'feature-dark');
   if (r.status !== 200 || r.malformed || !isObject(r.json)) failNoAnswer('grade-pass', r);
   const g = r.json;
   if (!isCount(g.graded) || !isObject(g.byRule) || !isObject(g.cursors)) {
     finish('failed', 'grade-pass-malformed-response: expected graded, byRule, cursors');
   }
-  finish('ok', `graded=${g.graded} decision-points=${Object.keys(g.cursors).length}`);
+  const decisionPoints = Object.keys(g.cursors).length;
+  field('graded', g.graded);
+  field('decision_points', decisionPoints);
+  finish('ok', `graded=${g.graded} decision-points=${decisionPoints}`);
 }
 
 main();
