@@ -376,6 +376,7 @@ export class ScriptCanaryRunner {
         ts: new Date(this.now()).toISOString(), kind: 'script-canary', machineId: this.d.machineId, ...row,
       }) + '\n');
     } catch (err) {
+      // @silent-fallback-ok — this legacy audit is best-effort; the independent assertion journal below is required.
       console.warn('[ScriptCanaryRunner] audit write failed:', err instanceof Error ? err.message : String(err));
     }
   }
@@ -392,6 +393,7 @@ export class ScriptCanaryRunner {
       fs.fsyncSync(fd);
       return true;
     } catch (error) {
+      // @silent-fallback-ok — the canary fails and records this problem in run history; no passing assertion is inferred.
       console.error('[ScriptCanaryRunner] assertion write failed:', error);
       return false;
     } finally {

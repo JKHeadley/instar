@@ -51,7 +51,7 @@ export function fixedCertificateBody(cert: FixedResultCertificate): string {
 function signatureValid(body: string, signature: string, key: string | undefined): boolean {
   if (!key || !/^[A-Za-z0-9+/=]+$/.test(signature)) return false;
   try { return crypto.verify(null, Buffer.from(body), key, Buffer.from(signature, 'base64')); }
-  catch { return false; }
+  catch { return false; /* @silent-fallback-ok — a signature parse failure denies fixed closure. */ }
 }
 
 export function decideFixedResult(input: {

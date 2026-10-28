@@ -108,7 +108,7 @@ export class JobSupervisionWorker {
       return;
     }
     let key: string | null;
-    try { key = this.deps.readJevKey(); } catch { key = null; }
+    try { key = this.deps.readJevKey(); } catch { key = null; /* @silent-fallback-ok — provider-unavailable is journaled below. */ }
     const today = new Date(this.now()).toISOString().slice(0, 10);
     if (!key || this.deps.store.countCalls('jev', `${today}T00:00:00.000Z`) >= 1500) {
       this.deps.store.markUnchecked(attemptId, 'provider-unavailable', this.now());

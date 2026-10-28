@@ -1835,6 +1835,7 @@ export class JobScheduler {
         }
         this.supervisionBlocksLoaded = true;
       } catch (error) {
+        // @silent-fallback-ok — supervisionWriteFailed holds in memory, attempts a durable hold, and reports degradation.
         this.supervisionWriteFailed(slug, error);
         return false;
       }
@@ -1929,6 +1930,7 @@ export class JobScheduler {
       }
       return true;
     } catch (error) {
+      // @silent-fallback-ok — supervisionWriteFailed holds in memory, attempts a durable hold, and reports degradation.
       this.supervisionWriteFailed(slug, error);
       return false;
     }

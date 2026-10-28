@@ -150,6 +150,13 @@ schema setup left a leak on migration failure. Registration now happens
 immediately after open, with a close-on-failure test. The reviewer reread the
 diff and concurred with the correction; no further safety concern was found.
 
+**CI corrective pass:** The fixed-closure fixture now explicitly marks its
+attempt decision-eligible, matching the active cohort it exercises. Six
+catch-block ratchet matches are annotated with their fail-closed or recorded
+degradation behavior; the no-silent-fallback count remains at its 494 baseline.
+The Node 20 shard that passed every assertion but lost its Vitest worker after
+the run still requires a green rerun on the new head.
+
 ## Evidence pointers
 
 - `docs/specs/job-result-supervision-v2-benchmark-evidence.md`

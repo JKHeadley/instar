@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-28T05:24:04.441Z",
+  "slug": "job-result-supervision-v2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobFixedResultCertificate.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/JobSupervisionWorker.ts",
+      "src/scheduler/ScriptCanaryRunner.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

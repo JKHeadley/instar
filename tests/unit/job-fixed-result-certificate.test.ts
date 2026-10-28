@@ -81,7 +81,7 @@ describe('exact fixed-result certificates', () => {
       const add = (runId: string) => {
         const id = store.register({ runId, fireId: `fire:${runId}`, slug: 'health-check',
           templateDigest: attempt.templateDigest, featureStateHash: attempt.featureStateHash,
-          evidencePolicy: 'structured-v2', now });
+          decisionEligible: true, evidencePolicy: 'structured-v2', now });
         store.recordResult(id, { result: 'success', completedAt: new Date(now).toISOString() });
         return id;
       };
