@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-The job-result supervision cohort check now accepts a test agent only when its init-created `throwawayAgent` record has a valid creation time and an unexpired expiry time. `AgentServer` passes the actual config to the check. The change touches `src/scheduler/JobSupervisionRollout.ts` and `src/server/AgentServer.ts`. It is driven by the approved `docs/specs/job-result-supervision-v2.md`. The worktree is on `JKHeadley/instar` at package version 1.3.1494. The code-owned audit and cohort switches remain off.
+The job-result supervision cohort check now accepts a test agent only when its init-created `throwawayAgent` record has a valid creation time, an unexpired expiry time, and no `keep: true` exemption. `AgentServer` passes the actual config to the check. The change touches `src/scheduler/JobSupervisionRollout.ts` and `src/server/AgentServer.ts`. It is driven by the approved `docs/specs/job-result-supervision-v2.md`. The worktree is on `JKHeadley/instar` at package version 1.3.1494. The code-owned audit and cohort switches remain off.
 
 ## Decision-point inventory
 
@@ -64,7 +64,7 @@ The eligibility fix is narrow and reversible. It removes a type mismatch in a do
 
 ## Second-pass review
 
-**Reviewer:** independent eligibility side-effects reviewer. **Independent read: concur after revision.** An expiring record can exist outside a temporary project, and throwaway agents can be configured to run live jobs. The under-block and conclusion above now state the missing isolation proof; the cohort gate remains off.
+**Reviewer:** independent eligibility side-effects reviewer. **Independent read: concur after revision.** An expiring record can exist outside a temporary project, and throwaway agents can be configured to run live jobs. The under-block and conclusion above now state the missing isolation proof; the cohort gate remains off. The reviewer also concurred with rejecting `keep: true`, which the expiry lifecycle treats as exempt.
 
 ## Class-Closure Declaration
 

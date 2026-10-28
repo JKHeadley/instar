@@ -20,8 +20,8 @@ export function jobSupervisionCohortEligible(
   if (cohort !== 'test-agent') return false;
   const record = values.throwawayAgent;
   if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
-  const { createdAt, expiresAt } = record as Record<string, unknown>;
-  return typeof createdAt === 'string' && Number.isFinite(Date.parse(createdAt))
+  const { createdAt, expiresAt, keep } = record as Record<string, unknown>;
+  return keep !== true && typeof createdAt === 'string' && Number.isFinite(Date.parse(createdAt))
     && Date.parse(createdAt) <= now
     && typeof expiresAt === 'string' && Number.isFinite(Date.parse(expiresAt))
     && Date.parse(expiresAt) > now;

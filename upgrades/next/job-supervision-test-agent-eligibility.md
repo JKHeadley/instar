@@ -4,12 +4,13 @@
 
 The scheduled-job supervision test cohort now recognizes Instar's actual
 expiring throwaway-agent record. It rejects a boolean marker, malformed
-record, or expired test agent. The audit and cohort rollout gates remain off.
+record, `--keep` exemption, or expired test agent. The audit and cohort rollout gates remain off.
 
 ## What to Tell Your User
 
-The test-agent safety check is ready for the supervised trial. Jev result
-decisions are still off while the benchmark and rollout checks continue.
+The test-cohort expiry check now recognizes real temporary agents. Jev result
+decisions are still off. The supervised trial also needs separate proof that
+its jobs and external data flow are isolated.
 
 ## Summary of New Capabilities
 
@@ -19,4 +20,4 @@ decisions are still off while the benchmark and rollout checks continue.
 ## Evidence
 
 Focused tests cover a valid expiring record, boolean and malformed markers,
-expired records, cohort separation, and the still-closed rollout state.
+expired and `--keep` records, cohort separation, and the still-closed rollout state.

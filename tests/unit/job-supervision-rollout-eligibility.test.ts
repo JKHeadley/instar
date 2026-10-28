@@ -10,6 +10,9 @@ describe('job supervision cohort eligibility', () => {
     }, now)).toBe(true);
     expect(jobSupervisionCohortEligible('test-agent', { throwawayAgent: true }, now)).toBe(false);
     expect(jobSupervisionCohortEligible('test-agent', {
+      throwawayAgent: { createdAt: '2026-10-28T14:00:00Z', expiresAt: '2026-10-28T16:00:00Z', keep: true },
+    }, now)).toBe(false);
+    expect(jobSupervisionCohortEligible('test-agent', {
       throwawayAgent: { createdAt: '2026-10-28T14:00:00Z', expiresAt: '2026-10-28T15:00:00Z' },
     }, now)).toBe(false);
     expect(jobSupervisionCohortEligible('test-agent', {
