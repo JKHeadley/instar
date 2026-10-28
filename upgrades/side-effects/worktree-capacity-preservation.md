@@ -43,3 +43,5 @@ Revert and release. A retained crash lock can be inspected and removed; it is ru
 ## Evidence
 
 Real-Git tests cover ignored unique files and generated-output directories. Unit tests cover the lock and count boundaries; integration covers the CLI path and concurrent calls (10/10 passed). Production-lifecycle E2E passed 2/2. The updated closed-read-tier test passed 15/15. The complete local suite passed 52,820 unit, 4,930 integration, and 3,594 E2E tests with zero failures. The live cleaner has three successful launchd runs and a 308-directory count; PR merge is pending.
+
+The first peer merge verification passed its unit lane but failed two integration files, `cartographer-eventloop-worker.test.ts` and `dashboard-door-model-routes.test.ts`. GitHub's full integration and E2E runs passed on the same PR head, and an isolated local rerun of those exact files passed all 31 tests. This supports an environment or timing failure in the peer run, but it does not make that required check green. A fresh head verification must pass before merge. The live physical count was 316 at the latest check, below the proposed 500 ceiling.
