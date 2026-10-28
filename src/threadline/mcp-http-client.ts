@@ -236,10 +236,12 @@ export async function getThreadHistoryViaHttp(
  * Sealed-handoff keystone — self-mint a Secret Drop request via the agent
  * server's loopback `/threadline/secrets/request` route.
  *
- * Deliberately sends NO Authorization header: this route lives under the
- * `/threadline/*` auth-bypass umbrella and enforces localhost itself. The MCP
- * stdio process cannot present a valid bearer anyway — the on-disk authToken is
- * vault-externalized (`{secret:true}`), which is the exact gap this route closes.
+ * Deliberately sends NO Authorization header: this route is one of the few
+ * exact `/threadline/*` routes the bearer gate leaves public (middleware.ts
+ * THREADLINE_PUBLIC_ROUTES) and it enforces loopback-only itself. It predates
+ * the stdio helper's vault-aware token resolution (mcpAuthToken.ts) and stays
+ * token-free so a helper with NO resolvable token can still mint a sealed
+ * handoff — which is the exact gap this route closes.
  * The mint goes through the server's durable SecretDrop store, so the request
  * survives session churn.
  */

@@ -9111,6 +9111,21 @@ Peer health (\`GET /threadline/peers/health\`) now counts \`failedCount\` and \`
       result.upgraded.push('CLAUDE.md: added honest-delivery relayStatus section');
     }
 
+    // Threadline own-surface routes are bearer-gated (fb-829a7161-942): the
+    // `/threadline/` prefix is no longer exempt from the bearer check, so the
+    // A2A delivery-health curls the template used to show WITHOUT a token now
+    // 401. Rewrite the exact token-less forms an earlier template emitted to
+    // carry the bearer. Idempotent: the authed form does not match the bare
+    // pattern (a preceding `-H` breaks `curl http`).
+    {
+      const bare = new RegExp('`curl http://localhost:' + String(port) + '/threadline/peers/', 'g');
+      if (bare.test(content)) {
+        content = content.replace(bare, '`curl -H "Authorization: Bearer $AUTH" http://localhost:' + String(port) + '/threadline/peers/');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: A2A delivery-health curls now carry the bearer (threadline routes are bearer-gated)');
+      }
+    }
+
     // A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md, Agent
     // awareness). OWN sniff key — content-sniffed for idempotency.
     if (!content.includes('inbound message-id ledger')) {
