@@ -54,9 +54,11 @@ Machine-local queue policy stays on the lease holder. A peer only runs a request
 
 ## 10. Test evidence and limits
 
-Two unit regression tests were red before the change and green after it. A follow-up regression covers a closed PR discovered during base refresh. After both priority-claim fixes, the M5 isolated checkout passed 44 peer unit tests, 4 real HTTP integration tests, and 14 production lifecycle tests. Build and all 49 lint steps passed on Studio. The first exact-head M5 unit run passed after fixing its shell PATH; Studio's first Local Verify run caught the missing release-note section, which is now corrected. Final full-suite and CI checks are pending. The tests cover busy-slot dispatch, main staying local, and release of a stale priority claim.
+Two unit regression tests were red before the change and green after it. A follow-up regression covers a closed PR discovered during base refresh. After both priority-claim fixes, the M5 isolated checkout passed 44 peer unit tests, 4 real HTTP integration tests, and 14 production lifecycle tests. Build and all 49 lint steps passed on Studio. The M5 full run passed 52,520 unit and 4,913 integration tests on the prior head. Studio's first Local Verify run caught a missing release-note section, which was corrected. Its second run caught a timing race in the new HTTP test: the peer child started before the coordinator received the acceptance response. The test now waits for the accepted reservation it asserts; an independent second pass confirmed that the wait preserves the local-start and peer-start checks. Final exact-head full-suite and CI checks are pending. The tests cover busy-slot dispatch, main staying local, and release of a stale priority claim.
 
 ## Second-pass review
 
 **Reviewer:** `review_next_slot_priority`
 **Independent read of the artifact:** The reviewer found that a durable remote reservation could leave a stale Studio suite claim, and that a closed PR dequeued during base refresh could do the same. Both paths now reconcile the claim immediately, with tests for release when only remote work remains and retention when main is queued. The reviewer concurred with the updated diff and found no further concrete over-block, under-block, lease, or hold issue. The production E2E was assessed as meaningful wiring coverage.
+
+The reviewer also checked the integration timing correction after Studio's second run. It waits for the exact accepted state asserted, retains separate no-local-start and one-peer-start assertions, and introduces no new issue.

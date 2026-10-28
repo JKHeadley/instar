@@ -112,7 +112,9 @@ describe('peer verifier routes (integration, real HTTP)', () => {
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
     });
     expect((await svc.request(3)).ok).toBe(true);
-    for (let i = 0; i < 50 && p.children.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    for (let i = 0; i < 200 && svc.snapshot().peers.reserved[0]?.state !== 'accepted'; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(localStarts).toHaveLength(0);
     expect(p.children).toHaveLength(1);
     expect(svc.snapshot().peers.reserved).toEqual([expect.objectContaining({ pr: 3, state: 'accepted' })]);
