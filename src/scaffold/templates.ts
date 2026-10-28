@@ -2207,7 +2207,15 @@ Rule: I do not state that work landed inside another agent's state unless I have
 (Source: codex-instar audit Item 11, 2026-05-22 confabulation incident where one agent fabricated an ACK from another, then logged its own fabrication as evidence of progress.)
 `;
 
+  content += directJobSupervisionQualityAwareness(port);
   return content;
+}
+
+/** Shared by new installs and the update migration. */
+export function directJobSupervisionQualityAwareness(port: number): string {
+  return `\n\n### Direct Job-Supervision Call Quality (audit view; Jev decisions still off)
+
+When asked whether Jev or its outage replacement is performing well for scheduled script results, read \`GET /decision-quality?sinceHours=24\` (Bearer, port ${port}) and its \`directJobSupervision\` section. \`?scope=pool\` adds machine-tagged \`remoteDirectJobSupervision\` and names missing peers. The section gives each direct call's attempt ID, actual provider/model, prompt hash, verdict, cost, and independent grade when known; it also reports missing journal records and incomplete coverage. These calls are separate from the router's \`points\` and are marked \`routerEnrollment: pending\`. Never count unknown grades as accuracy or claim Jev result decisions are active from this read surface. The code-owned result-triage gate remains off until the benchmark, independent grading, and rollout checks pass.\n`;
 }
 
 /**

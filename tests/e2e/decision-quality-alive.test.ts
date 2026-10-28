@@ -27,6 +27,7 @@ import { DP_COMPLETION_EVALUATE, DP_EXTERNAL_HOG_KILL_LEAVE } from '../../src/da
 import { getDecisionQualityRecorder } from '../../src/core/decisionQualityTypes.js';
 import type { DecisionQualityRecorderImpl } from '../../src/core/DecisionQualityRecorderImpl.js';
 import { AutonomousRunStore } from '../../src/core/AutonomousRunStore.js';
+import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 
 function createMockSessionManager() {
   return { listRunningSessions: () => [], getSession: () => null };
@@ -36,6 +37,7 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
   let tmpDir: string;
   let stateDir: string;
   let server: AgentServer;
+  let scheduler: JobScheduler;
   let app: express.Express;
   const AUTH = 'test-e2e-decision-quality';
 
@@ -45,6 +47,8 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
     fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+    const jobsFile = path.join(stateDir, 'jobs.json');
+    fs.writeFileSync(jobsFile, '[]');
 
     const config: InstarConfig = {
       projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
@@ -54,17 +58,23 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
       developmentAgent: true,
       provenance: { uniformSeam: { enabled: true, dryRun: false } },
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      scheduler: { enabled: false, jobsFile, maxParallelJobs: 1 },
       messaging: [], monitoring: {}, updates: {},
     } as InstarConfig;
 
-    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state: new StateManager(stateDir) });
+    const state = new StateManager(stateDir);
+    const sessionManager = createMockSessionManager();
+    scheduler = new JobScheduler({ jobsFile, enabled: false, maxParallelJobs: 1,
+      quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 } },
+    sessionManager as any, state, stateDir);
+    server = new AgentServer({ config, sessionManager: sessionManager as any, state, scheduler });
     await server.start();
     app = server.getApp();
   });
 
   afterAll(async () => {
     await server.stop();
+    scheduler.stop();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/decision-quality-alive.test.ts' });
   });
 
@@ -98,6 +108,8 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
     // The three first-customer WIRED points are present in the census surface.
     const wiredPoints = (res.body.points as Array<any>).map((p) => p.decisionPoint);
     expect(wiredPoints).toContain(DP_EXTERNAL_HOG_KILL_LEAVE);
+    expect(res.body.directJobSupervision).toMatchObject({ available: true,
+      source: 'job-supervision-store', routerEnrollment: 'pending', denominator: 0 });
   });
 
   it('POST /decision-quality/grade-pass is alive (200, not 503) and returns the { graded, byRule, cursors } contract', async () => {

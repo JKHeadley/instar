@@ -60,6 +60,7 @@ import {
   AGENT_CONNECT_STEP1_RESTART_ASK_MARKER,
   agentConnectSection,
   agentConnectStep1,
+  directJobSupervisionQualityAwareness,
   JEV_CORRECTION_CARD_V1_MARKER,
   jevCirclesShadowAwareness,
   jevCorrectionShadowAwareness,
@@ -8035,6 +8036,11 @@ setTimeout(() => process.exit(0), 2000);
       content += DECISION_QUALITY_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added LLM-Decision Quality Meter section');
+    }
+    if (!content.includes('### Direct Job-Supervision Call Quality')) {
+      content += directJobSupervisionQualityAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added direct job-supervision call quality section');
     }
 
     // Benchmark-Divergence Detector (benchmark-divergence-detector §Migration

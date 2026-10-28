@@ -247,6 +247,7 @@ export class JobSupervisionStore {
         PRIMARY KEY(attempt_id, epoch),
         FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id)
       );
+      CREATE INDEX IF NOT EXISTS calls_started_at_idx ON calls(started_at);
       CREATE TABLE IF NOT EXISTS late_settlements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         attempt_id TEXT NOT NULL,
@@ -770,12 +771,13 @@ export class JobSupervisionStore {
 
   /** Content-free bulk audit for every provider attempt, including failures. */
   callSummarySince(since: string): Array<{
-    slug: string; machineId: string | null; provider: string; model: string;
+    slug: string; machineId: string | null; decisionPoint: string; provider: string; model: string;
     promptHash: string; calls: number; settled: number; failed: number;
     unknownOutcome: number; incorrect: number; tokensIn: number; tokensOut: number;
     costUsd: number; costUnknown: number; averageLatencyMs: number | null;
   }> {
     const rows = this.db.prepare(`SELECT a.slug AS slug,a.machine_id AS machineId,
+      c.decision_point AS decisionPoint,
       c.provider AS provider,COALESCE(c.actual_model,c.intended_model) AS model,
       c.prompt_hash AS promptHash,COUNT(*) AS calls,
       SUM(CASE WHEN c.settlement='current' THEN 1 ELSE 0 END) AS settled,
@@ -788,10 +790,10 @@ export class JobSupervisionStore {
       AVG(c.latency_ms) AS averageLatencyMs
       FROM calls c JOIN attempts a ON a.attempt_id=c.attempt_id
       WHERE c.started_at>=?
-      GROUP BY a.slug,a.machine_id,c.provider,COALESCE(c.actual_model,c.intended_model),c.prompt_hash
-      ORDER BY a.slug,c.provider,model,c.prompt_hash`).all(since) as Array<Record<string, unknown>>;
+      GROUP BY a.slug,a.machine_id,c.decision_point,c.provider,COALESCE(c.actual_model,c.intended_model),c.prompt_hash
+      ORDER BY a.slug,c.decision_point,c.provider,model,c.prompt_hash`).all(since) as Array<Record<string, unknown>>;
     return rows.map(r => ({ slug: String(r.slug), machineId: r.machineId as string | null,
-      provider: String(r.provider), model: String(r.model), promptHash: String(r.promptHash),
+      decisionPoint: String(r.decisionPoint), provider: String(r.provider), model: String(r.model), promptHash: String(r.promptHash),
       calls: Number(r.calls), settled: Number(r.settled), failed: Number(r.failed),
       unknownOutcome: Number(r.unknownOutcome), incorrect: Number(r.incorrect),
       tokensIn: Number(r.tokensIn), tokensOut: Number(r.tokensOut), costUsd: Number(r.costUsd),
@@ -800,6 +802,46 @@ export class JobSupervisionStore {
 
   callRows(attemptId: string): Array<Record<string, unknown>> {
     return this.db.prepare('SELECT * FROM calls WHERE attempt_id=? ORDER BY epoch').all(attemptId) as Array<Record<string, unknown>>;
+  }
+
+  /** Bounded, content-free rows for bulk review of direct Jev/replacement calls. */
+  qualityCallRowsSince(since: string, limit = 500): { rows: Array<{
+    attemptId: string; epoch: number; runId: string; slug: string; machineId: string | null;
+    decisionPoint: string; provider: string; intendedModel: string;
+    actualProvider: string | null; actualModel: string | null;
+    promptHash: string; evidencePolicyHash: string; startedAt: string; settledAt: string | null;
+    settlement: string; verdict: string | null; grade: SupervisionGrade;
+    outcomeEvidenceLinked: boolean; tokensIn: number | null; tokensOut: number | null;
+    costUsd: number | null; latencyMs: number | null; errorReason: string | null;
+  }>; truncated: boolean } {
+    const cap = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 500;
+    const rows = this.db.prepare(`SELECT c.attempt_id AS attemptId,c.epoch,a.run_id AS runId,a.slug,
+      a.machine_id AS machineId,c.decision_point AS decisionPoint,c.provider,
+      c.intended_model AS intendedModel,c.actual_provider AS actualProvider,
+      c.actual_model AS actualModel,c.prompt_hash AS promptHash,
+      c.evidence_policy_hash AS evidencePolicyHash,c.started_at AS startedAt,
+      c.settled_at AS settledAt,c.settlement,c.verdict,
+      CASE WHEN c.settlement='current' AND c.outcome_evidence_id IS NOT NULL THEN a.grade ELSE 'unknown' END AS grade,
+      c.outcome_evidence_id IS NOT NULL AS outcomeEvidenceLinked,
+      c.tokens_in AS tokensIn,c.tokens_out AS tokensOut,c.cost_usd AS costUsd,
+      c.latency_ms AS latencyMs,c.error_reason AS errorReason
+      FROM calls c JOIN attempts a ON a.attempt_id=c.attempt_id
+      WHERE c.started_at>=? ORDER BY c.started_at DESC,c.attempt_id,c.epoch LIMIT ?`)
+      .all(since, cap + 1) as Array<Record<string, unknown>>;
+    return { rows: rows.slice(0, cap).map(r => ({
+      attemptId: String(r.attemptId), epoch: Number(r.epoch), runId: String(r.runId),
+      slug: String(r.slug), machineId: r.machineId as string | null,
+      decisionPoint: String(r.decisionPoint), provider: String(r.provider),
+      intendedModel: String(r.intendedModel), actualProvider: r.actualProvider as string | null,
+      actualModel: r.actualModel as string | null, promptHash: String(r.promptHash),
+      evidencePolicyHash: String(r.evidencePolicyHash), startedAt: String(r.startedAt),
+      settledAt: r.settledAt as string | null, settlement: String(r.settlement),
+      verdict: r.verdict as string | null, grade: r.grade as SupervisionGrade,
+      outcomeEvidenceLinked: Boolean(r.outcomeEvidenceLinked),
+      tokensIn: r.tokensIn as number | null, tokensOut: r.tokensOut as number | null,
+      costUsd: r.costUsd as number | null, latencyMs: r.latencyMs as number | null,
+      errorReason: r.errorReason as string | null,
+    })), truncated: rows.length > cap };
   }
 
   lateSettlements(attemptId: string): Array<Record<string, unknown>> {

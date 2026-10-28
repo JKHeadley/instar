@@ -258,6 +258,7 @@ import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
+import { buildDirectJobSupervisionQuality } from './directJobSupervisionQuality.js';
 import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
@@ -2407,6 +2408,41 @@ function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<st
     if (k in row) out[k] = row[k];
   }
   return out;
+}
+
+/** Peer data for the direct-call lane is a separate, scalar allowlist. */
+function pickDirectJobSupervisionPeer(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  if (row.source !== 'job-supervision-store' || row.routerEnrollment !== 'pending'
+    || row.available !== true || typeof row.coverageIncomplete !== 'boolean') return null;
+  const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  const count = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  // bounded-input-reviewed: peer labels are displayed as data, never fed to a model prompt; 128 chars bounds response size.
+  const label = (value: unknown): string | null => typeof value === 'string' ? value.slice(0, 128) : null;
+  const grades = row.gradeDistribution && typeof row.gradeDistribution === 'object'
+    ? row.gradeDistribution as Record<string, unknown> : {};
+  const required = [row.denominator, row.missingRecords, row.orphanAttempts, row.callCount,
+    row.costUnknownCalls, grades.correct, grades.incorrect, grades.unknown];
+  if (required.some(value => count(value) === null)
+    || Number(grades.correct) + Number(grades.incorrect) + Number(grades.unknown) !== row.denominator) return null;
+  const callAudit = Array.isArray(row.callAudit) ? row.callAudit.slice(0, 500).flatMap((value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const r = value as Record<string, unknown>;
+    return [{ slug: label(r.slug), decisionPoint: label(r.decisionPoint), provider: label(r.provider), model: label(r.model),
+      promptHash: label(r.promptHash), calls: number(r.calls), settled: number(r.settled),
+      failed: number(r.failed), unknownOutcome: number(r.unknownOutcome),
+      incorrect: number(r.incorrect), tokensIn: number(r.tokensIn), tokensOut: number(r.tokensOut),
+      costUsd: number(r.costUsd), costUnknown: number(r.costUnknown),
+      averageLatencyMs: number(r.averageLatencyMs) }];
+  }) : [];
+  return { source: 'job-supervision-store', routerEnrollment: 'pending',
+    available: true, coverageIncomplete: row.coverageIncomplete,
+    denominator: number(row.denominator), missingRecords: number(row.missingRecords),
+    orphanAttempts: number(row.orphanAttempts), callCount: number(row.callCount),
+    costUnknownCalls: number(row.costUnknownCalls),
+    gradeDistribution: { correct: number(grades.correct), incorrect: number(grades.incorrect),
+      unknown: number(grades.unknown) }, callAudit };
 }
 
 /**
@@ -22054,6 +22090,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const wiredButNoGrader = findWiredWithoutGraders();
+    let directJobSupervision: Record<string, unknown>;
+    try {
+      if (!ctx.scheduler || ctx.scheduler.isReadOnlyStandby()) throw new Error('journal unavailable');
+      directJobSupervision = buildDirectJobSupervisionQuality({
+        store: ctx.scheduler.getJobSupervisionStore(),
+        history: ctx.scheduler.getRunHistory(),
+        sinceHours,
+      });
+    } catch {
+      // The router meter remains available, while the missing direct-call
+      // source is explicit. Never make an absent journal look like zero calls.
+      directJobSupervision = { source: 'job-supervision-store', routerEnrollment: 'pending',
+        available: false, coverageIncomplete: true, reason: 'journal-unavailable' };
+    }
     return {
       sinceHours,
       gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
@@ -22062,6 +22112,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       counters: totalCounters,
       // The four §5.5 annotation-rejection counters, by class.
       rejections: getDecisionAnnotationRejectionCounters(),
+      directJobSupervision,
     };
   };
 
@@ -22095,6 +22146,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const dqExtraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
       const failed: Array<{ machineId: string; error: string }> = [];
       const remotePoints: Array<Record<string, unknown>> = [];
+      const remoteDirectJobSupervision: Array<Record<string, unknown>> = [];
+      const directJobSupervisionMissing: string[] = [];
       await Promise.all(
         peers.map(async (p) => {
           if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, dqExtraAllowlist).ok) {
@@ -22110,17 +22163,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` });
               return;
             }
-            const j = (await r.json()) as { points?: Array<Record<string, unknown>> };
+            const j = (await r.json()) as { points?: Array<Record<string, unknown>>; directJobSupervision?: unknown };
             for (const row of j.points ?? []) {
               if (JSON.stringify(row).length > 8_192) continue; // clamp oversized peer rows
               remotePoints.push({ ...pickDecisionQualityPointFields(row), machineId: p.machineId, remote: true });
             }
+            const direct = pickDirectJobSupervisionPeer(j.directJobSupervision);
+            if (direct) remoteDirectJobSupervision.push({ ...direct, machineId: p.machineId });
+            else directJobSupervisionMissing.push(p.machineId);
           } catch (err) {
             failed.push({ machineId: p.machineId, error: err instanceof Error ? err.name : 'unreachable' });
           }
         }),
       );
-      res.json({ ...local, scope: 'pool', pool: { peersQueried: peers.length, failed }, remotePoints });
+      res.json({ ...local, scope: 'pool', pool: { peersQueried: peers.length, failed }, remotePoints,
+        remoteDirectJobSupervision,
+        directJobSupervisionMissing,
+        directJobSupervisionCoverageIncomplete: failed.length > 0
+          || (local.directJobSupervision as Record<string, unknown>).coverageIncomplete === true
+          || directJobSupervisionMissing.length > 0
+          || remoteDirectJobSupervision.some(row => row.coverageIncomplete === true) });
     } catch (err) {
       res.status(500).json({ error: `decision-quality read failed: ${err instanceof Error ? err.message : String(err)}` });
     }

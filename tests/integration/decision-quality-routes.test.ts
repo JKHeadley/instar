@@ -10,6 +10,7 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
+import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import {
   ExternalHogDecisionStore,
   HOG_SUSTAINED_RIGHT_RULE_ID,
@@ -42,6 +43,7 @@ function ctxWith(opts: {
   peers?: Array<{ machineId: string; url: string }>;
   hogStore?: ExternalHogDecisionStore | null;
   supervisionStore?: JobSupervisionStore;
+  runHistory?: JobRunHistory;
 }): RouteContext {
   return {
     config: {
@@ -53,7 +55,9 @@ function ctxWith(opts: {
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     featureMetricsLedger: opts.ledger,
-    scheduler: opts.supervisionStore ? ({ getJobSupervisionStore: () => opts.supervisionStore } as any) : null,
+    scheduler: opts.supervisionStore ? ({ isReadOnlyStandby: () => false,
+      getJobSupervisionStore: () => opts.supervisionStore,
+      getRunHistory: () => opts.runHistory } as any) : null,
     externalHogSentinel: opts.hogStore ? ({ decisionStoreRef: () => opts.hogStore } as any) : undefined,
     resolvePeerUrls: opts.peers ? () => opts.peers! : undefined,
     startTime: new Date(),
@@ -88,6 +92,66 @@ afterEach(() => {
 });
 
 describe('GET /decision-quality (integration)', () => {
+  it('shows direct job calls separately and strips hostile peer detail', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'decision-quality-direct-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const store = new JobSupervisionStore(tmpDir);
+    try {
+      const history = new JobRunHistory(tmpDir);
+      const runId = history.recordStart({ slug: 'health-check', sessionId: 'script',
+        trigger: 'scheduled', runner: 'script' });
+      const id = store.register({ runId, fireId: 'fire-1', slug: 'health-check',
+        decisionEligible: true, evidencePolicy: 'structured-v1' });
+      store.recordResult(id, { result: 'success', completedAt: new Date().toISOString(), evidenceHash: 'hash' });
+      expect(store.beginCall({ attemptId: id, provider: 'jev', decisionPoint: 'job-result-supervision-v2',
+        promptHash: 'prompt-v1', evidencePolicyHash: 'policy-v1', evidenceHash: 'hash',
+        intendedModel: 'jev-1.13.0', leaseMs: 1000 })).not.toBeNull();
+      vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ points: [],
+        directJobSupervision: { source: 'job-supervision-store', routerEnrollment: 'pending',
+          available: true, denominator: 3, missingRecords: 0, orphanAttempts: 0,
+          coverageIncomplete: false, callCount: 3, costUnknownCalls: 0,
+          gradeDistribution: { correct: 2, incorrect: 1, unknown: 0 },
+          callAudit: [{ slug: 'peer-job', calls: 3, contextFull: 'SECRET-PEER-CONTENT' }],
+          callDetails: [{ evidenceText: 'SECRET-PEER-CONTENT' }],
+          evidenceText: 'SECRET-PEER-CONTENT' } }) }));
+      const res = await request(appWith(ctxWith({ ledger, developmentAgent: true,
+        supervisionStore: store, runHistory: history,
+        peers: [{ machineId: 'peer-1', url: 'http://127.0.0.1:9099' }] })))
+        .get('/decision-quality?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.directJobSupervision).toMatchObject({ source: 'job-supervision-store',
+        routerEnrollment: 'pending', denominator: 1, callCount: 1 });
+      expect(res.body.directJobSupervision.callDetails[0]).toMatchObject({ attemptId: id, epoch: 1 });
+      expect(res.body.points).not.toContainEqual(expect.objectContaining({ decisionPoint: 'job-result-session-v2' }));
+      expect(res.body.remoteDirectJobSupervision).toHaveLength(1);
+      expect(res.body.remoteDirectJobSupervision[0]).toMatchObject({ machineId: 'peer-1', denominator: 3 });
+      expect(JSON.stringify(res.body.remoteDirectJobSupervision)).not.toContain('SECRET-PEER-CONTENT');
+    } finally { store.close(); }
+  });
+
+  it('marks an incomplete peer audit as missing instead of reporting complete coverage', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const base = { source: 'job-supervision-store', routerEnrollment: 'pending',
+      available: true, coverageIncomplete: false, denominator: 3, missingRecords: 0,
+      orphanAttempts: 0, callCount: 3, costUnknownCalls: 0,
+      gradeDistribution: { correct: 3, incorrect: 0, unknown: 0 } };
+    for (const invalid of [
+      { ...base, denominator: undefined },
+      { ...base, denominator: 3.5 },
+      { ...base, gradeDistribution: { correct: 0, incorrect: 0, unknown: 0 } },
+      { ...base, available: false },
+    ]) {
+      vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ points: [], directJobSupervision: invalid }) }));
+      const res = await request(appWith(ctxWith({ ledger, developmentAgent: true,
+        peers: [{ machineId: 'peer-1', url: 'http://127.0.0.1:9099' }] })))
+        .get('/decision-quality?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.remoteDirectJobSupervision).toEqual([]);
+      expect(res.body.directJobSupervisionMissing).toEqual(['peer-1']);
+      expect(res.body.directJobSupervisionCoverageIncomplete).toBe(true);
+    }
+  });
+
   it('returns 401 without a bearer token', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     const res = await request(appWith(ctxWith({ ledger, developmentAgent: true }))).get('/decision-quality');
