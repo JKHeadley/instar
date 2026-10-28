@@ -7,7 +7,7 @@
 
 ## What to Tell Your User
 
-Nothing for ordinary agents. For anyone developing instar: `instar worktree create` now works from a normal checkout of the instar repository, without adding the repo address to a settings file first.
+Nothing for ordinary agents. For anyone developing instar: the worktree command now works from a normal checkout of the instar repository, without adding the repo address to a settings file first.
 
 ## Summary of New Capabilities
 
