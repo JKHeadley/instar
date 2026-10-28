@@ -10,8 +10,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 describe('held-reply outcome awareness installation parity', () => {
   it('new agents learn the lookup and the do-not-resend rule', () => {
     const md = generateClaudeMd('echo', 'Echo', 4042, true);
-    expect(md).toContain(telegramOriginHeldOutcomeAwareness(4042));
-    expect(md).toContain('http://localhost:4042/telegram/origins/operations/OPERATION_ID/outcome');
+    expect(md).toContain(telegramOriginHeldOutcomeAwareness());
+    expect(md).toContain('/telegram/origins/operations/OPERATION_ID/outcome');
   });
   it('existing agents receive it once, in CLAUDE.md and the framework shadow', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'held-outcome-migration-'));

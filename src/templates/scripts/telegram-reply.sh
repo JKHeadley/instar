@@ -655,7 +655,7 @@ print(",".join(str(i) for i in ids))' 2>/dev/null)
   # arrive. The server may still retry it (e.g. after a rate limit), so this is
   # not a licence to resend either.
   [ -z "$VERDICT" ] && [ "$HELD_OUTCOME" = "known-failed" ] && VERDICT="refused-attempt"
-  CHECK_LINE="  Check again: curl -s -H \"Authorization: Bearer \$INSTAR_AUTH_TOKEN\" ${CHECK_URL:-<no operation id returned>}"
+  CHECK_LINE="  Check again: curl -s -H \"Authorization: Bearer \$INSTAR_AUTH_TOKEN\" -H \"X-Instar-AgentId: \$INSTAR_AGENT_ID\" ${CHECK_URL:-<no operation id returned>}"
   case "$VERDICT" in
     delivered|partially-delivered)
       echo "DELIVERED — Telegram accepted this message${HELD_MSG_ID:+ (message id ${HELD_MSG_ID})}. Do NOT resend it." >&2

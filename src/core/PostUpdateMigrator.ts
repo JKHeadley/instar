@@ -7425,7 +7425,7 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     if (!content.includes('Held reply outcome:')) {
-      content += '\n' + telegramOriginHeldOutcomeAwareness(port);
+      content += '\n' + telegramOriginHeldOutcomeAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
@@ -13105,7 +13105,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         ['Origin worker health:', telegramOriginWorkerAwareness],
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
-        ['Held reply outcome:', () => telegramOriginHeldOutcomeAwareness(this.config.port)],
+        ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {

@@ -168,10 +168,11 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
     const runtime = deps.runtime();
     if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId, outcome: 'unknown', safeToResend: false }); return; }
     let captured: import('../messaging/telegram-origin/OriginUnrecordedReceipts.js').UnrecordedReceiptEntry[] = [];
-    try { captured = runtime.unrecordedReceipts?.forOperation(operationId) ?? []; } catch { /* fallback unreadable: the store answers alone */ }
+    try { captured = runtime.unrecordedReceipts?.forOperation(operationId) ?? []; } catch { /* @silent-fallback-ok — the fallback file is unreadable; the store answers alone and the verdict degrades to unknown, never to not-delivered */ }
     let audit: import('../messaging/telegram-origin/StoreTypes.js').OriginAuditRecord | null;
     try { audit = await runtime.store.getOperation(operationId); }
     catch {
+      // @silent-fallback-ok — not silent: answers 503 origin-store-unavailable (or delivered from the fallback record)
       const verdict = classifyOperationOutcome(operationId, null, captured);
       if (verdict.outcome === 'delivered') { res.json({ ...verdict, storeAvailable: false }); return; }
       res.status(503).json({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
@@ -180,7 +181,7 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
     }
     const verdict = classifyOperationOutcome(operationId, audit, captured);
     let executionOwnerMachineId: string | null = null;
-    try { executionOwnerMachineId = (JSON.parse(audit?.record.envelopeJson ?? 'null') as { executionOwnerMachineId?: string } | null)?.executionOwnerMachineId ?? null; } catch { /* unreadable envelope */ }
+    try { executionOwnerMachineId = (JSON.parse(audit?.record.envelopeJson ?? 'null') as { executionOwnerMachineId?: string } | null)?.executionOwnerMachineId ?? null; } catch { /* @silent-fallback-ok — an unreadable envelope only loses the remote-owner hint; the verdict still answers */ }
     const remote = executionOwnerMachineId && executionOwnerMachineId !== runtime.options.identity.originMachineId ? executionOwnerMachineId : null;
     // A send executed on another machine: this machine's record cannot prove it
     // never arrived (the owner may have delivered it), so never say "resend".

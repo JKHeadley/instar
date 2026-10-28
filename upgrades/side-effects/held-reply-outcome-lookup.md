@@ -85,6 +85,10 @@ Clear to ship after the second-pass read. One defect was found and fixed during 
 - Concern 3: "the server delivers the rest itself" was unproven for multi-part operations — wording changed to "check before sending the rest yourself" in both the route and the script.
 - Reconcile correctness, mesh `ok:true`, dedup recording, route auth and the history row were checked and found correct.
 
+## Gate follow-ups (after the first local verify)
+
+The first local verify of PR 2427 failed three repository gates, none a behavior defect: the new CLAUDE.md addendum had to be registered in the feature-delivery tracker (its shadow mirror entry is now a bare builder, so the awareness text is port-free); three route `catch` blocks that answer an explicit status needed the `@silent-fallback-ok` tag; and the check command the script prints needed the `X-Instar-AgentId` header. Effort: 2 commit attempts for the follow-up (the first was refused because these two artifacts were not restaged).
+
 ## Evidence pointers
 
 tests/unit/telegram-origin/held-reply-outcome.test.ts, tests/unit/telegram-reply-held-outcome.test.ts, tests/integration/telegram-origin-routes.test.ts ("receipt could not be saved"), tests/unit/telegram-origin/origin-service.test.ts (updated).

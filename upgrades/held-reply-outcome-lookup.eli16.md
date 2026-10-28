@@ -25,3 +25,5 @@ Normal successful sends behave exactly as before. A genuinely uncertain send (th
 ## What a reader needs to decide
 
 Nothing. This is a bug fix that makes an existing report honest and adds a read-only question. If it turned out wrong, undoing the code change is the whole rollback: the small receipts file is harmless if left behind.
+
+The first full test run of the change caught three housekeeping rules (a list the new help text had to be added to, three labels on error handlers, and one header in a printed command); none changed what the fix does.
