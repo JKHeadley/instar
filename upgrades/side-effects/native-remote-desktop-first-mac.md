@@ -4,6 +4,8 @@
 
 Tier 2 security-sensitive first-machine slice of the approved blocker hand-off spec, incorporating Justin's direct-access and PIN-only clarifications. This adds one local macOS display/input host, a browser viewer, and a process-local ten-minute grant after dashboard PIN entry. It is dark by default, limited to development agents, and does not advertise Windows or Linux as ready. Justin superseded the Telegram challenge in topic 131439 on 2026-10-27 at 23:41 PDT after reviewing the first live page.
 
+Direct desktop access remains a permanent operator action even when no blocker exists; blocker hand-off may link to the same viewer when that action is appropriate. The ELI16 and spec now state that distinction plainly.
+
 ## Decision points touched
 
 - Desktop admission in `DirectDesktopAccess`: added. Requires an explicit target, live dashboard PIN session, browser key proof, healthy local host, and a ten-minute lease. The PIN page states the full-control scope.
