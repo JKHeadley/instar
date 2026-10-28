@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-publish-package",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T22:07:23.967Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-publish-package.md",
+  "artifactSha256": "4aa2a13f448d8e437465dc8cd58a85156fdf76ce4e56ef0749cc92f26ad94dc6",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/native-remote-desktop-quality.md",
+    "upgrades/side-effects/native-remote-desktop-publish-package.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "PR CI now gates the universal Mac release artifact before merging.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

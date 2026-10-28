@@ -7,17 +7,17 @@
 
 ## Summary of the change
 
-The first Mac desktop branch built its Swift helper only when `npm run build` ran on macOS, while Instar publishes npm packages from Ubuntu with install scripts disabled. A normal update would therefore omit the helper even though Echo's local overlay worked. The publish workflow now builds a universal Apple silicon/Intel helper on a macOS runner from a pinned source commit, transfers it into the Ubuntu package build, and checks binary architecture, executable mode, and npm tarball inclusion before publishing. The ordinary local build retains its native-architecture behavior.
+The first Mac desktop branch built its Swift helper only when `npm run build` ran on macOS, while Instar publishes npm packages from Ubuntu with install scripts disabled. A normal update would therefore omit the helper even though Echo's local overlay worked. PR CI now builds and checks a universal Apple silicon/Intel helper. The publish workflow independently builds that helper on a macOS runner from a pinned source commit, transfers it into the Ubuntu package build, and checks binary architecture, executable mode, and npm tarball inclusion before publishing. The ordinary local build retains its native-architecture behavior.
 
 ## Decision-point inventory
 
 - `scripts/build-native-desktop-host.mjs` — modify — release mode demands macOS and both CPU architectures; ordinary Linux build still skips the Mac-only helper.
-- `scripts/check-native-desktop-release.mjs` and `.github/workflows/publish.yml` — add — hard release-artifact invariants fail the publish when the helper is missing or malformed.
+- `scripts/check-native-desktop-release.mjs`, `.github/workflows/ci.yml`, and `.github/workflows/publish.yml` — add — hard artifact invariants fail PR CI or publish when the helper is missing or malformed.
 - Remote desktop grant, input, tunnel, and operator authority — pass-through — no policy or runtime admission change.
 
 ## 1. Over-block
 
-A macOS runner outage or a Swift toolchain change blocks an otherwise valid Instar npm release. That is a real availability cost. It is preferable to silently publishing a package whose advertised Mac desktop button cannot work. A runner/toolchain failure is visible in the publish job and can be repaired or reverted; the currently installed version remains usable.
+A macOS runner outage or a Swift toolchain change blocks an otherwise valid PR or Instar npm release. That is a real availability cost. It is preferable to silently publishing a package whose advertised Mac desktop button cannot work. A runner/toolchain failure is visible in CI and can be repaired or reverted; the currently installed version remains usable.
 
 ## 2. Under-block
 
@@ -43,7 +43,7 @@ The Ubuntu `npm run build` runs before artifact download, so it cannot replace t
 
 ## 6. External surfaces
 
-Publishing now consumes a macOS GitHub runner and one workflow artifact. A failure delays the next npm version and is visible in GitHub Actions. Users do not see a new prompt; the dashboard continues to require only its PIN. The npm tarball grows by the universal helper. The build job does not access user screens, PINs, or agent state.
+PR CI and publishing now consume a macOS GitHub runner; publish transfers one workflow artifact. A failure delays merging or the next npm version and is visible in GitHub Actions. Users do not see a new prompt; the dashboard continues to require only its PIN. The npm tarball grows by the universal helper. The build jobs do not access user screens, PINs, or agent state.
 
 ## 6b. Operator-surface quality (Operator-Surface Quality standard)
 
