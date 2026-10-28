@@ -14,6 +14,7 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
  */
 
 import { Router } from 'express';
+import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
@@ -12955,6 +12956,11 @@ export function createRoutes(ctx: RouteContext): Router {
   // ── Native operator remote desktop (explicit dev-agent opt-in) ─────────────
   const desktopOperatorSession = (req: ExpressRequest): string =>
     typeof req.headers['x-instar-operator-session'] === 'string' ? req.headers['x-instar-operator-session'] : '';
+  const desktopTransport = (req: ExpressRequest, res: ExpressResponse): boolean => {
+    if (req.secure || isLoopbackPeer(req.socket.remoteAddress)) return true;
+    res.status(403).json({ error: 'Remote desktop requires the HTTPS tunnel or local access' });
+    return false;
+  };
   const desktopIntent = (req: ExpressRequest, res: ExpressResponse): boolean => {
     if (req.headers['x-instar-request'] === '1') return true;
     res.status(403).json({ error: 'X-Instar-Request: 1 required' });
@@ -12971,13 +12977,17 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/desktop/targets', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
     if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     const target = ctx.directDesktopAccess.targetInfo();
     const topics = Object.entries(ctx.topicOperatorStore?.all() ?? {})
       .filter(([id, binding]) => /^\d+$/.test(id) && binding.platform === 'telegram')
-      .map(([id]) => ({ topicId: Number(id), label: `Telegram topic ${id}` }));
+      .map(([id]) => {
+        const name = ctx.telegram?.getTopicName(Number(id))?.trim();
+        return { topicId: Number(id), label: name || `Telegram topic ${id}` };
+      });
     let ready = false;
     try { ready = (await ctx.directDesktopAccess.probe()).ready; } catch { /* OS permission absent: target remains unavailable */ }
     res.json({ machines: [{ ...target, ready }], topics });
@@ -12985,19 +12995,22 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/desktop/requests', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);
     if (!ctx.verifyDashboardOperatorSession?.(session)) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     const topicId = Number(req.body?.topicId);
-    const operator = ctx.topicOperatorStore?.getOperator(topicId);
-    if (!operator || operator.platform !== 'telegram') {
+    const telegramStepUp = ctx.directDesktopAccess.requiresTelegramStepUp();
+    const operator = telegramStepUp ? ctx.topicOperatorStore?.getOperator(topicId) : null;
+    if (telegramStepUp && (!operator || operator.platform !== 'telegram')) {
       res.status(403).json({ error: 'Verified Telegram operator required' }); return;
     }
     try {
       const result = await ctx.directDesktopAccess.begin({
-        machineId: req.body?.machineId, topicId, operatorUid: operator.uid,
+        machineId: req.body?.machineId, topicId: telegramStepUp ? topicId : 0,
+        operatorUid: telegramStepUp ? operator!.uid : 'dashboard-pin',
         operatorSessionToken: session, browserPublicKey: req.body?.browserPublicKey,
         browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
         browserNonce: req.body?.browserNonce, scopeConfirmed: req.body?.scopeConfirmed,
@@ -13008,12 +13021,14 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/desktop/requests/:id', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
     try { res.json(ctx.directDesktopAccess.status(req.params.id, desktopOperatorSession(req))); }
     catch { res.status(403).json({ error: 'Desktop request unavailable' }); }
   });
   router.post('/desktop/requests/:id/ticket', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     try {
       const ticket = ctx.directDesktopAccess.ticket(req.params.id, desktopOperatorSession(req),
@@ -13024,6 +13039,7 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/desktop/requests/:id/revoke', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     try { ctx.directDesktopAccess.revoke(req.params.id, desktopOperatorSession(req)); res.json({ revoked: true }); }
     catch { res.status(403).json({ error: 'Desktop revocation unavailable' }); }

@@ -37,6 +37,13 @@ describe('native desktop init and migration parity', () => {
       expect(first).toContain(REMOTE_DESKTOP_MARKER);
       run();
       expect(fs.readFileSync(file, 'utf8')).toBe(first);
+      fs.writeFileSync(file, `# Existing agent\n- **${REMOTE_DESKTOP_MARKER}**: Opening requires a Telegram code.\n`);
+      run();
+      const updated = fs.readFileSync(file, 'utf8');
+      expect(updated).toContain('no Telegram approval is required');
+      expect(updated).not.toContain('Opening requires a Telegram code');
+      run();
+      expect(fs.readFileSync(file, 'utf8')).toBe(updated);
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'remote-desktop-delivery-parity.test.ts cleanup' });
     }

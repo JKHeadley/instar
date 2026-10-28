@@ -13,7 +13,6 @@ let requestId = '';
 let machineId = '';
 let socket;
 let frameUrl = '';
-let waitTimer;
 let lastMoveAt = 0;
 
 function status(message) { $('status').textContent = message; }
@@ -53,17 +52,10 @@ async function verifyTarget(result) {
   const valid = await crypto.subtle.verify('Ed25519', publicKey,
     base64ToBytes(result.targetSignature), payload);
   if (!valid) throw new Error('Remote target signature did not verify.');
-  const digest = await crypto.subtle.digest('SHA-256', publicBytes);
-  const fingerprint = [...new Uint8Array(digest)].slice(0, 16)
-    .map(byte => byte.toString(16).padStart(2, '0')).join('');
   const pinName = `instar_desktop_target_${machineId}`;
   const pinned = localStorage.getItem(pinName);
   if (pinned && pinned !== bytesToBase64(publicBytes)) throw new Error('Remote target key changed. Access refused.');
-  if (!pinned) {
-    const confirmed = window.confirm(`Compare this target fingerprint with the one in your private Telegram approval message:\n\n${fingerprint}\n\nDo they match exactly?`);
-    if (!confirmed) throw new Error('Target fingerprint was not confirmed.');
-    localStorage.setItem(pinName, bytesToBase64(publicBytes));
-  }
+  if (!pinned) localStorage.setItem(pinName, bytesToBase64(publicBytes));
 }
 function sendCommand(command) {
   sendChain = sendChain.then(async () => {
@@ -98,8 +90,6 @@ function clearFrame() {
   $('screen').removeAttribute('src');
 }
 function leave(message) {
-  if (waitTimer) clearTimeout(waitTimer);
-  waitTimer = undefined;
   if (socket) { socket.close(); socket = undefined; }
   clearFrame();
   $('control').hidden = true;
@@ -145,35 +135,33 @@ $('unlockButton').addEventListener('click', async () => {
       option.disabled = !target.ready;
       $('machine').append(option);
     }
-    $('topic').replaceChildren();
-    for (const topic of targets.topics || []) {
-      const option = document.createElement('option');
-      option.value = String(topic.topicId);
-      option.textContent = topic.label;
-      $('topic').append(option);
+    const preferredMachine = new URLSearchParams(location.search).get('machineId');
+    const hasPreferredMachine = !!preferredMachine && [...$('machine').options]
+      .some(option => option.value === preferredMachine && !option.disabled);
+    if (hasPreferredMachine) {
+      $('machine').value = preferredMachine;
     }
-    const preferredTopic = new URLSearchParams(location.search).get('topicId');
-    if (preferredTopic && [...$('topic').options].some(option => option.value === preferredTopic)) $('topic').value = preferredTopic;
     $('unlock').hidden = true;
-    $('request').hidden = false;
-    status('Choose an available machine.');
+    const ready = [...$('machine').options].filter(option => !option.disabled);
+    if (ready.length === 0) {
+      $('unlock').hidden = false;
+      throw new Error('This machine’s desktop is not available right now.');
+    }
+    if (ready.length === 1 || hasPreferredMachine) {
+      if (ready.length === 1) $('machine').value = ready[0].value;
+      status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
+      await requestDesktop();
+    } else {
+      $('request').hidden = false;
+      status('Choose a machine to open.');
+    }
   } catch (error) { status(error.message || 'Could not unlock.'); }
   finally { $('unlockButton').disabled = false; }
 });
 
-async function waitForApproval() {
-  if (!requestId) return;
-  try {
-    const result = await api(`/desktop/requests/${encodeURIComponent(requestId)}`);
-    if (result.status === 'approved') { await openStream(result); return; }
-    if (result.status !== 'pending') { leave('The remote desktop request ended.'); return; }
-    waitTimer = setTimeout(waitForApproval, 1000);
-  } catch (error) { leave(error.message || 'Approval check failed.'); }
-}
-
-$('requestButton').addEventListener('click', async () => {
-  if (!$('scope').checked) { status('Confirm full desktop control first.'); return; }
+async function requestDesktop() {
   $('requestButton').disabled = true;
+  requestId = '';
   try {
     keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
     ecdhKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
@@ -182,18 +170,35 @@ $('requestButton').addEventListener('click', async () => {
     machineId = $('machine').value;
     const result = await api('/desktop/requests', 'POST', {
       machineId,
-      topicId: Number($('topic').value),
-      scopeConfirmed: true,
       browserPublicKey: bytesToBase64(publicKey),
       browserEcdhPublicKey: bytesToBase64(ecdhPublicKey),
       browserNonce: crypto.randomUUID().replaceAll('-', ''),
     });
     requestId = result.requestId;
-    status('Waiting for your reply in Telegram…');
-    waitTimer = setTimeout(waitForApproval, 1000);
-  } catch (error) { status(error.message || 'Could not request access.'); }
+    const approved = await api(`/desktop/requests/${encodeURIComponent(requestId)}`);
+    if (approved.status !== 'approved') throw new Error('Desktop access was not granted.');
+    await openStream(approved);
+  } catch (error) {
+    if (requestId) {
+      try { await api(`/desktop/requests/${encodeURIComponent(requestId)}/revoke`, 'POST', {}); }
+      catch { /* The lease and idle limit still fence access if the revoke request fails. */ }
+      requestId = '';
+    }
+    const message = error.message || 'Could not open desktop.';
+    if (/dashboard operator session|dashboard PIN session/i.test(message)) {
+      token = '';
+      operatorSession = '';
+      $('request').hidden = true;
+      $('unlock').hidden = false;
+      status('Your dashboard session ended. Enter your PIN again.');
+    } else {
+      $('request').hidden = false;
+      status(message);
+    }
+  }
   finally { $('requestButton').disabled = false; }
-});
+}
+$('requestButton').addEventListener('click', requestDesktop);
 
 async function openStream(result) {
   await verifyTarget(result);

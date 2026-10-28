@@ -5,9 +5,10 @@ import { DirectDesktopAccess } from '../../src/core/DirectDesktopAccess.js';
 import type { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
 import type { RemoteStepUpLockoutPort } from '../../src/core/RemoteStepUpLockouts.js';
 
-function fixture() {
+function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   let now = 1_800_000_000_000;
   let binding = true;
+  let sessionValid = true;
   let challenge = '';
   let cancelled = 0;
   let indicatorExit: (() => void) | null = null;
@@ -36,9 +37,9 @@ function fixture() {
     sign: (payload: Buffer) => crypto.sign(null, payload, targetKey.privateKey) };
   const authority = new DirectDesktopAccess('machine-1', 'Echo Mac', host, locks, targetIdentity,
     (topic, uid) => binding && topic === 131439 && uid === '7812716706',
-    token => token === 'dashboard-proof',
+    token => sessionValid && token === 'dashboard-proof',
     async (_topic, text) => { challenge = text; },
-    id => { closed.push(id); }, () => now);
+    id => { closed.push(id); }, () => now, undefined, mode);
   const browser = crypto.generateKeyPairSync('ed25519');
   const browserEcdh = crypto.createECDH('prime256v1');
   browserEcdh.generateKeys();
@@ -50,11 +51,28 @@ function fixture() {
   const code = () => /\/desktop [0-9a-f-]{36} (\d{6})/.exec(challenge)?.[1] ?? '';
   return { authority, begin, code, browser, browserEcdh, closed, failures,
     setNow: (value: number) => { now = value; }, setBinding: (value: boolean) => { binding = value; },
+    setSessionValid: (value: boolean) => { sessionValid = value; },
     cancelled: () => cancelled, indicatorStops: () => indicatorStops,
     crashIndicator: () => indicatorExit?.() };
 }
 
 describe('DirectDesktopAccess', () => {
+  it('opens from a fresh dashboard PIN session without Telegram and revokes when that session ends', async () => {
+    const f = fixture('pin');
+    f.setBinding(false);
+    const { requestId } = await f.begin();
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    expect(state.status).toBe('approved');
+    const payload = Buffer.from(JSON.stringify(['desktop-browser-possession-v1', requestId, state.connectionNonce]));
+    const ticket = f.authority.ticket(requestId, 'dashboard-proof', state.connectionNonce!,
+      crypto.sign(null, payload, f.browser.privateKey).toString('base64'));
+    const stream = await f.authority.admit({ headers: { origin: 'https://instar.example', host: 'instar.example',
+      'x-forwarded-proto': 'https', 'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
+    url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    f.setSessionValid(false);
+    await expect(stream.assertActive()).rejects.toThrow('grant');
+    expect(f.closed).toEqual([stream.grantId]);
+  });
   it('needs dashboard proof, verified Telegram binding and full-desktop confirmation', async () => {
     const f = fixture();
     await expect(f.authority.begin({ machineId: 'machine-1', topicId: 131439,
@@ -82,7 +100,9 @@ describe('DirectDesktopAccess', () => {
     const request = { headers: { origin: 'https://instar.example', host: 'instar.example',
       'x-forwarded-proto': 'https',
       'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
-      url: '/desktop-stream' } as IncomingMessage;
+      url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage;
+    const remoteRequest = { ...request, socket: { remoteAddress: '192.0.2.1' } } as unknown as IncomingMessage;
+    await expect(f.authority.admit(remoteRequest)).rejects.toThrow('transport');
     const stream = await f.authority.admit(request);
     await expect(f.authority.admit(request)).rejects.toThrow('ticket');
     const encrypted = await stream.captureEncrypted();
@@ -121,7 +141,7 @@ describe('DirectDesktopAccess', () => {
     const stream = await f.authority.admit({ headers: { origin: 'https://instar.example', host: 'instar.example',
       'x-forwarded-proto': 'https',
       'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
-      url: '/desktop-stream' } as IncomingMessage);
+      url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
     f.crashIndicator();
     await expect(stream.assertActive()).rejects.toThrow('grant');
     expect(f.indicatorStops()).toBe(1);

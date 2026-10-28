@@ -30,23 +30,15 @@ async function boot(enabled: boolean) {
       protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
   } as InstarConfig;
-  let approvalHandler: unknown;
-  let dmText = '';
-  const telegram = {
-    getOwnerUserId: () => 7812716706,
-    setDesktopApprovalHandler: (handler: unknown) => { approvalHandler = handler; },
-    sendToOwnerDM: async (text: string) => { dmText = text; return { messageId: 1 }; },
-    getTopicHistory: () => [],
-  };
   const server = new AgentServer({
-    config, state: new StateManager(stateDir), telegram: telegram as any,
+    config, state: new StateManager(stateDir), telegram: null,
     meshSelfId: machineId,
     listPoolMachines: () => [{ machineId, nickname: 'Echo Mac', online: true }] as any,
     sessionManager: { listRunningSessions: () => [], getSession: () => null,
       getRunningSessionPanePids: () => [] } as any,
   });
   await server.start();
-  return { server, dir, machineId, stateDir, approvalHandler: () => approvalHandler, dmText: () => dmText };
+  return { server, dir, machineId, stateDir, config };
 }
 
 describe('native desktop production boot', () => {
@@ -63,14 +55,8 @@ describe('native desktop production boot', () => {
   });
 
   it.skipIf(process.platform !== 'darwin')('wires a live Mac target into the production route', async () => {
-    const { server, dir, machineId, approvalHandler } = await boot(true);
+    const { server, dir, machineId, config } = await boot(true);
     try {
-      expect(typeof approvalHandler()).toBe('function');
-      const op = server.getTopicOperatorStore();
-      expect(op?.setAuthenticatedOperator(131439, { platform: 'telegram', uid: '7812716706' }, {
-        kind: 'authenticated-inbound', ingress: 'telegram-polling',
-        authorization: 'telegram-is-authorized-sender', senderUid: '7812716706', messageId: '1',
-      })).not.toBeNull();
       const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
       expect(unlock.status).toBe(200);
       const listed = await request(server.getApp()).get('/desktop/targets')
@@ -78,27 +64,51 @@ describe('native desktop production boot', () => {
         .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
       expect(listed.status).toBe(200);
       expect(listed.body.machines).toEqual([{ machineId, label: 'Echo Mac', ready: expect.any(Boolean) }]);
-      expect(listed.body.topics[0].topicId).toBe(131439);
+      expect(listed.body.topics).toEqual([]);
       const viewer = await request(server.getApp()).get('/dashboard/desktop.html');
       expect(viewer.status).toBe(200);
+      expect(viewer.text).toContain('Remote desktop: Echo Mac');
+      expect(viewer.text).toMatch(/desktop\.js\?v=[a-f0-9]{16}/);
+      expect(viewer.headers['cache-control']).toBe('no-store');
+      const viewerScript = await request(server.getApp()).get('/dashboard/desktop.js');
+      expect(viewerScript.status).toBe(200);
+      expect(viewerScript.headers['cache-control']).toBe('no-store');
+      expect(viewerScript.text).not.toContain("$('topic').replaceChildren()");
       expect(viewer.headers['content-security-policy']).toContain("script-src 'self'");
       expect(viewer.headers['content-security-policy']).toContain('wss://');
+      config.dashboardPin = '654321';
+      const stale = await request(server.getApp()).get('/desktop/targets')
+        .set('Authorization', 'Bearer desktop-e2e-token')
+        .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
+      expect(stale.status).toBe(403);
+      expect((await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' })).status).toBe(403);
+      expect((await request(server.getApp()).post('/dashboard/unlock').send({ pin: '654321' })).status).toBe(200);
     } finally {
       await server.stop();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop-boot-lifecycle cleanup' });
     }
   });
 
+  it.skipIf(process.platform !== 'darwin')('limits desktop PIN guesses and persists the attempt budget', async () => {
+    const { server, dir, stateDir } = await boot(true);
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        expect((await request(server.getApp()).post('/dashboard/unlock').send({ pin: '000000' })).status).toBe(403);
+      }
+      expect((await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' })).status).toBe(429);
+      const saved = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'pin-attempts.json'), 'utf8'));
+      expect(saved.__dashboard_unlock_global__.count).toBe(5);
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop PIN limit cleanup' });
+    }
+  });
+
   it.skipIf(process.platform !== 'darwin' || process.env.DESKTOP_LIVE_TEST !== '1')
     ('captures and controls the live Mac through the production boot path, then revokes', async () => {
-      const { server, dir, machineId, stateDir, approvalHandler, dmText } = await boot(true);
+      const { server, dir, machineId, stateDir } = await boot(true);
       let ws: WebSocket | undefined;
       try {
-        const op = server.getTopicOperatorStore();
-        op!.setAuthenticatedOperator(131439, { platform: 'telegram', uid: '7812716706' }, {
-          kind: 'authenticated-inbound', ingress: 'telegram-polling',
-          authorization: 'telegram-is-authorized-sender', senderUid: '7812716706', messageId: '1',
-        });
         const app = server.getApp();
         const unlock = await request(app).post('/dashboard/unlock').send({ pin: '123456' });
         expect(unlock.status).toBe(200);
@@ -110,15 +120,11 @@ describe('native desktop production boot', () => {
         const browserPublicKey = ed.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
         const browserEcdhPublicKey = browserEcdh.getPublicKey().toString('base64');
         const created = await request(app).post('/desktop/requests').set(headers).send({
-          machineId, topicId: 131439, scopeConfirmed: true, browserPublicKey,
+          machineId, browserPublicKey,
           browserEcdhPublicKey, browserNonce: '0123456789abcdef',
         });
         expect(created.status).toBe(201);
         const requestId = created.body.requestId;
-        const code = /\/desktop [0-9a-f-]{36} (\d{6})/.exec(dmText())?.[1];
-        expect(code).toMatch(/^\d{6}$/);
-        expect((approvalHandler() as (input: unknown) => boolean)({ requestId, code,
-          topicId: 131439, senderUid: '7812716706' })).toBe(true);
         const status = await request(app).get(`/desktop/requests/${requestId}`).set(headers);
         expect(status.body.status).toBe('approved');
         const key = Buffer.from(crypto.hkdfSync('sha256',

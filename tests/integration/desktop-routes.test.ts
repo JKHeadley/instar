@@ -14,6 +14,7 @@ function app(access: DirectDesktopAccess | null) {
     config: { projectName: 'desktop-test', projectDir: '/tmp', stateDir: '/tmp', port: 0, authToken: AUTH },
     sessionManager: { listRunningSessions: () => [] }, state: {}, scheduler: null,
     directDesktopAccess: access,
+    telegram: { getTopicName: (id: number) => id === 131439 ? 'Remote access + blocker hand-off design' : null },
     verifyDashboardOperatorSession: (token: string) => token === 'operator-proof',
     topicOperatorStore: { all: () => ({ 131439: operator }), getOperator: (id: number) => id === 131439 ? operator : null },
     startTime: new Date(),
@@ -27,9 +28,10 @@ function app(access: DirectDesktopAccess | null) {
 
 function fakeAccess(): DirectDesktopAccess {
   return {
+    requiresTelegramStepUp: () => false,
     targetInfo: () => ({ machineId: 'machine-1', label: 'Echo Mac' }),
     probe: async () => ({ ready: true, screenPermission: true, inputPermission: true, displayCount: 1 }),
-    begin: async input => { expect(input.operatorUid).toBe('7812716706'); return { requestId: 'request-1' }; },
+    begin: async input => { expect(input.operatorUid).toBe('dashboard-pin'); return { requestId: 'request-1' }; },
     status: () => ({ status: 'approved', connectionNonce: 'nonce-1' }),
     ticket: () => 'ticket-1',
     revoke: () => {},
@@ -54,17 +56,18 @@ describe('remote desktop HTTP routes', () => {
     expect(listed.status).toBe(200);
     expect(listed.body.machines).toEqual([{ machineId: 'machine-1', label: 'Echo Mac', ready: true }]);
     expect(listed.body.topics[0].topicId).toBe(131439);
+    expect(listed.body.topics[0].label).toBe('Remote access + blocker hand-off design');
     expect(listed.headers['cache-control']).toBe('no-store');
   });
 
-  it('derives the operator from verified topic binding and gates writes on intent', async () => {
+  it('uses the dashboard PIN session and gates writes on intent', async () => {
     const { server } = app(fakeAccess());
     const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-Operator-Session': 'operator-proof' };
-    const body = { machineId: 'machine-1', topicId: 131439, scopeConfirmed: true,
+    const body = { machineId: 'machine-1',
       browserPublicKey: 'fixture', browserNonce: '0123456789abcdef', operatorUid: 'attacker' };
     expect((await request(server).post('/desktop/requests').set(headers).send(body)).status).toBe(403);
-    expect((await request(server).post('/desktop/requests').set({ ...headers, 'X-Instar-Request': '1' })
-      .send({ ...body, topicId: 99 })).status).toBe(403);
+    expect((await request(server).post('/desktop/requests').set({ Authorization: `Bearer ${AUTH}`,
+      'X-Instar-Request': '1' }).send(body)).status).toBe(403);
     const created = await request(server).post('/desktop/requests').set({ ...headers, 'X-Instar-Request': '1' }).send(body);
     expect(created.status).toBe(201);
     expect(created.body.requestId).toBe('request-1');

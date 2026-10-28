@@ -9,18 +9,15 @@
 </head>
 <body>
   <a href="/dashboard/">← Dashboard</a>
-  <h1>Remote desktop</h1>
-  <p>Control the currently logged-in desktop of one machine. Your actions affect the whole machine. Access lasts at most ten minutes and stops when you press Stop.</p>
+  <h1>Remote desktop: __INSTAR_DESKTOP_TARGET_NAME__</h1>
+  <p>Enter your dashboard PIN to see and control this machine’s desktop for up to ten minutes. Clicks and typing work in its open apps as if you were sitting there. You can change files or settings. Press Stop access at any time.</p>
   <section id="unlock">
     <label>Dashboard PIN <input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
-    <button id="unlockButton">Unlock</button>
+    <button id="unlockButton">Open desktop</button>
   </section>
   <section id="request" hidden>
     <label>Machine <select id="machine"></select></label>
-    <label>Telegram approval topic <select id="topic"></select></label>
-    <label><input id="scope" type="checkbox"> I understand this gives me full control of the logged-in desktop.</label>
-    <button id="requestButton">Ask to open desktop</button>
-    <p class="muted">The code arrives in your private Telegram chat with the bot. Reply with the command in your verified Telegram topic. This page will wait for that reply.</p>
+    <button id="requestButton">Open selected machine</button>
   </section>
   <section id="control" hidden>
     <div class="row"><strong id="machineName"></strong><button id="stopButton" class="danger">Stop access</button></div>
@@ -29,6 +26,6 @@
     <p class="muted">Click the desktop image to click remotely. Move the pointer over the image to move the remote pointer.</p>
   </section>
   <p id="status" role="status"></p>
-  <script type="module" src="/dashboard/desktop.js"></script>
+  <script type="module" src="/dashboard/desktop.js?v=__INSTAR_DESKTOP_ASSET_VERSION__"></script>
 </body>
 </html>

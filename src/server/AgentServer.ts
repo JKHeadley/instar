@@ -181,6 +181,7 @@ import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOver
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
+import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
 import { DesktopAccessAudit } from '../core/DesktopAccessAudit.js';
@@ -357,6 +358,20 @@ export class AgentServer {
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
+  private dashboardPinVersion: string | null = null;
+
+  private syncDashboardPinVersion(): void {
+    const version = createHash('sha256').update(this.config.dashboardPin ?? '').digest('hex');
+    if (this.dashboardPinVersion !== null && this.dashboardPinVersion !== version) {
+      this.dashboardOperatorSessions.clear();
+    }
+    this.dashboardPinVersion = version;
+  }
+
+  private verifyDashboardOperatorSession(token: string | undefined): boolean {
+    this.syncDashboardPinVersion();
+    return this.dashboardOperatorSessions.verify(token);
+  }
   /** multi-transport-mesh-comms (Layer 0.5) — see the bind site in start(). */
   private meshBindActive: boolean;
   private startTime: Date;
@@ -1261,6 +1276,16 @@ export class AgentServer {
     // Dashboard security headers — set before static serving so they apply to all dashboard responses
     this.app.use(dashboardSecurityHeaders);
 
+    // PIN-only desktop access requires a durable guess budget. Construct it
+    // before any dashboard unlock can mint an operator session.
+    try {
+      this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir });
+    } catch (err) {
+      // @silent-fallback-ok — the warning is visible and desktop admission stays dark without a durable PIN budget.
+      console.warn('[instar] PIN attempt store unavailable; remote desktop stays dark:', err);
+      this.pinAttemptStore = null;
+    }
+
     // Dashboard static files — served BEFORE auth middleware so the page loads
     // without a token. Auth happens via WebSocket/API calls from the page itself.
     const dashboardDir = this.resolveDashboardDir();
@@ -1278,6 +1303,23 @@ export class AgentServer {
         lastModified: true,
       });
     });
+    this.app.get('/dashboard/desktop.html', (_req, res) => {
+      dashboardCacheControl(res);
+      const label = this.directDesktopAccess?.targetInfo().label ?? 'this machine';
+      const escaped = label.replace(/[&<>"']/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      })[character] ?? character);
+      const html = fs.readFileSync(path.join(dashboardDir, 'desktop.html'), 'utf8')
+        .replace('__INSTAR_DESKTOP_TARGET_NAME__', escaped)
+        .replace('__INSTAR_DESKTOP_ASSET_VERSION__',
+          createHash('sha256').update(fs.readFileSync(path.join(dashboardDir, 'desktop.js'))).digest('hex').slice(0, 16));
+      res.setHeader('Cache-Control', 'no-store');
+      res.type('html').send(html);
+    });
+    this.app.get('/dashboard/desktop.js', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(path.join(dashboardDir, 'desktop.js'), { cacheControl: false });
+    });
     this.app.use('/dashboard', express.static(dashboardDir, DASHBOARD_STATIC_OPTIONS));
 
     // PIN-based dashboard unlock — exchanges a short PIN for the auth token.
@@ -1289,9 +1331,16 @@ export class AgentServer {
     const pinAttempts = new Map<string, { count: number; resetAt: number }>();
     const MAX_ATTEMPTS = 5;
     const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
+    const GLOBAL_MAX_ATTEMPTS = 20;
+    const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+    let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
+      if (this.directDesktopAccess && !req.secure && !isLoopbackPeer(req.socket.remoteAddress)) {
+        res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
+        return;
+      }
       if (!configRef.dashboardPin || !configRef.authToken) {
         res.status(503).json({ error: 'PIN authentication not yet available. Try again shortly.' });
         return;
@@ -1301,12 +1350,18 @@ export class AgentServer {
 
       // Rate limit by IP
       const now = Date.now();
+      if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
+      if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS
+        || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
+        return;
+      }
       let entry = pinAttempts.get(ip);
       if (entry && now > entry.resetAt) {
         pinAttempts.delete(ip);
         entry = undefined;
       }
-      if (entry && entry.count >= MAX_ATTEMPTS) {
+      if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
         res.status(429).json({ error: 'Too many attempts. Try again later.' });
         return;
       }
@@ -1326,7 +1381,9 @@ export class AgentServer {
           pinAttempts.set(ip, entry);
         }
         entry.count++;
-        const remaining = MAX_ATTEMPTS - entry.count;
+        globalPinAttempts.count++;
+        const remaining = this.pinAttemptStore?.recordFailure(ip) ?? (MAX_ATTEMPTS - entry.count);
+        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
         res.status(403).json({
           error: 'Incorrect PIN',
           attemptsRemaining: remaining,
@@ -1334,9 +1391,14 @@ export class AgentServer {
         return;
       }
 
+      pinAttempts.delete(ip);
+      this.pinAttemptStore?.recordSuccess(ip);
+      globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
+      this.pinAttemptStore?.recordSuccess(GLOBAL_PIN_KEY);
       // The ordinary API token is also available to agents, so it cannot prove
       // that a human unlocked the dashboard. Issue a separate short-lived proof
       // for explicitly operator-gated actions.
+      this.syncDashboardPinVersion();
       const operatorSession = this.dashboardOperatorSessions.issue();
       res.json({
         token: configRef.authToken,
@@ -1718,21 +1780,10 @@ export class AgentServer {
               stateDir: options.config.stateDir,
             });
           } catch (err) {
+            // @silent-fallback-ok — this read-only price view reports its startup failure and stays unavailable.
             console.warn('[instar] routing-price-authority init failed (non-fatal):', err);
             this.routingPriceAuthority = null;
           }
-        }
-
-        // Durable per-IP PIN-attempt lockout (S2-1) — hardens EVERY PIN route
-        // (mandates, money surfaces, external-hog arm) so a restart no longer
-        // resets brute-force lockout. Independent of the money layer.
-        try {
-          this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir });
-        } catch (err) {
-          // @silent-fallback-ok: loud warn + degrade to the pre-existing in-memory
-          // lockout (defence-in-depth layer, never the auth decision itself).
-          console.warn('[instar] pin-attempt store init failed (non-fatal — in-memory lockout only):', err);
-          this.pinAttemptStore = null;
         }
 
         // ── Layer 1c provider-report store + reconciliation sweep (FD-21 —
@@ -2427,7 +2478,7 @@ export class AgentServer {
     // explicit even on development agents; incomplete hosts cannot advertise
     // access. Other platforms require their own host adapters and live proof.
     if (options.config.remoteDesktop?.enabled === true && options.config.developmentAgent === true
-      && process.platform === 'darwin' && this.meshSelfId && this.telegramAdapter && this.topicOperatorStore) {
+      && process.platform === 'darwin' && this.meshSelfId && this.pinAttemptStore) {
       const label = options.listPoolMachines?.().find(peer => peer.machineId === this.meshSelfId)?.nickname;
       if (label) {
         try {
@@ -2446,7 +2497,7 @@ export class AgentServer {
           { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
             sign: payload => Buffer.from(signMachinePayload(payload, privateKey), 'base64') },
           (topicId, uid) => this.topicOperatorStore?.getOperator(topicId)?.uid === uid,
-          token => this.dashboardOperatorSessions.verify(token),
+          token => this.verifyDashboardOperatorSession(token),
           async (topicId, text) => {
             const uid = this.topicOperatorStore?.getOperator(topicId)?.uid;
             if (!uid || String(this.telegramAdapter!.getOwnerUserId() ?? '') !== uid) {
@@ -2461,9 +2512,9 @@ export class AgentServer {
           grantId => this.desktopStreamManager?.closeGrant(grantId),
           Date.now,
           new DesktopAccessAudit(options.config.stateDir),
+          'pin',
         );
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
-        this.telegramAdapter.setDesktopApprovalHandler(input => this.directDesktopAccess!.acceptAuthenticatedTelegramReply(input));
         } catch (error) {
           // @silent-fallback-ok — warn and leave desktop admission dark when target identity cannot be proven.
           console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
@@ -4692,7 +4743,7 @@ export class AgentServer {
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionRelogin: options.subscriptionRelogin ?? null,
-      verifyDashboardOperatorSession: (token: string | undefined) => this.dashboardOperatorSessions.verify(token),
+      verifyDashboardOperatorSession: (token: string | undefined) => this.verifyDashboardOperatorSession(token),
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,

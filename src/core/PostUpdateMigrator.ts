@@ -7387,6 +7387,15 @@ setTimeout(() => process.exit(0), 2000);
         : content + '\n' + remoteDesktopBullet(port) + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added native remote desktop availability and operator flow');
+    } else {
+      const lines = content.split('\n');
+      const index = lines.findIndex(line => line.includes(REMOTE_DESKTOP_MARKER));
+      if (index >= 0 && lines[index] !== remoteDesktopBullet(port)) {
+        lines[index] = remoteDesktopBullet(port);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated native remote desktop PIN flow');
+      }
     }
 
     if (!content.includes('### Telegram message origin')) {

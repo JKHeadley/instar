@@ -9,6 +9,7 @@ export interface DesktopAuditEvent {
   grantId: string;
   machineId: string;
   operatorUid: string;
+  authMethod?: 'pin' | 'telegram';
   inputBucket?: 'none' | '1-9' | '10-99' | '100+';
 }
 
@@ -27,6 +28,7 @@ export class DesktopAccessAudit {
       at, kind: event.kind, machineId: event.machineId,
       grantRef: crypto.createHash('sha256').update(event.grantId).digest('hex').slice(0, 16),
       operatorRef: crypto.createHash('sha256').update(event.operatorUid).digest('hex').slice(0, 16),
+      ...(event.authMethod ? { authMethod: event.authMethod } : {}),
       ...(event.inputBucket ? { inputBucket: event.inputBucket } : {}),
     };
     fs.appendFileSync(file, JSON.stringify(entry) + '\n', { mode: 0o600 });
