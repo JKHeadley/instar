@@ -5209,12 +5209,12 @@ export class AgentServer {
       state: () => triageState,
       auditPath: triageAuditPath,
       machineId: this.meshSelfId ?? null,
-      enabled: () => jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }).active,
+      enabled: () => jobSupervisionRolloutState(options.config).active,
       fetchPool: fetchTriagePool,
       supervision: () => options.scheduler && !options.scheduler.isReadOnlyStandby()
         ? options.scheduler.getJobSupervisionStore() : null,
       runHistory: () => options.scheduler?.getRunHistory() ?? null,
-      supervisionRollout: () => jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }),
+      supervisionRollout: () => jobSupervisionRolloutState(options.config),
       isScriptRunLive: runId => options.scheduler?.isScriptRunLive(runId) ?? false,
       expectedMachineIds: () => {
         if (!options.scheduler || options.scheduler.isReadOnlyStandby()) return null;
@@ -5265,7 +5265,7 @@ export class AgentServer {
       this.jobSupervisionReconcileTimer.unref?.();
     }
     if (options.scheduler && !options.scheduler.isReadOnlyStandby()
-      && jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }).active) {
+      && jobSupervisionRolloutState(options.config).active) {
       const keyStore = new SecretStore({ stateDir: options.config.stateDir,
         forceFileKey: options.config.secrets?.forceFileKey });
       const worker = new JobSupervisionWorker({
@@ -5274,7 +5274,7 @@ export class AgentServer {
           const key = keyStore.get('typesafe_api_key');
           return typeof key === 'string' ? key : null;
         },
-        auditReady: () => jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }).active,
+        auditReady: () => jobSupervisionRolloutState(options.config).active,
         onAttention: (attemptId, reason) => {
           void options.telegram?.createAttentionItem({
             id: `job-supervision:${attemptId}`, conditionKey: `job-supervision:${attemptId}`,
