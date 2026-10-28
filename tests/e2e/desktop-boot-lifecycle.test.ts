@@ -158,7 +158,7 @@ describe('native desktop production boot', () => {
           return processes.stdout.split('\n').some(line => {
             const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
             return !!match && Number(match[2]) !== process.pid
-              && /\/instar-desktop-host (indicator|capture-stream|input-stream)$/.test(match[3]);
+              && /\/instar-desktop-host (indicator|capture-stream(?:-h264)?|input-stream)$/.test(match[3]);
           });
         };
         const localUserRecentlyActive = () => {
@@ -308,8 +308,12 @@ describe('native desktop production boot', () => {
           resumedRecord.length - 16)), resumedDecipher.final()]);
         expect(resumedJpeg.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
         targetEvents.length = 0;
-        if (anotherControllerActive() || localUserRecentlyActive()) {
-          context.skip('the Mac is in use by another controller or local user');
+        // Our own CGEvent mouse/key posts reset HIDIdleTime. The initial
+        // pre-input check established local idleness; repeating it here would
+        // always skip the revoke/release half of this live proof. Still refuse
+        // a second remote controller before resuming input.
+        if (anotherControllerActive()) {
+          context.skip('another desktop controller is using this Mac');
         }
         sendLiveInput(ws, resumedKey, 1n, { kind: 'buttonDown', ...target, button: 'left' });
         sendLiveInput(ws, resumedKey, 2n, { kind: 'keyDown', key: 'Meta' });
@@ -333,6 +337,12 @@ describe('native desktop production boot', () => {
 
   it.skipIf(process.platform !== 'darwin' || process.env.DESKTOP_H264_LIVE_TEST !== '1')
     ('negotiates, decrypts, and decodes a live hardware AVC keyframe through production boot', async context => {
+      // A combined live run exercises mouse/keyboard first. Its CGEvents reset
+      // HIDIdleTime, so let that signal become quiet before the next host check.
+      // The occupancy and idle guards below still refuse an active Mac.
+      if (process.env.DESKTOP_LIVE_TEST === '1') {
+        await new Promise(resolve => setTimeout(resolve, 31_000));
+      }
       const { server, dir, machineId } = await boot(true);
       let ws: WebSocket | undefined;
       let requestId = '';

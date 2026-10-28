@@ -144,7 +144,7 @@ export class DesktopStreamManager {
             session.frameQueued?.();
           } else if (frame) session.frameDropped?.();
         }
-      } catch { close('authority-failed'); return; }
+      } catch { /* @silent-fallback-ok — close records the reason and revokes access. */ close('authority-failed'); return; }
       if (!closed) {
         timer = setTimeout(() => { void nextFrame(); }, FRAME_INTERVAL_MS);
         timer.unref?.();
@@ -175,7 +175,7 @@ export class DesktopStreamManager {
       if (closed || !isBinary || !Buffer.isBuffer(data) || data.length > 4_096) { close('protocol'); return; }
       let command: ReturnType<DesktopStreamSession['decryptCommand']>;
       try { command = session.decryptCommand(data); }
-      catch { close('decrypt-failed'); return; }
+      catch { /* @silent-fallback-ok — close records the reason and revokes access. */ close('decrypt-failed'); return; }
       if (command.type === 'stop') {
         pendingInputs.length = 0;
         void session.revoke().then(() => close('stop'), () => close('stop-error'));

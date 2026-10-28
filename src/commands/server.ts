@@ -17220,7 +17220,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   setTimeout(() => reject(new Error('Tunnel restart timed out after 15s')), 15_000)
                 ),
               ]);
-            } catch (err) {
+            } catch (err) { // @silent-fallback-ok — logs the restart failure; auto-reconnect remains armed.
               console.error(`[SleepWake] Tunnel restart failed:`, err);
               // The restart task owns auto-reconnect and the singleflight lock
               // even if this 15-second reporting window expires first.

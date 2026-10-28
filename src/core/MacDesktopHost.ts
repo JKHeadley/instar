@@ -68,7 +68,7 @@ export class MacDesktopHost implements DesktopHost {
     const oldHelperExited = Promise.all([...oldHelpers].map(child => this.waitForInputExit(child))).then(() => {});
     // Prior cleanup may already be failed, but the old-helper exit promise
     // still needs its own rejection observer.
-    void oldHelperExited.catch(() => {});
+    void oldHelperExited.catch(() => { /* @silent-fallback-ok — releaseBarrier awaits this promise and fails new input closed. */ });
     const buttons = new Set<string>();
     const keys = new Set(this.heldRemoteKeys);
     if (this.heldRemoteButton) buttons.add(this.heldRemoteButton);
