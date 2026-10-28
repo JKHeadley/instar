@@ -6,8 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const universal = process.argv.includes('--release-universal');
-if (universal && process.platform !== 'darwin') {
+const releaseUniversal = process.argv.includes('--release-universal');
+const universal = releaseUniversal || (process.env.INSTAR_RELEASE_BUILD === '1' && process.platform === 'darwin');
+if (releaseUniversal && process.platform !== 'darwin') {
   throw new Error('The universal macOS desktop host must be built on macOS');
 }
 

@@ -7,13 +7,14 @@
 
 ## Summary of the change
 
-The first Mac desktop branch built its Swift helper only when `npm run build` ran on macOS, while Instar publishes npm packages from Ubuntu with install scripts disabled. A normal update would therefore omit the helper even though Echo's local overlay worked. PR CI now builds and checks a universal Apple silicon/Intel helper. The publish workflow independently builds that helper on a macOS runner from a pinned source commit, transfers it into the Ubuntu package build, and checks binary architecture, executable mode, and npm tarball inclusion before publishing. The local release command now makes the same universal package; ordinary local builds retain native-architecture behavior.
+The first Mac desktop branch built its Swift helper only when `npm run build` ran on macOS, while Instar publishes npm packages from Ubuntu with install scripts disabled. A normal update would therefore omit the helper even though Echo's local overlay worked. PR CI now runs the actual release build mode and checks a universal Apple silicon/Intel helper. The publish workflow independently builds that helper on a macOS runner from a pinned source commit, transfers it into the Ubuntu package build, and checks binary architecture, executable mode, and npm tarball inclusion before publishing. The local release command now makes the same universal package. `prepublishOnly` also preserves or verifies the universal helper after npm's mandatory final rebuild; ordinary local builds retain native-architecture behavior.
 
 ## Decision-point inventory
 
 - `scripts/build-native-desktop-host.mjs` — modify — release mode demands macOS and both CPU architectures; ordinary Linux build still skips the Mac-only helper.
 - `scripts/check-native-desktop-release.mjs`, `.github/workflows/ci.yml`, and `.github/workflows/publish.yml` — add — hard artifact invariants fail PR CI or publish when the helper is missing or malformed.
 - `scripts/release-local.mjs` — modify — the fallback local release builds and checks the same universal helper and npm file list.
+- `package.json` `prepublishOnly` — modify — the final npm lifecycle rebuild uses release mode and checks the packaged helper before publishing.
 - Remote desktop grant, input, tunnel, and operator authority — pass-through — no policy or runtime admission change.
 
 ## 1. Over-block
@@ -22,7 +23,7 @@ A macOS runner outage or a Swift toolchain change blocks an otherwise valid PR o
 
 ## 2. Under-block
 
-The checks prove two Mach-O architectures, executable mode, and tarball presence. They do not prove that every future Mac version grants ScreenCaptureKit/Accessibility permission or that a physical iPhone decodes H.264. The local universal helper probe and gated live Mac test cover this development host; fleet and phone behavior still need deployment evidence. An npm lifecycle step added later could mutate `dist/` after the pre-publish check, so the workflow should be revisited if publish scripts change.
+The checks prove two Mach-O architectures, executable mode, and tarball presence. They do not prove that every future Mac version grants ScreenCaptureKit/Accessibility permission or that a physical iPhone decodes H.264. The local universal helper probe and gated live Mac test cover this development host; fleet and phone behavior still need deployment evidence. A future npm lifecycle step added after `prepublishOnly` could still mutate `dist/`; the workflow should be revisited if publish scripts change.
 
 ## 3. Level-of-abstraction fit
 
@@ -40,7 +41,7 @@ No competing-signals judgment point is added. A release either contains a valid 
 
 ## 5. Interactions
 
-The Ubuntu `npm run build` runs before artifact download, so it cannot replace the downloaded helper. The Mac job and Ubuntu job use the same pinned source SHA, avoiding a binary built from a different main revision. `scripts/release-local.mjs` builds universal after its ordinary `npm run build`, then checks the same architecture and pack-list invariants; the existing parity test enforces the relative script order. `UpdateChecker` installs with `--ignore-scripts`, so this does not rely on npm postinstall. The existing dark gate still returns 503 on Windows/Linux and on a Mac without runtime permissions.
+The Ubuntu `npm run build` runs before artifact download, so it cannot replace the downloaded helper. `npm publish` invokes `prepublishOnly`, which builds again: on Ubuntu the Mac helper already in `dist/` is retained and checked; on macOS release mode rebuilds the universal helper, then checks it. PR CI runs that same release-mode build. The Mac artifact job and Ubuntu publish job use the same pinned source SHA, avoiding a binary built from a different main revision. `scripts/release-local.mjs` builds universal after its ordinary `npm run build`, then checks the same architecture and pack-list invariants; the existing parity test enforces the relative script order. `UpdateChecker` installs with `--ignore-scripts`, so this does not rely on npm postinstall. The existing dark gate still returns 503 on Windows/Linux and on a Mac without runtime permissions.
 
 ## 6. External surfaces
 
@@ -74,6 +75,7 @@ Not required: this change validates a release artifact and leaves messaging, ses
 - `npm pack --dry-run --json --ignore-scripts` included `dist/native/instar-desktop-host`.
 - `npm run lint:parallel` passed all 49 checks.
 - `tests/unit/release-local-parity.test.ts` passed all five checks after local release parity was restored.
+- `INSTAR_RELEASE_BUILD=1 npm run build` left an executable universal helper; `check-native-desktop-release.mjs` reported both CPU slices.
 
 ## Class-Closure Declaration (display-only mirror)
 

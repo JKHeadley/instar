@@ -64,7 +64,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node scripts/build-native-desktop-host.mjs --release-universal
+          cache: npm
+      - run: npm ci
+      - run: INSTAR_RELEASE_BUILD=1 npm run build
       - run: node scripts/check-native-desktop-release.mjs
       - name: Check npm package contents
         run: npm pack --dry-run --json --ignore-scripts | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk).on("end", () => { const pack = JSON.parse(text)[0]; if (!pack.files.some(file => file.path === "dist/native/instar-desktop-host")) throw new Error("npm tarball omits native desktop host"); });'
