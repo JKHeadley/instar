@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-publish-package",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T22:34:37.120Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-publish-package.md",
+  "artifactSha256": "781aa9e0cbb5d11455a45f3e56d8fce44bf7e06abfec1cc2b13aa8bbafdee76d",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-quality.md",
+    "scripts/release-local.mjs",
+    "upgrades/side-effects/native-remote-desktop-publish-package.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The npm fallback release must package the same universal Mac helper as GitHub publishing.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}
