@@ -19,7 +19,7 @@ import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
-  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline,
+  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, combineNeeds,
 } from '../../dashboard/console/home-model.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
@@ -140,8 +140,17 @@ describe('Console Home E2E (feature is alive)', () => {
     }
     // The real commitment that waits on the operator surfaces.
     expect(cards.promised.state).toBe('attn');
-    expect(cards.promised.value).toBe('1 need you');
-    expect(headline(cards).text).not.toBe('All quiet.');
+    expect(cards.promised.value).toBe('1 waiting on you');
+    // "What needs you" is the one answer: it carries the waiting promise, and
+    // the headline counts that card alone, so the two agree (topic 127504).
+    const combined = { ...cards, needs: combineNeeds(cards.needs, cards.promised) };
+    if (Number.isFinite(cards.needs.count)) {
+      expect(combined.needs.count).toBe(cards.needs.count + 1);
+    } else {
+      // A queue that could not be read stays "can't tell" — never "Nothing needs you".
+      expect(combined.needs.value).not.toBe('Nothing needs you');
+    }
+    expect(headline(combined).text).not.toBe('All quiet.');
   });
 
   it('the Promises page reads the real mesh view and its Mark-as-done reaches the real tracker', async () => {
