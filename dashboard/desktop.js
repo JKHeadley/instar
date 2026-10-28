@@ -36,9 +36,12 @@ let heldButton = null;
 let heldPhase = 'none';
 let holdHeartbeat = 0;
 let buttonOperationId = 0;
+let buttonReleaseRequested = false;
 let nextKeyOperationId = 0;
 const heldKeys = new Map();
 const keyOperationIds = new Map();
+const keyReleaseRequested = new Set();
+const keyReleaseQueue = [];
 const pendingKeyTaps = new Set();
 const remoteKeys = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
   'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
@@ -52,7 +55,7 @@ function syncHoldHeartbeat() {
 }
 
 function setHeldButton(button, phase = button ? 'sent' : 'none') {
-  if (!button) buttonOperationId++;
+  if (!button) { buttonOperationId++; buttonReleaseRequested = false; }
   heldButton = button;
   heldPhase = phase;
   syncHoldHeartbeat();
@@ -65,6 +68,7 @@ function flushPendingMove() {
 }
 function releaseButton() {
   if (!heldButton || heldPhase === 'releasing' || heldPhase === 'unknown') return;
+  if (heldPhase === 'pending') { buttonReleaseRequested = true; return; }
   flushPendingMove();
   const button = heldButton;
   const epoch = streamEpoch;
@@ -81,6 +85,7 @@ function releaseButton() {
 function beginHold(button) {
   if (heldButton) return;
   flushPendingMove();
+  buttonReleaseRequested = false;
   const epoch = streamEpoch;
   const streamSocket = socket;
   const operation = ++buttonOperationId;
@@ -88,7 +93,7 @@ function beginHold(button) {
   void send({ kind: 'buttonDown', ...cursor, button }).then(sent => {
     if (epoch !== streamEpoch || operation !== buttonOperationId
       || heldButton !== button || heldPhase !== 'pending') return;
-    if (sent) heldPhase = 'sent';
+    if (sent) { heldPhase = 'sent'; if (buttonReleaseRequested) releaseButton(); }
     else { heldPhase = 'unknown'; unexpectedDisconnect(streamSocket); }
   });
 }
@@ -97,6 +102,15 @@ function updateKeyButton(key) {
     if (button.dataset.remoteKey === key && button.dataset.modifier) {
       button.setAttribute('aria-pressed', String(heldKeys.has(key)));
     }
+  }
+}
+function drainKeyReleases() {
+  while (keyReleaseQueue.length) {
+    const key = keyReleaseQueue[0];
+    if (heldKeys.get(key) === 'pending') return;
+    keyReleaseQueue.shift();
+    keyReleaseRequested.delete(key);
+    if (heldKeys.get(key) === 'sent') void releaseKey(key, true);
   }
 }
 function beginKey(key) {
@@ -111,7 +125,10 @@ function beginKey(key) {
   return send({ kind: 'keyDown', key }).then(sent => {
     if (epoch !== streamEpoch || keyOperationIds.get(key) !== operation
       || heldKeys.get(key) !== 'pending') return false;
-    if (sent) heldKeys.set(key, 'sent');
+    if (sent) {
+      heldKeys.set(key, 'sent');
+      drainKeyReleases();
+    }
     else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(streamSocket); }
     return sent;
   });
@@ -120,9 +137,14 @@ async function tapKey(key) {
   const epoch = streamEpoch;
   if (await beginKey(key) && epoch === streamEpoch) await releaseKey(key);
 }
-function releaseKey(key) {
+function releaseKey(key, fromQueue = false) {
   const phase = heldKeys.get(key);
   if (!phase || phase === 'releasing' || phase === 'unknown') return Promise.resolve(false);
+  if (!fromQueue && (phase === 'pending' || keyReleaseQueue.length)) {
+    if (!keyReleaseRequested.has(key)) { keyReleaseRequested.add(key); keyReleaseQueue.push(key); }
+    drainKeyReleases();
+    return Promise.resolve(false);
+  }
   heldKeys.set(key, 'releasing');
   const epoch = streamEpoch;
   const streamSocket = socket;
@@ -236,6 +258,8 @@ function leave(message) {
   pointers.clear();
   setHeldButton(null);
   for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
+  keyReleaseRequested.clear();
+  keyReleaseQueue.length = 0;
   pendingKeyTaps.clear();
   syncHoldHeartbeat();
   clearFrame();
@@ -778,6 +802,8 @@ $('stopButton').addEventListener('click', async () => {
   pointers.clear();
   setHeldButton(null);
   for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
+  keyReleaseRequested.clear();
+  keyReleaseQueue.length = 0;
   pendingKeyTaps.clear();
   syncHoldHeartbeat();
   sendCommand({ type: 'stop' });

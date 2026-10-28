@@ -38,6 +38,8 @@ export class MacDesktopHost implements DesktopHost {
   private readonly inputChildren = new Set<{ kill(signal?: NodeJS.Signals): boolean }>();
   private indicatorChild: ChildProcessWithoutNullStreams | null = null;
   private inputStream: ChildProcessWithoutNullStreams | null = null;
+  private readonly retiringInputStreams = new Set<ChildProcessWithoutNullStreams>();
+  private readonly closedInputStreams = new WeakSet<ChildProcessWithoutNullStreams>();
   private captureStream: ChildProcessWithoutNullStreams | null = null;
   private captureReply = Buffer.alloc(0);
   private captureLastFrame: Buffer | null = null;
@@ -55,13 +57,9 @@ export class MacDesktopHost implements DesktopHost {
   cancelInput(): Promise<void> {
     this.inputGeneration++;
     const priorInputStream = this.inputStream;
-    const oldHelperExited = priorInputStream ? new Promise<void>((resolve, reject) => {
-      if (priorInputStream.exitCode !== null || priorInputStream.signalCode !== null) { resolve(); return; }
-      const timer = setTimeout(() => reject(new Error('mac-desktop-host-input-exit-unconfirmed')), 2_000);
-      timer.unref?.();
-      priorInputStream.once('close', () => { clearTimeout(timer); resolve(); });
-      priorInputStream.once('error', () => { clearTimeout(timer); reject(new Error('mac-desktop-host-input-exit-unconfirmed')); });
-    }) : Promise.resolve();
+    const oldHelpers = new Set(this.retiringInputStreams);
+    if (priorInputStream) oldHelpers.add(priorInputStream);
+    const oldHelperExited = Promise.all([...oldHelpers].map(child => this.waitForInputExit(child))).then(() => {});
     // Prior cleanup may already be failed, but the old-helper exit promise
     // still needs its own rejection observer.
     void oldHelperExited.catch(() => {});
@@ -77,7 +75,7 @@ export class MacDesktopHost implements DesktopHost {
     this.heldRemoteKeys.clear();
     this.pendingControlAction = null;
     for (const child of this.inputChildren) child.kill('SIGKILL');
-    priorInputStream?.kill('SIGKILL');
+    for (const child of oldHelpers) child.kill('SIGKILL');
     this.inputStream = null;
     if (this.pendingInput) {
       clearTimeout(this.pendingInput.timer);
@@ -88,7 +86,7 @@ export class MacDesktopHost implements DesktopHost {
     // an in-flight down whose acknowledgement may have been lost). It can
     // still overlap a local person's identical key; macOS has no ownership
     // token for a posted CGEvent.
-    if (priorInputStream || buttons.size || keys.size) {
+    if (oldHelpers.size || buttons.size || keys.size) {
       const payload = buttons.size || keys.size
         ? Buffer.from(JSON.stringify({ buttons: [...buttons], keys: [...keys] })) : null;
       // A replacement grant cannot post input before the old grant's release
@@ -108,6 +106,20 @@ export class MacDesktopHost implements DesktopHost {
       });
     }
     return this.releaseBarrier;
+  }
+
+  private waitForInputExit(child: ChildProcessWithoutNullStreams): Promise<void> {
+    if (this.closedInputStreams.has(child)) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('mac-desktop-host-input-exit-unconfirmed')), 2_000);
+      timer.unref?.();
+      child.once('close', () => { clearTimeout(timer); resolve(); });
+      child.once('error', () => { clearTimeout(timer); reject(new Error('mac-desktop-host-input-exit-unconfirmed')); });
+    });
+  }
+
+  private retireInputStream(child: ChildProcessWithoutNullStreams): void {
+    if (!this.closedInputStreams.has(child)) this.retiringInputStreams.add(child);
   }
 
   private trustedBinary(): string {
@@ -332,7 +344,9 @@ export class MacDesktopHost implements DesktopHost {
     try { await this.releaseBarrier; }
     catch { throw new Error('mac-desktop-host-release-unconfirmed'); }
     if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
-    if (this.pendingControlAction) throw new Error('mac-desktop-host-input-uncertain');
+    if (this.pendingControlAction || this.retiringInputStreams.size) {
+      throw new Error('mac-desktop-host-input-uncertain');
+    }
     if ((action.kind === 'keyDown' && this.heldRemoteKeys.has(action.key))
       || (action.kind === 'keyUp' && !this.heldRemoteKeys.has(action.key))
       || (action.kind === 'buttonDown' && this.heldRemoteButton !== null)
@@ -349,6 +363,7 @@ export class MacDesktopHost implements DesktopHost {
         if (this.pendingInput?.timer !== timer) return;
         this.pendingInput = null;
         if (this.inputStream === child) this.inputStream = null;
+        this.retireInputStream(child);
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-host-input-timeout'));
       }, 2_000);
@@ -359,6 +374,7 @@ export class MacDesktopHost implements DesktopHost {
           clearTimeout(timer);
           this.pendingInput = null;
           if (this.inputStream === child) this.inputStream = null;
+          this.retireInputStream(child);
           child.kill('SIGKILL');
           reject(new Error('mac-desktop-host-input-unavailable'));
         }
@@ -378,11 +394,16 @@ export class MacDesktopHost implements DesktopHost {
     });
     this.inputStream = child;
     this.inputReply = '';
+    child.once('close', () => {
+      this.closedInputStreams.add(child);
+      this.retiringInputStreams.delete(child);
+    });
     const fail = () => {
       // A killed old helper may emit close after a new grant has spawned its
       // replacement. Its late callbacks must never touch the new command.
       if (this.inputStream !== child) return;
       this.inputStream = null;
+      this.retireInputStream(child);
       const pending = this.pendingInput;
       if (pending) {
         this.pendingInput = null;

@@ -24,7 +24,8 @@ function helper(reply: string): MacDesktopHost {
     `  if (reply === 'closes-stdin' && count === 1) { const h=Buffer.alloc(4);h.writeUInt32BE(4);process.stdout.write(Buffer.concat([h,jpeg]));setTimeout(()=>{process.stdin.on('error',()=>{});process.stdin.pause();process.stdin.removeAllListeners('data');fs.closeSync(0);},50);setInterval(()=>{},1000); }\n` +
     `  if (reply === 'input-closes-stdin' && count === 1) { process.stdout.write('{"ok":true}\\n');setTimeout(()=>{process.stdin.on('error',()=>{});process.stdin.pause();process.stdin.removeAllListeners('data');fs.closeSync(0);},50);setInterval(()=>{},1000); }\n` +
     `  if (reply === 'down-no-ack-record-release' && count === 1) setTimeout(()=>process.exit(1),10);\n` +
-    `  if (reply.startsWith('record-release') || reply === 'release-fails' || reply === 'release-no-ack') process.stdout.write('{"ok":true}\\n');\n` +
+    `  if (reply === 'malformed-ack-late' && !fs.existsSync(${JSON.stringify(filename + '.fault')})) { fs.writeFileSync(${JSON.stringify(filename + '.fault')},'1'); setTimeout(()=>process.stdout.write('{"ok":false}\\n'),80); }\n` +
+    `  else if (reply.startsWith('record-release') || reply === 'release-fails' || reply === 'release-no-ack' || reply === 'malformed-ack-late') process.stdout.write('{"ok":true}\\n');\n` +
     `});}\n`;
   fs.writeFileSync(filename, script, { mode: 0o700 });
   helpers.push(filename);
@@ -37,6 +38,9 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
       SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup' });
       if (fs.existsSync(filename + '.release')) SafeFsExecutor.safeUnlinkSync(filename + '.release', {
         operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-release',
+      });
+      if (fs.existsSync(filename + '.fault')) SafeFsExecutor.safeUnlinkSync(filename + '.fault', {
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-fault',
       });
     }
   });
@@ -146,6 +150,31 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
     await oldRelease;
     await newInput;
     expect(newInputDone).toBe(true);
+    await host.cancelInput();
+  });
+
+  it('keeps a failed helper in the exit barrier before release or replacement input', async () => {
+    const host = helper('malformed-ack-late');
+    const pending = host.input({ kind: 'keyDown', key: 'Meta' });
+    type TestChild = { kill(signal?: NodeJS.Signals): boolean };
+    let child: TestChild | null = null;
+    for (let attempt = 0; attempt < 20 && !child; attempt++) {
+      child = (host as unknown as { inputStream: TestChild | null }).inputStream;
+      if (!child) await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(child).not.toBeNull();
+    const originalKill = child!.kill.bind(child);
+    child!.kill = signal => { setTimeout(() => originalKill(signal), 150); return true; };
+    await expect(pending).rejects.toThrow('mac-desktop-host-input-unavailable');
+    await expect(host.input({ kind: 'move', x: 0.5, y: 0.5 }))
+      .rejects.toThrow('mac-desktop-host-input-uncertain');
+    const release = host.cancelInput();
+    let replacementDone = false;
+    const replacement = host.input({ kind: 'keyDown', key: 'Meta' }).then(() => { replacementDone = true; });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(replacementDone).toBe(false);
+    await release;
+    await replacement;
     await host.cancelInput();
   });
 

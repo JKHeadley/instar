@@ -51,6 +51,8 @@ describe('desktop touch gestures', () => {
     expect((window as unknown as { __commands: Array<{ action?: { kind: string } }> }).__commands.at(-1)?.action?.kind)
       .toBe('buttonDown');
     touch(window, surface, 'pointercancel', 3, 100, 70);
+    await Promise.resolve();
+    await Promise.resolve();
     const finalActions = (window as unknown as { __commands: Array<{ action?: { kind: string } }> }).__commands
       .map(command => command.action?.kind);
     expect(finalActions).toEqual(['scroll', 'scroll', 'buttonDown', 'buttonUp']);
@@ -69,6 +71,7 @@ describe('desktop touch gestures', () => {
     window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'c', bubbles: true, cancelable: true }));
     window.document.dispatchEvent(new window.KeyboardEvent('keyup', { key: 'c', bubbles: true, cancelable: true }));
     window.document.dispatchEvent(new window.KeyboardEvent('keyup', { key: 'Meta', bubbles: true, cancelable: true }));
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(commands.slice(beforePhysical).map(command => `${command.action?.kind}:${command.action?.key}`))
       .toEqual(['keyDown:Meta', 'keyDown:c', 'keyUp:c', 'keyUp:Meta']);
     const typeInput = window.document.getElementById('typeText')!;
@@ -130,6 +133,51 @@ describe('desktop touch gestures', () => {
     expect(window.document.getElementById('status')!.textContent).toBe('Old key stream ended.');
     meta.click();
     await new Promise(resolve => setTimeout(resolve, 0));
+    viewer.leave('Quick release test.');
+    viewer.setInputEnabled(true);
+    const quickActions: string[] = [];
+    let resolveDown!: (value: boolean) => void;
+    viewer.setSendCommand(command => {
+      const kind = command.action?.kind ?? '';
+      quickActions.push(kind);
+      return kind === 'buttonDown' ? new Promise(resolve => { resolveDown = resolve; }) : Promise.resolve(true);
+    });
+    window.document.getElementById('dragButton')!.click();
+    window.document.getElementById('dragButton')!.click();
+    expect(quickActions).toEqual(['buttonDown']);
+    resolveDown(false);
+    await Promise.resolve();
+    expect(quickActions).toEqual(['buttonDown']);
+    viewer.leave('Retry quick release.');
+    viewer.setInputEnabled(true);
+    quickActions.length = 0;
+    viewer.setSendCommand(command => {
+      const kind = command.action?.kind ?? '';
+      quickActions.push(kind);
+      return kind === 'buttonDown' ? new Promise(resolve => { resolveDown = resolve; }) : Promise.resolve(true);
+    });
+    window.document.getElementById('dragButton')!.click();
+    window.document.getElementById('dragButton')!.click();
+    expect(quickActions).toEqual(['buttonDown']);
+    resolveDown(true);
+    await Promise.resolve();
+    expect(quickActions).toEqual(['buttonDown', 'buttonUp']);
+    viewer.leave('Quick key release.');
+    viewer.setInputEnabled(true);
+    quickActions.length = 0;
+    viewer.setSendCommand(command => {
+      const kind = command.action?.kind ?? '';
+      quickActions.push(kind);
+      return kind === 'keyDown' ? new Promise(resolve => { resolveDown = resolve; }) : Promise.resolve(true);
+    });
+    window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'c', bubbles: true }));
+    window.document.dispatchEvent(new window.KeyboardEvent('keyup', { key: 'c', bubbles: true }));
+    expect(quickActions).toEqual(['keyDown']);
+    resolveDown(true);
+    await Promise.resolve();
+    expect(quickActions).toEqual(['keyDown', 'keyUp']);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    viewer.leave('Finished quick release test.');
     dom.window.close();
   });
 });
