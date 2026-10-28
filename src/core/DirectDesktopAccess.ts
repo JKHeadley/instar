@@ -514,7 +514,11 @@ export class DirectDesktopAccess {
               && !frame.keyframe) { forceKeyframe = true; return null; }
             candidateVideoKeyframe = frame.keyframe;
             return admittedAead.encryptFrame(encodeDesktopH264(frame));
-          } catch {
+          } catch (error) {
+            // A Stop/takeover can cancel the native read while it is awaited.
+            // Never turn that cancellation into a new JPEG helper launch.
+            if (row.grantId !== admittedGrantId || !this.validGrant(row)
+              || (error as Error).message === 'mac-desktop-host-capture-cancelled') throw error;
             // Hardware encoding is optional. Downgrade this logical session
             // without changing its controller lock or input authority.
             activeCodec = 'jpeg';
@@ -522,6 +526,9 @@ export class DirectDesktopAccess {
             lastQueuedGeometry = '';
           }
         } else if (activeCodec === 'h264') activeCodec = 'jpeg';
+        if (row.grantId !== admittedGrantId || !this.validGrant(row)) {
+          throw new Error('desktop grant unavailable');
+        }
         const image = await this.host.capture();
         const digest = crypto.createHash('sha256').update(image).digest();
         if (lastQueuedFrameDigest?.equals(digest)) return null;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { DirectDesktopAccess } from '../../src/core/DirectDesktopAccess.js';
@@ -126,6 +126,52 @@ describe('DirectDesktopAccess', () => {
     stream.fallbackVideo?.();
     expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
     expect(requestedKeys).toEqual([true, false, true]);
+    stream.release('terminal');
+  });
+  it('does not spawn JPEG capture after an H.264 read is cancelled by Stop', async () => {
+    const f = fixture('pin');
+    let rejectH264!: (error: Error) => void;
+    f.host.captureH264 = () => new Promise((_resolve, reject) => { rejectH264 = reject; });
+    const jpegCapture = vi.fn(async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    f.host.capture = jpegCapture;
+    const { requestId } = await f.begin('h264');
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    const proof = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-browser-possession-v1',
+      requestId, state.connectionNonce])), f.browser.privateKey).toString('base64');
+    const ticket = f.authority.ticket(requestId, 'dashboard-proof', state.connectionNonce!, proof);
+    const stream = await f.authority.admit({ headers: { origin: 'https://instar.example',
+      host: 'instar.example', 'x-forwarded-proto': 'https',
+      'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
+    url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    const capture = stream.captureEncrypted();
+    for (let i = 0; i < 20 && !rejectH264; i++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(rejectH264).toBeTypeOf('function');
+    f.authority.revoke(requestId, 'dashboard-proof');
+    rejectH264(new Error('mac-desktop-host-capture-cancelled'));
+    await expect(capture).rejects.toThrow('capture-cancelled');
+    expect(jpegCapture).not.toHaveBeenCalled();
+  });
+  it('downgrades an active grant after a hardware encoder failure', async () => {
+    const f = fixture('pin');
+    const h264Capture = vi.fn(async () => { throw new Error('mac-desktop-host-capture-unavailable'); });
+    const jpegCapture = vi.fn(async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    f.host.captureH264 = h264Capture;
+    f.host.capture = jpegCapture;
+    const { requestId } = await f.begin('h264');
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    const proof = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-browser-possession-v1',
+      requestId, state.connectionNonce])), f.browser.privateKey).toString('base64');
+    const ticket = f.authority.ticket(requestId, 'dashboard-proof', state.connectionNonce!, proof);
+    const stream = await f.authority.admit({ headers: { origin: 'https://instar.example',
+      host: 'instar.example', 'x-forwarded-proto': 'https',
+      'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
+    url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
+    expect(h264Capture).toHaveBeenCalledTimes(1);
+    expect(jpegCapture).toHaveBeenCalledTimes(1);
+    stream.frameQueued?.();
+    expect(await stream.captureEncrypted()).toBeNull();
+    expect(h264Capture).toHaveBeenCalledTimes(1);
     stream.release('terminal');
   });
   it('reads the current pointer only for an active grant and its PIN session', async () => {

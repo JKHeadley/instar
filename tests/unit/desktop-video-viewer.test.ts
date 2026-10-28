@@ -86,4 +86,17 @@ describe('desktop H.264 viewer resource bounds', () => {
     expect(v.window.document.getElementById('status')!.textContent).toBe('Stopped.');
     v.dom.window.close();
   });
+
+  it('ignores a late decoder error after a same-stream geometry reset', () => {
+    const v = viewer();
+    v.video.receiveH264(packet(960, 540), 0);
+    v.video.receiveH264(packet(640, 360), 0);
+    expect(v.decoders).toHaveLength(2);
+    expect(v.decoders[0].closed).toBe(true);
+    v.decoders[0].error();
+    expect(v.video.getCodec()).toBe('h264');
+    expect(v.decoders[1].closed).toBe(false);
+    expect(v.commands).toEqual([]);
+    v.dom.window.close();
+  });
 });

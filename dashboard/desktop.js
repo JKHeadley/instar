@@ -322,7 +322,7 @@ function receiveH264(bytes, epoch) {
         } catch { fallbackVideo(epoch); }
         finally { frame.close(); }
       },
-      error: () => fallbackVideo(epoch),
+      error: () => { if (generation === decoderGeneration) fallbackVideo(epoch); },
     });
     decoder.configure({ codec: H264_CODEC, codedWidth: width, codedHeight: height,
       optimizeForLatency: true });
