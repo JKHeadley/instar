@@ -24,6 +24,7 @@ import { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
 import { JobResultTriage, buildScriptTriageConfigGetter, buildTriageProviders, evaluateFloor } from '../scheduler/JobResultTriage.js';
 import { JOB_COST_AUDIT_READY } from '../scheduler/JobCostAuditReadiness.js';
 import { jobSupervisionRolloutState } from '../scheduler/JobSupervisionRollout.js';
+import { supervisionMembershipStatus } from '../scheduler/JobSupervisionStore.js';
 import { JobSupervisionWorker } from '../scheduler/JobSupervisionWorker.js';
 import { JobTriageBackupCheck } from '../scheduler/JobTriageBackupCheck.js';
 import { ScriptCanaryRunner } from '../scheduler/ScriptCanaryRunner.js';
@@ -5214,6 +5215,21 @@ export class AgentServer {
       runHistory: () => options.scheduler?.getRunHistory() ?? null,
       supervisionRollout: () => jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }),
       isScriptRunLive: runId => options.scheduler?.isScriptRunLive(runId) ?? false,
+      expectedMachineIds: () => {
+        if (!options.scheduler || options.scheduler.isReadOnlyStandby()) return null;
+        try {
+          const remembered = options.scheduler.getJobSupervisionStore().expectedMachineIds();
+          if (remembered === null) return null;
+          if (!options.coordinator?.enabled) {
+            return Array.from(new Set([...remembered, ...(this.meshSelfId ? [this.meshSelfId] : [])])).sort();
+          }
+          const registry = options.coordinator.managers.identityManager.loadRegistry();
+          const membership = Object.entries(registry.machines).map(([machineId, machine]) =>
+            ({ machineId, status: supervisionMembershipStatus(machine) }));
+          const current = membership.filter(entry => entry.status === 'active').map(entry => entry.machineId);
+          return Array.from(new Set([...remembered, ...current, ...(this.meshSelfId ? [this.meshSelfId] : [])])).sort();
+        } catch { return null; }
+      },
     });
     if (options.scheduler) {
       const reconcileSupervision = () => {
@@ -5222,6 +5238,15 @@ export class AgentServer {
           const store = options.scheduler!.getJobSupervisionStore();
           const history = options.scheduler!.getRunHistory().query({ sinceHours: 24, limit: 5000, excludeSideRuns: true });
           store.reconcileHistory(history.runs, Date.now(), runId => options.scheduler!.isScriptRunLive(runId));
+          if (options.coordinator?.enabled) {
+            try {
+              const registry = options.coordinator.managers.identityManager.loadRegistry();
+              store.observeMachineMembership(Object.entries(registry.machines)
+                .map(([machineId, machine]) => ({ machineId, status: supervisionMembershipStatus(machine) })));
+            } catch (error) {
+              console.error('[job-supervision] expected-machine roster refresh failed:', error);
+            }
+          }
           store.expireLeases();
           store.expireRetries();
           if (history.total > history.runs.length) {

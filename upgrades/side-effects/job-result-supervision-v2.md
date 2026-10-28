@@ -109,10 +109,16 @@ data; its user-facing wording is unchanged.
 owns the attempts and model calls it executed; `/jobs/triage?scope=pool` merges
 attempt IDs and marks peer failures or conflicting rows incomplete. It also
 reports incomplete coverage whenever a seven-day expected-machine roster is
-unavailable or a listed machine vanishes from discovery. The current server
-does not yet provide that roster, so pool accuracy is intentionally unavailable.
-The local
-write journal cannot be shared across concurrent executors. The future
+unavailable or a listed machine vanishes from discovery. The activation
+follow-up reads authenticated pairing membership at startup and every 30
+seconds, persists active peers across disappearance and restarts, and retires
+them only on explicit revocation. A registry read failure or lost supervision
+journal leaves pool accuracy unavailable across every subsequent restart: a
+separate fsynced loss marker preserves that embargo. Pending pairings are
+excluded, and malformed registry entries cannot retire a remembered peer. The
+remembered peer list remains expected if the mesh coordinator is disabled. The
+foundation branch alone still lacks this roster. The local write journal
+cannot be shared across concurrent executors. The future
 certificate and fallback-reservation authorities must be pool-owned before
 decision activation. Attention items use the existing Telegram attention
 surface; no URLs are generated. Topic transfer does not move a machine's
@@ -156,6 +162,15 @@ catch-block ratchet matches are annotated with their fail-closed or recorded
 degradation behavior; the no-silent-fallback count remains at its 494 baseline.
 The Node 20 shard that passed every assertion but lost its Vitest worker after
 the run still requires a green rerun on the new head.
+
+**Pool-roster review:** The reviewer found two false-complete paths in the
+activation follow-up: the lost-journal flag cleared after a second restart,
+and a malformed registry status could retire a peer. The durable loss marker
+and strict membership parser close those paths; second-restart and malformed
+entry tests now pin the behavior. The reviewer also found that disabling the
+coordinator bypassed the remembered roster. The production-shaped lifecycle
+test now covers this, and the server reads the durable roster in both modes.
+The reviewer reread the corrected diff and concurred with the roster follow-up.
 
 ## Evidence pointers
 

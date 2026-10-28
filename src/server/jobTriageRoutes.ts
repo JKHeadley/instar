@@ -35,7 +35,7 @@ export interface JobTriageRoutesDeps {
   runHistory?: () => JobRunHistory | null;
   supervisionRollout?: () => JobSupervisionRolloutState;
   isScriptRunLive?: (runId: string) => boolean;
-  /** Durable seven-day machine roster; absent means pool completeness is unknown. */
+  /** Durable expected-machine roster; absent means pool completeness is unknown. */
   expectedMachineIds?: () => string[] | null;
 }
 
@@ -77,7 +77,7 @@ export function buildSupervisionCoverage(deps: JobTriageRoutesDeps, sinceHours: 
   let initialVerdictCoverage = 0;
   let requestedInvestigations = 0;
   let investigated = 0;
-  let coverageIncomplete = scan.total > 5000 || !history.isReadHealthy();
+  let coverageIncomplete = scan.total > 5000 || !history.isReadHealthy() || store.journalWasRecreated();
   const censusRunIds = new Set(runs.map(r => r.runId));
   for (const run of runs) {
     const row = store.findByRunId(run.runId);

@@ -79,6 +79,25 @@ describe('GET /jobs/triage', () => {
     } finally { supervision.close(); }
   });
 
+  it('keeps local and pool quality unavailable after the supervision journal is recreated', async () => {
+    const history = new JobRunHistory(dir);
+    const original = new JobSupervisionStore(dir);
+    original.close();
+    SafeFsExecutor.safeUnlinkSync(path.join(dir, 'ledger', 'job-supervision.db'),
+      { operation: 'tests/unit/job-triage-routes.test.ts' });
+    let restored = new JobSupervisionStore(dir);
+    restored.close();
+    restored = new JobSupervisionStore(dir); // The lost-journal embargo must survive another restart.
+    try {
+      const local = await request(app({ supervision: () => restored, runHistory: () => history })).get('/jobs/triage');
+      expect(local.body.supervision).toMatchObject({ coverageIncomplete: true, accuracy: null });
+      const pool = await request(app({ supervision: () => restored, runHistory: () => history,
+        expectedMachineIds: () => restored.expectedMachineIds(),
+        fetchPool: async () => ({ results: [], failed: [] }) })).get('/jobs/triage?scope=pool');
+      expect(pool.body.supervision).toMatchObject({ coverageIncomplete: true, accuracy: null });
+    } finally { restored.close(); }
+  });
+
   it('poolHasRecentTriageSession: true on a peer cooldown since the window, null when the pool cannot be read', async () => {
     const fetchPool = async () => ({ results: [{ machineId: 'm-2', body: { cooldowns: { 'health-check:disk-low': '2026-10-26T10:00:00.000Z' } } }], failed: [] });
     expect(await poolHasRecentTriageSession(fetchPool, 'health-check:disk-low', Date.parse('2026-10-26T06:00:00Z'))).toBe(true);

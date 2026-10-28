@@ -56,6 +56,25 @@ describe('job-cost production lifecycle', () => {
     expect(triage.body.counts.sessionsSpawned).toBe(0);
     expect(triage.body.supervision).toMatchObject({ denominator: 0, decisionCoverage: 0, coverageIncomplete: false,
       rollout: { auditReady: false, cohort: 'off', active: false } });
+    const pool = await request(app).get('/jobs/triage?scope=pool').set('Authorization', `Bearer ${token}`);
+    expect(pool.status).toBe(200);
+    expect(pool.body.supervision.coverageIncomplete).toBe(false);
+    expect(pool.body.machines).toHaveLength(1);
+  });
+
+  it('retains a prior mesh peer when the coordinator is disabled', async () => {
+    const peer = 'm_bbbbbbbbbbbbbbbb';
+    const roster = scheduler.getJobSupervisionStore();
+    roster.observeMachineMembership([{ machineId: peer, status: 'active' }]);
+    try {
+      const pool = await request(server.getApp()).get('/jobs/triage?scope=pool')
+        .set('Authorization', `Bearer ${token}`);
+      expect(pool.status).toBe(200);
+      expect(pool.body.supervision).toMatchObject({ coverageIncomplete: true, accuracy: null });
+      expect(pool.body.pool.failed).toEqual([]);
+    } finally {
+      roster.observeMachineMembership([{ machineId: peer, status: 'revoked' }]);
+    }
   });
 
   it('keeps later conversions on sessions while an audited first-wave script runs with zero sessions', async () => {

@@ -13,6 +13,36 @@ import { JobTriageStateStore } from '../../src/scheduler/JobTriageStateStore.js'
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('authenticated script-result coverage', () => {
+  it('keeps a vanished machine in the pool coverage check until membership is revoked', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'job-supervision-roster-http-'));
+    const ledger = new JobSupervisionStore(dir);
+    const self = 'm_aaaaaaaaaaaaaaaa';
+    const peer = 'm_bbbbbbbbbbbbbbbb';
+    try {
+      ledger.observeMachineMembership([{ machineId: self, status: 'active' },
+        { machineId: peer, status: 'active' }]);
+      const app = express();
+      app.use(authMiddleware(() => 'secret', 'test'));
+      mountJobTriageRoutes(app, {
+        state: () => new JobTriageStateStore({ file: path.join(dir, 'triage-state.json') }),
+        auditPath: path.join(dir, 'triage-audit.jsonl'), machineId: self, enabled: () => false,
+        supervision: () => ledger, runHistory: () => new JobRunHistory(dir),
+        expectedMachineIds: () => ledger.expectedMachineIds(),
+        fetchPool: async () => ({ results: [], failed: [] }),
+      });
+      const missing = await request(app).get('/jobs/triage?scope=pool').set('Authorization', 'Bearer secret');
+      expect(missing.status).toBe(200);
+      expect(missing.body.supervision.coverageIncomplete).toBe(true);
+      ledger.observeMachineMembership([{ machineId: peer, status: 'revoked' }]);
+      const retired = await request(app).get('/jobs/triage?scope=pool').set('Authorization', 'Bearer secret');
+      expect(retired.status).toBe(200);
+      expect(retired.body.supervision.coverageIncomplete).toBe(false);
+    } finally {
+      ledger.close();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/job-supervision-routes.test.ts' });
+    }
+  });
+
   it('reports completed, missing and side-run records through the real route', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'job-supervision-http-'));
     const ledger = new JobSupervisionStore(dir);

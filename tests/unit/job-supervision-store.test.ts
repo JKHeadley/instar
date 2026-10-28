@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
+import { JobSupervisionStore, supervisionMembershipStatus } from '../../src/scheduler/JobSupervisionStore.js';
 
 describe('JobSupervisionStore', () => {
   let dir: string;
@@ -55,6 +55,34 @@ describe('JobSupervisionStore', () => {
     store = new JobSupervisionStore(dir);
     expect(store.claimable(t0 + 2)).toHaveLength(0);
     expect(begin(store, id, t0 + 2)).toBeNull();
+  });
+
+  it('keeps missing pool machines in the expected roster until explicit revocation', () => {
+    const self = 'm_aaaaaaaaaaaaaaaa';
+    const peer = 'm_bbbbbbbbbbbbbbbb';
+    store.observeMachineMembership([{ machineId: 'm_cccccccccccccccc', status: 'pending' }], t0);
+    expect(store.expectedMachineIds()).toEqual([]);
+    store.observeMachineMembership([{ machineId: self, status: 'active' },
+      { machineId: peer, status: 'active' }], t0);
+    expect(store.expectedMachineIds()).toEqual([self, peer]);
+    store.close();
+    store = new JobSupervisionStore(dir);
+    store.observeMachineMembership([{ machineId: self, status: 'active' }], t0 + 7 * 24 * 60 * 60_000);
+    expect(store.expectedMachineIds()).toEqual([self, peer]);
+    store.observeMachineMembership([{ machineId: peer, status: 'revoked' }], t0 + 8 * 24 * 60 * 60_000);
+    expect(store.expectedMachineIds()).toEqual([self]);
+    expect(() => store.observeMachineMembership([{ machineId: self, status: 'active' },
+      { machineId: 'bad-id', status: 'active' }])).toThrow(/invalid supervision machine id/);
+    expect(store.expectedMachineIds()).toEqual([self]);
+  });
+
+  it('rejects malformed registry membership instead of retiring a peer', () => {
+    expect(supervisionMembershipStatus({ status: 'active' })).toBe('active');
+    expect(supervisionMembershipStatus({ status: 'active', revokedAt: '2026-10-28T00:00:00Z' })).toBe('revoked');
+    expect(supervisionMembershipStatus({ status: 'revoked' })).toBe('revoked');
+    expect(supervisionMembershipStatus({ status: 'pending' })).toBe('pending');
+    expect(() => supervisionMembershipStatus({ status: 'unavailable' })).toThrow(/invalid supervision registry status/);
+    expect(() => supervisionMembershipStatus({ status: 'active', revokedAt: 'bad' })).toThrow(/invalid supervision registry revocation/);
   });
 
   it('commits pre-call audit before egress and fences a late Jev response after replacement', () => {
@@ -218,6 +246,11 @@ describe('JobSupervisionStore', () => {
       { operation: 'tests/unit/job-supervision-store.test.ts' });
     store = new JobSupervisionStore(dir);
     expect(store.censusBaselineAt()).toBe(baseline);
+    expect(store.expectedMachineIds()).toBeNull();
+    store.close();
+    store = new JobSupervisionStore(dir);
+    expect(store.journalWasRecreated()).toBe(true);
+    expect(store.expectedMachineIds()).toBeNull();
   });
 
   it('retains independent outcome links and never lets a later correct grade hide a miss', () => {

@@ -47,3 +47,16 @@ single-case diagnostic also failed at the CLI invocation. Those cases stayed
 unchecked. No Haiku accuracy or cost claim is made from them. On this agent,
 Luna is the only replacement candidate with positive measured evidence so
 far, and 11 synthetic cases are not enough to authorize production use.
+
+A direct synthetic Claude CLI probe on 2026-10-27 at 21:47 PDT identified the
+failure as this agent's exhausted weekly Claude quota. The CLI reported a reset
+of October 29 at 2 PM Pacific. This is an availability result, not a Haiku
+quality result. A Haiku benchmark must wait until that quota is available;
+the one-provider path and unchecked accounting remain the safe behavior now.
+
+## Current production sample
+
+Echo's existing run-history ledger contains nine script runs since October 21:
+eight successful `llm-decision-grading` runs and one declared skip. This is
+well below the spec's 300 observed and independently gradable outcomes per
+common fixed shape. No fixed-routine certificate is justified by this sample.

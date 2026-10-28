@@ -108,6 +108,20 @@ const DAY_MS = 24 * 60 * 60_000;
 const RETRYABLE_REASONS = new Set(['provider-unavailable', 'provider-timeout', 'provider-error',
   'queue-overload', 'replacement-budget-exhausted']);
 
+/** Unknown pairing state cannot silently retire an expected pool machine. */
+export function supervisionMembershipStatus(entry: { status?: unknown; revokedAt?: unknown }): 'active' | 'pending' | 'revoked' {
+  if (entry.revokedAt !== undefined && entry.revokedAt !== null) {
+    if (typeof entry.revokedAt !== 'string' || !Number.isFinite(Date.parse(entry.revokedAt))) {
+      throw new Error('invalid supervision registry revocation');
+    }
+    return 'revoked';
+  }
+  if (entry.status === 'revoked') return 'revoked';
+  if (entry.status === 'pending') return 'pending';
+  if (entry.status === 'active') return 'active';
+  throw new Error('invalid supervision registry status');
+}
+
 /** UUIDv7: sortable timestamp plus 74 cryptographically random bits. */
 function attemptIdAt(now: number): string {
   const bytes = crypto.randomBytes(16);
@@ -121,6 +135,7 @@ function attemptIdAt(now: number): string {
 export class JobSupervisionStore {
   private readonly db: SqliteDatabase;
   private readonly baselineAt: string;
+  private readonly journalRecreated: boolean;
   private unregisterSqlite?: () => void;
 
   constructor(stateDir: string) {
@@ -128,7 +143,9 @@ export class JobSupervisionStore {
     fs.mkdirSync(dir, { recursive: true });
     const dbPath = path.join(dir, 'job-supervision.db');
     const baselinePath = path.join(dir, 'job-supervision-baseline.json');
+    const lossMarkerPath = path.join(dir, 'job-supervision-journal-lost');
     const existed = fs.existsSync(dbPath);
+    const baselineExisted = fs.existsSync(baselinePath);
     // This independent marker survives a lost/recreated SQLite journal. Never
     // reset its census boundary merely because the database was removed.
     if (!fs.existsSync(baselinePath)) {
@@ -144,6 +161,16 @@ export class JobSupervisionStore {
       throw new Error('invalid supervision baseline');
     }
     this.baselineAt = baseline.at;
+    if (baselineExisted && !existed && !fs.existsSync(lossMarkerPath)) {
+      // Keep the accuracy embargo across further restarts. Recreating SQLite
+      // once cannot reconstruct the lost result or machine census.
+      const fd = fs.openSync(lossMarkerPath, 'wx', 0o600);
+      try { fs.writeFileSync(fd, new Date().toISOString()); fs.fsyncSync(fd); }
+      finally { fs.closeSync(fd); }
+      const dirFd = fs.openSync(dir, 'r');
+      try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+    }
+    this.journalRecreated = fs.existsSync(lossMarkerPath);
     this.db = new Database(dbPath);
     // Register as soon as the handle opens. A failed schema migration must
     // neither leak the handle nor leave it outside process-exit cleanup.
@@ -242,6 +269,12 @@ export class JobSupervisionStore {
         reason TEXT NOT NULL,
         held_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS expected_machines (
+        machine_id TEXT PRIMARY KEY,
+        first_observed_at TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
     `);
     // Existing record-only ledgers may predate the sufficiency floor.
     const columns = this.db.pragma('table_info(attempts)') as Array<{ name: string }>;
@@ -287,6 +320,7 @@ export class JobSupervisionStore {
 
   /** Independent run-history boundary established before the first script attempt. */
   censusBaselineAt(): string { return this.baselineAt; }
+  journalWasRecreated(): boolean { return this.journalRecreated; }
 
   holdSlug(slug: string, reason: string, now = Date.now()): void {
     this.db.prepare('INSERT OR IGNORE INTO held_slugs(slug,reason,held_at) VALUES(?,?,?)')
@@ -297,6 +331,40 @@ export class JobSupervisionStore {
     const rows = this.db.prepare('SELECT slug,reason,held_at FROM held_slugs ORDER BY held_at')
       .all() as Array<{ slug: string; reason: string; held_at: string }>;
     return rows.map(r => ({ slug: r.slug, reason: r.reason, heldAt: r.held_at }));
+  }
+
+  /** Pairing-registry observations persist across peer outages and restarts.
+   * An absent peer stays expected until its membership is explicitly revoked. */
+  observeMachineMembership(entries: Array<{ machineId: string; status: 'active' | 'pending' | 'revoked' }>, now = Date.now()): void {
+    const at = new Date(now).toISOString();
+    this.db.transaction(() => {
+      for (const entry of entries) {
+        if (!/^m_[a-z0-9]{8,64}$/.test(entry.machineId)) throw new Error('invalid supervision machine id');
+        if (entry.status === 'pending') continue; // Unpaired machines cannot have authoritative job history.
+        const prior = this.db.prepare('SELECT last_observed_at,revoked_at FROM expected_machines WHERE machine_id=?')
+          .get(entry.machineId) as { last_observed_at: string; revoked_at: string | null } | undefined;
+        if (entry.status === 'revoked') {
+          if (prior?.revoked_at) continue;
+          this.db.prepare(`INSERT INTO expected_machines(machine_id,first_observed_at,last_observed_at,revoked_at)
+            VALUES(?,?,?,?) ON CONFLICT(machine_id) DO UPDATE SET last_observed_at=excluded.last_observed_at,
+            revoked_at=excluded.revoked_at`).run(entry.machineId, at, at, at);
+        } else if (!prior || prior.revoked_at || !Number.isFinite(Date.parse(prior.last_observed_at))
+          || now - Date.parse(prior.last_observed_at) >= DAY_MS) {
+          this.db.prepare(`INSERT INTO expected_machines(machine_id,first_observed_at,last_observed_at,revoked_at)
+            VALUES(?,?,?,NULL) ON CONFLICT(machine_id) DO UPDATE SET last_observed_at=excluded.last_observed_at,
+            revoked_at=NULL`).run(entry.machineId, at, at);
+        }
+      }
+    })();
+  }
+
+  expectedMachineIds(): string[] | null {
+    // Losing the SQLite journal also loses the seven-day peer census. Do not
+    // report pool accuracy from a newly empty roster after that loss.
+    if (this.journalRecreated) return null;
+    const rows = this.db.prepare('SELECT machine_id FROM expected_machines WHERE revoked_at IS NULL ORDER BY machine_id')
+      .all() as Array<{ machine_id: string }>;
+    return rows.map(row => row.machine_id);
   }
 
   register(input: RegisterSupervisionInput): string {
