@@ -752,6 +752,27 @@ export class CommitmentTracker extends EventEmitter {
       boundTuple = bindResult.boundTuple;
     }
 
+    // A per-topic request is NOT a watch on a global setting. Live 2026-10-28
+    // (Echo Bugs 10000001049): "swap this topic to Opus 5.5" (topic 95267) and
+    // "swap this topic to gpt-6-sol" (topic 18330) were both recorded as
+    // config-change on the invented key `topic.model`. One key holds one value,
+    // so every sweep auto-corrected one and "reverted" the other — 1001
+    // violation alerts each. Per-topic pins live in topic profiles, which this
+    // tracker does not verify, so such a request becomes an unverifiable
+    // one-time-action (stays pending, closed explicitly or by expiry) rather
+    // than a config-watch that can only fight its siblings.
+    let type = input.type;
+    let configPath = input.configPath;
+    let configExpectedValue = input.configExpectedValue;
+    let verificationMethod = input.verificationMethod;
+    if (type === 'config-change' && CommitmentTracker.isTopicScopedConfigPath(configPath)) {
+      console.warn(`[CommitmentTracker] "${configPath}" is topic-scoped, not a global setting — recording as one-time-action, no config-watch`);
+      type = 'one-time-action';
+      configPath = undefined;
+      configExpectedValue = undefined;
+      verificationMethod = 'manual';
+    }
+
     const id = `CMT-${String(this.nextId++).padStart(3, '0')}`;
 
     // Auto-enable PromiseBeacon on time-promise commitments. If the
@@ -779,7 +800,7 @@ export class CommitmentTracker extends EventEmitter {
       id,
       userRequest: input.userRequest,
       agentResponse: input.agentResponse,
-      type: input.type,
+      type,
       status: 'pending',
       createdAt: new Date().toISOString(),
       verificationCount: 0,
@@ -795,11 +816,11 @@ export class CommitmentTracker extends EventEmitter {
       blockedOn,
       ...(actionClass ? { actionClass } : {}),
       ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}),
-      configPath: input.configPath,
-      configExpectedValue: input.configExpectedValue,
+      configPath,
+      configExpectedValue,
       behavioralRule: input.behavioralRule,
       expiresAt: input.expiresAt,
-      verificationMethod: input.verificationMethod,
+      verificationMethod,
       verificationPath: input.verificationPath,
       relatedThreadId: input.relatedThreadId,
       relatedAgent: input.relatedAgent,
@@ -840,21 +861,43 @@ export class CommitmentTracker extends EventEmitter {
     // writer surface, initial version is 0 and future mutations CAS from there.
     this.insertNew(commitment);
 
+    // Two open config-watches expecting DIFFERENT values for the same key can
+    // never both hold — they flap forever. The newest request is the user's
+    // current word on that key, so it supersedes the older watch. Runs AFTER
+    // insertNew: a failed save must not leave the older promise withdrawn and
+    // pointing at a row that was never stored.
+    if (type === 'config-change' && configPath !== undefined) {
+      for (const older of this.getActive()) {
+        if (older.id === id || older.type !== 'config-change' || older.configPath !== configPath) continue;
+        if (this.deepEqual(older.configExpectedValue, configExpectedValue)) continue;
+        const superseded = this.mutateSync(older.id, c => ({
+          ...c,
+          status: 'withdrawn',
+          resolvedAt: new Date().toISOString(),
+          resolution: `superseded-by-${id}: newer request expects ${configPath} = ${JSON.stringify(configExpectedValue)}`,
+          supersededBy: id,
+        }));
+        this.refreshThreadIdIndex(superseded);
+        console.log(`[CommitmentTracker] Withdrawn ${older.id}: superseded by ${id}`);
+        this.emit('withdrawn', superseded);
+      }
+    }
+
     // Regenerate behavioral rules file if this is a behavioral commitment
-    if (input.type === 'behavioral') {
+    if (type === 'behavioral') {
       this.writeBehavioralRules();
     }
 
     this.refreshThreadIdIndex(commitment);
 
-    console.log(`[CommitmentTracker] Recorded ${id}: "${input.userRequest}" (${input.type})`);
+    console.log(`[CommitmentTracker] Recorded ${id}: "${input.userRequest}" (${type})`);
     this.emit('recorded', commitment);
 
     // Run immediate verification for config-change commitments.
     // verifyOne goes through mutateSync, which replaces the store entry
     // with a new object — return the freshest snapshot so callers see
     // the post-verification status.
-    if (input.type === 'config-change') {
+    if (type === 'config-change') {
       this.verifyOne(id);
     }
 
@@ -1244,6 +1287,17 @@ export class CommitmentTracker extends EventEmitter {
     return this.getActive().filter((c) => c.topicId === topicId);
   }
 
+  /** Config roots that name a topic/session, not a global setting (see record()). */
+  private static readonly TOPIC_SCOPED_CONFIG_ROOTS = new Set([
+    'topic', 'topics', 'thistopic', 'topicprofile', 'topicprofiles', 'session', 'conversation',
+  ]);
+
+  static isTopicScopedConfigPath(configPath: string | undefined): boolean {
+    if (!configPath) return false;
+    const root = configPath.split('.')[0].replace(/[-_\s]/g, '').toLowerCase();
+    return CommitmentTracker.TOPIC_SCOPED_CONFIG_ROOTS.has(root);
+  }
+
   /**
    * True if a one-time-action commitment has no way to be verified
    * automatically — no verificationMethod at all, or the `manual` method
@@ -1544,7 +1598,9 @@ export class CommitmentTracker extends EventEmitter {
     } else if (wasVerified) {
       // Regression — was verified, now violated
       console.warn(`[CommitmentTracker] VIOLATION ${id}: "${updated.userRequest}" — ${result.detail}`);
-      if (this.config.onViolation) {
+      // Once escalated ("keeps reverting — looks like a bug"), the user has been
+      // told once; a per-flap repeat is noise (live: 1001 alerts per commitment).
+      if (this.config.onViolation && !updated.escalated) {
         this.config.onViolation(updated, result.detail);
       }
     }

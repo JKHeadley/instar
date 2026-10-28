@@ -340,7 +340,7 @@ A "commitment" is when:
 2. The agent acknowledges and agrees to do it
 
 Types of commitments:
-- "config-change": User asks to change a setting (e.g., "turn off auto-updates", "set max sessions to 5")
+- "config-change": User asks to change a GLOBAL agent setting (e.g., "turn off auto-updates", "set max sessions to 5"). configPath must be a real agent-wide config key. A request scoped to one topic or conversation ("swap this topic to Opus", "use gpt-6-sol here") is NOT config-change — record it as "one-time-action" with no configPath.
 - "behavioral": User asks agent to change ongoing behavior (e.g., "always check with me before deploying", "stop sending daily reports")
 - "one-time-action": User asks agent to do something once (e.g., "deploy the latest version", "clean up old logs")
 
