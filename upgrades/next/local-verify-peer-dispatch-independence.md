@@ -10,6 +10,11 @@ Local Verify's coordinator now offers an eligible queued PR to an idle peer even
 
 The Mac Mini no longer needs the Studio to start a merge check before it can take a waiting PR. When another full suite has the Studio's only test slot, the Mini can still work on an eligible PR. The Studio remains in charge of merging and keeps main-branch checks.
 
+## Summary of New Capabilities
+
+- An idle peer can verify an eligible queued PR while an unrelated suite occupies Studio's local slot.
+- Studio releases its next-slot priority claim as soon as no locally runnable verification remains.
+
 ## Evidence
 
 Two regression tests reproduced the idle-peer gap before the code change and passed after it. Focused integration, production lifecycle, full-suite, and CI results are release gates.

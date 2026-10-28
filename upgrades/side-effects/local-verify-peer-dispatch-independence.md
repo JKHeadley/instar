@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 2: the coordinator's peer dispatcher no longer requires a local verifier to be in flight. Its scheduling timer runs after the local pump has had the first chance to start work, and the existing queue, lease, pause, version, eligibility, and durable reservation checks remain in force. This lets a peer work while an unrelated full suite occupies the Studio's only suite slot. The change spans 8 source, test, spec, and release files plus this review; one approved parent spec, one independent review with two concrete findings resolved, and one planned commit/gate attempt.
+Tier 2: the coordinator's peer dispatcher no longer requires a local verifier to be in flight. Its scheduling timer runs after the local pump has had the first chance to start work, and the existing queue, lease, pause, version, eligibility, and durable reservation checks remain in force. This lets a peer work while an unrelated full suite occupies the Studio's only suite slot. The change spans 8 source, test, spec, and release files plus this review; one approved parent spec, one independent review with two concrete findings resolved, and two commit/gate attempts (the first Local Verify run caught a missing required release-note section).
 
 ## Decision-point inventory
 
@@ -54,7 +54,7 @@ Machine-local queue policy stays on the lease holder. A peer only runs a request
 
 ## 10. Test evidence and limits
 
-Two unit regression tests were red before the change and green after it. A follow-up regression covers a closed PR discovered during base refresh. After both priority-claim fixes, the M5 isolated checkout passed 44 peer unit tests, 4 real HTTP integration tests, and 14 production lifecycle tests. Build and all 49 lint steps passed on Studio. Full-suite and CI checks are pending. The tests cover busy-slot dispatch, main staying local, and release of a stale priority claim.
+Two unit regression tests were red before the change and green after it. A follow-up regression covers a closed PR discovered during base refresh. After both priority-claim fixes, the M5 isolated checkout passed 44 peer unit tests, 4 real HTTP integration tests, and 14 production lifecycle tests. Build and all 49 lint steps passed on Studio. The first exact-head M5 unit run passed after fixing its shell PATH; Studio's first Local Verify run caught the missing release-note section, which is now corrected. Final full-suite and CI checks are pending. The tests cover busy-slot dispatch, main staying local, and release of a stale priority claim.
 
 ## Second-pass review
 
