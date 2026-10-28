@@ -5200,7 +5200,10 @@ export class AgentServer {
       });
       this.scriptCanaryTimer = setInterval(() => {
         if (!scheduler.listScriptJobs().some(job => scheduler.scriptRunnersActiveFor(job.slug))) return;
-        void canaryRunner.tick().catch(error => console.error('[script-canary] tick failed:', error));
+        void canaryRunner.tick().catch(error => {
+          // @silent-fallback-ok — this timer logs the failure; the next tick retries the independent canary.
+          console.error('[script-canary] tick failed:', error);
+        });
       }, 60_000);
       this.scriptCanaryTimer.unref?.();
     }
@@ -5228,7 +5231,10 @@ export class AgentServer {
             ({ machineId, status: supervisionMembershipStatus(machine) }));
           const current = membership.filter(entry => entry.status === 'active').map(entry => entry.machineId);
           return Array.from(new Set([...remembered, ...current, ...(this.meshSelfId ? [this.meshSelfId] : [])])).sort();
-        } catch { return null; }
+        } catch {
+          // @silent-fallback-ok — unknown membership makes pool accuracy unavailable, never complete.
+          return null;
+        }
       },
     });
     if (options.scheduler) {

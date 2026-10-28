@@ -171,6 +171,9 @@ entry tests now pin the behavior. The reviewer also found that disabling the
 coordinator bypassed the remembered roster. The production-shaped lifecycle
 test now covers this, and the server reads the durable roster in both modes.
 The reviewer reread the corrected diff and concurred with the roster follow-up.
+The stacked branch also keeps the no-silent-fallback ratchet at 494: the
+expected-roster read fails toward unavailable accuracy, and a pre-existing
+canary timer catch logs its failure while its next tick retries.
 
 ## Evidence pointers
 
