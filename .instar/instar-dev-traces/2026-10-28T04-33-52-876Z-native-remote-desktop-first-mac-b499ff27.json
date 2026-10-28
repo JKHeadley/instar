@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-first-mac",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T04:33:52.876Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-first-mac.md",
+  "artifactSha256": "948308ca4c5944c897a3d54dfc60a2a4bac000e2d8d4e9ffc10234cb79f4f09f",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Production shutdown consistency for security-sensitive remote desktop; active grants remain revoked first.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
