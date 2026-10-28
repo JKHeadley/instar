@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-28T04:12:26.409Z",
+  "slug": "worktree-reporter-hook-removal",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "migration / fleet-rollout surface: src/data/http-hook-templates.ts touches http-hook-templates (settings/hook migration source)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 60,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/http-hook-templates.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
