@@ -10,6 +10,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build-desktop-host:
+    name: Build universal macOS desktop host
+    runs-on: macos-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Pin the release source
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/build-native-desktop-host.mjs --release-universal
+      - run: node scripts/check-native-desktop-release.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instar-desktop-host-universal
+          path: dist/native/instar-desktop-host
+          if-no-files-found: error
+          retention-days: 7
+
   # Note: no CI gate inside this workflow. ci.yml (lint + unit [node 20+22] +
   # build + integration + e2e) runs on the same main push and is enforced as a
   # required status check on PRs via branch protection. Duplicating it here
@@ -17,6 +44,7 @@ jobs:
   publish:
     name: Bump & Publish
     runs-on: ubuntu-latest
+    needs: build-desktop-host
     # Skip version-bump commits to prevent infinite loop
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     permissions:
@@ -27,7 +55,7 @@ jobs:
         with:
           # Always fetch latest HEAD, not the triggering SHA — avoids version
           # collisions when a prior queued run already bumped the version.
-          ref: main
+          ref: ${{ needs.build-desktop-host.outputs.source_sha }}
           # RELEASE_TOKEN is a PAT that can bypass branch protection for version bump commits.
           # Falls back to GITHUB_TOKEN but that will fail if branch protection is enabled.
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -40,6 +68,15 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+      - uses: actions/download-artifact@v4
+        with:
+          name: instar-desktop-host-universal
+          path: dist/native
+      - name: Verify release includes native desktop host
+        run: |
+          chmod 0755 dist/native/instar-desktop-host
+          node scripts/check-native-desktop-release.mjs
+          npm pack --dry-run --json --ignore-scripts | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk).on("end", () => { const pack = JSON.parse(text)[0]; if (!pack.files.some(file => file.path === "dist/native/instar-desktop-host")) throw new Error("npm tarball omits native desktop host"); });'
 
       - name: Assemble release-note fragments
         # Release notes are authored as per-PR FRAGMENTS in upgrades/next/<slug>.md
