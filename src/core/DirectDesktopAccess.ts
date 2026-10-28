@@ -1,6 +1,7 @@
 /** Operator-initiated, single-machine remote desktop authority.
  * All requests, grants and tickets are memory-only: a restart revokes access.
- * The Telegram reply must enter through the authenticated adapter seam. */
+ * A PIN session may authorize access directly; the legacy Telegram challenge
+ * remains available only when explicitly selected by the caller. */
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { DesktopHost, DesktopInput } from './DesktopHost.js';
@@ -8,6 +9,7 @@ import type { RemoteStepUpLockoutPort } from './RemoteStepUpLockouts.js';
 import type { DesktopStreamSession } from '../server/DesktopStreamManager.js';
 import { DesktopAead, deriveDesktopKey } from './DesktopAead.js';
 import type { DesktopAccessAudit } from './DesktopAccessAudit.js';
+import { isLoopbackPeer } from './desktopTransport.js';
 
 const CHALLENGE_MS = 2 * 60_000;
 const GRANT_MS = 10 * 60_000;
@@ -24,6 +26,7 @@ interface DirectRequest {
   browserEcdhPublicKey: string;
   browserNonce: string;
   operatorSessionHash: string;
+  operatorSessionToken?: string;
   codeHash: Buffer;
   createdAt: number;
   status: 'pending' | 'approved' | 'revoked';
@@ -80,7 +83,10 @@ export class DirectDesktopAccess {
     private readonly closeGrant: (grantId: string) => void,
     private readonly now: () => number = Date.now,
     private readonly audit?: DesktopAccessAudit,
+    private readonly approvalMode: 'telegram' | 'pin' = 'telegram',
   ) {}
+
+  requiresTelegramStepUp(): boolean { return this.approvalMode === 'telegram'; }
 
   targetInfo(): { machineId: string; label: string } {
     return { machineId: this.machineId, label: this.machineLabel };
@@ -115,7 +121,9 @@ export class DirectDesktopAccess {
       && this.activeGrantId === row.grantId && !!row.grantSignature
       && !!row.approvedAt && this.now() >= row.approvedAt && this.now() < row.approvedAt + GRANT_MS
       && !!row.lastActivity && this.now() - row.lastActivity < IDLE_MS
-      && this.isVerifiedOperator(row.topicId, row.operatorUid)
+      && (this.approvalMode === 'pin'
+        ? !!row.operatorSessionToken && this.isDashboardOperatorSession(row.operatorSessionToken)
+        : this.isVerifiedOperator(row.topicId, row.operatorUid))
       && crypto.verify(null, this.signedPayload(row), this.keyPair.publicKey, row.grantSignature)
       && !!row.targetSignature
       && crypto.verify(null, this.targetPayload(row), crypto.createPublicKey({
@@ -130,13 +138,16 @@ export class DirectDesktopAccess {
   }
 
   async begin(input: DirectDesktopRequestInput): Promise<{ requestId: string }> {
-    if (this.disabled || input.machineId !== this.machineId || input.scopeConfirmed !== true
-      || !Number.isSafeInteger(input.topicId) || input.topicId <= 0
-      || !/^\d{1,30}$/.test(input.operatorUid)
+    if (this.disabled || input.machineId !== this.machineId
       || !this.isDashboardOperatorSession(input.operatorSessionToken)
-      || !this.isVerifiedOperator(input.topicId, input.operatorUid)
+      || (this.requiresTelegramStepUp() && (input.scopeConfirmed !== true
+        || !Number.isSafeInteger(input.topicId) || input.topicId <= 0
+        || !/^\d{1,30}$/.test(input.operatorUid)
+        || !this.isVerifiedOperator(input.topicId, input.operatorUid)))
       || !/^[A-Za-z0-9_-]{16,128}$/.test(input.browserNonce)) {
-      throw new Error('verified operator and full desktop confirmation required');
+      throw new Error(this.requiresTelegramStepUp()
+        ? 'verified operator and full desktop confirmation required'
+        : 'recent dashboard PIN session required');
     }
     let browserKey: crypto.KeyObject;
     try {
@@ -151,16 +162,22 @@ export class DirectDesktopAccess {
       check.computeSecret(browserEcdh);
     } catch { throw new Error('browser ECDH key invalid'); }
     if (!(await this.probe()).ready) throw new Error('desktop host is not ready');
-    const lockoutKey = `${input.operatorUid}:${input.machineId}`;
-    if (this.lockouts.get(lockoutKey) > this.now()) throw new Error('desktop approval is locked');
+    const lockoutKey = this.requiresTelegramStepUp()
+      ? `${input.operatorUid}:${input.machineId}`
+      : `${this.sessionHash(input.operatorSessionToken)}:${input.machineId}`;
+    if (this.requiresTelegramStepUp() && this.lockouts.get(lockoutKey) > this.now()) throw new Error('desktop approval is locked');
     for (const [id, row] of this.requests) {
       if (this.now() - row.createdAt > 60 * 60_000) this.requests.delete(id);
     }
+    for (const [key, at] of this.lastRequestAt) {
+      if (this.now() - at > 60 * 60_000) this.lastRequestAt.delete(key);
+    }
     if (this.requests.size >= 100) throw new Error('desktop request capacity reached');
     const previousRequest = this.lastRequestAt.get(lockoutKey) ?? 0;
-    if (this.now() - previousRequest < 10_000) throw new Error('wait before requesting another desktop code');
+    if (this.now() - previousRequest < 10_000) throw new Error('wait before requesting another desktop session');
     for (const [id, row] of this.requests) {
-      if (row.operatorUid === input.operatorUid && row.machineId === input.machineId && row.status === 'pending') {
+      if (row.operatorSessionHash === this.sessionHash(input.operatorSessionToken)
+        && row.machineId === input.machineId && row.status === 'pending') {
         this.requests.delete(id);
       }
     }
@@ -169,14 +186,21 @@ export class DirectDesktopAccess {
     const salt = crypto.randomBytes(32);
     const digest = crypto.createHash('sha256').update(salt).update(code).digest();
     const row: DirectRequest = {
-      id, operatorUid: input.operatorUid, topicId: input.topicId, machineId: input.machineId,
+      id, operatorUid: this.requiresTelegramStepUp() ? input.operatorUid
+        : `dashboard-pin:${this.sessionHash(input.operatorSessionToken).slice(0, 16)}`,
+      topicId: this.requiresTelegramStepUp() ? input.topicId : 0, machineId: input.machineId,
       machineLabel: this.machineLabel, browserPublicKey: input.browserPublicKey,
       browserEcdhPublicKey: input.browserEcdhPublicKey,
       browserNonce: input.browserNonce, operatorSessionHash: this.sessionHash(input.operatorSessionToken),
+      operatorSessionToken: this.requiresTelegramStepUp() ? undefined : input.operatorSessionToken,
       codeHash: Buffer.concat([salt, digest]), createdAt: this.now(), status: 'pending',
     };
     this.requests.set(id, row);
     this.lastRequestAt.set(lockoutKey, this.now());
+    if (!this.requiresTelegramStepUp()) {
+      if (!this.approveRow(row)) { this.requests.delete(id); throw new Error('desktop grant unavailable'); }
+      return { requestId: id };
+    }
     try {
       // The code is delivered to the already verified operator's private DM.
       // The caller must use an unlogged send path; the reply is intercepted
@@ -207,12 +231,16 @@ export class DirectDesktopAccess {
       } catch { this.disabled = true; /* @silent-fallback-ok — lockout storage failed; disable all desktop admission. */ }
       return false;
     }
+    return this.approveRow(row);
+  }
+
+  private approveRow(row: DirectRequest): boolean {
     if (this.activeGrantId) {
       const active = [...this.requests.values()].find(other => other.grantId === this.activeGrantId);
       if (active && this.validGrant(active)) return false;
       if (active) this.revokeRow(active);
     }
-    // Consume the code before signing. A second reply cannot issue another grant.
+    // A Telegram code is consumed by changing the row state before signing.
     try {
       row.status = 'approved';
       row.grantId = crypto.randomUUID();
@@ -279,7 +307,9 @@ export class DirectDesktopAccess {
     const forwarded = request.headers['x-forwarded-proto'];
     const tlsSocket = !!request.socket && 'encrypted' in request.socket
       && request.socket.encrypted === true;
-    const expectedScheme = tlsSocket || forwarded === 'https' ? 'https' : 'http';
+    const loopback = isLoopbackPeer(request.socket?.remoteAddress);
+    if (!tlsSocket && !loopback) throw new Error('desktop transport must use the local tunnel');
+    const expectedScheme = tlsSocket || (loopback && forwarded === 'https') ? 'https' : 'http';
     if (!origin || !host || origin !== `${expectedScheme}://${host}`) {
       throw new Error('desktop origin invalid');
     }
@@ -299,7 +329,7 @@ export class DirectDesktopAccess {
     try {
       await this.host.startIndicator(() => this.revokeRow(row));
       this.audit?.record({ kind: 'start', grantId: row.grantId!, machineId: row.machineId,
-        operatorUid: row.operatorUid });
+        operatorUid: row.operatorUid, authMethod: this.approvalMode });
     }
     catch { this.revokeRow(row); throw new Error('desktop local indicator unavailable'); }
     const assertActive = async () => {
@@ -349,6 +379,7 @@ export class DirectDesktopAccess {
   private revokeRow(row: DirectRequest): void {
     if (row.status === 'revoked') return;
     row.status = 'revoked';
+    row.operatorSessionToken = undefined;
     row.ticketHash = undefined;
     const ownsActiveHost = !!row.grantId && this.activeGrantId === row.grantId;
     if (ownsActiveHost) {
@@ -360,7 +391,7 @@ export class DirectDesktopAccess {
       const count = row.inputCount ?? 0;
       const inputBucket = count === 0 ? 'none' : count < 10 ? '1-9' : count < 100 ? '10-99' : '100+';
       try { this.audit?.record({ kind: 'stop', grantId: row.grantId, machineId: row.machineId,
-        operatorUid: row.operatorUid, inputBucket }); } catch { /* @silent-fallback-ok — containment takes priority over audit failure */ }
+        operatorUid: row.operatorUid, authMethod: this.approvalMode, inputBucket }); } catch { /* @silent-fallback-ok — containment takes priority over audit failure */ }
     }
     if (row.grantId) {
       if (ownsActiveHost) this.activeGrantId = null;

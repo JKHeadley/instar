@@ -2,18 +2,17 @@
 
 ## Summary
 
-Tier 2 security-sensitive first-machine slice of the approved blocker hand-off spec, incorporating Justin's direct-access clarification. This adds one local macOS display/input host, a browser viewer, verified Telegram step-up, and a process-local ten-minute grant. It is dark by default, limited to development agents, and does not advertise Windows or Linux as ready. The first pass is 37 files / about 2,350 added lines; the gate repair adds six runtime/test files. Spec convergence took six rounds. One commit gate attempt found missing side-effects trace, so this artifact records that review.
+Tier 2 security-sensitive first-machine slice of the approved blocker hand-off spec, incorporating Justin's direct-access and PIN-only clarifications. This adds one local macOS display/input host, a browser viewer, and a process-local ten-minute grant after dashboard PIN entry. It is dark by default, limited to development agents, and does not advertise Windows or Linux as ready. Justin superseded the Telegram challenge in topic 131439 on 2026-10-27 at 23:41 PDT after reviewing the first live page.
 
 ## Decision points touched
 
-- Desktop admission in `DirectDesktopAccess`: added. Requires an explicit target, verified topic operator, dashboard PIN session, browser key proof, scope confirmation, healthy local host, and owner Telegram DM challenge.
+- Desktop admission in `DirectDesktopAccess`: added. Requires an explicit target, live dashboard PIN session, browser key proof, healthy local host, and a ten-minute lease. The PIN page states the full-control scope.
 - Stream and input admission in `DesktopStreamManager`: added. Rechecks the live grant at point of use, enforces one controller, queue and rate bounds, expiry and revocation.
-- Production boot in `AgentServer`: added. Explicit config plus development role, macOS, machine identity, Telegram and operator binding; uncertainty leaves it dark.
-- Telegram reply interception: added. Authenticated `/desktop` replies are consumed before normal logging and never become regular chat commands.
+- Production boot in `AgentServer`: added. Explicit config plus development role, macOS and machine identity; uncertainty leaves it dark. Telegram is not required for desktop admission.
 
 ## 1. Over-block
 
-A legitimate operator without a working private Telegram DM or macOS Screen Recording/Accessibility permission cannot begin control. This is deliberate for the first local test because the independent identity and OS boundaries cannot be proven otherwise. A second browser or a stale fingerprint is refused even if the dashboard PIN is correct.
+A legitimate operator without macOS Screen Recording/Accessibility permission cannot begin control. A second browser or changed target key is refused even if the dashboard PIN is correct. If the PIN is unavailable or its operator session expires, display and input are refused. The PIN-only choice loses independent Telegram identity assurance; this is an explicit operator revision.
 
 ## 2. Under-block
 
@@ -21,19 +20,23 @@ This first target is local to Echo. It does not provide cross-machine grant rout
 
 ## 3. Level of abstraction
 
-The target owns grant authority because only it can prove its display/input session and stop the stream. `DesktopHost` isolates the OS adapter. The browser cannot mint or extend a grant. Telegram is an independent, authenticated step-up channel; dashboard PIN is only the first factor. The write-domain registry marks requests machine-local and ephemeral; restart destroys keys and grants.
+The target owns grant authority because only it can prove its display/input session and stop the stream. `DesktopHost` isolates the OS adapter. The browser cannot mint or extend a grant. A successful dashboard PIN unlock mints a short-lived operator session which the target rechecks while streaming. The write-domain registry marks requests machine-local and ephemeral; restart destroys keys and grants.
 
 ## 4. Signal vs authority compliance
 
-Per `docs/signal-vs-authority.md`, no lexical detector decides whether a person may control the host. Admission is a finite security policy over cryptographic proof, verified identity, scope, lease, and live OS state. Each failed proof denies the specific privileged operation. The lower-level readiness probe is only a signal for availability; it does not grant access. There is no competing-signals judgment point here: possession, identity, scope, and expiry are invariants.
+Per `docs/signal-vs-authority.md`, no lexical detector decides whether a person may control the host. Admission is a finite security policy over the PIN-derived session, browser possession proof, target key, lease, and live OS state. Each failed proof denies the specific privileged operation. The lower-level readiness probe is only a signal for availability; it does not grant access. The PIN proves credential possession, not a named human identity.
 
 ## 5. Interactions
 
-The desktop viewer uses the existing dashboard PIN session but a separate Telegram challenge. Telegram lifeline interception runs before Instar's durable inbound queuing, so a challenge reply is not written to Instar's message log or handled as a normal agent command. The reply remains visible in Telegram topic history; its one-use code is bound to the verified sender and request. Server boot keeps the feature dark unless every dependency is present. Revoke closes the WebSocket and cancels held input; a server restart drops all grants. The new route prefix is classified in `WriteDomainRegistry` and listed in `CapabilityIndex`.
+The desktop viewer uses the existing dashboard PIN session. Server boot keeps the feature dark unless the host and machine identity are available. Revoke closes the WebSocket and cancels held input; a server restart drops all grants. The new route prefix is classified in `WriteDomainRegistry` and listed in `CapabilityIndex`.
 
 ## 6. External surfaces
 
-On an explicitly enabled development Mac, the Machines page offers “Open this machine.” The viewer uses the same named tunnel and requires a private DM approval. The DM contains a short code and target fingerprint; neither is posted to the topic. No cross-agent notice is emitted by this slice. The local Swift helper displays a menu bar indicator during control.
+On an explicitly enabled development Mac, the Machines page offers “Open this machine.” The viewer uses the same named tunnel and opens from PIN submission. It presents machine control in plain language and requires no Telegram setup, copied command, topic picker, checkbox, or fingerprint dialog. No cross-agent notice is emitted by this slice. The local Swift helper displays a menu bar indicator during control.
+
+## 6b. Operator-surface quality
+
+The viewer leads with its primary action: enter the existing dashboard PIN and open this machine. Its heading names the Mac Studio before access, and the explanation says plainly that clicks and typing affect open apps and can change files or settings. It exposes no keys, request IDs, fingerprints, topic numbers, or protocol details as primary content. Stop access is visible during control but styled as a secondary danger action rather than the first call to action. The form and live image fit phone width, with short labels and readable text. Justin's phone screenshot caught a stale-script error before PIN entry; the page now loads a content-versioned script with no-store headers. A fresh real Chrome browser completed the public HTTPS PIN-to-frame, click, and Stop path after deployment.
 
 ## 7. Multi-machine posture
 
@@ -45,17 +48,19 @@ Set `remoteDesktop.enabled` false and restart Echo: admission and streams close.
 
 ## Conclusion
 
-The first-Mac design is appropriate for a controlled operator test after the full suite and live identity, frame, input and revoke checks pass. It cannot be described as all-machine access. The code preserves a generic host adapter seam for the Windows/WSL and Linux work tracked in topic 131439.
+The revised first-Mac design is appropriate for a controlled operator test after PIN-to-stream, frame, input and revoke checks pass. It cannot be described as all-machine access or as independent human identity verification. The code preserves a generic host adapter seam for the Windows/WSL and Linux work tracked in topic 131439.
 
 ## Second-pass review
 
-**Reviewer:** desktop_side_effects_review. **Independent read: concur with condition.** The reviewer found no concrete grant, input, browser-key or Telegram admission bypass. Before deployment, preserve installed 1.3.1481 changes, especially the WorktreeCreate/WorktreeRemove hook removal in `4c1251ab5`; verify the installed package version after overlay. The reviewer also required the Telegram-topic-visibility clarification above.
+**Original reviewer:** desktop_side_effects_review. **Independent read: concur with condition.** This review covered the earlier Telegram design. Justin superseded its approval flow after live UX feedback; Astra's review found the PIN-only direction consistent with the dashboard surface standard if the loss of independent-factor assurance is recorded and session, revocation, audit, and PIN limits remain enforced. A code review of the revised path is still required before claiming it verified. Before deployment, preserve installed 1.3.1482 changes and verify the installed package version after overlay.
+
+**Revised-path reviewer:** Astra reviewed the changed code and found no concrete replay or expired-session admission bypass. It identified a direct-network plaintext PIN path and three viewer retry failures. The revised code now limits desktop PIN and stream admission to local or TLS transport, keeps the Unlock form reachable when the target is unavailable, revokes a grant if setup fails, and returns to PIN entry when the session expires. The first-use fingerprint dialog is gone; the target key is pinned on first authenticated dashboard use and refused if it later changes. The residual is that first-use trust comes from the dashboard server, not an independent out-of-band fingerprint comparison.
 
 The full integration suite exposed a dark-feature shutdown mock without `setDesktopApprovalHandler`. Shutdown now clears the handler only when desktop access was initialized and the adapter offers that method. Grant revocation still runs first. The same reviewer checked this teardown fix and concurred.
 
 ## Evidence pointers
 
-`tests/unit/DirectDesktopAccess.test.ts`, `tests/integration/desktop-routes.test.ts`, `tests/e2e/desktop-boot-lifecycle.test.ts`; live Mac test command used `DESKTOP_LIVE_TEST=1` and exercised real ScreenCaptureKit capture, CGEvent pointer movement and revoke.
+`tests/unit/DirectDesktopAccess.test.ts`, `tests/integration/desktop-routes.test.ts`, `tests/e2e/desktop-boot-lifecycle.test.ts`; live Mac test command used `DESKTOP_LIVE_TEST=1` and exercised real ScreenCaptureKit capture, CGEvent pointer movement and revoke. A fresh Chrome DevTools session loaded the public named tunnel, entered the real dashboard PIN from the encrypted local config, received a 1920×1080 frame, clicked the image, and confirmed Stop cleared control. The first full suite found two scanner false positives in `AgentServer.ts` (one new fail-dark PIN-store catch, one read-only price catch shifted outside a 20-line marker window); both now have in-window documented exemptions and the focused ratchet returns its 494 baseline.
 
 ## Class-Closure Declaration
 
