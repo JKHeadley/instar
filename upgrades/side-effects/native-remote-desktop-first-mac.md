@@ -30,6 +30,8 @@ Per `docs/signal-vs-authority.md`, no lexical detector decides whether a person 
 
 The desktop viewer uses the existing dashboard PIN session. Server boot keeps the feature dark unless the host and machine identity are available. Revoke closes the WebSocket and cancels held input; a server restart drops all grants. The new route prefix is classified in `WriteDomainRegistry` and listed in `CapabilityIndex`.
 
+The capability description and generated agent awareness both describe the same PIN-only path. A stale capability description that still named Telegram approval and a fingerprint was corrected after the live flow changed.
+
 ## 6. External surfaces
 
 On an explicitly enabled development Mac, the Machines page offers “Open this machine.” The viewer uses the same named tunnel and opens from PIN submission. It presents machine control in plain language and requires no Telegram setup, copied command, topic picker, checkbox, or fingerprint dialog. No cross-agent notice is emitted by this slice. The local Swift helper displays a menu bar indicator during control.

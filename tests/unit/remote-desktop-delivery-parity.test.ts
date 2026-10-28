@@ -6,8 +6,15 @@ import { getMigrationDefaults, applyDefaults } from '../../src/config/ConfigDefa
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd, REMOTE_DESKTOP_MARKER } from '../../src/scaffold/templates.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { CAPABILITY_INDEX } from '../../src/server/CapabilityIndex.js';
 
 describe('native desktop init and migration parity', () => {
+  it('advertises the same PIN-only path in self-discovery', () => {
+    const desktop = CAPABILITY_INDEX.find(entry => entry.key === 'remoteDesktop');
+    expect(desktop?.description).toContain('existing dashboard PIN');
+    expect(desktop?.description).not.toContain('one-use code');
+    expect(desktop?.description).not.toContain('fingerprint');
+  });
   it('keeps new and existing agents dark while preserving a deliberate opt-in', () => {
     const defaults = getMigrationDefaults('managed-project');
     expect(defaults.remoteDesktop).toEqual({ enabled: false });
