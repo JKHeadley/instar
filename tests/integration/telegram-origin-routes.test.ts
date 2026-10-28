@@ -145,7 +145,8 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
       expect(remote.status).toBe(200);
       expect(remote.body).toMatchObject({ outcome: 'unknown', safeToResend: false, executionOwnerMachineId: 'mini' });
       vi.mocked(h.runtime.store.getOperation).mockRestore(); vi.mocked(h.runtime.unrecordedReceipts.forOperation).mockRestore();
-      expect(audit?.operation?.state).toBe('outcome-unknown');
+      // Before the claim lease is reaped the operation is still `admitted`; the delivery truth lives in the fallback record.
+      expect(audit?.operation?.state).toBe('admitted');
       // An unknown id answers 404 unknown, never "not delivered".
       const missing = await request(h.app).get('/telegram/origins/operations/00000000-0000-0000-0000-000000000000/outcome').set('Authorization', 'Bearer agent-test');
       expect(missing.status).toBe(404);
