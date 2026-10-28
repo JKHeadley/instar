@@ -7,12 +7,13 @@
  * broadcast. A claim is a LEASE with a fenced ownership epoch: a receiver
  * rejects a stale-epoch claim (invariant-4 epoch fencing), so a demoted
  * machine's late claim cannot steal a job from the current lease-holder, and a
- * partition double-run is structurally prevented when the journal is reachable.
+ * partition double-run requires a pool-wide authority; the local store alone
+ * cannot prevent it.
  *
  * Claim records store METADATA ONLY — machine id, job slug, epoch, timestamps —
  * never job payloads (the spec's explicit privacy bound). The store is the
- * local materialized view of the replicated claim kind; the journal carries
- * each record to peers and feeds them back through `applyRemote`.
+ * intended local materialized view. Production peer receive does not yet call
+ * `applyRemote`, so this store must not be selected by the runtime cutover.
  *
  * This store does NOT decide WHEN to use the journal path — that is the
  * `JobLeaseCutoverGate`. The store only manages the leases once the gate has
@@ -59,6 +60,13 @@ export interface JobLeaseClaimStoreConfig {
 
 const DEFAULT_LEASE_TIMEOUT_MS = 30 * 60_000;
 const CLAIMS_FILE = 'job-lease-claims.json';
+
+/**
+ * Production cutover stays dark until peer claim receive and pool-authoritative
+ * acquisition are wired and exercised together. A local lease file cannot
+ * arbitrate two machines that claim the same slug before journal replication.
+ */
+export const JOB_LEASE_POOL_AUTHORITY_READY = false;
 
 /** The verdict of a local claim attempt. */
 export type ClaimAttempt =

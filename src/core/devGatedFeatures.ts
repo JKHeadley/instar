@@ -426,8 +426,8 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'ws43JournalLease',
     configPath: 'multiMachine.seamlessness.ws43JournalLease',
-    description: 'WS4.3 journal-lease cutover — job claims upgrade from the best-effort AgentBus broadcast to a durable, epoch-fenced lease over the replicated journal (the JobLeaseCutoverGate guarantees the two mechanisms are NEVER both live for a job set).',
-    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The dryRun sub-flag (ws43JournalLeaseDryRun) is ALSO omitted from ConfigDefaults and resolves COHERENTLY with this flag at the consumer (dev → live, fleet → dry-run) so live-on-dev actually exercises the lease path. A genuine live cutover engages ONLY when the flag resolves live AND the pool is flag-coherent (≥2 machines all advertising not-dry-run), so a single-machine dev agent never half-migrates (strict no-op). Job-claim coordination on durable local/replicated state — no destructive/irreversible write, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+    description: 'WS4.3 planned journal-lease cutover — currently held on the legacy AgentBus path by a code-owned readiness floor until peer claim receive and pool-authoritative acquisition are implemented.',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The dryRun sub-flag (ws43JournalLeaseDryRun) remains omitted from ConfigDefaults and resolves coherently with the development-agent flag, but neither value can bypass the code-owned readiness floor. A local lease file and flag-coherent peers cannot arbitrate concurrent claims. The pool continues using the legacy path until a shared authority and receive wiring are proven. Operator directive 2026-06-13 topic 13481.',
   },
   {
     name: 'ws44PoolLinks',

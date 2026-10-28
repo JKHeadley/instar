@@ -261,6 +261,8 @@ export class JobScheduler {
    * path (byte-for-byte today's behavior).
    */
   private leaseClaimStore: JobLeaseClaimStore | null = null;
+  /** The mechanism that actually acquired each live job, fixed for its fire. */
+  private acquiredClaimPath = new Map<string, 'journal' | 'bus'>();
   /**
    * Live provider for the cutover-gate input (flag + dry-run + the pool peers'
    * advertised ws43JournalLease capability + this machine's lease epoch). Read
@@ -663,21 +665,26 @@ export class JobScheduler {
 
   /**
    * Release a claim for a completed job across BOTH mechanisms. The path that
-   * actually took the claim may differ from the path the gate would pick at
-   * completion time (a mid-run flag flip), so we release both — each store's
-   * completeClaim is a strict no-op when this machine does not own the slug's
-   * live record, so releasing the unused store is harmless. The journal release
-   * is synchronous (durable); the bus release is best-effort async.
+   * actually took the claim may differ from the live gate at completion time.
+   * Release only that acquired path: an old local journal file may still hold
+   * a same-slug claim from a previous version and must not be mutated by a bus
+   * job. After a process restart, unknown ownership defaults to the legacy bus
+   * path; a journal lease then expires rather than being completed by guess.
    */
   private releaseClaim(slug: string, result: 'success' | 'failure'): void {
-    try {
-      this.leaseClaimStore?.completeClaim(slug, result);
-    } catch {
-      /* @silent-fallback-ok — best-effort; lease expires on its own otherwise */
+    const acquiredPath = this.acquiredClaimPath.get(slug);
+    this.acquiredClaimPath.delete(slug);
+    if (acquiredPath === 'journal') {
+      try {
+        this.leaseClaimStore?.completeClaim(slug, result);
+      } catch {
+        /* @silent-fallback-ok — best-effort; lease expires on its own otherwise */
+      }
+    } else {
+      this.claimManager?.completeClaim(slug, result).catch(err => {
+        console.error(`[scheduler] Failed to broadcast claim completion for "${slug}": ${err}`);
+      });
     }
-    this.claimManager?.completeClaim(slug, result).catch(err => {
-      console.error(`[scheduler] Failed to broadcast claim completion for "${slug}": ${err}`);
-    });
   }
 
   /**
@@ -1145,6 +1152,7 @@ export class JobScheduler {
     // journal lease nor the legacy bus broadcast); each machine runs it locally.
     if (job.perMachineIndependent) {
       // no-op: claim/lease deliberately skipped
+      this.acquiredClaimPath.delete(slug);
     } else if (claimPath?.path === 'journal') {
       // Synchronous, durable: the lease is persisted before the spawn, so a
       // crash between claim and spawn leaves the lease (fenced, expiring) rather
@@ -1161,6 +1169,7 @@ export class JobScheduler {
         });
         return false;
       }
+      this.acquiredClaimPath.set(slug, 'journal');
     } else {
       if (claimPath?.journalDryRun) {
         console.log(`[scheduler] WS4.3 journal-lease DRY-RUN — would lease "${slug}" via journal (epoch ${claimPath.epoch}); running legacy bus path.`);
@@ -1170,6 +1179,7 @@ export class JobScheduler {
           console.error(`[scheduler] Failed to broadcast claim for "${slug}": ${err}`);
         });
       }
+      this.acquiredClaimPath.set(slug, 'bus');
     }
     return true;
   }
@@ -2092,8 +2102,9 @@ export class JobScheduler {
       triageFields: [...(job.triageFields ?? [])].sort(),
     })).digest('hex');
     try {
-      const fireId = this.leaseClaimStore?.getClaim(slug)?.claimId
-        ?? this.claimManager?.getClaim(slug)?.claimId ?? `local:${runId}`;
+      const fireId = (this.acquiredClaimPath.get(slug) === 'journal'
+        ? this.leaseClaimStore?.getClaim(slug)?.claimId
+        : this.claimManager?.getClaim(slug)?.claimId) ?? `local:${runId}`;
       supervisionId = this.getJobSupervisionStore().register({
         runId, fireId, slug, machineId: this.machineId,
         templateDigest: job.scriptHashExpected ?? null,

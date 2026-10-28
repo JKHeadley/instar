@@ -68,6 +68,7 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { resolveEncryptToPinnedMode, encryptToPinnedModeName } from '../threadline/encryptToPinned.js';
 import { resolveRefuseDowngradeMode } from '../threadline/refuseDowngrade.js';
@@ -23052,15 +23053,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             () => ({
               // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
               // read ws43JournalLease through resolveDevAgentGate → LIVE on a dev
-              // agent / DARK on the fleet (config OMITS both flags). ws43JournalLease
-              // DryRun resolves COHERENTLY: on a dev agent the cutover goes genuinely
-              // live (dryRun → false) so the journal-lease path is actually exercised,
-              // not just logged; on the fleet it resolves to the safe dry-run default
-              // (true). An explicit config value still wins on either flag. A genuine
-              // live cutover only engages when the flag resolves live AND the pool is
-              // flag-coherent (≥2 machines all advertising not-dry-run), so a
-              // single-machine dev agent never half-migrates.
-              enabled: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config),
+              // agent / DARK on the fleet (config OMITS both flags). The extra
+              // code-owned readiness floor stays FALSE until remote claim receive
+              // and a pool authority prevent simultaneous local acquisitions.
+              // Config cannot bypass that floor. Dry-run still resolves from the
+              // dev/fleet gate, but cannot enable an unsafe journal claim.
+              enabled: JOB_LEASE_POOL_AUTHORITY_READY
+                && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config),
               dryRun: config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config),
               epoch: coordinator.getLeaseEpoch(),
               peers: registryForCutover
@@ -23078,7 +23077,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
             },
           );
-          console.log(pc.dim('  [scheduler] WS4.3 journal-lease cutover wired (engages only when flag on + pool coherent).'));
+          console.log(pc.dim('  [scheduler] WS4.3 journal-lease cutover wired (pool-authority readiness required).'));
         }
         if (poolSelfId) {
           try {
@@ -23227,7 +23226,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
                 // Machine-coherence advert (machine-coherence-guard §3.2).
                 // Emission is UNCONDITIONAL (M3, normative): it ships live with
                 // the code, regardless of the sentinel's dev-gate/enabled/dryRun

@@ -1498,16 +1498,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // guard never fires there even when resolved live (it can only ever refuse,
       // never wrongly spawn — the safe direction).
       // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
-      // "Cutover discipline"). When on AND the pool is flag-coherent (every
-      // online peer advertises ws43JournalLease), job claims upgrade from the
-      // best-effort AgentBus broadcast to a durable, epoch-fenced lease over the
-      // replicated journal. The cutover gate (JobLeaseCutoverGate) guarantees the
+      // "Cutover discipline"). The intended path upgrades claims from the
+      // best-effort AgentBus broadcast to a pool-authoritative lease. It remains
+      // unavailable until peer claim receive and atomic acquisition are wired;
+      // flag coherence alone cannot make local lease files safe. The cutover gate guarantees the
       // two mechanisms are NEVER both live for a job set (the named migration
       // hazard: one machine leasing via journal while a peer broadcasts via bus).
       // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
       // `ws43JournalLease` is DELIBERATELY OMITTED here (not hardcoded false) so
-      // resolveDevAgentGate decides at runtime — LIVE on a development agent,
-      // DARK on the fleet. Registered in DEV_GATED_FEATURES. When dark, or in a
+      // resolveDevAgentGate decides the flag at runtime — on for a development
+      // agent, off on the fleet. A separate code-owned readiness floor keeps
+      // actual journal claiming dark on every agent for now. Registered in
+      // DEV_GATED_FEATURES. When dark, or in a
       // mixed/older pool, or single-machine, the scheduler stays on the legacy
       // bus path (byte-for-byte today's behavior); the JobLeaseCutoverGate's
       // flag-coherence requirement means a single-machine dev agent (no peers)
@@ -1515,9 +1517,9 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       //
       // WS4.3 journal-lease DRY-RUN (the WS-wide "log intended claims" posture).
       // `ws43JournalLeaseDryRun` is ALSO DELIBERATELY OMITTED so the dev-gate
-      // resolves it COHERENTLY with ws43JournalLease: on a dev agent the cutover
-      // goes LIVE (dryRun → false) so the journal-lease path is actually
-      // exercised (not just logged); on the fleet it resolves to the safe dry-run
+      // resolves it COHERENTLY with ws43JournalLease: on a dev agent the dry-run
+      // flag is false, while the code-owned readiness floor still blocks the
+      // cutover; on the fleet it resolves to the safe dry-run
       // default (true). The consumer computes `dryRun: cfg?.ws43JournalLeaseDryRun
       // ?? !resolveDevAgentGate(undefined, config)` — an explicit config value
       // still wins. A genuine live cutover only engages when the flag resolves

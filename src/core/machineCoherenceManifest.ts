@@ -130,7 +130,7 @@ export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
     resolution: 'dev-gate+dryRun',
     dryRunConfigPath: 'multiMachine.seamlessness.ws43JournalLeaseDryRun',
     readSource: 'boot',
-    guarantee: 'job-claim single-ownership (a mixed pool keeps the whole pool on the legacy bus)',
+    guarantee: 'journal-claim cutover intent (runtime readiness floor currently keeps the legacy bus path)',
   },
   {
     key: 'seamlessness.ws44PoolLinks',
