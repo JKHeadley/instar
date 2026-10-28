@@ -25,6 +25,9 @@ import {
   HOST_TEST_TTL_DEFAULT_MS,
   HOST_TEST_TTL_MAX_MS,
   HOST_TEST_TTL_MIN_MS,
+  SUITE_WAITER_AGING_MS,
+  compareSuiteWaiters,
+  suiteWaiterTier,
   HostTestRunnerSemaphore,
   LOCK_WEDGE_AGE_MS,
   TEST_RUNNER_CAPACITY_EXIT_CODE,
@@ -346,6 +349,121 @@ describe('merge-gate suite priority', () => {
     expect(sem.hasMergeGatePriority()).toBe(false);
     fs.writeFileSync(file, JSON.stringify({ v: 1, pid: process.pid, hostname: 'other-host', expiresAt: now() + 60_000 }));
     expect(sem.hasMergeGatePriority()).toBe(false);
+  });
+});
+
+describe('suite waiter tickets — fair aging between merge-gate and ordinary suites', () => {
+  const waitersDir = (paths: TestRunnerPaths) => path.join(paths.baseDir, 'host-test-runner-waiters');
+  function writeTicket(paths: TestRunnerPaths, name: string, over: Record<string, unknown>): void {
+    fs.mkdirSync(waitersDir(paths), { recursive: true });
+    fs.writeFileSync(path.join(waitersDir(paths), `${name.padEnd(24, '0')}.json`), JSON.stringify({
+      v: 1, id: `waiter:${name}`, pid: 41_000, hostname: HOST, priority: 'ordinary', ...over,
+    }));
+  }
+
+  it('orders waiters: aged ordinary first, then merge-gate, then ordinary by arrival', () => {
+    const now = 10_000_000_000;
+    const aged = { id: 'a', pid: 1, priority: 'ordinary' as const, since: now - SUITE_WAITER_AGING_MS };
+    const gate = { id: 'b', pid: 1, priority: 'merge-gate' as const, since: now - 1000 };
+    const early = { id: 'c', pid: 1, priority: 'ordinary' as const, since: now - 5000 };
+    const late = { id: 'd', pid: 1, priority: 'ordinary' as const, since: now - 10 };
+    expect(suiteWaiterTier(aged, now)).toBe(0);
+    expect(suiteWaiterTier({ ...aged, since: aged.since + 1 }, now)).toBe(2);
+    expect([late, early, gate, aged].sort((x, y) => compareSuiteWaiters(x, y, now)).map((w) => w.id))
+      .toEqual(['a', 'b', 'c', 'd']);
+    // A total order: equal tier and arrival fall back to id, so two waiters never both yield.
+    expect(compareSuiteWaiters({ ...late, id: 'x' }, { ...late, id: 'y' }, now)).toBeLessThan(0);
+  });
+
+  it('a merge-gate request yields a free slot to an ordinary suite that has waited past the aging bound', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeTicket(paths, 'aa', { since: now() - SUITE_WAITER_AGING_MS - 1, expiresAt: now() + 30_000 });
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(eventsOf(paths, 'block')[0]?.waitersAhead).toBe(1);
+  });
+
+  it('a merge-gate request still goes ahead of an ordinary suite that has not aged', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeTicket(paths, 'aa', { since: now() - 60_000, expiresAt: now() + 30_000 });
+    const out = await sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 });
+    expect(out.kind).toBe('acquired');
+  });
+
+  it('ordinary suites are admitted in arrival order', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeTicket(paths, 'aa', { since: now() - 60_000, expiresAt: now() + 30_000 });
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(eventsOf(paths, 'block')[0]?.waitersAhead).toBe(1);
+    // Targeted runs never look at suite tickets.
+    expect((await sem.acquire({ lane: 'targeted', runClass: 'background', fileCount: 1, budgetMs: 0 })).kind).toBe('acquired');
+  });
+
+  it('ignores expired, dead, foreign-host, future-dated and corrupt tickets', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths, { pidAlive: (p) => p !== 41_001 });
+    writeTicket(paths, 'a1', { since: now() - 60_000, expiresAt: now() - 1 });
+    writeTicket(paths, 'a2', { pid: 41_001, since: now() - 60_000, expiresAt: now() + 30_000 });
+    writeTicket(paths, 'a3', { hostname: 'other-host', since: now() - 60_000, expiresAt: now() + 30_000 });
+    writeTicket(paths, 'a4', { since: now() + 3_600_000, expiresAt: now() + 30_000 });
+    writeTicket(paths, 'a5', { since: now() - 60_000, expiresAt: now() + 3_600_000 });
+    fs.writeFileSync(path.join(waitersDir(paths), `${'a6'.padEnd(24, '0')}.json`), '{broken');
+    expect(sem.listSuiteWaiters()).toEqual([]);
+    expect((await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+  });
+
+  it('a waiting suite holds a ticket while it waits and removes it when it gives up', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeRows(paths, [row({ pid: 40_900, acquiredAt: now() })]);
+    const seen: number[] = [];
+    await expect(sem.acquire({
+      lane: 'suite', runClass: 'background', budgetMs: 20_000,
+      onWaitTick: () => { seen.push(sem.listSuiteWaiters().length); },
+    })).rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((n) => n === 1)).toBe(true);
+    expect(sem.listSuiteWaiters()).toEqual([]);
+  });
+
+  it('the 2026-10-28 starvation: an ordinary suite waiting behind back-to-back merge-gate work gets the next slot once aged', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    let t = 10_000_000_000;
+    const clock = { now: () => t };
+    // The Local Verify child: same host, same clock, waiting for the next slot.
+    const verifier = makeSem(paths, { now: clock.now });
+    const start = t;
+    let verifierRefused = false;
+    const sem = makeSem(paths, {
+      now: clock.now,
+      sleep: async (ms: number) => {
+        t += Math.max(1, ms);
+        // The coordinator keeps a live claim for its queued work the whole time.
+        verifier.setMergeGatePriority('coordinator', true);
+        if (t - start >= 20 * 60_000 && readRows(paths).some((r) => r.pid === 40_901)) {
+          // The running verify finishes 20 minutes in; the next verify asks first.
+          writeRows(paths, []);
+          await verifier.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 })
+            .catch((e) => { verifierRefused = e instanceof TestRunnerCapacityTimeoutError; });
+        }
+      },
+    });
+    verifier.setMergeGatePriority('coordinator', true);
+    writeRows(paths, [row({ pid: 40_901, acquiredAt: t })]);
+    const out = await sem.acquire({ lane: 'suite', runClass: 'interactive', budgetMs: 45 * 60_000 });
+    expect(out.kind).toBe('acquired');
+    expect(verifierRefused).toBe(true);
+    expect(t - start).toBeLessThan(21 * 60_000);
   });
 });
 

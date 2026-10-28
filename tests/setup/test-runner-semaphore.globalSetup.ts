@@ -328,7 +328,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
       runClass,
       fileCount,
       budgetMs,
-      onWaitTick: (elapsedMs, holders, priorityWait) => {
+      onWaitTick: (elapsedMs, holders, priorityWait, waitersAhead) => {
         const now = Date.now();
         if (now - lastWaitLineAt < 60_000) return; // once a minute (§2.6)
         lastWaitLineAt = now;
@@ -337,7 +337,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
         // hang (§2.10).
         line(
           `${WAIT_SPINNER} waiting for a ${lane}-lane test slot (${Math.round(elapsedMs / 60000)}m elapsed; ` +
-            `${holders.length} holder(s): ${holders.map((h) => `pid ${h.pid} age ${Math.round(h.ageMs / 1000)}s`).join(', ') || 'none visible'}${priorityWait ? '; merge-gate verify has the next slot' : ''}) — active work, not a hang`,
+            `${holders.length} holder(s): ${holders.map((h) => `pid ${h.pid} age ${Math.round(h.ageMs / 1000)}s`).join(', ') || 'none visible'}${priorityWait ? '; merge-gate verify has the next slot' : ''}${waitersAhead > 0 ? `; ${waitersAhead} waiter(s) ahead in line` : ''}) — active work, not a hang`,
         );
       },
     });

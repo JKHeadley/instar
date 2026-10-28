@@ -12871,6 +12871,16 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('CLAUDE.md: clarified merge-gate preparation priority');
     }
 
+    // Waiting full suites now take turns (fair aging, 2026-10-28): an aged ordinary
+    // suite goes ahead of merge-gate work. Existing agents need the read surface.
+    if (content.includes('When Local Verify has runnable merge-gate work') && !content.includes('`suiteWaiters`')) {
+      const line = '- Waiting full suites take turns fairly: each one holds a short ticket while it waits, and an ordinary suite that has waited 15 min goes ahead of merge-gate work for the next slot (then merge-gate work, then other suites in arrival order). The one-suite cap is unchanged. `GET /test-runner-limiter` → `suiteWaiters` shows the line, next first.\n';
+      const anchor = '- **"Why is my test run waiting?"';
+      content = content.includes(anchor) ? content.replace(anchor, line + anchor) : content + '\n' + line;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added fair suite-waiter ordering');
+    }
+
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
     // Awareness + Migration Parity: an agent that doesn't know a "sender not
     // recognized" notice comes from the mesh sender re-validation will be confused

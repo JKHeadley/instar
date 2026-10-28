@@ -37,6 +37,7 @@ import {
   coerceTtlMs as coerceTestRunnerTtlMs,
   HOST_TEST_SUITE_CAP_DEFAULT,
   HOST_TEST_TARGETED_CAP_DEFAULT,
+  suiteWaiterTier,
 } from '../core/hostTestRunnerSemaphore.js';
 import type { TestRunnerHolderRow } from '../core/hostTestRunnerSemaphore.js';
 import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
@@ -13616,6 +13617,14 @@ export function createRoutes(ctx: RouteContext): Router {
         admittedOpen: status.admittedOpen.map((w) => ({ pid: Number(w.pid), acquiredAt: Number(w.acquiredAt) })),
         suite: status.suite,
         mergeGatePriority: { active: sem.hasMergeGatePriority() },
+        // Live suite waiters, next-in-line first (fair aging): an `aged` ordinary
+        // suite goes ahead of merge-gate work.
+        suiteWaiters: sem.listSuiteWaiters().map((w) => ({
+          pid: Number(w.pid),
+          priority: w.priority,
+          waitedMs: Math.max(0, Date.now() - Number(w.since)),
+          aged: suiteWaiterTier(w, Date.now()) === 0,
+        })),
         targeted: status.targeted,
         // Additive DETAIL field (§4 freeze scope): a resolved cap above the
         // code default, surfaced as change-detection alongside ttlSignalArmed.

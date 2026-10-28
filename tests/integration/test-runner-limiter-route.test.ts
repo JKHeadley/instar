@@ -246,6 +246,25 @@ describe('GET /test-runner-limiter (integration — real routes pipeline)', () =
     sem.setMergeGatePriority('agent-a', false);
     expect((await request(app).get('/test-runner-limiter').set(auth())).body.mergeGatePriority).toEqual({ active: false });
   });
+  it('lists live suite waiters next-in-line first, marking an aged ordinary suite', async () => {
+    const app = appWith();
+    expect((await request(app).get('/test-runner-limiter').set(auth())).body.suiteWaiters).toEqual([]);
+    const dir = path.join(baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    const ticket = (name: string, over: Record<string, unknown>) => fs.writeFileSync(
+      path.join(dir, `${name.padEnd(24, '0')}.json`),
+      JSON.stringify({ v: 1, id: `waiter:${name}`, pid: process.pid, hostname: os.hostname(), expiresAt: now + 30_000, ...over }),
+    );
+    ticket('b1', { priority: 'merge-gate', since: now - 60_000 });
+    ticket('b2', { priority: 'ordinary', since: now - 16 * 60_000 });
+    const body = (await request(app).get('/test-runner-limiter').set(auth())).body;
+    expect(body.suiteWaiters.map((w: { priority: string; aged: boolean }) => [w.priority, w.aged]))
+      .toEqual([['ordinary', true], ['merge-gate', false]]);
+    expect(body.suiteWaiters[0].pid).toBe(process.pid);
+    expect(body.suiteWaiters[0].waitedMs).toBeGreaterThanOrEqual(16 * 60_000);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/test-runner-limiter-route.test.ts:waiters' });
+  });
   it('Bearer required: 401 without a token; 403 with a wrong one; 200 with the right one', async () => {
     const app = appWith();
     expect((await request(app).get('/test-runner-limiter')).status).toBe(401);

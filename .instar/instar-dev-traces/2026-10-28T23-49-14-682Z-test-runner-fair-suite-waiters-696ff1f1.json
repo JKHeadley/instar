@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "test-runner-fair-suite-waiters",
+  "sessionId": "b87f298f-3c2d-4340-9e2a-fe9dfaf527f3",
+  "timestamp": "2026-10-28T23:49:14.682Z",
+  "artifactPath": "upgrades/side-effects/test-runner-fair-suite-waiters.md",
+  "artifactSha256": "1493bbf46eca11d1197bcf71ab57a35536891a43406e90d1c622e701460cf9ca",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-10-28T23-49-05-029Z-test-runner-fair-suite-waiters-ba9d31d4.json",
+    "docs/specs/test-runner-concurrency-bound.md",
+    "docs/specs/test-runner-fair-suite-waiters.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/hostTestRunnerSemaphore.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/test-runner-limiter-lifecycle.test.ts",
+    "tests/integration/test-runner-limiter-route.test.ts",
+    "tests/setup/test-runner-semaphore.globalSetup.ts",
+    "tests/unit/PostUpdateMigrator-mergeGatePreparation.test.ts",
+    "tests/unit/host-test-runner-semaphore.test.ts",
+    "upgrades/next/test-runner-fair-suite-waiters.md",
+    "upgrades/side-effects/test-runner-fair-suite-waiters.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes admission order in a host-wide gate (limiter); the parent spec is converged and approved and its section 2.6 pre-authorizes this aging/waiter-ticket refinement without a new convergence round.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

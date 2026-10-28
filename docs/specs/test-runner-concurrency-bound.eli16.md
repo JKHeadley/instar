@@ -45,6 +45,10 @@ A test suite that hangs forever would jam the lane forever, so after a generous 
 
 Full suites serialize: on a busy multi-agent machine, someone's push waits for someone else's suite. That's the deliberate price of the operator's rule, and the log makes the cost measurable so the cap can be raised with evidence. And because the system deliberately errs toward letting runs through when its own bookkeeping is broken, it's honestly a *best-effort* bound — in a rare stuck-lock situation a few extra runs can slip through for a short window (the safe direction), and those windows are logged and visible rather than silent. Even that failure mode has a hard floor, though: if a broken lock ever let runs pile up toward storm levels, a separate counter that doesn't depend on the lock stops admitting more — "let it through when unsure" flips off at exactly the point where letting more through would BE the meltdown. Older work branches that predate the change don't carry the ticket-taking code until they rebase — the bound covers the machine progressively, not instantly. And the whole thing is per-machine, per-user by design (a test run burns THIS machine's cores; there's nothing to coordinate across machines).
 
+## Taking turns fairly (added 2026-10-28)
+
+When several full suites wait for the one slot, they now take turns. Each waiting run holds a small ticket that it keeps refreshing. When the slot frees, an ordinary run that has waited 15 minutes goes first, then merge-verification work, then everyone else in arrival order. Before this, a long merge-verification queue could keep a live check waiting for close to an hour. The one-at-a-time limit is unchanged, and a broken or missing ticket just falls back to the old first-come behavior. The plain-English detail is in `test-runner-fair-suite-waiters.eli16.md`.
+
 ## Escape hatches
 
 One environment variable turns the whole thing off instantly (and even that is logged, so a silently-disabled guard can't quietly explain the next meltdown). Deleting one file drops enforcement back to watch-only. Reverting the change removes everything; the leftover state files are inert.

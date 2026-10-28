@@ -100,6 +100,14 @@ export const TARGETED_FILE_LIMIT = 5;
 /** A coordinator renews its claim every 30s; a stalled server loses priority promptly. */
 export const MERGE_GATE_PRIORITY_LEASE_MS = 120_000;
 export const MERGE_GATE_PRIORITY_MAX_CLAIMS = 64;
+/**
+ * An ordinary suite that has waited this long takes the next suite slot ahead of
+ * merge-gate work, so a busy merge queue cannot starve a live host check (2026-10-28).
+ */
+export const SUITE_WAITER_AGING_MS = 900_000;
+/** A waiter renews its ticket on every poll; a killed or stalled waiter loses its place. */
+export const SUITE_WAITER_LEASE_MS = 60_000;
+export const SUITE_WAITER_MAX_TICKETS = 64;
 
 export type TestLane = 'suite' | 'targeted';
 export type TestPosture = 'off' | 'dry-run' | 'enforcing';
@@ -862,7 +870,33 @@ export interface AcquireRequest {
   /** Override budget (default resolved per §2.9). */
   budgetMs?: number;
   /** Called about once per poll while waiting (the §2.10 wait-line hook). */
-  onWaitTick?: (elapsedMs: number, holders: Array<{ pid: number; ageMs: number }>, priorityWait: boolean) => void;
+  onWaitTick?: (
+    elapsedMs: number,
+    holders: Array<{ pid: number; ageMs: number }>,
+    priorityWait: boolean,
+    /** Live suite waiters ahead of this one for the next slot (fair aging). */
+    waitersAhead: number,
+  ) => void;
+}
+
+export interface SuiteWaiter {
+  id: string;
+  pid: number;
+  priority: 'merge-gate' | 'ordinary';
+  /** When this waiter's acquire started (ms epoch). */
+  since: number;
+}
+
+/** 0 = an aged ordinary waiter, 1 = merge-gate work, 2 = any other ordinary waiter. */
+export function suiteWaiterTier(w: Pick<SuiteWaiter, 'priority' | 'since'>, nowMs: number): number {
+  if (w.priority === 'merge-gate') return 1;
+  return nowMs - w.since >= SUITE_WAITER_AGING_MS ? 0 : 2;
+}
+
+/** Next-in-line order: tier, then arrival, then id (a total order, so no two waiters both yield). */
+export function compareSuiteWaiters(a: SuiteWaiter, b: SuiteWaiter, nowMs: number): number {
+  return suiteWaiterTier(a, nowMs) - suiteWaiterTier(b, nowMs) || a.since - b.since ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 export type AcquireOutcome =
@@ -1027,6 +1061,90 @@ export class HostTestRunnerSemaphore {
         typeof row.expiresAt === 'number' && row.expiresAt > this.now() &&
         row.expiresAt <= this.now() + MERGE_GATE_PRIORITY_LEASE_MS;
     } catch { return false; /* @silent-fallback-ok: a bad claim cannot block a suite. */ }
+  }
+
+  // ── Suite waiter tickets (fair aging, §2.6 pre-authorized refinement) ──
+  //
+  // A blocked suite request leaves a short-lease ticket so the NEXT free slot goes to
+  // the right waiter instead of whoever polls first. Order: an ordinary suite that has
+  // waited SUITE_WAITER_AGING_MS, oldest first; then merge-gate work; then the other
+  // ordinary suites in arrival order. The cap is unchanged — this only picks who is
+  // next. Tickets are separate files (additive under the §2.6 schema rule): an older
+  // actor ignores them and keeps barging. Every failure here falls back to barging.
+
+  private waiterDir(): string {
+    return path.join(this.paths.baseDir, 'host-test-runner-waiters');
+  }
+
+  private waiterFile(id: string): string {
+    return path.join(this.waiterDir(), `${crypto.createHash('sha256').update(id).digest('hex').slice(0, 24)}.json`);
+  }
+
+  private renewWaiterTicket(id: string, priority: 'merge-gate' | 'ordinary', since: number): void {
+    try {
+      const dir = this.waiterDir();
+      const file = this.waiterFile(id);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (!fs.existsSync(file)) {
+        const names = fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n));
+        if (names.length >= SUITE_WAITER_MAX_TICKETS) {
+          for (const name of names) {
+            if (this.readWaiterTicket(path.join(dir, name)) === null) {
+              SafeFsExecutor.safeUnlinkSync(path.join(dir, name), { operation: 'HostTestRunnerSemaphore.pruneWaiterTicket' });
+            }
+          }
+          if (fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).length >= SUITE_WAITER_MAX_TICKETS) return;
+        }
+      }
+      atomicWriteFileSync(file, JSON.stringify({
+        v: 1, id, pid: process.pid, hostname: this.host, priority, since,
+        expiresAt: this.now() + SUITE_WAITER_LEASE_MS,
+      }), { mode: 0o600, operation: 'HostTestRunnerSemaphore.renewWaiterTicket' });
+    } catch {
+      /* @silent-fallback-ok: without a ticket this waiter barges, the pre-ticket behavior. */
+    }
+  }
+
+  private clearWaiterTicket(id: string): void {
+    try {
+      SafeFsExecutor.safeUnlinkSync(this.waiterFile(id), { operation: 'HostTestRunnerSemaphore.clearWaiterTicket' });
+    } catch {
+      /* @silent-fallback-ok: a leftover ticket expires within SUITE_WAITER_LEASE_MS. */
+    }
+  }
+
+  /** A corrupt, foreign-host, expired or dead ticket is not a waiter. */
+  private readWaiterTicket(file: string): SuiteWaiter | null {
+    try {
+      const row = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const nowMs = this.now();
+      if (row?.v !== 1 || row.hostname !== this.host || typeof row.id !== 'string' ||
+        !Number.isInteger(row.pid) || row.pid <= 0 || !this.pidAlive(row.pid) ||
+        typeof row.since !== 'number' || row.since > nowMs + START_TIME_SKEW_MS ||
+        typeof row.expiresAt !== 'number' || row.expiresAt <= nowMs ||
+        row.expiresAt > nowMs + SUITE_WAITER_LEASE_MS) return null;
+      return { id: row.id, pid: row.pid, priority: row.priority === 'merge-gate' ? 'merge-gate' : 'ordinary', since: row.since };
+    } catch { return null; /* @silent-fallback-ok: a bad ticket cannot delay a suite. */ }
+  }
+
+  /** Live suite waiters on this host, next-in-line first. */
+  listSuiteWaiters(): SuiteWaiter[] {
+    let names: string[];
+    try { names = fs.readdirSync(this.waiterDir()).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)); }
+    catch { return []; }
+    const out: SuiteWaiter[] = [];
+    for (const name of names.slice(0, SUITE_WAITER_MAX_TICKETS)) {
+      const w = this.readWaiterTicket(path.join(this.waiterDir(), name));
+      if (w) out.push(w);
+    }
+    const nowMs = this.now();
+    return out.sort((a, b) => compareSuiteWaiters(a, b, nowMs));
+  }
+
+  /** How many live waiters stand ahead of this request for the next suite slot. */
+  private suiteWaitersAhead(self: SuiteWaiter): number {
+    const nowMs = this.now();
+    return this.listSuiteWaiters().filter((w) => w.id !== self.id && compareSuiteWaiters(w, self, nowMs) < 0).length;
   }
 
   // ── Holders IO ──────────────────────────────────────────────────────
@@ -1623,13 +1741,28 @@ export class HostTestRunnerSemaphore {
   // ── Acquire / release (§2.2–§2.4) ───────────────────────────────────
 
   async acquire(req: AcquireRequest): Promise<AcquireOutcome> {
+    const waiter: SuiteWaiter = {
+      id: `waiter:${this.genId()}`,
+      pid: process.pid,
+      priority: req.priority === 'merge-gate' ? 'merge-gate' : 'ordinary',
+      since: this.now(),
+    };
+    try {
+      return await this.acquireLoop(req, waiter);
+    } finally {
+      if (req.lane === 'suite') this.clearWaiterTicket(waiter.id);
+    }
+  }
+
+  private async acquireLoop(req: AcquireRequest, waiter: SuiteWaiter): Promise<AcquireOutcome> {
     const ctx = this.resolveContext();
     const budgetMs = req.budgetMs ?? resolveAcquireBudgetMs(req.lane, req.runClass, this.env, ctx.tuning.file);
-    const startMs = this.now();
+    const startMs = waiter.since;
     const deadline = startMs + budgetMs;
     let lockEverAcquired = false;
     let lastHolders: Array<{ pid: number; ageMs: number }> = [];
     let priorityWait = false;
+    let waitersAhead = 0;
 
     // df determination — OUTSIDE the lock, marker-cached (§2.2 item 2).
     const df = resolveDfLocal(this.paths, this.dfProbe);
@@ -1689,8 +1822,14 @@ export class HostTestRunnerSemaphore {
           this.flushEvents(events);
           const live = req.lane === 'suite' ? pass.report.liveSuite : pass.report.liveTargeted;
           const cap = req.lane === 'suite' ? ctx.suiteCap.cap : ctx.targetedCap.cap;
-          priorityWait = req.lane === 'suite' && req.priority !== 'merge-gate' && this.hasMergeGatePriority();
-          if (live < cap && !priorityWait) {
+          // An aged ordinary suite stops yielding to the coordinator's claim; the
+          // tickets then put it ahead of merge-gate waiters (fair aging).
+          const aged = suiteWaiterTier(waiter, this.now()) === 0;
+          priorityWait = req.lane === 'suite' && req.priority !== 'merge-gate' && !aged && this.hasMergeGatePriority();
+          waitersAhead = req.lane === 'suite' ? this.suiteWaitersAhead(waiter) : 0;
+          if (live + waitersAhead < cap && !priorityWait) {
+            // Under the lock, so no other waiter counts this one twice (holder + ticket).
+            if (req.lane === 'suite') this.clearWaiterTicket(waiter.id);
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
             this.writeHolders(pass.kept);
@@ -1707,7 +1846,7 @@ export class HostTestRunnerSemaphore {
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
             this.writeHolders(pass.kept);
-            this.ledger('would-block', { lane: req.lane, holders: lastHolders, cap, priorityWait });
+            this.ledger('would-block', { lane: req.lane, holders: lastHolders, cap, priorityWait, waitersAhead });
             this.ledger('acquire', this.acquireFields(req, row, true));
             this.armSelfTtlWarn(row);
             return { kind: 'acquired', id: row.id, wouldBlock: true, ttlMs: row.ttlMs };
@@ -1720,10 +1859,11 @@ export class HostTestRunnerSemaphore {
           releaseLock(this.paths.lock, fd, 'HostTestRunnerSemaphore.acquire:release');
         }
         if (this.now() >= deadline) {
-          this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs, priorityWait });
+          this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs, priorityWait, waitersAhead });
           throw new TestRunnerCapacityTimeoutError(req.lane, budgetMs, lastHolders);
         }
-        req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait);
+        if (req.lane === 'suite') this.renewWaiterTicket(waiter.id, waiter.priority, waiter.since);
+        req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait, waitersAhead);
         await this.sleep(this.jitteredPoll());
         continue;
       }
@@ -1786,7 +1926,8 @@ export class HostTestRunnerSemaphore {
         this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs });
         throw new TestRunnerCapacityTimeoutError(req.lane, budgetMs, lastHolders);
       }
-      req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait);
+      if (req.lane === 'suite') this.renewWaiterTicket(waiter.id, waiter.priority, waiter.since);
+      req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait, waitersAhead);
       await this.sleep(this.jitteredPoll());
     }
   }
