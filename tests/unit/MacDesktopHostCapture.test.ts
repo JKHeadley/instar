@@ -24,6 +24,7 @@ function helper(reply: string): MacDesktopHost {
     `  if (reply === 'closes-stdin' && count === 1) { const h=Buffer.alloc(4);h.writeUInt32BE(4);process.stdout.write(Buffer.concat([h,jpeg]));setTimeout(()=>{process.stdin.on('error',()=>{});process.stdin.pause();process.stdin.removeAllListeners('data');fs.closeSync(0);},50);setInterval(()=>{},1000); }\n` +
     `  if (reply === 'input-closes-stdin' && count === 1) { process.stdout.write('{"ok":true}\\n');setTimeout(()=>{process.stdin.on('error',()=>{});process.stdin.pause();process.stdin.removeAllListeners('data');fs.closeSync(0);},50);setInterval(()=>{},1000); }\n` +
     `  if (reply === 'down-no-ack-record-release' && count === 1) setTimeout(()=>process.exit(1),10);\n` +
+    `  if (reply === 'record-release-exit-after-ack' && count === 1) setTimeout(()=>process.exit(0),30);\n` +
     `  if (reply === 'malformed-ack-late' && !fs.existsSync(${JSON.stringify(filename + '.fault')})) { fs.writeFileSync(${JSON.stringify(filename + '.fault')},'1'); setTimeout(()=>process.stdout.write('{"ok":false}\\n'),80); }\n` +
     `  else if (reply.startsWith('record-release') || reply === 'release-fails' || reply === 'release-no-ack' || reply === 'malformed-ack-late') process.stdout.write('{"ok":true}\\n');\n` +
     `});}\n`;
@@ -139,8 +140,24 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
     expect(JSON.parse(fs.readFileSync(filename, 'utf8'))).toEqual({ buttons: [], keys: ['Meta'] });
   });
 
+  it('fences input after the persistent helper exits while a remote key is held', async () => {
+    const host = helper('record-release-exit-after-ack');
+    const filename = helpers.at(-1)! + '.release';
+    await host.input({ kind: 'keyDown', key: 'Meta' });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    for (let attempt = 0; attempt < 50 && !fs.existsSync(filename); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(JSON.parse(fs.readFileSync(filename, 'utf8'))).toEqual({ buttons: [], keys: ['Meta'] });
+    await expect(host.input({ kind: 'move', x: 0.5, y: 0.5 }))
+      .rejects.toThrow('mac-desktop-host-input-uncertain');
+    await host.cancelInput();
+  });
+
   it('waits for the old helper to exit and its release to finish before new input', async () => {
     const host = helper('record-release-delayed');
+    let unexpectedExits = 0;
+    host.setInputFailureHandler(() => { unexpectedExits++; });
     await host.input({ kind: 'keyDown', key: 'Meta' });
     const oldRelease = host.cancelInput();
     let newInputDone = false;
@@ -150,6 +167,7 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
     await oldRelease;
     await newInput;
     expect(newInputDone).toBe(true);
+    expect(unexpectedExits).toBe(0);
     await host.cancelInput();
   });
 
@@ -166,8 +184,6 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes'
     const originalKill = child!.kill.bind(child);
     child!.kill = signal => { setTimeout(() => originalKill(signal), 150); return true; };
     await expect(pending).rejects.toThrow('mac-desktop-host-input-unavailable');
-    await expect(host.input({ kind: 'move', x: 0.5, y: 0.5 }))
-      .rejects.toThrow('mac-desktop-host-input-uncertain');
     const release = host.cancelInput();
     let replacementDone = false;
     const replacement = host.input({ kind: 'keyDown', key: 'Meta' }).then(() => { replacementDone = true; });

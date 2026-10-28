@@ -49,9 +49,13 @@ export class MacDesktopHost implements DesktopHost {
   private heldRemoteButton: 'left' | 'right' | null = null;
   private readonly heldRemoteKeys = new Set<string>();
   private pendingControlAction: DesktopInput | null = null;
+  private inputHelperLost = false;
+  private inputFailureHandler: (() => void) | null = null;
   private inputGeneration = 0;
   private releaseBarrier: Promise<void> = Promise.resolve();
   constructor(private readonly binary = DEFAULT_HOST) {}
+
+  setInputFailureHandler(handler: () => void): void { this.inputFailureHandler = handler; }
 
   /** Local kill switch: stop any native input still running when a grant ends. */
   cancelInput(): Promise<void> {
@@ -74,6 +78,7 @@ export class MacDesktopHost implements DesktopHost {
     this.heldRemoteButton = null;
     this.heldRemoteKeys.clear();
     this.pendingControlAction = null;
+    this.inputHelperLost = false;
     for (const child of this.inputChildren) child.kill('SIGKILL');
     for (const child of oldHelpers) child.kill('SIGKILL');
     this.inputStream = null;
@@ -344,7 +349,7 @@ export class MacDesktopHost implements DesktopHost {
     try { await this.releaseBarrier; }
     catch { throw new Error('mac-desktop-host-release-unconfirmed'); }
     if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
-    if (this.pendingControlAction || this.retiringInputStreams.size) {
+    if (this.pendingControlAction || this.retiringInputStreams.size || this.inputHelperLost) {
       throw new Error('mac-desktop-host-input-uncertain');
     }
     if ((action.kind === 'keyDown' && this.heldRemoteKeys.has(action.key))
@@ -404,6 +409,7 @@ export class MacDesktopHost implements DesktopHost {
       if (this.inputStream !== child) return;
       this.inputStream = null;
       this.retireInputStream(child);
+      if (this.heldRemoteButton || this.heldRemoteKeys.size) this.inputHelperLost = true;
       const pending = this.pendingInput;
       if (pending) {
         this.pendingInput = null;
@@ -411,6 +417,11 @@ export class MacDesktopHost implements DesktopHost {
         pending.reject(new Error('mac-desktop-host-input-unavailable'));
       }
       child.kill('SIGKILL');
+      // A dead helper may have left a button or modifier down. Revoke the
+      // owning grant immediately rather than waiting for the next command.
+      void this.cancelInput();
+      if (this.inputFailureHandler) this.inputFailureHandler();
+      else this.inputHelperLost = true;
     };
     child.stderr.resume();
     child.stdout.on('data', (chunk: Buffer) => {

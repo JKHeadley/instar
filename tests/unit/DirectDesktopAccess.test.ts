@@ -23,6 +23,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   let heldButton: string | null = null;
   const heldKeys = new Set<string>();
   let indicatorExit: (() => void) | null = null;
+  let inputExit: (() => void) | null = null;
   let indicatorStops = 0;
   let probes = 0;
   let probeGate: Promise<void> | null = null;
@@ -50,6 +51,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
       if (action.kind === 'keyUp') heldKeys.delete(action.key);
     },
     cancelInput: () => { cancelled++; heldButton = null; heldKeys.clear(); },
+    setInputFailureHandler: (onExit: () => void) => { inputExit = onExit; },
     startIndicator: async (onExit: () => void) => { await indicatorGate; indicatorExit = onExit; },
     stopIndicator: () => { indicatorStops++; },
   } as unknown as MacDesktopHost;
@@ -78,7 +80,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
     probes: () => probes,
     setProbeGate: (gate: Promise<void> | null) => { probeGate = gate; },
     setIndicatorGate: (gate: Promise<void> | null) => { indicatorGate = gate; },
-    crashIndicator: () => indicatorExit?.() };
+    crashIndicator: () => indicatorExit?.(), crashInputHelper: () => inputExit?.() };
 }
 
 describe('DirectDesktopAccess', () => {
@@ -355,5 +357,25 @@ describe('DirectDesktopAccess', () => {
     await expect(stream.assertActive()).rejects.toThrow('grant');
     expect(f.indicatorStops()).toBe(1);
     expect(f.closed).toEqual([stream.grantId]);
+  });
+
+  it('terminates an active grant when its native input helper dies while controls are held', async () => {
+    const f = fixture('pin');
+    const { requestId } = await f.begin();
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    const ticket = f.authority.ticket(requestId, 'dashboard-proof', state.connectionNonce!,
+      crypto.sign(null, Buffer.from(JSON.stringify(['desktop-browser-possession-v1', requestId,
+        state.connectionNonce])), f.browser.privateKey).toString('base64'));
+    const stream = await f.authority.admit({ headers: { origin: 'https://instar.example', host: 'instar.example',
+      'x-forwarded-proto': 'https', 'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
+    url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    await stream.input({ kind: 'buttonDown', x: 0.4, y: 0.5, button: 'left' });
+    await stream.input({ kind: 'keyDown', key: 'Meta' });
+    f.crashInputHelper();
+    expect(f.heldButton()).toBeNull();
+    expect(f.heldKeys()).toEqual([]);
+    expect(f.closed).toEqual([stream.grantId]);
+    await expect(stream.input({ kind: 'move', x: 0.5, y: 0.5 })).rejects.toThrow('grant');
+    expect(f.authority.status(requestId, 'dashboard-proof').status).toBe('revoked');
   });
 });

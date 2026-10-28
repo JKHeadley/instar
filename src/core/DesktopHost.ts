@@ -25,6 +25,7 @@ export interface DesktopHost {
   cursor?(): Promise<{ x: number; y: number }>;
   input(action: DesktopInput): Promise<void>;
   cancelInput(): void;
+  setInputFailureHandler?(handler: () => void): void;
   startIndicator(onUnexpectedExit: () => void): Promise<void>;
   stopIndicator(): void;
 }

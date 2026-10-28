@@ -91,7 +91,12 @@ export class DirectDesktopAccess {
     private readonly now: () => number = Date.now,
     private readonly audit?: DesktopAccessAudit,
     private readonly approvalMode: 'telegram' | 'pin' = 'telegram',
-  ) {}
+  ) {
+    this.host.setInputFailureHandler?.(() => {
+      const row = [...this.requests.values()].find(item => item.grantId === this.activeGrantId);
+      if (row) this.revokeRow(row);
+    });
+  }
 
   requiresTelegramStepUp(): boolean { return this.approvalMode === 'telegram'; }
 
