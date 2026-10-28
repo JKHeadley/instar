@@ -118,11 +118,31 @@ tiers finish.
 **Independent read of the artifact:** Concur. The receipt and structured fields
 provide a bounded, run-linked signal without new authority. The reviewer
 confirmed that matching counts do not prove the grading algorithm correct.
+The reviewer also concurred with disabling automatic Git maintenance in the
+short-lived handoff test fixture to address the observed teardown race. The
+handoff tests still exercise real commits, refs, and WIP behavior; CI on the
+new commit remains necessary because the race was intermittent.
+The reviewer concurred with the script-runner test update: it checks the run
+ID against the recorded run, rejects a receipt token on ordinary jobs, and
+continues to reject unrelated inherited secrets.
 
 ## Evidence pointers
 
 Focused unit, route integration, and production-install lifecycle tests are
 in this PR; full-suite and CI results will be attached to the PR.
+
+The first full verification also exposed a handoff test teardown race:
+`fs.rmSync` saw a new file appear in a temporary Git object directory after
+the test's assertion passed. The short-lived Git fixture now disables automatic
+garbage collection and maintenance before its first commit. This changes only
+test setup; it does not alter production handoff behavior. A focused run of all
+71 handoff tests passed after the fixture change. The full suite must rerun on
+the new commit before merge.
+
+CI also caught an older script-runner test that rejected the newly added
+`INSTAR_JOB_RUN_ID` environment field. The test now allows and validates that
+run ID, and still rejects a receipt token on ordinary jobs and unrelated
+secret environment variables.
 
 ## Class-Closure Declaration (display-only mirror)
 

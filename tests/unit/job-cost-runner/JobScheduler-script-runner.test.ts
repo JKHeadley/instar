@@ -25,6 +25,7 @@ type Scheduler = InstanceType<typeof JobScheduler>;
 const ALLOWED_ENV = new Set([
   'PATH', 'HOME', 'INSTAR_AUTH_TOKEN', 'INSTAR_AGENT_ID', 'INSTAR_PORT', 'INSTAR_JOB_SLUG',
   'INSTAR_MESSAGE_KIND', 'INSTAR_SENDER_CLASS',
+  'INSTAR_JOB_RUN_ID',
 ]);
 
 function fmText(slug: string): string {
@@ -210,6 +211,8 @@ describe('script runner execution', () => {
       INSTAR_JOB_SLUG: 'probe', INSTAR_MESSAGE_KIND: 'automated', INSTAR_SENDER_CLASS: 'script',
     });
     expect(envDump.env.JCR_SECRET_TEST).toBeUndefined();
+    expect(envDump.env.INSTAR_JOB_RUN_ID).toBe(lastRun(s, 'probe').runId);
+    expect(envDump.env.INSTAR_JOB_RECEIPT_TOKEN).toBeUndefined();
 
     const run = lastRun(s, 'probe');
     expect(run).toMatchObject({ result: 'success', runner: 'script', tokens: 0, origin: 'instar' });
