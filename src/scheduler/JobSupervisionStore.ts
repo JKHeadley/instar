@@ -13,6 +13,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as SqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
+import { GRADE_PASS_POINTS } from '../core/decisionGradingPass.js';
 import { isSideRun, type JobRun } from './JobRunHistory.js';
 import { decideFixedResult, type FixedCertificateAuthority, type FixedResultCertificate } from './JobFixedResultCertificate.js';
 import type { ParsedScriptRun } from './jobScriptProtocol.js';
@@ -273,6 +274,7 @@ export class JobSupervisionStore {
         graded INTEGER NOT NULL CHECK(graded >= 0),
         decision_points INTEGER NOT NULL CHECK(decision_points >= 0),
         observed_at TEXT NOT NULL,
+        idle_proof_hash TEXT,
         FOREIGN KEY(run_id) REFERENCES attempts(run_id)
       );
       CREATE TABLE IF NOT EXISTS held_slugs (
@@ -309,6 +311,10 @@ export class JobSupervisionStore {
     }
     if (!columns.some(c => c.name === 'receipt_token_hash')) {
       this.db.exec('ALTER TABLE attempts ADD COLUMN receipt_token_hash TEXT');
+    }
+    const receiptColumns = this.db.pragma('table_info(grade_pass_receipts)') as Array<{ name: string }>;
+    if (!receiptColumns.some(c => c.name === 'idle_proof_hash')) {
+      this.db.exec('ALTER TABLE grade_pass_receipts ADD COLUMN idle_proof_hash TEXT');
     }
     const callColumns = this.db.pragma('table_info(calls)') as Array<{ name: string }>;
     if (!callColumns.some(c => c.name === 'error_reason')) {
@@ -630,17 +636,31 @@ export class JobSupervisionStore {
   }
 
   /** Server-owned proof that the grading endpoint completed for this script run. */
-  recordGradePassReceipt(runId: string, token: string, graded: number, decisionPoints: number, now = Date.now()): boolean {
+  recordGradePassReceipt(runId: string, token: string, graded: number, decisionPoints: number,
+    now = Date.now(), idleProofHash?: string): boolean {
     if (!Number.isSafeInteger(graded) || graded < 0 || !Number.isSafeInteger(decisionPoints) || decisionPoints < 0) return false;
+    if (idleProofHash !== undefined && (graded !== 0 || decisionPoints !== GRADE_PASS_POINTS.length
+      || !/^[a-f0-9]{64}$/.test(idleProofHash))) return false;
     return this.db.transaction(() => {
       if (!this.canRecordGradePassReceipt(runId, token)) return false;
-      const existing = this.db.prepare('SELECT graded,decision_points FROM grade_pass_receipts WHERE run_id=?')
-        .get(runId) as { graded: number; decision_points: number } | undefined;
-      if (existing) return existing.graded === graded && existing.decision_points === decisionPoints;
-      this.db.prepare('INSERT INTO grade_pass_receipts(run_id,graded,decision_points,observed_at) VALUES(?,?,?,?)')
-        .run(runId, graded, decisionPoints, new Date(now).toISOString());
+      const existing = this.db.prepare('SELECT graded,decision_points,idle_proof_hash FROM grade_pass_receipts WHERE run_id=?')
+        .get(runId) as { graded: number; decision_points: number; idle_proof_hash: string | null } | undefined;
+      if (existing) return existing.graded === graded && existing.decision_points === decisionPoints
+        && (idleProofHash === undefined || existing.idle_proof_hash === idleProofHash);
+      this.db.prepare(`INSERT INTO grade_pass_receipts(run_id,graded,decision_points,observed_at,idle_proof_hash)
+        VALUES(?,?,?,?,?)`).run(runId, graded, decisionPoints, new Date(now).toISOString(), idleProofHash ?? null);
       return true;
     })();
+  }
+
+  /** A verified empty workset is separate from the script's count receipt. */
+  gradePassIdleProof(runId: string): { evidenceId: string; ruleId: string } | null {
+    const row = this.db.prepare(`SELECT graded,decision_points,idle_proof_hash
+      FROM grade_pass_receipts WHERE run_id=?`).get(runId) as
+      { graded: number; decision_points: number; idle_proof_hash: string | null } | undefined;
+    if (!row || row.graded !== 0 || row.decision_points !== GRADE_PASS_POINTS.length
+      || !row.idle_proof_hash || !/^[a-f0-9]{64}$/.test(row.idle_proof_hash)) return null;
+    return { evidenceId: `grade-pass-idle-v1:${row.idle_proof_hash}`, ruleId: 'grade-pass-idle-effects-v1' };
   }
 
   /** The script cannot create this row; compare its claim with the server receipt. */

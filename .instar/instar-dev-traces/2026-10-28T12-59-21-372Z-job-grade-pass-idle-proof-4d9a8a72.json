@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "job-grade-pass-idle-proof",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T12:59:21.372Z",
+  "artifactPath": "upgrades/side-effects/job-grade-pass-idle-proof.md",
+  "artifactSha256": "a2a110a6677511782ca46b3ddd8abbec26f23a93f012160324e0a7c724d557a5",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/core/DecisionQualityRecorderImpl.ts",
+    "src/core/JobGradePassIdleVerifier.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/FeatureMetricsLedger.ts",
+    "src/scheduler/JobSupervisionStore.ts",
+    "src/scheduler/JobSupervisionWorker.ts",
+    "src/server/routes.ts",
+    "tests/e2e/job-grade-pass-idle-proof-alive.test.ts",
+    "tests/integration/decision-quality-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-scriptJobs.test.ts",
+    "tests/unit/job-grade-pass-idle-verifier.test.ts",
+    "tests/unit/job-supervision-store.test.ts",
+    "tests/unit/job-supervision-worker.test.ts",
+    "upgrades/eli16/job-grade-pass-idle-proof.md",
+    "upgrades/next/job-grade-pass-idle-proof.md",
+    "upgrades/side-effects/job-grade-pass-idle-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable proof and automatic outcome grading affect model accuracy claims, so the approved converged spec and full review apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

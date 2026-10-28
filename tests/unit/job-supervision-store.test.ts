@@ -77,6 +77,31 @@ describe('JobSupervisionStore', () => {
     expect(store.recordGradePassReceipt('migrated-run', token, 0, 0)).toBe(true);
   });
 
+  it('keeps an idle effect proof separate from the ordinary receipt and migrates old journals', () => {
+    const token = 'd'.repeat(64);
+    const proof = 'e'.repeat(64);
+    store.close();
+    const db = new Database(path.join(dir, 'ledger', 'job-supervision.db'));
+    db.exec('ALTER TABLE grade_pass_receipts DROP COLUMN idle_proof_hash');
+    db.close();
+    store = new JobSupervisionStore(dir);
+    store.register({ runId: 'idle-run', fireId: 'idle-fire', slug: 'llm-decision-grading',
+      evidencePolicy: 'job-result-structured-v2',
+      receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+    expect(store.recordGradePassReceipt('idle-run', token, 0, 6, t0, 'bad')).toBe(false);
+    expect(store.recordGradePassReceipt('idle-run', token, 0, 5, t0, proof)).toBe(false);
+    expect(store.recordGradePassReceipt('idle-run', token, 1, 6, t0, proof)).toBe(false);
+    expect(store.gradePassIdleProof('idle-run')).toBeNull();
+    expect(store.recordGradePassReceipt('idle-run', token, 0, 6, t0, proof)).toBe(true);
+    expect(store.gradePassIdleProof('idle-run')).toEqual({
+      evidenceId: `grade-pass-idle-v1:${proof}`, ruleId: 'grade-pass-idle-effects-v1',
+    });
+    expect(store.recordGradePassReceipt('idle-run', token, 0, 6, t0, 'f'.repeat(64))).toBe(false);
+    store.close();
+    store = new JobSupervisionStore(dir);
+    expect(store.gradePassIdleProof('idle-run')?.evidenceId).toBe(`grade-pass-idle-v1:${proof}`);
+  });
+
   it('never promotes a dark-era result into a model call after the rollout changes', () => {
     const id = store.register({ runId: 'dark-run', fireId: 'dark-fire', slug: 'health-check',
       decisionEligible: false, evidencePolicy: 'structured-v1', now: t0 });

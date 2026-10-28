@@ -2226,6 +2226,47 @@ export class FeatureMetricsLedger {
   }
 
   /**
+   * Keep the scheduled grade-pass effect check and the pass itself on one
+   * SQLite writer lane. A second process cannot add a decision between the
+   * strict pre-read and the strict post-read. Nested ledger transactions use
+   * savepoints. The callback must be synchronous and bounded.
+   */
+  withExclusiveGradingPass<T>(work: () => T): T {
+    if (this.closed) throw new Error('quality ledger closed');
+    return this.db.transaction(work).immediate();
+  }
+
+  /** Strict, content-free read for proving a grade pass was genuinely idle. */
+  strictGradingIdleSnapshot(points: readonly string[]): Array<{
+    decisionPoint: string; cursorTs: number; cursorCorrelationId: string;
+    nextCorrelationId: string | null; nextTs: number | null; totalRows: number;
+  }> {
+    if (this.closed) throw new Error('quality ledger closed');
+    return points.map(decisionPoint => {
+      const cursor = this.db.prepare(`SELECT cursor_ts AS cursorTs,
+        cursor_correlation_id AS cursorCorrelationId FROM decision_grading_cursor
+        WHERE decision_point=?`).get(decisionPoint) as
+        { cursorTs: number; cursorCorrelationId: string } | undefined;
+      const cursorTs = cursor?.cursorTs ?? 0;
+      const cursorCorrelationId = cursor?.cursorCorrelationId ?? '';
+      const next = this.db.prepare(`SELECT correlation_id AS correlationId,ts
+        FROM decision_quality WHERE decision_point=?
+        AND (ts>? OR (ts=? AND correlation_id>?))
+        ORDER BY ts ASC,correlation_id ASC LIMIT 1`)
+        .get(decisionPoint, cursorTs, cursorTs, cursorCorrelationId) as
+        { correlationId: string; ts: number } | undefined;
+      // Count the whole point, including late rows behind the cursor. A
+      // cursor-only read can falsely certify idle after a late insert.
+      const count = this.db.prepare(`SELECT COUNT(*) AS totalRows FROM decision_quality
+        WHERE decision_point=?`).get(decisionPoint) as { totalRows: number };
+      if (!Number.isSafeInteger(count.totalRows) || count.totalRows < 0) throw new Error('invalid grading row count');
+      return { decisionPoint, cursorTs, cursorCorrelationId,
+        nextCorrelationId: next?.correlationId ?? null, nextTs: next?.ts ?? null,
+        totalRows: count.totalRows };
+    });
+  }
+
+  /**
    * Upsert the grading cursor (keyset boundary + P19 recheck backoff).
    * `updated_at` is stamped from the injected clock — it is the staleness key
    * cursor pruning keys on. Never throws.

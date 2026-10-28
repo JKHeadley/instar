@@ -31,6 +31,7 @@ describe('Scheduled jobs run as scripts — agent awareness', () => {
     expect(fresh.split(SCRIPT_JOBS_CLAUDEMD_MARKER)).toHaveLength(2);
     expect(fresh).toContain(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER);
     expect(fresh).toContain('A bare OK or skipped line cannot be closed as safe without independent evidence');
+    expect(fresh).toContain('A separate idle effect proof can grade a routine Jev verdict correct');
   });
 
   it('migrateClaudeMd adds it once (content-sniffed, idempotent)', () => {
@@ -60,5 +61,17 @@ describe('Scheduled jobs run as scripts — agent awareness', () => {
     expect(after).toContain('Only during a Jev outage may benchmarked Haiku or Luna replace Jev');
     expect(after).not.toContain('sample routine results');
     expect(migrate(projectDir).upgraded).not.toContain('CLAUDE.md: corrected script result supervision wording');
+  });
+
+  it('adds idle proof guidance once to an existing supervision section', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'script-idle-proof-awareness-'));
+    dirs.push(projectDir);
+    const old = generateClaudeMd('instar', 'Echo', 4042, true)
+      .replace(/For the llm-decision-grading job, a server receipt confirms[^\n]+\n\n/, '');
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), old);
+    expect(migrate(projectDir).upgraded).toContain('CLAUDE.md: added grading-job idle proof guidance');
+    const after = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(after).toContain('A separate idle effect proof can grade a routine Jev verdict correct');
+    expect(migrate(projectDir).upgraded).not.toContain('CLAUDE.md: added grading-job idle proof guidance');
   });
 });

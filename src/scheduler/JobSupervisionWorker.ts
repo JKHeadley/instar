@@ -201,6 +201,21 @@ export class JobSupervisionWorker {
 
   private afterVerdict(attemptId: string): void {
     const row = this.deps.store.get(attemptId);
+    // Only a separately verified empty grade pass can provide a positive
+    // production outcome for this first script. The ordinary server receipt
+    // is included in Jev's input and is never itself a grade.
+    if (row?.slug === 'llm-decision-grading' && row.status === 'resolved'
+      && row.verdict === 'routine' && row.evidenceSufficient) {
+      const proof = this.deps.store.gradePassIdleProof(row.runId);
+      if (proof) {
+        try {
+          this.deps.store.gradeOutcome({ attemptId, evidenceId: proof.evidenceId,
+            ruleId: proof.ruleId, gradedBy: 'JobGradePassEffectVerifier', grade: 'correct', now: this.now() });
+        } catch {
+          this.deps.onAttention?.(attemptId, 'outcome-grading-failed');
+        }
+      }
+    }
     if (row?.status !== 'unresolved') return;
     // Automatic investigation stays closed until a real OS isolation boundary
     // is attested. An old unrestricted triage session is never used here.

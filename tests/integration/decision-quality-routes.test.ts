@@ -393,6 +393,9 @@ describe('POST /decision-quality/grade-pass (integration)', () => {
   it('writes a server receipt for a registered script run before reporting success', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-receipt-'));
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installDecisionQualityRecorder(new DecisionQualityRecorderImpl({
+      ledger, config: { developmentAgent: true, provenance: { uniformSeam: { enabled: true, dryRun: false } } },
+    }));
     const supervisionStore = new JobSupervisionStore(tmpDir);
     try {
       const token = 'a'.repeat(64);
@@ -412,10 +415,74 @@ describe('POST /decision-quality/grade-pass (integration)', () => {
         .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'grade-run')
         .set('X-Instar-Job-Receipt-Token', token).send({});
       expect(response.status).toBe(200);
+      expect(supervisionStore.gradePassIdleProof('grade-run')?.ruleId).toBe('grade-pass-idle-effects-v1');
       expect(supervisionStore.gradePassSignal('grade-run',
         `graded=${response.body.graded} decision-points=${Object.keys(response.body.cursors).length}`))
         .toMatchObject({ status: 'healthy' });
       expect(supervisionStore.gradePassSignal('grade-run', 'graded=99 decision-points=99')).toBeNull();
+    } finally { supervisionStore.close(); }
+  });
+
+  it('does not mint an idle proof when the recording seam is missing', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-no-recorder-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'd'.repeat(64);
+      supervisionStore.register({ runId: 'no-recorder-run', fireId: 'fire-3', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const app = appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore }));
+      const response = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'no-recorder-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(supervisionStore.gradePassSignal('no-recorder-run', 'graded=0 decision-points=6')).not.toBeNull();
+      expect(supervisionStore.gradePassIdleProof('no-recorder-run')).toBeNull();
+    } finally { supervisionStore.close(); }
+  });
+
+  it('does not mint an idle proof from a recorder wired to a different ledger', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-wrong-ledger-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const otherLedger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installDecisionQualityRecorder(new DecisionQualityRecorderImpl({
+      ledger: otherLedger,
+      config: { developmentAgent: true, provenance: { uniformSeam: { enabled: true, dryRun: false } } },
+    }));
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'e'.repeat(64);
+      supervisionStore.register({ runId: 'wrong-ledger-run', fireId: 'fire-4', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const response = await request(appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore })))
+        .post('/decision-quality/grade-pass').set('Authorization', `Bearer ${AUTH}`)
+        .set('X-Instar-Job-Run-Id', 'wrong-ledger-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(supervisionStore.gradePassIdleProof('wrong-ledger-run')).toBeNull();
+    } finally { supervisionStore.close(); otherLedger.close(); }
+  });
+
+  it('keeps a scheduled nonempty grade pass ungraded even if its response count is zero', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-nonempty-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.recordDecision({ correlationId: 'pending-now', decisionPoint: DP_MESSAGING_TONE_GATE,
+      feature: 'MessagingToneGate', ts: Date.now() });
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'c'.repeat(64);
+      supervisionStore.register({ runId: 'nonempty-run', fireId: 'fire-2', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const app = appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore }));
+      const response = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'nonempty-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(response.body.graded).toBe(0);
+      expect(supervisionStore.gradePassIdleProof('nonempty-run')).toBeNull();
     } finally { supervisionStore.close(); }
   });
 

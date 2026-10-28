@@ -52,6 +52,31 @@ describe('JobSupervisionWorker', () => {
     expect(store.callRows(a)[0]).toMatchObject({ provider: 'jev', settlement: 'current' });
   });
 
+  it('grades a routine grading-job verdict only with an independent idle effect proof', async () => {
+    const response = (async () => Response.json({ model: 'jev-1.13.0',
+      answers: { triage: { choice: 'routine', probabilities: { needs_session: 0.01 } },
+        triage_rev: { choice: 'routine', probabilities: { needs_session: 0.01 } } } })) as typeof fetch;
+    const run = (runId: string, proof?: string) => {
+      const token = 'a'.repeat(64);
+      const id = store.register({ runId, fireId: `fire:${runId}`, slug: 'llm-decision-grading',
+        decisionEligible: true, evidencePolicy: 'job-result-structured-v2', now: t0,
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      expect(store.recordGradePassReceipt(runId, token, 0, 6, t0, proof)).toBe(true);
+      store.recordResult(id, { result: 'success', completedAt: new Date(t0).toISOString(),
+        evidenceHash, evidenceText: evidence, evidenceSufficient: true });
+      return id;
+    };
+    const proven = run('proven', 'b'.repeat(64));
+    const unproven = run('unproven');
+    const worker = new JobSupervisionWorker({ store, readJevKey: () => 'key', auditReady: () => true,
+      fetchImpl: response, now: () => t0 + 1000 });
+    expect(await worker.drain()).toBe(2);
+    expect(store.get(proven)).toMatchObject({ status: 'resolved', grade: 'correct' });
+    expect(store.callRows(proven)[0].outcome_evidence_id).toBe(`grade-pass-idle-v1:${'b'.repeat(64)}`);
+    expect(store.get(unproven)).toMatchObject({ status: 'resolved', grade: 'unknown' });
+    expect(store.callRows(unproven)[0].outcome_evidence_id).toBeNull();
+  });
+
   it('keeps an uncertified bare OK unresolved even when Jev says routine', async () => {
     const id = add(store, 'r1');
     const attention = vi.fn();

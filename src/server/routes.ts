@@ -257,7 +257,7 @@ import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
-import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
+import { runGradePassWithIdleProof } from '../core/JobGradePassIdleVerifier.js';
 import { buildDirectJobSupervisionQuality } from './directJobSupervisionQuality.js';
 import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
@@ -22240,16 +22240,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const q = ctx.config.provenance?.quality ?? {};
       const maxDecisionsPerPass = typeof q.maxDecisionsPerPass === 'number' && q.maxDecisionsPerPass > 0 ? q.maxDecisionsPerPass : 200;
       const evidenceWindowHours = typeof q.evidenceWindowHours === 'number' && q.evidenceWindowHours > 0 ? q.evidenceWindowHours : 6;
-      const result = runDecisionGradingPass({
+      const checked = runGradePassWithIdleProof({ deps: {
         ledger: ctx.featureMetricsLedger,
         hogStore: ctx.externalHogSentinel?.decisionStoreRef?.() ?? null,
         annotate: annotateDecisionOutcome,
         maxDecisionsPerPass,
         evidenceWindowMs: evidenceWindowHours * 3_600_000,
         now: Date.now,
-      });
+      }, runId: scriptRunId ?? null,
+      allowProof: ctx.config.provenance?.uniformSeam?.dryRun === false
+        && decisionQualityRecordingLive(ctx.featureMetricsLedger) });
+      const result = checked.result;
       if (scriptRunId && !receiptStore?.recordGradePassReceipt(
-        scriptRunId, scriptReceiptToken!, result.graded, Object.keys(result.cursors).length)) {
+        scriptRunId, scriptReceiptToken!, result.graded, Object.keys(result.cursors).length,
+        Date.now(), checked.idleProofHash ?? undefined)) {
         res.status(500).json({ error: 'grade-pass receipt could not be recorded' });
         return;
       }

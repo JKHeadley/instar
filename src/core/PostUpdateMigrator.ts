@@ -243,6 +243,8 @@ Every production script run is recorded before execution. Read GET /jobs/triage 
 
 When active, an exact certified routine shape may be closed by a fixed rule. Jev checks every other trustworthy result that needs judgment. Haiku or Luna replaces Jev only while Jev is unavailable, and only with benchmark evidence and a recorded call. A bare OK or skipped line cannot be closed as safe without independent evidence. An uncertain verdict requests isolated diagnosis; if isolation is unavailable, the result stays open and raises attention.
 
+For the llm-decision-grading job, a server receipt confirms that the grading endpoint ran. A separate idle effect proof can grade a routine Jev verdict correct only when strict before/after reads show no decision rows at any grading point, including behind each cursor. A nonempty or unreadable workset remains outcome-unknown. This narrow proof does not enable Jev rollout by itself.
+
 **When to use:** "Did every script result get checked?" or "Why did this job stay open?" → read GET /jobs/triage and its supervision block. The scope=pool query shows partial-pool failures explicitly. Never infer full coverage from a missing peer or an empty model log.
 `;
 }
@@ -7550,6 +7552,17 @@ setTimeout(() => process.exit(0), 2000);
       content += JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added script result supervision records');
+    }
+    const idleProofAwareness = 'For the llm-decision-grading job, a server receipt confirms that the grading endpoint ran.';
+    if (content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER) && !content.includes(idleProofAwareness)) {
+      const marker = '**When to use:** "Did every script result get checked?"';
+      const paragraph = JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port)
+        .split('\n').find(line => line.startsWith(idleProofAwareness));
+      if (paragraph && content.includes(marker)) {
+        content = content.replace(marker, `${paragraph}\n\n${marker}`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added grading-job idle proof guidance');
+      }
     }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
     const currentTriageLine = '- **After both code gates open**, every trustworthy script result gets a decision record. Exact certified routine shapes may use a fixed rule; Jev judges the rest. Only during a Jev outage may benchmarked Haiku or Luna replace Jev for those judgment results. An uncertain answer keeps the result open and requests isolated diagnosis. Until benchmark and outcome-audit coverage is verified, the model path stays inactive. Active scripts still get a daily must-fail canary.';
