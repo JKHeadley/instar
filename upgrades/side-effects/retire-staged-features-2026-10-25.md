@@ -3,8 +3,9 @@
 **Version / slug:** `retire-staged-features-2026-10-25`
 **Date:** `2026-10-25`
 **Author:** `Echo`
-**Second-pass reviewer:** `not required` — the change removes decision points and
-adds none; the only new runtime code is a config/instruction migration step (see §4).
+**Second-pass reviewer:** independent general-purpose reviewer (fresh context, Claude Opus 5.5),
+2026-10-28 — concurred; required because the local verifier flags the test deletions
+(`testsRemoved`). See "Second-pass review" below.
 **Tier:** 1 (fully reversible by revert) · ~45 files · ~1,100 LOC removed, ~400 added
 (migration + its tests) · spec rounds 3 of a Tier-1 cap of 3 (breadth of consumers,
 not a design dispute) · commit/gate attempts: see Evidence.
@@ -177,7 +178,28 @@ behavior is added — only removed.
 
 ## Second-pass review (if required)
 
-Not required (see Conclusion).
+**Reviewer:** independent general-purpose subagent (fresh context, not given the author's conclusion), 2026-10-28
+**Verdict:** CONCUR
+
+Required because the local verifier flagged the PR `testsRemoved` (verify of head
+8ea2e800, all lanes green). The reviewer read the full test diff against `origin/main`
+and the source, and ran the 11 changed/added unit test files (389 tests passed).
+
+- Every deleted test file targets only retired code (`JevReviewFlagShadow`,
+  `MoveIntentClassifier`, `ProfileIntentClassifier`, `ProactiveCompactionSentinel`,
+  `StandardsCoverageEnrichment`); no retired name remains in `src/`. The two deleted
+  integration files that also touched kept code are still covered elsewhere:
+  `planTransferByNickname` / `buildRelocationNicknameSet` (`TransferByNickname.test.ts`,
+  `relocation-nickname-set.test.ts`), `POST /pool/transfer`
+  (`pool-placement-transfer-routes.test.ts`), `validateProfileFields`
+  (`topicProfileValidation.test.ts`), `setPinWithOneHlc` (`u41-pin-persistence.test.ts`).
+- Every modified test file changes only as a consequence of the retirement: retired
+  names dropped from ratchets, line pins renumbered (all 26 checked against
+  `ConfigDefaults.ts`), a fixture renamed. No threshold lowered, no skip added.
+- The new `PostUpdateMigrator-retire-staged-features.test.ts` covers the migration step.
+- Findings acted on: a stale line-number list in a `lint-dev-agent-dark-gate.test.ts`
+  comment was corrected. Noted, not acted on: no GEMINI.md-specific strip test (the
+  migrator handles it in the same loop as AGENTS.md, which is tested).
 
 ---
 

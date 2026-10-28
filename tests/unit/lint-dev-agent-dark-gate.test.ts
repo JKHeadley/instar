@@ -392,11 +392,11 @@ describe('lint-dev-agent-dark-gate', () => {
     // (their two `enabled: false` rows are REMOVED from the map — the structural
     // stubs are retired with their DARK_GATE_EXCLUSIONS rows; -9 and -6 lines);
     // and `topicProfiles.intentClassifier` (-21 lines, no `enabled:` literal). Path
-    // SET is now 26 entries (28 - 2). RE-VERIFIED by hand: `grep -n 'enabled: false'`
-    // over the edited ConfigDefaults yields exactly these 26 literal lines — 130, 383,
-    // 441, 560, 574, 645, 776, 784, 814, 880, 1053, 1065, 1080, 1165, 1281, 1285,
-    // 1292, 1302, 1539, 1572, 1582, 1611, 1872, 1939, 2067, 2166 — each a real
-    // `enabled: false,` in its named block.
+    // SET is now 26 entries (28 - 2). After the 2026-10-28 merge of main the 26
+    // attributed rows sit at 141, 394, 452, 571, 585, 656, 787, 795, 825, 891,
+    // 1064, 1076, 1091, 1176, 1292, 1296, 1303, 1313, 1552, 1585, 1595, 1624,
+    // 1885, 1952, 2080, 2179 — each a real `enabled: false,` in its named block
+    // (the map below is checked against the live file by attributeRealConfigDefaults).
     const EXPECTED: Record<string, string> = {
       // Line->attributed-path map for every `enabled: false` literal in
       // ConfigDefaults.ts. REGENERATED via attributeEnabledFalsePaths on the
