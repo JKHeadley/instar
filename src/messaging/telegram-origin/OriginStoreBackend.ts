@@ -431,6 +431,19 @@ export class OriginStoreBackend {
     id(input.operationId);
     const now = input.now ?? Date.now();
     integer(now, 0, Number.MAX_SAFE_INTEGER - RECOVERY_REVIEW_INTERVAL_MS);
+    // Another owner holding the store's write lock (e.g. winning the same
+    // reservation) answers "not reserved", exactly as an already-reserved
+    // operation does. BEGIN IMMEDIATE is refused before any statement runs, so
+    // nothing was spent; the operation stays eligible for a later pass. Before,
+    // the 25 ms busy timeout surfaced as a "database is locked" error instead.
+    try {
+      return this.reserveRecoveryAttemptLocked(input.operationId, now);
+    } catch (err) {
+      if (isSqliteBusy(err)) return false;
+      throw err;
+    }
+  }
+  private reserveRecoveryAttemptLocked(operationId: string, now: number): boolean {
     return this.db.transaction(() => {
       const eligible = this.db.prepare(`SELECT 1 FROM telegram_origin_operations o
         WHERE o.operation_id=? AND o.kind='ordinary' AND o.state IN ('admitted','held','partial')
@@ -442,11 +455,11 @@ export class OriginStoreBackend {
           AND e.attempts<o.max_attempts AND (e.next_attempt_at IS NULL OR e.next_attempt_at<=?))
         AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c WHERE c.operation_id=o.operation_id
           AND c.state NOT IN ('queued','accepted'))`)
-        .get(input.operationId, now, now, now, new Date(now).toISOString());
+        .get(operationId, now, now, now, new Date(now).toISOString());
       if (!eligible) return false;
       this.db.prepare(`INSERT INTO telegram_origin_recovery_schedule VALUES (?,1,?)
         ON CONFLICT(operation_id) DO UPDATE SET attempts=attempts+1,next_attempt_at=excluded.next_attempt_at`)
-        .run(input.operationId, now + RECOVERY_REVIEW_INTERVAL_MS);
+        .run(operationId, now + RECOVERY_REVIEW_INTERVAL_MS);
       return true;
     }).immediate();
   }
@@ -770,6 +783,17 @@ export class OriginStoreBackend {
       destination: { accountId: row.account_id ?? null, chatId: row.chat_id ?? null, topicId: row.topic_id ?? null },
       recovery: row.recovery_attempts === null ? null : { attempts: row.recovery_attempts, nextAttemptAt: row.recovery_next! },
       expiryReportedAt: row.hold_expiry_reported_at ?? null, producerKind: row.producer_kind ?? null }));
+  }
+  /** attention-lifecycle-close-on-cause §3.3 — how many of this topic's ordinary
+   * operations are still HELD for `lease-not-held`. The clear signal for the
+   * `telegram-origin-held:<topic>` attention condition: independent of retry
+   * due-time and of the held-listing page limit (both exist for other readers
+   * and must not be the signal). Read-only. */
+  unresolvedHeldOperationCount(topicId: string): number {
+    const row = this.db.prepare(`SELECT COUNT(*) n FROM telegram_origin_operations o
+      JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
+      WHERE o.kind='ordinary' AND o.state='held' AND o.hold_reason='lease-not-held' AND CAST(d.topic_id AS TEXT)=?`).get(String(topicId)) as { n: number };
+    return Number(row?.n ?? 0);
   }
   markHoldExpiryReported(input: { operationId: string; now?: number }): boolean {
     id(input.operationId);
@@ -1113,4 +1137,10 @@ export class OriginStoreBackend {
     }).immediate();
   }
   close(): void { this.queue.close(); }
+}
+
+/** SQLite refused a lock (another connection holds it past the busy timeout). */
+function isSqliteBusy(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith('SQLITE_BUSY');
 }

@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "local-verify-capacity",
+  "sessionId": "c6c1f783-f738-4ca5-bfa0-2a96b7927729",
+  "timestamp": "2026-10-27T04:04:43.711Z",
+  "artifactPath": "upgrades/side-effects/local-verify-capacity.md",
+  "artifactSha256": "6c6378ac319fc78bcbdf11c1f5c19368520c0d171c21462a42506ff4352db876",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.eli16.md",
+    "docs/specs/local-verify-capacity.md",
+    "docs/specs/reports/local-verify-capacity-convergence.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/record.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-capacity.md",
+    "upgrades/side-effects/local-verify-capacity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a remote verifier that can produce merge-authorizing records; durable dispatch, lease fencing, and peer cancellation cross machine boundaries.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-verify-capacity-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  }
+}

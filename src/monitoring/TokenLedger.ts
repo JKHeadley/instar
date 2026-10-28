@@ -55,6 +55,12 @@ function computeHeadHash(filePath: string, size: number): string {
   }
 }
 
+/** Clamp a job-session key/label: trimmed, bounded, '' when absent. */
+function clampKey(v: string): string {
+  const t = String(v ?? '').trim();
+  return t.length > 200 ? t.slice(0, 200) : t;
+}
+
 // ── Schema ────────────────────────────────────────────────────────────
 
 const SCHEMA = [
@@ -134,6 +140,24 @@ const SCHEMA = [
   // Small key/value table for one-shot maintenance markers (e.g. the
   // attribution backfill). Keeps idempotent migrations from re-running on
   // every boot without needing an external migration framework.
+  // Job-cost attribution (docs/specs/job-cost-reduction.md §9.1). token_events rows
+  // are keyed by the CLAUDE TRANSCRIPT session id, which a job session only learns
+  // after its first hook event. So a job is recorded at spawn under the id the
+  // spawner has (its tmux session name — the id JobRunHistory records), and a second
+  // row keyed by the transcript id is added when the hook bridge binds it
+  // (bindJobSessionTranscript), carrying `alias_of` = the spawn-time key. Only rows
+  // whose session_id matches a token_events/codex session ever join; the spawn-time
+  // row is the "was this job session ever bound?" evidence (unbound = unmapped).
+  `CREATE TABLE IF NOT EXISTS job_sessions (
+     session_id TEXT PRIMARY KEY,
+     job_slug   TEXT NOT NULL,
+     machine_id TEXT,
+     started_at INTEGER NOT NULL,
+     origin     TEXT NOT NULL DEFAULT 'job',
+     alias_of   TEXT
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_job_sessions_started ON job_sessions(started_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_job_sessions_alias ON job_sessions(alias_of)`,
   `CREATE TABLE IF NOT EXISTS ledger_meta (
      key        TEXT PRIMARY KEY,
      value      TEXT,
@@ -142,6 +166,48 @@ const SCHEMA = [
 ];
 
 // ── Types ─────────────────────────────────────────────────────────────
+
+/** Origin of a job session (job-cost-reduction §9.1): a normal run, or a triage session. */
+export type JobSessionOrigin = 'job' | 'triage' | 'rollback';
+
+/** Per-job token totals from the job_sessions ⋈ token_events (+ codex) join. */
+export interface JobTokenTotalsRow {
+  jobSlug: string;
+  origin: string;
+  framework: 'claude-code' | 'codex-cli';
+  model: string;
+  /** Distinct transcript sessions that carried usage in the window. */
+  sessions: number;
+  /** Model calls: one per token_events row (one per API request); codex = token_count events. */
+  modelCalls: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Cache-read tokens. Claude: separate from tokensIn. Codex: a subset of its raw input, already removed from tokensIn here. */
+  cacheRead: number;
+  /** Cache-creation tokens (Claude only; 0 for codex). */
+  cacheWrite: number;
+}
+
+/** Recorded job sessions per slug/origin in a window, and how many never bound to a transcript. */
+export interface JobSessionCountRow {
+  jobSlug: string;
+  origin: string;
+  /** Spawn-time rows recorded in the window (alias_of IS NULL). */
+  recorded: number;
+  /** Of those, how many have neither a bound transcript row nor any usage under their own id. */
+  unbound: number;
+}
+
+/** A transcript session's usage in a window, with its transcript path when the ledger read it. */
+export interface SessionUsageRow {
+  sessionId: string;
+  filePath: string | null;
+  modelCalls: number;
+  tokensIn: number;
+  tokensOut: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
 
 export interface IngestLineResult {
   inserted: boolean;
@@ -1449,12 +1515,251 @@ export class TokenLedger {
         if (n < batchSize) { more = false; break; }
         more = true; // hit a full batch — more may remain for the next call
       }
+      this.pruneJobSessionsOlderThan(cutoffMs, { batchSize, maxBatches });
       return { deleted, more };
     } catch {
       // @silent-fallback-ok: retention prune is best-effort. A failed prune leaves
       // older rows for the next tick; it must never throw into the poller's cadence.
       return { deleted, more };
     }
+  }
+
+  // ── Job-cost attribution (docs/specs/job-cost-reduction.md §9.1) ─────
+
+  /**
+   * Record that `sessionId` is a job session for `slug`. Idempotent (INSERT OR
+   * IGNORE on the session id — the first record wins). `sessionId` is whatever id the
+   * spawner has: the Claude transcript id when known, otherwise the spawn-time key
+   * (the tmux session name) to be bound later via {@link bindJobSessionTranscript}.
+   * Returns true when a new row was written. Fail-open (observability).
+   */
+  recordJobSession(
+    sessionId: string,
+    slug: string,
+    machineId: string | null,
+    startedAt: string | number,
+    origin: JobSessionOrigin | string = 'job',
+  ): boolean {
+    if (this.closed) return false;
+    const id = clampKey(sessionId);
+    const jobSlug = clampKey(slug);
+    if (!id || !jobSlug) return false;
+    const ts = typeof startedAt === 'number' ? startedAt : Date.parse(startedAt);
+    const started = Number.isFinite(ts) ? ts : Date.now();
+    try {
+      const r = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO job_sessions (session_id, job_slug, machine_id, started_at, origin, alias_of)
+           VALUES (?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(id, jobSlug, clampKey(machineId ?? '') || null, started, clampKey(String(origin)) || 'job');
+      return Number(r.changes ?? 0) > 0;
+    } catch {
+      // @silent-fallback-ok: attribution is observability; a failed write leaves the
+      // session unmapped (reported as such), it must never break a job spawn.
+      return false;
+    }
+  }
+
+  /**
+   * Bind a spawn-time job-session key to the Claude transcript session id the hook
+   * bridge learned (SessionManager.setClaudeSessionId). Adds a row keyed by the
+   * transcript id that copies the slug/machine/origin/started_at of the spawn-time row
+   * and points back at it (`alias_of`). A respawn/--resume that rotates the transcript
+   * id binds again, so every transcript a job run produced joins. No-op (false) when
+   * the alias is unknown — the session was not a job — or already bound to that id.
+   */
+  bindJobSessionTranscript(aliasId: string, transcriptSessionId: string): boolean {
+    if (this.closed) return false;
+    const alias = clampKey(aliasId);
+    const tid = clampKey(transcriptSessionId);
+    if (!alias || !tid || alias === tid) return false;
+    try {
+      const r = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO job_sessions (session_id, job_slug, machine_id, started_at, origin, alias_of)
+           SELECT ?, job_slug, machine_id, started_at, origin, session_id
+             FROM job_sessions WHERE session_id = ?`,
+        )
+        .run(tid, alias);
+      return Number(r.changes ?? 0) > 0;
+    } catch {
+      // @silent-fallback-ok: same envelope as recordJobSession.
+      return false;
+    }
+  }
+
+  /**
+   * Per-job token totals in [sinceMs, untilMs): job_sessions joined to token_events
+   * (Claude, per request) and to codex_token_sessions (Codex, cumulative per session,
+   * attributed by its last_ts). Rows with `machineId` given keep only that machine's
+   * job sessions (and rows recorded without a machine). Degrades to [] on failure.
+   */
+  jobTokenTotals(opts: { sinceMs: number; untilMs?: number; machineId?: string | null }): JobTokenTotalsRow[] {
+    if (this.closed) return [];
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const machine = opts.machineId ?? null;
+    try {
+      const claude = this.db
+        .prepare(
+          `SELECT js.job_slug AS jobSlug, js.origin AS origin, COALESCE(te.model, 'unknown') AS model,
+             COUNT(DISTINCT te.session_id) AS sessions,
+             COUNT(*) AS modelCalls,
+             COALESCE(SUM(te.input_tokens), 0) AS tokensIn,
+             COALESCE(SUM(te.output_tokens), 0) AS tokensOut,
+             COALESCE(SUM(te.cache_read_tokens), 0) AS cacheRead,
+             COALESCE(SUM(te.cache_creation_tokens), 0) AS cacheWrite
+           FROM token_events te JOIN job_sessions js ON js.session_id = te.session_id
+           WHERE te.ts >= ? AND te.ts < ?
+             AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+           GROUP BY js.job_slug, js.origin, COALESCE(te.model, 'unknown')`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+      const codex = this.db
+        .prepare(
+          `SELECT js.job_slug AS jobSlug, js.origin AS origin, COALESCE(cs.model, 'unknown') AS model,
+             COUNT(*) AS sessions,
+             COALESCE(SUM(cs.token_count_events), 0) AS modelCalls,
+             COALESCE(SUM(cs.input_tokens - cs.cached_input_tokens), 0) AS tokensIn,
+             COALESCE(SUM(cs.output_tokens), 0) AS tokensOut,
+             COALESCE(SUM(cs.cached_input_tokens), 0) AS cacheRead
+           FROM codex_token_sessions cs JOIN job_sessions js ON js.session_id = cs.session_id
+           WHERE cs.last_ts >= ? AND cs.last_ts < ?
+             AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+           GROUP BY js.job_slug, js.origin, COALESCE(cs.model, 'unknown')`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+      const toRow = (r: Record<string, number | string>, framework: JobTokenTotalsRow['framework']): JobTokenTotalsRow => ({
+        jobSlug: String(r.jobSlug),
+        origin: String(r.origin),
+        framework,
+        model: String(r.model),
+        sessions: Number(r.sessions) || 0,
+        modelCalls: Number(r.modelCalls) || 0,
+        tokensIn: Math.max(0, Number(r.tokensIn) || 0),
+        tokensOut: Number(r.tokensOut) || 0,
+        cacheRead: Number(r.cacheRead) || 0,
+        cacheWrite: Number(r.cacheWrite ?? 0) || 0,
+      });
+      return [...claude.map((r) => toRow(r, 'claude-code')), ...codex.map((r) => toRow(r, 'codex-cli'))];
+    } catch {
+      // @silent-fallback-ok: the cost report states "no attributed usage", never throws.
+      return [];
+    }
+  }
+
+  /**
+   * Spawn-time job sessions recorded in [sinceMs, untilMs) per slug/origin, and how
+   * many are UNBOUND: no transcript row was ever bound to them and no usage sits under
+   * their own id. An unbound session is reported, never dropped (§9.2 `unmapped`).
+   */
+  jobSessionCounts(opts: { sinceMs: number; untilMs?: number; machineId?: string | null }): JobSessionCountRow[] {
+    if (this.closed) return [];
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const machine = opts.machineId ?? null;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT js.job_slug AS jobSlug, js.origin AS origin, COUNT(*) AS recorded,
+             SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM job_sessions b WHERE b.alias_of = js.session_id)
+                       AND NOT EXISTS (SELECT 1 FROM token_events te WHERE te.session_id = js.session_id)
+                       AND NOT EXISTS (SELECT 1 FROM codex_token_sessions cs WHERE cs.session_id = js.session_id)
+                  THEN 1 ELSE 0 END) AS unbound
+           FROM job_sessions js
+           WHERE js.alias_of IS NULL AND js.started_at >= ? AND js.started_at < ?
+             AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+           GROUP BY js.job_slug, js.origin`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+      return rows.map((r) => ({
+        jobSlug: String(r.jobSlug),
+        origin: String(r.origin),
+        recorded: Number(r.recorded) || 0,
+        unbound: Number(r.unbound) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: same envelope as jobTokenTotals.
+      return [];
+    }
+  }
+
+  /**
+   * Usage per Claude transcript session with events in [sinceMs, untilMs), with the
+   * transcript path the ledger read it from (file_offsets, matched by basename) — the
+   * input to the §9.2 best-effort backfill, which reads only each file's head to map
+   * its first prompt to a job. Bounded by `limit`. Degrades to [] on failure.
+   */
+  sessionUsageInWindow(opts: { sinceMs: number; untilMs?: number; limit?: number }): SessionUsageRow[] {
+    if (this.closed) return [];
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const limit = opts.limit && opts.limit > 0 ? Math.floor(opts.limit) : 20_000;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT session_id AS sessionId, COUNT(*) AS modelCalls,
+             COALESCE(SUM(input_tokens), 0) AS tokensIn,
+             COALESCE(SUM(output_tokens), 0) AS tokensOut,
+             COALESCE(SUM(cache_read_tokens), 0) AS cacheRead,
+             COALESCE(SUM(cache_creation_tokens), 0) AS cacheWrite
+           FROM token_events WHERE ts >= ? AND ts < ?
+           GROUP BY session_id LIMIT ?`,
+        )
+        .all(opts.sinceMs, until, limit) as Array<Record<string, number | string>>;
+      if (rows.length === 0) return [];
+      // Transcript paths: file_offsets rows read since the window opened (a file with
+      // events in the window was read at or after its first event).
+      const files = this.db
+        .prepare(`SELECT file_path AS filePath FROM file_offsets WHERE last_read >= ?`)
+        .all(opts.sinceMs) as Array<{ filePath: string }>;
+      const byId = new Map<string, string>();
+      for (const f of files) {
+        const base = path.basename(f.filePath);
+        if (base.endsWith('.jsonl')) byId.set(base.slice(0, -'.jsonl'.length), f.filePath);
+      }
+      return rows.map((r) => ({
+        sessionId: String(r.sessionId),
+        filePath: byId.get(String(r.sessionId)) ?? null,
+        modelCalls: Number(r.modelCalls) || 0,
+        tokensIn: Number(r.tokensIn) || 0,
+        tokensOut: Number(r.tokensOut) || 0,
+        cacheRead: Number(r.cacheRead) || 0,
+        cacheWrite: Number(r.cacheWrite) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: the backfill is comparison-only; [] reads as "nothing to backfill".
+      return [];
+    }
+  }
+
+  /**
+   * Prune job_sessions on the token_events schedule: rows that started before
+   * `cutoffMs` AND carry no remaining token_events under their id (a long session
+   * that still has in-retention events keeps its attribution until they age out).
+   * Spawn-time rows have no events of their own and so age out at the cutoff.
+   * Bounded batches; fail-open.
+   */
+  pruneJobSessionsOlderThan(cutoffMs: number, opts?: { batchSize?: number; maxBatches?: number }): number {
+    if (this.closed) return 0;
+    const batchSize = opts?.batchSize && opts.batchSize > 0 ? opts.batchSize : 5000;
+    const maxBatches = opts?.maxBatches && opts.maxBatches > 0 ? opts.maxBatches : 20;
+    let deleted = 0;
+    try {
+      const del = this.db.prepare(
+        `DELETE FROM job_sessions WHERE session_id IN (
+           SELECT js.session_id FROM job_sessions js
+            WHERE js.started_at < ?
+              AND NOT EXISTS (SELECT 1 FROM token_events te WHERE te.session_id = js.session_id)
+            LIMIT ?)`,
+      );
+      for (let b = 0; b < maxBatches; b++) {
+        const n = Number(del.run(cutoffMs, batchSize).changes ?? 0);
+        deleted += n;
+        if (n < batchSize) break;
+      }
+    } catch {
+      // @silent-fallback-ok: retention prune is best-effort (same envelope as pruneOlderThan).
+    }
+    return deleted;
   }
 
   /** Reclaim up to `pages` freed pages (no-op unless auto_vacuum=INCREMENTAL is active). Fail-open. */

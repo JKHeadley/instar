@@ -21,15 +21,26 @@
  * steady-state FREQUENCY under feedback).
  */
 
+import { WorkAdmission } from '../core/workAdmission.js';
+import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
+import { PlacementExecutor } from '../core/PlacementExecutor.js';
+import type { MachineCapacity } from '../core/types.js';
+import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import { checkThrowawayExpiry, MAX_TEARDOWN_ATTEMPTS } from '../core/ThrowawayAgentGuard.js';
+import path from 'node:path';
 import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
+import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
 import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/laneReport.js';
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
+import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -229,6 +240,48 @@ const ageKillBackoff: SelfActionController = {
  * once-per-interval liveness line is the SEPARATE eternal-sentinel controller
  * below — a rate-floored constant-cost heartbeat, not a bounded action.)
  */
+/**
+ * codex-arm-session-sweep — CodexArmSessionSweeper's kill path (spec
+ * codex-arm-session-leak-and-sweeper §3.6-3.7). Under the worst case (every kill is
+ * refused, the orphan population never shrinks) each candidate is attempted at most
+ * maxKillFailuresPerSession (3) times and then never again, and a pass is capped at
+ * maxKillsPerPass attempts — so the total over ANY horizon is 3 × candidates: horizon-
+ * independent, which is the convergence this registry proves rather than the prose
+ * arithmetic the spec also carries. Modelled with 10 standing candidates.
+ */
+const codexArmSessionSweep: SelfActionController = {
+  id: 'codex-arm-session-sweep',
+  actionVerb: 'sweep-kill',
+  models: 'src/monitoring/CodexArmSessionSweeper.ts (killSession — per-session kill-failure brake + per-pass attempt cap)',
+  modelsPath: 'src/monitoring/CodexArmSessionSweeper.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart forgets the per-session failure counts; the next pass re-reads tmux and re-corroborates every candidate before any kill, and the per-pass cap bounds the first pass regardless.' },
+  boundK: 30,         // 10 candidates × 3 attempts each, then never again
+  perTargetBoundK: 3, // maxKillFailuresPerSession
+  ticks: 40,          // 40 passes; N=40 and 2N=80 both settle at 30
+  tickMs: 10 * 60_000, // one pass every 10 min (sweepIntervalMs)
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    const MAX_FAILURES = 3;
+    const MAX_ATTEMPTS_PER_PASS = 50;
+    const candidates = Array.from({ length: 10 }, (_, i) => `instar-codex-arm-${i}`);
+    const failures = new Map<string, number>();
+    return {
+      tick() {
+        sink.considered += 1; // one PASS considered per tick (the fixture's contract)
+        let attempted = 0;
+        for (const name of candidates) {
+          if ((failures.get(name) ?? 0) >= MAX_FAILURES) continue; // kill-failures-exhausted → kept
+          if (attempted >= MAX_ATTEMPTS_PER_PASS) continue;         // per-pass-cap → kept
+          attempted += 1;
+          sink.emit({ verb: 'killSession', target: name });
+          if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
+          else failures.delete(name);
+        }
+      },
+    };
+  },
+};
+
 const promiseBeaconNotify: SelfActionController = {
   id: 'promise-beacon-notify',
   actionVerb: 'beacon-notify',
@@ -967,6 +1020,64 @@ const feedbackTriageTick: SelfActionController = {
       f.durableState.set('feedback-triage-last-requeued-at', f.clock.nowMs());
       sink.emit({ verb: 'retry-triage-call', target: 'hot-cluster' });
       sink.emitTimesMs.push(f.clock.nowMs());
+    } };
+  },
+};
+
+/**
+ * A script anomaly episode may request an investigation more than once as
+ * observers retry, but its durable spawned outcome is terminal. New job runs
+ * are new external work and separately face the per-slug and machine daily
+ * caps in JobResultTriage; this fixture pins one unchanging episode forever.
+ */
+const jobScriptTriageEpisode: SelfActionController = {
+  id: 'job-script-triage-episode',
+  actionVerb: 'spawn-triage-session',
+  models: 'src/scheduler/JobResultTriage.ts (admitTriageSpawn episode outcome and daily session caps)',
+  modelsPath: 'src/scheduler/JobResultTriage.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 96,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return jobScriptTriageEpisode.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      if (f.durableState.get('job-script-triage-episode-spawned')) return;
+      f.durableState.set('job-script-triage-episode-spawned', true);
+      sink.emit({ verb: 'spawn-triage-session', target: 'persistent-anomaly-episode' });
+    } };
+  },
+};
+
+/** The outage backup pass is eligible only after its durable six-hour stamp. */
+const jobScriptTriageBackup: SelfActionController = {
+  id: 'job-script-triage-backup',
+  actionVerb: 'retry-outage-triage',
+  models: 'src/scheduler/JobTriageBackupCheck.ts (lastPassAt interval and Jev outage gate)',
+  modelsPath: 'src/scheduler/JobTriageBackupCheck.ts',
+  delegatedGiveUp: 'durable six-hour lastPassAt and bounded twelve-result sample per slug; investigation sessions retain daily caps',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 24 * 3,
+  tickMs: 60 * 60_000,
+  eternalSentinel: { reason: 'one bounded outage pass per six hours while Jev remains unavailable', rateFloorMs: 6 * 60 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return jobScriptTriageBackup.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const last = f.durableState.get('job-script-triage-backup-last-pass') as number | undefined;
+      if (last !== undefined && now - last < 6 * 60 * 60_000) return;
+      f.durableState.set('job-script-triage-backup-last-pass', now);
+      sink.emit({ verb: 'retry-outage-triage', target: 'outage-sample' });
+      sink.emitTimesMs.push(now);
     } };
   },
 };
@@ -2594,7 +2705,437 @@ const localVerifyMergeHandoff: SelfActionController = {
   },
 };
 
+
+/**
+ * overload-admission-self-help — trustworthy-machine-load Part C (C1/C4). The
+ * real WorkAdmission is driven by the 15 s load verdict: under the pinned
+ * worst case (every sample `saturated`, forever) it CLOSES once (a state
+ * transition, not an emit), fires the deterministic self-help notice ONCE per
+ * closed episode (an attention item naming the top processes), and then holds:
+ * no reopen (the 5-good-sample hysteresis never clears), no second item until
+ * a genuine reopen starts a new episode. Models the REAL class (no copy of its
+ * logic) with a virtual clock; the recovery slot is never touched by this path.
+ */
+const overloadAdmissionSelfHelp: SelfActionController = {
+  id: 'overload-admission-self-help',
+  actionVerb: 'overload-notify',
+  models: 'src/core/workAdmission.ts (WorkAdmission.observe — close on saturated/impaired, self-help once per closed episode, reopen only after 5 good samples)',
+  modelsPath: 'src/core/workAdmission.ts',
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason:
+      'The closed-episode latch is process-local by design (the audit stream records it; nothing re-reads it). A reconstruction under the same overload cannot re-fire immediately: the sampler needs 2 of 3 fresh samples before any non-unknown verdict (≥30 s) and WorkAdmission needs 3 consecutive overloaded samples (45 s) before self-help, so a restart loop is rate-floored at one item per ≥75 s and the supervisor restart backoff bounds the loop itself.',
+  },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 15_000, // the real sample cadence (LOAD_SAMPLE_INTERVAL_MS)
+  makeUnderPressure(f, sink) {
+    const wa = new WorkAdmission({
+      config: () => ({ enabled: true, dryRun: false, reopenAfterGoodSamples: 5, selfHelpAfterSaturatedSamples: 3 }),
+      // Never acquired on this path (no operator admit in the model); a real
+      // semaphore object is required by the type, pointed at a tmp path.
+      recoverySlot: new HostSpawnSemaphore({ holdersPath: path.join(os.tmpdir(), 'instar-overload-admission-model-slot.json'), cap: 1 }),
+      now: () => f.clock.nowMs(),
+      onSustainedOverload: () => { sink.emit({ verb: 'notify', target: 'overload-self-help' }); },
+    });
+    return {
+      tick() {
+        sink.considered += 1;
+        wa.observe('saturated'); // the worst case: overloaded on every sample, never clearing
+      },
+    };
+  },
+};
+
+/**
+ * interactive-login-expired-swap — CMT-1008. A topic session stuck at Claude Code's expired-login
+ * screen is swapped onto a signed-in account. Under the pinned fixture the swap is always refused
+ * (targetAlwaysRejects: no eligible alternate / refresh refused) and the session never leaves the
+ * screen, so the monitor re-offers it forever. The REAL brake (`decideLoginExpiredSwap`, the same
+ * function the recovery calls): one attempt per 10-min cooldown, at most 3 per session, then it
+ * stays put. A successful swap resets the budget, but only after the dead source account is marked
+ * needs-reauth and excluded, so successes are bounded by the pool size (not modelled: the fixture
+ * refuses every swap).
+ */
+const interactiveLoginExpiredSwap: SelfActionController = {
+  id: 'interactive-login-expired-swap',
+  actionVerb: 'account-swap',
+  models: 'src/core/InteractiveLoginExpiredRecovery.ts (decideLoginExpiredSwap: 10-min cooldown + 3-attempt cap per session)',
+  modelsPath: 'src/core/InteractiveLoginExpiredRecovery.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt budget is in memory; after a restart a stuck session needs a fresh 60-s dwell and is again capped at 3 attempts, and nothing in this controller causes a restart.' },
+  boundK: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS,
+  perTargetBoundK: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS,
+  ticks: 60,
+  tickMs: 5 * 60_000, // the monitor re-offers well inside every cooldown
+  makeUnderPressure(f, sink) {
+    const TARGET = 'stuck-topic-session';
+    let attempts = 0;
+    let lastAt: number | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const d = decideLoginExpiredSwap({ attempts, lastAttemptAtMs: lastAt, nowMs: f.clock.nowMs(),
+          cooldownMs: INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, maxAttempts: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS });
+        if (d !== 'attempt') return;
+        attempts += 1; lastAt = f.clock.nowMs();
+        sink.emit({ verb: 'account-swap', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; } // a real move (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
+ * overload-shed — trustworthy-machine-load Part D (D1–D4). The real
+ * OverloadShedPlanner under the pinned worst case: this machine's admission is
+ * closed and enforced on every sample, forever; a healthy peer always has room;
+ * and the peer NEVER claims a proposed topic (every move expires). Brakes, all in
+ * the planner: one live move at a time (10 min entry TTL), 2 moves per hour, a
+ * 30 min per-topic cooldown, MAX_ATTEMPTS_PER_TOPIC (2) per overload episode, and
+ * at most MAX_REFUNDS_PER_TOPIC (2) refunds for proposals whose transfer never
+ * started (the worst case modelled here). The episode never ends under pressure,
+ * so the total settles at 4 × the topics (5 topics → 20 proposals) and the
+ * per-topic count at 4, independent of the horizon. The reconciler (the actuator)
+ * additionally initiates at most ONE transfer per topic per episode. The episode,
+ * attempt and refund counts are durable, so a restart continues the same episode.
+ */
+function makeOverloadShedPlanner(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  let statePath = f.durableState.get('overload-shed-state-path') as string | undefined;
+  if (!statePath) {
+    statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'instar-overload-shed-model-')), 'state.json');
+    f.durableState.set('overload-shed-state-path', statePath);
+  }
+  const topics = Array.from({ length: 5 }, (_, i) => ({ sessionKey: String(1001 + i), pinned: false }));
+  const nowIso = () => new Date(f.clock.nowMs()).toISOString();
+  const planner = new OverloadShedPlanner({
+    config: () => ({ ...DEFAULT_OVERLOAD_SHED, enabled: true, dryRun: false }),
+    selfMachineId: () => 'm-self',
+    admission: () => ({ acceptingWork: false, enforced: true }),
+    capacities: () => [
+      { machineId: 'm-self', online: true, maxSessions: 10, activeSessionCount: 10, loadVerdict: 'saturated' },
+      { machineId: 'm-peer', online: true, maxSessions: 100, activeSessionCount: 1, loadVerdict: 'ok',
+        liveness: { state: 'live', evidenceAgeMs: 5_000, evidenceAt: nowIso(), source: 'direct' } },
+    ] as MachineCapacity[],
+    ownedTopics: () => topics,
+    ownerOf: () => 'm-self', // the peer never claims: every proposed move expires
+    // Worst case for the refund path: the transfer is never even started, so every
+    // expiry is refundable — capped at MAX_REFUNDS_PER_TOPIC per topic per episode.
+    statusOf: () => ({ status: 'active' }),
+    placement: new PlacementExecutor(),
+    statePath,
+    now: () => f.clock.nowMs(),
+  });
+  let proposedSeen = 0; // per-process counter (the planner's counters are in memory)
+  return {
+    tick() {
+      sink.considered += 1;
+      planner.tick();
+      const proposed = (planner.status() as { counters: { proposed: number } }).counters.proposed;
+      const live = planner.overloadMoves()[0];
+      if (proposed > proposedSeen && live) {
+        proposedSeen = proposed;
+        sink.emit({ verb: 'converge-overload-transfer', target: live.sessionKey });
+      }
+    },
+  };
+}
+
+const overloadShed: SelfActionController = {
+  id: 'overload-shed',
+  actionVerb: 'converge-overload-transfer',
+  models: 'src/core/OverloadShedPlanner.ts (OverloadShedPlanner.tick — one live move, 2/hour breaker, 30 min topic cooldown, 2 attempts + 2 never-started refunds per topic per durable overload episode)',
+  modelsPath: 'src/core/OverloadShedPlanner.ts',
+  boundK: 20,
+  perTargetBoundK: 4,
+  ticks: 4 * 60 * 16, // 16 hours of 15 s samples (enough for 20 proposals at 2/hour)
+  tickMs: 15_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return makeOverloadShedPlanner(f, sink); },
+  },
+  makeUnderPressure(f, sink) { return makeOverloadShedPlanner(f, sink); },
+};
+
+/**
+ * attention-lifecycle-pass — the hourly attention reconciliation pass
+ * (src/messaging/TelegramAdapter.ts runAttentionLifecyclePass; spec
+ * docs/specs/attention-lifecycle-close-on-cause.md §3.4): supersede duplicate
+ * open rows → producer-verified clears → bounded expiry. Convergence shape:
+ * every action moves a row to a TERMINAL state (DONE) the pass itself never
+ * reopens, so under the pinned worst case — a backlog of duplicate and stale
+ * rows nobody ever touches again — the total action count is exactly one
+ * close per row that qualifies and the per-row count is 1; from the second
+ * pass on, with no new rows, it closes zero. The brake is structural
+ * (terminal state + idempotent re-read), not a counter. Drives the SAME pure
+ * decision functions the adapter calls (planAttentionSupersessions,
+ * decideAttentionExpiry), not a re-implementation.
+ */
+const attentionLifecyclePass: SelfActionController = {
+  id: 'attention-lifecycle-pass',
+  actionVerb: 'reap-stale-attention-row', // 'reap' detector token: a row is retired to DONE
+  models: 'src/messaging/TelegramAdapter.ts (runAttentionLifecyclePass — supersede → verified clears → expiry; startAttentionLifecycleTimers hourly)',
+  modelsPath: 'src/messaging/TelegramAdapter.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      // The rows are durable (state/attention-items.json); a restart re-reads
+      // them with their terminal statuses, so a closed row stays closed and the
+      // pass finds nothing new. Modelled by rebuilding the controller over the
+      // SAME durable row map.
+      return makeAttentionLifecyclePassModel(f, sink, f.durableState);
+    },
+  },
+  // 10 duplicate conditions × 3 rows: 2 superseded each (20) and the 10 keepers then expire as
+  // stale automated rows (10); + 20 stale automated + 5 stale operator-asked = 55 closes, ever.
+  boundK: 10 * 2 + 10 + 20 + 5,
+  perTargetBoundK: 1,
+  ticks: 72, // three days of hourly passes
+  tickMs: 60 * 60 * 1000,
+  makeUnderPressure(f, sink) {
+    return makeAttentionLifecyclePassModel(f, sink, f.durableState);
+  },
+};
+
+function makeAttentionLifecyclePassModel(f: PressureFixture, sink: ActionSink, durable: Map<string, unknown>): { tick(): void } {
+  type Row = AttentionLifecycleItem & { status: string };
+  const KEY = 'attention-lifecycle-pass:rows';
+  const DAY = 86_400_000;
+  // Virtual "now" starts far enough along that the seeded rows are already stale.
+  const base = f.clock.nowMs() + 400 * DAY;
+  if (!durable.has(KEY)) {
+    const rows = new Map<string, Row>();
+    const at = (daysAgo: number) => new Date(base - daysAgo * DAY).toISOString();
+    for (let c = 0; c < 10; c++) {
+      // Three timestamped duplicates of one condition (a legacy producer without a conditionKey).
+      for (let d = 0; d < 3; d++) {
+        const id = `held:${c}:${1_700_000_000_000 + c * 1000 + d}`;
+        rows.set(id, { id, title: 'A reply is held', category: 'telegram-origin', sourceContext: 'origin', priority: 'NORMAL', status: 'OPEN', createdAt: at(30 - d), updatedAt: at(30 - d) });
+      }
+    }
+    for (let i = 0; i < 20; i++) {
+      const id = `rope-health-urgent:${i}:ep-1`;
+      rows.set(id, { id, title: `rope ${i} down`, category: 'mesh', sourceContext: 'rope-health', priority: 'NORMAL', status: 'OPEN', createdAt: at(40), updatedAt: at(40) });
+    }
+    for (let i = 0; i < 5; i++) {
+      const id = `agent:ask-${i}`;
+      rows.set(id, { id, title: `Your call on thing ${i}?`, category: 'decision', sourceContext: 'agent', priority: 'NORMAL', status: 'OPEN', createdAt: at(60), updatedAt: at(60) });
+    }
+    // The floors: never acted on, however long the horizon.
+    rows.set('sec-1', { id: 'sec-1', title: 'Rotate exposed GitHub access token', category: 'security', priority: 'HIGH', status: 'OPEN', createdAt: at(90), updatedAt: at(90) });
+    rows.set('ack-1', { id: 'ack-1', title: 'operator is on it', category: 'general', sourceContext: 'x', priority: 'NORMAL', status: 'ACKNOWLEDGED', createdAt: at(90), updatedAt: at(90) });
+    durable.set(KEY, rows);
+  }
+  const rows = durable.get(KEY) as Map<string, Row>;
+  const cfg = resolveAttentionLifecycleConfig(undefined);
+  const close = (row: Row) => {
+    row.status = 'DONE';
+    row.updatedAt = new Date(base + f.clock.nowMs()).toISOString();
+    sink.emit({ verb: 'reap-stale-attention-row', target: row.id });
+  };
+  return {
+    tick() {
+      sink.considered += 1;
+      const nowMs = base + f.clock.nowMs();
+      // 1. supersede duplicates (the same pure planner the adapter uses)
+      for (const plan of planAttentionSupersessions([...rows.values()])) {
+        for (const dup of plan.close) close(rows.get(dup.id)!);
+      }
+      // 2. verified clears: the pinned worst case has NO producer that ever answers 'cleared'.
+      // 3. expiry (the same pure decision the adapter uses); the fixture's first pass is live.
+      for (const row of rows.values()) {
+        if (row.status !== 'OPEN') continue;
+        const d = decideAttentionExpiry(row, cfg, nowMs);
+        if (d.expire) close(row);
+      }
+    },
+  };
+}
+
+
+/**
+ * throwaway-expiry-teardown — test-agent-leak-guard (docs/specs/test-agent-leak-guard.md).
+ * An expired throwaway's server/lifeline runs the teardown at every start; if
+ * its own launchd job cannot be unloaded, launchd KeepAlive restarts it, so the
+ * teardown is re-attempted on every restart. Drives the REAL
+ * teardownExpiredThrowaway under the "unload always fails" pressure: each tick
+ * is one launchd restart. The attempt counter lives in the on-disk marker
+ * (survives restart), and after MAX_TEARDOWN_ATTEMPTS the outcome is
+ * `quarantined` (terminal) — no further unload attempts, horizon-independent.
+ */
+function makeThrowawayTeardownLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  let dir = f.durableState.get('throwaway-teardown-dir') as string | undefined;
+  if (!dir) {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'self-action-throwaway-'));
+    fs.mkdirSync(path.join(dir, '.instar', 'state'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.instar', 'config.json'), JSON.stringify({ projectName: 'sa', throwawayAgent: { createdAt: 'x', expiresAt: '2000-01-01T00:00:00Z' } }));
+    f.durableState.set('throwaway-teardown-dir', dir);
+  }
+  const projectDir = dir;
+  return {
+    tick() {
+      sink.considered += 1; // one launchd restart considered per tick
+      checkThrowawayExpiry('sa', projectDir, {
+        platform: 'darwin',
+        homes: [path.join(projectDir, 'nohome')],
+        uid: 501,
+        run: (_cmd, args) => {
+          if (args[0] === 'print') return `\tworking directory = ${projectDir}\n`;
+          if (args[0] === 'bootout') {
+            sink.emit({ verb: 'kill', target: 'ai.instar.sa' });
+            if (f.targetAlwaysRejects()) throw new Error('bootout refused');
+          }
+          return '';
+        },
+      });
+    },
+  };
+}
+
+/**
+ * local-verify-interrupted-resume — a server stop that kills a running PR verify
+ * (2026-10-26: the lifeline's drift restart killed PR 2350's run four times, each
+ * time un-counted and re-queued behind a fresh `main` verify). Modelled: every tick
+ * is a server stop + boot under which the interrupted PR is restored FIRST
+ * (`resumeFirst`, consumed on its single start — never two jumps per interruption),
+ * its attempt stays counted (`attempts` never decremented), and the starved signal
+ * fires ONCE per entry when `interruptions` reaches INTERRUPTION_LIMITS.starvedAfter
+ * (`starvedRaised` persisted) — horizon-independent: 48 restarts ⇒ at most one
+ * notify per entry (2 entries ⇒ boundK 2), not one per restart.
+ */
+const localVerifyInterruptedResume: SelfActionController = {
+  id: 'local-verify-interrupted-resume',
+  actionVerb: 'notify-starved-verify-retry',
+  models: 'src/localVerify/LocalVerifyService.ts (shutdown/restoreQueue → interruptions + resumeFirst; checkStarved/raiseStarvedIfDue → decideStarved(interrupted); pump → decideStart(resumeFirst))',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeInterruptedResume(f, sink),
+  },
+  makeUnderPressure(f, sink) { return makeInterruptedResume(f, sink); },
+};
+
+/** Entries live in `durableState` (queue.json): a restart is one more interruption, never a reset. */
+function makeInterruptedResume(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  type E = { pr: number; attempts: number; errorRetries: number; firstQueuedAt: number; starvedRaised: boolean; interruptions: number; resumeFirst?: true; running: boolean };
+  const key = 'local-verify-interrupted-resume:queue';
+  const t0 = f.clock.nowMs();
+  let queue = (f.durableState.get(key) as E[] | undefined)
+    ?? [301, 302].map((pr): E => ({ pr, attempts: 0, errorRetries: 0, firstQueuedAt: t0, starvedRaised: false, interruptions: 0, running: false }));
+  f.durableState.set(key, queue);
+  const main: { kind: 'main'; notBefore?: number; pr?: undefined } = { kind: 'main' };
+  return {
+    tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      // 1. The server stops: the running entry is interrupted (shutdown): counted, marked, re-queued first.
+      const ran = queue.find((e) => e.running);
+      if (ran) {
+        ran.running = false;
+        ran.interruptions += 1;
+        ran.resumeFirst = true;
+        queue = [ran, ...queue.filter((e) => e !== ran)];
+        f.durableState.set(key, queue);
+      }
+      // 2. Boot: restored entries are checked for starvation before anything starts.
+      for (const e of queue) {
+        const d = decideStarved(e, now);
+        if (!d.raise) continue;
+        e.starvedRaised = true;
+        if (d.reason !== 'interrupted' && e.interruptions >= 2) throw new Error('interruption threshold should raise with reason interrupted');
+        sink.emit({ verb: 'notify-starved-verify-retry', target: String(e.pr) });
+      }
+      // 3. The boot-time `main` verify is queued; the interrupted PR must still start first.
+      const q: Array<E | typeof main> = [main, ...queue];
+      const d = decideStart({ foreignHolders: 0, queue: q, now, fairShare: { mainHealthy: false, oldestUnverifiedMainAt: now, lastStartWasMain: false } });
+      if (d.kind !== 'start') return;
+      const picked = q[d.index];
+      if (ran && picked !== ran) throw new Error(`interrupted PR ${ran.pr} did not resume first (picked ${picked.pr ?? 'main'})`);
+      if (picked.pr === undefined) return;
+      // The start consumes resumeFirst (one jump per interruption) and counts the attempt.
+      if (picked.resumeFirst !== true && ran === picked) throw new Error('resumeFirst was not set on the interrupted entry');
+      delete picked.resumeFirst;
+      picked.attempts += 1;
+      picked.running = true;
+      const prior = (f.durableState.get(key + ':attempts') as Map<number, number> | undefined) ?? new Map<number, number>();
+      if ((prior.get(picked.pr) ?? 0) >= picked.attempts) throw new Error(`attempts went backwards for pr ${picked.pr} (an interrupted run was un-counted)`);
+      prior.set(picked.pr, picked.attempts);
+      f.durableState.set(key + ':attempts', prior);
+    },
+  };
+}
+
+const throwawayExpiryTeardown: SelfActionController = {
+  id: 'throwaway-expiry-teardown',
+  actionVerb: 'kill',
+  models: 'src/core/ThrowawayAgentGuard.ts (teardownExpiredThrowaway — durable attempt counter, quarantine after MAX_TEARDOWN_ATTEMPTS)',
+  modelsPath: 'src/core/ThrowawayAgentGuard.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeThrowawayTeardownLoop(f, sink),
+  },
+  boundK: MAX_TEARDOWN_ATTEMPTS,
+  perTargetBoundK: MAX_TEARDOWN_ATTEMPTS,
+  ticks: 40,
+  tickMs: 10_000, // launchd ThrottleInterval
+  eternalSentinel: undefined,
+  makeUnderPressure: (f, sink) => makeThrowawayTeardownLoop(f, sink),
+};
+
+/** One failed provider result can cause at most three audited calls; SQLite
+ * persists call_count and the 24-hour expiry across worker restarts. */
+const jobSupervisionProviderRetry: SelfActionController = {
+  id: 'job-supervision-provider-retry',
+  actionVerb: 'retry-provider-call',
+  models: 'src/scheduler/JobSupervisionWorker.ts (per-result provider retry via JobSupervisionStore.call_count)',
+  modelsPath: 'src/scheduler/JobSupervisionWorker.ts',
+  boundK: 3, perTargetBoundK: 3, ticks: 30, tickMs: 60 * 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => jobSupervisionRetryModel(f, sink) },
+  makeUnderPressure: (f, sink) => jobSupervisionRetryModel(f, sink),
+};
+
+function jobSupervisionRetryModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const count = (f.durableState.get('supervision-call-count') as number | undefined) ?? 0;
+    if (count >= 3) return;
+    f.durableState.set('supervision-call-count', count + 1);
+    sink.emit({ verb: 'retry-provider-call', target: 'one-result' });
+  } };
+}
+
+/** A missing run-history row gets one unchecked recovery record. Later ticks
+ * see that row by unique run_id and cannot insert another. */
+const jobSupervisionCensusRepair: SelfActionController = {
+  id: 'job-supervision-census-repair',
+  actionVerb: 'retry-census-repair',
+  models: 'src/scheduler/JobSupervisionStore.ts (reconcileHistory unique run_id and unchecked recovery)',
+  modelsPath: 'src/scheduler/JobSupervisionStore.ts',
+  boundK: 1, perTargetBoundK: 1, ticks: 60, tickMs: 30_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => jobSupervisionCensusModel(f, sink) },
+  makeUnderPressure: (f, sink) => jobSupervisionCensusModel(f, sink),
+};
+
+function jobSupervisionCensusModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects() || f.durableState.get('supervision-census-recovered')) return;
+    f.durableState.set('supervision-census-recovered', true);
+    sink.emit({ verb: 'retry-census-repair', target: 'one-run-id' });
+  } };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  jobSupervisionProviderRetry,
+  jobSupervisionCensusRepair,
+  throwawayExpiryTeardown,
+  localVerifyInterruptedResume,
+  attentionLifecyclePass,
   localVerifyFlakeRerun,
   localVerifyMergeHandoff,
   localVerifyMainFairShare,
@@ -2607,7 +3148,11 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   systemTopicAdoption,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
+  overloadAdmissionSelfHelp,
+  overloadShed,
   feedbackTriageTick,
+  jobScriptTriageEpisode,
+  jobScriptTriageBackup,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,
   passkeyRevokeOutbox,
@@ -2629,6 +3174,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   spendCapApproach,
   proactiveSwapMonitor,
   ageKillBackoff,
+  codexArmSessionSweep,
   promiseBeaconNotify,
   livenessHeartbeat,
   promiseBeaconInternalCadence,
@@ -2651,4 +3197,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   agentIdentityCoherenceDetector,
   a2aPeerDarkRaise,
   threadlineConnectEnableRestart,
+  interactiveLoginExpiredSwap,
 ];

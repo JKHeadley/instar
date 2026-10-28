@@ -300,6 +300,55 @@ describe('§2.3 cap enforcement — two symmetric lanes', () => {
   });
 });
 
+describe('merge-gate suite priority', () => {
+  it('keeps the next free suite slot for Local Verify while targeted tests can run', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem } = clockSem(paths);
+    sem.setMergeGatePriority('agent-a', true);
+    expect(sem.hasMergeGatePriority()).toBe(true);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(eventsOf(paths, 'block')[0]?.priorityWait).toBe(true);
+    expect((await sem.acquire({ lane: 'targeted', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+    const verify = await sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 });
+    expect(verify.kind).toBe('acquired');
+    if (verify.kind === 'acquired') sem.release(verify.id);
+    sem.setMergeGatePriority('agent-a', false);
+    expect(sem.hasMergeGatePriority()).toBe(false);
+    expect((await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+  });
+
+  it('ignores expired and dead claims and preserves another agent claim', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const clock = clockSem(paths);
+    clock.sem.setMergeGatePriority('agent-a', true);
+    clock.sem.setMergeGatePriority('agent-b', true);
+    clock.sem.setMergeGatePriority('agent-a', false);
+    expect(clock.sem.hasMergeGatePriority()).toBe(true);
+    clock.advance(120_001);
+    expect(clock.sem.hasMergeGatePriority()).toBe(false);
+    expect((await clock.sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+    clock.sem.setMergeGatePriority('agent-b', true);
+    expect(clock.sem.hasMergeGatePriority()).toBe(true);
+    const dead = makeSem(paths, { now: clock.now, pidAlive: () => false });
+    expect(dead.hasMergeGatePriority()).toBe(false);
+  });
+
+  it('ignores corrupt and foreign-host claims', () => {
+    const paths = mkPaths();
+    const { sem, now } = clockSem(paths);
+    sem.setMergeGatePriority('agent-a', true);
+    const dir = path.join(paths.baseDir, 'host-test-runner-priority');
+    const file = path.join(dir, fs.readdirSync(dir)[0]);
+    fs.writeFileSync(file, '{broken');
+    expect(sem.hasMergeGatePriority()).toBe(false);
+    fs.writeFileSync(file, JSON.stringify({ v: 1, pid: process.pid, hostname: 'other-host', expiresAt: now() + 60_000 }));
+    expect(sem.hasMergeGatePriority()).toBe(false);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // §2.4 ReclaimPolicy — DEFAULT capacity-reclaim-only
 // ═══════════════════════════════════════════════════════════════════════════

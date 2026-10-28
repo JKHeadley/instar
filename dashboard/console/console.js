@@ -6,9 +6,26 @@
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago,
+  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { renderPromises } from './promises.js';
+import { renderMachines } from './machines.js';
+import { renderAccounts } from './accounts.js';
+import { renderMessages } from './messages.js';
+import { renderAllowed } from './allowed.js';
+import { renderPlans } from './plans.js';
+import { renderCosts } from './costs.js';
+import { renderSchedule } from './schedule.js';
+import { renderDevelopment, groupExtras } from './development.js';
+import { renderAgents } from './agents.js';
+import { renderMandates } from './mandates.js';
+import { renderSecrets } from './secrets.js';
+import { renderLearned } from './learned.js';
+import { renderInside } from './inside.js';
+import { renderFiles } from './files.js';
+import { renderSessions } from './sessions.js';
+import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -69,6 +86,16 @@ async function get(path, timeoutMs = TIMEOUT_MS) {
   } catch (e) {
     return failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached');
   } finally { clearTimeout(t); }
+}
+
+/** POST with the bearer token; returns { ok, data } or { ok:false, reason } with the server's own words. */
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) return { ok: true, data };
+    return { ok: false, reason: (data && (data.error || data.message)) ? String(data.error || data.message) : `The server answered ${r.status}.` };
+  } catch { return { ok: false, reason: 'The server could not be reached.' }; }
 }
 
 // ── auth ──────────────────────────────────────────────────────────────────
@@ -168,11 +195,11 @@ async function fillAgentName() {
 // col: which desktop column the card sits in. On a phone both columns stack.
 const CARDS = [
   { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
-  { id: 'promised', title: 'What I’ve promised', href: legacyHref('commitments'), col: 'main' },
-  { id: 'doing', title: 'What I’m doing', href: legacyHref('sessions'), col: 'main' },
-  { id: 'reach', title: 'Can I reach you', href: legacyHref('origins'), col: 'side' },
-  { id: 'running', title: 'Where I’m running', href: legacyHref('machines'), col: 'side' },
-  { id: 'allowed', title: 'What I’m allowed to do', href: legacyHref('machines'), col: 'side' },
+  { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
+  { id: 'doing', title: 'What I’m doing', href: '#/work/sessions', col: 'main' },
+  { id: 'reach', title: 'Can I reach you', href: '#/people/messages', col: 'side' },
+  { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
+  { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
 
 const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'partial', stale: 'out of date' };
@@ -316,14 +343,12 @@ function paintHeadline(models) {
     const words = h.text.split(' ');
     h1.append(document.createTextNode(words.slice(0, -1).join(' ') + (words.length > 1 ? ' ' : '')), el('span', { class: 'accent', text: words[words.length - 1] }));
   } else h1.textContent = h.text;
-  const parts = [];
-  if (models.needs && models.needs.count > 0) parts.push(`${models.needs.value} in the queue`);
-  if (models.promised && models.promised.count > 0) parts.push(`${models.promised.count} ${models.promised.count === 1 ? 'promise' : 'promises'} waiting on you`);
-  sub.textContent = h.tone === 'attn' && parts.length ? `${parts.join(' and ')}.${h.sub ? ' ' + h.sub : ''}` : (h.sub || '');
+  // The count itself is explained by the "What needs you" card underneath; the sub-line only qualifies it.
+  sub.textContent = h.sub || '';
   $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-function pooled(id, path, build, set) {
+function pooled(id, path, build, set, namesP) {
   const slow = setTimeout(() => {
     const card = $(`#card-${id}`);
     if (card && card.getAttribute('data-state') === 'loading') {
@@ -331,21 +356,33 @@ function pooled(id, path, build, set) {
       line.textContent = 'Still checking the other machines…';
     }
   }, TIMEOUT_MS);
-  get(path, POOL_TIMEOUT_MS).then((r) => { clearTimeout(slow); set(id, build(r)); });
+  Promise.all([get(path, POOL_TIMEOUT_MS), namesP]).then(([r, names]) => { clearTimeout(slow); set(id, build(r, Date.now(), names)); });
 }
 
 async function loadHome() {
   const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
-  const set = (id, model) => { models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model; paintHeadline(models); };
+  const raw = {};
+  const paint = (id) => {
+    // "What needs you" is the one answer: queue items plus promises waiting on the operator.
+    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised) : raw[id];
+    models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model;
+  };
+  const set = (id, model) => {
+    raw[id] = model;
+    paint(id);
+    if (id === 'promised' && raw.needs) paint('needs');
+    paintHeadline(models);
+  };
   // Each card fetches and renders on its own (spec §1): one slow source never blocks the rest.
-  pooled('needs', '/attention?scope=pool', buildNeeds, set);
-  get('/health').then((r) => set('reach', buildReach(r)));
   const poolP = get('/pool');
+  const namesP = poolP.then(machineNames);
+  pooled('needs', '/attention?scope=pool', buildNeeds, set, namesP);
+  get('/health').then((r) => set('reach', buildReach(r)));
   Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
     const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
     set('promised', buildPromised(r, Date.now(), peers));
   });
-  pooled('doing', '/sessions?scope=pool', buildDoing, set);
+  pooled('doing', '/sessions?scope=pool', buildDoing, set, namesP);
   poolP.then((r) => set('running', buildRunning(r)));
   Promise.all([get('/guards'), get('/mandate')]).then(([g, m]) => set('allowed', buildAllowed(g, m)));
 }
@@ -370,7 +407,7 @@ function renderHome(main) {
 
 // ── Group pages (static directories) ──────────────────────────────────────
 function tile(t, withIcon = true) {
-  const a = el('a', { class: 'tile', href: legacyHref(t.id) });
+  const a = el('a', { class: 'tile', href: tabHref(t.id) });
   if (withIcon) a.append(el('span', { class: 't-icon', icon: t.icon || 'arrow' }));
   a.append(el('span', {}, el('span', { class: 't-name', text: t.label }), el('span', { class: 't-desc', text: t.desc })));
   return a;
@@ -385,6 +422,7 @@ function renderGroup(main, g) {
       el('p', { text: 'Each of these opens in the dashboard, where everything works exactly as before.' }),
     ),
     el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
+    ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
   ];
   if (g.hood && g.hood.length) {
     parts.push(
@@ -405,12 +443,42 @@ function footNote() {
 }
 
 // ── routing ───────────────────────────────────────────────────────────────
+// Native feature pages, by hash path. A feature not listed here still opens its legacy tab.
+const NATIVE = {
+  'work/promises': renderPromises,
+  'work/plans': renderPlans,
+  'work/plans/in-the-way': renderPlans,
+  'work/schedule': renderSchedule,
+  'work/development': renderDevelopment,
+  'work/sessions': renderSessions,
+  'capacity/machines': renderMachines,
+  'capacity/accounts': renderAccounts,
+  'capacity/costs': renderCosts,
+  'people/messages': renderMessages,
+  'people/agents': renderAgents,
+  'people/mandates': renderMandates,
+  'people/secrets': renderSecrets,
+  'settings/allowed': renderAllowed,
+  'settings/learned': renderLearned,
+  'settings/inside': renderInside,
+  'settings/files': renderFiles,
+};
+
 function route() {
-  const id = (location.hash.replace(/^#\/?/, '') || 'home').split('/')[0];
+  closeSheet();
+  const path = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
+  const id = path.split('/')[0];
   const group = GROUPS.find((g) => g.id === id);
   const active = group ? group.id : 'home';
   const main = renderShell(active);
-  if (group) renderGroup(main, group); else renderHome(main);
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (NATIVE[path]) {
+    NATIVE[path](main, { get, post });
+    // Pages refresh in place every 30 s while visible, never over an open sheet.
+    refreshTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && !sheetIsOpen() && (location.hash.replace(/^#\/?/, '').split('?')[0]) === path) NATIVE[path](main, { get, post });
+    }, REFRESH_MS);
+  } else if (group) renderGroup(main, group); else renderHome(main);
   window.scrollTo(0, 0);
 }
 

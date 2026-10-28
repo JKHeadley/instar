@@ -100,6 +100,60 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     } finally { timeout.mockRestore(); await adapter.stop(); }
   });
 
+  it('a reply Telegram accepted but whose receipt could not be saved is reported delivered, looked up, logged and guarded against resend', async () => {
+    let adapter: TelegramAdapter;
+    const h = await appHarness({ telegram: { sendToTopic: (...args: Parameters<TelegramAdapter['sendToTopic']>) => adapter.sendToTopic(...args),
+      getTopicHistory: (topicId: number, limit?: number) => adapter.getTopicHistory(topicId, limit) } });
+    adapter = new TelegramAdapter({ token: h.botToken, chatId: '-100123' }, h.stateDir, { suppressLifelineAutoCreate: true });
+    const record = h.runtime.store.recordOutcome.bind(h.runtime.store);
+    vi.spyOn(h.runtime.store, 'recordOutcome').mockRejectedValueOnce(new Error('worker restarting')).mockImplementation(record);
+    const text = 'The held-reply outcome report is ready for your review now.';
+    try {
+      const sent = await request(h.app).post('/telegram/reply/42')
+        .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken).send({ text });
+      expect(sent.status).toBe(409);
+      expect(sent.body).toMatchObject({ error: 'telegram-origin-held', reason: 'receipt-persistence-unavailable', outcome: 'accepted-unrecorded',
+        delivered: true, messageId: '27', fallbackRecorded: true, retryable: false });
+      expect(sent.body.checkOutcome).toBe(`/telegram/origins/operations/${sent.body.operationId}/outcome`);
+      // (4) the delivered message is in message history.
+      expect(adapter.getTopicHistory(42, 5).some(m => m.messageId === 27 && m.fromUser === false && m.text === text)).toBe(true);
+      // (1) a session (ordinary auth, no operator proof) can ask by operation id.
+      const lookup = await request(h.app).get(sent.body.checkOutcome).set('Authorization', 'Bearer agent-test');
+      expect(lookup.status).toBe(200);
+      expect(lookup.body).toMatchObject({ outcome: 'delivered', safeToResend: false, source: 'unrecorded-receipt', messageIds: ['27'] });
+      expect(JSON.stringify(lookup.body)).not.toContain(text);
+      expect((await request(h.app).get(sent.body.checkOutcome)).status).toBe(401);
+      // A resend of the same text is not delivered a second time.
+      const resend = await request(h.app).post('/telegram/reply/42')
+        .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken).send({ text });
+      expect(resend.status).toBe(200);
+      expect(resend.body.suppressedDuplicate).toBe(true);
+      expect(h.network).toHaveBeenCalledOnce();
+      // A send that ran on ANOTHER machine is never "safe to resend" from this machine's record.
+      const audit = await h.runtime.store.getOperation(sent.body.operationId);
+      const getOperation = h.runtime.store.getOperation.bind(h.runtime.store);
+      vi.spyOn(h.runtime.store, 'getOperation').mockImplementation(async id => {
+        const row = await getOperation(id);
+        if (!row) return row;
+        const envelope = JSON.parse(row.record.envelopeJson);
+        return { ...row, record: { ...row.record, envelopeJson: JSON.stringify({ ...envelope, executionOwnerMachineId: 'mini' }) },
+          operation: { ...row.operation!, state: 'known-failed' }, children: row.children.map(c => ({ ...c, state: 'known-failed' })),
+          attempts: row.attempts.map(a => ({ ...a, outcome: 'known-failed', receiptJson: null })) };
+      });
+      vi.spyOn(h.runtime.unrecordedReceipts, 'forOperation').mockReturnValue([]);
+      const remote = await request(h.app).get(sent.body.checkOutcome).set('Authorization', 'Bearer agent-test');
+      expect(remote.status).toBe(200);
+      expect(remote.body).toMatchObject({ outcome: 'unknown', safeToResend: false, executionOwnerMachineId: 'mini' });
+      vi.mocked(h.runtime.store.getOperation).mockRestore(); vi.mocked(h.runtime.unrecordedReceipts.forOperation).mockRestore();
+      // Before the claim lease is reaped the operation is still `admitted`; the delivery truth lives in the fallback record.
+      expect(audit?.operation?.state).toBe('admitted');
+      // An unknown id answers 404 unknown, never "not delivered".
+      const missing = await request(h.app).get('/telegram/origins/operations/00000000-0000-0000-0000-000000000000/outcome').set('Authorization', 'Bearer agent-test');
+      expect(missing.status).toBe(404);
+      expect(missing.body.outcome).toBe('unknown');
+    } finally { await adapter.stop(); }
+  });
+
   it('paces repeated recovery reviews and exposes the durable delay through authenticated audit HTTP', async () => {
     const review = vi.fn(async (_text: string) => ({ pass: true, latencyMs: 1 }));
     const h = await appHarness({ messagingToneGate: { review } });

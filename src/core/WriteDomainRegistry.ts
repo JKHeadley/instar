@@ -128,6 +128,66 @@ export function sessionBuildContextKeyFor(machineId: string | null | undefined):
   return `session-build-context-${id}`;
 }
 
+/**
+ * Machine-local stores written DIRECTLY (atomic temp + rename), outside
+ * `StateManager.guardWrite` and outside any mutating HTTP route — so they have
+ * no op/kv/route entry to carry their classification. They are registered here
+ * instead, under the SAME two-axis story schema (I9), and each path must also
+ * appear in FileClassifier's git-sync exclusions (asserted by test).
+ *
+ * Shape mirrors the external-hog arm marker: the logical story IS the
+ * file-level story — each machine's copy stands alone.
+ */
+export interface DirectWriteFileEntry {
+  /** Agent-root-relative path. */
+  path: string;
+  domain: 'machine-local';
+  /** machine-local-justification taxonomy key (spec §13). */
+  justification: 'hardware-bound-resource';
+  story: ConvergenceStory;
+}
+
+export const MACHINE_LOCAL_DIRECT_WRITE_FILES: ReadonlyArray<DirectWriteFileEntry> = [
+  // job-cost-reduction §5.4/§13: an episode is a live observation of THIS
+  // machine's disk, sessions and server; a copy elsewhere describes the wrong
+  // hardware. Visible pool-wide through GET /jobs?scope=pool.
+  {
+    path: '.instar/state/job-anomaly-episodes.json',
+    domain: 'machine-local',
+    justification: 'hardware-bound-resource',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'episodes describe this machine\'s own disk/sessions/server; merged on read by GET /jobs?scope=pool; file-level arm in FileClassifier sync exclusions',
+    },
+  },
+  // job-cost-reduction §13: the triage caps bound sessions spawned into THIS
+  // host's process slots; the backup cursor points into this machine's own run
+  // history. Merged on read by GET /jobs/triage?scope=pool.
+  {
+    path: '.instar/state/job-triage-state.json',
+    domain: 'machine-local',
+    justification: 'hardware-bound-resource',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'caps/cooldown bound this host\'s own spawned sessions; merged on read by GET /jobs/triage?scope=pool; file-level arm in FileClassifier sync exclusions',
+    },
+  },
+];
+
+/** I9 check over the direct-write file list: entries whose story fails validation. */
+export function invalidDirectWriteFiles(
+  files: ReadonlyArray<DirectWriteFileEntry> = MACHINE_LOCAL_DIRECT_WRITE_FILES,
+): Array<{ path: string; reason: string }> {
+  return files
+    .map(f => ({ path: f.path, v: storyValid(f.story) }))
+    .filter(x => !x.v.ok)
+    .map(x => ({ path: x.path, reason: x.v.reason ?? 'invalid story' }));
+}
+
 export class WriteDomainRegistry {
   private readonly ops = new Map<string, OpEntry>();
   private readonly kv = new Map<string, KvEntry>();

@@ -702,6 +702,21 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Reaps orphaned MCP server processes.',
   },
   {
+    key: 'monitoring.codexArmSessionSweeper.enabled',
+    kind: 'config',
+    configPath: 'monitoring.codexArmSessionSweeper.enabled',
+    defaultEnabled: true,
+    dryRunConfigPath: 'monitoring.codexArmSessionSweeper.dryRun',
+    expectedTickMs: 600_000,
+    process: 'server',
+    // TRUE because server.ts registers a live getter (enabled/dryRun/lastTickAt), so the
+    // declared cadence is actually evaluated — a declared-but-inert expectedTickMs was
+    // the review's finding #5.
+    expectRuntime: true,
+    component: 'CodexArmSessionSweeper',
+    description: 'Closes orphaned instar-codex-arm-* tmux sessions codexHookArm leaks when its creator dies before teardown (an update restart). Reads tmux, not instar\'s session registry.',
+  },
+  {
     key: 'monitoring.staleBackstop.enabled',
     kind: 'config',
     configPath: 'monitoring.staleBackstop.enabled',
@@ -788,6 +803,26 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     expectRuntime: false,
     component: 'ResourceLedger',
     description: 'CPU/memory sampling + rate-limit-event ledger (read-only observability).',
+  },
+  {
+    key: 'monitoring.workAdmission.enabled',
+    kind: 'config',
+    configPath: 'monitoring.workAdmission.enabled',
+    defaultEnabled: false, // dark on the fleet; ON (dry-run) for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'WorkAdmission',
+    description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session; dry-run logs would-refuse only.',
+  },
+  {
+    key: 'monitoring.overloadShed.enabled',
+    kind: 'config',
+    configPath: 'monitoring.overloadShed.enabled',
+    defaultEnabled: false, // dark on the fleet; ON (dry-run) for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'OverloadShedPlanner',
+    description: 'Overload shed (trustworthy-machine-load Part D): moves existing conversations off a machine that has stayed overloaded, one at a time with a 2/hour breaker; dry-run logs would-move only.',
   },
   {
     key: 'monitoring.processFootprintMonitor.enabled',
@@ -1215,6 +1250,7 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'ThrowawayAgentGuard', reason: 'Pure classification module + init/teardown helpers called inline by installAutoStart, the scheduler admission gate and the server/lifeline startup decision (test-agent-leak-guard). Always-on safety floor with no enabled flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },
   { component: 'OriginToolGuard', reason: 'Generates an always-on harness hook, not a boot-constructed server monitor. Actual installed hook enrollment is reported by the Telegram origin activation matrix.' },
   { component: 'AgentIdentityDivergenceDetector', reason: 'Pure decision function over injected peer observations (agree / disagree / cannot-tell). It IS wired at boot in AgentServer and raises one deduped Attention item on a real split, but it registers no runtime getter and carries no enabled flag, so there is nothing for the /guards inventory to report a posture FOR. It moves to GUARD_MANIFEST if it ever gains a config gate or a status surface.' },
   { component: 'SessionPoolPromotionActivation', reason: 'Evidence-gated rollout actuator selected by promotionModel; it delegates every mutation to StageAdvancer and is not itself a protective guard. Its off/operator/auto posture is surfaced by the promotion route and machine-coherence manifest.' },

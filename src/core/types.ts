@@ -7,6 +7,8 @@
 
 // Type-only import (erased at compile time — types.ts stays runtime-import-free).
 import type { DecisionProvenanceBlock } from './decisionQualityTypes.js';
+import type { AnomalyDecl } from '../scheduler/jobScriptProtocol.js';
+import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 
 // ── Provider Credentials ────────────────────────────────────────────
 
@@ -505,6 +507,12 @@ export interface JobDefinition {
   expectedDurationMinutes: number;
   /** Model tier to use */
   model: ModelTier;
+  /** Benchmark-backed session pin. Both fields must be present; otherwise the
+   *  job stays on its existing default model and framework. */
+  framework?: IntelligenceFramework;
+  frameworkModel?: string;
+  /** Opt-in to reviewed, non-safety session-start context omissions. */
+  leanContext?: boolean;
   /** Whether this job is currently enabled */
   enabled: boolean;
   /** The skill or prompt to execute */
@@ -648,6 +656,32 @@ export interface JobDefinition {
     | 'untrusted-bad-signature'
     | 'untrusted-not-in-lockfile'
     | 'untrusted-hash-mismatch';
+  /** Job cost reduction §5.1 — `'script'` makes an instar-origin template run
+   *  its shipped node script (`scriptFile`) with no session. Accepted ONLY on
+   *  instar-origin templates in v1; user-origin `execute.type: 'script'` jobs
+   *  keep their shell behaviour. */
+  runner?: 'script';
+  /** Bare filename of the shipped script (`<slug>.mjs`, `^[a-z0-9-]+\.mjs$`).
+   *  Never a command line — the scheduler rebuilds the absolute path. */
+  scriptFile?: string;
+  /** The script's real bound; the execution timeout is twice this. */
+  scriptTimeoutMinutes?: number;
+  /** Declared anomaly kinds (§5.3). Undeclared kinds are ignored + logged. */
+  anomalies?: AnomalyDecl[];
+  /** Supervision class for a script job (§5.6.1). */
+  scriptSupervision?: 'triage' | 'deterministic';
+  /** Triage evidence projection (§5.6.2, F17). */
+  triageEvidence?: 'full' | 'structured-only';
+  /** Allowed `JOB_FIELD` keys (§5.2). */
+  triageFields?: string[];
+  /** Exact `JOB_RESULT ok` summaries that are bare-ok (no triage call). */
+  triageBareOk?: string[];
+  /** Skipped reason codes that are bare (no triage call). */
+  triageBareSkipped?: string[];
+  /** The signed lock-file's scriptHash for this job, set by the loader only
+   *  when the job is `trusted`. The scheduler re-hashes the script against it
+   *  immediately before every execution. */
+  scriptHashExpected?: string;
 }
 
 /** A pre-confirmed resolution for a common blocker pattern. */
@@ -755,7 +789,9 @@ export interface JobState {
    */
   firstSeenAt?: string;
   lastRun?: string;
-  lastResult?: 'success' | 'failure' | 'timeout' | 'pending';
+  /** `skipped` (job-cost-reduction §5.2): a script reported nothing to do.
+   *  It neither raises nor resets consecutiveFailures. */
+  lastResult?: 'success' | 'failure' | 'timeout' | 'pending' | 'skipped';
   /** Error message from the last failure (cleared on success) */
   lastError?: string;
   /** Handoff notes from the last successful run — claims to verify, not facts */
@@ -767,6 +803,12 @@ export interface JobState {
 }
 
 export interface JobSchedulerConfig {
+  /**
+   * Test-agent leak guard: a throwaway-located agent refuses every scheduled
+   * job (it cannot prove a session would not use the operator's real login).
+   * true is the explicit override for a test that arranged its own login.
+   */
+  allowOnThrowawayAgent?: boolean;
   /** Path to jobs definition file */
   jobsFile: string;
   /** Whether the scheduler is active */
@@ -795,6 +837,9 @@ export interface JobSchedulerConfig {
   authToken?: string;
   /** Project name exposed as $INSTAR_AGENT_ID so gate shells can bind bearer auth to this agent. */
   projectName?: string;
+  /** Agent HTTP port exposed to script-runner jobs as $INSTAR_PORT
+   *  (job-cost-reduction §5.1). Falls back to `.instar/config.json` port. */
+  port?: number;
   /** Wake-time job reaper — closes runs left pending after the host wakes from sleep. */
   wakeReaper?: {
     /** Minimum sleep duration (seconds) to trigger a reap pass. Defaults to 60. */
@@ -1177,6 +1222,16 @@ export interface IntelligenceOptions {
      * downgraded to `background` (the safe default). Omitted ⇒ background.
      */
     lane?: 'interactive' | 'background';
+    /**
+     * Job-cost attribution (docs/specs/job-cost-reduction.md §9.1): set ONLY by a
+     * call made FOR a scheduled job (anomaly narrator, triage referee, backup check,
+     * supervision pass). Recorded on the feature-metrics row so GET /jobs/cost can
+     * total per-slug spend exactly. Content-free labels; no routing effect.
+     */
+    jobSlug?: string;
+    machineId?: string;
+    /** The run id or anomaly-episode id the call was made for. */
+    runId?: string;
   };
   /**
    * Optional token-usage callback (Iris-audit item 1, spec
@@ -1362,11 +1417,14 @@ export type SkipReason =
   | 'paused'          // Scheduler is paused
   | 'quota'           // Quota constraints
   | 'memory-pressure' // Memory gate blocked the job (distinct from quota)
+  | 'overload'        // Machine overloaded: admission closed to new automatic work (trustworthy-machine-load C1)
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
+  | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
+  | 'script-cap'      // job-cost-reduction F8: 3 scripts already running on this server (retried in 1 min)
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**
@@ -3570,6 +3628,17 @@ export interface InstarConfig {
       sweepIntervalMs?: number;
       dryRun?: boolean;
     };
+    /**
+     * attention-lifecycle-close-on-cause §3.5: a commitment waiting on the
+     * operator (owner:user / blocked on user-input or user-authorization)
+     * expires after `maxAgeDays` (default 14) instead of waiting forever.
+     * Own `dryRun`, default false. Rides the auto-expiry sweep cadence.
+     */
+    operatorWait?: {
+      enabled?: boolean;
+      maxAgeDays?: number;
+      dryRun?: boolean;
+    };
     agentOwnedFollowthrough?: {
       enabled?: boolean;
       dryRun?: boolean;
@@ -4100,6 +4169,25 @@ export interface InstarConfig {
       maxChecksPerDay?: number;
     };
     /**
+     * Model assessment of machine load (trustworthy-machine-load B4). ADVISORY,
+     * LOG-ONLY: when a machine's own load verdict and the outside view disagree,
+     * or its readings contradict, Jev (Luna referee when unsure) labels it and
+     * the label is graded 15 min later. Acts on nothing. `enabled` OMITTED ⇒ the
+     * development-agent gate decides; explicit false is the kill switch, read
+     * live. Needs the vault `typesafe_api_key`.
+     */
+    jevLoadAssessment?: {
+      enabled?: boolean;
+      /** Pinned Jev model id (default "jev-1.13.0"). */
+      model?: string;
+      /** Hard abort per Jev call (default 1500, max 10000). */
+      timeoutMs?: number;
+      /** Daily bound on attempted Jev calls (default 200). */
+      maxChecksPerDay?: number;
+      /** The Luna referee for unsure answers; on unless `enabled: false`. */
+      referee?: { enabled?: boolean; timeoutMs?: number };
+    };
+    /**
      * Jev job-completion audit (docs/specs/jev-job-supervision.md). DARK by
      * default. Observe-only: captures an evidence pack when a scheduled job
      * completes, and a batch job asks Jev whether the evidence shows the
@@ -4453,6 +4541,28 @@ export interface InstarConfig {
   enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build')[];
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
+  /**
+   * Test-agent leak guard (docs/specs/test-agent-leak-guard.md). Recorded by
+   * `instar init` when it created this agent in a temporary folder or under a
+   * sandboxed HOME (or with --expires-in). Once expiresAt passes, the server
+   * and lifeline remove this agent's own autostart and exit for good.
+   */
+  throwawayAgent?: {
+    createdAt: string;
+    expiresAt?: string;
+    reasons?: string[];
+  };
+  /**
+   * Install-time autostart posture. `autoInstall: false` (recorded by a
+   * non-interactive `instar init` without --autostart) stops the server and
+   * lifeline startup self-heals from installing or regenerating the autostart
+   * unit on their own. `instar autostart install` is the explicit request and
+   * sets it back to true.
+   */
+  autostart?: {
+    autoInstall?: boolean;
+    reason?: string;
+  };
   /** Registered users */
   users: UserProfile[];
   /** Messaging adapters to enable */
@@ -6518,6 +6628,38 @@ export interface MonitoringConfig {
     retentionDays?: number;
   };
   /**
+   * Overload admission (trustworthy-machine-load Part C): close this machine to new
+   * automatic work while it is saturated/impaired, keep one host-wide recovery slot
+   * for an operator session, and advertise the state so placement skips it.
+   * `enabled` undefined resolves via the developmentAgent gate; `dryRun` defaults
+   * true (log would-refuse, refuse nothing). Status: GET /work-admission.
+   */
+  workAdmission?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Consecutive ok/elevated samples (15 s each) before admission reopens (default 5). */
+    reopenAfterGoodSamples?: number;
+    /** Consecutive saturated/impaired samples before the self-help notice (default 3). */
+    selfHelpAfterSaturatedSamples?: number;
+  };
+  /**
+   * Overload shed (trustworthy-machine-load Part D): move existing conversations off
+   * this machine once its admission has stayed closed for 3 minutes, one at a time,
+   * through the ownership reconciler. `enabled` undefined resolves via the
+   * developmentAgent gate; `dryRun` defaults true (log would-move, move nothing).
+   * Status: GET /overload-shed.
+   */
+  overloadShed?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Admission must stay closed this long before this machine sheds (default 180000). */
+    sourceAfterMs?: number;
+    /** Breaker: moves proposed per hour from this machine (default 2). */
+    maxMovesPerHour?: number;
+    /** Same-topic cooldown, and how long a machine seen refusing work is not a target (default 1800000). */
+    recentShedMs?: number;
+  };
+  /**
    * ProcessFootprintMonitor — observe-only per-machine process-count measurement
    * (the climb signal missing before the 2026-06-26 resource-exhaustion panic).
    * `enabled` undefined resolves via the developmentAgent gate (live on echo, dark
@@ -6712,8 +6854,19 @@ export interface MonitoringConfig {
      *  (overall tier = worst of memory and CPU). Default 1.0. */
     cpuModerateLoadPerCore?: number;
     /** CPU pressure: load-per-core at/above which pressure is `critical`.
-     *  Default 1.5. */
+     *  Default 1.5. Decides cpuTier ONLY under `cpuSignal: 'load'`. */
     cpuCriticalLoadPerCore?: number;
+    /**
+     * Which CPU signal decides cpuTier (spec reaper-pressure-signals). `'busy'` (default):
+     * sampled real CPU busy % from os.cpus() tick deltas. `'load'`: the legacy 1-min load ÷
+     * cores — the rollback lever. The load average read 9.4/core on 2026-10-25 while the
+     * CPU was 36-44% idle (macOS counts I/O-blocked threads), so it is no longer the default.
+     */
+    cpuSignal?: 'busy' | 'load';
+    /** Busy-% at/above which cpuTier is `moderate` (cpuSignal 'busy'). Default 75. */
+    cpuModerateBusyPct?: number;
+    /** Busy-% at/above which cpuTier is `critical` (cpuSignal 'busy'). Default 90. */
+    cpuCriticalBusyPct?: number;
     /** Under CPU pressure, require positive descendant-CPU progress before the
      *  `active-process` existence-veto keeps a session — so a wedged/idle child
      *  (live PID, ~0 CPU) no longer holds an otherwise-reapable idle session
@@ -7105,6 +7258,37 @@ export interface MonitoringConfig {
     reapIntervalMs?: number;
     maxReapsPerPass?: number;
     maxAncestorHops?: number;
+  };
+  /**
+   * CodexArmSessionSweeper (spec docs/specs/codex-arm-session-leak-and-sweeper.md).
+   * Closes the detached `instar-codex-arm-*` tmux sessions codexHookArm leaks when
+   * the process that created them is killed before its `finally` runs — which is
+   * PostUpdateMigrator on every update, during which the server restarts (~8
+   * orphans/day measured on one laptop; 41 retired by hand across two sweeps).
+   * Reads the MACHINE (`tmux ls`), never instar's own session registry, because an
+   * arm session is never registered there — the exact reason the leak was invisible
+   * (`GET /sessions` said 11 while the machine held 112). Ships enabled in DRY-RUN:
+   * the source fix stops new orphans, so the sweeper reports the backlog and kills
+   * nothing until `dryRun: false`. GET /codex-arm-sweeper.
+   */
+  codexArmSessionSweeper?: {
+    enabled?: boolean;
+    /** Default true: report would-kills (`wouldKillDistinct`), kill nothing. */
+    dryRun?: boolean;
+    /** Default 900_000; clamped to a 300_000 floor (~2x the ~150 s modeled arming budget). */
+    maxAgeMs?: number;
+    sweepIntervalMs?: number;
+    initialPassDelayMs?: number;
+    /** Kill ATTEMPTS per pass (dry-run and failures count). Default 50. */
+    maxKillsPerPass?: number;
+    /** Wall-clock budget per pass for the synchronous kill path. Default 3000. */
+    maxPassMs?: number;
+    /** Consecutive unreadable passes before the breaker opens. Default 5. */
+    maxConsecutiveListFailures?: number;
+    /** While open, one probe is let through every this many passes. Default 6. */
+    breakerProbeEveryPasses?: number;
+    /** Failed kills of one name before it is never retried. Default 3. */
+    maxKillFailuresPerSession?: number;
   };
   /**
    * Agent hard-sleep — SleepController decision foundation (RESPONSIBLE-RESOURCE-

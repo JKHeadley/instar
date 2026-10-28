@@ -109,6 +109,30 @@ describe('JobScheduler × WS4.3 journal-lease cutover', () => {
     expect(h.leaseStore.getClaim('daily-sync')).toBeUndefined();
   });
 
+  it('BUS completion leaves a stale local journal claim untouched', async () => {
+    h = makeHarness({ enabled: false, dryRun: false, epoch: 7, peers: [] });
+    const stale = h.leaseStore.tryClaim('daily-sync', 7);
+    expect(stale.ok).toBe(true);
+    expect(await h.scheduler.triggerJob('daily-sync', 'manual')).toBe('triggered');
+    const busClaimId = h.busClaim.getClaim('daily-sync')?.claimId;
+    expect(busClaimId).toBeTruthy();
+    (h.scheduler as unknown as { releaseClaim(slug: string, result: 'success' | 'failure'): void })
+      .releaseClaim('daily-sync', 'success');
+    expect(h.busClaim.getClaim('daily-sync')?.completed).toBe(true);
+    expect(h.leaseStore.getClaim('daily-sync')?.claimId).toBe(stale.ok ? stale.claim.claimId : '');
+    expect(h.leaseStore.getClaim('daily-sync')?.completed).toBe(false);
+  });
+
+  it('JOURNAL completion does not complete an unrelated bus claim', async () => {
+    h = makeHarness(coherent());
+    await h.busClaim.tryClaim('daily-sync');
+    expect(await h.scheduler.triggerJob('daily-sync', 'manual')).toBe('triggered');
+    (h.scheduler as unknown as { releaseClaim(slug: string, result: 'success' | 'failure'): void })
+      .releaseClaim('daily-sync', 'success');
+    expect(h.leaseStore.getClaim('daily-sync')?.completed).toBe(true);
+    expect(h.busClaim.getClaim('daily-sync')?.completed).toBe(false);
+  });
+
   it('dry-run on a coherent pool → bus path runs, journal NOT taken', async () => {
     h = makeHarness({ enabled: true, dryRun: true, epoch: 7,
       peers: [{ machineId: 'm2', online: true, ws43JournalLease: true }] });

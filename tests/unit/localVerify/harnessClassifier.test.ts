@@ -66,6 +66,9 @@ describe('classifyHarness: package.json', () => {
     expect(run({ ...PKG, devDependencies: { ...PKG.devDependencies, '@vitest/coverage-v8': '^2.1.9' } }).reasons).toEqual(['package.json:toolchain']);
     expect(run({ ...PKG, devDependencies: { ...PKG.devDependencies, tsx: '^4.0.0' } }).reasons).toEqual(['package.json:toolchain']);
   });
+  it('a change to the TypeScript 7 compiler alias the build runs is a toolchain change', () => {
+    expect(run({ ...PKG, devDependencies: { ...PKG.devDependencies, 'typescript-native': 'npm:typescript@7.0.3' } }).reasons).toEqual(['package.json:toolchain']);
+  });
   it('unreadable or unparseable package.json is harness-changing', () => {
     expect(classifyHarness({ changedPaths: ['package.json'] }).reasons).toEqual(['package.json:unreadable']);
     expect(classifyHarness({ changedPaths: ['package.json'], packageJson: { base: j(PKG), head: null } }).harnessChanging).toBe(true);
@@ -91,6 +94,13 @@ describe('classifyHarness: package-lock.json', () => {
       .toEqual(['package-lock.json:toolchain']);
     expect(run({ ...LOCK, packages: { ...LOCK.packages, 'node_modules/@vitest/runner': { version: '2.1.9', integrity: 'sha512-EVIL' } } }).harnessChanging).toBe(true);
     expect(run({ ...LOCK, packages: { ...LOCK.packages, 'node_modules/foo/node_modules/typescript': { version: '4.0.0' } } }).harnessChanging).toBe(true);
+  });
+  it('the TypeScript 7 alias and its native platform binaries are toolchain packages', () => {
+    expect(run({ ...LOCK, packages: { ...LOCK.packages, 'node_modules/typescript-native': { version: '7.0.3', integrity: 'sha512-x' } } }).reasons)
+      .toEqual(['package-lock.json:toolchain']);
+    expect(run({ ...LOCK, packages: { ...LOCK.packages, 'node_modules/@typescript/typescript-linux-x64': { version: '7.0.3', integrity: 'sha512-y' } } }).harnessChanging).toBe(true);
+    // A similarly named scope is not.
+    expect(run({ ...LOCK, packages: { ...LOCK.packages, 'node_modules/@typescript-eslint/parser': { version: '8.0.0', integrity: 'sha512-z' } } }).harnessChanging).toBe(false);
   });
   it('a v1 lockfile dependencies tree is read too', () => {
     const v1 = { lockfileVersion: 1, dependencies: { foo: { version: '1.0.0', dependencies: { tsx: { version: '4.0.0' } } } } };

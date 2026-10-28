@@ -9,6 +9,7 @@
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
+import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { randomUUID, type KeyObject } from 'node:crypto';
@@ -73,6 +74,7 @@ import { hostFreeMemPct, type MemReadDeps } from '../monitoring/hostMemoryPressu
 import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { classifyLoginExpired } from './LoginExpiredSignature.js';
+import type { InteractiveLoginExpiredSignal } from './InteractiveLoginExpiredRecovery.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import { resolveIdleSinceSeed } from './idleSincePersistence.js';
 import type { InputDetector } from '../monitoring/PromptGate.js';
@@ -340,6 +342,12 @@ const STARTUP_TAIL_WINDOW_MS = 120_000;
 /** How long a rerouted session must keep showing the expired-login frame before
  *  the monitor ends it (one frame alone never ends a session). */
 const LOGIN_EXPIRED_DWELL_MS = 60_000;
+/** Interactive sessions: how often the live tail is checked for the expired-login frame
+ *  (cheaper than every 5 s tick; well inside the ~1 minute recovery budget). */
+const INTERACTIVE_LOGIN_CHECK_INTERVAL_MS = 20_000;
+/** Interactive sessions: a session still at the screen after a recovery attempt is offered
+ *  again only after this long (the recovery owns its own per-session cooldown too). */
+const INTERACTIVE_LOGIN_REPORT_RETRY_MS = 10 * 60_000;
 /** Prepended to a topic bootstrap when its earlier conversation could not be reopened (spec §3.1, P24 in-band disclosure). */
 export const RESUME_REOPEN_FAILED_NOTE =
   'Note: your earlier conversation in this topic could not be reopened, so you only have the recent topic messages below.';
@@ -669,6 +677,31 @@ export function applyClaudeConfinement(argv: string[], confinement: { tmpDir: st
   const pairs = Object.entries(allow).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '' && !isCredentialEnvName(e[0])).map(([k, v]) => `${k}=${v}`);
   argv.unshift('/usr/bin/env', '-i', ...pairs);
   return envFlags;
+}
+
+/**
+ * Tool confinement without an OS sandbox (job-cost-reduction §5.6.2, triage sessions): drop
+ * `--dangerously-skip-permissions`, add the confined permission form with `--tools <list>` (before
+ * `-p` when present), and assert it. The caller also passes `--allowedTools <list>` (so `dontAsk`
+ * permits exactly those tools) and `--strict-mcp-config --mcp-config {}` (no MCP servers load).
+ * Throws when the mode was not applied, so a spawn can never silently run with full permissions.
+ */
+export function applyClaudeToolConfinement(argv: string[], tools: string[]): void {
+  if (tools.length === 0 || tools.some((t) => !/^[A-Za-z][A-Za-z0-9_]*$/.test(t))) {
+    throw new Error('confined-tools-invalid: tool names must be plain identifiers');
+  }
+  const form: string[] = [...CLAUDE_CONFINED_PERMISSION_ARGS];
+  const toolsAt = form.indexOf('--tools');
+  form[toolsAt + 1] = tools.join(',');
+  let dangerous = argv.indexOf('--dangerously-skip-permissions');
+  while (dangerous >= 0) { argv.splice(dangerous, 1); dangerous = argv.indexOf('--dangerously-skip-permissions'); }
+  const dashP = argv.indexOf('-p');
+  argv.splice(dashP > 0 ? dashP : argv.length, 0, ...form);
+  const at = argv.indexOf('--tools');
+  if (argv.includes('--dangerously-skip-permissions') || !argv.includes('dontAsk') || at < 0 || argv[at + 1] !== tools.join(',')
+    || !argv.includes('--strict-mcp-config')) {
+    throw new Error('confined-tools-adapter-missing: the confined permission mode was not applied');
+  }
 }
 
 export class SessionManager extends EventEmitter {
@@ -1043,6 +1076,10 @@ export class SessionManager extends EventEmitter {
    * longer running, and whenever the frame is no longer the live tail.
    */
   private readonly loginExpiredFirstSeen = new Map<string, number>();
+  /** Interactive (non-job) sessions: last time the live tail was checked for the expired-login
+   *  frame, and when the current episode was last handed to the recovery sink (CMT-1008). */
+  private readonly interactiveLoginLastCheckAt = new Map<string, number>();
+  private readonly interactiveLoginReportedAt = new Map<string, number>();
   /** Terminal child status sampled from a tmux pane retained by
    * `remain-on-exit failed`; consumed by the self-exit transition. */
   private readonly terminalExitCodes = new Map<string, number>();
@@ -1659,6 +1696,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   private maybeEscalateIdleZombieVeto(session: Session, topicId: number | null, reasonKey: string): void {
     const incidentKey = 'idle-zombie-veto:' + (topicId ?? 'none') + ':' + reasonKey;
     if (this.incidentDedupe?.shouldEmit(incidentKey, 24 * 60 * 60 * 1000)) {
+      this.idleZombieVetoEscalated.set(session.id, topicId);
       this.emit('idleZombieVetoEscalation', {
         session,
         topicId,
@@ -1680,6 +1718,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
    *
    * @returns whether a kill was actually performed (for the caller's WARN wording).
    */
+  /**
+   * attention-lifecycle-close-on-cause §3.3 — sessions whose idle-zombie veto was
+   * escalated to the attention queue, by topic. When the veto ends (the session
+   * was finally killed, or its backoff state is dropped because it is gone) the
+   * server closes that row via `idleZombieVetoCleared`.
+   */
+  private readonly idleZombieVetoEscalated = new Map<string, number | null>();
+
+  private noteIdleZombieVetoEnded(sessionId: string): void {
+    if (!this.idleZombieVetoEscalated.has(sessionId)) return;
+    const topicId = this.idleZombieVetoEscalated.get(sessionId) ?? null;
+    this.idleZombieVetoEscalated.delete(sessionId);
+    this.emit('idleZombieVetoCleared', { sessionId, topicId });
+  }
+
   private async handleIdleZombie(
     session: Session,
     idleMs: number,
@@ -1709,6 +1762,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (result.terminated) {
         console.warn(`[SessionManager] Session "${session.name}" idle at prompt for ${Math.round(idleMs / 60_000)}m with no active processes${bindingNote}. Killing zombie.`);
         this.idleKillBackoff.recordKilled(session.id);
+        this.noteIdleZombieVetoEnded(session.id);
       } else {
         const vetoKey = normalizeReasonKey(result.skipped ? { reason: result.skipped } : null)
           ?? verdict.reasonKey ?? 'unknown';
@@ -1894,10 +1948,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   /** Signal sink for "this session showed Claude Code's Login expired frame under this config
    *  home". Wired by server.ts to the QuotaPoller, which alone decides pool status. */
-  private loginExpiredSink: ((input: { configHome: string; session: string }) => void) | null = null;
+  private loginExpiredSink: ((input: { configHome: string; session: string; messageLed?: boolean }) => void) | null = null;
 
-  setLoginExpiredSink(fn: ((input: { configHome: string; session: string }) => void) | null): void {
+  /** `messageLed` (CMT-1008): the frame was the CLI's own `⏺` message line, not a tool result —
+   *  only then may the sighting change pool state on its own. */
+  setLoginExpiredSink(fn: ((input: { configHome: string; session: string; messageLed?: boolean }) => void) | null): void {
     this.loginExpiredSink = fn;
+  }
+
+  /** Signal sink for "this INTERACTIVE session has sat at Claude Code's expired-login screen past
+   *  the dwell" (CMT-1008). Wired by server.ts to InteractiveLoginExpiredRecovery, which owns the
+   *  pool marking and the swap; this class only detects. */
+  private interactiveLoginExpiredSink: ((input: InteractiveLoginExpiredSignal) => void | Promise<unknown>) | null = null;
+
+  setInteractiveLoginExpiredSink(fn: ((input: InteractiveLoginExpiredSignal) => void | Promise<unknown>) | null): void {
+    this.interactiveLoginExpiredSink = fn;
   }
 
   /** The configured standing-session entries (tmux names and `topic:<id>`). */
@@ -2004,7 +2069,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const liveConfigHome = this.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true });
     const configHome = liveConfigHome ?? 'the default login';
     if (liveConfigHome && this.loginExpiredSink) {
-      try { this.loginExpiredSink({ configHome: liveConfigHome, session: session.tmuxSession }); }
+      try { this.loginExpiredSink({ configHome: liveConfigHome, session: session.tmuxSession, messageLed: verdict.messageLed === true }); }
       catch { /* @silent-fallback-ok — a signal sink failure must never block ending the session */ }
     }
     console.warn(`[SessionManager] Rerouted session "${session.name}" is stuck at an expired login (${configHome}): "${verdict.matchedLine}". Ending it so its slot is freed.`);
@@ -2027,6 +2092,63 @@ rm()  { "${shimRunner}" rm  "$@"; }
       });
     }
     return killed.terminated;
+  }
+
+  /**
+   * Interactive-branch helper (CMT-1008): a topic-bound Claude Code session placed on a login whose
+   * CLI sign-in has expired shows "Login expired · Please run /login" (or "Not logged in · Run
+   * /login") on every turn and never recovers on its own. When the live tail has shown that frame
+   * for LOGIN_EXPIRED_DWELL_MS, hand it to the recovery sink once per episode (re-offered after
+   * INTERACTIVE_LOGIN_REPORT_RETRY_MS if the screen persists). Detection only: it never kills,
+   * swaps, or touches pool state itself. Never throws into the tick.
+   */
+  private async reportInteractiveLoginExpired(session: Session): Promise<void> {
+    if (!this.interactiveLoginExpiredSink) return;
+    const key = session.tmuxSession;
+    const now = Date.now();
+    const lastCheck = this.interactiveLoginLastCheckAt.get(key);
+    if (lastCheck !== undefined && now - lastCheck < INTERACTIVE_LOGIN_CHECK_INTERVAL_MS) return;
+    this.interactiveLoginLastCheckAt.set(key, now);
+    let pane = '';
+    try {
+      pane = (await this.captureOutputMaybeAsync(key, 40)) || '';
+    } catch { /* @silent-fallback-ok — an unreadable pane is re-checked next interval */
+      return;
+    }
+    const verdict = classifyLoginExpired(pane);
+    // Only the CLI's own message line counts here: a `⎿`-led tool result (e.g. the session ran
+    // `claude auth status` against some login) must never mark this session's account.
+    if (!verdict.loginExpired || !verdict.messageLed) {
+      this.loginExpiredFirstSeen.delete(key);
+      this.interactiveLoginReportedAt.delete(key);
+      return;
+    }
+    const firstSeen = this.loginExpiredFirstSeen.get(key);
+    if (firstSeen === undefined) {
+      this.loginExpiredFirstSeen.set(key, now);
+      return;
+    }
+    if (now - firstSeen < LOGIN_EXPIRED_DWELL_MS) return;
+    const reportedAt = this.interactiveLoginReportedAt.get(key);
+    if (reportedAt !== undefined && now - reportedAt < INTERACTIVE_LOGIN_REPORT_RETRY_MS) return;
+    this.interactiveLoginReportedAt.set(key, now);
+    const configHome = this.configHomeForSession(key, { defaultWhenUnset: true });
+    console.warn(`[SessionManager] Interactive session "${session.name}" is stuck at an expired login (${configHome ?? 'unknown login'}): "${verdict.matchedLine}". Handing it to login-expired recovery.`);
+    try {
+      const r = this.interactiveLoginExpiredSink({
+        session: key,
+        sessionName: session.name,
+        configHome: configHome ?? null,
+        accountId: session.subscriptionAccountId ?? null,
+        matchedLine: verdict.matchedLine ?? '',
+        protected: this.config.protectedSessions.includes(key),
+      });
+      if (r && typeof (r as Promise<unknown>).catch === 'function') {
+        (r as Promise<unknown>).catch((err) => console.warn(`[SessionManager] login-expired recovery for "${session.name}" failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    } catch (err) { /* @silent-fallback-ok — a sink failure is logged and re-offered after the retry interval */
+      console.warn(`[SessionManager] login-expired recovery for "${session.name}" threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async terminateSession(
@@ -2659,10 +2781,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (!live.has(key)) this.startupTails.delete(key);
         }
       }
-      if (this.loginExpiredFirstSeen.size > 0) {
+      if (this.loginExpiredFirstSeen.size > 0 || this.interactiveLoginLastCheckAt.size > 0 || this.interactiveLoginReportedAt.size > 0) {
         const live = new Set(running.map(s => s.tmuxSession));
-        for (const key of this.loginExpiredFirstSeen.keys()) {
-          if (!live.has(key)) this.loginExpiredFirstSeen.delete(key);
+        for (const m of [this.loginExpiredFirstSeen, this.interactiveLoginLastCheckAt, this.interactiveLoginReportedAt]) {
+          for (const key of m.keys()) {
+            if (!live.has(key)) m.delete(key);
+          }
         }
       }
       // Drop age-gate work memory for sessions that are no longer running
@@ -2835,6 +2959,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           // tick. Skip the rest of the loop body (the default exit/idle paths
           // below are tuned for the headless lane, not a held REPL).
           continue;
+        }
+
+        // Interactive (non-job) Claude Code session stuck at an expired login
+        // (CMT-1008): detection only — the recovery sink marks the pool and
+        // swaps the session onto a signed-in account. Falls through so the
+        // default lane below is unchanged.
+        if ((session.framework ?? 'claude-code') === 'claude-code' && !session.jobSlug) {
+          await this.reportInteractiveLoginExpired(session);
         }
 
         // Gemini CLI can complete a Telegram turn by rendering the final
@@ -3293,6 +3425,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * The numbers behind a memory-pressure refusal, so the message can be checked
+   * against other readings (trustworthy-machine-load, 2026-10-27: a refusal at
+   * ~80% used was misread as "41% free", a different macOS figure that counts
+   * compressible memory as free). Never throws.
+   */
+  private memoryPressureEvidence(deps: MemReadDeps = {}): string {
+    try {
+      const usedPercent = Math.round(100 - hostFreeMemPct(deps));
+      return `${usedPercent}% used, i.e. 100 minus free+inactive+purgeable, read just after the check; thresholds high 75%, critical 90%`;
+    } catch {
+      return 'reading unavailable'; // @silent-fallback-ok — evidence text for a message, never a decision input
+    }
+  }
+
+  /**
    * Current host memory-pressure tier (june15-headless-spawn-reroute PR2, O2).
    * Extracted from getSessionDiagnostics' inline computation so the reroute
    * pre-spawn gate and the diagnostics surface read ONE definition of pressure.
@@ -3395,6 +3542,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * (PARALLEL-DEV-ISOLATION-SPEC.md). Without `topicId`, falls back to the
    * legacy main-checkout behavior for back-compat with non-topic-bound jobs.
    */
+  /**
+   * Overload admission (trustworthy-machine-load Part C). Set by the server when
+   * WorkAdmission is constructed; null = no admission control (today's behavior).
+   */
+  private admissionGate: ((kind: AdmissionKind, sessionName: string) => AdmissionDecision) | null = null;
+  /** Releases a recovery slot taken at admission when the spawn fails before `running` (second-pass #1). */
+  private admissionRelease: ((sessionName: string) => void) | null = null;
+
+  setAdmissionGate(
+    gate: ((kind: AdmissionKind, sessionName: string) => AdmissionDecision) | null,
+    release: ((sessionName: string) => void) | null = null,
+  ): void {
+    this.admissionGate = gate;
+    this.admissionRelease = release;
+  }
+
+  private releaseAdmissionFor(sessionName: string): void {
+    try { this.admissionRelease?.(sessionName); } catch { /* @silent-fallback-ok — the slot is reclaimed by the startup grace / pid death */ }
+  }
+
+  /** Throws AdmissionRefusedError when an enforcing admission gate refuses the spawn. */
+  private checkAdmission(kind: AdmissionKind, sessionName: string): void {
+    if (!this.admissionGate) return;
+    let decision: AdmissionDecision;
+    try { decision = this.admissionGate(kind, sessionName); } catch (err) {
+      // @silent-fallback-ok (logged): a broken admission gate fails toward starting
+      // the session — reachability over protection (The Agent Is Always Reachable).
+      console.warn(`[SessionManager] admission gate failed, admitting ${sessionName}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!decision.allowed) throw new AdmissionRefusedError(decision.reason ?? 'overloaded', decision.detail ?? 'machine overloaded');
+  }
+
   async spawnSession(options: {
     name: string;
     prompt: string;
@@ -3493,6 +3673,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
      * framework, or a launch that would be rerouted to the interactive lane, is refused.
      */
     confinement?: { framework: 'claude-code'; settingsPath: string; tmpDir: string };
+    /**
+     * Narrow a claude-code session to exactly these tools (job-cost-reduction §5.6.2, triage
+     * sessions), on both the headless and the rerouted interactive lane: no
+     * `--dangerously-skip-permissions`; `--permission-mode dontAsk --tools <list> --no-chrome`,
+     * `--allowedTools <list>` and `--strict-mcp-config --mcp-config {}`. Asserted; the spawn fails
+     * if the form was not applied. Not an OS sandbox. No effect on other frameworks (they have no
+     * tool flag). Mutually exclusive with `confinement`, which has its own tool set.
+     */
+    confinedTools?: string[];
+    /**
+     * Launch on the agent's default model, ignoring `model` (the job's tier). Triage sessions use it:
+     * the operator asked for "a real session with real intelligence", not the template's tier.
+     */
+    useAgentDefaultModel?: boolean;
   }): Promise<Session> {
     if (options.cwd !== undefined) {
       const worktreesRoot = path.resolve(this.config.projectDir, '.worktrees');
@@ -3503,6 +3697,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!fs.existsSync(requested)) throw new Error('spawn-cwd-refused: directory does not exist');
     }
     if (options.confinement && !options.omitAuthEnv) throw new Error('confinement-requires-omit-auth-env');
+    if (options.confinement && options.confinedTools) throw new Error('confined-tools-conflicts-with-confinement');
+    if (options.confinedTools && options.confinedTools.length === 0) throw new Error('confined-tools-invalid: empty tool list');
+    if (options.useAgentDefaultModel) options = { ...options, model: undefined };
+    if (options.confinedTools) {
+      // dontAsk refuses any tool the settings do not allow: the allowlist IS the tool list.
+      options = { ...options, allowedTools: [...options.confinedTools], disableProjectMcp: true };
+    }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
     }
@@ -3521,6 +3722,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (this.tmuxSessionExists(tmuxSession)) {
       throw new Error(`tmux session "${tmuxSession}" already exists`);
     }
+    // Overload admission (Part C1): automatic work is not started on an
+    // overloaded machine; the caller retries (jobs) or keeps its message queued.
+    this.checkAdmission('automatic', tmuxSession);
 
     // ── PARALLEL-DEV-ISOLATION (PARALLEL-DEV-ISOLATION-SPEC.md AC-1) ──
     // If WorktreeManager is wired AND topicId provided, resolve a topic worktree
@@ -3755,6 +3959,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         headlessSpec.argv.splice(dashPIndex, 0, ...extraClaudeFlags);
       }
     }
+    if (options.confinedTools && headlessFramework === 'claude-code') {
+      applyClaudeToolConfinement(headlessSpec.argv, options.confinedTools);
+    }
 
     // Threadline A2A continuity (claude-code HEADLESS only): set/resume the
     // conversation id so follow-up messages on the same thread land in a warm
@@ -3830,7 +4037,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!options.omitAuthEnv) this.linkAgentOwnedMemory(headlessFramework, headlessSpec.envOverrides, resolvedCwd);
     const originEnvFlags = options.omitAuthEnv ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
       sessionId, harnessId: headlessFramework, projectDir: resolvedCwd,
-      configuredModel: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
+      configuredModel: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       configHome: this.originConfigHome(headlessFramework, headlessSpec.envOverrides),
     });
     // omitAuthEnv: blank every credential-shaped variable the tmux server could hand down.
@@ -3946,12 +4153,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       tmuxSession,
       startedAt: new Date().toISOString(),
       triggeredBy: options.triggeredBy,
-      // Record the framework-RESOLVED model, not the raw tier alias. A Codex
+      // Record the framework-RESOLVED launch model, not the raw tier alias. A Codex
       // agent's session must show its real gpt-5.x model on the dashboard, not
-      // the Claude tier nickname (haiku/sonnet) the caller passed. Falls back
-      // to the raw value when no mapping applies. + carry the framework so the
+      // the Claude tier nickname (haiku/sonnet) the caller passed. The launch
+      // model may also reflect a rate-limit swap. + carry the framework so the
       // dashboard can render engine-aware.
-      model: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
+      model: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       framework: headlessFramework,
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
@@ -4035,7 +4242,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     const why = reroutedCount >= maxRerouted
       ? `rerouted-session cap reached (${reroutedCount}/${maxRerouted})`
-      : `host memory pressure is ${pressure}`;
+      : `host memory pressure is ${pressure} (${this.memoryPressureEvidence()})`;
     if (mode === 'force') {
       // Loud refusal — force-mode has no headless fallback. Report AND throw.
       DegradationReporter.getInstance().report({
@@ -4191,6 +4398,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (extraClaudeFlags.length > 0) {
       launchSpec.argv.push(...extraClaudeFlags);
     }
+    if (options.confinedTools) applyClaudeToolConfinement(launchSpec.argv, options.confinedTools);
 
     // K9: build PATH env with shim prepended (when shim was installed) — same as
     // the headless block.
@@ -4227,25 +4435,30 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // headless confined launch — no agent authority in the tmux env, the shared adapter (G2/G4/G6),
     // and the prompt delivered as a FILE behind one fixed typed line (D1), never typed itself.
     const confinement = options.confinement;
+    // omitAuthEnv (job-cost-reduction §5.6.2): the token blanking and the credential-shaped-variable
+    // blanking are keyed on omitAuthEnv here exactly as on the headless lane (confinement implies it).
+    const omitAuth = Boolean(confinement) || Boolean(options.omitAuthEnv);
     let confinedEnvFlags: string[] = [];
     let confinedPromptPath: string | null = null;
-    if (confinement) {
-      // The trust dialog is matched on the exact workspace path, which must be whitespace-free; refuse
-      // by name here rather than failing every startup as `dialog-unknown` (spec D2 rule 3).
-      if (/\s/.test(resolvedCwd)) throw new Error('confinement-adapter-missing: workspace-path-whitespace — the confined workspace path contains whitespace');
+    if (omitAuth) {
       for (const key of Object.keys(process.env).sort()) {
         if (isCredentialEnvName(key) && key !== 'CLAUDE_CONFIG_DIR') confinedEnvFlags.push('-e', `${key}=`);
       }
       confinedEnvFlags.push('-e', 'GH_TOKEN=', '-e', 'GITHUB_TOKEN=', '-e', 'INSTAR_BIND_TOKEN=', '-e', 'INSTAR_FENCING_TOKEN=');
+    }
+    if (confinement) {
+      // The trust dialog is matched on the exact workspace path, which must be whitespace-free; refuse
+      // by name here rather than failing every startup as `dialog-unknown` (spec D2 rule 3).
+      if (/\s/.test(resolvedCwd)) throw new Error('confinement-adapter-missing: workspace-path-whitespace — the confined workspace path contains whitespace');
       confinedEnvFlags.push(...applyClaudeConfinement(launchSpec.argv, confinement, { sessionId, tmuxSession },
         launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR));
       confinedPromptPath = path.join(path.resolve(confinement.tmpDir), `confined-prompt-${sessionId}.md`);
       confinedPromptLine(confinedPromptPath); // validates the path shape before anything runs
       fs.writeFileSync(confinedPromptPath, promptWithSentinel, { mode: 0o600, flag: 'wx' });
-    } else {
+    } else if (!omitAuth) {
       this.linkAgentOwnedMemory('claude-code', launchSpec.envOverrides, resolvedCwd);
     }
-    const originEnvFlags = confinement ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
+    const originEnvFlags = omitAuth ? ['-e', 'INSTAR_ORIGIN_TOKEN='] : await this.originTokenEnvFlags({
       sessionId, harnessId: 'claude-code', projectDir: resolvedCwd, configuredModel: launchModel,
       configHome: this.originConfigHome('claude-code', launchSpec.envOverrides),
     });
@@ -4269,7 +4482,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ...originEnvFlags,
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
-        '-e', `INSTAR_AUTH_TOKEN=${confinement ? '' : this.config.authToken}`,
+        '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -4296,9 +4509,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
               '-e', 'INSTAR_HOST_TEST_RUN_CLASS=background',
             ]
           : []),
-        ...(confinement ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
-        ...(workTreeFencingToken && !confinement ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
-        ...(workTreeFencingToken && !confinement ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
+        ...(omitAuth ? [] : this.ghTokenEnvFlags()), // P3b: per-agent vault GitHub token (empty when no vault token)
+        ...(workTreeFencingToken && !omitAuth ? ['-e', `INSTAR_FENCING_TOKEN=${workTreeFencingToken}`] : []),
+        ...(workTreeFencingToken && !omitAuth ? ['-e', `INSTAR_WORKTREE_PATH=${resolvedCwd}`] : []),
         ...(shimDir ? ['-e', `PATH=${shimmedPath}`, '-e', `BASH_ENV=${path.join(shimDir, '.shellrc')}`] : []),
         ...anthropicEnvFlags,
         // Same DB-credential isolation as every other spawn (Portal 2026-02-22).
@@ -4353,7 +4566,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       completionMode: 'pattern',
       completionPatterns: [sentinel],
       // A confined caller's own bound is its contract (the canary 10 min, a build its lease).
-      maxLifetimeMinutes: confinement ? (options.maxDurationMinutes ?? lifetimeMinutes) : lifetimeMinutes,
+      // A triage session (omitAuthEnv) has its own bound too (job-cost-reduction §5.6.2: 2× expected, ≤30 min).
+      maxLifetimeMinutes: omitAuth ? (options.maxDurationMinutes ?? lifetimeMinutes) : lifetimeMinutes,
       ...(confinement ? { confinedConfigHome: launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
     };
     // Saved BEFORE any startup step: the monitor and both auto-answerers see this session only
@@ -4798,6 +5012,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // the CAS guard + endedReason are the only additions here.
       this.idlePromptSince.delete(session.id);
       this.idleKillBackoff?.clear(session.id); // session gone → drop veto-backoff state (map-leak eviction)
+      this.noteIdleZombieVetoEnded(session.id);
       this.reapingSessions.delete(session.id);
       // G3 (MESH-SELF-HEAL-SPEC §3.3, FD7): "a topic→session binding exists IFF a
       // live session exists." killSession historically did NOT clear the binding,
@@ -6425,6 +6640,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (this.state.removeSession(session.id)) {
           cleaned.push(session.id);
           this.idleKillBackoff?.clear(session.id); // map-leak eviction (Fix A finding 1)
+          this.noteIdleZombieVetoEnded(session.id);
         }
       } else {
         retained.push({ id: session.id, endedAt: Number.isNaN(endedAt) ? 0 : endedAt });
@@ -6439,6 +6655,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (this.state.removeSession(s.id)) {
           cleaned.push(s.id);
           this.idleKillBackoff?.clear(s.id); // map-leak eviction (Fix A finding 1)
+          this.noteIdleZombieVetoEnded(s.id);
         }
       }
     }
@@ -6665,6 +6882,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         `Running: ${runningSessions.map(s => s.name).join(', ')}`
       );
     }
+    // Overload admission (Part C2): while overloaded, an operator session starts
+    // only by taking the one host-wide recovery slot.
+    this.checkAdmission('operator', tmuxSession);
 
     // Generate session ID before tmux spawn so we can pass it as env var
     const interactiveSessionId = this.generateId();
@@ -6955,6 +7175,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     } catch (err) {
       this.revokeOriginSession(interactiveSessionId);
+      this.releaseAdmissionFor(tmuxSession); // a failed spawn must not hold the recovery slot
       throw new Error(`Failed to create interactive tmux session: ${this.originSpawnError(err)}`);
     }
 
@@ -7109,6 +7330,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           this.state.saveSession(failed);
         }
       } catch { /* state cleanup is best-effort */ }
+      this.releaseAdmissionFor(tmuxSession); // the fresh respawn below re-admits on its own
 
       this.emit('resumeFailed', {
         tmuxSession,

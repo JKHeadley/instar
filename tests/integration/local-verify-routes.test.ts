@@ -56,10 +56,12 @@ function record(): LocalVerifyRecord {
   };
 }
 
-function setup(views: Record<number, PrView>) {
-  const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
-  dirs.push(stateDir);
+function setup(views: Record<number, PrView>, existingStateDir?: string) {
+  const stateDir = existingStateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
+  if (!existingStateDir) dirs.push(stateDir);
   const children: Array<{ resultPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
+  const priorities: boolean[] = [];
+  let holders: number[] = [];
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
     verifierVersion: '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
@@ -77,10 +79,12 @@ function setup(views: Record<number, PrView>) {
     isGroupAlive: () => false,
     killGroup: () => {},
     readProcessArgs: async () => null,
-    foreignSuiteHolders: () => [],
+    foreignSuiteHolders: () => holders.map((pid) => ({ pid })),
+    suiteCapacity: () => 1,
+    setSuitePriority: (active) => { priorities.push(active); },
     setTimer: () => {},
   });
-  return { stateDir, svc, children };
+  return { stateDir, svc, children, priorities, setHolders: (next: number[]) => { holders = next; } };
 }
 
 function app(ctx: RouteContext): express.Express {
@@ -91,6 +95,18 @@ function app(ctx: RouteContext): express.Express {
 }
 
 describe('local-verify routes (integration)', () => {
+  it('keeps the next merge check reserved after the first check acquires the only suite slot', async () => {
+    const s = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: 8 })).status).toBe(202);
+    expect(s.children).toHaveLength(1);
+    s.setHolders([90_001]); // first verifier child acquired the host's only suite slot
+    await s.svc.tick();
+    expect((await request(a).get('/local-verify')).body.queue.map((e: { pr: number }) => e.pr)).toContain(8);
+    expect(s.priorities.at(-1)).toBe(true);
+  });
+
   it('answers 503 when the service is not constructed', async () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
     dirs.push(dir);
@@ -181,6 +197,74 @@ describe('local-verify routes (integration)', () => {
     expect(after.mergeLine).toMatchObject({ hold: null, handoffs: 1, merged: 1, lastOutcome: 'merged' });
     expect(after.inFlight).toEqual({ pr: 8, headSha: sha('c') });
     expect(s.children).toHaveLength(2);
+  });
+
+  it('a run killed by a server stop shows on GET after the restart: counted, interrupted, and first ahead of the boot-time main verify', async () => {
+    const s = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: 8 })).status).toBe(202);
+    s.svc.shutdown(); // the server stops mid-run (a lifeline or manual restart)
+    s.children[0].resolve({ status: null, signal: 'SIGTERM' });
+
+    // The restarted server, on the same state dir.
+    const s2 = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) }, s.stateDir);
+    await s2.svc.boot();
+    const a2 = app(baseCtx(s2.stateDir, { localVerify: s2.svc }));
+    const before = (await request(a2).get('/local-verify')).body;
+    expect(before.inFlight).toBeNull();
+    expect(before.queue.map((e: { pr: number }) => e.pr)).toEqual([7, 8]);
+    expect(before.queue[0]).toMatchObject({ pr: 7, attempts: 1, interruptions: 1, resumeFirst: true });
+
+    s2.svc.noteMainHead(sha('9')); // the boot-time main verify (main health is suspect at boot)
+    await s2.svc.settle();
+    await s2.svc.tick();
+    const after = (await request(a2).get('/local-verify')).body;
+    expect(after.inFlight).toEqual({ pr: 7, headSha: sha('a') });
+    expect(after.queue.map((e: { pr: number; kind?: string }) => e.kind ?? e.pr)).toEqual(['main', 8]);
+  });
+
+  it('main-red hold over HTTP (CMT-1033): GET /local-verify shows the hold and the held entry; the POST answer for a held PR carries it; a repair candidate runs', async () => {
+    const FILE = 'tests/unit/no-silent-fallbacks.test.ts';
+    const s = setup({
+      7: view({ title: 'chore: unrelated', body: '', files: [{ path: 'src/core/Foo.ts' }] }),
+      8: view({ headRefOid: sha('c'), title: 'fix(tests): main red on no-silent-fallbacks', body: '', files: [{ path: 'src/server/routes.ts' }] }),
+    });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    // main fails its verify twice on one file ⇒ main-red with the failing file known.
+    const redMain = () => JSON.stringify({
+      kind: 'record', record: { ...record(), kind: 'main', pr: 0, headSha: sha('e'), baseSha: sha('e'), outcome: 'failure' }, overlaps: [], keptWorktree: null,
+      reasons: ['lane-failed:unit:1', `file-failed:${FILE}:1`], failures: [{ file: FILE, lane: 'unit', failed: 1, message: 'expected 495 to be less than or equal to 494' }],
+    });
+    s.svc.noteMainHead(sha('e'));
+    for (const i of [0, 1]) {
+      expect(s.children).toHaveLength(i + 1);
+      fs.writeFileSync(s.children[i].resultPath, redMain());
+      s.children[i].resolve({ status: 0, signal: null });
+      await s.svc.whenIdle();
+      await s.svc.settle();
+      await new Promise((r) => setImmediate(r));
+    }
+    expect((await request(a).get('/local-verify/status')).status).toBe(503); // no status loop here; the service's own health is red:
+    expect(s.svc.mainHealth().state).toBe('main-red');
+
+    const held = await request(a).post('/local-verify').send({ pr: 7 });
+    expect(held.status).toBe(202);
+    expect(held.body).toMatchObject({ ok: true, status: 'queued', hold: { reason: 'main-red', state: 'main-red', failingFiles: [FILE], repairPrs: [], heldPrs: [7] } });
+    expect(held.body.hold.detail).toContain('main is red on ' + FILE);
+    expect(s.children).toHaveLength(2); // no doomed run started
+    const g = (await request(a).get('/local-verify')).body;
+    expect(g.inFlight).toBeNull();
+    expect(g.mainRedHold).toMatchObject({ reason: 'main-red', redHead: sha('e'), failingFiles: [FILE], heldPrs: [7] });
+    expect(g.queue).toHaveLength(1);
+    expect(g.queue[0]).toMatchObject({ pr: 7, held: { reason: 'main-red', why: 'no-overlap' } });
+    expect(g.queue[0]).not.toHaveProperty('text');
+
+    const repair = await request(a).post('/local-verify').send({ pr: 8 });
+    expect(repair.status).toBe(202);
+    expect(repair.body.hold).toBeUndefined();
+    expect(s.children).toHaveLength(3); // the repair candidate took the slot
+    expect((await request(a).get('/local-verify')).body).toMatchObject({ inFlight: { pr: 8, headSha: sha('c') }, mainRedHold: { repairPrs: [8], heldPrs: [7] } });
   });
 
   it('validates the record query', async () => {

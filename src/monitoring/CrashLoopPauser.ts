@@ -95,6 +95,10 @@ export class CrashLoopPauser {
         slug: job.slug,
         sinceHours: this.windowHours,
         limit: 1000,
+        // job-cost-reduction §5.6: canary and triage rows are recorded under the
+        // real slug but are not the job's own runs — a must-fail canary must
+        // never make a healthy job look like a crash loop.
+        excludeSideRuns: true,
       });
 
       const failures = runs.filter(

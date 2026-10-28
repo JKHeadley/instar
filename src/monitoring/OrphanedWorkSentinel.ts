@@ -127,6 +127,12 @@ export interface OrphanedWorkSentinelDeps {
   record: (event: OrphanedWorkEvent) => void;
   /** Raise ONE deduped attention item for a stranded worktree. */
   raiseAttention: (event: OrphanedWorkEvent) => void;
+  /**
+   * attention-lifecycle-close-on-cause §3.3 — a previously flagged worktree is
+   * no longer orphaned (clean, owner alive again, or gone from the listing):
+   * close its attention row. Absent ⇒ rows wait for the hourly expiry.
+   */
+  clearAttention?: (path: string, reason: string) => void;
   /** Passive trace for an enumeration failure — see the reaper's `warn`. */
   warn?: (line: string) => void;
   /** Restart-surviving failure count/time. Current blind state is never restored. */
@@ -227,9 +233,18 @@ export class OrphanedWorkSentinel extends EventEmitter {
       }
       const worktrees: OrphanedWorktreeInfo[] = enumeration.worktrees;
 
+      // §3.3 — a flagged worktree that vanished from the listing is no longer stranded.
+      const listed = new Set(worktrees.map((w) => w.path));
+      for (const flaggedPath of this.flaggedPaths()) {
+        if (!listed.has(flaggedPath)) this.clearFlagged(flaggedPath, 'the worktree is gone');
+      }
+
       for (const info of worktrees) {
         const evalResult = this.evaluate(info);
         evaluations.push(evalResult);
+        if (evalResult.verdict === 'skip' && (evalResult.reason === 'clean' || evalResult.reason === 'owner-alive')) {
+          this.clearFlagged(info.path, evalResult.reason === 'clean' ? 'the worktree has no uncommitted work' : 'its owning session is alive again');
+        }
         if (evalResult.verdict !== 'orphaned') continue;
         if (flaggedEvents.length >= this.cfg.maxFlagsPerPass) continue;
 
@@ -263,6 +278,20 @@ export class OrphanedWorkSentinel extends EventEmitter {
       this.running = false;
     }
     return { ts: this.now(), evaluations, flagged: flaggedEvents };
+  }
+
+  private flaggedPaths(): string[] {
+    return [...new Set([...this.flagged].map((key) => key.slice(0, key.lastIndexOf('::'))))];
+  }
+
+  /** Drop every flagged signature for `path` and close its attention row (once). */
+  private clearFlagged(path: string, reason: string): void {
+    let had = false;
+    for (const key of [...this.flagged]) {
+      if (key.startsWith(`${path}::`)) { this.flagged.delete(key); had = true; }
+    }
+    if (!had) return;
+    try { this.deps.clearAttention?.(path, reason); } catch { /* clearing must never throw the pass */ }
   }
 
   private recordEnumerationFailure(at: number): void {

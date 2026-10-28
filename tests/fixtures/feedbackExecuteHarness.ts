@@ -77,6 +77,7 @@ export function defaultRun(cmd: ConfinedCommand): Partial<ConfinedResult> {
   if (/^git /.test(c)) return { exitCode: 0 };
   if (/^(cat |ls |echo |security |ln )/.test(c) || /^node -e/.test(c)) return { exitCode: 1, stderr: 'Operation not permitted' };
   if (/vitest run/.test(c) && isBaseState(cmd.cwd)) return { exitCode: 1, stdout: ' FAIL  tests/fix.test.ts > fixes it\nAssertionError: expected 1 to be 2\n Test Files  1 failed (1)' };
+  if (/vitest run/.test(c)) return { exitCode: 0, stdout: ' Test Files  1 passed (1)\n      Tests  1 passed (1)' };
   return { exitCode: 0, stdout: 'ok' };
 }
 

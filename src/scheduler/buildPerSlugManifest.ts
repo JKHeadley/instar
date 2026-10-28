@@ -15,6 +15,7 @@
  */
 import type { PerSlugManifest } from './AgentMdJobLoader.js';
 import type { JobPriority, ModelTier } from '../core/types.js';
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 
 export interface BuildPerSlugManifestInput {
   slug: string;
@@ -27,6 +28,9 @@ export interface BuildPerSlugManifestInput {
   enabled: boolean;
   execute: PerSlugManifest['execute'];
   model?: ModelTier;
+  framework?: IntelligenceFramework;
+  frameworkModel?: string;
+  leanContext?: boolean;
   // Optional pass-throughs the loader reads from the MANIFEST (manifestToJobDefinition),
   // not the body frontmatter — so they must be carried here or they're silently dropped.
   tags?: string[];
@@ -65,6 +69,9 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
     manifestVersion: 1,
   };
   if (input.model !== undefined) m.model = input.model;
+  if (input.framework !== undefined) m.framework = input.framework;
+  if (input.frameworkModel !== undefined) m.frameworkModel = input.frameworkModel;
+  if (input.leanContext !== undefined) m.leanContext = input.leanContext;
   if (input.tags !== undefined) m.tags = input.tags;
   if (input.unrestrictedTools !== undefined) m.unrestrictedTools = input.unrestrictedTools;
   if (input.gate !== undefined) m.gate = input.gate;

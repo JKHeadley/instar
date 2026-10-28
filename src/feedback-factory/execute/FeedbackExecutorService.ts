@@ -37,7 +37,7 @@ import {
 import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
-import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, type SessionResult } from './executorSession.js';
+import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
 import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, judgeIndependentReview, renderReviewComment, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
@@ -981,7 +981,17 @@ export class FeedbackExecutorService {
     if (result.outcome === 'spec-drafted') {
       const expected = `docs/specs/feedback-${safeSlug(row.initiativeId)}.md`;
       const shape = row.needsSpec ? checkSpecDraft(changeSet, expected) : { ok: false as const, reason: 'spec drafted for an item that did not need one' };
-      if (!shape.ok) { this.endAttempt(row, epoch, 'failed', `spec-shape: ${shape.reason}`); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
+      if (!shape.ok) {
+        // The workspace is removed after failure. Keep the bounded, sanitized path list so a
+        // generated file or checkout mismatch can be diagnosed without retaining file contents.
+        this.opts.audit.append('execute:spec-shape-rejected', {
+          attemptId: row.attemptId,
+          changes: changeSet.entries.map(({ path, kind }) => ({ path, kind })),
+        });
+        this.endAttempt(row, epoch, 'failed', `spec-shape: ${shape.reason}`);
+        await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
+        return;
+      }
       await this.gateAndPublish(row, epoch, changeSet, result, 'spec', slug, approver);
       return;
     }
@@ -1082,6 +1092,7 @@ export class FeedbackExecutorService {
       const head = await run(p.headClone, 'head', testCmd);
       if (limit(head)) return { ok: false, reason: limit(head)! };
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
+      if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
       if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
       // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
       // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
@@ -1828,4 +1839,3 @@ export class FeedbackExecutorService {
     }
   }
 }
-

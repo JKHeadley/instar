@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "job-result-supervision-v2",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T05:22:54.031Z",
+  "artifactPath": "upgrades/side-effects/job-result-supervision-v2.md",
+  "artifactSha256": "e55f998b1d68cf5a89d16b782b47448ec73584adb669fc342ce25e615fea688f",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/scheduler/JobFixedResultCertificate.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/JobSupervisionWorker.ts",
+    "src/scheduler/ScriptCanaryRunner.ts",
+    "tests/unit/job-fixed-result-certificate.test.ts",
+    "upgrades/side-effects/job-result-supervision-v2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Correct the production fixed-closure gate fixture and make fail-closed catch behavior explicit to the safety ratchet.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

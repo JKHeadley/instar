@@ -35,8 +35,13 @@ export interface HookEventTemplate {
  * - SubagentStart: when subagents spawn (with agent_id, agent_type)
  * - SubagentStop: when subagents finish (with last_assistant_message, transcript path)
  * - Stop: when main agent finishes (with last_assistant_message)
- * - WorktreeCreate: when worktrees are created (connects to worktree awareness)
- * - WorktreeRemove: when worktrees are removed
+ *
+ * Deliberately NOT WorktreeCreate / WorktreeRemove: in Claude Code a hook on those
+ * events REPLACES git's own worktree handling and must print the worktree path. The
+ * reporter prints nothing, so registering it there broke `claude --worktree` and
+ * worktree-isolated subagents ("WorktreeCreate hook failed: hook succeeded but returned
+ * no worktree path"). PostUpdateMigrator.removeWorktreeReporterHooks() strips it from
+ * existing agents.
  * - TaskCompleted: when tasks finish (with task_id, subject, description)
  * - SessionEnd: when sessions terminate (with exit reason)
  * - PreCompact: when context compaction is about to occur (with trigger reason)
@@ -46,8 +51,6 @@ export const HOOK_EVENT_TEMPLATES: HookEventTemplate[] = [
   { event: 'SubagentStart', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
   { event: 'SubagentStop', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
   { event: 'Stop', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
-  { event: 'WorktreeCreate', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
-  { event: 'WorktreeRemove', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
   { event: 'TaskCompleted', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
   { event: 'SessionEnd', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },
   { event: 'PreCompact', config: { type: 'command', command: 'node "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/hook-event-reporter.js"', timeout: 3000 } },

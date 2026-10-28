@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   failure, ago, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
   machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
+  combineNeeds, machineNames, machineLabel,
 } from '../../dashboard/console/home-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
@@ -71,7 +72,7 @@ describe('What needs you', () => {
     const m = buildNeeds(ok({ items: [item({ priority: 'URGENT' }), item({}), item({}), item({ status: 'DONE', priority: 'URGENT' })], pool: { failed: [] } }), NOW);
     expect(m.state).toBe('attn');
     expect(m.value).toBe('1 thing');
-    expect(m.line).toContain('2 routine notices');
+    expect(m.line).not.toMatch(/notice/); // routine items ask nothing of the operator: not on the front page
   });
   it('shows at most three rows but keeps the full list for See all, newest first', () => {
     const items = [1, 2, 3, 4, 5].map((n) => item({ priority: 'URGENT', title: `i${n}`, createdAt: minsAgo(n * 10) }));
@@ -96,7 +97,7 @@ describe('What needs you', () => {
     expect(m.count).toBe(1);
     expect(m.all).toHaveLength(2);
     expect(m.all[1].main).toBe('old');
-    expect(m.line).toContain('probably already handled');
+    expect(m.line).not.toMatch(/14\+ days/);
   });
   it('a security item never ages out', () => {
     const m = buildNeeds(ok({ items: [item({ category: 'security', source: 'agent', title: 'Rotate token', createdAt: minsAgo(60 * 24 * 40) })], pool: { failed: [] } }), NOW);
@@ -154,12 +155,12 @@ describe('What I have promised', () => {
   it('a promise waiting on the operator but untouched for 14+ days is not counted', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
     expect(m.count).toBe(0);
-    expect(m.line).toContain('untouched for 14+ days');
+    expect(m.line).toBe('Nothing recent waiting on you.');
   });
   it('promises waiting on the operator lead', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);
     expect(m.state).toBe('attn');
-    expect(m.value).toBe('2 need you');
+    expect(m.value).toBe('2 waiting on you');
   });
   it('without replica rows it says only this machine is visible', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'own' })] }), NOW);
@@ -276,7 +277,7 @@ describe('headline()', () => {
     const h = headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') });
     expect(h.text).toBe('Nothing urgent that I can see.');
     expect(h.tone).toBe('muted');
-    expect(h.sub).toContain("can't see fully");
+    expect(h.sub).toMatch(/can't fully see/i);
   });
   it('a partial-coverage card blocks "all quiet" even when its state is ok', () => {
     expect(headline({ needs: card('ok'), promised: { state: 'ok', value: '', coverage: 'partial view' } }).text).not.toBe('All quiet.');
@@ -285,14 +286,14 @@ describe('headline()', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), allowed: card('attn', '70 of 99 on') }).text).toBe('One area needs a look.');
   });
   it('a known total keeps its coverage qualification', () => {
-    expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).toContain("can't see fully");
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).toMatch(/can't fully see/i);
   });
   it('a partial queue keeps its known urgency in the headline (round-4 blocker)', () => {
     const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
     expect(n.state).toBe('partial');
     const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
     expect(h.text).toBe('One thing needs you.');
-    expect(h.sub).toContain("can't see fully");
+    expect(h.sub).toMatch(/can't fully see/i);
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');

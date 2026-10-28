@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "agent-improvement-capture-capacity",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-27T21:54:07.755Z",
+  "artifactPath": "upgrades/side-effects/agent-improvement-capture-capacity.md",
+  "artifactSha256": "668be6de479ea3f61c50f105439b6054d673f3c615ec2b9fddf2b64288fb9df7",
+  "coveredFiles": [
+    "docs/specs/agent-improvement-pipeline.eli16.md",
+    "docs/specs/agent-improvement-pipeline.md",
+    "src/commands/server.ts",
+    "src/monitoring/ClassReviewStore.ts",
+    "src/monitoring/CorrectionCaptureLoop.ts",
+    "src/monitoring/CorrectionClassReview.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/correction-capture-backlog-lifecycle.test.ts",
+    "tests/integration/corrections-routes.test.ts",
+    "tests/unit/correction-class-review.test.ts",
+    "tests/unit/correction-learning-wiring-integrity.test.ts",
+    "upgrades/side-effects/agent-improvement-capture-capacity.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reversible repair to existing capture and review accounting; no schema migration, new authority, or external feedback route. The independent review and direct regression checks cover the changed edges.",
+  "eli16Path": "docs/specs/agent-improvement-pipeline.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/agent-improvement-capture-capacity.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Existing correction-class-review-outcomes controller is capped at 50 open artifacts and one per semantic class; cap-held Attention uses a stable coalesced ID, so sustained corrections cannot mint unbounded work or notices."
+    }
+  }
+}

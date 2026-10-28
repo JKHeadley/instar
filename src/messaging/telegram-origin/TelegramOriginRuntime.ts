@@ -25,6 +25,7 @@ import { OriginPoolAudit } from './OriginPoolAudit.js';
 import { assessOriginActivation, type OriginEnrollmentSnapshot } from './OriginActivation.js';
 import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
+import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
 
 export interface TelegramOriginRuntimeOptions {
   storage: OriginStoreOptions;
@@ -100,6 +101,8 @@ export class TelegramOriginRuntime {
   readonly observer = new RuntimeOriginObserver();
   readonly sessions: OriginSessionRegistry;
   readonly service: TelegramOriginService;
+  /** Telegram acceptances whose receipt write failed (held-reply outcome lookup). */
+  readonly unrecordedReceipts: OriginUnrecordedReceipts;
   readonly notifier: TelegramOriginOutageNotifier;
   readonly capacity: OriginCapacityAuthority;
   private capacityOwner?: OriginEgressCapacity;
@@ -130,7 +133,9 @@ export class TelegramOriginRuntime {
       readShardMetrics: machineId => this.store.getFederatedMetrics(machineId) });
     this.sessions = new OriginSessionRegistry({ stateDir: options.storage.stateDir,
       agentId: options.identity.agentId, machineId: options.identity.originMachineId, isSessionLive: options.isSessionLive });
+    this.unrecordedReceipts = new OriginUnrecordedReceipts(options.storage.stateDir);
     this.service = new TelegramOriginService({ store, sessions: this.sessions, observer: this.observer,
+      unrecordedReceipts: this.unrecordedReceipts,
       identity: options.identity, signingKey: options.signingKey, ownerBootId: this.ownerBootId,
       display: options.display, authorize: options.authorize, wireParams: options.wireParams, holdsLease: options.holdsLease, spoolEvidence: record => this.spool.putEvidence(record),
       authorizeOrigin: options.authorizeOrigin,
@@ -371,6 +376,23 @@ export class TelegramOriginRuntime {
     } catch { this.retentionUnavailable = true; }
     finally { this.retentionRunning = false; }
   }
+  /** Fold Telegram acceptances whose receipt write failed back into the store.
+   * The attempt becomes reconcilable once its claim was reaped to
+   * outcome-unknown; until then it stays pending for the next tick. */
+  async reconcileUnrecordedReceipts(): Promise<number> {
+    let folded = 0;
+    let pending: ReturnType<OriginUnrecordedReceipts['pending']>;
+    try { pending = this.unrecordedReceipts.pending(); } catch { return 0; }
+    for (const entry of pending.slice(0, 50)) {
+      try {
+        if (await this.store.reconcileReceipt({ childId: entry.childId, attemptId: entry.attemptId, receiptJson: entry.receiptJson, outcome: 'accepted' })) {
+          this.unrecordedReceipts.markReconciled(entry.operationId, entry.childId);
+          folded++;
+        }
+      } catch { return folded; } // the store is still down: try again next tick
+    }
+    return folded;
+  }
   /** Called by the existing recovery scheduler, never by a second retry loop.
    * One bounded worker reopen per fifteen minutes; replay uses the original
    * operation, children, bytes, deadline, and claims rather than minting a send.
@@ -417,6 +439,7 @@ export class TelegramOriginRuntime {
       await this.confirmRecordingHealthy();
       await this.importLegacyQueue();
       await this.store.reapAbandoned();
+      await this.reconcileUnrecordedReceipts();
       for (const origin of await this.store.undiagnosedOrigins()) this.service.requestDiagnosis(origin.originId, origin.reason);
       const admitted = await this.store.takeRecoverableAdmissions();
       const candidates = new Map(admitted.map(admission => [admission.operationId, {

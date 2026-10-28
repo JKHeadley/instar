@@ -97,6 +97,9 @@ export const START_TIME_SKEW_MS = 120_000;
 export const TTL_WARN_FRACTION = 0.8;
 /** Targeted classification file-count limit K (§2.3). */
 export const TARGETED_FILE_LIMIT = 5;
+/** A coordinator renews its claim every 30s; a stalled server loses priority promptly. */
+export const MERGE_GATE_PRIORITY_LEASE_MS = 120_000;
+export const MERGE_GATE_PRIORITY_MAX_CLAIMS = 64;
 
 export type TestLane = 'suite' | 'targeted';
 export type TestPosture = 'off' | 'dry-run' | 'enforcing';
@@ -852,12 +855,14 @@ export interface HostTestRunnerSemaphoreDeps {
 export interface AcquireRequest {
   lane: TestLane;
   runClass: TestRunClass;
+  /** Only the Local Verify runner uses this; ordinary suites yield to its live claim. */
+  priority?: 'merge-gate';
   /** Resolved MATCHED file count (targeted lane). */
   fileCount?: number;
   /** Override budget (default resolved per §2.9). */
   budgetMs?: number;
   /** Called about once per poll while waiting (the §2.10 wait-line hook). */
-  onWaitTick?: (elapsedMs: number, holders: Array<{ pid: number; ageMs: number }>) => void;
+  onWaitTick?: (elapsedMs: number, holders: Array<{ pid: number; ageMs: number }>, priorityWait: boolean) => void;
 }
 
 export type AcquireOutcome =
@@ -959,6 +964,69 @@ export class HostTestRunnerSemaphore {
       },
       { flipRecorded: ctx.tuning.file?.enforcing === true && ctx.tuning.file?.flippedAt !== undefined },
     );
+  }
+
+  /**
+   * The coordinator publishes a short lease while it has runnable merge-gate
+   * work. Each agent has its own file so two agents on one host cannot erase
+   * each other's claim. A dead or stalled coordinator cannot hold the lane.
+   */
+  setMergeGatePriority(ownerKey: string, active: boolean): void {
+    const dir = path.join(this.paths.baseDir, 'host-test-runner-priority');
+    const file = path.join(dir, `${crypto.createHash('sha256').update(ownerKey).digest('hex').slice(0, 24)}.json`);
+    if (!active) {
+      try {
+        const row = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        // A retiring server must not erase its replacement's fresh claim.
+        if (row?.pid !== process.pid || row?.hostname !== this.host) return;
+        SafeFsExecutor.safeUnlinkSync(file, { operation: 'HostTestRunnerSemaphore.clearMergeGatePriority' });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      return;
+    }
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(file)) {
+      const names = fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n));
+      if (names.length >= MERGE_GATE_PRIORITY_MAX_CLAIMS) {
+        for (const name of names) {
+          const stale = path.join(dir, name);
+          if (!this.livePriorityClaim(stale)) {
+            SafeFsExecutor.safeUnlinkSync(stale, { operation: 'HostTestRunnerSemaphore.pruneMergeGatePriority' });
+          }
+        }
+        if (fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).length >= MERGE_GATE_PRIORITY_MAX_CLAIMS) {
+          throw new Error('merge-gate priority claim ceiling reached');
+        }
+      }
+    }
+    atomicWriteFileSync(file, JSON.stringify({
+      v: 1, pid: process.pid, hostname: this.host,
+      expiresAt: this.now() + MERGE_GATE_PRIORITY_LEASE_MS,
+    }), { mode: 0o600, operation: 'HostTestRunnerSemaphore.setMergeGatePriority' });
+  }
+
+  /** A corrupt, foreign-host, expired or dead claim never delays a suite. */
+  hasMergeGatePriority(): boolean {
+    const dir = path.join(this.paths.baseDir, 'host-test-runner-priority');
+    let names: string[];
+    try { names = fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)); }
+    catch { return false; }
+    // A poisoned directory cannot make admission unboundedly expensive.
+    for (const name of names.slice(0, MERGE_GATE_PRIORITY_MAX_CLAIMS)) {
+      if (this.livePriorityClaim(path.join(dir, name))) return true;
+    }
+    return false;
+  }
+
+  private livePriorityClaim(file: string): boolean {
+    try {
+      const row = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      return row?.v === 1 && row.hostname === this.host &&
+        Number.isInteger(row.pid) && row.pid > 0 && this.pidAlive(row.pid) &&
+        typeof row.expiresAt === 'number' && row.expiresAt > this.now() &&
+        row.expiresAt <= this.now() + MERGE_GATE_PRIORITY_LEASE_MS;
+    } catch { return false; /* @silent-fallback-ok: a bad claim cannot block a suite. */ }
   }
 
   // ── Holders IO ──────────────────────────────────────────────────────
@@ -1561,6 +1629,7 @@ export class HostTestRunnerSemaphore {
     const deadline = startMs + budgetMs;
     let lockEverAcquired = false;
     let lastHolders: Array<{ pid: number; ageMs: number }> = [];
+    let priorityWait = false;
 
     // df determination — OUTSIDE the lock, marker-cached (§2.2 item 2).
     const df = resolveDfLocal(this.paths, this.dfProbe);
@@ -1620,7 +1689,8 @@ export class HostTestRunnerSemaphore {
           this.flushEvents(events);
           const live = req.lane === 'suite' ? pass.report.liveSuite : pass.report.liveTargeted;
           const cap = req.lane === 'suite' ? ctx.suiteCap.cap : ctx.targetedCap.cap;
-          if (live < cap) {
+          priorityWait = req.lane === 'suite' && req.priority !== 'merge-gate' && this.hasMergeGatePriority();
+          if (live < cap && !priorityWait) {
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
             this.writeHolders(pass.kept);
@@ -1637,7 +1707,7 @@ export class HostTestRunnerSemaphore {
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
             this.writeHolders(pass.kept);
-            this.ledger('would-block', { lane: req.lane, holders: lastHolders, cap });
+            this.ledger('would-block', { lane: req.lane, holders: lastHolders, cap, priorityWait });
             this.ledger('acquire', this.acquireFields(req, row, true));
             this.armSelfTtlWarn(row);
             return { kind: 'acquired', id: row.id, wouldBlock: true, ttlMs: row.ttlMs };
@@ -1650,10 +1720,10 @@ export class HostTestRunnerSemaphore {
           releaseLock(this.paths.lock, fd, 'HostTestRunnerSemaphore.acquire:release');
         }
         if (this.now() >= deadline) {
-          this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs });
+          this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs, priorityWait });
           throw new TestRunnerCapacityTimeoutError(req.lane, budgetMs, lastHolders);
         }
-        req.onWaitTick?.(this.now() - startMs, lastHolders);
+        req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait);
         await this.sleep(this.jitteredPoll());
         continue;
       }
@@ -1716,7 +1786,7 @@ export class HostTestRunnerSemaphore {
         this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs });
         throw new TestRunnerCapacityTimeoutError(req.lane, budgetMs, lastHolders);
       }
-      req.onWaitTick?.(this.now() - startMs, lastHolders);
+      req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait);
       await this.sleep(this.jitteredPoll());
     }
   }

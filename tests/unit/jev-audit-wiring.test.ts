@@ -148,8 +148,9 @@ describe('structural absence: the wake-reaper path never reaches the audit', () 
     const src = fs.readFileSync(path.resolve(__dirname, '../../src/scheduler/JobScheduler.ts'), 'utf8');
     const reaper = src.slice(src.indexOf('reapStuckRuns'), src.indexOf('reapStuckRuns') + 6000);
     expect(reaper).not.toContain('jevAudit');
-    // Both live-output callsites are wired:
-    expect(src.match(/this\.jevAudit\?\.capture\(/g)?.length).toBe(3); // model-session + script then/catch
+    // All live-output callsites are wired: model-session, legacy script
+    // then/catch, and the new protocol-script completion funnel.
+    expect(src.match(/this\.jevAudit\?\.capture\(/g)?.length).toBe(4);
   });
 });
 

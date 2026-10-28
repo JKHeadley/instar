@@ -8,6 +8,33 @@ model: haiku
 enabled: true
 tags:
   - cat:guardian
+runner: script
+script: health-check.mjs
+scriptTimeoutMinutes: 1
+anomalies:
+  - kind: disk-low
+    class: recoverable
+  - kind: disk-critical
+    class: critical
+  - kind: sessions-exhausted
+    class: recoverable
+  - kind: llm-unreliable
+    class: recoverable
+  - kind: degradation:*
+    class: recoverable
+supervision: tier0
+scriptSupervision: triage
+triageEvidence: full
+triageFields:
+  - disk_free_pct
+  - sessions_current
+  - sessions_max
+  - degradations
+  - llm_status
+triageBareOk:
+  - healthy
+triageBareSkipped:
+  - feature-dark
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none

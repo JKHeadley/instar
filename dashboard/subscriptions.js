@@ -933,7 +933,31 @@ export function groupMatrixRowsByProvider(rows) {
 /** Render the account × machine grid. `target` is replaced. Each empty (reachable) cell
  *  gets a "Set up" button carrying its (accountId, machineId) as data-* attributes for the
  *  controller's delegated tap handler. Offline columns are disabled; no state is fabricated. */
-export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}, reloginEpisodes = [], reloginFailures = []) {
+/**
+ * Why the automatic repair will not start for a needs-sign-in cell, in plain words (from
+ * GET /subscription-relogin `blockers`). Unknown reasons get a generic line, never silence.
+ */
+const REPAIR_BLOCKER_TEXT = {
+  'no-open-incident': 'Won’t repair on its own: this machine has no confirmed sign-in failure for it yet (its saved login can’t be read).',
+  'profile-unresolved': 'Won’t repair on its own: this machine has no browser profile signed in to this account.',
+  'profile-directory-missing': 'Won’t repair on its own: this account’s browser profile folder is missing on this machine.',
+  'profile-not-dedicated': 'Won’t repair on its own: this account has no browser profile of its own on this machine.',
+  'profile-ambiguous': 'Won’t repair on its own: more than one browser profile claims this account on this machine.',
+  'profile-identity-mismatch': 'Won’t repair on its own: the browser profile is signed in to a different account.',
+  'vault-reference-missing': 'Won’t repair on its own: a saved password or code for this account is missing.',
+  'login-method-not-autonomous': 'Won’t repair on its own: this account’s sign-in method can’t be done automatically.',
+  'breaker-open': 'Won’t repair on its own: repairs for this account failed too often and are paused.',
+  'source-not-exchange-corroborated': 'Won’t repair on its own: the sign-in failure isn’t confirmed yet.',
+  'cause-not-actionable': 'Won’t repair on its own: the failure isn’t one a new sign-in fixes.',
+  'feature-off': 'Automatic repair is turned off on this machine.',
+  'feature-unavailable': 'Automatic repair isn’t running on this machine.',
+};
+export function repairBlockerText(reason) {
+  if (typeof reason !== 'string' || !reason) return '';
+  return REPAIR_BLOCKER_TEXT[reason] || 'Won’t repair on its own on this machine. Use Sign in.';
+}
+
+export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}, reloginEpisodes = [], reloginFailures = [], reloginBlockers = []) {
   if (!target) return;
   target.replaceChildren();
   const model = buildMatrixModel(poolScope, pendingScope, transient);
@@ -1070,6 +1094,12 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-failed',
             'Didn’t finish — the sign-in link expired before this account was set up.'));
         }
+        if (c.state === 'needs-reauth' && Array.isArray(reloginBlockers)) {
+          const blocker = reloginBlockers.find((b) => b && b.accountId === c.accountId && b.machineId === c.machineId)
+            || reloginBlockers.find((b) => b && b.accountId === '*' && b.machineId === c.machineId);
+          const text = blocker ? repairBlockerText(blocker.reason) : '';
+          if (text) td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', text));
+        }
         td.appendChild(btn);
       } else if (c.state === 'in-progress' && c.login && c.login.verificationUrl) {
         // The cell carries the COMPLETE flow, rebuilt from SERVER pending-login state
@@ -1161,7 +1191,7 @@ export function createController(opts) {
   // add the D4 ceremony when the episode lands. recentOutcomes: client-observed terminal
   // outcomes rendered as explicit cards in the pending panel (D4 — never a vanishing line).
   const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
-    reloginWired: false, reloginEpisodes: [], reloginFailures: [],
+    reloginWired: false, reloginEpisodes: [], reloginFailures: [], reloginBlockers: [],
     matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null,
     matrixEpisodes: {}, recentOutcomes: [] };
 
@@ -1226,6 +1256,10 @@ export function createController(opts) {
     state.reloginEpisodes = reloginBody && Array.isArray(reloginBody.episodes) ? reloginBody.episodes : [];
     state.reloginFailures = reloginBody && reloginBody.pool && Array.isArray(reloginBody.pool.failed)
       ? reloginBody.pool.failed : [];
+    state.reloginBlockers = (reloginBody && Array.isArray(reloginBody.blockers) ? reloginBody.blockers : [])
+      // A machine where the repair is not running at all blocks every one of its cells.
+      .concat((reloginBody && reloginBody.pool && Array.isArray(reloginBody.pool.unavailable) ? reloginBody.pool.unavailable : [])
+        .map((u) => ({ accountId: '*', machineId: u && u.machineId, reason: 'feature-unavailable' })));
     render(accountsBody, pendingBody, inUseBody, poolBody);
     reschedule();
   }
@@ -1332,7 +1366,7 @@ export function createController(opts) {
   function rerenderMatrixFromCache() {
     if (!els.matrix || !state.lastPoolBody) return;
     if (hasOpenInteraction(doc, els.matrix)) return;
-    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
+    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures, state.reloginBlockers);
   }
 
   function render(accountsBody, pendingBody, inUseBody, poolBody) {
@@ -1367,7 +1401,7 @@ export function createController(opts) {
     // the (already pool-scope) pending logins. Hidden when the pool-scope read is unavailable.
     if (els.matrix) {
       if (!hasOpenInteraction(doc, els.matrix)) {
-        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
+        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures, state.reloginBlockers);
       } else {
         updateCountdowns(doc, els.matrix, now());
       }

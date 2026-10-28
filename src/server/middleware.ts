@@ -137,6 +137,40 @@ export function _resetDeprecationLogCache(): void {
  * The `X-Instar-AgentId` mismatch rule is NOT part of this helper; callers that
  * need it apply it separately (`/health` never did).
  */
+/**
+ * The ONLY `/threadline/*` routes the bearer gate lets through. Each is a
+ * peer-protocol or self-mint surface that enforces its own authentication in
+ * the handler:
+ *   - GET  /threadline/health            — peer discovery probe (identity card)
+ *   - POST /threadline/handshake/hello   — Ed25519 handshake, step 1
+ *   - POST /threadline/handshake/confirm — Ed25519 handshake, step 2
+ *   - POST /threadline/messages/receive  — Threadline-Relay token + signature
+ *   - POST /threadline/threads/backfill  — Threadline-Relay token + signature
+ *   - GET  /threadline/blobs/:id         — Threadline-Relay token + signature
+ *   - POST /threadline/secrets/request   — loopback-only self-mint (sealed handoff)
+ * Matching is EXACT (method + full path), never a prefix: `/threadline/healthz`
+ * or `/threadline/health/anything` is NOT public. Exported so the template
+ * auth lint can mirror it without re-deriving it.
+ */
+export const THREADLINE_PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
+  { method: 'GET', path: '/threadline/health' },
+  { method: 'POST', path: '/threadline/handshake/hello' },
+  { method: 'POST', path: '/threadline/handshake/confirm' },
+  { method: 'POST', path: '/threadline/messages/receive' },
+  { method: 'POST', path: '/threadline/threads/backfill' },
+  { method: 'POST', path: '/threadline/secrets/request' },
+];
+
+/** `/threadline/blobs/:id` — one path segment, nothing after it. */
+const THREADLINE_PUBLIC_BLOB_ROUTE = /^\/threadline\/blobs\/[^/]+$/;
+
+/** True iff this exact (method, path) is one of the public Threadline routes above. */
+export function isThreadlinePublicRoute(method: string, reqPath: string): boolean {
+  const m = method.toUpperCase();
+  if (m === 'GET' && THREADLINE_PUBLIC_BLOB_ROUTE.test(reqPath)) return true;
+  return THREADLINE_PUBLIC_ROUTES.some((r) => r.method === m && r.path === reqPath);
+}
+
 export function bearerMatches(req: { headers: Record<string, unknown> }, authToken: string | undefined): boolean {
   if (!authToken) return true;
   const header = req.headers.authorization;
@@ -212,10 +246,20 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
       return;
     }
 
-    // Threadline protocol endpoints use their own auth (relay tokens + Ed25519 signatures).
-    // Handshake and health endpoints are unauthenticated by design.
-    // Authenticated threadline endpoints enforce Threadline-Relay auth in route handlers.
-    if (req.path.startsWith('/threadline/')) {
+    // Threadline PEER-PROTOCOL endpoints carry their own auth (the Ed25519
+    // handshake, the Threadline-Relay token + signature, or loopback-only) and
+    // are reached by OTHER agents, which never hold this agent's bearer — so
+    // they are exempt here by EXACT route (method + path), never by prefix.
+    // Every other /threadline/* route is this agent's OWN control surface
+    // (send a message as me, discover, bind a hub topic, change bridge config,
+    // read my conversations) and needs the bearer like any other route. Until
+    // 2026-10-27 the whole prefix was exempt, so an unauthenticated POST over
+    // the public tunnel reached `/threadline/relay-send`'s field validation
+    // (fb-829a7161-942): anyone with the tunnel URL could send Threadline
+    // messages under the agent's identity. Prefix exemptions are how that
+    // happens; the allowlist below is the fix. Keep the lint in
+    // tests/unit/job-template-auth-lint.test.ts in step with it.
+    if (isThreadlinePublicRoute(req.method, req.path)) {
       next();
       return;
     }

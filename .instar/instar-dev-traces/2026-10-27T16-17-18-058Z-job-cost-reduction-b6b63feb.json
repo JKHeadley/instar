@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "slug": "job-cost-reduction",
+  "sessionId": "151db862-f0e5-4985-9614-540e5687e3fe",
+  "timestamp": "2026-10-27T16:17:18.058Z",
+  "artifactPath": "upgrades/side-effects/job-cost-reduction.md",
+  "artifactSha256": "18213bc2b9c8f5eaa88bdd50ffa080ba229778b2cf0437f20622b943b19218bd",
+  "specPath": "docs/specs/job-cost-reduction.md",
+  "coveredFiles": [
+    "docs/specs/job-cost-reduction.eli16.md",
+    "docs/specs/job-cost-reduction.md",
+    "src/config/ConfigDefaults.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scheduler/JobCostAuditReadiness.ts",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "upgrades/next/job-cost-reduction.md",
+    "upgrades/side-effects/job-cost-reduction.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Audit finding narrows first-wave conversion to deterministic grading; correction-class backfill has pending benchmark coverage. Approved spec and focused Astra second pass apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "gpt-6-astra",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-cost-reduction-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

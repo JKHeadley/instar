@@ -5,7 +5,6 @@ schedule: "0 4 * * 1"
 priority: low
 expectedDurationMinutes: 10
 model: haiku
-supervision: tier1
 enabled: false
 perMachineIndependent: true
 tags:
@@ -16,6 +15,11 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: ["Bash"]
 unrestrictedTools: false
 mcpAccess: none
+runner: script
+script: doorway-scan.mjs
+scriptTimeoutMinutes: 9
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run one doorway scan. This job only INVOKES the deterministic prober and sanity-checks that it produced a well-formed result — the prober owns 100% of the network I/O, secret handling, timeouts, sanitization, and delivery (it performs the POST /view + POST /attention itself, in-process). You have Bash ONLY — no Edit/Write tool — and a PreToolUse command-allowlist guard restricts this session's Bash to the sanctioned prober invocation + the /health gate + read-only plumbing. Do NOT try to edit any source file; this job NEVER auto-applies a change to the canonical registry (a stale map surfaces as a maintainer diff for the operator, never an edit).
 

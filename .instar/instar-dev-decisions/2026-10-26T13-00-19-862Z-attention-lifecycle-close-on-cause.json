@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-26T13:00:19.862Z",
+  "slug": "attention-lifecycle-close-on-cause",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "comment-only commit: marks an HTTP 500 error path as intentional for the silent-fallback ratchet; no behavior change"
+  },
+  "verdict": "pass"
+}

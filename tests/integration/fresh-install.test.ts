@@ -112,7 +112,7 @@ describe('Fresh install: instar init <project-name>', () => {
     expect(fs.existsSync(jobsPath)).toBe(true);
 
     const jobs = JSON.parse(fs.readFileSync(jobsPath, 'utf-8'));
-    expect(jobs.length).toBe(27);
+    expect(jobs.length).toBe(28);
 
     const slugs = jobs.map((j: any) => j.slug);
     // Core jobs
@@ -153,6 +153,7 @@ describe('Fresh install: instar init <project-name>', () => {
     expect(slugs).toContain('overseer-development');
     // Layer 7 templates-drift verifier (telegram-delivery-robustness § 7)
     expect(slugs).toContain('templates-drift-verifier');
+    expect(slugs).toContain('script-job-supervisor'); // daily review added by job-cost-reduction
   });
 
   it('installs behavioral hooks', () => {

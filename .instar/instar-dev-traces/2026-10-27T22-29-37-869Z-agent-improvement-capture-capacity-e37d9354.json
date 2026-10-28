@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "agent-improvement-capture-capacity",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-27T22:29:37.869Z",
+  "artifactPath": "upgrades/side-effects/agent-improvement-capture-capacity.md",
+  "artifactSha256": "1b76116063630c3c57ac15b4528a317e27e3aa1706d653bd778dd82a809491f0",
+  "coveredFiles": [
+    "docs/specs/agent-improvement-pipeline.eli16.md",
+    "tests/unit/console-costs.test.ts",
+    "upgrades/side-effects/agent-improvement-capture-capacity.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A test-only clock fixture repair found by the full suite; it is reversible and changes no shipped runtime behavior.",
+  "eli16Path": "docs/specs/agent-improvement-pipeline.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/agent-improvement-capture-capacity.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

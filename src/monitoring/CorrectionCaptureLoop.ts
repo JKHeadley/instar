@@ -23,8 +23,8 @@
  * ALL FOUR capacity throw paths (daily-cap, reserve-breach, LlmAbortedError,
  * breaker-open). Previously these DROPPED the capture silently. Now, when a
  * bounded durable backlog is wired (default-on when the feature is enabled), a
- * capacity throw PERSISTS the already-pre-scrubbed capture to the backlog so a
- * later headroom window can distill it ('distill-backlogged'). A non-capacity
+ * capacity throw or load shedding PERSISTS the pre-scrubbed capture to the
+ * backlog so a later headroom window can distill it. A non-capacity
  * throw (e.g. a malformed provider error) still drops ('distill-dropped'), and
  * if the backlog enqueue itself fails the capture falls back to the old drop —
  * the fire-and-forget seam never throws regardless.
@@ -32,6 +32,17 @@
 import type { CorrectionLedger, CorrectionKind, CorrectionRecord } from './CorrectionLedger.js';
 import type { CorrectionCaptureBacklog } from './CorrectionCaptureBacklog.js';
 import { scrubSecrets } from './scrubSecrets.js';
+
+/** Expire buffered text on schedule, independently of model availability. */
+export function pruneCaptureBacklogIfDue(
+  backlog: Pick<CorrectionCaptureBacklog, 'pruneExpired'>,
+  ttlMs: number,
+  lastPrunedAt: number,
+  now = Date.now(),
+): { lastPrunedAt: number; pruned: number } {
+  if (now - lastPrunedAt < 5 * 60_000) return { lastPrunedAt, pruned: 0 };
+  return { lastPrunedAt: now, pruned: backlog.pruneExpired(ttlMs) };
+}
 
 // ── Ephemeral capture ring ──────────────────────────────────────────────
 
@@ -292,6 +303,7 @@ export type CaptureDecision =
   | 'no-signal'
   | 'no-topic'
   | 'shed'
+  | 'shed-backlogged'
   | 'rate-limited'
   | 'distill-dropped'    // distill threw a NON-capacity fault — silently dropped
   | 'distill-backlogged' // distill threw a CAPACITY fault — pre-scrubbed capture persisted for retry
@@ -358,8 +370,25 @@ export async function captureAndDistill(
       return 'no-signal';
     }
 
-    // Load-shed under sustained quota pressure.
+    const backlogCapture = () => deps.backlog?.enqueue({
+      topicId: input.topicId!,
+      turns: window.map((turn) => ({ ...turn, text: scrubSecrets(turn.text) })),
+      deterministicWeight: input.deterministicWeight,
+      sessionId: input.sessionId ?? null,
+      capturedAt: now(),
+    });
+
+    // Load-shed the expensive distillation under sustained quota pressure.
+    // The signal itself is still valuable: preserve its scrubbed window for
+    // the existing bounded drain once capacity returns.
     if (deps.shouldShed?.()) {
+      if (deps.backlog) {
+        const id = backlogCapture();
+        if (id) {
+          deps.audit?.({ decision: 'shed-backlogged', topicId: input.topicId, detail: id });
+          return 'shed-backlogged';
+        }
+      }
       deps.audit?.({ decision: 'shed', topicId: input.topicId });
       return 'shed';
     }
@@ -397,13 +426,7 @@ export async function captureAndDistill(
       // the old drop. A NON-capacity fault still drops.
       if (deps.backlog && isCapacityThrow(distillErr)) {
         try {
-          const id = deps.backlog.enqueue({
-            topicId: input.topicId,
-            turns: window,
-            deterministicWeight: input.deterministicWeight,
-            sessionId: input.sessionId ?? null,
-            capturedAt: now(),
-          });
+          const id = backlogCapture();
           if (id) {
             deps.audit?.({ decision: 'distill-backlogged', topicId: input.topicId, detail: id });
             return 'distill-backlogged';

@@ -5,7 +5,6 @@ schedule: "0 6 * * 2"
 priority: low
 expectedDurationMinutes: 5
 model: haiku
-supervision: tier1
 enabled: false
 perMachineIndependent: true
 tags:
@@ -16,6 +15,11 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: ["Bash"]
 unrestrictedTools: false
 mcpAccess: none
+runner: script
+script: routing-price-web-verify.mjs
+scriptTimeoutMinutes: 5
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run one routing-price web-verify pass. This job only INVOKES the deterministic prober and sanity-checks that it produced a well-formed result — the prober owns 100% of the network I/O, the conservative page parsing, the plausibility clamp, the forward-only day-alignment, and the observed-cache write. You have Bash ONLY — no Edit/Write tool. Do NOT try to edit any source file, and NEVER touch `scripts/routing-prices.manifest.json` (the canonical manifest is human/PIN-reviewed only; the prober is structurally forbidden from writing it).
 

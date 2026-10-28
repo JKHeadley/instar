@@ -14,6 +14,10 @@ import type { PlaywrightProfileRegistry } from '../../src/core/PlaywrightProfile
 import type { ClaudePasteBackController } from '../../src/core/ClaudePasteBackController.js';
 import type { ReloginBrowserPort } from '../../src/core/AnthropicReloginBrowserDriver.js';
 
+// The drive settles in milliseconds alone; under the local verifier's parallel lanes
+// it can exceed vi.waitFor's 1 s default. Wait on the outcome, not a wall clock.
+const RELOGIN_SETTLE = { timeout: 30_000, interval: 50 };
+
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, {
   recursive: true, force: true, operation: 'subscription-relogin-runtime.test cleanup',
@@ -65,7 +69,7 @@ describe('production-shaped subscription re-login runtime', () => {
     await runtime.service.tick();
     const suggested = runtime.store.list()[0]; expect(suggested.state).toBe('suggested');
     await runtime.service.approve(suggested.id);
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     expect(account.status).toBe('active');
     expect(source.closedAt).not.toBeNull();
     expect(enrollment.start).toHaveBeenCalledWith(expect.objectContaining({ openBrowser: false }));
@@ -118,7 +122,7 @@ describe('production-shaped subscription re-login runtime', () => {
     });
     await runtime.service.tick();
     const suggested = runtime.store.list()[0];
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     expect(runtime.store.listEvents(suggested.id).map((event) => event.eventClass))
       .toContain('unattended-policy-approved');
     expect(enrollment.start).toHaveBeenCalledWith(expect.objectContaining({ provider: 'openai', framework: 'codex-cli', openBrowser: false }));
@@ -173,7 +177,7 @@ describe('production-shaped subscription re-login runtime', () => {
     });
     await runtime.service.tick();
     const suggested = runtime.store.list()[0];
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.failureClass).toBe('verification-failed'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.failureClass).toBe('verification-failed'), RELOGIN_SETTLE);
     expect(runtime.store.get(suggested.id)?.state).not.toBe('succeeded');
     expect(account.status).toBe('needs-reauth');
     runtime.close();
@@ -231,7 +235,7 @@ describe('production-shaped subscription re-login runtime', () => {
     });
     await runtime.service.tick();
     const suggested = runtime.store.list()[0];
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     const eventClasses = runtime.store.listEvents(suggested.id).map((event) => event.eventClass);
     expect(eventClasses).toContain('agent-drive-started');
     expect(eventClasses).not.toContain('browser-drive-started');
@@ -299,7 +303,7 @@ describe('production-shaped subscription re-login runtime', () => {
     });
     await runtime.service.tick();
     const episode = runtime.store.list()[0];
-    await vi.waitFor(() => expect(runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(episode.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     const events = runtime.store.listEvents(episode.id).map((event) => event.eventClass);
     expect(events).not.toContain('artifact-reissue-budget-exhausted');
     expect(enrollment.abandon).toHaveBeenCalledTimes(1);
@@ -387,7 +391,7 @@ describe('production-shaped subscription re-login runtime', () => {
     await runtime.service.tick();
     const episode = runtime.store.list()[0];
     await runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(runtime.store.get(episode.id)?.state).toBe('refused'));
+    await vi.waitFor(() => expect(runtime.store.get(episode.id)?.state).toBe('refused'), RELOGIN_SETTLE);
     expect(account).toMatchObject({ identityDrifted: true,
       identityDrift: { actualEmail: 'wrong@example.com', repairState: 'owner-relogin-required' } });
     expect(runtime.store.isBreakerOpen(account.id, account.provider)).toBe(true);

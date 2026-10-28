@@ -433,7 +433,7 @@ credential data, and obsolete route state is pruned after 30 days.
 
 ### `src/scheduler/` — cron + agentmd job execution
 
-`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobLeaseCutoverGate`, `JobLeaseClaimStore`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
+`AgentMdAtomicSave`, `AgentMdJobLoader`, `AgentMdLockFile`, `AgentMdReconcile`, `DisabledBodyDrift`, `InstallBuiltinJobs`, `IntegrationGate`, `JobClaimManager`, `JobFixedResultCertificate`, `JobLeaseCutoverGate`, `JobLeaseClaimStore`, `JobLoader`, `JobRunHistory`, `JobScheduler`, `JobSupervisionEvidence`, `JobSupervisionReplacementPrompt`, `JobSupervisionRollout`, `JobSupervisionStore`, `JobSupervisionWorker`, `MigrationInvariants`, `MigrationLedger`, `SkipLedger`.
 
 `JobRunHistory` applies the shared `CapacityEnforcement` contract before each JSONL append. Rows within budget are written unchanged; oversized optional detail is condensed and recorded as a durable `truncated` outcome; a row whose essential fields still cannot fit is refused and reported as an invariant failure. This keeps expected bounded-storage behavior observable without misclassifying successful condensation as a service degradation.
 

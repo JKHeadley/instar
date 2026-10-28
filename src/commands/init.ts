@@ -29,6 +29,7 @@
  * Existing project adds .instar/ and appends to CLAUDE.md.
  */
 
+import { applyInitPosture, decideInitPosture, parseTtl } from '../core/ThrowawayAgentGuard.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -114,6 +115,12 @@ interface InitOptions {
    * dual-runtime use.
    */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build' | 'both';
+  /** Test-agent leak guard: allow self-installed autostart despite a non-interactive init. */
+  autostart?: boolean;
+  /** Test-agent leak guard: record an expiry (e.g. "30m", "6h", "2d"). */
+  expiresIn?: string;
+  /** Test-agent leak guard: never expire, even in a temporary folder. */
+  keep?: boolean;
 }
 
 /**
@@ -203,6 +210,15 @@ export function refuseIfTccProtected(projectDir: string, what: string): void {
  * Main init entry point. Handles both fresh and existing project modes.
  */
 export async function initProject(options: InitOptions): Promise<void> {
+  if (options.keep && options.expiresIn) {
+    console.log(pc.red('  --keep and --expires-in contradict each other; pass one.'));
+    process.exit(1);
+  }
+  if (options.expiresIn && parseTtl(options.expiresIn) === null) {
+    console.log(pc.red(`  --expires-in must look like 30m, 6h or 2d (got "${options.expiresIn}").`));
+    process.exit(1);
+  }
+
   // Standalone mode: create at ~/.instar/agents/<name>/
   if (options.standalone) {
     const agentName = options.name;
@@ -211,7 +227,8 @@ export async function initProject(options: InitOptions): Promise<void> {
       console.log(`  Usage: ${pc.cyan('instar init --standalone my-agent')}`);
       process.exit(1);
     }
-    return initStandaloneAgent(agentName, options);
+    const projectDir = path.join(standaloneAgentsDir(), agentName);
+    return withProvisioningPosture(projectDir, options, () => initStandaloneAgent(agentName, options));
   }
 
   // Detect mode: if a project name argument was passed, it's fresh install
@@ -219,9 +236,40 @@ export async function initProject(options: InitOptions): Promise<void> {
   const isFresh = !!projectName && !options.dir;
 
   if (isFresh) {
-    return initFreshProject(projectName!, options);
+    const projectDir = path.resolve(process.cwd(), projectName!);
+    return withProvisioningPosture(projectDir, options, () => initFreshProject(projectName!, options));
   } else {
-    return initExistingProject(options);
+    const projectDir = path.resolve(options.dir || process.cwd());
+    return withProvisioningPosture(projectDir, options, () => initExistingProject(options));
+  }
+}
+
+/**
+ * Test-agent leak guard (docs/specs/test-agent-leak-guard.md). After an init
+ * that CREATED this agent's config.json (never a re-run over an existing
+ * agent), record the provisioning posture: autostart.autoInstall:false for a
+ * non-interactive or throwaway init (unless --autostart), and a throwawayAgent
+ * expiry for a throwaway location or --expires-in (or a keep record).
+ */
+async function withProvisioningPosture(projectDir: string, options: InitOptions, run: () => Promise<void>): Promise<void> {
+  const configFile = path.join(projectDir, '.instar', 'config.json');
+  const existedBefore = fs.existsSync(configFile);
+  await run();
+  if (existedBefore || !fs.existsSync(configFile)) return;
+  const interactive = options.interactive ?? !!(process.stdin.isTTY && process.stdout.isTTY);
+  const posture = decideInitPosture({
+    projectDir,
+    interactive,
+    autostartFlag: options.autostart === true,
+    keep: options.keep === true,
+    expiresIn: options.expiresIn,
+  });
+  applyInitPosture(projectDir, posture);
+  if (posture.throwawayAgent?.expiresAt) {
+    console.log(pc.yellow(`  Throwaway agent: it will remove its own auto-start and stop at ${posture.throwawayAgent.expiresAt} (pass --keep to never expire).`));
+  }
+  if (posture.autostart) {
+    console.log(pc.dim(`  Auto-start will not install itself (${posture.autostart.reason}); run \`instar autostart install\` to add it.`));
   }
 }
 
@@ -3253,6 +3301,55 @@ export function getDefaultJobs(port: number): object[] {
         value: `Run a quick health check: verify the instar server is responding (curl http://localhost:\${INSTAR_PORT:-${port}}/health), check disk space (df -h), and report any issues. Only send a message if something needs attention — silence means healthy. IMPORTANT: If you find issues, describe them in plain conversational language. Never dump raw JSON, field names, error codes, or structured data. The user reads these on their phone — write like you're texting them a quick heads-up. If the health response includes a degradationSummary array, relay those narrative strings directly.`,
       },
       tags: ['cat:guardian'],
+      mcpAccess: 'none',
+      // Script runner (docs/specs/job-cost-reduction.md §5): the shipped
+      // scripts/health-check.mjs does this check with zero LLM calls. The prompt
+      // body above stays complete and unchanged: it is the narrator's context and
+      // the rollback path (§8.4).
+      runner: 'script',
+      script: 'health-check.mjs',
+      scriptTimeoutMinutes: 1,
+      supervision: 'tier0',
+      scriptSupervision: 'triage',
+      triageEvidence: 'full',
+      triageFields: ['disk_free_pct', 'sessions_current', 'sessions_max', 'degradations', 'llm_status'],
+      triageBareOk: ['healthy'],
+      triageBareSkipped: ['feature-dark'],
+      anomalies: [
+        { kind: 'disk-low', class: 'recoverable' },
+        { kind: 'disk-critical', class: 'critical' },
+        { kind: 'sessions-exhausted', class: 'recoverable' },
+        { kind: 'llm-unreliable', class: 'recoverable' },
+        { kind: 'degradation:*', class: 'recoverable' },
+      ],
+    },
+    {
+      slug: 'script-job-supervisor',
+      name: 'Script Job Supervisor',
+      description: 'One daily high-level review across every script job: triage decisions, sessions, backup-check disagreements, canaries and missing machines (docs/specs/job-cost-reduction.md §5.6.5). Advisory: raises or clears its own low-priority attention items.',
+      schedule: '23 7 * * *',
+      priority: 'low',
+      expectedDurationMinutes: 5,
+      model: 'haiku',
+      enabled: true,
+      execute: {
+        type: 'prompt',
+        value: `Run the daily script-job supervision pass once, then stop. Do NOT message the user: the server makes the one bounded review call and raises or clears its own low-priority attention items.
+
+AUTH="\${INSTAR_AUTH_TOKEN:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
+AGENT_ID="\${INSTAR_AGENT_ID:-$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)}"
+
+curl -sS -m 300 -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" -H "X-Instar-Request: 1" -H 'Content-Type: application/json' -d '{}' http://localhost:\${INSTAR_PORT:-${port}}/jobs/script-supervision/pass
+
+A 503 means the pass is dark on this agent; a 409 means another machine holds the run. Both are nothing to do. Never retry in the same run. Exit silently.`,
+      },
+      tags: ['cat:guardian', 'role:worker'],
+      mcpAccess: 'none',
+      runner: 'script',
+      script: 'script-job-supervisor.mjs',
+      scriptTimeoutMinutes: 6,
+      supervision: 'tier0',
+      scriptSupervision: 'deterministic',
     },
     {
       slug: 'reflection-trigger',
@@ -3389,7 +3486,10 @@ For each overdue action:
 
 Also check pending actions (curl -s -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" "http://localhost:$PORT/evolution/actions?status=pending") for items that have been pending more than 48 hours without a due date — these are forgotten commitments.
 
-If no overdue or stale items, exit silently.`,
+Attention row (one per condition, never per run): if anything is overdue, raise or refresh the single item with id "evolution-overdue": curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"evolution-overdue","conditionKey":"evolution-overdue","title":"Evolution actions are overdue","body":"<count> overdue: <ids>","priority":"medium","source":"agent"}'
+When the overdue list is EMPTY, close that row instead: curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention/clear -H 'Content-Type: application/json' -d '{"conditionKey":"evolution-overdue","resolution":"no evolution actions are overdue"}'
+
+If no overdue or stale items, exit silently (after the clear above).`,
       },
       tags: ['cat:learning', 'role:worker', 'exec:prompt', 'pair:commitment-detection'],
     },
@@ -3836,7 +3936,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
         const codexArmModel = 'gpt-5.2';
         armCodexHooks({
           projectDir,
-          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel }),
+          trustDriver: makeTmuxTrustDriver({ tmuxPath: detectTmuxPath() || 'tmux', codexBinary: codexBin, model: codexArmModel, log: (m) => console.warn(m) }),
         });
       } catch {
         // fail-soft — the post-update migrator re-arms on the next update.
@@ -4559,14 +4659,18 @@ process.stdin.on('end', async () => {
       },
       timeout: 3000,
     }, (res) => {
-      res.resume(); // drain response
+      // Exit as soon as the server has answered (it does in ~7 ms): this hook
+      // runs after every tool call and Claude Code waits for it, so the old
+      // fixed 50 ms wait was added to every action.
+      res.resume();
+      res.on('end', () => process.exit(0));
     });
 
-    req.on('error', () => {}); // silent failure
+    req.on('error', () => process.exit(0)); // silent failure
     req.write(payload);
     req.end();
 
-    // Don't wait for response — exit immediately
+    // Upper bound: never wait longer than before for a slow server.
     setTimeout(() => process.exit(0), 50);
   } catch (e) {
     process.exit(0);

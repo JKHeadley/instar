@@ -100,7 +100,7 @@ fails, and keeps any opened row or list open across refreshes.
 | Card | Route (existing) | Fields used | Scope | Can't tell when | Detail |
 |---|---|---|---|---|---|
 | Can I reach you | `/health` | `telegramOrigin.heldForward.{count,oldestSince,observedAt,expiredUnreported}` | this machine | block absent, `observedAt` null, count missing; stale past 5 min | legacy Message origins |
-| What needs you | `/attention?scope=pool` | `items[]` with `status=OPEN`; `pool.failed` | pool | request fails or no list | inline See all |
+| What needs you | `/attention?scope=pool`, plus the promises *waiting on you* from What I've promised; `/pool` for machine names | `items[]` with `status=OPEN`; `pool.failed`; `machines[].{machineId,nickname}` | pool | request fails or no list; promises unread marks it partial | inline See all |
 | What I'm doing | `/sessions?scope=pool` | `sessions[].{name,status,machineNickname,startedAt,telemetry.lastActivity}`; `pool.failed` | pool | request fails or no list | legacy Sessions |
 | What I've promised | `/commitments?scope=mesh` (all statuses; the tracker's active rule applied client-side to own and replica rows alike) | `enabled`, `scope`, `commitments[].{owner,blockedOn,status,expiresAt,createdAt,viewSource,originMachineId,stalenessMs}` | mesh | request fails or `enabled:false` | inline See all + legacy Commitments |
 | Where I'm running | `/pool` | `machines[].{nickname,online,routerReceivedAt,loadAvg,hardware.cpuCores,ropeCondition}` | pool | request fails or no list | legacy Machines |
@@ -109,13 +109,18 @@ fails, and keeps any opened row or list open across refreshes.
 Block specifics:
 
 - **What needs you** splits the open items: *waiting on you* (URGENT, items raised
-  by the agent, and decision/approval/review/security/sign-in categories) first,
-  then a count of routine automated items. The same notice raised again or on
+  by the agent, and decision/approval/review/security/sign-in categories); routine
+  automated items are not counted on Home (see "A calm front page"). The same notice raised again or on
   several machines (same category and title) is **one** entry ("27 copies ·
   Mac Studio, Mac Mini, Laptop"). An entry untouched for 14+ days moves to a
-  visible "probably already handled" group that is listed but not counted;
+  visible "Older, still open" group that is listed but not counted (age is not evidence it was handled);
   security items never age out. Highest priority first, newest first within it.
-  Unreachable peers are named. (Operator, 2026-10-25: "If the user is overloaded
+  Unreachable peers are named, never shown by internal id (a machine with no name
+  is described as such). It also lists the promises *waiting on you* from What
+  I've promised, marked "a promise", so it is the one answer to "what needs you":
+  the headline counts this card alone and the two can never disagree (operator,
+  2026-10-27, topic 127504: the headline said "One thing needs you." above this
+  card saying "Nothing needs you"). (Operator, 2026-10-25: "If the user is overloaded
   with notification/required actions/attention items they will simply ignore all
   of them." On live data this took the count from 32 to 4. The root cause, items
   that never close when their cause clears, is its own issue:
@@ -128,7 +133,7 @@ Block specifics:
 - **What I've promised** leads with promises *waiting on you* (owner user, or
   blocked on your input or authorization) touched in the last 14 days, then
   missed ones; older waiting promises are listed as "untouched 14+ days" but not
-  counted (47 → 11 on live data); then a count of the rest. Replica rows say they come from another machine and how old they are.
+  counted (47 → 11 on live data); the rest is not counted on Home (see "A calm front page"). Replica rows say they come from another machine and how old they are.
   Coverage is stated beside the value: no replica rows means "only this machine's
   promises are visible", a replica over 15 min old means "some of it is out of
   date"; either marks the card a partial view even when it also needs you.
@@ -142,7 +147,20 @@ Block specifics:
 - **What I'm allowed to do** shows guards on, watching only, off-where-they-should-
   be-on and off by design, from `/guards`' own summary, plus active mandates; a
   failed mandate read keeps the guard reading and marks the card a partial view.
-- **The headline** is teal "All quiet." only when every card is observed and
+- **A calm front page** (operator, 2026-10-27: "still looks WAY too busy and hard
+  to understand"). Home shows only what asks something of the operator: no
+  count of routine notices, no count of promises carried or untouched for
+  weeks (they stay under See all), a miss untouched for 14+ days is history
+  rather than a red row, a promise waiting on the operator is listed once (in
+  What needs you), and when every machine is answering the machine list
+  collapses to that one line. The headline names the areas it cannot fully
+  see instead of counting them.
+- **No internal text on Home.** No card or headline shows an internal id, a
+  placeholder value (undefined/null), an internal field name or bookkeeping
+  phrasing; `tests/unit/console-home-one-answer.test.ts` scans every builder's
+  rendered text for it.
+- **The headline** counts What needs you (which already includes waiting
+  promises). It is teal "All quiet." only when every card is observed and
   fine. Unknown, partial or stale cards make it "Nothing urgent that I can see."
   in a muted tone, and a known count always carries the coverage qualification.
 

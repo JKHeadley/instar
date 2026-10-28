@@ -5,6 +5,21 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "host-test-runner-merge-priority",
+      "description": "Per-agent, host-local short leases that give a queued merge-gate verify the next full-suite slot. Expired, dead-owner and foreign-host claims have no authority.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["~/.instar/host-test-runner-priority/*.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 64,
+        "note": "One replace-in-place claim per agent and machine, at most 64 host-wide. A new writer prunes dead or expired claims at the ceiling; a live claim expires after 2 minutes without renewal."
+      }
+    },
+    {
       "category": "telegram-origin-session-custody",
       "description": "Machine-bound preparation credential verifiers and the owner-only notice IPC socket. Raw credentials are never persisted. Session liveness and incarnation must still be current; a copied verifier or stale socket never grants delivery authority. Excluded structurally from git sync and replicated backup.",
       "scope": "machine-local", "freshness": "real-time", "conflictShape": "single-writer", "transport": "none",
@@ -900,6 +915,61 @@
       }
     },
     {
+      "category": "audit-work-admission",
+      "description": "Overload-admission audit stream (trustworthy-machine-load-and-mesh-floor Part C): one JSON line per admission transition (closed/reopened), refusal or would-refuse (dry-run), and recovery-slot grant. Machine-local observability of this machine's own decisions; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/work-admission.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "WorkAdmission.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending; rows are small and only written on transitions and refusals."
+      }
+    },
+    {
+      "category": "audit-overload-shed",
+      "description": "Overload-shed audit stream (trustworthy-machine-load-and-mesh-floor Part D): one JSON line per proposed move, would-move (dry-run, at most one per topic/target per 5 min), claim, expiry, breaker hold and governor hold. Machine-local observability of this machine's own shed decisions; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/overload-shed.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "OverloadShedPlanner.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending."
+      }
+    },
+    {
+      "category": "overload-shed-state",
+      "description": "Overload-shed planner state (trustworthy-machine-load Part D): capacity reservations on targets (TTL), the per-hour move breaker, per-topic cooldowns and attempt counts for the current overload episode, peers recently seen refusing work, and the one live move. Restart-safe so a restart neither resets the breaker nor re-proposes a topic.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/overload-shed.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file replaced in place; every list in it is pruned each tick (reservations by TTL, move times to one hour, cooldowns to 30 min, attempts reset per episode and bounded by the topics this machine owns)."
+      }
+    },
+    {
       "category": "audit-reaper",
       "description": "Reaper decision audit stream (keep/kill transitions stamped with pressure tier).",
       "scope": "machine-local",
@@ -1633,6 +1703,25 @@
       }
     },
     {
+      "category": "local-verify-peer-attempts",
+      "description": "Machine-local peer verifier hand-off state: one current attempt, the last 20 results, and cancelled attempt ids retained for seven days. It lets a restarted peer reject delayed hand-offs and lets the coordinator retrieve a completed result.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/peer-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 20,
+        "tombstoneMaxAgeMs": 604800000,
+        "note": "The current attempt is replaced on completion or restart, results keep their last 20 entries, and cancelled attempt ids expire after seven days. The snapshot is rewritten in place."
+      }
+    },
+    {
       "category": "local-verify-journal",
       "description": "local-verify completion journal: one line per verify record (repo, pr, head, base, lanes, outcome, flags, verifierVersion, policyHash), written ONLY by LocalVerifyService's completion path; the in-memory record index is rebuilt from it at boot. Plus the per-PR first-seen-closed times used for the 14-day retention. Machine-local: another machine's lease acquisition starts with an empty index and re-verifies (spec local-verify-merge-authority §2 step 6).",
       "scope": "machine-local",
@@ -1683,6 +1772,23 @@
         "class": "fixed-cardinality",
         "maxRecords": 1,
         "note": "One file, overwritten atomically on every state change."
+      }
+    },
+    {
+      "category": "local-verify-main-failure",
+      "description": "local-verify main-failure detail: the failing test files, bounded reasons and clipped first messages of the last failed `main` verify, keyed by its head. Read at boot so the main-red hold (CMT-1033: doomed PR verifies wait while `main` is red; a PR that touches or names a failing file runs first) survives a server restart; it is consulted only while its head is the main-health watermark's red head, and removed when `main` goes green. Machine-local: the verify queue it gates is this machine's.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/main-failure.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file, overwritten atomically on every failed main verify and removed on green."
       }
     },
     {

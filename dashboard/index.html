@@ -2422,6 +2422,9 @@
     .job-state-card .state-row .state-val {
       color: var(--text);
       font-weight: 500;
+      text-align: right;
+      overflow-wrap: anywhere;
+      min-width: 0;
     }
 
     .job-state-card .state-row .state-val.error {
@@ -8754,7 +8757,11 @@
           + desc
           + '<div class="job-item-meta">'
           + '<span>' + esc(schedule) + '</span>'
-          + '<span class="model-badge">' + esc(j.model || '—') + '</span>'
+          + (j.runner === 'inactive'
+            ? '<span class="model-badge" title="Script supervisor is inactive on this agent" style="background:rgba(180,180,180,0.18)">inactive</span>'
+            : j.runner === 'script'
+            ? '<span class="model-badge" title="Runs as a small script with no AI session" style="background:rgba(150,200,220,0.18)">script</span>'
+            : '<span class="model-badge">' + esc(j.model || '—') + '</span>')
           + priorityBadge
           + nsBadge
           + trustWarn
@@ -8861,6 +8868,7 @@
         + (s.lastError ? '<div class="state-row"><span>Error</span><span class="state-val error" style="word-break:break-word">' + esc(s.lastError) + '</span></div>' : '')
         + '<div class="state-row"><span>Next Run</span><span class="state-val">' + esc(nextTimeAbs) + '</span></div>'
         + '</div>'
+        + '<div id="jobScriptCard" class="job-state-card" style="display:none"></div>'
         + '<div id="jobSparkline" class="job-sparkline"></div>'
         + '<div class="sparkline-legend"><div class="sparkline-legend-item"><div class="sparkline-legend-dot success"></div>Success</div><div class="sparkline-legend-item"><div class="sparkline-legend-dot failure"></div>Failure</div><div class="sparkline-legend-item"><div class="sparkline-legend-dot skipped"></div>Skipped</div></div>'
         + '<div class="job-history-section"><h4>Run History</h4>'
@@ -8874,6 +8882,73 @@
 
       // Load history
       loadJobHistory(slug);
+      loadJobScriptCard(job);
+    }
+
+    // ─── Script-job card (job-cost-reduction §8 item 7) ──────────────
+    //
+    // Runner, last result, 7-day tokens vs the baseline (GET /jobs/cost) and
+    // the last day's triage decisions/sessions (GET /jobs/triage). Each read
+    // is optional: a 503/404 (feature dark, older server) just hides its row.
+    function jobCostRowFor(data, slug) {
+      if (!data) return null;
+      const list = Array.isArray(data) ? data : (data.jobs || data.slugs || data.rows || null);
+      if (Array.isArray(list)) return list.find(r => r && r.slug === slug) || null;
+      const keyed = data.bySlug || data.perSlug || data;
+      return (keyed && typeof keyed === 'object' && keyed[slug]) || null;
+    }
+    function jobTokensOf(row) {
+      if (!row) return null;
+      const v = row.weightedTokens ?? row.tokens?.weighted ?? (typeof row.tokens === 'number' ? row.tokens : null);
+      return typeof v === 'number' ? v : null;
+    }
+    function fmtTokens(n) {
+      if (n === null || n === undefined) return '—';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+      return String(Math.round(n));
+    }
+    function jobTriageSummaryFor(data, slug) {
+      const row = data && data.perSlug && data.perSlug[slug];
+      if (!row) return { decisions: 0, sessions: 0 };
+      return {
+        decisions: Number.isFinite(row.decisions) ? row.decisions : 0,
+        sessions: Number.isFinite(row.sessions) ? row.sessions : 0,
+      };
+    }
+    async function loadJobScriptCard(job) {
+      const card = document.getElementById('jobScriptCard');
+      if (!card || !['script', 'session-rollback', 'inactive'].includes(job.runner)) return;
+      const slug = job.slug;
+      const s = job.state || {};
+      const rows = [];
+      rows.push('<div class="state-row"><span>Runs as</span><span class="state-val">'
+        + esc(job.runner === 'script' ? 'A script (no AI session)'
+          : job.runner === 'inactive' ? 'Inactive' : 'An AI session') + '</span></div>');
+      rows.push('<div class="state-row"><span>Last result</span><span class="state-val">' + esc(s.lastResult || '—') + '</span></div>');
+      card.innerHTML = rows.join('');
+      card.style.display = '';
+      let cost = null, triage = null;
+      try { cost = await apiFetch('/jobs/cost?sinceDays=7'); } catch { cost = null; }
+      try { triage = await apiFetch('/jobs/triage?slug=' + encodeURIComponent(slug) + '&sinceHours=24'); } catch { triage = null; }
+      if (selectedJob !== slug) return;
+      const costRow = jobCostRowFor(cost, slug);
+      if (costRow) {
+        const now = jobTokensOf(costRow);
+        const base = costRow.baseline === null ? null : jobTokensOf(costRow.baseline);
+        const baseText = costRow.baseline === null ? 'no baseline yet' : (base === null ? '—' : fmtTokens(base));
+        rows.push('<div class="state-row"><span>Tokens, last 7 days</span><span class="state-val">'
+          + esc(fmtTokens(now)) + ' (before: ' + esc(baseText) + ')</span></div>');
+      }
+      if (triage) {
+        if (job.scriptSupervision === 'triage') {
+          const summary = jobTriageSummaryFor(triage, slug);
+          rows.push('<div class="state-row"><span>Triage, last day</span><span class="state-val">'
+            + esc(summary.decisions ? summary.decisions + ' decision' + (summary.decisions === 1 ? '' : 's') : 'no decisions') + '</span></div>');
+          rows.push('<div class="state-row"><span>Sessions it started</span><span class="state-val">' + summary.sessions + '</span></div>');
+        }
+      }
+      card.innerHTML = rows.join('');
     }
 
     function jobsGoBack() {

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "merge-gate-priority-preparation",
+  "sessionId": "2b2781fe-a0ae-4fac-96c1-86978e4139d8",
+  "timestamp": "2026-10-27T17:43:38.409Z",
+  "artifactPath": "upgrades/side-effects/merge-gate-priority-preparation.md",
+  "artifactSha256": "fcae8b47b9ea54150cac289202a9b66e4fa8ca1e3a0eca0bf92897018336d7d6",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    "docs/specs/test-runner-concurrency-bound.eli16.md",
+    "docs/specs/test-runner-concurrency-bound.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/scaffold/templates.ts",
+    "tests/integration/test-runner-bound-meta.test.ts",
+    "tests/unit/PostUpdateMigrator-mergeGatePreparation.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/merge-gate-priority-preparation.md",
+    "upgrades/side-effects/merge-gate-priority-preparation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Merge-gate suite admission and fleet migration behavior",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

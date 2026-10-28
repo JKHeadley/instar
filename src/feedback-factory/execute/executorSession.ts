@@ -27,7 +27,7 @@ export function buildExecutorPrompt(input: ExecutorPromptInput): string {
   const brief = input.brief;
   const task = input.needsSpec
     ? `This item needs a design first. Do NOT change any code. Write ONE new spec draft at ${input.specPath} describing the problem, the evidence and a proposed fix. Do not add review, approval or convergence tags to its frontmatter. Then write the result file with outcome "spec-drafted".`
-    : 'Reproduce the problem with a failing test (vitest, under tests/). If it cannot be reproduced, write the result file with outcome "not-reproducible" and stop. Otherwise fix it so the test passes, and leave every change uncommitted in this directory. Then write the result file with outcome "fixed".';
+    : 'Reproduce the problem with a failing test (vitest, under tests/). Run that test before changing production code and confirm it fails because of the reported defect. After the fix, run it again with -t set to the exact test name you will put in testName. Check that Vitest reports at least one passed test; an all-skipped run is not proof. If it cannot be reproduced, write the result file with outcome "not-reproducible" and stop. Otherwise leave every change uncommitted in this directory and write the result file with outcome "fixed".';
   return [
     'You are working on one feedback item in a sandboxed copy of the repository. You have no network and no credentials.',
     'Do NOT run git commit, git push or gh. Do NOT edit package.json, lockfiles, scripts/, .github/, .husky/, .claude/ or test-runner configs — such changes are never published.',
@@ -113,8 +113,8 @@ export function shq(value: string): string {
  * fails the check. A pass at base, or no test run at all, fails it too.
  */
 export function classifyBaseFailure(output: string, exitCode: number | null, changedSources: string[], importedNames: Record<string, string> = {}): { ok: true; kind: 'assertion' | 'missing-new-source' } | { ok: false; reason: string } {
-  if (exitCode === 0) return { ok: false, reason: 'test-passes-at-base' };
   const text = output.replace(/\u001b\[[0-9;]*m/g, '');
+  if (exitCode === 0) return { ok: false, reason: vitestPassedTestCount(text) > 0 ? 'test-passes-at-base' : 'test-not-found-at-base' };
   if (/No test files found|no tests? (found|ran)|0 passed.*0 failed|Tests\s+no tests/i.test(text)) return { ok: false, reason: 'test-not-found-at-base' };
   const missing = [...text.matchAll(/(?:Cannot find module|Failed to (?:load|resolve) (?:url|import)|does not provide an export named|is not exported by)\s+['"]?([^'"\s)]+)['"]?/g)].map((m) => m[1]);
   const exportMissing = [...text.matchAll(/(?:module|file)\s+['"]([^'"]+)['"]\s+does not provide an export named/g)].map((m) => m[1]);
@@ -143,6 +143,20 @@ export function classifyBaseFailure(output: string, exitCode: number | null, cha
   }
   if (/AssertionError|expected .+ to |toBe|toEqual|toMatch|toThrow|assert\./i.test(text) && /\bfail(ed)?\b|✗|×|FAIL/i.test(text)) return { ok: true, kind: 'assertion' };
   return { ok: false, reason: 'not-an-assertion-failure' };
+}
+
+/** A successful Vitest process may have selected zero tests (all skipped by -t). Every summary must show a pass. */
+export function vitestPassedTestCount(output: string): number {
+  const text = output.replace(/\u001b\[[0-9;]*m/g, '');
+  const summaries = [...text.matchAll(/(?:^|\n)\s*Tests\s+([^\n]+)/g)];
+  if (summaries.length === 0) return 0;
+  // A test can print a fake positive summary on either stream. The runner's real
+  // all-skipped summary still appears, so never let a later positive line erase it.
+  const passed = summaries.map(([, summary]) => {
+    const match = summary.match(/(?:^|\|)\s*(\d+)\s+passed\b/);
+    return match ? Number(match[1]) : 0;
+  });
+  return Math.min(...passed);
 }
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "instar-witness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Signed, offline-verifiable records of work between AI agents. An agent identity key plus append-only witness records that anyone can check without trusting a server.",
   "type": "module",
   "main": "dist/index.js",

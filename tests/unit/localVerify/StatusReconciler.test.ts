@@ -58,6 +58,7 @@ function setup(opts: { postStatuses?: boolean; enabled?: boolean; rulesRequire?:
     t: Date.parse('2026-10-21T12:00:00.000Z'),
     combined: new Map<string, CombinedStatusRead | null>(),
     checkRuns: new Map<string, CheckRunView[] | null>(),
+    verifying: false,
     postStatuses: opts.postStatuses ?? true,
     enabled: opts.enabled ?? true,
     bypass: 'never' as string | null,
@@ -77,7 +78,7 @@ function setup(opts: { postStatuses?: boolean; enabled?: boolean; rulesRequire?:
 
   const service = {
     getRecord: (p: number, h: string) => st.records.get(`${p}:${h}`) ?? null,
-    isVerifying: () => false,
+    isVerifying: () => st.verifying,
     mainHealth: () => ({ state: st.health, redHead: null, reason: '', lastGreenHead: null, since: 0, currentMainHead: st.mainHead, pendingMainHead: null, mainInFlight: null }),
     noteMainHead: (h: string | null) => { notedMain.push(h); },
     onLeaseAcquired: (o: { foreignHolder: boolean }) => { acquired.push(o); },
@@ -138,6 +139,27 @@ describe('StatusReconciler — posting discipline', () => {
     s.st.prs = [pr({ rollup: [lvStatus('PENDING')] })];
     await s.rec.pass(); await s.rec.drain();
     expect(s.posts.map((p) => p.state)).toEqual(['success', 'success']);
+  });
+
+  it('re-posts when the reason changes under an unchanged state (verifying -> awaiting-independent-review)', async () => {
+    // PR #2405, 2026-10-27: the status read "verifying" for ~40 minutes after the run had
+    // finished, because a pending -> pending change was never re-posted.
+    const s = setup();
+    s.st.records.clear();
+    s.st.verifying = true;
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts.map((p) => [p.state, p.description])).toEqual([['pending', 'verifying']]);
+    s.st.prs = [pr({ rollup: [lvStatus('PENDING')] })];
+    // The run finishes: a harness-changing record with no independent review stays pending, for a different reason.
+    s.st.verifying = false;
+    s.st.records.set(`7:${sha('a')}`, record({ harnessChanging: true }));
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts).toHaveLength(2);
+    expect(s.posts[1]).toMatchObject({ state: 'pending' });
+    expect(s.posts[1].description).toMatch(/^awaiting-independent-review/);
+    // Nothing changes: nothing more is posted.
+    await s.rec.pass(); await s.rec.drain();
+    expect(s.posts).toHaveLength(2);
   });
 
   it('lists every open PR to main with no author filter; other bases and invalid heads are ignored', async () => {

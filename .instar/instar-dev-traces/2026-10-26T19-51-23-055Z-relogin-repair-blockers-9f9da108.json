@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "relogin-repair-blockers",
+  "sessionId": "3a9ce9d9-0cad-4c45-95f6-270e56a03fdf",
+  "timestamp": "2026-10-26T19:51:23.055Z",
+  "artifactPath": "upgrades/side-effects/relogin-repair-blockers.md",
+  "artifactSha256": "8d3480f1243e7df267e820812868b58477cd988a0a2284d0b71de2d3099eacd6",
+  "coveredFiles": [
+    "dashboard/subscriptions.js",
+    "docs/specs/relogin-repair-blockers.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SubscriptionReloginPolicy.ts",
+    "src/core/SubscriptionReloginRuntime.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/integration/subscription-relogin-blockers.test.ts",
+    "tests/integration/subscription-relogin-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-assistedRelogin.test.ts",
+    "tests/unit/subscriptions-render.test.ts",
+    "upgrades/next/relogin-repair-blockers.md",
+    "upgrades/side-effects/relogin-repair-blockers.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive read-only observability: a new response field and a dashboard line reusing the existing admission function; no decision changes, no persisted state; a revert fully undoes it.",
+  "eli16Path": "docs/specs/relogin-repair-blockers.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relogin-repair-blockers.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

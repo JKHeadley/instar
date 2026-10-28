@@ -181,6 +181,23 @@ describe('/subscription-relogin routes', () => {
     expect(list.body.pool.failed).toEqual([]);
   });
 
+  it('merges peer repair blockers and names machines whose blockers are unknown', async () => {
+    const newer = express();
+    newer.get('/subscription-relogin', (_req, res) => res.json({ enabled: true, episodes: [], blockers: [
+      { accountId: 'acct-2', machineId: 'ignored', framework: 'claude-code', reason: 'profile-unresolved' },
+      { accountId: 7, reason: 'malformed-row-dropped' },
+    ] }));
+    const older = express();
+    older.get('/subscription-relogin', (_req, res) => res.json({ enabled: true, episodes: [] }));
+    const a = await listen(newer); const b = await listen(older); extraServers.push(a, b);
+    peerUrls = [{ machineId: 'machine-2', url: a.url }, { machineId: 'machine-3', url: b.url }];
+    const list = await api('/subscription-relogin?scope=pool');
+    expect(list.body.blockers).toEqual([expect.objectContaining({ accountId: 'acct-2', machineId: 'machine-2',
+      reason: 'profile-unresolved', remote: true })]);
+    // This host's runtime here exposes no blockers read, and machine-3 predates the field: unknown, not clear.
+    expect(list.body.pool.blockersUnknown.sort()).toEqual(['machine-1', 'machine-3']);
+  });
+
   it('keeps remote pool status and one-click dispatch alive when the dashboard host has no local runtime', async () => {
     const remoteEpisode = { id: 'remote-repair', accountId: 'acct-2', machineId: 'machine-2',
       state: 'suggested', inputDigest: `sha256:${'c'.repeat(64)}` };

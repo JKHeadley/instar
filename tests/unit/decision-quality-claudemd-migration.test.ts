@@ -12,11 +12,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { generateClaudeMd } from '../../src/scaffold/templates.js';
+import { directJobSupervisionQualityAwareness, generateClaudeMd } from '../../src/scaffold/templates.js';
 import { DECISION_QUALITY_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const MARKER = 'LLM-Decision Quality Meter';
+const DIRECT_MARKER = '### Direct Job-Supervision Call Quality';
 
 describe('Decision-quality CLAUDE.md awareness (Agent Awareness Standard)', () => {
   it('generateClaudeMd (new-install path) includes the awareness section with the read + grade-pass surfaces', () => {
@@ -34,6 +35,14 @@ describe('Decision-quality CLAUDE.md awareness (Agent Awareness Standard)', () =
     const s = DECISION_QUALITY_CLAUDEMD_SECTION(9999);
     expect(s).toContain('http://localhost:9999/decision-quality');
     expect(s).not.toContain('localhost:4042');
+  });
+
+  it('teaches new agents that direct Jev calls have a separate audit section and remain off', () => {
+    const md = generateClaudeMd('my-proj', 'echo', 9999, true);
+    expect(md).toContain(directJobSupervisionQualityAwareness(9999));
+    expect(md).toContain(DIRECT_MARKER);
+    expect(md).toContain('routerEnrollment: pending');
+    expect(md).toContain('Jev decisions still off');
   });
 
   it('aggregates are presented evidence-strength-first with the insufficient-evidence honesty marker', () => {
@@ -70,10 +79,12 @@ describe('migrateClaudeMd appends the decision-quality section for existing agen
     expect(countMarker()).toBe(0);
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' } as any).migrate();
     expect(countMarker()).toBe(1);
+    expect(fs.readFileSync(claudeMdPath, 'utf-8').split(DIRECT_MARKER)).toHaveLength(2);
     expect(fs.readFileSync(claudeMdPath, 'utf-8')).toContain('/decision-quality/grade-pass');
     // Second run must not double-append.
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' } as any).migrate();
     expect(countMarker()).toBe(1);
+    expect(fs.readFileSync(claudeMdPath, 'utf-8').split(DIRECT_MARKER)).toHaveLength(2);
   });
 
   it('does NOT re-append when the section is already present', () => {

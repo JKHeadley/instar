@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
 import { admission, compileOriginWorker, temporaryState } from '../../helpers/telegramOriginStore.js';
 
@@ -31,6 +32,26 @@ describe('durable recovery review pacing', () => {
     expect(audit?.attempts).toEqual([]);
     expect(audit?.children[0]).toMatchObject({ state: 'queued', attempts: 0 });
     expect((await reopened.recoverableAdmissions({ now: now + 2 * interval }))[0]).toEqual(op);
+  });
+
+  it('answers "not reserved" (false), never a lock error, while another writer holds the store', async () => {
+    // Two owners share one store file; the loser of a reservation race must read
+    // "not reserved", the same answer an already-reserved operation gives. Under CI
+    // load the 25 ms busy timeout expired first and the reservation threw
+    // "database is locked" instead (recovery-review-budget flake, PR #2408).
+    const stateDir = temporaryState(), store = await open(stateDir);
+    const now = Date.now(), op = admission('locked', now);
+    await store.admit(op);
+    const blocker = new Database((await store.diagnostics()).path);
+    blocker.pragma('busy_timeout = 0');
+    blocker.exec('BEGIN IMMEDIATE');
+    try {
+      expect(await store.reserveRecoveryAttempt({ operationId: op.operationId, now })).toBe(false);
+    } finally {
+      blocker.exec('ROLLBACK'); blocker.close();
+    }
+    // Nothing was spent while locked out: the reservation is still available.
+    expect(await store.reserveRecoveryAttempt({ operationId: op.operationId, now })).toBe(true);
   });
 
   it('leaves another operation eligible and bounds recovery over the original lifetime', async () => {

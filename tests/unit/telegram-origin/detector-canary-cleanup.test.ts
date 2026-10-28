@@ -196,14 +196,31 @@ it.each([0, -1, 30_001, 1.5, Number.NaN])('rejects invalid cleanup bounds (%s)',
 });
 
 
-it.each([
-  ['worker-exit-nonzero', 'process.exitCode = 2;'],
-  ['worker-error', "setImmediate(() => { throw new Error('private worker detail'); });"],
-])('distinguishes %s after valid cleanup acknowledgement', async (fault, ending) => {
-  const canary = await fixture(`parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});${ending}`);
+it('distinguishes worker-exit-nonzero after valid cleanup acknowledgement', async () => {
+  const canary = await fixture("parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});process.exitCode = 2;");
   await canary.run();
   expect(canary.getHealth()).toMatchObject({ state: 'fail', attempts: 1, reason: 'canary-cleanup-unverified' });
-  expectFault(`cleanup:${fault}:awaiting-exit`);
+  expectFault('cleanup:worker-exit-nonzero:awaiting-exit');
+});
+
+it('distinguishes worker-error after the parent receives valid cleanup acknowledgement', async () => {
+  const canary = await fixture("parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});setInterval(()=>{},1000);");
+  let worker: Worker | undefined;
+  const acknowledged = gate();
+  const realEmit = Worker.prototype.emit;
+  vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event, ...args) {
+    if (event === 'online') worker = this;
+    const emitted = realEmit.call(this, event, ...args);
+    if (event === 'message' && args[0]?.type === 'cleanup') acknowledged.release();
+    return emitted;
+  });
+  const running = canary.run();
+  await acknowledged.promise;
+  expect(worker).toBeDefined();
+  worker!.emit('error', new Error('private worker detail'));
+  await running;
+  expect(canary.getHealth()).toMatchObject({ state: 'fail', attempts: 1, reason: 'canary-cleanup-unverified' });
+  expectFault('cleanup:worker-error:awaiting-exit');
   expect(JSON.stringify(report.mock.calls)).not.toContain('private worker detail');
 });
 

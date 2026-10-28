@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "console-home-one-answer",
+  "sessionId": "6215a466-77bb-4f7e-a33b-02e7a5053727",
+  "timestamp": "2026-10-27T17:07:51.514Z",
+  "artifactPath": "upgrades/side-effects/console-home-one-answer.md",
+  "artifactSha256": "6160a3f415e3164f186868e196e20b5c2555d3f48913da16a8d1399d1ac6a150",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/home-model.js",
+    "docs/specs/console-home-one-answer.eli16.md",
+    "tests/unit/console-home-model.test.ts",
+    "tests/unit/console-home-one-answer.test.ts",
+    "upgrades/next/console-home-one-answer.md",
+    "upgrades/side-effects/console-home-one-answer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dashboard display-only change; a revert fully undoes it; no gate, route, config or migration.",
+  "eli16Path": "docs/specs/console-home-one-answer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-home-one-answer.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
