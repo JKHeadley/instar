@@ -60,6 +60,8 @@ function setup(views: Record<number, PrView>, existingStateDir?: string) {
   const stateDir = existingStateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
   if (!existingStateDir) dirs.push(stateDir);
   const children: Array<{ resultPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
+  const priorities: boolean[] = [];
+  let holders: number[] = [];
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
     verifierVersion: '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
@@ -77,10 +79,12 @@ function setup(views: Record<number, PrView>, existingStateDir?: string) {
     isGroupAlive: () => false,
     killGroup: () => {},
     readProcessArgs: async () => null,
-    foreignSuiteHolders: () => [],
+    foreignSuiteHolders: () => holders.map((pid) => ({ pid })),
+    suiteCapacity: () => 1,
+    setSuitePriority: (active) => { priorities.push(active); },
     setTimer: () => {},
   });
-  return { stateDir, svc, children };
+  return { stateDir, svc, children, priorities, setHolders: (next: number[]) => { holders = next; } };
 }
 
 function app(ctx: RouteContext): express.Express {
@@ -91,6 +95,18 @@ function app(ctx: RouteContext): express.Express {
 }
 
 describe('local-verify routes (integration)', () => {
+  it('keeps the next merge check reserved after the first check acquires the only suite slot', async () => {
+    const s = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: 8 })).status).toBe(202);
+    expect(s.children).toHaveLength(1);
+    s.setHolders([90_001]); // first verifier child acquired the host's only suite slot
+    await s.svc.tick();
+    expect((await request(a).get('/local-verify')).body.queue.map((e: { pr: number }) => e.pr)).toContain(8);
+    expect(s.priorities.at(-1)).toBe(true);
+  });
+
   it('answers 503 when the service is not constructed', async () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
     dirs.push(dir);

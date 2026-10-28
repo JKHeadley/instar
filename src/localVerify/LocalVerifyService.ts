@@ -185,6 +185,8 @@ export interface LocalVerifyServiceSeams {
   readProcessArgs(pid: number): Promise<string | null>;
   /** Live full-suite holders of the host test-runner bound. */
   foreignSuiteHolders(): Array<{ pid: number }>;
+  /** Host suite cap; unknown capacity leaves spare-slot policy unchanged. */
+  suiteCapacity?(): number;
   /** Publish/clear the merge-gate's short host-wide claim for the next suite slot. */
   setSuitePriority?(active: boolean): void;
   onStarved?(info: { pr: number; headSha: string; waitedMs: number; interruptions?: number; reason?: 'waited' | 'interrupted' }): void;
@@ -1891,19 +1893,47 @@ export class LocalVerifyService {
     this.scheduleDispatch();
     // Keep renewing the reservation through child preparation. Releasing it at
     // spawn let ad-hoc suites take the slot before the child reached its lanes.
+    // At cap one, a second runnable entry also owns the next slot after this
+    // child acquires it; otherwise an ordinary waiter can overtake the queue.
     if (this.inFlight || this.starting) {
-      this.publishSuitePriority(!this.stopped && (!!this.starting || (!!this.inFlight && !this.inFlight.cancelled && !this.inFlight.suiteSlotAcquired)));
+      const preparing = !!this.starting || (!!this.inFlight && !this.inFlight.cancelled && !this.inFlight.suiteSlotAcquired);
+      let onlySlot = false;
+      try { onlySlot = this.seams.suiteCapacity?.() === 1; } catch { /* @silent-fallback-ok: unknown cap never over-reserves */ }
+      const nextQueued = !preparing && onlySlot && this.nextRunnableQueuedEntry() !== null;
+      this.publishSuitePriority(!this.stopped && (preparing || nextQueued));
       return;
     }
+    const next = this.nextRunnableQueuedEntry();
+    if (!next) { this.publishSuitePriority(false); return; }
+    // This claim is written BEFORE checking an occupied slot. Once that slot
+    // releases, ordinary suites yield and the next pump can start this verify.
+    this.publishSuitePriority(true);
+    const holders = this.seams.foreignSuiteHolders();
+    if (holders.length > 0) {
+      this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });
+      return;
+    }
+    if (next.kind !== 'main' && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
+      // The verify tests the merge with TODAY's base: re-read it right before the start, and
+      // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
+      this.starting = next;
+      void this.refreshBaseThenPump(next);
+      return;
+    }
+    const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
+    this.lastStartWasMain = entry.kind === 'main';
+    this.start(entry);
+  }
+
+  private nextRunnableQueuedEntry(): QueueEntry | null {
     // A merge hand-off holds the queue (bounded): the next PR is verified on top of the merge, not against it.
     if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold || this.queue.length === 0) {
-      this.publishSuitePriority(false);
-      return;
+      return null;
     }
-    if (this.notePause()) { this.publishSuitePriority(false); return; } // an update is waiting only on us
+    if (this.notePause()) return null; // an update is waiting only on us
     // The files on disk must still be the verifier this server labels records with: an update
     // that landed under us holds the queue for the restart instead of spawning a child that refuses.
-    if (this.verifierChangedOnDisk()) { this.publishSuitePriority(false); return; }
+    if (this.verifierChangedOnDisk()) return null;
     const now = this.now();
     // Stable: FIFO within a level. An ordinary PR that has waited THROUGHPUT_AGING_MS ranks with
     // the merge-throughput label, so the label can never hold an old PR back indefinitely.
@@ -1919,38 +1949,18 @@ export class LocalVerifyService {
       const held = new Set(hold.heldPrs.map((h) => h.pr));
       admissible = admissible.filter((e) => e.kind === 'main' || !held.has(e.pr));
       if (admissible.length === 0) {
-        this.publishSuitePriority(false);
         if (this.holdIdleAudited !== hold.redHead) {
           this.holdIdleAudited = hold.redHead;
           this.audit({ event: 'main-red-hold-idle', redHead: hold.redHead, held: hold.heldPrs.length, failingFiles: hold.failingFiles });
         }
-        return;
+        return null;
       }
     }
     const d = decideStart({
       foreignHolders: 0, queue: admissible, now: this.now(),
       fairShare: { mainHealthy: this.health.isHealthy(), mainRed: this.health.snapshot().state === 'main-red', oldestUnverifiedMainAt: this.mainObs.oldestUnverifiedAt, lastStartWasMain: this.lastStartWasMain },
     });
-    if (d.kind !== 'start') { this.publishSuitePriority(false); return; }
-    // This claim is written BEFORE checking an occupied slot. Once that slot
-    // releases, ordinary suites yield and the next pump can start this verify.
-    this.publishSuitePriority(true);
-    const holders = this.seams.foreignSuiteHolders();
-    if (holders.length > 0) {
-      this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });
-      return;
-    }
-    const next = admissible[d.index];
-    if (next.kind !== 'main' && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
-      // The verify tests the merge with TODAY's base: re-read it right before the start, and
-      // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
-      this.starting = next;
-      void this.refreshBaseThenPump(next);
-      return;
-    }
-    const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
-    this.lastStartWasMain = entry.kind === 'main';
-    this.start(entry);
+    return d.kind === 'start' ? admissible[d.index] : null;
   }
 
   private publishSuitePriority(active: boolean): void {

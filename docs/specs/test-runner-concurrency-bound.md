@@ -46,6 +46,18 @@ own suite holder on its 30-second tick, then clears its claim so a host with a
 suite cap above one can use spare slots. The child clears its own claim on
 acquisition or error. Claims renew while waiting and expire after two minutes without
 renewal; dead-owner, expired, corrupt, and foreign-host claims are ignored.
+When either the server or its scrubbed-environment verifier child resolves to
+one suite slot, if another local queue entry is runnable while the current
+verifier holds the only suite slot, the coordinator keeps its claim for that
+*next* entry. Otherwise a waiting ordinary suite can take the slot between
+two verifier runs. It rechecks the normal queue decision on every pump; an
+update pause, merge hold, main-red hold, remote reservation, empty queue, or
+changed verifier releases the claim. If both processes resolve to more than
+one slot, it still
+clears the claim after the current child acquires its slot, so an ordinary
+suite can use spare capacity. This extension repairs the production cap-one
+path; a multi-slot host's next-run reservation remains a separate capacity
+policy decision.
 An ordinary suite waits while a live claim exists, even if the current holder
 has just released. The Local Verify child is the only caller that requests
 `priority: 'merge-gate'`, so it can acquire that slot. Targeted tests keep

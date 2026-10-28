@@ -44,7 +44,7 @@ function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; token: string; resolve: (x: { status: number | null; signal: string | null }) => void; intentAtSpawn: InFlightIntent | null }
 
-function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string } = {}) {
+function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boolean | null>; stateDir?: string; verifierVersion?: string; suiteCap?: number } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvsvc-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
@@ -92,6 +92,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     killGroup: (g, s) => { kills.push({ pgid: g, signal: s }); if (!stubborn.has(g)) alive.delete(g); },
     readProcessArgs: async (p) => procArgs.get(p) ?? null,
     foreignSuiteHolders: () => holders.map((pid) => ({ pid })),
+    suiteCapacity: () => opts.suiteCap ?? 1,
     setSuitePriority: (active) => { priorities.push(active); },
     onStarved: (i) => { starved.push(i); },
     onRecord: (r) => { records.push(r); },
@@ -487,6 +488,25 @@ describe('single flight and starvation', () => {
     await s.svc.tick();
     expect(s.priorities.at(-1)).toBe(false);
     await s.finish(0, ok(record()));
+    expect(s.priorities.at(-1)).toBe(false);
+  });
+
+  it('keeps the next-slot claim while one verify holds the only suite slot and another is queued', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('b') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    expect(s.spawned).toHaveLength(1);
+    s.setHolders([s.spawned[0].pid]);
+    await s.svc.tick();
+    expect(s.priorities.at(-1)).toBe(true);
+  });
+
+  it('leaves a spare suite slot available when the host cap exceeds one', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('b') }) }, suiteCap: 2 });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    s.setHolders([s.spawned[0].pid]);
+    await s.svc.tick();
     expect(s.priorities.at(-1)).toBe(false);
   });
 

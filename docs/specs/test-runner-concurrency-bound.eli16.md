@@ -8,9 +8,12 @@ no tests for nearly three hours. A runnable verifier now reserves the next
 suite slot while it waits for the current suite to finish. It keeps that
 reservation while its child installs and builds. This stops other full suites
 from jumping in during setup. When the child is ready to run tests, it reserves the next
-slot again and waits for the current holder. Once it has the slot, the server
-releases its setup reservation within about 30 seconds, so a machine configured
-for two full suites can use its other slot. Small targeted tests use their
+slot again and waits for the current holder. If another merge check is already
+waiting on a one-slot machine, the server keeps the reservation for that next
+check until it can start. This closes a gap where a regular full suite could
+slip between two checks. The server can have a two-suite setting that its test
+process does not inherit; it keeps the reservation in that case too. When both
+processes can run two suites, it frees the other slot. Small targeted tests use their
 own lane throughout. Each reservation expires within two minutes if its owner
 stalls. On a sustained merge backlog, ordinary full suites can still wait up
 to their existing 45-minute limit; the status API explains whether merge

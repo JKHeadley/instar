@@ -15,9 +15,10 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { _resetHostTestRunnerSemaphoreForTest, getHostTestRunnerSemaphore } from '../../src/core/hostTestRunnerSemaphore.js';
+import { _resetHostTestRunnerSemaphoreForTest, getHostTestRunnerSemaphore, resolveCap, writeTuningFile } from '../../src/core/hostTestRunnerSemaphore.js';
 import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireLocalVerifyPeers, wireLocalVerifySwitches, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
 import type { LocalVerifyServiceSeams } from '../../src/localVerify/LocalVerifyService.js';
+import { scrubbedEnv } from '../../src/localVerify/serviceSeams.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
 import { PROTECTED_PATH_PREFIXES } from '../../src/monitoring/greenPrAutomergeWiring.js';
@@ -98,7 +99,9 @@ describe('local-verify lifecycle (production wiring)', () => {
   it('production wiring publishes and clears a real host priority claim', async () => {
     const { home, stateDir } = sourceCheckout();
     const previous = process.env.INSTAR_HOST_TEST_BASE_DIR;
+    const previousCap = process.env.INSTAR_HOST_TEST_MAX;
     process.env.INSTAR_HOST_TEST_BASE_DIR = path.join(home, 'host-limiter');
+    process.env.INSTAR_HOST_TEST_MAX = '2';
     _resetHostTestRunnerSemaphoreForTest();
     try {
       const built = buildLocalVerifyService({
@@ -107,6 +110,14 @@ describe('local-verify lifecycle (production wiring)', () => {
       });
       expect(built.service).not.toBeNull();
       const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+      const semaphore = getHostTestRunnerSemaphore();
+      expect(semaphore.status().cap).toBe(2); // server process override
+      expect(scrubbedEnv().INSTAR_HOST_TEST_MAX).toBeUndefined();
+      expect(resolveCap('suite', scrubbedEnv(), semaphore.resolveContext().tuning.file).cap).toBe(1); // verifier child
+      expect(seams.suiteCapacity?.()).toBe(1); // reserve the next slot across this mismatch
+      writeTuningFile(semaphore.paths, { v: 1, maxConcurrent: 2 });
+      expect(resolveCap('suite', scrubbedEnv(), semaphore.resolveContext().tuning.file).cap).toBe(2);
+      expect(seams.suiteCapacity?.()).toBe(2); // both processes can use a spare slot
       expect(typeof seams.setSuitePriority).toBe('function');
       seams.setSuitePriority!(true);
       expect(getHostTestRunnerSemaphore().hasMergeGatePriority()).toBe(true);
@@ -117,6 +128,8 @@ describe('local-verify lifecycle (production wiring)', () => {
       _resetHostTestRunnerSemaphoreForTest();
       if (previous === undefined) delete process.env.INSTAR_HOST_TEST_BASE_DIR;
       else process.env.INSTAR_HOST_TEST_BASE_DIR = previous;
+      if (previousCap === undefined) delete process.env.INSTAR_HOST_TEST_MAX;
+      else process.env.INSTAR_HOST_TEST_MAX = previousCap;
     }
   });
 

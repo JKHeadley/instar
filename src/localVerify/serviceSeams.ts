@@ -8,7 +8,7 @@
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promisify } from 'node:util';
-import { getHostTestRunnerSemaphore } from '../core/hostTestRunnerSemaphore.js';
+import { getHostTestRunnerSemaphore, resolveCap } from '../core/hostTestRunnerSemaphore.js';
 import type { ChildHandle, LocalVerifyServiceSeams, PrView } from './LocalVerifyService.js';
 
 const execFileAsync = promisify(execFile);
@@ -120,6 +120,17 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
       } catch {
         return []; // @silent-fallback-ok: the bound is watch-only; an unreadable holders file is no observation
       }
+    },
+    suiteCapacity(): number {
+      try {
+        const semaphore = getHostTestRunnerSemaphore();
+        // The verifier child receives scrubbedEnv(), which drops the server's
+        // per-process cap override. Its cap is the shared tuning-file value.
+        // Reserve the next slot whenever either side sees a cap of one.
+        const serverCap = semaphore.status().cap;
+        const childCap = resolveCap('suite', scrubbedEnv(), semaphore.resolveContext().tuning.file).cap;
+        return Math.min(serverCap, childCap);
+      } catch { return 1; } // @silent-fallback-ok: unknown capacity keeps a runnable verifier's next-slot claim
     },
   };
 }
