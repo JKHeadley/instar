@@ -3,7 +3,7 @@
 **Version / slug:** `job-result-supervision-v2`  
 **Date:** 2026-10-27  
 **Author:** Echo  
-**Second-pass reviewer:** independent review in progress; three findings under correction
+**Second-pass reviewer:** `/root/supervision_side_effects_review` concurred for the dark foundation
 
 ## Summary of the change
 
@@ -23,6 +23,7 @@ covers scheduler admission, persisted state, model egress, and reporting.
 - `JobFixedResultCertificate.decideFixedResult` — add — verifies two signatures, independent outcomes, current canary, and exact run snapshot before fixed closure.
 - `JobSupervisionWorker` — add, dark — one Jev verdict per result, replacement only on Jev unavailability, with a pre-call audit and token reservation.
 - `JobSupervisionStore` — add — serializes attempts, provider leases, grades, holds, and retry limits.
+- `SqliteRegistry` — register the new long-lived WAL handle and unregister it on explicit close, so process exit closes the journal cleanly.
 - `GET /jobs/triage` — modify — shows missing, unchecked, unresolved, graded, and provider-call counts; marks missing peer/history data incomplete.
 
 ## 1. Over-block
@@ -36,6 +37,11 @@ a slug hold. A failure before `recordStart` launched no script and created no
 result to recover. These are deliberate integrity stops; the script route cannot
 claim that it checked evidence it could not retain. The prior runner remains
 the recovery path where one exists.
+The process-wide SQLite close registry now owns the journal from the moment
+its handle opens; an explicit store close unregisters it first. The constructor
+also closes an opened handle if schema setup fails. Wiring tests verify both
+normal close and failed construction, after CI caught the missing registration
+on Node 20 and Node 22.
 
 ## 2. Under-block
 
@@ -130,14 +136,19 @@ process-owned-run reconciliation handles abandoned local runs on the next
 30-second pass when the current process no longer owns them. Cross-machine
 claim recovery remains an activation prerequisite. The run-start gate state is
 now persisted as a readable field, and the model queue excludes dark-era rows
-even if a later rollout opens. The current
-code is suitable for continued draft-PR review with the decision gates dark.
-It is not ready for an active model rollout or merge as a completed feature.
+even if a later rollout opens. The current code is suitable for merge as a
+record-only foundation with both decision gates dark. It is not ready for an
+active model rollout.
 
 ## Second-pass review (if required)
 
 **Reviewer:** `/root/supervision_side_effects_review`  
 **Independent read of the artifact:** Concur for draft PR with both decision gates dark; activation prerequisites above remain
+
+**SQLite lifecycle follow-up:** The reviewer found that registering only after
+schema setup left a leak on migration failure. Registration now happens
+immediately after open, with a close-on-failure test. The reviewer reread the
+diff and concurred with the correction; no further safety concern was found.
 
 ## Evidence pointers
 

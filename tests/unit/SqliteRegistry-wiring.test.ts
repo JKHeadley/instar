@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import {
   sqliteRegistrySize,
@@ -25,6 +26,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { StopGateDb } from '../../src/core/StopGateDb.js';
 import { PreferenceStore } from '../../src/providers/uxConfirm/PreferenceStore.js';
 import { SpawnLedger } from '../../src/threadline/SpawnLedger.js';
+import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = path.join(REPO_ROOT, 'src');
@@ -78,6 +80,9 @@ const LONG_LIVED_STORES = [
   // Codex lifecycle delivery/effect evidence are process-lifetime stores.
   'src/core/InboundDeliveryStore.ts',
   'src/core/RecoveryActuationAuthority.ts',
+  // Script-result supervision keeps its WAL journal open for the scheduler's
+  // lifetime and must close before process exit.
+  'src/scheduler/JobSupervisionStore.ts',
 ];
 
 /**
@@ -168,5 +173,23 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
     expect(sqliteRegistrySize()).toBe(0);
     new SpawnLedger(path.join(tmp, 'spawn.db'));
     expect(sqliteRegistrySize()).toBe(1);
+  });
+
+  it('JobSupervisionStore registers and unregisters its live journal', () => {
+    const store = new JobSupervisionStore(tmp);
+    expect(sqliteRegistrySize()).toBe(1);
+    store.close();
+    expect(sqliteRegistrySize()).toBe(0);
+  });
+
+  it('JobSupervisionStore closes an opened journal when schema setup fails', () => {
+    const ledger = path.join(tmp, 'ledger');
+    fs.mkdirSync(ledger);
+    const db = new Database(path.join(ledger, 'job-supervision.db'));
+    db.exec('CREATE TABLE attempts (id TEXT)');
+    db.close();
+    fs.writeFileSync(path.join(ledger, 'job-supervision-baseline.json'), JSON.stringify({ at: new Date().toISOString() }));
+    expect(() => new JobSupervisionStore(tmp)).toThrow();
+    expect(sqliteRegistrySize()).toBe(0);
   });
 });

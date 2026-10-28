@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as SqliteDatabase } from 'better-sqlite3';
+import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { isSideRun, type JobRun } from './JobRunHistory.js';
 import { decideFixedResult, type FixedCertificateAuthority, type FixedResultCertificate } from './JobFixedResultCertificate.js';
 import type { ParsedScriptRun } from './jobScriptProtocol.js';
@@ -120,6 +121,7 @@ function attemptIdAt(now: number): string {
 export class JobSupervisionStore {
   private readonly db: SqliteDatabase;
   private readonly baselineAt: string;
+  private unregisterSqlite?: () => void;
 
   constructor(stateDir: string) {
     const dir = path.join(stateDir, 'ledger');
@@ -143,6 +145,10 @@ export class JobSupervisionStore {
     }
     this.baselineAt = baseline.at;
     this.db = new Database(dbPath);
+    // Register as soon as the handle opens. A failed schema migration must
+    // neither leak the handle nor leave it outside process-exit cleanup.
+    this.unregisterSqlite = registerSqliteHandle(() => { try { this.db.close(); } catch { /* already closed */ } });
+    try {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = FULL');
     this.db.pragma('busy_timeout = 5000');
@@ -267,9 +273,17 @@ export class JobSupervisionStore {
     if (!callColumns.some(c => c.name === 'reserved_tokens_in')) {
       this.db.exec('ALTER TABLE calls ADD COLUMN reserved_tokens_in INTEGER');
     }
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
 
-  close(): void { this.db.close(); }
+  close(): void {
+    this.unregisterSqlite?.();
+    this.unregisterSqlite = undefined;
+    if (this.db.open) this.db.close();
+  }
 
   /** Independent run-history boundary established before the first script attempt. */
   censusBaselineAt(): string { return this.baselineAt; }
