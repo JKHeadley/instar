@@ -89,6 +89,36 @@ const runBody = () => ({
 });
 
 describe('peer verifier routes (integration, real HTTP)', () => {
+  it('dispatches over real HTTP while an unrelated suite occupies the coordinator slot', async () => {
+    const p = peerService();
+    const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
+    const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeercoord-')));
+    dirs.push(stateDir);
+    const localStarts: number[] = [];
+    const svc = new LocalVerifyService({
+      repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
+      verifierVersion: '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
+      remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'coord', nodeVersion: 'v24',
+      protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' }, nice: false,
+    }, {
+      prView: async (pr) => pr === 3 ? { author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: sha('a'), baseRefName: 'main', baseRefOid: sha('b') } : null,
+      isPrOpen: async () => true, baseHead: async () => sha('b'),
+      spawnRun: () => { localStarts.push(1); throw new Error('local slot is occupied'); },
+      isGroupAlive: () => false, killGroup: () => {}, readProcessArgs: async () => null,
+      foreignSuiteHolders: () => [{ pid: 42_001 }], setSuitePriority: () => {},
+    });
+    svc.setPeerWiring({
+      peers: () => [{ machineId: 'peer1', url }], client: makePeerClient(AUTH, 'echo'),
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
+    });
+    expect((await svc.request(3)).ok).toBe(true);
+    for (let i = 0; i < 50 && p.children.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(localStarts).toHaveLength(0);
+    expect(p.children).toHaveLength(1);
+    expect(svc.snapshot().peers.reserved).toEqual([expect.objectContaining({ pr: 3, state: 'accepted' })]);
+    svc.shutdown();
+  });
+
   it('the coordinator\'s real client reads status, dispatches, reads the result and cancels over HTTP', async () => {
     const p = peerService();
     const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));

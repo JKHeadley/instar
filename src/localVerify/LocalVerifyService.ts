@@ -1531,8 +1531,9 @@ export class LocalVerifyService {
     if (!client || peers.length === 0) return;
     if (this.stopped || this.restoring || this.blockedBy || this.mergeHold || this.verifierHold) return;
     if (this.notePause() || this.verifierChangedOnDisk()) return;
-    // Only when the coordinator's own slot is busy: its own next run always goes first.
-    if (!this.inFlight && !this.starting) return;
+    // The pump has already given the local slot its first chance before this
+    // scheduled dispatch runs. If another suite holds that slot, an idle peer
+    // can take a queued PR instead of waiting for the Studio to start one.
     const lease = this.leaseState();
     if (!lease.holds) return;
     this.dispatchRunning = true;
@@ -1569,6 +1570,7 @@ export class LocalVerifyService {
             this.queue.splice(this.queue.indexOf(entry), 1);
             this.audit({ event: 'dequeued', pr: entry.pr, reason: 'closed', headSha: entry.headSha });
             this.persistQueue();
+            this.reconcileSuitePriority();
             continue;
           }
           if (this.seams.baseHead) {
@@ -1603,6 +1605,9 @@ export class LocalVerifyService {
           this.audit({ event: 'peer-dispatch-skipped', pr: entry.pr, reason: 'queue-unwritable' });
           return;
         }
+        // The reserved PR no longer needs Studio's next suite slot. Retire a
+        // stale claim now, without waiting for the next coordinator tick.
+        this.reconcileSuitePriority();
         this.audit({ event: 'peer-dispatch', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, peer: peer.machineId, attemptId: marker.attemptId, attempt: entry.remoteAttempts });
         const iso = this.isolationInput();
         const ans = await client.run(peer, {
@@ -1627,6 +1632,7 @@ export class LocalVerifyService {
           this.peerFailure(peer, h, `refused:${ans.reason}`);
         }
         this.persistQueue();
+        this.reconcileSuitePriority();
       }
     } finally {
       this.dispatchRunning = false;
@@ -1896,11 +1902,7 @@ export class LocalVerifyService {
     // At cap one, a second runnable entry also owns the next slot after this
     // child acquires it; otherwise an ordinary waiter can overtake the queue.
     if (this.inFlight || this.starting) {
-      const preparing = !!this.starting || (!!this.inFlight && !this.inFlight.cancelled && !this.inFlight.suiteSlotAcquired);
-      let onlySlot = false;
-      try { onlySlot = this.seams.suiteCapacity?.() === 1; } catch { /* @silent-fallback-ok: unknown cap never over-reserves */ }
-      const nextQueued = !preparing && onlySlot && this.nextRunnableQueuedEntry() !== null;
-      this.publishSuitePriority(!this.stopped && (preparing || nextQueued));
+      this.reconcileSuitePriority();
       return;
     }
     const next = this.nextRunnableQueuedEntry();
@@ -1923,6 +1925,18 @@ export class LocalVerifyService {
     const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
     this.lastStartWasMain = entry.kind === 'main';
     this.start(entry);
+  }
+
+  private reconcileSuitePriority(): void {
+    if (this.inFlight || this.starting) {
+      const preparing = !!this.starting || (!!this.inFlight && !this.inFlight.cancelled && !this.inFlight.suiteSlotAcquired);
+      let onlySlot = false;
+      try { onlySlot = this.seams.suiteCapacity?.() === 1; } catch { /* @silent-fallback-ok: unknown cap never over-reserves */ }
+      const nextQueued = !preparing && onlySlot && this.nextRunnableQueuedEntry() !== null;
+      this.publishSuitePriority(!this.stopped && (preparing || nextQueued));
+      return;
+    }
+    this.publishSuitePriority(this.nextRunnableQueuedEntry() !== null);
   }
 
   private nextRunnableQueuedEntry(): QueueEntry | null {

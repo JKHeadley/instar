@@ -8,6 +8,8 @@
  */
 
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
@@ -27,7 +29,11 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 const ROOT = path.resolve(__dirname, '..', '..');
 const DIST_ENTRY = path.join(ROOT, 'dist', 'localVerify', 'runVerifyMain.js');
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'local-verify-lifecycle.test.ts' }); });
+const servers: http.Server[] = [];
+afterEach(async () => {
+  for (const s of servers.splice(0)) await new Promise((resolve) => s.close(resolve));
+  for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'local-verify-lifecycle.test.ts' });
+});
 
 function sourceCheckout(): { home: string; stateDir: string } {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvlife-')));
@@ -217,6 +223,61 @@ describe('local-verify lifecycle (production wiring)', () => {
     values['monitoring.localVerify.peer.enabled'] = false;
     expect((await request(serve(c)).get('/local-verify/peer-status')).body.enabled).toBe(false);
     svc.shutdown();
+  });
+
+  it('production-built coordinator dispatches to a peer while its own suite slot is occupied', async () => {
+    const coord = sourceCheckout();
+    const peerHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-e2e-')));
+    dirs.push(peerHome);
+    const peerStateDir = path.join(peerHome, '.instar');
+    fs.mkdirSync(peerStateDir);
+    const builtCoord = buildLocalVerifyService({
+      config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: coord.home, stateDir: coord.stateDir, agentHome: coord.home, machineId: 'm_coord', mainEntry: DIST_ENTRY,
+    });
+    const builtPeer = buildLocalVerifyService({
+      config: { enabled: true, peer: { enabled: true } }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: peerHome, stateDir: peerStateDir, agentHome: peerHome, machineId: 'm_peer', mainEntry: DIST_ENTRY,
+    });
+    expect(builtCoord.reason).toBeNull();
+    expect(builtPeer.reason).toBeNull();
+    const coordinator = builtCoord.service!;
+    const peer = builtPeer.service!;
+    const prView = async () => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: 'a'.repeat(40), baseRefName: 'main', baseRefOid: 'b'.repeat(40) });
+    const coordSeams = (coordinator as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    const peerSeams = (peer as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    coordSeams.prView = prView;
+    coordSeams.baseHead = async () => 'b'.repeat(40);
+    coordSeams.isPrOpen = async () => true;
+    coordSeams.foreignSuiteHolders = () => [{ pid: 9001 }];
+    peerSeams.prView = prView;
+    peerSeams.foreignSuiteHolders = () => [];
+    let peerStarts = 0;
+    peerSeams.spawnRun = () => { peerStarts++; return { pid: 9100, exited: new Promise(() => {}) }; };
+    wireLocalVerifyPeers(peer, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peer.enabled' ? true as T : fb },
+      authToken: 'test-token', agentId: 'echo',
+      lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
+    });
+    const peerContext = { ...ctx(peerStateDir, peer), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 7 }) } } as never;
+    const server = http.createServer(serve(peerContext));
+    servers.push(server);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const peerUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    wireLocalVerifyPeers(coordinator, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peers' ? [{ machineId: 'm_peer', url: peerUrl }] as T : fb },
+      authToken: 'test-token', agentId: 'echo',
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
+    });
+    await coordinator.boot();
+    await peer.boot();
+    expect((await coordinator.request(3)).ok).toBe(true);
+    for (let i = 0; i < 100 && peerStarts === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(peerStarts).toBe(1);
+    expect((await request(serve(ctx(coord.stateDir, coordinator))).get('/local-verify')).body.peers.reserved)
+      .toEqual([expect.objectContaining({ pr: 3, state: 'accepted' })]);
+    coordinator.shutdown();
+    peer.shutdown();
   });
 
   it('without peer.enabled, a machine with no source checkout still builds nothing', () => {

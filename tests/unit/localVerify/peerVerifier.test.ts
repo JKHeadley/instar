@@ -138,6 +138,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
   let t = Date.parse('2026-10-21T12:00:00.000Z');
   let pid = 7000;
   let prOpen = true;
+  let foreignHolders: Array<{ pid: number }> = [];
   const seams: LocalVerifyServiceSeams = {
     prView: async (pr) => views[pr] ?? null,
     isPrOpen: async () => prOpen,
@@ -153,7 +154,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
     isGroupAlive: () => false,
     killGroup: (pgid, signal) => { killed.push({ pgid, signal }); },
     readProcessArgs: async () => null,
-    foreignSuiteHolders: () => [],
+    foreignSuiteHolders: () => foreignHolders,
     setSuitePriority: (active) => { priorities.push(active); },
     signal: (key) => { signals.push(key); },
     now: () => t,
@@ -173,7 +174,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
     await flush();
   };
   const queueFile = () => JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<Record<string, unknown>> };
-  return { svc, seams, stateDir, views, spawned, killed, timers, signals, priorities, flush, runTimers, finish, queueFile, setPrOpen: (v: boolean) => { prOpen = v; }, advance: (ms: number) => { t += ms; }, now: () => t };
+  return { svc, seams, stateDir, views, spawned, killed, timers, signals, priorities, flush, runTimers, finish, queueFile, setPrOpen: (v: boolean) => { prOpen = v; }, setForeignHolders: (pids: number[]) => { foreignHolders = pids.map((pid) => ({ pid })); }, advance: (ms: number) => { t += ms; }, now: () => t };
 }
 
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
@@ -220,7 +221,7 @@ function coordinator(opts: { epoch?: number; holds?: boolean } = {}) {
 // ── coordinator ────────────────────────────────────────────────────────
 
 describe('coordinator — dispatch', () => {
-  it('hands the next entry to an idle peer only while its own slot is busy, with the intent persisted before the send', async () => {
+  it('hands the next entry to an idle peer after local work starts, with the intent persisted before the send', async () => {
     const c = coordinator();
     await c.svc.request(1);
     await c.runTimers();
@@ -235,6 +236,42 @@ describe('coordinator — dispatch', () => {
     const atSend = c.peer.queueAtSend() as { entries: Array<{ pr: number; remote?: { attemptId: string; state: string } }> };
     expect(atSend.entries.find((e) => e.pr === 2)?.remote).toMatchObject({ attemptId: sent[0].attemptId, state: 'sending' });
     expect(c.svc.snapshot().peers.reserved).toEqual([expect.objectContaining({ pr: 2, peer: 'peer1', state: 'accepted' })]);
+  });
+
+  it('uses an idle peer while an unrelated suite holds the local slot', async () => {
+    const c = coordinator();
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    expect(c.spawned).toHaveLength(0);
+    await c.runTimers();
+    expect(c.peer.runs().map((r) => r.pr)).toEqual([1]);
+    expect(c.svc.snapshot().peers.reserved).toEqual([expect.objectContaining({ pr: 1, state: 'accepted' })]);
+    expect(c.priorities.at(-1)).toBe(false); // no local work remains after the remote reservation
+  });
+
+  it('keeps main for the coordinator while dispatching a PR past a busy local slot', async () => {
+    const c = coordinator();
+    c.setForeignHolders([9001]);
+    c.svc.noteMainHead(sha('d'));
+    await c.svc.request(1);
+    await c.runTimers();
+    expect(c.spawned).toHaveLength(0);
+    expect(c.peer.runs().map((r) => r.pr)).toEqual([1]);
+    expect(c.svc.snapshot().queue.some((e) => e.kind === 'main')).toBe(true);
+    expect(c.priorities.at(-1)).toBe(true); // main still owns Studio's next slot
+  });
+
+  it('releases the Studio claim when base refresh finds the sole queued PR closed', async () => {
+    const c = coordinator();
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    expect(c.priorities.at(-1)).toBe(true);
+    c.advance(5 * 60_000); // require the dispatcher's pre-send base refresh
+    c.setPrOpen(false);
+    await c.runTimers();
+    expect(c.peer.runs()).toHaveLength(0);
+    expect(c.svc.snapshot().queue).toEqual([]);
+    expect(c.priorities.at(-1)).toBe(false);
   });
 
   it('a reserved entry is never started locally, even when the local slot frees', async () => {
