@@ -7378,7 +7378,8 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     if (!content.includes(REMOTE_DESKTOP_MARKER)) {
-      const anchor = '- Features: Real-time terminal streaming';
+      // Preserve the console bullet directly below Features on existing agents.
+      const anchor = '- **Sharing the dashboard**';
       const at = content.indexOf(anchor);
       const eol = at >= 0 ? content.indexOf('\n', at) : -1;
       content = eol >= 0

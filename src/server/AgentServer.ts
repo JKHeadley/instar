@@ -2465,6 +2465,7 @@ export class AgentServer {
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
         this.telegramAdapter.setDesktopApprovalHandler(input => this.directDesktopAccess!.acceptAuthenticatedTelegramReply(input));
         } catch (error) {
+          // @silent-fallback-ok — warn and leave desktop admission dark when target identity cannot be proven.
           console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
           this.directDesktopAccess = null;
           this.desktopStreamManager = null;

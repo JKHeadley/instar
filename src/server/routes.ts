@@ -12947,6 +12947,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(ctx.growthMilestoneAnalyst.buildDigest());
     } catch (err) {
+      // @silent-fallback-ok — HTTP 500 is returned; nearby desktop intent is a separate helper.
       res.status(500).json({ error: (err as Error).message });
     }
   });

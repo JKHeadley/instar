@@ -204,7 +204,7 @@ export class DirectDesktopAccess {
       try {
         const failure = this.lockouts.recordFailure(lockoutKey, this.now());
         if (failure.attempts >= 3) row.status = 'revoked';
-      } catch { this.disabled = true; }
+      } catch { this.disabled = true; /* @silent-fallback-ok — lockout storage failed; disable all desktop admission. */ }
       return false;
     }
     if (this.activeGrantId) {
@@ -360,7 +360,7 @@ export class DirectDesktopAccess {
       const count = row.inputCount ?? 0;
       const inputBucket = count === 0 ? 'none' : count < 10 ? '1-9' : count < 100 ? '10-99' : '100+';
       try { this.audit?.record({ kind: 'stop', grantId: row.grantId, machineId: row.machineId,
-        operatorUid: row.operatorUid, inputBucket }); } catch { /* containment takes priority over audit failure */ }
+        operatorUid: row.operatorUid, inputBucket }); } catch { /* @silent-fallback-ok — containment takes priority over audit failure */ }
     }
     if (row.grantId) {
       if (ownsActiveHost) this.activeGrantId = null;

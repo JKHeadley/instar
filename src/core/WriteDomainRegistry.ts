@@ -330,6 +330,15 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // a session running ON THIS machine (a peer's session can never be listed here).
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 
+  // Desktop grants exist only in the target process. A restart destroys every
+  // grant and its keys; the redacted audit is written to this machine's logs.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/requests', domain: 'machine-local', story: {
+    logical: 'ephemeral-rebuildable',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
+  } });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
   // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
