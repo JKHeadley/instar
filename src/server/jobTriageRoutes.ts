@@ -11,6 +11,9 @@
 import type { Router, Request, Response } from 'express';
 import { readTriageAudit, type TriageAuditRow } from '../scheduler/JobResultTriage.js';
 import type { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
+import type { JobSupervisionStore, SupervisionAttempt } from '../scheduler/JobSupervisionStore.js';
+import { isSideRun, type JobRunHistory } from '../scheduler/JobRunHistory.js';
+import { jobSupervisionRolloutState, type JobSupervisionRolloutState } from '../scheduler/JobSupervisionRollout.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { poolPeerFetch, type PoolPeerTarget, type RopeResultRecorder } from './poolPeerFetch.js';
 
@@ -28,6 +31,105 @@ export interface JobTriageRoutesDeps {
   /** GET the given path (with query) on every online peer. Absent ⇒ pool scope answers self only. */
   fetchPool?: (pathWithQuery: string) => Promise<PoolFanOutResult>;
   now?: () => number;
+  supervision?: () => JobSupervisionStore | null;
+  runHistory?: () => JobRunHistory | null;
+  supervisionRollout?: () => JobSupervisionRolloutState;
+  isScriptRunLive?: (runId: string) => boolean;
+  /** Durable seven-day machine roster; absent means pool completeness is unknown. */
+  expectedMachineIds?: () => string[] | null;
+}
+
+export interface SupervisionCoverage {
+  denominator: number;
+  decisionCoverage: number;
+  initialVerdictCoverage: number;
+  byStatus: Record<string, number>;
+  byProvider: Record<string, number>;
+  byGrade: Record<string, number>;
+  accuracy: number | null;
+  gradableFraction: number | null;
+  investigationCompletion: number | null;
+  unchecked: Array<Pick<SupervisionAttempt, 'attemptId' | 'runId' | 'slug' | 'registeredAt' | 'reason' | 'status'>>;
+  unresolved: Array<Pick<SupervisionAttempt, 'attemptId' | 'runId' | 'slug' | 'registeredAt' | 'reason' | 'status'>>;
+  coverageIncomplete: boolean;
+  reconciliation: { inserted: number; outcomeUnknown: number };
+  attempts: SupervisionAttempt[];
+  rollout: JobSupervisionRolloutState;
+  holds: Array<{ slug: string; reason: string; heldAt: string }>;
+  callAudit: ReturnType<JobSupervisionStore['callSummarySince']>;
+}
+
+/** The run history supplies the denominator, including rows missing from the new ledger. */
+export function buildSupervisionCoverage(deps: JobTriageRoutesDeps, sinceHours: number): SupervisionCoverage | null {
+  const store = deps.supervision?.();
+  const history = deps.runHistory?.();
+  if (!store || !history) return null;
+  const scan = history.query({ sinceHours, limit: 5000, excludeSideRuns: true });
+  const runs = scan.runs.filter(r => r.runner === 'script' && !isSideRun(r));
+  const reconciliation = store.reconcileHistory(runs, (deps.now ?? Date.now)(), deps.isScriptRunLive);
+  const byStatus: Record<string, number> = {};
+  const byProvider: Record<string, number> = {};
+  const byGrade: Record<string, number> = {};
+  const unchecked: SupervisionCoverage['unchecked'] = [];
+  const unresolved: SupervisionCoverage['unresolved'] = [];
+  const attempts: SupervisionAttempt[] = [];
+  let decisionCoverage = 0;
+  let initialVerdictCoverage = 0;
+  let requestedInvestigations = 0;
+  let investigated = 0;
+  let coverageIncomplete = scan.total > 5000 || !history.isReadHealthy();
+  const censusRunIds = new Set(runs.map(r => r.runId));
+  for (const run of runs) {
+    const row = store.findByRunId(run.runId);
+    if (!row) { coverageIncomplete = true; byStatus['unchecked:missing-record'] = (byStatus['unchecked:missing-record'] ?? 0) + 1; continue; }
+    if (attempts.length < 5000) attempts.push(row);
+    else coverageIncomplete = true;
+    if (run.result === 'pending' && row.completedAt) coverageIncomplete = true;
+    byStatus[row.status] = (byStatus[row.status] ?? 0) + 1;
+    byProvider[row.provider ?? 'none'] = (byProvider[row.provider ?? 'none'] ?? 0) + 1;
+    byGrade[row.grade] = (byGrade[row.grade] ?? 0) + 1;
+    if (row.investigation !== 'not-needed') requestedInvestigations++;
+    if (row.investigation === 'investigated') investigated++;
+    if (row.status === 'resolved' && (row.verdict === 'routine' || row.investigation === 'investigated')) decisionCoverage++;
+    if (row.verdict) initialVerdictCoverage++;
+    const item = { attemptId: row.attemptId, runId: row.runId, slug: row.slug,
+      registeredAt: row.registeredAt, reason: row.reason, status: row.status };
+    if (row.status === 'unchecked' || row.status === 'expired-unchecked') unchecked.push(item);
+    if (row.status === 'unresolved') unresolved.push(item);
+  }
+  // A surviving supervision row with no independent history row is itself
+  // evidence of a lost census. Include it in the denominator and make quality
+  // rates unavailable until the independent ledger is repaired.
+  let orphanAttempts = 0;
+  const since = new Date((deps.now ?? Date.now)() - sinceHours * 3_600_000).toISOString();
+  const ledgerRows = store.listSince(since, 5000);
+  if (ledgerRows.length === 5000) coverageIncomplete = true;
+  for (const row of ledgerRows) {
+    if (censusRunIds.has(row.runId)) continue;
+    orphanAttempts++;
+    coverageIncomplete = true;
+    byStatus[row.status] = (byStatus[row.status] ?? 0) + 1;
+    byProvider[row.provider ?? 'none'] = (byProvider[row.provider ?? 'none'] ?? 0) + 1;
+    byGrade[row.grade] = (byGrade[row.grade] ?? 0) + 1;
+    if (attempts.length < 5000) attempts.push(row);
+    const item = { attemptId: row.attemptId, runId: row.runId, slug: row.slug,
+      registeredAt: row.registeredAt, reason: row.reason, status: row.status };
+    if (row.status === 'unchecked' || row.status === 'expired-unchecked') unchecked.push(item);
+    if (row.status === 'unresolved') unresolved.push(item);
+  }
+  const denominator = runs.length + orphanAttempts;
+  return { denominator, decisionCoverage, initialVerdictCoverage,
+    byStatus, byProvider, byGrade,
+    accuracy: !coverageIncomplete && (byGrade.correct ?? 0) + (byGrade.incorrect ?? 0) > 0
+      ? (byGrade.correct ?? 0) / ((byGrade.correct ?? 0) + (byGrade.incorrect ?? 0)) : null,
+    gradableFraction: coverageIncomplete ? null : denominator > 0
+      ? ((byGrade.correct ?? 0) + (byGrade.incorrect ?? 0)) / denominator : null,
+    investigationCompletion: requestedInvestigations > 0 ? investigated / requestedInvestigations : null,
+    unchecked: unchecked.slice(0, 500), unresolved: unresolved.slice(0, 500),
+    coverageIncomplete, reconciliation, attempts,
+    rollout: deps.supervisionRollout?.() ?? jobSupervisionRolloutState(),
+    holds: store.heldSlugs(),
+    callAudit: store.callSummarySince(since) };
 }
 
 /** Bounded, credential-safe fan-out shared by the pool view and cooldown admission. */
@@ -88,6 +190,7 @@ export interface JobTriageView {
   cooldowns: Record<string, string>;
   daily: { day: string; perSlug: Record<string, number>; machine: number };
   backup: { lastPassAt?: string; consecutiveFailures: number; lastConsidered?: Record<string, { considered: number; read: number; unread: number; at: string }> };
+  supervision?: SupervisionCoverage | null;
 }
 
 /** Builds this machine's view over the last `sinceHours` (default 24). */
@@ -128,6 +231,7 @@ export function buildJobTriageView(deps: JobTriageRoutesDeps, store: JobTriageSt
     cooldowns: st.cooldowns,
     daily: { day: st.daily.day, perSlug: st.daily.perSlug, machine: st.daily.machine },
     backup: { lastPassAt: st.backup.lastPassAt, consecutiveFailures: st.backup.consecutiveFailures, lastConsidered: st.backup.lastConsidered },
+    supervision: buildSupervisionCoverage(deps, sinceHours),
   };
 }
 
@@ -178,6 +282,31 @@ export function mountJobTriageRoutes(router: Router, deps: JobTriageRoutesDeps):
         failed = [{ machineId: '*', reason: 'pool-fanout-failed' }];
       }
     }
-    res.json({ scope: 'pool', machines, pool: { selfMachineId: deps.machineId, peersOk: machines.length - 1, failed } });
+    const mergedAttempts = new Map<string, SupervisionAttempt>();
+    const expected = deps.expectedMachineIds?.() ?? null;
+    const observed = new Set(machines.map(m => m.machineId).filter((id): id is string => typeof id === 'string'));
+    let coverageIncomplete = failed.length > 0 || !expected || expected.some(id => !observed.has(id));
+    for (const machine of machines) {
+      if (!machine.supervision || machine.supervision.coverageIncomplete) coverageIncomplete = true;
+      for (const attempt of machine.supervision?.attempts ?? []) {
+        if (!attempt?.attemptId) { coverageIncomplete = true; continue; }
+        if (mergedAttempts.has(attempt.attemptId)
+          && JSON.stringify(mergedAttempts.get(attempt.attemptId)) !== JSON.stringify(attempt)) coverageIncomplete = true;
+        else mergedAttempts.set(attempt.attemptId, attempt);
+      }
+    }
+    const byStatus: Record<string, number> = {};
+    const byProvider: Record<string, number> = {};
+    const byGrade: Record<string, number> = {};
+    for (const row of mergedAttempts.values()) {
+      byStatus[row.status] = (byStatus[row.status] ?? 0) + 1;
+      byProvider[row.provider ?? 'none'] = (byProvider[row.provider ?? 'none'] ?? 0) + 1;
+      byGrade[row.grade] = (byGrade[row.grade] ?? 0) + 1;
+    }
+    res.json({ scope: 'pool', machines,
+      supervision: { denominator: mergedAttempts.size, byStatus, byProvider, byGrade, coverageIncomplete,
+        accuracy: coverageIncomplete || (byGrade.correct ?? 0) + (byGrade.incorrect ?? 0) === 0 ? null
+          : (byGrade.correct ?? 0) / ((byGrade.correct ?? 0) + (byGrade.incorrect ?? 0)) },
+      pool: { selfMachineId: deps.machineId, peersOk: machines.length - 1, failed } });
   });
 }

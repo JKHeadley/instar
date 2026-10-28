@@ -89,6 +89,10 @@ describe('ScriptCanaryRunner', () => {
     const audit = fs.readFileSync(path.join(h.root, 'logs', 'job-anomaly.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
     expect(audit).toHaveLength(2);
     expect(audit.every(a => a.kind === 'script-canary' && typeof a.runId === 'string')).toBe(true);
+    const assertions = fs.readFileSync(path.join(h.root, 'ledger', 'script-canary-assertions.jsonl'), 'utf-8')
+      .trim().split('\n').map(l => JSON.parse(l));
+    expect(assertions).toHaveLength(2);
+    expect(assertions.every(a => a.passed === true && typeof a.runId === 'string')).toBe(true);
     expect(h.cleared).toEqual([scriptCanaryConditionKey('m-1')]);
     expect(h.raised).toHaveLength(0);
   });

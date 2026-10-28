@@ -114,6 +114,79 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
+  it('does not open the supervision journal on a read-only standby', () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");
+    const { s } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    project.state.setReadOnly(true);
+    try {
+      const openStore = vi.spyOn(s, 'getJobSupervisionStore');
+      expect(s.scriptRunnersActiveFor('probe')).toBe(false);
+      expect(openStore).not.toHaveBeenCalled();
+      expect(() => s.getJobSupervisionStore()).toThrow(/read-only standby/);
+    } finally { project.state.setReadOnly(false); }
+  });
+
+  it('does not execute a script when its durable supervision registration fails', async () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "import fs from 'node:fs'; fs.writeFileSync('ran.txt', 'yes'); console.log('JOB_RESULT ok done');");
+    const { s, sm } = mkScheduler(project);
+    scheduler = s;
+    vi.spyOn(s.getJobSupervisionStore(), 'register').mockImplementation(() => { throw new Error('ledger-unavailable'); });
+    s.start();
+    expect(await s.triggerJob('probe', 'test')).toBe('triggered');
+    await waitFor(() => lastRun(s, 'probe')?.result === 'failure');
+    expect(fs.existsSync(path.join(project.dir, 'ran.txt'))).toBe(false);
+    expect(lastRun(s, 'probe')).toMatchObject({ result: 'failure', error: 'supervision-register-failed' });
+    expect(s.scriptRunnersActiveFor('probe')).toBe(false);
+    expect(sm._spawnCount).toBe(0);
+  });
+
+  it('holds future script fires when the independent completion census cannot be written', async () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");
+    const { s, sm } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    vi.spyOn(s.getRunHistory(), 'recordCompletion').mockImplementation(() => { throw new Error('history-disk-full'); });
+    expect(await s.triggerJob('probe', 'test')).toBe('triggered');
+    await waitFor(() => project!.state.getJobState('probe')?.lastError === 'history-write-failed');
+    expect(s.scriptRunnersActiveFor('probe')).toBe(false);
+    expect(sm._spawnCount).toBe(0);
+    expect(lastRun(s, 'probe')?.result).toBe('pending');
+    s.stop();
+    const restarted = mkScheduler(project);
+    scheduler = restarted.s;
+    restarted.s.start();
+    expect(restarted.s.scriptRunnersActiveFor('probe')).toBe(false);
+    expect(restarted.s.getJobSupervisionStore().heldSlugs()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ slug: 'probe', reason: 'write-failed:history-disk-full' }),
+    ]));
+  });
+
+  it('keeps a hold after restart when the result was recorded but its unchecked transition failed', async () => {
+    project = createTempProject();
+    addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");
+    const { s } = mkScheduler(project);
+    scheduler = s;
+    s.start();
+    vi.spyOn(s.getJobSupervisionStore(), 'markUnchecked').mockImplementation(() => { throw new Error('transition-disk-full'); });
+    vi.spyOn(s.getJobSupervisionStore(), 'holdSlug').mockImplementation(() => { throw new Error('hold-disk-full'); });
+    expect(await s.triggerJob('probe', 'test')).toBe('triggered');
+    await waitFor(() => lastRun(s, 'probe')?.result === 'success');
+    expect(s.scriptRunnersActiveFor('probe')).toBe(false);
+    s.stop();
+    const restarted = mkScheduler(project);
+    scheduler = restarted.s;
+    restarted.s.start();
+    expect(restarted.s.scriptRunnersActiveFor('probe')).toBe(false);
+    expect(restarted.s.getJobSupervisionStore().heldSlugs()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ slug: 'probe', reason: 'independent-history-mismatch' }),
+    ]));
+  });
+
   it('runs node directly (no shell) with the reduced env, records success, spawns no session', async () => {
     project = createTempProject();
     process.env.JCR_SECRET_TEST = 'leak-me';
@@ -173,6 +246,7 @@ describe('script runner execution', () => {
     await waitFor(() => project!.state.getJobState('probe')?.lastResult === 'failure');
     expect(project.state.getJobState('probe')!.consecutiveFailures).toBe(1);
     expect(lastRun(s, 'probe')).toMatchObject({ result: 'failure', error: 'missing-result-line' });
+    expect(s.scriptRunnersActiveFor('probe')).toBe(false);
   });
 
   it('a secret printed by the script is scrubbed before it is stored', async () => {

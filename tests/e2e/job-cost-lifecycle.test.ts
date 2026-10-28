@@ -54,6 +54,8 @@ describe('job-cost production lifecycle', () => {
     const triage = await request(app).get('/jobs/triage').set('Authorization', `Bearer ${token}`);
     expect(triage.status).toBe(200);
     expect(triage.body.counts.sessionsSpawned).toBe(0);
+    expect(triage.body.supervision).toMatchObject({ denominator: 0, decisionCoverage: 0, coverageIncomplete: false,
+      rollout: { auditReady: false, cohort: 'off', active: false } });
   });
 
   it('keeps later conversions on sessions while an audited first-wave script runs with zero sessions', async () => {
@@ -114,6 +116,9 @@ describe('job-cost production lifecycle', () => {
       expect(sessions._spawnCount).toBe(1);
       expect(scriptScheduler.getRunHistory().query({ slug: 'llm-decision-grading', limit: 1 }).runs[0])
         .toMatchObject({ runner: 'script', result: 'success', tokens: 0 });
+      expect(scriptScheduler.getJobSupervisionStore().findByRunId(
+        scriptScheduler.getRunHistory().query({ slug: 'llm-decision-grading', limit: 1 }).runs[0].runId,
+      )).toMatchObject({ status: 'unchecked', reason: 'triage-dark' });
     } finally {
       scriptScheduler?.stop();
       if (endpoint.listening) await new Promise<void>(resolve => endpoint.close(() => resolve()));

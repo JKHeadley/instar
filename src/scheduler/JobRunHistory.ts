@@ -203,6 +203,10 @@ export class JobRunHistory {
   private cachedRuns: JobRun[] | null = null;
   private cachedSize = 0;
   private cachedMtimeMs = 0;
+  private lastReadHealthy = true;
+
+  /** Lets coverage reporters distinguish an empty ledger from a failed read. */
+  isReadHealthy(): boolean { return this.lastReadHealthy; }
 
   constructor(stateDir: string) {
     this.ledgerDir = path.join(stateDir, 'ledger');
@@ -788,6 +792,7 @@ export class JobRunHistory {
    */
   private readLines(): JobRun[] {
     if (!fs.existsSync(this.file)) {
+      this.lastReadHealthy = true;
       this.cachedRuns = [];
       this.cachedSize = 0;
       this.cachedMtimeMs = 0;
@@ -795,6 +800,7 @@ export class JobRunHistory {
     }
 
     try {
+      this.lastReadHealthy = true;
       const stat = fs.statSync(this.file);
       const size = stat.size;
       const mtimeMs = stat.mtimeMs;
@@ -835,6 +841,7 @@ export class JobRunHistory {
       this.cachedMtimeMs = mtimeMs;
       return runs;
     } catch (error) {
+      this.lastReadHealthy = false;
       console.error(`[JobRunHistory] Failed to read:`, error);
       DegradationReporter.getInstance().report({
         feature: 'JobRunHistory.readLines',

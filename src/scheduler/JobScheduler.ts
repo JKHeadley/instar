@@ -35,6 +35,9 @@ import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../config/ConfigDefault
 import { AUDIT_READY_SCRIPT_SLUGS, JOB_COST_AUDIT_READY, JOB_MODEL_ROUTING_AUDIT_READY } from './JobCostAuditReadiness.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
+import { JobSupervisionStore } from './JobSupervisionStore.js';
+import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
+import { jobSupervisionRolloutState } from './JobSupervisionRollout.js';
 import { decideJobModelRoute, type JobRouteDecision, type JobRouteEvidence } from './JobModelRoute.js';
 import { SkipLedger } from './SkipLedger.js';
 import { classifySessionDeath } from '../monitoring/QuotaExhaustionDetector.js';
@@ -184,6 +187,13 @@ export class JobScheduler {
   private static readonly SCRIPT_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
   private scriptStartOffsetEnabled = true;
   private scriptRunObservers: ScriptRunObserver[] = [];
+  /** Opened on the first production script attempt; never for canaries. */
+  private supervisionStore: JobSupervisionStore | null = null;
+  private supervisionBlocksLoaded = false;
+  private supervisionCensusHealthy = true;
+  private readonly activeScriptRunIds = new Set<string>();
+  /** A failed durable write moves future fires off the script runner. */
+  private supervisionBlockedSlugs = new Set<string>();
   private projectedSessionListeners: ProjectedSessionListener[] = [];
   /** Triage sessions: tmux name → their run row. */
   private projectedRuns: Map<string, { runId: string; slugTag: string; slug: string; trigger: string }> = new Map();
@@ -1800,6 +1810,37 @@ export class JobScheduler {
    * and `jobs.scriptRunners.disabledSlugs`.
    */
   scriptRunnersActiveFor(slug: string): boolean {
+    // The scheduler checks standby role later in triggerJob. Avoid opening a
+    // writable SQLite journal while that read-only role is still being checked.
+    if (this.state.readOnly) return false;
+    if (!this.supervisionBlocksLoaded) {
+      try {
+        const store = this.getJobSupervisionStore();
+        for (const held of store.heldSlugs()) this.supervisionBlockedSlugs.add(held.slug);
+        const baseline = store.censusBaselineAt();
+        const scan = this.runHistory.query({ limit: 100000, excludeSideRuns: true });
+        if (!this.runHistory.isReadHealthy() || scan.total > scan.runs.length) {
+          this.supervisionCensusHealthy = false;
+        } else {
+          for (const run of scan.runs) {
+            if (run.runner !== 'script' || run.startedAt < baseline) continue;
+            const row = store.findByRunId(run.runId);
+            if (!row || row.reason === 'missing-record' || row.reason === 'outcome-unknown'
+              || run.result === 'pending' || !row.completedAt || row.result !== run.result
+              || (row.status === 'pending' && !row.decisionEligible)) {
+              this.supervisionBlockedSlugs.add(run.slug);
+              store.holdSlug(run.slug, 'independent-history-mismatch');
+            }
+          }
+        }
+        this.supervisionBlocksLoaded = true;
+      } catch (error) {
+        this.supervisionWriteFailed(slug, error);
+        return false;
+      }
+    }
+    if (!this.supervisionCensusHealthy) return false;
+    if (this.supervisionBlockedSlugs.has(slug)) return false;
     if (!JOB_COST_AUDIT_READY.laterScriptJobs && !AUDIT_READY_SCRIPT_SLUGS.has(slug)
       && (SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS as readonly string[]).includes(slug)) return false;
     if (!JOB_COST_AUDIT_READY.dailySupervision && slug === 'script-job-supervisor') return false;
@@ -1821,6 +1862,76 @@ export class JobScheduler {
    */
   projectAsAgentmd(job: JobDefinition): JobDefinition {
     return { ...job, execute: { type: 'agentmd' } };
+  }
+
+  /** The record-only supervision spine is independent of model rollout gates. */
+  getJobSupervisionStore(): JobSupervisionStore {
+    if (this.state.readOnly) throw new Error('script supervision journal unavailable on read-only standby');
+    return this.supervisionStore ??= new JobSupervisionStore(this.stateDir);
+  }
+
+  isReadOnlyStandby(): boolean { return this.state.readOnly; }
+
+  /** A local pending script is live only while this process owns its run. */
+  isScriptRunLive(runId: string): boolean { return this.activeScriptRunIds.has(runId); }
+
+  private supervisionWriteFailed(slug: string, error: unknown): void {
+    this.supervisionBlockedSlugs.add(slug);
+    const reason = error instanceof Error ? error.message : String(error);
+    // A failure in a later transition may leave a completed, matching attempt
+    // row. Persist the hold independently of that row whenever SQLite permits;
+    // the restart census also catches unfinished transitions while dark.
+    try { this.getJobSupervisionStore().holdSlug(slug, `write-failed:${reason.slice(0, 120)}`); }
+    catch { /* @silent-fallback-ok — admission remains closed in this process; restart census checks both ledgers. */ }
+    DegradationReporter.getInstance().report({
+      feature: 'JobScheduler.jobSupervision',
+      primary: `Record the production script attempt for "${slug}"`,
+      fallback: 'Hold the script route; use the prior agentmd runner for future fires',
+      reason,
+      impact: `Script-result coverage for "${slug}" is incomplete until the durable ledger is repaired`,
+    });
+    void this.telegram?.createAttentionItem({
+      id: `job-supervision-write:${slug}`, conditionKey: `job-supervision-write:${slug}`,
+      title: `A scheduled script cannot be safely recorded: ${slug}`,
+      summary: `The ${slug} script route is held because its result ledger failed: ${reason.slice(0, 200)}`,
+      description: `The ${slug} script route is held because its result ledger failed: ${reason.slice(0, 200)}`,
+      priority: 'HIGH', category: 'job', sourceContext: 'job-supervision',
+    }).catch(e => console.error('[job-supervision] attention delivery failed:', e));
+  }
+
+  private supervisionContractViolated(slug: string, reason: string): void {
+    if (this.supervisionBlockedSlugs.has(slug)) return;
+    this.supervisionBlockedSlugs.add(slug);
+    try { this.getJobSupervisionStore().holdSlug(slug, reason); }
+    catch (error) { this.supervisionWriteFailed(slug, error); }
+    DegradationReporter.getInstance().report({
+      feature: 'JobScheduler.jobSupervision',
+      primary: `Run the verified script for "${slug}"`,
+      fallback: 'Hold this script route and use its prior runner for future fires',
+      reason,
+      impact: `The current result stays unchecked and future script fires for "${slug}" are held`,
+    });
+    void this.telegram?.createAttentionItem({
+      id: `job-supervision-contract:${slug}`, conditionKey: `job-supervision-contract:${slug}`,
+      title: `A scheduled script failed its result contract: ${slug}`,
+      summary: `The ${slug} script route is held after ${reason}. Its latest result is unchecked.`,
+      description: `The ${slug} script route is held after ${reason}. Its latest result is unchecked.`,
+      priority: 'HIGH', category: 'job', sourceContext: 'job-supervision',
+    }).catch(e => console.error('[job-supervision] contract attention failed:', e));
+  }
+
+  /** A failed independent census append cannot silently improve coverage. */
+  private completeScriptHistory(runId: string, slug: string, input: Parameters<JobRunHistory['recordCompletion']>[0]): boolean {
+    try {
+      this.runHistory.recordCompletion(input);
+      if (this.runHistory.findRun(runId)?.result !== input.result) {
+        throw new Error(`script run history did not persist completion for ${runId}`);
+      }
+      return true;
+    } catch (error) {
+      this.supervisionWriteFailed(slug, error);
+      return false;
+    }
   }
 
   private scriptPathFor(slug: string): string {
@@ -1947,20 +2058,55 @@ export class JobScheduler {
     const projected = this.projectAsAgentmd(job);
     const observability = JobScheduler.computeRunObservability(projected, JobScheduler.resolveAllowlist(projected));
     const startedAt = new Date().toISOString();
-    const runId = this.runHistory.recordStart({
-      slug,
-      sessionId: sessionName,
-      trigger: reason,
-      origin: 'instar',
-      runner: 'script',
-      lockTrust: job.lockTrust ?? 'unknown',
-      tokens: 0,
-      resolvedPath: observability.resolvedPath,
-      bodyHash: observability.bodyHash,
-      frontmatterHash: observability.frontmatterHash,
-      manifestVersion: observability.manifestVersion,
-      toolAllowlist: null,
-    });
+    let runId: string;
+    try {
+      runId = this.runHistory.recordStart({
+        slug,
+        sessionId: sessionName,
+        trigger: reason,
+        origin: 'instar',
+        runner: 'script',
+        lockTrust: job.lockTrust ?? 'unknown',
+        tokens: 0,
+        resolvedPath: observability.resolvedPath,
+        bodyHash: observability.bodyHash,
+        frontmatterHash: observability.frontmatterHash,
+        manifestVersion: observability.manifestVersion,
+        toolAllowlist: null,
+      });
+    } catch (error) {
+      this.supervisionWriteFailed(slug, error);
+      this.releaseClaim(slug, 'failure');
+      this.scriptInFlight.delete(slug);
+      return;
+    }
+    this.activeScriptRunIds.add(runId);
+    let supervisionId: string;
+    const supervisionActiveAtStart = jobSupervisionRolloutState(this.readAgentConfig() ?? {}).active;
+    const featureStateHash = crypto.createHash('sha256').update(JSON.stringify({
+      supervisionActiveAtStart,
+      scriptSupervision: job.scriptSupervision ?? null,
+      triageEvidence: job.triageEvidence ?? null,
+      triageFields: [...(job.triageFields ?? [])].sort(),
+    })).digest('hex');
+    try {
+      const fireId = this.leaseClaimStore?.getClaim(slug)?.claimId
+        ?? this.claimManager?.getClaim(slug)?.claimId ?? `local:${runId}`;
+      supervisionId = this.getJobSupervisionStore().register({
+        runId, fireId, slug, machineId: this.machineId,
+        templateDigest: job.scriptHashExpected ?? null,
+        featureStateHash,
+        decisionEligible: supervisionActiveAtStart,
+        evidencePolicy: SUPERVISION_EVIDENCE_POLICY,
+      });
+    } catch (error) {
+      this.supervisionWriteFailed(slug, error);
+      this.completeScriptHistory(runId, slug, { runId, result: 'failure', error: 'supervision-register-failed' });
+      this.releaseClaim(slug, 'failure');
+      this.scriptInFlight.delete(slug);
+      this.activeScriptRunIds.delete(runId);
+      return;
+    }
     const prior = this.state.getJobState(slug);
     this.state.saveJobState({
       slug,
@@ -1999,7 +2145,7 @@ export class JobScheduler {
         const exec = await this.executeScript(job, [], {});
         ({ parsed, scrubbed } = this.parseExec(job, exec));
       }
-      this.finishScriptRun(job, runId, parsed, scrubbed, startedAt);
+      this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart);
     };
 
     const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
@@ -2008,10 +2154,10 @@ export class JobScheduler {
         .catch((err) => {
           console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
           try {
-            this.finishScriptRun(job, runId, { ...this.untrustedParse(''), reason: 'script-runner-error', reasonCode: 'script-runner-error' }, '', startedAt);
+            this.finishScriptRun(job, runId, supervisionId, { ...this.untrustedParse(''), reason: 'script-runner-error', reasonCode: 'script-runner-error' }, '', startedAt, supervisionActiveAtStart);
           } catch { /* @silent-fallback-ok — bookkeeping best-effort on an internal throw */ }
         })
-        .finally(() => this.scriptInFlight.delete(slug));
+        .finally(() => { this.scriptInFlight.delete(slug); this.activeScriptRunIds.delete(runId); });
     };
     if (offset > 0) {
       const t = setTimeout(go, offset);
@@ -2025,15 +2171,41 @@ export class JobScheduler {
   private finishScriptRun(
     job: JobDefinition,
     runId: string,
+    supervisionId: string,
     parsed: ParsedScriptRun,
     scrubbed: string,
     startedAt: string,
+    supervisionActiveAtStart: boolean,
   ): void {
     const slug = job.slug;
     const finishedAt = new Date().toISOString();
     const outputSummary = scrubbed ? scrubbed.slice(-1000) : undefined;
     const lastAssessment = parseInstrumentAssessment(scrubbed) ?? undefined;
+    try {
+      const result = parsed.result === 'success' || parsed.result === 'skipped' ? parsed.result : 'failure';
+      const evidence = parsed.reasonCode === 'script-untrusted' ? { ok: false as const, reason: 'script-untrusted' }
+        : projectSupervisionEvidence({ job, parsed, scrubbedOutput: scrubbed });
+      this.getJobSupervisionStore().recordResult(supervisionId, {
+        result, completedAt: finishedAt,
+        evidenceHash: evidence.ok ? evidence.hash : null,
+        evidenceText: evidence.ok ? evidence.text : null,
+        evidenceSufficient: evidence.ok && evidence.sufficientForRoutine,
+        reason: parsed.reasonCode || null,
+      });
+      if (!supervisionActiveAtStart) {
+        this.getJobSupervisionStore().markUnchecked(supervisionId,
+          evidence.ok ? 'triage-dark' : evidence.reason);
+      } else if (!evidence.ok) {
+        this.getJobSupervisionStore().markUnchecked(supervisionId, evidence.reason);
+      }
+      if (!evidence.ok && ['script-untrusted', 'parser-integrity', 'output-truncated', 'evidence-over-cap'].includes(evidence.reason)) {
+        this.supervisionContractViolated(slug, evidence.reason);
+      }
+    } catch (error) {
+      this.supervisionWriteFailed(slug, error);
+    }
     const previous = this.state.getJobState(slug);
+    let historyRecorded = true;
     const startedAtMs = Date.parse(startedAt) || Date.now();
     const captureJev = (result: 'success' | 'failure') => {
       try {
@@ -2051,11 +2223,13 @@ export class JobScheduler {
         slug, lastRun: finishedAt, lastResult: 'success', lastError: undefined, lastAssessment,
         consecutiveFailures: 0, nextScheduled: this.getNextRun(slug),
       });
-      this.runHistory.recordCompletion({ runId, result: 'success', outputSummary });
-      captureJev('success');
-      this.clearRetryState(slug);
-      this.clearFailureAlertState(slug);
-      this.releaseClaim(slug, 'success');
+      historyRecorded = this.completeScriptHistory(runId, slug, { runId, result: 'success', outputSummary });
+      if (historyRecorded) {
+        captureJev('success');
+        this.clearRetryState(slug);
+        this.clearFailureAlertState(slug);
+      }
+      this.releaseClaim(slug, historyRecorded ? 'success' : 'failure');
     } else if (parsed.result === 'skipped') {
       // §5.2: neither success nor failure — consecutiveFailures unchanged
       // (neither raised nor reset), no retry, no Jev audit capture.
@@ -2063,9 +2237,9 @@ export class JobScheduler {
         slug, lastRun: finishedAt, lastResult: 'skipped', lastError: previous?.lastError, lastAssessment,
         consecutiveFailures: previous?.consecutiveFailures ?? 0, nextScheduled: this.getNextRun(slug),
       });
-      this.runHistory.recordCompletion({ runId, result: 'skipped', error: parsed.reason || undefined, outputSummary });
-      this.clearRetryState(slug);
-      this.releaseClaim(slug, 'success');
+      historyRecorded = this.completeScriptHistory(runId, slug, { runId, result: 'skipped', error: parsed.reason || undefined, outputSummary });
+      if (historyRecorded) this.clearRetryState(slug);
+      this.releaseClaim(slug, historyRecorded ? 'success' : 'failure');
     } else {
       const errorMsg = parsed.reason || 'failed';
       const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
@@ -2073,12 +2247,20 @@ export class JobScheduler {
         slug, lastRun: finishedAt, lastResult: 'failure', lastError: errorMsg, lastAssessment,
         consecutiveFailures, nextScheduled: this.getNextRun(slug),
       });
-      this.runHistory.recordCompletion({ runId, result: 'failure', error: errorMsg, outputSummary });
+      historyRecorded = this.completeScriptHistory(runId, slug, { runId, result: 'failure', error: errorMsg, outputSummary });
       captureJev('failure');
       void this.alertOnConsecutiveFailures(job, consecutiveFailures, errorMsg);
       this.releaseClaim(slug, 'failure');
       // An untrusted script cannot be fixed by a retry; the alert is the path.
-      if (parsed.reasonCode !== 'script-untrusted') this.scheduleRetry(slug, 'error');
+      if (parsed.reasonCode !== 'script-untrusted' && historyRecorded) this.scheduleRetry(slug, 'error');
+    }
+
+    if (!historyRecorded) {
+      this.state.saveJobState({
+        slug, lastRun: finishedAt, lastResult: 'failure', lastError: 'history-write-failed',
+        consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+        nextScheduled: this.getNextRun(slug),
+      });
     }
 
     notifyScriptRunObservers(this.scriptRunObservers, {

@@ -23,6 +23,8 @@ import { mountJobCostRoutes } from './jobCostRoutes.js';
 import { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
 import { JobResultTriage, buildScriptTriageConfigGetter, buildTriageProviders, evaluateFloor } from '../scheduler/JobResultTriage.js';
 import { JOB_COST_AUDIT_READY } from '../scheduler/JobCostAuditReadiness.js';
+import { jobSupervisionRolloutState } from '../scheduler/JobSupervisionRollout.js';
+import { JobSupervisionWorker } from '../scheduler/JobSupervisionWorker.js';
 import { JobTriageBackupCheck } from '../scheduler/JobTriageBackupCheck.js';
 import { ScriptCanaryRunner } from '../scheduler/ScriptCanaryRunner.js';
 import { verifyJobAnomalyEpisodes } from '../scheduler/JobCanaryEpisodeHarness.js';
@@ -444,6 +446,8 @@ export class AgentServer {
   private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
   private scriptCanaryTimer: ReturnType<typeof setInterval> | null = null;
+  private jobSupervisionReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private jobSupervisionWorkerTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private relayVerdictCounters: (() => Record<string, number>) | null = null;
   /** A2A inbound message-id ledger controller (docs/specs/a2a-inbound-id-ledger.md). */
@@ -5203,9 +5207,60 @@ export class AgentServer {
       state: () => triageState,
       auditPath: triageAuditPath,
       machineId: this.meshSelfId ?? null,
-      enabled: () => getTriageConfig().enabled !== false,
+      enabled: () => jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }).active,
       fetchPool: fetchTriagePool,
+      supervision: () => options.scheduler && !options.scheduler.isReadOnlyStandby()
+        ? options.scheduler.getJobSupervisionStore() : null,
+      runHistory: () => options.scheduler?.getRunHistory() ?? null,
+      supervisionRollout: () => jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }),
+      isScriptRunLive: runId => options.scheduler?.isScriptRunLive(runId) ?? false,
     });
+    if (options.scheduler) {
+      const reconcileSupervision = () => {
+        if (options.scheduler!.isReadOnlyStandby()) return;
+        try {
+          const store = options.scheduler!.getJobSupervisionStore();
+          const history = options.scheduler!.getRunHistory().query({ sinceHours: 24, limit: 5000, excludeSideRuns: true });
+          store.reconcileHistory(history.runs, Date.now(), runId => options.scheduler!.isScriptRunLive(runId));
+          store.expireLeases();
+          store.expireRetries();
+          if (history.total > history.runs.length) {
+            console.error('[job-supervision] census exceeded the bounded reconciliation page');
+          }
+        } catch (error) {
+          console.error('[job-supervision] reconciliation failed:', error);
+        }
+      };
+      reconcileSupervision();
+      this.jobSupervisionReconcileTimer = setInterval(reconcileSupervision, 30_000);
+      this.jobSupervisionReconcileTimer.unref?.();
+    }
+    if (options.scheduler && !options.scheduler.isReadOnlyStandby()
+      && jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }).active) {
+      const keyStore = new SecretStore({ stateDir: options.config.stateDir,
+        forceFileKey: options.config.secrets?.forceFileKey });
+      const worker = new JobSupervisionWorker({
+        store: options.scheduler.getJobSupervisionStore(),
+        readJevKey: () => {
+          const key = keyStore.get('typesafe_api_key');
+          return typeof key === 'string' ? key : null;
+        },
+        auditReady: () => jobSupervisionRolloutState(options.config as { developmentAgent?: boolean; throwawayAgent?: boolean }).active,
+        onAttention: (attemptId, reason) => {
+          void options.telegram?.createAttentionItem({
+            id: `job-supervision:${attemptId}`, conditionKey: `job-supervision:${attemptId}`,
+            title: 'A script result still needs checking',
+            summary: `Result ${attemptId} remains open: ${reason}`,
+            description: `Result ${attemptId} remains open: ${reason}`,
+            priority: 'HIGH', category: 'job', sourceContext: 'job-supervision',
+          });
+        },
+      });
+      this.jobSupervisionWorkerTimer = setInterval(() => {
+        void worker.drain().catch(error => console.error('[job-supervision] worker failed:', error));
+      }, 5000);
+      this.jobSupervisionWorkerTimer.unref?.();
+    }
     const scriptSupervisor = JOB_COST_AUDIT_READY.dailySupervision && options.scheduler && options.intelligence && options.telegram
       ? new ScriptJobSupervisor({
           fetchPoolJobs: async () => {
@@ -7109,6 +7164,14 @@ export class AgentServer {
     if (this.scriptCanaryTimer) {
       clearInterval(this.scriptCanaryTimer);
       this.scriptCanaryTimer = null;
+    }
+    if (this.jobSupervisionReconcileTimer) {
+      clearInterval(this.jobSupervisionReconcileTimer);
+      this.jobSupervisionReconcileTimer = null;
+    }
+    if (this.jobSupervisionWorkerTimer) {
+      clearInterval(this.jobSupervisionWorkerTimer);
+      this.jobSupervisionWorkerTimer = null;
     }
     if (this.subscriptionLoginLedger) {
       try { this.subscriptionLoginLedger.close(); }

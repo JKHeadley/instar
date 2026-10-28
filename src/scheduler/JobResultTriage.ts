@@ -31,11 +31,9 @@ import { bandFor, type CascadeBand } from '../core/JevCascade.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { BoundedJsonlAudit } from '../core/BoundedJsonlAudit.js';
 import { SingleFlightProvider } from '../core/SingleFlightProvider.js';
-import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { readJsonlTailLines } from '../utils/jsonl-tail.js';
 import type { ScriptRunContext, ScriptRunObserver } from './scriptRunObservers.js';
 import type { JobRun } from './JobRunHistory.js';
-import { JOB_COST_AUDIT_READY } from './JobCostAuditReadiness.js';
 import type { JobTriageStateStore, TriageSessionRecord } from './JobTriageStateStore.js';
 
 export const JOB_TRIAGE_FEATURE = 'job-result-triage';
@@ -79,9 +77,11 @@ export function buildScriptTriageConfigGetter(opts: {
     const raw = jobs && typeof jobs === 'object' ? (jobs as Record<string, unknown>).scriptTriage : undefined;
     const block = (raw && typeof raw === 'object' ? raw : {}) as ScriptTriageConfig;
     const jev = block.jev && typeof block.jev === 'object' ? block.jev : {};
-    const jevEnabled = resolveDevAgentGate(typeof jev.enabled === 'boolean' ? jev.enabled : undefined, { developmentAgent: opts.developmentAgent });
-    return { ...block, enabled: JOB_COST_AUDIT_READY.resultTriage && block.enabled !== false,
-      jev: { ...jev, enabled: JOB_COST_AUDIT_READY.resultTriage && jevEnabled } };
+    // V2 owns model decisions after its separate audit and cohort gates open.
+    // Keep this older latest-per-slug implementation dark so one result can
+    // never receive competing decisions from both pipelines.
+    return { ...block, enabled: false,
+      jev: { ...jev, enabled: false } };
   };
 }
 
@@ -236,11 +236,11 @@ export function evaluateFloor(
 // ── Jev question ────────────────────────────────────────────────────────
 
 export const TRIAGE_CRITERIA: Readonly<Record<string, string>> = {
-  routine: 'The job did its normal work; anything it reports needs no one to act right now.',
-  needs_session: "The result shows something wrong that an operator's assistant with tools should investigate or fix now.",
-  cannot_tell: 'There is too little here to tell.',
+  routine: 'Independent structured evidence verifies normal work, with no anomaly or action needed. A success, skipped, OK, or no-work label by itself is insufficient.',
+  needs_session: 'A structured anomaly, failure, or independent problem signal shows something concrete that an assistant with tools should investigate now.',
+  cannot_tell: 'Evidence is only a status label, a required probe is missing, fields were rejected, or signals conflict without a clear problem. Do not infer normality from OK or skipped.',
 };
-const TRIAGE_INSTRUCTIONS = 'Does this scheduled job result need a real session with real intelligence to investigate, or is it routine?';
+const TRIAGE_INSTRUCTIONS = 'Classify this scheduled job result. Choose routine only when independent facts corroborate it. Choose needs_session for a concrete problem; choose cannot_tell when proof is missing or ambiguous.';
 
 export function triageQuestions(): Record<string, { type: 'choice'; instructions: string; criteria: Record<string, string> }> {
   const fwd = { ...TRIAGE_CRITERIA };

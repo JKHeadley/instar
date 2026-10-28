@@ -226,9 +226,22 @@ ${SCRIPT_JOBS_CLAUDEMD_MARKER} (no session unless one is needed)
 
 Seventeen existing built-in jobs can run as small scripts with NO Claude session: each run prints one result line (ok, skipped or failed) and the scheduler records it. The first development-agent wave enables only the deterministic llm-decision-grading job. Correction-class-review-backstop remains a session because its endpoint can call an LLM whose benchmark task is pending. The other converted jobs still run as sessions, and the new daily script-job-supervisor is inactive, even with a saved opt-in, until its model calls have benchmark and decision-quality audit coverage. On fleet agents all pre-existing converted jobs still run as sessions, so this update adds no daily session or model call there.
 - **When health-check runs as a script**, it pushes critical problems at once (disk nearly full, reminders that could not be delivered). Other problems show as a calm attention item and send one message only if they last 6 hours or keep coming back.
-- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.
+- **After both code gates open**, every trustworthy script result gets a decision record. Exact certified routine shapes may use a fixed rule; Jev judges the rest. Only during a Jev outage may benchmarked Haiku or Luna replace Jev for those judgment results. An uncertain answer keeps the result open and requests isolated diagnosis. Until benchmark and outcome-audit coverage is verified, the model path stays inactive. Active scripts still get a daily must-fail canary.
 - Where to look (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\` (per job: \`runner\`, \`lockTrust\`, \`tokens\`, \`triage\`), \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/triage\` (recent triage decisions and the sessions they started) and \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/jobs/cost?sinceDays=7"\` (tokens per job against the baseline; \`?scope=pool\` for every machine). The Jobs dashboard tab shows the same.
 - **When to use** (PROACTIVE): the user asks "why did a job start a session?" → \`GET /jobs/triage\`; "what do my jobs cost?" → \`GET /jobs/cost\`; "why did I get a job safety-check notice?" → a daily canary failed: read that job's run history. Rollback: \`jobs.scriptRunners.enabled: false\` (or a slug in \`jobs.scriptRunners.disabledSlugs\`) runs an existing converted job as a session again; the new script-job-supervisor instead becomes inactive. Read live.
+`;
+}
+
+export const JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER = '### Script result supervision records';
+export function JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port: number): string {
+  return `
+${JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER}
+
+Every production script run is recorded before execution. Read GET /jobs/triage for the independent run-history count, reviewed and unchecked counts, open investigations, and the effective rollout gates. An unchecked result is a gap to investigate, never a successful review. The model path remains off until its code-owned audit and cohort gates open.
+
+When active, an exact certified routine shape may be closed by a fixed rule. Jev checks every other trustworthy result that needs judgment. Haiku or Luna replaces Jev only while Jev is unavailable, and only with benchmark evidence and a recorded call. A bare OK or skipped line cannot be closed as safe without independent evidence. An uncertain verdict requests isolated diagnosis; if isolation is unavailable, the result stays open and raises attention.
+
+**When to use:** "Did every script result get checked?" or "Why did this job stay open?" → read GET /jobs/triage and its supervision block. The scope=pool query shows partial-pool failures explicitly. Never infer full coverage from a missing peer or an empty model log.
 `;
 }
 
@@ -7474,6 +7487,19 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Scheduled jobs run as scripts section');
     } else {
       result.skipped.push('CLAUDE.md: Scheduled jobs run as scripts section already present');
+    }
+
+    if (!content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER)) {
+      content += JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added script result supervision records');
+    }
+    const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
+    const currentTriageLine = '- **After both code gates open**, every trustworthy script result gets a decision record. Exact certified routine shapes may use a fixed rule; Jev judges the rest. Only during a Jev outage may benchmarked Haiku or Luna replace Jev for those judgment results. An uncertain answer keeps the result open and requests isolated diagnosis. Until benchmark and outcome-audit coverage is verified, the model path stays inactive. Active scripts still get a daily must-fail canary.';
+    if (content.includes(oldTriageLine)) {
+      content = content.replace(oldTriageLine, currentTriageLine);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected script result supervision wording');
     }
 
     if (!content.includes('W32 cadence executor:')) {

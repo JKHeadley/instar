@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PostUpdateMigrator, SCRIPT_JOBS_CLAUDEMD_MARKER } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, SCRIPT_JOBS_CLAUDEMD_MARKER, JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 
@@ -29,6 +29,8 @@ describe('Scheduled jobs run as scripts — agent awareness', () => {
     expect(fresh).toContain('Correction-class-review-backstop remains a session because its endpoint can call an LLM');
     expect(fresh).toContain('the new daily script-job-supervisor is inactive');
     expect(fresh.split(SCRIPT_JOBS_CLAUDEMD_MARKER)).toHaveLength(2);
+    expect(fresh).toContain(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER);
+    expect(fresh).toContain('A bare OK or skipped line cannot be closed as safe without independent evidence');
   });
 
   it('migrateClaudeMd adds it once (content-sniffed, idempotent)', () => {
@@ -44,5 +46,19 @@ describe('Scheduled jobs run as scripts — agent awareness', () => {
     expect(second.skipped).toContain('CLAUDE.md: Scheduled jobs run as scripts section already present');
     const after = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8');
     expect(after.split(SCRIPT_JOBS_CLAUDEMD_MARKER)).toHaveLength(2);
+    expect(after.split(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER)).toHaveLength(2);
+  });
+
+  it('corrects the older outage-sampling wording on an existing agent', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'script-supervision-awareness-'));
+    dirs.push(projectDir);
+    const old = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# Existing agent\n${SCRIPT_JOBS_CLAUDEMD_MARKER}\n${old}\n`);
+    const first = migrate(projectDir);
+    expect(first.upgraded).toContain('CLAUDE.md: corrected script result supervision wording');
+    const after = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(after).toContain('Only during a Jev outage may benchmarked Haiku or Luna replace Jev');
+    expect(after).not.toContain('sample routine results');
+    expect(migrate(projectDir).upgraded).not.toContain('CLAUDE.md: corrected script result supervision wording');
   });
 });

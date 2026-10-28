@@ -3086,7 +3086,53 @@ const throwawayExpiryTeardown: SelfActionController = {
   makeUnderPressure: (f, sink) => makeThrowawayTeardownLoop(f, sink),
 };
 
+/** One failed provider result can cause at most three audited calls; SQLite
+ * persists call_count and the 24-hour expiry across worker restarts. */
+const jobSupervisionProviderRetry: SelfActionController = {
+  id: 'job-supervision-provider-retry',
+  actionVerb: 'retry-provider-call',
+  models: 'src/scheduler/JobSupervisionWorker.ts (per-result provider retry via JobSupervisionStore.call_count)',
+  modelsPath: 'src/scheduler/JobSupervisionWorker.ts',
+  boundK: 3, perTargetBoundK: 3, ticks: 30, tickMs: 60 * 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => jobSupervisionRetryModel(f, sink) },
+  makeUnderPressure: (f, sink) => jobSupervisionRetryModel(f, sink),
+};
+
+function jobSupervisionRetryModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const count = (f.durableState.get('supervision-call-count') as number | undefined) ?? 0;
+    if (count >= 3) return;
+    f.durableState.set('supervision-call-count', count + 1);
+    sink.emit({ verb: 'retry-provider-call', target: 'one-result' });
+  } };
+}
+
+/** A missing run-history row gets one unchecked recovery record. Later ticks
+ * see that row by unique run_id and cannot insert another. */
+const jobSupervisionCensusRepair: SelfActionController = {
+  id: 'job-supervision-census-repair',
+  actionVerb: 'retry-census-repair',
+  models: 'src/scheduler/JobSupervisionStore.ts (reconcileHistory unique run_id and unchecked recovery)',
+  modelsPath: 'src/scheduler/JobSupervisionStore.ts',
+  boundK: 1, perTargetBoundK: 1, ticks: 60, tickMs: 30_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => jobSupervisionCensusModel(f, sink) },
+  makeUnderPressure: (f, sink) => jobSupervisionCensusModel(f, sink),
+};
+
+function jobSupervisionCensusModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects() || f.durableState.get('supervision-census-recovered')) return;
+    f.durableState.set('supervision-census-recovered', true);
+    sink.emit({ verb: 'retry-census-repair', target: 'one-run-id' });
+  } };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  jobSupervisionProviderRetry,
+  jobSupervisionCensusRepair,
   throwawayExpiryTeardown,
   localVerifyInterruptedResume,
   attentionLifecyclePass,
