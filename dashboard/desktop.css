@@ -17,6 +17,7 @@ body.desktop-live>#control{position:fixed;inset:0;z-index:10;display:flex;flex-d
 .desktop-bar strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.desktop-bar #liveStatus{margin-left:auto;font-size:.8rem;color:#94a3b8}.desktop-bar button{margin-left:auto}
 .desktop-tools{overflow-x:auto;white-space:nowrap;padding-bottom:max(.45rem,env(safe-area-inset-bottom))}
 .desktop-tools button{flex:0 0 auto;padding:.5rem .65rem}.type-label{display:flex;align-items:center;gap:.4rem;margin:0;font-size:.8rem;flex:0 0 auto}.type-label input{width:min(32vw,14rem);padding:.5rem}
+.desktop-tools button[aria-pressed="true"]{background:#fbbf24;color:#422006}
 #surface{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;touch-action:none;overscroll-behavior:contain;user-select:none;background:#020617;cursor:none}
 #localCursor{position:absolute;left:50%;top:50%;width:18px;height:18px;pointer-events:none;z-index:2;transform:translate(-2px,-2px);filter:drop-shadow(0 1px 2px #000);background:#fff;clip-path:polygon(0 0,0 100%,25% 75%,43% 100%,58% 92%,40% 67%,75% 67%);display:none}
 body.desktop-live #localCursor{display:block}

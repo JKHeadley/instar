@@ -5,7 +5,12 @@ export type DesktopInput =
   | { kind: 'click'; x: number; y: number; button: 'left' | 'right' }
   | { kind: 'buttonDown' | 'buttonUp'; x: number; y: number; button: 'left' | 'right' }
   | { kind: 'scroll'; dx: number; dy: number }
-  | { kind: 'type'; text: string };
+  | { kind: 'type'; text: string }
+  | { kind: 'keyDown' | 'keyUp'; key: DesktopKey };
+
+export type DesktopKey = 'Meta' | 'Control' | 'Alt' | 'Shift' | 'Enter' | 'Tab'
+  | 'Escape' | 'Backspace' | 'Delete' | 'Space' | 'ArrowLeft' | 'ArrowRight'
+  | 'ArrowUp' | 'ArrowDown' | 'a' | 'c' | 'v' | 'x' | 'z';
 
 export interface DesktopProbe {
   screenPermission: boolean;

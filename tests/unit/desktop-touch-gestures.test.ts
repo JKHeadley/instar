@@ -17,6 +17,8 @@ describe('desktop touch gestures', () => {
       <button id="modeButton"></button><button id="dragButton"></button><button id="rightButton"></button>
       <button id="typeButton"></button><button id="stopButton"></button><input id="typeText">
       <button id="unlockButton"></button><button id="retryButton"></button><button id="requestButton"></button>
+      <button data-remote-key="Meta" data-modifier="true" aria-pressed="false"></button>
+      <button data-remote-key="c"></button>
       <div id="status"></div><div id="liveStatus"></div><div id="control"></div><div id="request"></div>
     </body>`, { url: 'https://instar.example/dashboard/desktop', runScripts: 'outside-only' });
     const { window } = dom;
@@ -44,6 +46,34 @@ describe('desktop touch gestures', () => {
       .map(command => command.action?.kind);
     expect(finalActions).toEqual(['scroll', 'scroll', 'buttonDown', 'buttonUp']);
     await Promise.resolve();
+    window.document.querySelector<HTMLElement>('[data-remote-key="Meta"]')!.click();
+    window.document.querySelector<HTMLElement>('[data-remote-key="c"]')!.click();
+    window.document.querySelector<HTMLElement>('[data-remote-key="Meta"]')!.click();
+    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect((window as unknown as { __commands: Array<{ action?: { kind: string; key?: string } }> }).__commands
+      .slice(-4).map(command => `${command.action?.kind}:${command.action?.key}`))
+      .toEqual(['keyDown:Meta', 'keyDown:c', 'keyUp:c', 'keyUp:Meta']);
+    const commands = (window as unknown as { __commands: Array<{ action?: { kind: string; key?: string } }> }).__commands;
+    const beforePhysical = commands.length;
+    window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Meta', bubbles: true, cancelable: true }));
+    window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'c', bubbles: true, cancelable: true }));
+    window.document.dispatchEvent(new window.KeyboardEvent('keyup', { key: 'c', bubbles: true, cancelable: true }));
+    window.document.dispatchEvent(new window.KeyboardEvent('keyup', { key: 'Meta', bubbles: true, cancelable: true }));
+    expect(commands.slice(beforePhysical).map(command => `${command.action?.kind}:${command.action?.key}`))
+      .toEqual(['keyDown:Meta', 'keyDown:c', 'keyUp:c', 'keyUp:Meta']);
+    const typeInput = window.document.getElementById('typeText')!;
+    typeInput.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'c', bubbles: true, cancelable: true }));
+    expect(commands).toHaveLength(beforePhysical + 4);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const beforeFailedKey = commands.length;
+    window.eval(`sendCommand = command => { window.__commands.push(command); return Promise.resolve(false); };`);
+    window.document.querySelector<HTMLElement>('[data-remote-key="c"]')!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(commands.slice(beforeFailedKey).map(command => command.action?.kind)).toEqual(['keyDown']);
+    expect(window.document.getElementById('status')!.textContent).toContain('Connection interrupted');
+    window.eval(`inputEnabled = true;`);
     window.eval(`sendCommand = command => Promise.resolve(command.action?.kind !== 'buttonDown');`);
     window.document.getElementById('dragButton')!.click();
     await Promise.resolve();

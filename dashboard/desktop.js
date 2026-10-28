@@ -35,12 +35,23 @@ const pointers = new Map();
 let heldButton = null;
 let heldPhase = 'none';
 let holdHeartbeat = 0;
+const heldKeys = new Map();
+const pendingKeyTaps = new Set();
+const remoteKeys = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
+  'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
+  'ArrowUp', 'ArrowDown', 'a', 'c', 'v', 'x', 'z']);
+
+function syncHoldHeartbeat() {
+  if (holdHeartbeat) { clearInterval(holdHeartbeat); holdHeartbeat = 0; }
+  if (heldButton || heldKeys.size) {
+    holdHeartbeat = setInterval(() => { if (inputEnabled) void sendCommand({ type: 'ping' }); }, 1_000);
+  }
+}
 
 function setHeldButton(button, phase = button ? 'sent' : 'none') {
   heldButton = button;
   heldPhase = phase;
-  if (holdHeartbeat) { clearInterval(holdHeartbeat); holdHeartbeat = 0; }
-  if (button) holdHeartbeat = setInterval(() => { if (inputEnabled) void sendCommand({ type: 'ping' }); }, 1_000);
+  syncHoldHeartbeat();
   $('dragButton').textContent = button ? 'Release' : 'Drag';
   $('dragButton').setAttribute('aria-pressed', String(!!button));
 }
@@ -68,6 +79,43 @@ function beginHold(button) {
     if (sent) heldPhase = 'sent';
     else { heldPhase = 'unknown'; unexpectedDisconnect(socket); }
   });
+}
+function updateKeyButton(key) {
+  for (const button of document.querySelectorAll('[data-remote-key]')) {
+    if (button.dataset.remoteKey === key && button.dataset.modifier) {
+      button.setAttribute('aria-pressed', String(heldKeys.has(key)));
+    }
+  }
+}
+function beginKey(key) {
+  if (!inputEnabled || !remoteKeys.has(key) || heldKeys.has(key)) return Promise.resolve(false);
+  heldKeys.set(key, 'pending');
+  updateKeyButton(key);
+  syncHoldHeartbeat();
+  return send({ kind: 'keyDown', key }).then(sent => {
+    if (heldKeys.get(key) !== 'pending') return;
+    if (sent) heldKeys.set(key, 'sent');
+    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(socket); }
+    return sent;
+  });
+}
+async function tapKey(key) {
+  if (await beginKey(key)) await releaseKey(key);
+}
+function releaseKey(key) {
+  const phase = heldKeys.get(key);
+  if (!phase || phase === 'releasing' || phase === 'unknown') return Promise.resolve(false);
+  heldKeys.set(key, 'releasing');
+  return send({ kind: 'keyUp', key }).then(sent => {
+    if (heldKeys.get(key) !== 'releasing') return;
+    if (sent) { heldKeys.delete(key); updateKeyButton(key); syncHoldHeartbeat(); }
+    else { heldKeys.set(key, 'unknown'); unexpectedDisconnect(socket); }
+    return sent;
+  });
+}
+function releaseControls() {
+  releaseButton();
+  for (const key of heldKeys.keys()) releaseKey(key);
 }
 
 function status(message) { $('status').textContent = message; $('liveStatus').textContent = message; }
@@ -164,6 +212,8 @@ function leave(message) {
   pendingMove = null;
   pointers.clear();
   setHeldButton(null);
+  for (const key of heldKeys.keys()) { heldKeys.delete(key); updateKeyButton(key); }
+  syncHoldHeartbeat();
   clearFrame();
   document.body.classList.remove('desktop-live', 'trackpad');
   $('control').hidden = true;
@@ -592,6 +642,37 @@ $('dragButton').addEventListener('click', () => {
   beginHold('left');
 });
 $('rightButton').addEventListener('click', () => clickCursor('right'));
+for (const button of document.querySelectorAll('[data-remote-key]')) {
+  button.addEventListener('click', () => {
+    const key = button.dataset.remoteKey;
+    if (button.dataset.modifier) {
+      if (heldKeys.has(key)) void Promise.all([...pendingKeyTaps]).then(() => releaseKey(key));
+      else beginKey(key);
+    } else {
+      const tap = tapKey(key);
+      pendingKeyTaps.add(tap);
+      void tap.finally(() => pendingKeyTaps.delete(tap));
+    }
+  });
+}
+function eventKey(event) {
+  const key = event.key === ' ' ? 'Space' : event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  return remoteKeys.has(key) ? key : null;
+}
+document.addEventListener('keydown', event => {
+  if (!inputEnabled || event.target instanceof HTMLInputElement) return;
+  const key = eventKey(event);
+  if (!key) return;
+  event.preventDefault();
+  if (!event.repeat) beginKey(key);
+});
+document.addEventListener('keyup', event => {
+  if (!inputEnabled || event.target instanceof HTMLInputElement) return;
+  const key = eventKey(event);
+  if (!key) return;
+  event.preventDefault();
+  releaseKey(key);
+});
 $('surface').addEventListener('contextmenu', event => event.preventDefault());
 $('surface').addEventListener('pointerdown', event => {
   event.preventDefault();
@@ -643,7 +724,7 @@ $('surface').addEventListener('pointerup', event => {
     clickCursor(event.button === 2 ? 'right' : 'left');
   }
 });
-function cancelGestures() { pointers.clear(); releaseButton(); }
+function cancelGestures() { pointers.clear(); releaseControls(); }
 $('surface').addEventListener('pointercancel', cancelGestures);
 window.addEventListener('blur', cancelGestures);
 document.addEventListener('visibilitychange', () => { if (document.hidden) cancelGestures(); });
@@ -651,9 +732,10 @@ window.addEventListener('resize', updateCursor);
 $('screen').addEventListener('load', updateCursor);
 $('typeButton').addEventListener('click', () => {
   const text = $('typeText').value;
-  if (text) send({ kind: 'type', text });
+  if (text) { releaseControls(); send({ kind: 'type', text }); }
   $('typeText').value = '';
 });
+$('typeText').addEventListener('focus', releaseControls);
 $('stopButton').addEventListener('click', async () => {
   stopping = true;
   resumeGeneration++;
@@ -666,6 +748,8 @@ $('stopButton').addEventListener('click', async () => {
   pendingMove = null;
   pointers.clear();
   setHeldButton(null);
+  for (const key of heldKeys.keys()) { heldKeys.delete(key); updateKeyButton(key); }
+  syncHoldHeartbeat();
   sendCommand({ type: 'stop' });
   const stoppingRequestId = requestId;
   // Blank the viewer immediately, even when the revoke HTTP request is slow.

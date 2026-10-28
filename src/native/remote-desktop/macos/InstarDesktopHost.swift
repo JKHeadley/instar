@@ -60,6 +60,14 @@ struct InstarDesktopHost {
     // This state belongs to the one grant-owned input-stream process. Its pipe
     // closing ends the process; the controller then posts release events.
     private static var heldButton: String? = nil
+    private static var heldKeys = Set<String>()
+    private static let keyCodes: [String: CGKeyCode] = [
+        "Meta": 55, "Control": 59, "Alt": 58, "Shift": 56,
+        "Enter": 36, "Tab": 48, "Escape": 53, "Backspace": 51,
+        "Delete": 117, "Space": 49, "ArrowLeft": 123, "ArrowRight": 124,
+        "ArrowDown": 125, "ArrowUp": 126,
+        "a": 0, "c": 8, "v": 9, "x": 7, "z": 6,
+    ]
     static func main() async {
         guard CommandLine.arguments.count == 2 else {
             fputs("usage: instar-desktop-host probe|capture|capture-stream|cursor|input|input-stream|release|indicator\n", stderr)
@@ -135,14 +143,28 @@ struct InstarDesktopHost {
             print("{\"x\":\(x),\"y\":\(y)}")
         case "release":
             if activeSession() && AXIsProcessTrusted() {
+                let data = FileHandle.standardInput.readDataToEndOfFile()
+                guard data.count <= 512,
+                      let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let buttons = raw["buttons"] as? [String],
+                      let keys = raw["keys"] as? [String],
+                      buttons.count <= 2, keys.count <= keyCodes.count,
+                      buttons.allSatisfy({ $0 == "left" || $0 == "right" }),
+                      keys.allSatisfy({ keyCodes[$0] != nil }) else { exit(69) }
                 let point = CGEvent(source: nil)?.location ?? CGPoint.zero
-                for button in [CGMouseButton.left, CGMouseButton.right] {
-                    let kind: CGEventType = button == .left ? .leftMouseUp : .rightMouseUp
+                for button in buttons {
+                    let mouseButton: CGMouseButton = button == "left" ? .left : .right
+                    let kind: CGEventType = button == "left" ? .leftMouseUp : .rightMouseUp
                     CGEvent(mouseEventSource: nil, mouseType: kind,
-                            mouseCursorPosition: point, mouseButton: button)?.post(tap: .cghidEventTap)
+                            mouseCursorPosition: point, mouseButton: mouseButton)?.post(tap: .cghidEventTap)
                 }
-                for keyCode in [CGKeyCode(0), 54, 55, 56, 58, 59, 60, 61, 62, 63] {
-                    CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)?.post(tap: .cghidEventTap)
+                for key in keys {
+                    guard let keyCode = keyCodes[key] else { continue }
+                    if let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
+                        if ["Meta", "Control", "Alt", "Shift"].contains(key) { event.type = .flagsChanged }
+                        event.flags = []
+                        event.post(tap: .cghidEventTap)
+                    }
                 }
             }
             print("{\"ok\":true}")
@@ -155,7 +177,7 @@ struct InstarDesktopHost {
                 exit(69)
             }
         case "input-stream":
-            defer { releaseHeldButton() }
+            defer { releaseHeldInput() }
             while let line = readLine(strippingNewline: true) {
                 do {
                     try performInput(Data(line.utf8))
@@ -172,14 +194,34 @@ struct InstarDesktopHost {
         }
     }
 
-    private static func releaseHeldButton() {
-        guard let button = heldButton, activeSession(), AXIsProcessTrusted() else { return }
-        let point = CGEvent(source: nil)?.location ?? CGPoint.zero
-        let mouseButton: CGMouseButton = button == "right" ? .right : .left
-        let type: CGEventType = button == "right" ? .rightMouseUp : .leftMouseUp
-        CGEvent(mouseEventSource: nil, mouseType: type,
-                mouseCursorPosition: point, mouseButton: mouseButton)?.post(tap: .cghidEventTap)
+    private static func releaseHeldInput() {
+        guard activeSession(), AXIsProcessTrusted() else { return }
+        if let button = heldButton {
+            let point = CGEvent(source: nil)?.location ?? CGPoint.zero
+            let mouseButton: CGMouseButton = button == "right" ? .right : .left
+            let type: CGEventType = button == "right" ? .rightMouseUp : .leftMouseUp
+            CGEvent(mouseEventSource: nil, mouseType: type,
+                    mouseCursorPosition: point, mouseButton: mouseButton)?.post(tap: .cghidEventTap)
+        }
         heldButton = nil
+        for key in heldKeys {
+            if let code = keyCodes[key] {
+                if let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) {
+                    if ["Meta", "Control", "Alt", "Shift"].contains(key) { event.type = .flagsChanged }
+                    event.post(tap: .cghidEventTap)
+                }
+            }
+        }
+        heldKeys.removeAll()
+    }
+
+    private static func modifierFlags(_ keys: Set<String>) -> CGEventFlags {
+        var flags: CGEventFlags = []
+        if keys.contains("Meta") { flags.insert(.maskCommand) }
+        if keys.contains("Control") { flags.insert(.maskControl) }
+        if keys.contains("Alt") { flags.insert(.maskAlternate) }
+        if keys.contains("Shift") { flags.insert(.maskShift) }
+        return flags
     }
 
     private static func performInput(_ data: Data) throws {
@@ -191,6 +233,22 @@ struct InstarDesktopHost {
             throw HostError.invalidInput
         }
         switch kind {
+        case "keyDown", "keyUp":
+            guard let key = raw["key"] as? String, let code = keyCodes[key] else { throw HostError.invalidInput }
+            var next = heldKeys
+            if kind == "keyDown" {
+                guard !next.contains(key) else { throw HostError.invalidInput }
+                next.insert(key)
+            } else {
+                guard next.contains(key) else { throw HostError.invalidInput }
+                next.remove(key)
+            }
+            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code,
+                                      keyDown: kind == "keyDown") else { throw HostError.inputUnavailable }
+            if ["Meta", "Control", "Alt", "Shift"].contains(key) { event.type = .flagsChanged }
+            event.flags = modifierFlags(next)
+            event.post(tap: .cghidEventTap)
+            heldKeys = next
         case "scroll":
             guard let dx = raw["dx"] as? Double, let dy = raw["dy"] as? Double,
                   dx.isFinite, dy.isFinite, abs(dx) <= 1_000, abs(dy) <= 1_000,
@@ -199,6 +257,7 @@ struct InstarDesktopHost {
                                       wheel2: Int32((-dx).rounded()), wheel3: 0) else {
                 throw HostError.invalidInput
             }
+            event.flags = modifierFlags(heldKeys)
             event.post(tap: .cghidEventTap)
         case "move", "click", "buttonDown", "buttonUp":
             guard let x = raw["x"] as? Double, let y = raw["y"] as? Double,
@@ -220,6 +279,7 @@ struct InstarDesktopHost {
                                           mouseCursorPosition: point, mouseButton: dragButton) else {
                     throw HostError.inputUnavailable
                 }
+                event.flags = modifierFlags(heldKeys)
                 event.post(tap: .cghidEventTap)
             } else {
                 let button = raw["button"] as? String ?? "left"
@@ -240,10 +300,12 @@ struct InstarDesktopHost {
                                              mouseCursorPosition: point, mouseButton: mouseButton) else {
                         throw HostError.inputUnavailable
                     }
+                    down.flags = modifierFlags(heldKeys)
                     down.post(tap: .cghidEventTap)
                     if kind == "buttonDown" { heldButton = button }
                 }
                 if let up {
+                    up.flags = modifierFlags(heldKeys)
                     up.post(tap: .cghidEventTap)
                     heldButton = nil
                 }

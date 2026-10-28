@@ -10,6 +10,9 @@ export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
 
 const FRAME_LIMIT = 625_000;
+const DESKTOP_KEYS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
+  'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
+  'ArrowUp', 'ArrowDown', 'a', 'c', 'v', 'x', 'z']);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_HOST = path.basename(path.dirname(MODULE_DIR)) === 'src'
   ? path.resolve(MODULE_DIR, '..', '..', 'dist', 'native', 'instar-desktop-host')
@@ -26,6 +29,7 @@ function validInput(action: MacDesktopInput): boolean {
     return Number.isFinite(action.dx) && Number.isFinite(action.dy)
       && Math.abs(action.dx) <= 1_000 && Math.abs(action.dy) <= 1_000;
   }
+  if (action.kind === 'keyDown' || action.kind === 'keyUp') return DESKTOP_KEYS.has(action.key);
   return action.kind === 'type' && typeof action.text === 'string'
     && action.text.length > 0 && action.text.length <= 1_024 && !action.text.includes('\0');
 }
@@ -40,10 +44,26 @@ export class MacDesktopHost implements DesktopHost {
   private pendingCapture: { resolve(frame: Buffer): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   private inputReply = '';
   private pendingInput: { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private heldRemoteButton: 'left' | 'right' | null = null;
+  private readonly heldRemoteKeys = new Set<string>();
+  private pendingControlAction: DesktopInput | null = null;
+  private inputGeneration = 0;
   constructor(private readonly binary = DEFAULT_HOST) {}
 
   /** Local kill switch: stop any native input still running when a grant ends. */
   cancelInput(): void {
+    this.inputGeneration++;
+    const buttons = new Set<string>();
+    const keys = new Set(this.heldRemoteKeys);
+    if (this.heldRemoteButton) buttons.add(this.heldRemoteButton);
+    if (this.pendingControlAction?.kind === 'buttonDown' || this.pendingControlAction?.kind === 'click') {
+      buttons.add(this.pendingControlAction.button);
+    }
+    if (this.pendingControlAction?.kind === 'keyDown') keys.add(this.pendingControlAction.key);
+    if (this.pendingControlAction?.kind === 'type') keys.add('a'); // Unicode CGEvent uses virtual key code 0.
+    this.heldRemoteButton = null;
+    this.heldRemoteKeys.clear();
+    this.pendingControlAction = null;
     for (const child of this.inputChildren) child.kill('SIGKILL');
     this.inputStream?.kill('SIGKILL');
     this.inputStream = null;
@@ -52,9 +72,14 @@ export class MacDesktopHost implements DesktopHost {
       this.pendingInput.reject(new Error('mac-desktop-host-input-cancelled'));
       this.pendingInput = null;
     }
-    // A native click or Unicode key sequence can be interrupted between down
-    // and up. Release held input after fencing the child processes.
-    void this.run('release').catch(() => {});
+    // The fallback releases only controls this grant successfully held (plus
+    // an in-flight down whose acknowledgement may have been lost). It can
+    // still overlap a local person's identical key; macOS has no ownership
+    // token for a posted CGEvent.
+    if (buttons.size || keys.size) {
+      void this.run('release', Buffer.from(JSON.stringify({ buttons: [...buttons], keys: [...keys] })))
+        .catch(() => {});
+    }
   }
 
   private trustedBinary(): string {
@@ -275,10 +300,19 @@ export class MacDesktopHost implements DesktopHost {
 
   async input(action: MacDesktopInput): Promise<void> {
     if (!validInput(action)) throw new Error('mac-desktop-host-input-invalid');
+    if ((action.kind === 'keyDown' && this.heldRemoteKeys.has(action.key))
+      || (action.kind === 'keyUp' && !this.heldRemoteKeys.has(action.key))
+      || (action.kind === 'buttonDown' && this.heldRemoteButton !== null)
+      || (action.kind === 'buttonUp' && this.heldRemoteButton !== action.button)
+      || (action.kind === 'click' && this.heldRemoteButton !== null)) {
+      throw new Error('mac-desktop-host-input-transition-invalid');
+    }
     if (!this.inputStream) this.startInputStream();
     const child = this.inputStream!;
     if (this.pendingInput) throw new Error('mac-desktop-host-input-busy');
-    await new Promise<void>((resolve, reject) => {
+    const generation = this.inputGeneration;
+    this.pendingControlAction = action;
+    try { await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pendingInput?.timer !== timer) return;
         this.pendingInput = null;
@@ -297,7 +331,13 @@ export class MacDesktopHost implements DesktopHost {
           reject(new Error('mac-desktop-host-input-unavailable'));
         }
       });
-    });
+    }); }
+    finally { if (this.inputGeneration === generation) this.pendingControlAction = null; }
+    if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
+    if (action.kind === 'buttonDown') this.heldRemoteButton = action.button;
+    if (action.kind === 'buttonUp') this.heldRemoteButton = null;
+    if (action.kind === 'keyDown') this.heldRemoteKeys.add(action.key);
+    if (action.kind === 'keyUp') this.heldRemoteKeys.delete(action.key);
   }
 
   private startInputStream(): void {

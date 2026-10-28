@@ -78,9 +78,10 @@ export class DesktopStreamManager {
     let drainingInputs = false;
     let captureFailures = 0;
     let heldButton: 'left' | 'right' | null = null;
+    const heldKeys = new Set<string>();
     let holdTimer: ReturnType<typeof setTimeout> | undefined;
     const refreshHoldLease = () => {
-      if (!heldButton) return;
+      if (!heldButton && heldKeys.size === 0) return;
       if (holdTimer) clearTimeout(holdTimer);
       // A half-open browser can leave a mouse button held even while the
       // target still thinks the WebSocket is connected. An authenticated ping
@@ -151,8 +152,10 @@ export class DesktopStreamManager {
           if (closed) return;
           await session.input(command.action);
           if (command.action.kind === 'buttonDown') heldButton = command.action.button;
-          if (command.action.kind === 'buttonUp') {
-            heldButton = null;
+          if (command.action.kind === 'buttonUp') heldButton = null;
+          if (command.action.kind === 'keyDown') heldKeys.add(command.action.key);
+          if (command.action.kind === 'keyUp') heldKeys.delete(command.action.key);
+          if (!heldButton && heldKeys.size === 0) {
             if (holdTimer) { clearTimeout(holdTimer); holdTimer = undefined; }
           } else refreshHoldLease();
           lastActivity = Date.now();

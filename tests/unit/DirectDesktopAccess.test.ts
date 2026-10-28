@@ -21,6 +21,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   let challenge = '';
   let cancelled = 0;
   let heldButton: string | null = null;
+  const heldKeys = new Set<string>();
   let indicatorExit: (() => void) | null = null;
   let indicatorStops = 0;
   let probes = 0;
@@ -45,8 +46,10 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
     input: async (action: DesktopInput) => {
       if (action.kind === 'buttonDown') heldButton = action.button;
       if (action.kind === 'buttonUp') heldButton = null;
+      if (action.kind === 'keyDown') heldKeys.add(action.key);
+      if (action.kind === 'keyUp') heldKeys.delete(action.key);
     },
-    cancelInput: () => { cancelled++; heldButton = null; },
+    cancelInput: () => { cancelled++; heldButton = null; heldKeys.clear(); },
     startIndicator: async (onExit: () => void) => { await indicatorGate; indicatorExit = onExit; },
     stopIndicator: () => { indicatorStops++; },
   } as unknown as MacDesktopHost;
@@ -71,7 +74,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
     setNow: (value: number) => { now = value; }, setBinding: (value: boolean) => { binding = value; },
     setSessionValid: (value: boolean) => { sessionValid = value; },
     setFrame: (value: Buffer) => { image = value; },
-    cancelled: () => cancelled, heldButton: () => heldButton, indicatorStops: () => indicatorStops,
+    cancelled: () => cancelled, heldButton: () => heldButton, heldKeys: () => [...heldKeys], indicatorStops: () => indicatorStops,
     probes: () => probes,
     setProbeGate: (gate: Promise<void> | null) => { probeGate = gate; },
     setIndicatorGate: (gate: Promise<void> | null) => { indicatorGate = gate; },
@@ -118,10 +121,13 @@ describe('DirectDesktopAccess', () => {
     };
     const old = await connect(f.browser);
     await old.input({ kind: 'buttonDown', x: 0.3, y: 0.4, button: 'left' });
+    await old.input({ kind: 'keyDown', key: 'Meta' });
     expect(f.heldButton()).toBe('left');
+    expect(f.heldKeys()).toEqual(['Meta']);
     const previousNonce = f.authority.status(requestId, 'dashboard-proof').connectionNonce!;
     old.release('transport-lost');
     expect(f.heldButton()).toBeNull();
+    expect(f.heldKeys()).toEqual([]);
     expect(f.authority.status(requestId, 'dashboard-proof')).toEqual({ status: 'interrupted' });
     await expect(old.assertActive()).rejects.toThrow('grant');
     const browser = crypto.generateKeyPairSync('ed25519');
@@ -139,8 +145,10 @@ describe('DirectDesktopAccess', () => {
     const replacement = await connect(browser);
     expect(replacement.grantId).not.toBe(old.grantId);
     await replacement.input({ kind: 'buttonDown', x: 0.4, y: 0.5, button: 'left' });
+    await replacement.input({ kind: 'keyDown', key: 'Shift' });
     f.authority.revoke(requestId, 'dashboard-proof');
     expect(f.heldButton()).toBeNull();
+    expect(f.heldKeys()).toEqual([]);
     await expect(replacement.assertActive()).rejects.toThrow('grant');
     await expect(f.authority.resume(requestId, 'dashboard-proof', input, 'attempt-other-123456', previousNonce,
       resumeProof(f.browser, requestId, previousNonce, 'attempt-other-123456', input))).rejects.toThrow('resume unavailable');
@@ -157,6 +165,7 @@ describe('DirectDesktopAccess', () => {
       'x-forwarded-proto': 'https', 'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
     url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
     await old.input({ kind: 'buttonDown', x: 0.2, y: 0.3, button: 'left' });
+    await old.input({ kind: 'keyDown', key: 'Alt' });
     expect(f.heldButton()).toBe('left');
     const newBrowser = crypto.generateKeyPairSync('ed25519');
     const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys();
@@ -169,6 +178,7 @@ describe('DirectDesktopAccess', () => {
     const replacement = await f.authority.resume(requestId, 'dashboard-proof', input, attempt,
       initial.connectionNonce!, proof);
     expect(f.heldButton()).toBeNull();
+    expect(f.heldKeys()).toEqual([]);
     expect(replacement.connectionNonce).not.toBe(initial.connectionNonce);
     expect(f.closed).toContain(old.grantId);
     await expect(old.assertActive()).rejects.toThrow('grant');

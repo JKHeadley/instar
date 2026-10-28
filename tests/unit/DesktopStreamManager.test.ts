@@ -183,6 +183,26 @@ describe('DesktopStreamManager', () => {
     expect(releases).toEqual(['terminal']);
   });
 
+  it('keeps a held modifier alive with pings and releases it after the pings stop', async () => {
+    const releases: string[] = [];
+    const actions: string[] = [];
+    const { ws } = await connect(async () => ({
+      grantId: 'held-modifier', assertActive: async () => {}, captureEncrypted: async () => null,
+      decryptCommand: data => JSON.parse(data.toString()),
+      input: async action => { actions.push(action.kind); },
+      revoke: async () => {}, release: reason => { releases.push(reason ?? 'none'); },
+    }), 120);
+    await once(ws, 'open');
+    ws.send(Buffer.from(JSON.stringify({ type: 'input', action: { kind: 'keyDown', key: 'Meta' } })));
+    for (let i = 0; i < 20 && !actions.length; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    await new Promise(resolve => setTimeout(resolve, 65));
+    ws.send(Buffer.from(JSON.stringify({ type: 'ping' })));
+    await new Promise(resolve => setTimeout(resolve, 65));
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    await once(ws, 'close');
+    expect(releases).toEqual(['terminal']);
+  });
+
   it('drops one transient capture error and resumes frames', async () => {
     let captures = 0;
     const { ws } = await connect(async () => ({
