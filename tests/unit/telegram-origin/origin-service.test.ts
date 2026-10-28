@@ -376,10 +376,11 @@ describe('origin service durable delivery', () => {
     const audit = await h.store.getOrigin(page.records[0].record.originId);
     expect(audit?.children[0].state).toBe('outcome-unknown');
   });
-  it('receipt persistence failure remains outcome-unknown after successful network acceptance', async () => {
+  it('receipt persistence failure after Telegram acceptance reports accepted-unrecorded with the message id', async () => {
     const h = await harness();
     vi.spyOn(h.store, 'recordOutcome').mockRejectedValue(new Error('disk failed'));
-    await expect(h.send()).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'receipt-persistence-unavailable' });
+    await expect(h.send()).rejects.toMatchObject({ outcome: 'accepted-unrecorded', reason: 'receipt-persistence-unavailable',
+      delivered: { messageId: '7', fallbackRecorded: false } });
     expect(h.network).toHaveBeenCalledOnce();
   });
   it('refuses changed caller materialization against the actual outbox claim', async () => {
@@ -413,7 +414,7 @@ describe('origin service durable delivery', () => {
       const h = await harness();
       const record = h.store.recordOutcome.bind(h.store);
       vi.spyOn(h.store, 'recordOutcome').mockRejectedValueOnce(new Error('disk failed')).mockImplementation(record);
-      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'outcome-unknown', reason: 'receipt-persistence-unavailable' });
+      await expect(sendLong(h)).rejects.toMatchObject({ outcome: 'accepted-unrecorded', reason: 'receipt-persistence-unavailable' });
       await expect(sendLong(h)).rejects.toMatchObject({ reason: 'duplicate-content' });
       expect(h.network).toHaveBeenCalledOnce();
     });

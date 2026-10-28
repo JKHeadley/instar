@@ -6,6 +6,7 @@ import type { TelegramOriginRuntime } from './TelegramOriginRuntime.js';
 import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import type { StoredOriginInput, OriginListQuery } from './StoreTypes.js';
 import { TelegramOriginHoldError } from './types.js';
+import { unrecordedAcceptanceCovers } from './OriginOperationOutcome.js';
 import type { TelegramOriginRecord } from './types.js';
 import { telegramFetch } from '../telegram-egress.js';
 import { verify as verifySignature } from 'node:crypto';
@@ -63,9 +64,10 @@ export async function handleOriginMesh(options: {
         record.executionOwnerMachineId !== runtime.options.identity.originMachineId || wireDigest(audit.record.envelopeJson) !== audit.record.envelopeDigest) {
         return { ok: false, reason: 'origin-receipt-unavailable' };
       }
+      const fallback = !originAuditDeliveryConfirmed(audit) && unrecordedAcceptanceCovers(runtime, audit);
       return { ok: true, operationId: command.operationId, originId: record.originId, envelopeDigest: audit.record.envelopeDigest,
-        executionOwnerMachineId: runtime.options.identity.originMachineId, state: audit.operation?.state ?? 'not-admitted',
-        originReceiptConfirmed: originAuditDeliveryConfirmed(audit) };
+        executionOwnerMachineId: runtime.options.identity.originMachineId, state: fallback ? 'accepted' : audit.operation?.state ?? 'not-admitted',
+        originReceiptConfirmed: fallback || originAuditDeliveryConfirmed(audit) };
     } catch { return { ok: false, reason: 'origin-receipt-unavailable' }; }
   }
   if (command.action === 'capabilities') return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,
@@ -144,6 +146,12 @@ export async function handleOriginMesh(options: {
   } catch (error) {
     if (error instanceof OriginSendPolicyRefusal) return { ok: false, reason: error.reason, outcome: 'held',
       operationId: record.operationId, policyRefusal: error.decision };
+    // Telegram accepted it; only the receipt write failed. Answering a refusal
+    // here would let the forwarding standby re-forward a delivered message.
+    if (error instanceof TelegramOriginHoldError && error.outcome === 'accepted-unrecorded' && error.delivered?.messageId && /^\d+$/.test(error.delivered.messageId)) {
+      return { ok: true, originId: record.originId, messageId: Number(error.delivered.messageId), originReceiptConfirmed: true,
+        deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId, receiptRecorded: false };
+    }
     if (error instanceof TelegramOriginHoldError) return { ok: false, reason: error.reason, outcome: error.outcome, operationId: error.operationId };
     // After admission a worker failure can mean a dispatched request; an RPC
     // error must never invite a new logical submission with replacement IDs.

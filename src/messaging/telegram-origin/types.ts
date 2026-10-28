@@ -102,7 +102,9 @@ export interface OriginPreparedChild {
   request: SealedBotRequest;
   requestDigest: string;
 }
-export type OriginSendOutcome = 'accepted' | 'known-failed' | 'outcome-unknown' | 'scheduled' | 'suppressed' | 'held' | 'partial' | 'expired-unresolved';
+/** `accepted-unrecorded`: Telegram accepted (its message id is in hand) but the
+ * origin store could not save the receipt; the message WAS delivered. */
+export type OriginSendOutcome = 'accepted' | 'accepted-unrecorded' | 'known-failed' | 'outcome-unknown' | 'scheduled' | 'suppressed' | 'held' | 'partial' | 'expired-unresolved';
 export interface OriginPlatformReceipt {
   transport: OriginDestination['transport'];
   accountId: string;
@@ -140,7 +142,10 @@ export type BotParameters = { [key: string]: OriginJson };
 export class TelegramOriginHoldError extends Error {
   readonly terminalForCallerRetry = true;
   constructor(readonly reason: string, readonly operationId: string | null = null,
-    readonly outcome: OriginSendOutcome = 'held') {
+    readonly outcome: OriginSendOutcome = 'held',
+    /** Set only with `accepted-unrecorded`: Telegram's own message id, and
+     * whether the fallback record (OriginUnrecordedReceipts) was written. */
+    readonly delivered?: { messageId: string | null; topicId: string | null; fallbackRecorded: boolean }) {
     super(`Telegram message held: ${reason}`);
     this.name = 'TelegramOriginHoldError';
   }

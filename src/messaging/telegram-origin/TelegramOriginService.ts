@@ -27,8 +27,9 @@ import { attestOrigin, verifyOriginAttestation } from './OriginAttestation.js';
 import { DEFAULT_ORIGIN_LIMITS, TelegramOriginHoldError } from './types.js';
 import type { BotParameters, OriginDisplaySettings, OriginLimits, OriginPlatformReceipt, SealedBotRequest, TelegramOriginProducer, TelegramOriginRecord } from './types.js';
 import type { OriginSessionRegistry } from './OriginSessionRegistry.js';
+import type { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
 import type { RuntimeOriginObserver } from './RuntimeOriginObserver.js';
-import type { AdmissionResult, ClaimInput, ClaimResult, ClaimFence, EvidenceReceipt, OriginAdmission, OutcomeInput, OutcomeWriteResult, StoredOriginInput, OriginAuditRecord, OriginListQuery, OriginListPage, OriginMetrics } from './StoreTypes.js';
+import type { AdmissionResult, ClaimInput, ClaimResult, ClaimFence, ClaimedChild, EvidenceReceipt, OriginAdmission, OutcomeInput, OutcomeWriteResult, StoredOriginInput, OriginAuditRecord, OriginListQuery, OriginListPage, OriginMetrics } from './StoreTypes.js';
 import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 export interface OriginServiceStore {
@@ -53,6 +54,8 @@ export interface OriginServiceStore {
 }
 export interface OriginServiceOptions {
   capacity?: OriginCapacityAuthority;
+  /** Fallback record for a Telegram acceptance whose receipt write failed. */
+  unrecordedReceipts?: Pick<OriginUnrecordedReceipts, 'append'>;
   sendPolicy?: OriginSendPolicyAuthority;
   authorizeOrigin?: (record: TelegramOriginRecord) => boolean | Promise<boolean>;
   store: OriginServiceStore;
@@ -633,8 +636,8 @@ export class TelegramOriginService {
           acceptedAll = child === operation.admission.children.at(-1);
           let saved: OutcomeWriteResult;
           try { saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'accepted', receiptJson: canonicalOrigin(receipt) }); }
-          catch { throw new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'outcome-unknown'); }
-          if (!saved.recorded) throw new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'outcome-unknown');
+          catch { throw this.#acceptedUnrecorded(operation, claim.child, receipt); }
+          if (!saved.recorded) throw this.#acceptedUnrecorded(operation, claim.child, receipt);
           if (!request.companionOf) last = response;
         } else if (response.status >= 400 && response.status < 500 && parsed?.ok === false) {
           const retryAfter = parsed.parameters?.retry_after;
@@ -673,6 +676,26 @@ export class TelegramOriginService {
     await this.admit(operation);
     await this.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' });
     return operation.record.originId;
+  }
+  /**
+   * Telegram accepted (its receipt names the message) but the store refused or
+   * failed the write. The message WAS delivered, so this is never "outcome
+   * unknown": capture the receipt in the fallback record for the recovery tick
+   * to fold back in, and tell the caller plainly so it does not resend.
+   */
+  #acceptedUnrecorded(operation: OriginPreparedBotOperation, child: ClaimedChild, receipt: OriginBotReceipt): TelegramOriginHoldError {
+    const receiptJson = canonicalOrigin(receipt);
+    let fallbackRecorded = false;
+    try {
+      if (this.options.unrecordedReceipts) {
+        this.options.unrecordedReceipts.append({ operationId: operation.record.operationId, originId: operation.record.originId,
+          childId: child.childId, attemptId: child.attemptId, receiptJson, messageId: receipt.messageId,
+          chatId: receipt.chatId, topicId: receipt.topicId, at: this.#now() });
+        fallbackRecorded = true;
+      }
+    } catch { /* the disk refused too: the caller is still told Telegram accepted it */ }
+    return new TelegramOriginHoldError('receipt-persistence-unavailable', operation.record.operationId, 'accepted-unrecorded',
+      { messageId: receipt.messageId, topicId: receipt.topicId, fallbackRecorded });
   }
   async #outcomeUnknown(operation: OriginPreparedBotOperation, fence: ClaimFence, reason: string, receipt?: OriginBotReceipt): Promise<void> {
     try { await this.options.store.recordOutcome({ ...fence, outcome: 'outcome-unknown', reason,

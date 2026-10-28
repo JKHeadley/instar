@@ -4,6 +4,7 @@ import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { renderOriginSetupGreeting } from '../messaging/telegram-origin/OriginSetupGreeting.js';
 import { OriginSendPolicyRefusal } from '../messaging/telegram-origin/OriginSendPolicy.js';
 import { originToolGuardDigest } from '../messaging/telegram-origin/OriginToolGuard.js';
+import { classifyOperationOutcome } from '../messaging/telegram-origin/OriginOperationOutcome.js';
 
 export function sendOriginHoldResponse(res: Response, error: TelegramOriginHoldError): void {
   if (error instanceof OriginSendPolicyRefusal) {
@@ -12,8 +13,12 @@ export function sendOriginHoldResponse(res: Response, error: TelegramOriginHoldE
   }
   // A generic 5xx would ask existing callers to submit a new logical operation,
   // including after an uncertain external acceptance. Only the outbox may retry.
+  const delivered = error.outcome === 'accepted-unrecorded';
   res.status(409).json({ error: 'telegram-origin-held', reason: error.reason,
-    outcome: error.outcome, operationId: error.operationId, retryable: false });
+    outcome: error.outcome, operationId: error.operationId, retryable: false,
+    // Telegram accepted it: the caller must not resend (held-reply outcome lookup).
+    ...(delivered ? { delivered: true, messageId: error.delivered?.messageId ?? null, fallbackRecorded: error.delivered?.fallbackRecorded ?? false } : {}),
+    ...(error.operationId ? { checkOutcome: `/telegram/origins/operations/${error.operationId}/outcome` } : {}) });
 }
 export function mountTelegramOriginRoutes(router: Router, deps: {
   runtime: () => TelegramOriginRuntime | null | undefined;
@@ -153,6 +158,36 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       res.json({ ...page, records: page.records.map(row => runtime.auditVerification(row)) });
     }
     catch { res.status(503).json({ error: 'origin-audit-unavailable', coverage: 'unknown' }); }
+  });
+  // "Did my held reply arrive?" by operation id. Ordinary API auth only (a
+  // session holds no operator proof); answers delivery state and Telegram
+  // message ids, never message content.
+  router.get('/telegram/origins/operations/:operationId/outcome', async (req, res) => {
+    const operationId = req.params.operationId;
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
+    const runtime = deps.runtime();
+    if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId, outcome: 'unknown', safeToResend: false }); return; }
+    let captured: import('../messaging/telegram-origin/OriginUnrecordedReceipts.js').UnrecordedReceiptEntry[] = [];
+    try { captured = runtime.unrecordedReceipts?.forOperation(operationId) ?? []; } catch { /* fallback unreadable: the store answers alone */ }
+    let audit: import('../messaging/telegram-origin/StoreTypes.js').OriginAuditRecord | null;
+    try { audit = await runtime.store.getOperation(operationId); }
+    catch {
+      const verdict = classifyOperationOutcome(operationId, null, captured);
+      if (verdict.outcome === 'delivered') { res.json({ ...verdict, storeAvailable: false }); return; }
+      res.status(503).json({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
+        detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' });
+      return;
+    }
+    const verdict = classifyOperationOutcome(operationId, audit, captured);
+    let executionOwnerMachineId: string | null = null;
+    try { executionOwnerMachineId = (JSON.parse(audit?.record.envelopeJson ?? 'null') as { executionOwnerMachineId?: string } | null)?.executionOwnerMachineId ?? null; } catch { /* unreadable envelope */ }
+    const remote = executionOwnerMachineId && executionOwnerMachineId !== runtime.options.identity.originMachineId ? executionOwnerMachineId : null;
+    // A send executed on another machine: this machine's record cannot prove it
+    // never arrived (the owner may have delivered it), so never say "resend".
+    const answer = remote && verdict.outcome === 'not-delivered'
+      ? { ...verdict, outcome: 'unknown' as const, safeToResend: false, detail: 'The send ran on another machine; this machine cannot confirm it never arrived. Do not resend.' }
+      : verdict;
+    res.status(!audit && !captured.length ? 404 : 200).json({ ...answer, ...(remote ? { executionOwnerMachineId: remote } : {}) });
   });
   router.get('/telegram/origins/:originId', async (req, res) => {
     if (!operator(req, res)) return;

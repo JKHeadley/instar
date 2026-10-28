@@ -1527,6 +1527,26 @@ export class TelegramAdapter implements MessagingAdapter {
    * Send a message to a specific forum topic.
    * Returns the Telegram message ID for delivery confirmation.
    */
+  /**
+   * Telegram accepted the message but the origin store could not save the
+   * receipt (`accepted-unrecorded`). It WAS delivered, so it belongs in the
+   * message history like any delivered message; the caller still gets the
+   * hold error so it can report the unsaved receipt honestly.
+   */
+  private logDeliveredDespiteHold(err: TelegramOriginHoldError, topicId: number, text: string, provenance?: Exclude<MessageProvenance, 'user'>): void {
+    if (err.outcome !== 'accepted-unrecorded') return;
+    const messageId = Number(err.delivered?.messageId);
+    if (!Number.isSafeInteger(messageId) || messageId <= 0) return;
+    try {
+      this.appendToLog({
+        messageId, topicId, text, fromUser: false, forwarded: false,
+        timestamp: new Date().toISOString(),
+        sessionName: this.topicToSession.get(topicId) ?? null,
+        provenance: provenance ?? 'automation',
+      });
+    } catch { /* history is best-effort here; the send outcome is already decided */ }
+  }
+
   async sendToTopic(
     topicId: number,
     text: string,
@@ -1668,6 +1688,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
+        if (err instanceof TelegramOriginHoldError) this.logDeliveredDespiteHold(err, topicId, text, options?.provenance);
         if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
@@ -1697,6 +1718,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
+        if (err instanceof TelegramOriginHoldError) this.logDeliveredDespiteHold(err, topicId, text, options?.provenance);
         if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }

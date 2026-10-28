@@ -18581,6 +18581,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // The send failed → release the in-flight reservation so the legitimate
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe
       // no-op when nothing was reserved (allowDuplicate / below-floor text).
+      if (err instanceof TelegramOriginHoldError && err.outcome === 'accepted-unrecorded') {
+        // Telegram accepted it; only the receipt write failed. Treat it as
+        // delivered for duplicate protection so a resend of this exact text,
+        // or a redrive of this delivery id, is not sent a second time.
+        if (!originOwnsContent) outboundContentDedup.record(topicId, text);
+        if (deliveryId && typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId)) deliveryLruRecord(deliveryId);
+        sendOriginHoldResponse(res, err);
+        return;
+      }
       if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
       if (err instanceof TelegramOriginHoldError) {
         sendOriginHoldResponse(res, err);
