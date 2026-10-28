@@ -161,6 +161,14 @@ describe('native desktop production boot', () => {
               && /\/instar-desktop-host (indicator|capture-stream|input-stream)$/.test(match[3]);
           });
         };
+        const localUserRecentlyActive = () => {
+          const idle = spawnSync('/usr/sbin/ioreg', ['-c', 'IOHIDSystem', '-d', '4'], { encoding: 'utf8' });
+          if (idle.status !== 0) return true;
+          const nanos = idle.stdout.match(/"HIDIdleTime"\s*=\s*(\d+)/)?.[1];
+          // The test moves the real pointer and posts keyboard events. If
+          // local presence cannot be established, preserve the user's input.
+          return !nanos || Number(nanos) < 30_000_000_000;
+        };
         for (let attempt = 0; attempt < 50 && !targetReady; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
@@ -227,7 +235,9 @@ describe('native desktop production boot', () => {
         const host = new MacDesktopHost();
         const before = await host.cursor();
         const target = targetReady!;
-        if (anotherControllerActive()) context.skip('another desktop controller is using this Mac');
+        if (anotherControllerActive() || localUserRecentlyActive()) {
+          context.skip('the Mac is in use by another controller or local user');
+        }
         sendLiveInput(ws, key, 1n, { kind: 'move', ...target });
         let observed = before;
         for (let attempt = 0; attempt < 20; attempt++) {
@@ -298,7 +308,9 @@ describe('native desktop production boot', () => {
           resumedRecord.length - 16)), resumedDecipher.final()]);
         expect(resumedJpeg.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
         targetEvents.length = 0;
-        if (anotherControllerActive()) context.skip('another desktop controller is using this Mac');
+        if (anotherControllerActive() || localUserRecentlyActive()) {
+          context.skip('the Mac is in use by another controller or local user');
+        }
         sendLiveInput(ws, resumedKey, 1n, { kind: 'buttonDown', ...target, button: 'left' });
         sendLiveInput(ws, resumedKey, 2n, { kind: 'keyDown', key: 'Meta' });
         await waitForEvents(['down', 'metaDown']);
