@@ -20,9 +20,12 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     name: 'Agent Network (Threadline)',
     category: 'communication',
     featureVersion: '1.0.0',
-    configPath: 'threadline',
-    enableAction: { method: 'PATCH', path: '/config', body: { threadline: { enabled: true } } },
-    disableAction: { method: 'PATCH', path: '/config', body: { threadline: { enabled: false } } },
+    // The relay reads threadline.relayEnabled (src/commands/server.ts bootstrapThreadline);
+    // threadline.enabled was a key nothing consumed.
+    configPath: 'threadline.relayEnabled',
+    honestyNote: 'The THREADLINE_RELAY_ENABLED=true environment variable, where set, keeps the relay on regardless of this switch.',
+    enableAction: { method: 'PATCH', path: '/config', body: { threadline: { relayEnabled: true } } },
+    disableAction: { method: 'PATCH', path: '/config', body: { threadline: { relayEnabled: false } } },
     oneLiner: 'Connect to other agents for cross-machine collaboration and messaging.',
     fullDescription: 'The Threadline relay enables agent-to-agent communication over a secure cloud relay. Agents can discover each other, exchange messages, and collaborate on tasks across machines. Messages are end-to-end authenticated with trust levels you control.',
     consentTier: 'network',
@@ -30,7 +33,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
       { dataType: 'agent identity and public key', destination: 'custom', retention: 'while connected', description: 'Your agent name and public key are shared with the relay server for discovery.' },
       { dataType: 'inter-agent messages', destination: 'custom', retention: 'ephemeral (relay only)', description: 'Messages pass through the relay server but are not stored long-term.' },
     ],
-    reversibilityNote: 'Disable anytime by setting threadline.enabled to false in config. Your agent will disconnect from the relay immediately.',
+    reversibilityNote: 'Switching off saves threadline.relayEnabled: false; the relay disconnects at the next server restart (unless the THREADLINE_RELAY_ENABLED=true environment variable keeps it on).',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -50,6 +53,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     category: 'communication',
     featureVersion: '1.0.0',
     configPath: 'publishing',
+    defaultOn: true, // server.ts: `pubConfig?.enabled !== false`
     enableAction: { method: 'PATCH', path: '/config', body: { publishing: { enabled: true } } },
     disableAction: { method: 'PATCH', path: '/config', body: { publishing: { enabled: false } } },
     oneLiner: 'Share content as public web pages via Telegraph.',
@@ -58,7 +62,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'published content', destination: 'custom', retention: 'indefinite (Telegraph servers)', description: 'Content is published to Telegraph and is publicly accessible. Cannot be fully deleted once cached.' },
     ],
-    reversibilityNote: 'Disable publishing in config. Existing pages remain on Telegraph but no new pages can be created.',
+    reversibilityNote: 'Switching off saves publishing.enabled: false; publishing stops at the next server restart. Existing pages remain on Telegraph.',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -80,7 +84,10 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     category: 'infrastructure',
     featureVersion: '1.0.0',
     configPath: 'tunnel',
-    enableAction: { method: 'PATCH', path: '/config', body: { tunnel: { enabled: true, type: 'quick' } } },
+    defaultOn: true, // server.ts: `config.tunnel?.enabled !== false`
+    // No `type` here: PATCH /config merges one level deep, so a type would overwrite an
+    // operator's named tunnel; the server already defaults type to 'quick'.
+    enableAction: { method: 'PATCH', path: '/config', body: { tunnel: { enabled: true } } },
     disableAction: { method: 'PATCH', path: '/config', body: { tunnel: { enabled: false } } },
     oneLiner: 'Expose your agent server to the internet for remote access.',
     fullDescription: 'Creates a Cloudflare tunnel that makes your local agent server accessible from anywhere. Enables remote access to the dashboard, private views, and API from your phone or other devices. Quick tunnels require no account; named tunnels give you a persistent custom domain.',
@@ -88,7 +95,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'HTTP traffic', destination: 'cloudflare', retention: 'transient (tunnel proxy)', description: 'All requests to your agent pass through Cloudflare infrastructure.' },
     ],
-    reversibilityNote: 'Disable the tunnel in config or stop the server. Quick tunnels disappear immediately. Named tunnels can be deleted from the Cloudflare dashboard.',
+    reversibilityNote: 'Switching off saves tunnel.enabled: false; the tunnel closes at the next server restart (a quick tunnel URL then stops working; a named tunnel can also be deleted from the Cloudflare dashboard).',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -108,6 +115,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     category: 'infrastructure',
     featureVersion: '1.0.0',
     configPath: 'gitBackup',
+    defaultOn: true, // server.ts: `config.gitBackup?.enabled !== false`
     enableAction: { method: 'PATCH', path: '/config', body: { gitBackup: { enabled: true } } },
     disableAction: { method: 'PATCH', path: '/config', body: { gitBackup: { enabled: false } } },
     oneLiner: 'Automatically version-control and sync agent state via git.',
@@ -116,7 +124,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'agent state files', destination: 'custom', retention: 'git history (indefinite)', description: 'Agent state is committed to git and pushed to your configured remote. Includes memory, config, and identity files.' },
     ],
-    reversibilityNote: 'Disable in config. Existing git history remains. No new commits or pushes will be made.',
+    reversibilityNote: 'Switching off saves gitBackup.enabled: false; backups stop at the next server restart. Existing git history remains.',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -136,6 +144,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     category: 'infrastructure',
     featureVersion: '1.0.0',
     configPath: 'dashboard.fileViewer',
+    defaultOn: true, // fileRoutes.ts DEFAULT_FILE_VIEWER_CONFIG.enabled
     enableAction: { method: 'PATCH', path: '/api/files/config', body: { enabled: true } },
     disableAction: { method: 'PATCH', path: '/api/files/config', body: { enabled: false } },
     oneLiner: 'Browse and edit project files from the web dashboard.',
@@ -166,6 +175,12 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     category: 'intelligence',
     featureVersion: '1.0.0',
     configPath: 'evolution',
+    defaultOn: true, // server.ts constructs EvolutionManager unconditionally
+    // The runtime ignores evolution.enabled, so a working-looking switch over an ignored
+    // key would be the original bug in new clothes (review r2). Read-only until the
+    // consumer honors the key.
+    switchable: false,
+    honestyNote: 'This agent currently runs the evolution system regardless of this setting; the switch is read-only until that changes.',
     enableAction: { method: 'PATCH', path: '/config', body: { evolution: { enabled: true } } },
     disableAction: { method: 'PATCH', path: '/config', body: { evolution: { enabled: false } } },
     oneLiner: 'Staged self-improvement through proposals, learnings, and gap analysis.',
@@ -174,7 +189,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'proposals, learnings, and gap analysis', destination: 'local', retention: 'indefinite (on disk)', description: 'Evolution data is stored locally in .instar/evolution/. No data leaves your machine.' },
     ],
-    reversibilityNote: 'Disable in config. Evolution data remains on disk but no new proposals, learnings, or actions will be generated.',
+    reversibilityNote: 'The setting can be saved as off, but this version of the agent keeps running the evolution system regardless; there is no off switch for it yet.',
     discoveryTriggers: [
       {
         type: 'usage-pattern',
@@ -193,17 +208,22 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     name: 'Autonomous Evolution',
     category: 'intelligence',
     featureVersion: '1.0.0',
-    configPath: 'evolution.autoImplement',
+    // AutonomousEvolution is on iff the resolved evolutionApprovalMode is 'autonomous'
+    // (src/commands/server.ts, AutonomyProfileManager.getResolvedState). evolution.autoImplement
+    // was a key nothing consumed.
+    configPath: 'evolution.approvalMode',
+    configEnabledValue: 'autonomous',
+    honestyNote: 'With no explicit setting, the autonomy profile decides (the "autonomous" profile turns this on).',
     prerequisiteFeatures: ['evolution-system'],
-    enableAction: { method: 'PATCH', path: '/config', body: { evolution: { autoImplement: true } } },
-    disableAction: { method: 'PATCH', path: '/config', body: { evolution: { autoImplement: false } } },
+    enableAction: { method: 'PATCH', path: '/config', body: { evolution: { approvalMode: 'autonomous' } } },
+    disableAction: { method: 'PATCH', path: '/config', body: { evolution: { approvalMode: 'ai-assisted' } } },
     oneLiner: 'Allow the agent to implement approved evolution proposals without asking.',
     fullDescription: 'When enabled, the agent can automatically implement evolution proposals that have been approved. Without this, proposals require explicit user approval before the agent acts on them. This is the highest level of agent autonomy.',
     consentTier: 'self-governing',
     dataImplications: [
       { dataType: 'agent behavior modifications', destination: 'local', description: 'The agent modifies its own configuration and behavioral files based on approved proposals.' },
     ],
-    reversibilityNote: 'Disable autoImplement in evolution config. All changes made by the agent are tracked in evolution history and can be reverted.',
+    reversibilityNote: 'Set evolution.approvalMode back to ai-assisted. All changes made by the agent are tracked in evolution history and can be reverted.',
     discoveryTriggers: [
       {
         type: 'usage-pattern',
@@ -225,6 +245,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     category: 'safety',
     featureVersion: '1.0.0',
     configPath: 'externalOperations',
+    defaultOn: true, // server.ts: `extOpsConfig?.enabled !== false`
     enableAction: { method: 'PATCH', path: '/config', body: { externalOperations: { enabled: true } } },
     disableAction: { method: 'PATCH', path: '/config', body: { externalOperations: { enabled: false } } },
     oneLiner: 'Classify and gate external operations (email, Slack, GitHub) by risk level.',
@@ -233,7 +254,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'operation classification logs', destination: 'local', retention: '30 days', description: 'Logs of classified operations are stored locally for audit.' },
     ],
-    reversibilityNote: 'Disable in config. The gate stops intercepting operations immediately.',
+    reversibilityNote: 'Switching off saves externalOperations.enabled: false; the gate stops intercepting at the next server restart.',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -261,7 +282,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'agent responses (for review)', destination: 'anthropic-cli', retention: 'transient (subscription-path call only)', description: 'Responses are sent to Anthropic via the Claude CLI subscription path for evaluation by a reviewer model.' },
     ],
-    reversibilityNote: 'Disable in config. Responses will be delivered directly without review.',
+    reversibilityNote: 'Switching off saves responseReview.enabled: false; after the next server restart responses are delivered without review.',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -281,6 +302,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     category: 'safety',
     featureVersion: '1.0.0',
     configPath: 'inputGuard',
+    defaultOn: true, // server.ts: `config.inputGuard?.enabled !== false`
     enableAction: { method: 'PATCH', path: '/config', body: { inputGuard: { enabled: true } } },
     disableAction: { method: 'PATCH', path: '/config', body: { inputGuard: { enabled: false } } },
     oneLiner: 'Defend against cross-topic prompt injection in incoming messages.',
@@ -289,7 +311,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'incoming message classifications', destination: 'anthropic-cli', retention: 'transient (subscription-path call only)', description: 'Messages are sent to Anthropic via the Claude CLI subscription path for injection classification.' },
     ],
-    reversibilityNote: 'Disable in config. Messages will be delivered without injection analysis.',
+    reversibilityNote: 'Switching off saves inputGuard.enabled: false; after the next server restart messages are delivered without injection analysis.',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -317,7 +339,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'bug reports and feature requests', destination: 'custom', retention: 'indefinite (delivered to maintainer)', description: 'Feedback messages are sent to the instar maintainer. They contain descriptions of issues or suggestions, not user data.' },
     ],
-    reversibilityNote: 'Disable in config. No new feedback will be sent. Previously sent feedback remains with the maintainer.',
+    reversibilityNote: 'Switching off saves feedback.enabled: false; no new feedback is sent after the next server restart. Previously sent feedback remains with the maintainer.',
     discoveryTriggers: [
       {
         type: 'problem-match',
@@ -376,7 +398,7 @@ export const BUILTIN_FEATURES: FeatureDefinition[] = [
     dataImplications: [
       { dataType: 'dispatch instructions', destination: 'custom', retention: 'stored locally after receipt', description: 'Instructions are fetched from the dispatch API. Your agent identity is sent to authenticate the request.' },
     ],
-    reversibilityNote: 'Disable in config. No new dispatches will be fetched. Previously applied dispatches remain in effect until manually reverted.',
+    reversibilityNote: 'Switching off saves dispatches.enabled: false; no new dispatches are fetched after the next server restart. Previously applied dispatches remain in effect until manually reverted.',
     discoveryTriggers: [
       {
         type: 'problem-match',

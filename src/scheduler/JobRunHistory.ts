@@ -54,11 +54,20 @@ export interface JobRun {
   /** Duration in seconds (computed on completion) */
   durationSeconds?: number;
   /** Result of the run */
-  result: 'pending' | 'success' | 'failure' | 'timeout' | 'spawn-error';
+  /** `skipped` (job-cost-reduction §5.2) — a script reported nothing to do
+   *  (feature dark, prober absent). Neither success nor failure: excluded
+   *  from stats, leaves consecutiveFailures unchanged, no retry. */
+  result: 'pending' | 'success' | 'failure' | 'timeout' | 'spawn-error' | 'skipped';
   /** Error message if failed */
   error?: string;
   /** Model tier used */
   model?: string;
+  /** Framework actually used for this session, when known. */
+  framework?: string;
+  /** How the model route was chosen; older rows have unknown provenance. */
+  routeBasis?: 'bench' | 'category-default' | 'default' | 'fallback' | 'unknown';
+  /** First failed pin check, when routeBasis is fallback. */
+  reason?: string;
   /** Machine ID that ran this job (multi-machine) */
   machineId?: string;
   /** Condensed output from the session (last ~1000 chars) */
@@ -72,7 +81,15 @@ export interface JobRun {
   // ── Phase 1b observability (jobs-as-agentmd spec §"Run-record observability") ──
   /** Where the job came from. "legacy" = traditional jobs.json entry,
    *  "instar" or "user" = per-slug manifest entry with the matching origin. */
-  origin?: 'instar' | 'user' | 'legacy';
+  /** `triage` (job-cost-reduction F13) marks a triage investigation session's
+   *  row — recorded under the job's slug but OUTSIDE the slug's stats. */
+  origin?: 'instar' | 'user' | 'legacy' | 'triage';
+  /** job-cost-reduction §5.1 — `script` for a no-session script run. */
+  runner?: 'script';
+  /** Lock-file trust verdict at run time (script runs). */
+  lockTrust?: string;
+  /** LLM tokens used by the run. Always 0 for a script run. */
+  tokens?: number;
   /** Absolute path the agentmd body was resolved from; null for non-agentmd. */
   resolvedPath?: string | null;
   /** SHA-256 of the body validated for this run. null for non-agentmd. */
@@ -121,6 +138,20 @@ export function averageMeasuredJobSuccessRates(
     .filter((rate): rate is number => rate !== null);
   if (measured.length === 0) return null;
   return measured.reduce((sum, rate) => sum + rate, 0) / measured.length;
+}
+
+/** Trigger stamped on canary rows (job-cost-reduction §5.6.4). */
+export const SCRIPT_CANARY_TRIGGER = 'script-canary';
+
+/**
+ * A "side run" is recorded under a job's slug but is not the job doing its
+ * work: a triage investigation session (`origin: 'triage'`, F13) or a daily
+ * must-fail canary (`trigger: 'script-canary'`, §5.6.4). Side runs are excluded
+ * from stats and must be excluded from any failure-streak / crash-loop
+ * counting — a canary is SUPPOSED to fail.
+ */
+export function isSideRun(r: Pick<JobRun, 'origin' | 'trigger'>): boolean {
+  return r.origin === 'triage' || r.trigger === SCRIPT_CANARY_TRIGGER;
 }
 
 /** Monotonic counter to ensure unique runIds even within the same millisecond */
@@ -172,6 +203,10 @@ export class JobRunHistory {
   private cachedRuns: JobRun[] | null = null;
   private cachedSize = 0;
   private cachedMtimeMs = 0;
+  private lastReadHealthy = true;
+
+  /** Lets coverage reporters distinguish an empty ledger from a failed read. */
+  isReadHealthy(): boolean { return this.lastReadHealthy; }
 
   constructor(stateDir: string) {
     this.ledgerDir = path.join(stateDir, 'ledger');
@@ -192,8 +227,14 @@ export class JobRunHistory {
     sessionId: string;
     trigger: string;
     model?: string;
+    framework?: string;
+    routeBasis?: JobRun['routeBasis'];
+    reason?: string;
     // Phase 1b observability extensions (jobs-as-agentmd spec)
-    origin?: 'instar' | 'user' | 'legacy';
+    origin?: 'instar' | 'user' | 'legacy' | 'triage';
+    runner?: 'script';
+    lockTrust?: string;
+    tokens?: number;
     resolvedPath?: string | null;
     bodyHash?: string | null;
     frontmatterHash?: string | null;
@@ -211,8 +252,14 @@ export class JobRunHistory {
       startedAt: new Date().toISOString(),
       result: 'pending',
       model: opts.model,
+      ...(opts.framework !== undefined ? { framework: opts.framework } : {}),
+      ...(opts.routeBasis !== undefined ? { routeBasis: opts.routeBasis } : {}),
+      ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
       machineId: this.machineId ?? undefined,
       origin: opts.origin,
+      ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
+      ...(opts.lockTrust !== undefined ? { lockTrust: opts.lockTrust } : {}),
+      ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
       resolvedPath: opts.resolvedPath ?? null,
       bodyHash: opts.bodyHash ?? null,
       frontmatterHash: opts.frontmatterHash ?? null,
@@ -238,7 +285,7 @@ export class JobRunHistory {
    */
   recordCompletion(opts: {
     runId: string;
-    result: 'success' | 'failure' | 'timeout';
+    result: 'success' | 'failure' | 'timeout' | 'skipped';
     error?: string;
     outputSummary?: string;
   }): void {
@@ -326,6 +373,8 @@ export class JobRunHistory {
     sinceHours?: number;
     limit?: number;
     offset?: number;
+    /** Drop triage + canary rows (see isSideRun). Default false. */
+    excludeSideRuns?: boolean;
   }): { runs: JobRun[]; total: number } {
     const all = this.getDeduplicatedRuns();
     const cutoff = opts?.sinceHours
@@ -335,6 +384,7 @@ export class JobRunHistory {
     const filtered = all.filter(r => {
       if (opts?.slug && r.slug !== opts.slug) return false;
       if (opts?.result && r.result !== opts.result) return false;
+      if (opts?.excludeSideRuns && isSideRun(r)) return false;
       if (cutoff && r.startedAt < cutoff) return false;
       return true;
     });
@@ -345,9 +395,22 @@ export class JobRunHistory {
     const total = filtered.length;
     const offset = opts?.offset ?? 0;
     const limit = opts?.limit ?? 50;
+    // Preserve the exact capped row. Adding a default field after persistence
+    // can push a 2 KB row over its bound; absent provenance means unknown.
     const runs = filtered.slice(offset, offset + limit);
 
     return { runs, total };
+  }
+
+  /**
+   * This machine's rows for one slug, newest first (job-cost-reduction §13:
+   * each machine triages the runs it executed). Rows with no machineId count
+   * as local only when this history has no machine id either.
+   */
+  localRunsForSlug(slug: string, limit: number): JobRun[] {
+    const { runs } = this.query({ slug, limit: 10000 });
+    const mine = runs.filter(r => (r.machineId ?? null) === (this.machineId ?? null));
+    return mine.slice(0, Math.max(0, limit));
   }
 
   /**
@@ -356,7 +419,10 @@ export class JobRunHistory {
   stats(slug: string, sinceHours?: number): JobRunStats {
     const { runs } = this.query({ slug, sinceHours, limit: 10000 });
 
-    const completed = runs.filter(r => r.result !== 'pending');
+    // `skipped` runs and side runs (triage sessions, canaries) are neither
+    // successes nor failures (job-cost-reduction §5.2, F13, §5.6.4): out of
+    // numerator AND denominator.
+    const completed = runs.filter(r => r.result !== 'pending' && r.result !== 'skipped' && !isSideRun(r));
     const successes = completed.filter(r => r.result === 'success').length;
     const failures = completed.filter(r => r.result !== 'success').length;
     const budgetCondensedRuns = completed.filter(r => r.truncated === true).length;
@@ -726,6 +792,7 @@ export class JobRunHistory {
    */
   private readLines(): JobRun[] {
     if (!fs.existsSync(this.file)) {
+      this.lastReadHealthy = true;
       this.cachedRuns = [];
       this.cachedSize = 0;
       this.cachedMtimeMs = 0;
@@ -733,6 +800,7 @@ export class JobRunHistory {
     }
 
     try {
+      this.lastReadHealthy = true;
       const stat = fs.statSync(this.file);
       const size = stat.size;
       const mtimeMs = stat.mtimeMs;
@@ -773,6 +841,7 @@ export class JobRunHistory {
       this.cachedMtimeMs = mtimeMs;
       return runs;
     } catch (error) {
+      this.lastReadHealthy = false;
       console.error(`[JobRunHistory] Failed to read:`, error);
       DegradationReporter.getInstance().report({
         feature: 'JobRunHistory.readLines',

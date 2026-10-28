@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "local-verify-throughput-overflow",
+  "sessionId": "62b13b7f-084e-44ac-9c3a-a985249271f5",
+  "timestamp": "2026-10-27T02:40:07.041Z",
+  "artifactPath": "upgrades/side-effects/local-verify-throughput-overflow.md",
+  "artifactSha256": "bed85bb7f543610eb7007360aa345ca6c0447790a8d090ae3b95abf53c60c9aa",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.md",
+    "docs/specs/local-verify-throughput-overflow.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/policy.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/mainRedHoldService.test.ts",
+    "upgrades/next/local-verify-throughput-overflow.md",
+    "upgrades/side-effects/local-verify-throughput-overflow.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Admission-only change to the verify queue with a fixed bound (cap + 5 for merge-throughput PRs); no verdict, record or merge decision changes. The PostUpdateMigrator touch is one idempotent content-sniffed CLAUDE.md line.",
+  "eli16Path": "docs/specs/local-verify-throughput-overflow.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-throughput-overflow.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

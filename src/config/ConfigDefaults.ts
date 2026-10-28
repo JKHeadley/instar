@@ -16,6 +16,17 @@
 
 import { DEFAULT_TIER_ESCALATION_CONFIG } from '../core/ModelTierEscalation.js';
 
+/** The first script wave is a runtime default too, including before migration writes config. */
+export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
+  'benchmark-divergence-analysis', 'commitment-checkin-reminder',
+  'correction-class-review-backstop',
+  'doorway-scan', 'feedback-factory-action-list', 'feedback-factory-execute',
+  'feedback-factory-process', 'feedback-factory-triage', 'health-check',
+  'jev-completion-audit', 'mentor-onboarding', 'release-readiness-check',
+  'review-canary-battery', 'routing-price-refresh',
+  'routing-price-web-verify', 'stall-matrix-live-check',
+] as const;
+
 /** Fields shared across ALL agent types and contexts (init + migration) */
 const SHARED_DEFAULTS: Record<string, unknown> = {
   // Model-Tier Escalation (FABLE-MODEL-ESCALATION-SPEC §9/§10). Ships DARK
@@ -1487,16 +1498,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // guard never fires there even when resolved live (it can only ever refuse,
       // never wrongly spawn — the safe direction).
       // WS4.3 journal-lease cutover (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
-      // "Cutover discipline"). When on AND the pool is flag-coherent (every
-      // online peer advertises ws43JournalLease), job claims upgrade from the
-      // best-effort AgentBus broadcast to a durable, epoch-fenced lease over the
-      // replicated journal. The cutover gate (JobLeaseCutoverGate) guarantees the
+      // "Cutover discipline"). The intended path upgrades claims from the
+      // best-effort AgentBus broadcast to a pool-authoritative lease. It remains
+      // unavailable until peer claim receive and atomic acquisition are wired;
+      // flag coherence alone cannot make local lease files safe. The cutover gate guarantees the
       // two mechanisms are NEVER both live for a job set (the named migration
       // hazard: one machine leasing via journal while a peer broadcasts via bus).
       // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
       // `ws43JournalLease` is DELIBERATELY OMITTED here (not hardcoded false) so
-      // resolveDevAgentGate decides at runtime — LIVE on a development agent,
-      // DARK on the fleet. Registered in DEV_GATED_FEATURES. When dark, or in a
+      // resolveDevAgentGate decides the flag at runtime — on for a development
+      // agent, off on the fleet. A separate code-owned readiness floor keeps
+      // actual journal claiming dark on every agent for now. Registered in
+      // DEV_GATED_FEATURES. When dark, or in a
       // mixed/older pool, or single-machine, the scheduler stays on the legacy
       // bus path (byte-for-byte today's behavior); the JobLeaseCutoverGate's
       // flag-coherence requirement means a single-machine dev agent (no peers)
@@ -1504,9 +1517,9 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       //
       // WS4.3 journal-lease DRY-RUN (the WS-wide "log intended claims" posture).
       // `ws43JournalLeaseDryRun` is ALSO DELIBERATELY OMITTED so the dev-gate
-      // resolves it COHERENTLY with ws43JournalLease: on a dev agent the cutover
-      // goes LIVE (dryRun → false) so the journal-lease path is actually
-      // exercised (not just logged); on the fleet it resolves to the safe dry-run
+      // resolves it COHERENTLY with ws43JournalLease: on a dev agent the dry-run
+      // flag is false, while the code-owned readiness floor still blocks the
+      // cutover; on the fleet it resolves to the safe dry-run
       // default (true). The consumer computes `dryRun: cfg?.ws43JournalLeaseDryRun
       // ?? !resolveDevAgentGate(undefined, config)` — an explicit config value
       // still wins. A genuine live cutover only engages when the flag resolves
@@ -2343,6 +2356,32 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       maxConcurrent: 2,
       maxStartsPerDay: 6,
       maxOpenPrs: 4,
+    },
+  },
+  // Job cost reduction (docs/specs/job-cost-reduction.md §8 item 2). All read
+  // LIVE. `jobs.scriptRunners.enabled` is DELIBERATELY OMITTED: it rides the
+  // development-agent gate (script runners live on dev agents; on the fleet
+  // every converted job runs its body as a session exactly as today — F6).
+  // `jobs.scriptTriage.jev.enabled` is likewise OMITTED (dev-gated Jev egress,
+  // F12). applyDefaults is add-missing per key, so an operator's value is never
+  // overwritten and a later default change reaches agents that never set it.
+  jobs: {
+    scriptRunners: {
+      // §11 first wave: only deterministic llm-decision-grading runs as a
+      // script initially. Correction-class backfill can invoke an LLM. The
+      // supervisor is installed but code-gated inactive until its model call
+      // has benchmark and decision-quality audit coverage. Later waves
+      // need an explicit idempotent migration; add-missing defaults alone
+      // cannot remove entries already written to an agent's config.
+      disabledSlugs: [...SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS],
+    },
+    scriptTriage: {
+      enabled: true,
+      sessionCooldownHours: 6,
+      maxSessionsPerDay: 6,
+      maxSessionsPerSlugPerDay: 3,
+      backupIntervalHours: 6,
+      jev: { model: 'jev-1.13.0', timeoutMs: 1500, maxChecksPerDay: 1500 },
     },
   },
 };

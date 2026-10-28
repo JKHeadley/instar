@@ -721,6 +721,9 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
     if (installed) {
       autoStarted = true;
+      // `instar join` is an explicit install: let the self-heals maintain it.
+      const { markAutoStartExplicit } = await import('../core/ThrowawayAgentGuard.js');
+      markAutoStartExplicit(config.projectDir);
       console.log(pc.dim(`  Auto-start installed for the joined home (${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}).`));
     }
   } catch (err) {

@@ -19,12 +19,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadRegistry } from './AgentRegistry.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
 /** Default allowlist of remote-origin URLs for the canonical instar repo.
- *  Operators can extend via `worktree.repoUrlAllowlist` in `.instar/config.json`. */
+ *  `JKHeadley/instar` is where instar is developed and released; a checkout
+ *  cloned from it was refused until it was listed here (no config could be
+ *  assumed on a fresh machine). Operators can extend via
+ *  `worktree.repoUrlAllowlist` in `.instar/config.json`. */
 export const DEFAULT_INSTAR_REPO_URL_ALLOWLIST: ReadonlyArray<string> = [
+  'git@github.com:JKHeadley/instar.git',
+  'https://github.com/JKHeadley/instar.git',
   'git@github.com:instar-ai/instar.git',
   'https://github.com/instar-ai/instar.git',
 ];
@@ -550,6 +556,9 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
 
   const worktreesDir = path.join(agentHome, '.worktrees');
   ensureWorktreesDir(worktreesDir);
+  const createLock = acquireWorktreeCreateLock(agentHome);
+  try {
+  assertWorktreeCapacity(worktreesDir);
 
   const existingSlugsLower = new Set(
     fs.readdirSync(worktreesDir).map((entry) => entry.toLowerCase()),
@@ -597,6 +606,10 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   } else {
     addArgs.push(worktreePath, opts.branch);
   }
+  if (!isRealDirectory(worktreesDir) || fs.realpathSync(worktreesDir) !== worktreesReal) {
+    throw new Error(`path-containment: ${worktreesDir} changed before worktree add`);
+  }
+  assertWorktreeCapacity(worktreesDir);
   const addResult = tryGit(addArgs, instarRepo, createOp, 'write');
   if (!addResult.ok) {
     throw new Error(classifyWorktreeAddError(addResult.error, worktreePath, instarRepo));
@@ -606,12 +619,15 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   // configuration (user.signingkey, commit.gpgsign, gpg.format,
   // gpg.ssh.allowedSignersFile) is deliberately untouched.
   setLocalGitIdentity(worktreePath, instarRepo, opts.stateDir ?? path.join(agentHome, '.instar'));
-  ensureHuskyHooksActive(worktreePath);
 
+  // Share node_modules BEFORE activating hooks: the prepare script is `husky`, a
+  // node_modules binary, and a fresh worktree has none of its own. Activating first
+  // failed every real create with "husky: not found".
   const shareNodeModules = opts.shareNodeModules ?? true;
   if (shareNodeModules) {
     maybeSymlinkNodeModules(instarRepo, worktreePath);
   }
+  ensureHuskyHooksActive(worktreePath);
 
   // Audit ledger — local and durable mirror.
   const stateDir = opts.stateDir ?? path.join(agentHome, '.instar');
@@ -640,6 +656,74 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
     shareNodeModules,
     createdBranch,
   };
+  } finally {
+    createLock.release();
+  }
+}
+
+/** Serialize the physical count and git add across CLI processes for one agent. */
+export function acquireWorktreeCreateLock(agentHome: string): { release: () => void } {
+  const runtimeDir = path.join(agentHome, '.instar');
+  const lockDir = path.join(runtimeDir, 'local');
+  for (const dir of [runtimeDir, lockDir]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { mode: 0o700 });
+    if (!fs.lstatSync(dir).isDirectory()) throw new Error(`worktree-create-lock: unsafe directory ${dir}`);
+  }
+  const lockPath = path.join(lockDir, 'worktree-create.lock');
+  let fd: number;
+  try {
+    fd = fs.openSync(lockPath,
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new Error(`worktree-create-busy: ${lockPath} exists; inspect its holder before clearing a stale lock`);
+    }
+    throw err;
+  }
+  let identity: fs.Stats;
+  try {
+    identity = fs.fstatSync(fd);
+    fs.writeSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+  } catch (err) {
+    try {
+      const current = fs.lstatSync(lockPath);
+      const opened = fs.fstatSync(fd);
+      if (current.dev === opened.dev && current.ino === opened.ino) {
+        SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'InstarWorktreeManager.failedCreateLock' });
+      }
+    } catch { /* Preserve the original lock setup error. */ }
+    fs.closeSync(fd);
+    throw err;
+  }
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      try {
+        const current = fs.lstatSync(lockPath);
+        if (current.dev === identity.dev && current.ino === identity.ino) {
+          SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'InstarWorktreeManager.releaseCreateLock' });
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      } finally {
+        fs.closeSync(fd);
+      }
+    },
+  };
+}
+
+/** Keep full checkout growth bounded before git creates another source tree. */
+export function assertWorktreeCapacity(worktreesDir: string, limit = 500): void {
+  const directories = fs.readdirSync(worktreesDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory()).length;
+  if (directories >= limit) {
+    throw new Error(
+      `worktree-capacity: ${directories} directories under ${worktreesDir} (limit ${limit}); ` +
+      'reclaim clean idle worktrees and preserve unique commits before creating another checkout',
+    );
+  }
 }
 
 export async function resolveBaseBranch(
@@ -842,6 +926,9 @@ export function hasRunnableHookShim(shimHookPath: string): boolean {
 
 function ensureWorktreesDir(worktreesDir: string): void {
   if (fs.existsSync(worktreesDir)) {
+    if (!fs.lstatSync(worktreesDir).isDirectory()) {
+      throw new Error(`path-containment: ${worktreesDir} is not a real directory (symlink?)`);
+    }
     // Re-assert 0700 every call to recover from drift.
     fs.chmodSync(worktreesDir, 0o700);
   } else {

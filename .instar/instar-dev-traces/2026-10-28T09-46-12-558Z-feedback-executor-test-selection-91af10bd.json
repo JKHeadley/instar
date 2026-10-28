@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "feedback-executor-test-selection",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-28T09:46:12.558Z",
+  "artifactPath": "upgrades/side-effects/feedback-executor-test-selection.md",
+  "artifactSha256": "f0b2d3b171fdef0ff78e6ee767ed18df9c559248cbf0b6579e5048f7df152ba4",
+  "coveredFiles": [
+    "docs/specs/feedback-executor-test-selection.eli16.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executorSession.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-executor-test-selection.md",
+    "upgrades/side-effects/feedback-executor-test-selection.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible correction inside the existing executor publication proof gate; no new interface, migration, or durable side effect. A revert fully restores prior behavior.",
+  "eli16Path": "docs/specs/feedback-executor-test-selection.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-executor-test-selection.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

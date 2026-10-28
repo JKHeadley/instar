@@ -101,6 +101,61 @@ describe('CorrectionClassReview', () => {
     expect(parseClassReviewJudgment(judgment('approve-everything', 'covered'))).toBeNull();
   });
 
+  it('limits created work items rather than treating review receipts as work items', async () => {
+    const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 'm1' });
+    const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 'm1' });
+    for (let i = 0; i < 3; i++) {
+      store.ensureShell({ dedupeKey: `receipt-${i}`, correctionId: `c-${i}`, origin: 'operator-attributed' });
+      store.fill(`receipt-${i}`, { standardReview: { verdict: 'covered', standardRef: 'Existing', isPolicyRelaxation: false },
+        processReview: { verdict: 'process-gap', proposedDelta: 'pending work' }, rationale: 'r', confidence: 'high' });
+    }
+    expect(store.countOpen()).toBe(3);
+    expect(store.countOpenArtifacts()).toBe(0);
+    const addAction = vi.fn(() => ({ id: 'ACT-created' }));
+    const attentionRoute = vi.fn(async () => {});
+    const engine = new CorrectionClassReview({ store, dryRun: false, maxOpenArtifacts: 1,
+      intelligence: { evaluate: vi.fn().mockResolvedValue(judgment('not-applicable', 'process-gap')) } as any,
+      addAction, attentionRoute, admitCorrectionAction: () => ({ allow: true, reason: 'review-filled' }) });
+    const rec = correction(ledger, 'user requests a process fix');
+    engine.record(rec, 'operator-attributed');
+    await vi.waitFor(() => expect(store.get(rec.dedupeKey)?.actionId).toBe('ACT-created'));
+    expect(addAction).toHaveBeenCalledOnce();
+    expect(store.countOpenArtifacts()).toBe(1);
+    const next = correction(ledger, 'The invoice approval procedure is missing');
+    engine.record(next, 'operator-attributed');
+    await vi.waitFor(() => expect(store.get(next.dedupeKey)?.fillState).toBe('filled'));
+    expect(store.get(next.dedupeKey)?.actionId).toBeUndefined();
+    expect(addAction).toHaveBeenCalledOnce();
+    expect(attentionRoute).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Correction class review at work-item capacity', priority: 'medium',
+    }));
+    ledger.close();
+  });
+
+  it('does not mint two artifacts when one capacity slot remains', async () => {
+    const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 'm1' });
+    const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 'm1' });
+    const createInitiative = vi.fn(async () => ({ id: 'INIT-1' }));
+    const addAction = vi.fn(() => ({ id: 'ACT-1' }));
+    const attentionRoute = vi.fn(async () => {});
+    const audit = vi.fn();
+    const engine = new CorrectionClassReview({ store, dryRun: false, maxOpenArtifacts: 1,
+      intelligence: { evaluate: vi.fn().mockResolvedValue(judgment('needs-upgrade', 'process-gap')) } as any,
+      createInitiative, addAction, attentionRoute, audit,
+      admitCorrectionAction: () => ({ allow: true, reason: 'review-filled' }) });
+    const rec = correction(ledger, 'a correction with both a standard and process gap');
+    engine.record(rec, 'operator-attributed');
+    await vi.waitFor(() => expect(store.get(rec.dedupeKey)?.initiativeId).toBe('INIT-1'));
+    expect(createInitiative).toHaveBeenCalledOnce();
+    expect(addAction).not.toHaveBeenCalled();
+    expect(store.countOpenArtifacts()).toBe(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ event: 'artifact-cap-held', dedupeKey: rec.dedupeKey }));
+    expect(attentionRoute).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Correction class review at work-item capacity', priority: 'medium',
+    }));
+    ledger.close();
+  });
+
   it('dead-letters after bounded failures and opens exactly one tracked recovery action', async () => {
     const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 'm1' });
     const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 'm1' });

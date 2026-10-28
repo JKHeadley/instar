@@ -29,13 +29,43 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { CorrectionLedger } from '../../src/monitoring/CorrectionLedger.js';
 import { CorrectionAnalyzer } from '../../src/monitoring/CorrectionAnalyzer.js';
 import { CorrectionLoopDriver } from '../../src/monitoring/CorrectionLoopDriver.js';
-import { CaptureRing, captureAndDistill, drainBacklog } from '../../src/monitoring/CorrectionCaptureLoop.js';
+import { CaptureRing, captureAndDistill, drainBacklog, pruneCaptureBacklogIfDue } from '../../src/monitoring/CorrectionCaptureLoop.js';
 import { CorrectionCaptureBacklog } from '../../src/monitoring/CorrectionCaptureBacklog.js';
 
 const AUTH = 'corr-wiring-token';
 const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 
 describe('Correction-learning wiring integrity (Slice 1b)', () => {
+  it('AgentServer routes class-review disposition to the real Telegram Attention adapter', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'corr-attention-wire-'));
+    try {
+      fs.mkdirSync(path.join(dir, '.instar', 'state', 'sessions'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.instar', 'state', 'jobs'), { recursive: true });
+      const createAttentionItem = vi.fn(async () => ({ id: 'attention-1' }));
+      const config = {
+        projectName: 'corr-attention-wire', agentName: 'Wiring', projectDir: dir,
+        stateDir: path.join(dir, '.instar'), port: 0, authToken: AUTH, developmentAgent: true,
+        monitoring: { correctionLearning: { enabled: true }, correctionClassReview: { enabled: true, dryRun: false } },
+      } as InstarConfig;
+      const server = new AgentServer({ config, sessionManager: createMockSessionManager() as any,
+        state: new StateManager(path.join(dir, '.instar')),
+        telegram: { createAttentionItem } as any,
+        intelligence: { evaluate: async () => JSON.stringify({
+          standardReview: { verdict: 'not-applicable', isPolicyRelaxation: false },
+          processReview: { verdict: 'process-gap', proposedDelta: 'fix the review process' },
+          rationale: 'Needs a human disposition', confidence: 'low',
+        }) } as any });
+      const response = await request(server.getApp()).post('/corrections').set(auth())
+        .set('X-Instar-Request', '1').send({ learning: 'Please improve this process', kind: 'infra-gap' });
+      expect(response.status).toBe(201);
+      await vi.waitFor(() => expect(createAttentionItem).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Correction class review needs disposition', sourceContext: 'correction-class-review',
+      })));
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'corr-attention-wiring' });
+    }
+  });
+
   describe('CorrectionLedger constructed IFF enabled (production AgentServer boot path)', () => {
     let onDir: string, offDir: string;
     let onServer: AgentServer, offServer: AgentServer;
@@ -183,6 +213,26 @@ describe('Correction-learning wiring integrity (Slice 1b)', () => {
       }
     });
 
+    it('preserves a detected user correction while distillation is load-shed', async () => {
+      const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+      const backlog = new CorrectionCaptureBacklog({ dbPath: ':memory:' });
+      try {
+        const ring = new CaptureRing({ captureContextTurns: 6, captureTopicMapMax: 10, topicTtlMs: 600_000 });
+        const distill = vi.fn(async () => '{}');
+        const decision = await captureAndDistill(
+          { ring, ledger, backlog, distill, shouldShed: () => true },
+          { topicId: 130715, text: 'Do not ask me to check logs; give me the direct link. token=abcdefghijklmnop',
+            fromUser: true, deterministicWeight: 3, isLearningSignal: true },
+        );
+        expect(decision).toBe('shed-backlogged');
+        expect(distill).not.toHaveBeenCalled();
+        expect(backlog.count()).toBe(1);
+        expect(JSON.stringify(backlog.claimBatch(1))).not.toContain('abcdefghijklmnop');
+      } finally {
+        ledger.close(); backlog.close();
+      }
+    });
+
     it('the drain is SKIPPED while the breaker is open and never throws', async () => {
       const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
       const backlog = new CorrectionCaptureBacklog({ dbPath: ':memory:' });
@@ -198,6 +248,25 @@ describe('Correction-learning wiring integrity (Slice 1b)', () => {
         expect(backlog.count()).toBe(1);
       } finally {
         ledger.close(); backlog.close();
+      }
+    });
+
+    it('expires buffered text on the maintenance tick even while the breaker is open', async () => {
+      let now = 1_000_000;
+      const backlog = new CorrectionCaptureBacklog({ dbPath: ':memory:', now: () => now });
+      const ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+      try {
+        backlog.enqueue({ topicId: 1, turns: [{ fromUser: true, text: 'stale correction', at: 0 }], deterministicWeight: 3 });
+        now += 24 * 60 * 60_000 + 5 * 60_000;
+        const first = pruneCaptureBacklogIfDue(backlog, 24 * 60 * 60_000, 0, now);
+        expect(first.pruned).toBe(1);
+        expect(backlog.count()).toBe(0);
+        const distill = vi.fn(async () => '{}');
+        expect((await drainBacklog({ backlog, ledger, distill, llmAvailable: () => false }, 5)).skipped).toBe('breaker-open');
+        expect(distill).not.toHaveBeenCalled();
+        expect(pruneCaptureBacklogIfDue(backlog, 24 * 60 * 60_000, first.lastPrunedAt, now + 1).pruned).toBe(0);
+      } finally {
+        backlog.close(); ledger.close();
       }
     });
   });

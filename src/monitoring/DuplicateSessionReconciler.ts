@@ -109,7 +109,13 @@ export interface ReconcilerDeps {
    * `duplicate-reconciled`) — the sweeper's own guards still decide the close.
    */
   armCloseout: (sessionKey: string, owner: string) => void;
-  raiseAttention: (item: { id: string; title: string; body: string; priority: 'high' | 'medium' }) => void;
+  raiseAttention: (item: { id: string; title: string; body: string; priority: 'high' | 'medium'; conditionKey?: string }) => void;
+  /**
+   * attention-lifecycle-close-on-cause §3.3 — close the attention row for a
+   * condition that ended (episode deleted, breaker released). Absent ⇒ rows
+   * stay open until the hourly pass expires them.
+   */
+  clearAttention?: (conditionKey: string, resolution: string) => void;
   journal: BoundedJsonlAudit;
   provenance?: (row: {
     component: string;
@@ -244,6 +250,7 @@ export class DuplicateSessionReconciler {
         return this.finish(report, `substrate-not-ready: ${substrate.reason ?? 'in-memory ownership store'}`);
       }
       this.substrateNotReadySince = null;
+      if (this.substratePauseItemRaised) this.clearAttention(`dup-reconciler:substrate:${this.deps.selfMachineId() ?? 'local'}`, 'cleared: the ownership substrate is ready again');
       this.substratePauseItemRaised = false;
       report.ran = true;
 
@@ -311,6 +318,7 @@ export class DuplicateSessionReconciler {
       this.substratePauseItemRaised = true;
       this.deps.raiseAttention({
         id: `dup-reconciler-substrate:${this.deps.selfMachineId() ?? 'local'}`,
+        conditionKey: `dup-reconciler:substrate:${this.deps.selfMachineId() ?? 'local'}`,
         title: 'Duplicate reconciler paused — ownership substrate not ready',
         body: `The duplicate-session reconciler has been paused for over 30 minutes (${reason ?? 'in-memory ownership store / replication not live'}). Duplicates are not being auto-converged while this holds.`,
         priority: 'medium',
@@ -363,6 +371,7 @@ export class DuplicateSessionReconciler {
     if (liveMachines.length < 2) {
       // Duplicate no longer exists — close the episode quietly.
       this.episodes.delete(cand.key);
+      this.clearEpisodeAttention(cand.key, 'cleared: the duplicate resolved on a fresh probe');
       this.journalRow({ kind: 'duplicate-resolved-before-action', key: cand.key });
       this.closeDryRunFollowup(cand.key, 'duplicate-resolved-on-fresh-probe');
       return { consumed: true, wrote: false };
@@ -571,6 +580,7 @@ export class DuplicateSessionReconciler {
         // Convergence observed everywhere → the existing closeout owns the close.
         if (!this.cfg.dryRun) this.deps.armCloseout(key.includes(':') ? key.split(':').slice(1).join(':') : key, ep.echoPending.owner);
         this.episodes.delete(key);
+        this.clearEpisodeAttention(key, 'cleared: convergence was observed on every machine');
         continue;
       }
       ep.echoPending.machines = pending;
@@ -591,6 +601,7 @@ export class DuplicateSessionReconciler {
       this.counters.escalations++;
       this.deps.raiseAttention({
         id: `dup-reconciler-echo:${new Date(this.nowFn()).toISOString().slice(0, 13)}`,
+        conditionKey: 'dup-reconciler:echo',
         title: `Convergence not observed on ${timedOut.length} conversation(s)`,
         body:
           'I repaired the ownership record for these conversations but the other machine(s) never showed the repair in their own view:\n' +
@@ -627,6 +638,7 @@ export class DuplicateSessionReconciler {
     if (arr.length === 3) {
       this.deps.raiseAttention({
         id: `dup-reconciler-transfer-flap:${key}`,
+        conditionKey: `dup-reconciler:transfer-flap:${key}`,
         title: `Conversation ${key} moved machines ${arr.length} times in 24h`,
         body: 'An automated mover is flapping this conversation between machines (moves are exempt from the duplicate breaker, but this volume is worth a look).',
         priority: 'medium',
@@ -641,8 +653,10 @@ export class DuplicateSessionReconciler {
     // TTL prune of idle topics rides the filter above; drop empty entries lazily.
     if (arr.length === this.cfg.breakerThreshold) {
       // Breaker just tripped: ONE item; the ladder clamp is read via breakerClamped().
+      this.breakerItemsOpen.add(key);
       this.deps.raiseAttention({
         id: `dup-reconciler-breaker:${key}`,
+        conditionKey: `dup-reconciler:breaker:${key}`,
         title: `Conversation ${key} keeps re-duplicating — auto-reconcile stopped`,
         body:
           `This conversation duplicated ${arr.length} times inside the window. I've stopped auto-converging it (and clamped its owner-dark ladder to the notice floor) — something is re-creating the duplicate. Details: logs/duplicate-reconciler.jsonl.`,
@@ -659,7 +673,24 @@ export class DuplicateSessionReconciler {
     const arr = (this.breakerEpisodes.get(key) ?? []).filter((x) => t - x < this.cfg.breakerWindowMs);
     // Transfer-traceable episodes do not clamp (§3.2.5).
     const effective = arr.length - transferTraceable.length;
-    return effective >= this.cfg.breakerThreshold;
+    const clamped = effective >= this.cfg.breakerThreshold;
+    if (!clamped && this.breakerItemsOpen.delete(key)) {
+      this.clearAttention(`dup-reconciler:breaker:${key}`, 'cleared: the duplicate breaker released (episodes aged out of the window)');
+    }
+    return clamped;
+  }
+
+  /** Conversations whose breaker item is open; emptied as each clamp releases. */
+  private readonly breakerItemsOpen = new Set<string>();
+
+  private clearAttention(conditionKey: string, resolution: string): void {
+    try { this.deps.clearAttention?.(conditionKey, resolution); } catch { /* clearing is observability — never fails the tick */ }
+  }
+
+  /** An episode ended: close its escalation row and the shared echo row when no echo is pending. */
+  private clearEpisodeAttention(key: string, resolution: string): void {
+    this.clearAttention(`dup-reconciler:escalate:${key}`, resolution);
+    if (![...this.episodes.values()].some((ep) => ep.echoPending)) this.clearAttention('dup-reconciler:echo', resolution);
   }
 
   private escalateOnce(ep: DuplicateEpisode, cand: DuplicateCandidate, reason: string, report: ReconcilerTickReport): void {
@@ -670,6 +701,7 @@ export class DuplicateSessionReconciler {
     // Fixed template + metadata (§3.4) — never free text from tails/arbiters.
     this.deps.raiseAttention({
       id: `dup-reconciler-escalate:${cand.key}`,
+      conditionKey: `dup-reconciler:escalate:${cand.key}`,
       title: `Duplicate conversation needs your call: ${cand.key}`,
       body:
         `The same conversation is live on ${cand.machines.length} machines (${cand.machines.map((m) => m.machineId).join(', ')}) ` +

@@ -25,6 +25,7 @@ import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { isInstarSourceTree } from './SourceTreeGuard.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -755,10 +756,19 @@ export class WorktreeManager extends EventEmitter {
     if (fs.existsSync(worktreePath)) {
       // Adopt existing if .git is valid
       try {
-        SafeGitExecutor.readSync(['-C', worktreePath, 'rev-parse', 'HEAD'], { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:759' });
+        SafeGitExecutor.readSync(['-C', worktreePath, 'rev-parse', 'HEAD'], { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:759', sourceTreeWorktreeManagerOk: true });
       } catch {
         throw new Error(`Worktree path ${worktreePath} exists but is not a valid git worktree`);
       }
+    } else if (isInstarSourceTree(this.opts.projectDir)) {
+      // The project is itself an instar source checkout (e.g. the instar-dev
+      // agent's home). SourceTreeGuard refuses `git branch` and the clone path's
+      // writes against it, which made every topic-bound spawn fail. Create the
+      // branch and worktree in ONE `git worktree add`, the shape the guard's
+      // narrow worktree-manager carve-out admits, and base a new branch on
+      // origin/main: the checkout's own HEAD may be any local branch.
+      this.addInstarSourceWorktree(worktreePath, branch);
+      await this.fastCopyDeps(worktreePath);
     } else if (this.shouldCloneInsteadOfWorktree()) {
       // Clone-default for cross-project worktrees: when the source repo lives
       // outside agent home, `git worktree add` leaves per-worktree metadata
@@ -848,6 +858,32 @@ export class WorktreeManager extends EventEmitter {
   }
 
   /**
+   * `git worktree add` for an instar source checkout, under the
+   * `sourceTreeWorktreeManagerOk` carve-out (worktree add only — no `branch`,
+   * no clone writes). Reuses the branch when it exists; otherwise creates it
+   * from origin/main, falling back to HEAD when there is no origin/main.
+   */
+  private addInstarSourceWorktree(worktreePath: string, branch: string): void {
+    const refExists = (ref: string): boolean => {
+      try {
+        SafeGitExecutor.readSync(['-C', this.opts.projectDir, 'rev-parse', '--verify', '--quiet', ref], { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:source-tree-ref-check', sourceTreeWorktreeManagerOk: true });
+        return true;
+      } catch {
+        // @silent-fallback-ok: expected path — rev-parse --verify exits non-zero when the ref is absent
+        return false;
+      }
+    };
+    const args = refExists(`refs/heads/${branch}`)
+      ? ['worktree', 'add', worktreePath, branch]
+      : ['worktree', 'add', '-b', branch, worktreePath, refExists('refs/remotes/origin/main') ? 'origin/main' : 'HEAD'];
+    SafeGitExecutor.execSync(['-C', this.opts.projectDir, ...args], {
+      timeout: 30_000,
+      operation: 'src/core/WorktreeManager.ts:source-tree-worktree-add',
+      sourceTreeWorktreeManagerOk: true,
+    });
+  }
+
+  /**
    * Decide whether to create a self-contained clone instead of a git
    * worktree. True when the source `projectDir` is outside agent home —
    * which is when the sandbox-revocation hazard applies. Set
@@ -927,7 +963,9 @@ export class WorktreeManager extends EventEmitter {
         try {
           return SafeGitExecutor.readSync(
             ['-C', dir, 'config', '--get', 'core.hooksPath'],
-            { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:seedGitHooks-read' },
+            // Read-only `config --get` (inside the worktree-manager carve-out) so an
+            // instar source checkout and its worktrees still get their hooks.
+            { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:seedGitHooks-read', sourceTreeWorktreeManagerOk: true },
           ).trim();
         } catch {
           // @silent-fallback-ok: expected path — `git config --get` exits non-zero when the key is unset

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-27T21:53:23.998Z",
+  "slug": "agent-improvement-capture-capacity",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 95,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/ClassReviewStore.ts",
+      "src/monitoring/CorrectionCaptureLoop.ts",
+      "src/monitoring/CorrectionClassReview.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 80,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

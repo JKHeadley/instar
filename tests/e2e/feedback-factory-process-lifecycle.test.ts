@@ -182,7 +182,8 @@ describe('feedback-factory-process job — wiring integrity (spec §191)', () =>
     expect(() => validateManifest(manifest, 'feedback-factory-process')).not.toThrow();
     expect(manifest.schedule).toBe('*/30 * * * *');
     expect(manifest.origin).toBe('instar');
-    expect(manifest.execute.type).toBe('agentmd');
+    expect(manifest.execute.type).toBe('script');
+    expect(fs.existsSync(path.join(agentStateDir, 'jobs', 'instar', 'scripts', 'feedback-factory-process.mjs'))).toBe(true);
   });
 
   it('the loader constructs a scheduled JobDefinition from it (NOT dead code)', () => {

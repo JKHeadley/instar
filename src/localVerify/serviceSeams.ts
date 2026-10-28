@@ -8,7 +8,7 @@
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promisify } from 'node:util';
-import { getHostTestRunnerSemaphore } from '../core/hostTestRunnerSemaphore.js';
+import { getHostTestRunnerSemaphore, resolveCap } from '../core/hostTestRunnerSemaphore.js';
 import type { ChildHandle, LocalVerifyServiceSeams, PrView } from './LocalVerifyService.js';
 
 const execFileAsync = promisify(execFile);
@@ -29,6 +29,8 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): Record<string
 
 export interface DefaultServiceSeamOpts {
   repo: string;
+  /** Stable per-agent claim key; absent in isolated tests. */
+  priorityKey?: string;
   /** The explicit per-agent GitHub environment (as MergeRunner uses); null = gh unavailable. */
   resolveGitHubEnv: () => NodeJS.ProcessEnv | null;
 }
@@ -45,10 +47,22 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
     }
   };
   return {
+    setSuitePriority(active: boolean): void {
+      if (!opts.priorityKey) return;
+      getHostTestRunnerSemaphore().setMergeGatePriority(opts.priorityKey, active);
+    },
     async prView(pr: number): Promise<PrView | null> {
-      const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid']);
+      // title/body/files feed the main-red repair match (mainRedHold.ts); gh lists the first 100 files.
+      // labels: `merge-throughput` ranks the PR ahead of ordinary PRs (prPriority).
+      const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,title,body,files,labels']);
       if (!out) return null;
-      try { return JSON.parse(out) as PrView; } catch { return null; }
+      try {
+        const v = JSON.parse(out) as PrView & { files?: unknown };
+        const files = Array.isArray(v.files) ? (v.files as Array<{ path?: unknown }>).filter((f) => !!f && typeof f.path === 'string').map((f) => ({ path: f.path as string })) : null;
+        const raw = v as { labels?: unknown };
+        const labels = Array.isArray(raw.labels) ? (raw.labels as Array<{ name?: unknown }>).filter((l) => !!l && typeof l.name === 'string').map((l) => ({ name: l.name as string })) : null;
+        return { ...v, files, labels };
+      } catch { return null; }
     },
     async baseHead(baseRefName: string): Promise<string | null> {
       if (!/^[A-Za-z0-9._/-]{1,200}$/.test(baseRefName)) return null;
@@ -106,6 +120,17 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
       } catch {
         return []; // @silent-fallback-ok: the bound is watch-only; an unreadable holders file is no observation
       }
+    },
+    suiteCapacity(): number {
+      try {
+        const semaphore = getHostTestRunnerSemaphore();
+        // The verifier child receives scrubbedEnv(), which drops the server's
+        // per-process cap override. Its cap is the shared tuning-file value.
+        // Reserve the next slot whenever either side sees a cap of one.
+        const serverCap = semaphore.status().cap;
+        const childCap = resolveCap('suite', scrubbedEnv(), semaphore.resolveContext().tuning.file).cap;
+        return Math.min(serverCap, childCap);
+      } catch { return 1; } // @silent-fallback-ok: unknown capacity keeps a runnable verifier's next-slot claim
     },
   };
 }

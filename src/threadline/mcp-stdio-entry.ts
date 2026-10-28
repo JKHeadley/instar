@@ -32,6 +32,7 @@ import { RegistryRestClient } from './client/RegistryRestClient.js';
 import type { RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
 import { sendMessageViaHttp, getThreadHistoryViaHttp, requestSecretViaHttp, startPairingViaHttp, createPairingInviteViaHttp } from './mcp-http-client.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
+import { resolveMcpAuthToken } from './mcpAuthToken.js';
 
 // ── Parse CLI args ───────────────────────────────────────────────────
 
@@ -117,7 +118,11 @@ function createHttpRelayDiscoverer(serverPort: number, agentToken: string): Rela
   let lastState = 'unknown';
   const refreshState = async (): Promise<string> => {
     try {
-      const res = await fetch(`http://localhost:${serverPort}/threadline/status`);
+      // Bearer-gated like every other own-control-surface route under
+      // /threadline/* (fb-829a7161-942); only peer-protocol routes are public.
+      const res = await fetch(`http://localhost:${serverPort}/threadline/status`, {
+        headers: { 'Authorization': `Bearer ${agentToken}` },
+      });
       if (!res.ok) return (lastState = 'unavailable');
       const body = await res.json() as { relay?: { connected?: boolean } };
       lastState = body.relay?.connected ? 'connected' : 'disconnected';
@@ -168,22 +173,16 @@ async function main(): Promise<void> {
     fs.mkdirSync(threadlineDir, { recursive: true });
   }
 
-  // Read server port and auth token. Token: INSTAR_AUTH_TOKEN env first
-  // (survives the secret-externalization refactor that moved authToken out of
-  // config.json into the encrypted store), legacy plaintext-config fallback with
-  // a string-type guard so the { "secret": true } placeholder produced by
-  // SecretMigrator cannot leak through as a bogus Bearer.
-  const configPath = path.join(stateDir, 'config.json');
-  let serverPort = 4040;
-  let agentToken = process.env.INSTAR_AUTH_TOKEN || '';
-  if (fs.existsSync(configPath)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      serverPort = config.port ?? 4040;
-      if (!agentToken && typeof config.authToken === 'string') agentToken = config.authToken;
-    } catch {
-      // Use defaults
-    }
+  // Read server port and auth token: INSTAR_AUTH_TOKEN env first (SessionManager
+  // injects it per spawned session), legacy plaintext config second, the
+  // encrypted vault third (a hand-started Codex on a secret-externalized install
+  // has neither of the first two). See mcpAuthToken.ts for the full rationale —
+  // every /threadline/* route this process drives is bearer-gated.
+  const resolvedAuth = resolveMcpAuthToken(stateDir, process.env);
+  const serverPort = resolvedAuth.port;
+  const agentToken = resolvedAuth.token;
+  if (!agentToken) {
+    console.error('[threadline-mcp] no agent API token found (env INSTAR_AUTH_TOKEN, config.json authToken, or the vault) — sends/discover will be refused by the agent server (401)');
   }
 
   // Instantiate dependencies from disk state

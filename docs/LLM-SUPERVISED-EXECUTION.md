@@ -13,6 +13,7 @@ Programmatic tools are fast, cheap, and fragile. They break after dependency upd
 | **0** | Raw Programmatic | None | Zero tokens | **Silent** — breaks go unnoticed |
 | **1** | LLM-Supervised | Lightweight (Haiku) | ~5-10k tokens/run | **Observed** — failures detected and reported |
 | **2** | Full Intelligent | Full (Sonnet/Opus) | 100-200k tokens/run | **Handled** — failures reasoned about and resolved |
+| **1 (layered)** | Script job (layered Tier 1) | Jev per non-trivial result, a slower replacement sample only during Jev unavailability, plus one daily review | Zero tokens on a bare-ok run; one small classifier call otherwise | **Observed** — a deterministic floor and daily must-fail canaries keep it honest when no model is available |
 
 ## The Rule
 
@@ -24,6 +25,8 @@ A pipeline is critical if ANY of these apply:
 - It handles user-facing feedback or communication
 - Its silent failure would cascade to other systems
 - It runs on a schedule (anything automated is critical by default)
+
+A converted script job (`runner: script`, see `docs/specs/job-cost-reduction.md`) stays critical and meets this rule through **layered** Tier 1 supervision instead of a supervising session on every run: Jev reads every non-trivial result; an uncertain Jev result requests a bounded investigator session. Only while Jev is unavailable, a slower replacement check samples routine results at most every 6 hours. One daily review looks across all script jobs regardless of Jev availability. The deterministic result floor and the daily must-fail canaries are the separately ratified deterministic safe rung (operator decision, 2026-10-26): with no Jev the job still runs, governed by that floor, and the outage replacement and daily review remain available on the selected framework.
 
 ## The Pattern
 

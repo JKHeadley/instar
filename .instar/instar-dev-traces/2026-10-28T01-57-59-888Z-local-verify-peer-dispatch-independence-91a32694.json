@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "local-verify-peer-dispatch-independence",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-28T01:57:59.888Z",
+  "artifactPath": "upgrades/side-effects/local-verify-peer-dispatch-independence.md",
+  "artifactSha256": "30ef4891fab6480c5bf6653cbcb7b5ebbe53b2c1a2ec03e00a3ca27d5c2b44ea",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "upgrades/next/local-verify-peer-dispatch-independence.md",
+    "upgrades/side-effects/local-verify-peer-dispatch-independence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation repair on a Tier 2 cross-machine verifier scheduling change; retaining the approved spec and independent review chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

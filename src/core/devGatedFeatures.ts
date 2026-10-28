@@ -44,6 +44,30 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'scriptRunners',
+    configPath: 'jobs.scriptRunners.enabled',
+    description: 'Script runners (job-cost-reduction §5.1): the converted built-in jobs run their shipped Node script instead of opening a model session; omitted ⇒ live on a development agent, every converted job runs its body as a session on the fleet.',
+    justification: 'Each script calls the same local endpoint its session body called, under the same claim and lock-file trust; an untrusted script records failed and starts nothing. Setting enabled:false or listing a slug in disabledSlugs restores the session path live at the next trigger. No credential or state mutation beyond what the session already did; it removes spend.',
+  },
+  {
+    name: 'scriptTriageJev',
+    configPath: 'jobs.scriptTriage.jev.enabled',
+    description: 'Jev triage of script-job results (job-cost-reduction §5.6.2): a scrubbed, clamped summary of a non-bare script run is sent to TypeSafe for routine / needs-session; omitted ⇒ live on a development agent, dark on the fleet (F12).',
+    justification: 'Advisory only: the deterministic floor (critical anomaly or a second consecutive failure) still starts a session whatever Jev answers, and every Jev failure falls to that floor. Inert without the vault typesafe_api_key; daily call cap; sessions are bounded by the triage caps and cooldown.',
+  },
+  {
+    name: 'workAdmission',
+    configPath: 'monitoring.workAdmission.enabled',
+    description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',
+    justification: 'Ships dryRun:true: the state machine, audit and advert run on the real verdict feed but nothing is refused and peers keep placing work here until a deliberate dryRun:false. Even live it only DEFERS automatic work (jobs retry, inbound messages stay in the durable queue) and always leaves an operator session a slot; no LLM, no spend, no kills, no credential or state mutation.',
+  },
+  {
+    name: 'overloadShed',
+    configPath: 'monitoring.overloadShed.enabled',
+    description: 'Overload shed (trustworthy-machine-load Part D): once this machine has refused new work for 3 minutes, proposes moving one existing Telegram conversation at a time to a healthy machine through the ownership reconciler, and drives started transfers to claim or abort independently of pins.',
+    justification: 'Ships dryRun:true: it logs each move it WOULD make and proposes nothing, and it also proposes nothing while overload admission itself is in dry-run. Even live, a move is a cooperative ownership transfer (the reconciler in its own dry-run performs no CAS), pinned topics and topics with a live autonomous run are never moved, and a breaker caps it at 2 moves per hour with 2 tries per topic per episode; no LLM, no spend, no kills.',
+  },
+  {
     name: 'identityReannounce',
     configPath: 'multiMachine.identityReannounce.enabled',
     description: 'Challenge-bound machine signing-key recovery with recovery-key continuity and exact epochs.',
@@ -402,8 +426,8 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'ws43JournalLease',
     configPath: 'multiMachine.seamlessness.ws43JournalLease',
-    description: 'WS4.3 journal-lease cutover — job claims upgrade from the best-effort AgentBus broadcast to a durable, epoch-fenced lease over the replicated journal (the JobLeaseCutoverGate guarantees the two mechanisms are NEVER both live for a job set).',
-    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The dryRun sub-flag (ws43JournalLeaseDryRun) is ALSO omitted from ConfigDefaults and resolves COHERENTLY with this flag at the consumer (dev → live, fleet → dry-run) so live-on-dev actually exercises the lease path. A genuine live cutover engages ONLY when the flag resolves live AND the pool is flag-coherent (≥2 machines all advertising not-dry-run), so a single-machine dev agent never half-migrates (strict no-op). Job-claim coordination on durable local/replicated state — no destructive/irreversible write, no third-party spend. Operator directive 2026-06-13 topic 13481.',
+    description: 'WS4.3 planned journal-lease cutover — currently held on the legacy AgentBus path by a code-owned readiness floor until peer claim receive and pool-authoritative acquisition are implemented.',
+    justification: 'Coordinates between the operator\'s OWN machines only — no external egress. The dryRun sub-flag (ws43JournalLeaseDryRun) remains omitted from ConfigDefaults and resolves coherently with the development-agent flag, but neither value can bypass the code-owned readiness floor. A local lease file and flag-coherent peers cannot arbitrate concurrent claims. The pool continues using the legacy path until a shared authority and receive wiring are proven. Operator directive 2026-06-13 topic 13481.',
   },
   {
     name: 'ws44PoolLinks',
@@ -702,6 +726,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'intelligence.jevCirclesShadow.enabled',
     description: 'Jev "going in circles" shadow (jev-circles-shadow.md): every 5 tool actions per session, asks Jev the measured five-label question over the last 15 actions and logs a content-free would-nudge row.',
     justification: 'Log-only — delivers nothing to any session, user or topic and no decision path reads the log. Inert without the vault typesafe_api_key (only the dev agent holds one). Reads only the session\'s own transcript (path shape-checked), secret-scrubs the window before egress, bounded by a fetch timeout, two calls in flight and a daily call cap (~$0.0001 per check), metered in feature metrics, kill switch read live. No destructive action.',
+  },
+  {
+    name: 'jevLoadAssessment',
+    configPath: 'intelligence.jevLoadAssessment.enabled',
+    description: 'Model assessment of machine load (trustworthy-machine-load B4): when a machine\'s own load verdict and the outside view disagree, or its readings contradict, Jev (Luna referee when unsure) labels it; the label is graded 15 min later against what happened.',
+    justification: 'Advisory and log-only — no placement, admission, shed, attention or message path reads its output. Asks only on the serving-lease holder, once per machine per 10-30 min, one call at a time under a fetch timeout and a daily cap of 200, metered; inert without the vault typesafe_api_key. Sends only load numbers, a machine nickname and fixed words, secret-scrubbed. Kill switch read live. No destructive action.',
   },
   {
     name: 'jevReviewFlagShadow',

@@ -620,7 +620,7 @@ describe('monitorTick rerouted-interactive branch — expired login', () => {
     env.firstSeen.set('proj-le-9', Date.now() - 61_000);
     await env.maintenanceTick();
     expect(env.state.getSession('le-9')!.status).toBe('killed');
-    expect(sightings).toEqual([{ configHome: '/home/x/.claude-followme-a', session: 'proj-le-9' }]);
+    expect(sightings).toEqual([{ configHome: '/home/x/.claude-followme-a', session: 'proj-le-9', messageLed: true }]);
   });
 
   it('data flow: two sessions ended at the frame + an unreadable credential → the real poller flips needs-reauth', async () => {
@@ -669,7 +669,7 @@ describe('monitorTick rerouted-interactive branch — expired login', () => {
       await b.maintenanceTick();
       b.firstSeen.set('proj-le-14', Date.now() - 61_000);
       await b.maintenanceTick();
-      expect(sightingsB).toEqual([{ configHome: path.join(os.homedir(), '.claude'), session: 'proj-le-14' }]);
+      expect(sightingsB).toEqual([{ configHome: path.join(os.homedir(), '.claude'), session: 'proj-le-14', messageLed: true }]);
       // The plain resolver (no opts) still reports nothing for an unset var.
       expect(b.manager.configHomeForSession('proj-le-14')).toBeUndefined();
     } finally {
@@ -730,6 +730,158 @@ describe('monitorTick rerouted-interactive branch — expired login', () => {
     firstSeen.set('proj-le-4', Date.now() - 120_000);
     await maintenanceTick();
     expect(state.getSession('le-4')!.status).toBe('running');
+  });
+});
+
+// ── CMT-1008: interactive (topic) sessions stuck at an expired login ──
+describe('monitorTick interactive branch — expired login (CMT-1008)', () => {
+  let tmpDir: string;
+  const NOT_LOGGED_IN_PANE = 'hello?\n\n⏺ Not logged in · Run /login\n\n✻ Worked for 0s\n❯ \n';
+  const EXPIRED_PANE = 'hello?\n\n⏺ Login expired · Please run /login\n❯ \n';
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-interactive-login-'));
+    mockTmuxSessions.clear();
+    newSessionArgvs.length = 0;
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/headless-spawn-reroute.test.ts' });
+  });
+
+  function seed(id: string, capture: string, extra: Record<string, unknown> = {}) {
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
+    state.saveSession({
+      id, name: id, status: 'running', tmuxSession: `proj-${id}`,
+      startedAt: new Date(Date.now() - 5 * 60_000).toISOString(), framework: 'claude-code',
+      subscriptionAccountId: 'sagemind-justin', ...extra,
+    } as never);
+    mockTmuxSessions.add(`proj-${id}`);
+    const m = manager as unknown as {
+      isSessionAliveAsync: () => Promise<boolean>; recordBuildContext: () => void; captureOutput: () => string;
+      configHomeForSession: () => string;
+      loginExpiredFirstSeen: Map<string, number>; interactiveLoginLastCheckAt: Map<string, number>;
+      interactiveLoginReportedAt: Map<string, number>;
+    };
+    m.isSessionAliveAsync = async () => true;
+    m.recordBuildContext = () => {};
+    m.captureOutput = () => capture;
+    m.configHomeForSession = () => '/home/x/.claude-sagemind-justin';
+    const signals: unknown[] = [];
+    manager.setInteractiveLoginExpiredSink((sig) => { signals.push(sig); });
+    /** Advance past the dwell and the check interval without waiting. */
+    const elapse = () => {
+      m.interactiveLoginLastCheckAt.clear();
+      const k = `proj-${id}`;
+      if (m.loginExpiredFirstSeen.has(k)) m.loginExpiredFirstSeen.set(k, Date.now() - 61_000);
+    };
+    return { manager, m, state, maintenanceTick, signals, elapse };
+  }
+
+  it.each([['Not logged in', NOT_LOGGED_IN_PANE], ['Login expired', EXPIRED_PANE]])(
+    'live tail shows "%s" past the dwell → reported once with its account, home and frame; session not killed',
+    async (_label, pane) => {
+      const env = seed('il-1', pane);
+      await env.maintenanceTick();
+      expect(env.signals).toEqual([]); // first sighting only starts the dwell
+      env.elapse();
+      await env.maintenanceTick();
+      expect(env.signals).toHaveLength(1);
+      expect(env.signals[0]).toMatchObject({
+        session: 'proj-il-1', accountId: 'sagemind-justin', configHome: '/home/x/.claude-sagemind-justin', protected: false,
+      });
+      expect(env.state.getSession('il-1')!.status).toBe('running'); // detection never kills
+      env.m.interactiveLoginLastCheckAt.clear();
+      await env.maintenanceTick();
+      expect(env.signals).toHaveLength(1); // same episode is not re-offered inside the retry window
+    },
+  );
+
+  it('inside the dwell → nothing reported', async () => {
+    const env = seed('il-2', NOT_LOGGED_IN_PANE);
+    await env.maintenanceTick();
+    env.m.interactiveLoginLastCheckAt.clear();
+    env.m.loginExpiredFirstSeen.set('proj-il-2', Date.now() - 30_000);
+    await env.maintenanceTick();
+    expect(env.signals).toEqual([]);
+  });
+
+  it('a stale mention scrolled out of the live tail never reports', async () => {
+    const stale = ['⏺ Not logged in · Run /login', ...Array.from({ length: 20 }, (_, i) => `⏺ step ${i} done`), '❯ '].join('\n');
+    const env = seed('il-3', stale);
+    await env.maintenanceTick();
+    env.elapse();
+    await env.maintenanceTick();
+    expect(env.signals).toEqual([]);
+    expect(env.m.loginExpiredFirstSeen.has('proj-il-3')).toBe(false);
+  });
+
+  it('a tool result printing the frame (⎿-led, e.g. `claude auth status`, `⎿ Please run /login`) never reports', async () => {
+    for (const [i, pane] of [
+      '\u23FA Bash(claude auth status)\n  \u23BF  Not logged in \u00B7 Run /login\n\u276F \n',
+      '\u23FA Bash(grep login logs)\n  \u23BF  Please run /login\n\u276F \n',
+    ].entries()) {
+      const env = seed(`il-t${i}`, pane);
+      await env.maintenanceTick();
+      env.elapse();
+      await env.maintenanceTick();
+      expect(env.signals).toEqual([]);
+    }
+  });
+
+  it('a session discussing the incident in prose never reports', async () => {
+    const env = seed('il-4', '⏺ Luna kept printing "Not logged in · Run /login" on every turn.\n❯ \n');
+    await env.maintenanceTick();
+    env.elapse();
+    await env.maintenanceTick();
+    expect(env.signals).toEqual([]);
+  });
+
+  it('frame leaves the live tail (session recovered) → episode cleared', async () => {
+    const env = seed('il-5', NOT_LOGGED_IN_PANE);
+    await env.maintenanceTick();
+    env.elapse();
+    await env.maintenanceTick();
+    expect(env.signals).toHaveLength(1);
+    env.m.captureOutput = () => '⏺ Here is the answer.\n❯ \n';
+    env.m.interactiveLoginLastCheckAt.clear();
+    await env.maintenanceTick();
+    expect(env.m.interactiveLoginReportedAt.has('proj-il-5')).toBe(false);
+    expect(env.m.loginExpiredFirstSeen.has('proj-il-5')).toBe(false);
+  });
+
+  it('a protected session is still reported (so the pool learns) but flagged protected', async () => {
+    const env = seed('il-6', NOT_LOGGED_IN_PANE);
+    (env.manager as unknown as { config: { protectedSessions: string[] } }).config.protectedSessions.push('proj-il-6');
+    await env.maintenanceTick();
+    env.elapse();
+    await env.maintenanceTick();
+    expect(env.signals[0]).toMatchObject({ protected: true });
+  });
+
+  it('job sessions and non-Claude frameworks are not handled by the interactive branch', async () => {
+    const job = seed('il-7', NOT_LOGGED_IN_PANE, { jobSlug: 'job-x' });
+    await job.maintenanceTick();
+    job.elapse();
+    await job.maintenanceTick();
+    expect(job.signals).toEqual([]);
+    const codex = seed('il-8', NOT_LOGGED_IN_PANE, { framework: 'codex-cli' });
+    await codex.maintenanceTick();
+    codex.elapse();
+    await codex.maintenanceTick();
+    expect(codex.signals).toEqual([]);
+  });
+
+  it('a throwing or rejecting sink never breaks the tick', async () => {
+    const env = seed('il-9', NOT_LOGGED_IN_PANE);
+    env.manager.setInteractiveLoginExpiredSink(() => Promise.reject(new Error('swap down')));
+    await env.maintenanceTick();
+    env.elapse();
+    await expect(env.maintenanceTick()).resolves.not.toThrow();
+    env.manager.setInteractiveLoginExpiredSink(() => { throw new Error('sink down'); });
+    env.m.interactiveLoginReportedAt.clear();
+    env.elapse();
+    await expect(env.maintenanceTick()).resolves.not.toThrow();
+    expect(env.state.getSession('il-9')!.status).toBe('running');
   });
 });
 

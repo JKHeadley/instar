@@ -168,6 +168,7 @@ export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
   // possible): `status --porcelain` for cleanliness, `cherry` for merged-detection.
   'status',
   'cherry',
+  'ls-files', // reaper checks ignored files before allowing worktree removal
 ]);
 
 // ── Env denylist ────────────────────────────────────────────────────

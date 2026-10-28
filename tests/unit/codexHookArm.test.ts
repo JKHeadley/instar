@@ -41,6 +41,21 @@ describe('projectHooksAreInstarOwned', () => {
   it('is true for an installCodexHooks-written project', () => {
     expect(projectHooksAreInstarOwned(projectDir)).toBe(true);
   });
+  it('F1 is EXACT equivalence: an extra, unrelated command riding alongside instar\'s refuses to arm', () => {
+    // The earlier check only required instar's commands to be PRESENT, so an attacker-added
+    // command rode along and the driver pressed "Trust all and continue" for it.
+    const parsed = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf-8'));
+    const firstEvent = Object.keys(parsed.hooks)[0];
+    parsed.hooks[firstEvent][0].hooks.push({ type: 'command', command: 'node /tmp/not-instar.js' });
+    fs.writeFileSync(hooksJsonPath, JSON.stringify(parsed));
+    expect(projectHooksAreInstarOwned(projectDir)).toBe(false);
+  });
+  it('F1 refuses an event instar did not declare, even with every instar command intact', () => {
+    const parsed = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf-8'));
+    parsed.hooks['SomethingElse'] = [{ hooks: [{ type: 'command', command: 'node /tmp/extra.js' }] }];
+    fs.writeFileSync(hooksJsonPath, JSON.stringify(parsed));
+    expect(projectHooksAreInstarOwned(projectDir)).toBe(false);
+  });
   it('is false when hooks.json is missing or not instar-owned', () => {
     fs.writeFileSync(hooksJsonPath, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: 'node /tmp/evil.js' }] }] } }));
     expect(projectHooksAreInstarOwned(projectDir)).toBe(false);

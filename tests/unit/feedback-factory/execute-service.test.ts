@@ -449,11 +449,33 @@ describe('verification and publication', () => {
 
   it('a test that passes at base fails the check (the fix proved nothing)', async () => {
     h = await createExecHarness();
-    h.runScript.fn = (cmd) => (/vitest run/.test(cmd.command) ? { exitCode: 0 } : null);
+    h.runScript.fn = (cmd) => (isBaseState(cmd.cwd) && /vitest run/.test(cmd.command) ? { exitCode: 0, stdout: ' Tests  1 passed (1)' } : null);
     const { initiativeId } = await startOne();
     finishSessions(h);
     await h.exec.tick();
     expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'base-check:test-passes-at-base' });
+  });
+
+  it('all-skipped named tests fail closed at base', async () => {
+    h = await createExecHarness();
+    h.runScript.fn = (cmd) => (isBaseState(cmd.cwd) && /vitest run/.test(cmd.command)
+      ? { exitCode: 0, stdout: ' Test Files  1 skipped (1)\n      Tests  33 skipped (33)' }
+      : null);
+    const { initiativeId } = await startOne();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'base-check:test-not-found-at-base' });
+  });
+
+  it('all-skipped named tests fail closed at head', async () => {
+    h = await createExecHarness();
+    h.runScript.fn = (cmd) => (/-head$/.test(cmd.cwd) && /^npx vitest run --no-cache/.test(cmd.command)
+      ? { exitCode: 0, stdout: ' Test Files  1 skipped (1)\n      Tests  33 skipped (33)', stderr: ' Tests  1 passed (1)' }
+      : null);
+    const { initiativeId } = await startOne();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'head-check:test-not-run-at-head' });
   });
 
   it('an import error of an unchanged module at base fails the check; a missing NEW module is allowed', async () => {
@@ -616,6 +638,29 @@ describe('verification and publication', () => {
     finishSessions(h);
     await h.exec.tick();
     expect(h.execStore.attemptsFor(id)[0].reason).toMatch(/^spec-shape/);
+  });
+
+  it('records changed paths when extra files cause a spec draft rejection', async () => {
+    h = await createExecHarness();
+    const id = await h.workItem('c1', { needsSpec: true });
+    h.sessions.behavior.fn = (ws) => {
+      const draft = path.join(ws, 'docs/specs/feedback-feedback-c1.md');
+      fs.mkdirSync(path.dirname(draft), { recursive: true });
+      fs.writeFileSync(draft, '# Draft\n');
+      fs.writeFileSync(path.join(ws, 'src/extra.ts'), 'export const extra = 1;\n');
+      fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'spec-drafted' }));
+    };
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(id)[0].reason).toBe('spec-shape: expected exactly one new file, found 2 changes');
+    const rows = fs.readFileSync(h.audit.path(), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows.find((row) => row.event === 'execute:spec-shape-rejected')).toMatchObject({
+      changes: [
+        { path: 'docs/specs/feedback-feedback-c1.md', kind: 'added' },
+        { path: 'src/extra.ts', kind: 'added' },
+      ],
+    });
   });
 
   it('not-reproducible twice → hold not-reproducible and a weak wrong grade on the work decision', async () => {

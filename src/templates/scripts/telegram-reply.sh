@@ -615,6 +615,86 @@ elif [ "$HTTP_CODE" = "422" ]; then
   fi
   echo "  Revise the message (remove CLI commands, file paths, config syntax, API endpoints) and retry." >&2
   exit 1
+elif [ "$HTTP_CODE" = "409" ] && printf '%s' "$BODY" | python3 -c 'import sys,json; raise SystemExit(0 if json.load(sys.stdin).get("error") == "telegram-origin-held" else 1)' 2>/dev/null; then
+  # A held reply is never a plain failure: the server keeps the original
+  # message, and an outcome of accepted-unrecorded / outcome-unknown means it
+  # may ALREADY be in the chat. Printing "Failed" here made sessions resend and
+  # the user got duplicates (Echo Bugs topic 10000000967). Ask the server once,
+  # by operation id, and say plainly what is known.
+  HELD_FIELDS=$(printf '%s' "$BODY" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print(d.get("operationId") or "")
+print(d.get("outcome") or "")
+print(d.get("reason") or "")
+print(d.get("messageId") or "")' 2>/dev/null)
+  HELD_OP=$(printf '%s\n' "$HELD_FIELDS" | sed -n '1p')
+  HELD_OUTCOME=$(printf '%s\n' "$HELD_FIELDS" | sed -n '2p')
+  HELD_REASON=$(printf '%s\n' "$HELD_FIELDS" | sed -n '3p')
+  HELD_MSG_ID=$(printf '%s\n' "$HELD_FIELDS" | sed -n '4p')
+  CHECK_URL=""
+  [ -n "$HELD_OP" ] && CHECK_URL="http://localhost:${PORT}/telegram/origins/operations/${HELD_OP}/outcome"
+  VERDICT=""
+  VERDICT_DETAIL=""
+  if [ -n "$CHECK_URL" ] && [ -n "$AUTH_TOKEN" ]; then
+    CHECK_CURL=(-s --max-time 5 -H "Authorization: Bearer ${AUTH_TOKEN}" "$CHECK_URL")
+    [ -n "$AGENT_ID" ] && CHECK_CURL+=(-H "X-Instar-AgentId: ${AGENT_ID}")
+    CHECK_BODY=$(curl "${CHECK_CURL[@]}" 2>/dev/null || echo "")
+    VERDICT_FIELDS=$(printf '%s' "$CHECK_BODY" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print(d.get("outcome") or "")
+print(d.get("detail") or "")
+ids=d.get("messageIds") or []
+print(",".join(str(i) for i in ids))' 2>/dev/null)
+    VERDICT=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '1p')
+    VERDICT_DETAIL=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '2p')
+    VERDICT_IDS=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '3p')
+    [ -z "$HELD_MSG_ID" ] && HELD_MSG_ID="$VERDICT_IDS"
+  fi
+  [ -z "$VERDICT" ] && [ "$HELD_OUTCOME" = "accepted-unrecorded" ] && VERDICT="delivered"
+  # No lookup answer, but Telegram definitely refused this attempt: it did not
+  # arrive. The server may still retry it (e.g. after a rate limit), so this is
+  # not a licence to resend either.
+  [ -z "$VERDICT" ] && [ "$HELD_OUTCOME" = "known-failed" ] && VERDICT="refused-attempt"
+  CHECK_LINE="  Check again: curl -s -H \"Authorization: Bearer \$INSTAR_AUTH_TOKEN\" -H \"X-Instar-AgentId: \$INSTAR_AGENT_ID\" ${CHECK_URL:-<no operation id returned>}"
+  case "$VERDICT" in
+    delivered|partially-delivered)
+      echo "DELIVERED — Telegram accepted this message${HELD_MSG_ID:+ (message id ${HELD_MSG_ID})}. Do NOT resend it." >&2
+      [ "$VERDICT" = "partially-delivered" ] && echo "  Only part of it reached Telegram. Check before sending the rest yourself." >&2
+      [ "$HELD_REASON" = "receipt-persistence-unavailable" ] && echo "  (The server could not save its delivery receipt; the receipt was kept in a fallback record.)" >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "Delivered to topic $TOPIC_ID${HELD_MSG_ID:+ (message id ${HELD_MSG_ID})}; receipt not fully recorded — do not resend"
+      exit 0
+      ;;
+    not-delivered)
+      echo "NOT SENT — this message never reached Telegram and the server will not retry it (operation ${HELD_OP:-unknown})." >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "  It is safe to send it again." >&2
+      exit 1
+      ;;
+    refused-attempt)
+      echo "NOT DELIVERED — Telegram refused this attempt (${HELD_REASON:-unknown}, operation ${HELD_OP:-unknown})." >&2
+      echo "  The server may still retry it, so check before sending it again." >&2
+      echo "$CHECK_LINE" >&2
+      exit 1
+      ;;
+    pending)
+      echo "HELD — not delivered yet. The server kept the original message and will deliver it itself. Do NOT resend it." >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "  Reason: ${HELD_REASON:-unknown} (operation ${HELD_OP:-unknown})" >&2
+      echo "$CHECK_LINE" >&2
+      exit 1
+      ;;
+    *)
+      echo "MAY ALREADY BE DELIVERED — the server could not confirm whether this message reached the chat. Do NOT resend it." >&2
+      echo "  Reason: ${HELD_REASON:-unknown}; outcome: ${HELD_OUTCOME:-unknown} (operation ${HELD_OP:-unknown})" >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "  Absence from the conversation is not proof of non-delivery." >&2
+      echo "$CHECK_LINE" >&2
+      echo "  Resend only if that check answers \"not-delivered\"." >&2
+      echo "AMBIGUOUS (HTTP 409 held): outcome unknown — do not resend; check the operation outcome"
+      exit 0
+      ;;
+  esac
 else
   # Recoverable-class detection (spec § Layer 2b).
   #

@@ -208,6 +208,11 @@ export class DecisionQualityRecorderImpl implements DecisionQualityRecorder {
     return this.enabled && !this.dryRun;
   }
 
+  /** A proof must read the same ledger that the active recorder writes. */
+  isRecordingLiveFor(ledger: FeatureMetricsLedger): boolean {
+    return this.isRecordingLive() && this.ledger === ledger;
+  }
+
   /** The resolved gate state (wiring-integrity/status surface). */
   gateState(): { enabled: boolean; dryRun: boolean } {
     return { enabled: this.enabled, dryRun: this.dryRun };
@@ -485,8 +490,9 @@ export function annotateDecisionOutcome(a: DecisionOutcomeAnnotationInput): Deci
  *
  * No installed recorder ⇒ false (a CLI process records nothing).
  */
-export function decisionQualityRecordingLive(): boolean {
-  return _activeAnnotator?.isRecordingLive() === true;
+export function decisionQualityRecordingLive(ledger?: FeatureMetricsLedger): boolean {
+  return ledger ? _activeAnnotator?.isRecordingLiveFor(ledger) === true
+    : _activeAnnotator?.isRecordingLive() === true;
 }
 
 /* ── Small helpers ──────────────────────────────────────────────────────── */

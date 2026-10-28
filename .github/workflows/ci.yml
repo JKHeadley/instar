@@ -307,7 +307,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run lint
+      - run: npm run lint:parallel
 
   unit:
     name: Unit Tests (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)

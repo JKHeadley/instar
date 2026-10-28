@@ -43,7 +43,8 @@ describe('PostUpdateMigrator package template shape', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-template-shape-'));
     tempDirs.push(tmp);
 
-    execFileSync('npx', ['tsc'], {
+    // The compiler `npm run build` uses (TypeScript 7); `npx tsc` resolves install-order dependently.
+    execFileSync(process.execPath, [path.join(repoRoot, 'node_modules', 'typescript-native', 'bin', 'tsc')], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

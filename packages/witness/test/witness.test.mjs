@@ -475,3 +475,63 @@ test('key file: created once with 0600, reloaded unchanged, never overwritten', 
   fs.writeFileSync(path.join(dir, 'witness-key.json'), JSON.stringify({ ...a.key, publicKey: generateWitnessKey().publicKey }));
   assert.throws(() => loadOrCreateWitnessKey(dir), /does not match/);
 });
+
+// ── SEAL references (SealKeeper form, PROVISIONAL until SealKeeper confirms the reading) ──
+
+import crypto from 'node:crypto';
+import { checkSealBytes, formatSealkeeperReference, parseSealReference, sealReferencesIn } from '../dist/index.js';
+
+const SEAL_BYTES = Buffer.from('{"seal":"example"}');
+const SEAL_HASH = crypto.createHash('sha256').update(SEAL_BYTES).digest('hex');
+
+test('a sealkeeper:seal:1 reference splits on the first five colons only; the URL keeps its own colons', () => {
+  const url = 'https://sealkeeper.run/v1/seal/read?id=abc:def&at=2026-10-25T12:00:00Z';
+  const ref = parseSealReference(`sealkeeper:seal:1:dawn:${SEAL_HASH}:${url}`);
+  assert.equal(ref.format, 'sealkeeper-v1');
+  assert.equal(ref.party, 'dawn');
+  assert.equal(ref.sha256, SEAL_HASH);
+  assert.equal(ref.url, url);
+  assert.deepEqual(ref.trusted, ['sha256']);
+  assert.deepEqual(ref.unverified, ['party', 'url']);
+  assert.equal(ref.provisional, true);
+});
+
+test('the old seal:sha256: form is still accepted, and plain evidence is not a SEAL reference', () => {
+  const ref = parseSealReference(`seal:sha256:${SEAL_HASH}`);
+  assert.equal(ref.format, 'legacy');
+  assert.equal(ref.sha256, SEAL_HASH);
+  assert.equal(ref.provisional, false);
+  assert.equal(parseSealReference('https://sealkeeper.run/seal/abc'), null);
+  assert.equal(parseSealReference('threadline:thread-1'), null);
+  assert.equal(parseSealReference('seal:sha256:not-a-hash'), null);
+});
+
+test('a malformed sealkeeper reference is reported, never read as a different field layout', () => {
+  assert.equal(parseSealReference('sealkeeper:seal:1:dawn:abc').format, 'malformed');
+  assert.equal(parseSealReference(`sealkeeper:seal:1::${SEAL_HASH}:https://x`).reason, 'empty party');
+  assert.equal(parseSealReference(`sealkeeper:seal:1:dawn:${SEAL_HASH}:`).reason, 'empty url');
+  assert.match(parseSealReference(`sealkeeper:seal:1:dawn:${SEAL_HASH.slice(0, 63)}:https://x`).reason, /64 hex/);
+  assert.match(parseSealReference(`sealkeeper:seal:1:dawn:${SEAL_HASH}:https://x/${'y'.repeat(200)}`).reason, /200 characters/);
+});
+
+test('formatSealkeeperReference refuses what the form cannot carry and round-trips what it can', () => {
+  const url = 'https://sealkeeper.run/v1/seal/read?party=dawn';
+  const reference = formatSealkeeperReference({ party: 'dawn', sha256: SEAL_HASH.toUpperCase(), url });
+  assert.equal(reference, `sealkeeper:seal:1:dawn:${SEAL_HASH}:${url}`);
+  assert.ok(reference.length <= 200);
+  assert.throws(() => formatSealkeeperReference({ party: 'did:key:z6Mk', sha256: SEAL_HASH, url }), /colon/);
+  assert.throws(() => formatSealkeeperReference({ party: 'dawn', sha256: 'abc', url }), /64 hex/);
+  assert.throws(() => formatSealkeeperReference({ party: 'dawn', sha256: SEAL_HASH, url: 'http://plain' }), /https/);
+  assert.throws(() => formatSealkeeperReference({ party: 'dawn', sha256: SEAL_HASH, url: `https://x/${'y'.repeat(200)}` }), /at most 200/);
+});
+
+test('checkSealBytes matches bytes to references by hash only; a stray SEAL is a mismatch', () => {
+  const refs = sealReferencesIn(['threadline:t', `sealkeeper:seal:1:dawn:${SEAL_HASH}:https://x`, `seal:sha256:${'0'.repeat(64)}`]);
+  assert.equal(refs.length, 2);
+  const ok = checkSealBytes(refs, [SEAL_BYTES]);
+  assert.deepEqual([...ok.matched.keys()], [SEAL_HASH]);
+  assert.deepEqual(ok.unmatched, []);
+  const bad = checkSealBytes(refs, [SEAL_BYTES, Buffer.from('tampered')]);
+  assert.equal(bad.unmatched.length, 1);
+  assert.equal(bad.unmatched[0], crypto.createHash('sha256').update('tampered').digest('hex'));
+});

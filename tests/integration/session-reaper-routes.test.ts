@@ -14,7 +14,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
-import { SessionReaper, type SessionReaperDeps } from '../../src/monitoring/SessionReaper.js';
+import { computePressure, SessionReaper, type SessionReaperDeps } from '../../src/monitoring/SessionReaper.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { Session } from '../../src/core/types.js';
 
@@ -111,6 +111,20 @@ describe('GET /sessions/reaper (integration)', () => {
     expect(res.body.sessions[0].name).toBe('sess');
     expect(['keep', 'reap-eligible']).toContain(res.body.sessions[0].verdict);
     expect(res.body.pool).toBeUndefined();
+  });
+
+  it('reaper-pressure-signals: the new pressure inputs reach the route, and the 2026-10-25 phantom is gone', async () => {
+    const LAPTOP_2026_10_25 = { freePct: 42.8, loadPerCore: 9.4, cpuBusyPct: 100 - 40.7, compressorPct: 35 / 128 * 100 };
+    const deps = { ...reaperDeps([]), pressure: () => computePressure(LAPTOP_2026_10_25, { cpuModerateLoadPerCore: 1.0, cpuCriticalLoadPerCore: 1.5 }) };
+    const reaper = new SessionReaper(deps, { enabled: true });
+    const res = await request(appWith(reaper)).get('/sessions/reaper');
+    expect(res.status).toBe(200);
+    // CPU: the phantom is gone. Memory: the compressor raise ships DARK — reported as
+    // the compressor readings are reported; memTier is the available-memory tier, always.
+    expect(res.body.pressure.tier).toBe('normal');
+    expect(res.body.pressure.inputs).toMatchObject({ cpuSignal: 'busy', loadPerCore: 9.4, cpuTier: 'normal', memTier: 'normal', kernelMemoryPressureLevel: null });
+    expect(res.body.pressure.inputs.cpuBusyPct).toBeCloseTo(59.3, 1);
+    expect(res.body.pressure.inputs.compressorPct).toBeCloseTo(27.34, 1);
   });
 
   it('dry-run snapshot reports dryRun:true and never reaps', async () => {

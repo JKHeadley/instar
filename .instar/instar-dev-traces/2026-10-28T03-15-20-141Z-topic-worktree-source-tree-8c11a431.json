@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "topic-worktree-source-tree",
+  "sessionId": "6403eef4-0261-4fa8-95c6-b72e86a0d232",
+  "timestamp": "2026-10-28T03:15:20.141Z",
+  "artifactPath": "upgrades/side-effects/topic-worktree-source-tree.md",
+  "artifactSha256": "a8edef8fce0587a6adbe586702bdde4f8a69b0cafe1240ee7745b06396f5e9b2",
+  "coveredFiles": [
+    "docs/specs/topic-worktree-source-tree.eli16.md",
+    "src/core/WorktreeManager.ts",
+    "tests/unit/WorktreeManager-instar-source-tree.test.ts",
+    "upgrades/next/topic-worktree-source-tree.md",
+    "upgrades/side-effects/topic-worktree-source-tree.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in one file using an existing guard carve-out; a revert fully undoes it.",
+  "eli16Path": "docs/specs/topic-worktree-source-tree.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-worktree-source-tree.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

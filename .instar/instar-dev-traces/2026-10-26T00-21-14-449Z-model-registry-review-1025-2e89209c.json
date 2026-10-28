@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "model-registry-review-1025",
+  "sessionId": "cd11bb25-38ff-4a31-becc-216173b7ad19",
+  "timestamp": "2026-10-26T00:21:14.449Z",
+  "artifactPath": "upgrades/side-effects/model-registry-review-1025.md",
+  "artifactSha256": "36ffb6f79c75f04d79184e322fdb98cf01cf9254b6c84c247a98b9a75c9ece36",
+  "coveredFiles": [
+    "scripts/model-registry-freshness.manifest.json",
+    "upgrades/model-registry-review-1025.eli16.md",
+    "upgrades/side-effects/model-registry-review-1025.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Data-only review record in one manifest: dates, a review note and five frontier:false rows; no pin or routing change.",
+  "eli16Path": "upgrades/model-registry-review-1025.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/model-registry-review-1025.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

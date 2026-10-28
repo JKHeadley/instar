@@ -97,6 +97,27 @@ export interface FeatureMetricRecord {
   verdictId?: string;
   /** Defaults to now(). */
   ts?: number;
+  /**
+   * Job-cost attribution (docs/specs/job-cost-reduction.md §9.1): the job slug,
+   * machine and run/episode id a call was made FOR (the anomaly narrator, the
+   * outage backup check, the supervision pass, Jev triage calls).
+   * Optional and content-free; NULL on every call not made for a job.
+   */
+  jobSlug?: string;
+  machineId?: string;
+  runId?: string;
+}
+
+/** One per-job feature-metrics rollup row (§9.1): calls a component made for a job slug. */
+export interface FeatureJobRollup {
+  jobSlug: string;
+  feature: string;
+  framework: string | null;
+  model: string | null;
+  calls: number;
+  tokensIn: number;
+  tokensOut: number;
+  tokensCached: number;
 }
 
 export interface FeatureRollup {
@@ -712,6 +733,11 @@ const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
   // ledger's reserveId === every provider_cost_report row's meteredCallId).
   // Additive + nullable; only metered calls stamp it (FD-21).
   { name: 'call_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN call_id TEXT' },
+  // job-cost-reduction §9.1: per-job attribution of calls made FOR a job. Additive +
+  // nullable; only calls whose attribution carries a jobSlug stamp them.
+  { name: 'job_slug', ddl: 'ALTER TABLE feature_metrics ADD COLUMN job_slug TEXT' },
+  { name: 'machine_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN machine_id TEXT' },
+  { name: 'run_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN run_id TEXT' },
 ];
 
 /** Batch ceiling for the retention prune (scal-F4): SQLite-portable bounded DELETE. */
@@ -815,12 +841,21 @@ export class FeatureMetricsLedger {
     } catch {
       // @silent-fallback-ok: the partial index is a read-path optimization only.
     }
+    // job-cost-reduction §9.1: partial index for the per-job read (GET /jobs/cost).
+    try {
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_feature_metrics_job_slug
+           ON feature_metrics (job_slug, ts) WHERE job_slug IS NOT NULL`,
+      );
+    } catch {
+      // @silent-fallback-ok: the partial index is a read-path optimization only.
+    }
     // Close-on-exit registry (SqliteRegistry.ts) — closed once at shutdown.
     registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
       `INSERT INTO feature_metrics
-         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, call_id, waited, wait_ms, verdict_id)
-       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @callId, @waited, @waitMs, @verdictId)`,
+         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, call_id, waited, wait_ms, verdict_id, job_slug, machine_id, run_id)
+       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @callId, @waited, @waitMs, @verdictId, @jobSlug, @machineId, @runId)`,
     );
     if (this.maintainSpendRollup) {
       try {
@@ -971,6 +1006,9 @@ export class FeatureMetricsLedger {
         waited: r.waited ? 1 : 0,
         waitMs: r.waitMs ?? null,
         verdictId: r.verdictId ?? null,
+        jobSlug: clampLabel(r.jobSlug),
+        machineId: clampLabel(r.machineId),
+        runId: clampLabel(r.runId),
       });
     } catch {
       // Observability must never break the path it observes (Close the Loop:
@@ -1225,6 +1263,48 @@ export class FeatureMetricsLedger {
         errorRowsWithUsage: Number(r.errorRowsWithUsage) || 0,
       };
     });
+  }
+
+  /**
+   * Per-job rollup (docs/specs/job-cost-reduction.md §9.1): llm calls a component
+   * made FOR a job slug (rows whose attribution carried a jobSlug), grouped by slug ×
+   * feature × framework × model, inside [sinceMs, untilMs). 'shed' rows are excluded —
+   * no call ran, so they carry no cost and are not model calls. `machineId`, when
+   * given, keeps rows stamped with that machine OR with no machine stamp (a call made
+   * on this machine before the stamp existed). Degrades to [] on a read failure.
+   */
+  byJobSlug(opts: { sinceMs: number; untilMs?: number; machineId?: string | null }): FeatureJobRollup[] {
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const machine = opts.machineId ?? null;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT job_slug AS jobSlug, feature, framework, model,
+             COUNT(*)                      AS calls,
+             COALESCE(SUM(tokens_in), 0)   AS tokensIn,
+             COALESCE(SUM(tokens_out), 0)  AS tokensOut,
+             COALESCE(SUM(tokens_cached), 0) AS tokensCached
+           FROM feature_metrics
+           WHERE job_slug IS NOT NULL AND ts >= ? AND ts < ? AND kind='llm' AND outcome != 'shed'
+             AND (? IS NULL OR machine_id IS NULL OR machine_id = ?)
+           GROUP BY job_slug, feature, framework, model`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string | null>>;
+      return rows.map((r) => ({
+        jobSlug: String(r.jobSlug),
+        feature: String(r.feature),
+        framework: r.framework === null || r.framework === undefined ? null : String(r.framework),
+        model: r.model === null || r.model === undefined ? null : String(r.model),
+        calls: Number(r.calls) || 0,
+        tokensIn: Number(r.tokensIn) || 0,
+        tokensOut: Number(r.tokensOut) || 0,
+        tokensCached: Number(r.tokensCached) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: a DB whose job_slug ALTER was swallowed reads as "no
+      // per-job calls" — the cost report states feature attribution, never throws.
+      return [];
+    }
   }
 
   /**
@@ -2143,6 +2223,47 @@ export class FeatureMetricsLedger {
       // from its last durable boundary next run — never a throw.
       return null;
     }
+  }
+
+  /**
+   * Keep the scheduled grade-pass effect check and the pass itself on one
+   * SQLite writer lane. A second process cannot add a decision between the
+   * strict pre-read and the strict post-read. Nested ledger transactions use
+   * savepoints. The callback must be synchronous and bounded.
+   */
+  withExclusiveGradingPass<T>(work: () => T): T {
+    if (this.closed) throw new Error('quality ledger closed');
+    return this.db.transaction(work).immediate();
+  }
+
+  /** Strict, content-free read for proving a grade pass was genuinely idle. */
+  strictGradingIdleSnapshot(points: readonly string[]): Array<{
+    decisionPoint: string; cursorTs: number; cursorCorrelationId: string;
+    nextCorrelationId: string | null; nextTs: number | null; totalRows: number;
+  }> {
+    if (this.closed) throw new Error('quality ledger closed');
+    return points.map(decisionPoint => {
+      const cursor = this.db.prepare(`SELECT cursor_ts AS cursorTs,
+        cursor_correlation_id AS cursorCorrelationId FROM decision_grading_cursor
+        WHERE decision_point=?`).get(decisionPoint) as
+        { cursorTs: number; cursorCorrelationId: string } | undefined;
+      const cursorTs = cursor?.cursorTs ?? 0;
+      const cursorCorrelationId = cursor?.cursorCorrelationId ?? '';
+      const next = this.db.prepare(`SELECT correlation_id AS correlationId,ts
+        FROM decision_quality WHERE decision_point=?
+        AND (ts>? OR (ts=? AND correlation_id>?))
+        ORDER BY ts ASC,correlation_id ASC LIMIT 1`)
+        .get(decisionPoint, cursorTs, cursorTs, cursorCorrelationId) as
+        { correlationId: string; ts: number } | undefined;
+      // Count the whole point, including late rows behind the cursor. A
+      // cursor-only read can falsely certify idle after a late insert.
+      const count = this.db.prepare(`SELECT COUNT(*) AS totalRows FROM decision_quality
+        WHERE decision_point=?`).get(decisionPoint) as { totalRows: number };
+      if (!Number.isSafeInteger(count.totalRows) || count.totalRows < 0) throw new Error('invalid grading row count');
+      return { decisionPoint, cursorTs, cursorCorrelationId,
+        nextCorrelationId: next?.correlationId ?? null, nextTs: next?.ts ?? null,
+        totalRows: count.totalRows };
+    });
   }
 
   /**

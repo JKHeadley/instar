@@ -11,6 +11,12 @@ export const WINDOW_RUN_LIVENESS_DEFAULTS = {
   workEvidenceMaxAgeMs: 30 * 60_000,
   recoveryCeilingMs: 15 * 60_000,
 } as const;
+/**
+ * A heartbeat is read (transcript mtime) after the authority stamps the sample
+ * time, so a live executor writing during the sample reads slightly in the
+ * future. Within this bound that is fresh, not a clock fault.
+ */
+export const WINDOW_RUN_HEARTBEAT_CLOCK_TOLERANCE_MS = 5_000;
 /** 24h at one sample/minute plus ample recovery/work headroom. Overflow fails closed. */
 export const WINDOW_RUN_LIVENESS_MAX_AUDIT_ENTRIES = 4_096;
 
@@ -93,7 +99,8 @@ export interface WindowRunRecoveryAttempt {
   requestedAt: string;
   deadlineAt: string;
   missingPredicates: WindowRunLivenessPredicate[];
-  outcome: 'pending' | 'would-attempt' | 'succeeded' | 'failed';
+  /** `executor-busy`: the executor refused the refresh because it is mid-work — alive, not a failed recovery. */
+  outcome: 'pending' | 'would-attempt' | 'succeeded' | 'failed' | 'executor-busy';
   completedAt?: string;
   resultDigest?: string;
   detail?: string;
@@ -206,6 +213,24 @@ export interface WindowRunRecoveryResult {
   replacementExecutorId?: string;
   /** Server-derived exact open task the replacement was instructed to resume. */
   resumedTaskRef?: string;
+  /** The executor refused the refresh because it has in-flight work. A busy session is alive. */
+  executorBusy?: boolean;
+}
+
+/**
+ * Map a SessionRefresh outcome onto a recovery result. A `session-busy`
+ * refusal means the executor is alive with in-flight work, so it is marked
+ * `executorBusy` instead of reading as a dead executor.
+ */
+export function windowRunRecoveryResultFromRefresh(
+  attemptId: string,
+  taskRef: string,
+  result: { ok: true; newSessionName: string; topicId: number | string } | { ok: false; code: string; message: string },
+): WindowRunRecoveryResult {
+  if (result.ok) {
+    return { succeeded: true, detail: `refreshed:${result.newSessionName}:${taskRef}`, receipt: `${attemptId}:${result.newSessionName}:${result.topicId}:${taskRef}`, replacementExecutorId: result.newSessionName, resumedTaskRef: taskRef };
+  }
+  return { succeeded: false, detail: `${result.code}:${result.message}`, receipt: `${attemptId}:${result.code}`, ...(result.code === 'session-busy' ? { executorBusy: true } : {}) };
 }
 
 export interface WindowRunLivenessDeps {
@@ -496,7 +521,7 @@ export class WindowRunLivenessAuthority {
     if (this.isExpired(sample, now)) return await this.fail(state, 'window-expired', now);
 
     if (missing.length === 0) {
-      if (state.status === 'preparing' || state.status === 'at-risk' && state.recoveryAttempt?.outcome === 'succeeded') {
+      if (state.status === 'preparing' || state.status === 'at-risk' && (state.recoveryAttempt?.outcome === 'succeeded' || state.recoveryAttempt?.outcome === 'executor-busy')) {
         const prior = state.status;
         state.status = 'active';
         state.activatedAt ??= now;
@@ -570,9 +595,36 @@ export class WindowRunLivenessAuthority {
     try {
       result = await this.deps.recover({ attemptId: attempt.attemptId, state: structuredClone(state), missingPredicates: missing, taskRef: recoveryTask });
     } catch (error) {
+      // @silent-fallback-ok — not swallowed: the error becomes the attempt's persisted
+      // `failed` detail/digest below and forces the loud terminal stall + notice.
       result = { succeeded: false, detail: error instanceof Error ? error.message : String(error), receipt: digest(String(error)) };
     }
     attempt.completedAt = this.now();
+    if (!result.succeeded && result.executorBusy === true) {
+      // A busy executor is alive and working; refreshing it would kill in-flight
+      // work. Not a failed recovery: stay at-risk, re-sample now, and let the
+      // recovery ceiling still bound how long a non-green run can stay unsettled.
+      attempt.outcome = 'executor-busy';
+      attempt.detail = result.detail.slice(0, 500);
+      attempt.resultDigest = digest({ attemptId: attempt.attemptId, receipt: result.receipt, executorBusy: true, detail: result.detail, requestedTaskRef: recoveryTask });
+      this.store.save(state);
+      sample = await this.deps.sample(structuredClone(state));
+      const busyResampledAt = this.now();
+      missing = this.applySample(state, sample, busyResampledAt);
+      if (missing.length === 0) {
+        state.status = 'active';
+        state.atRiskSince = undefined;
+        state.activatedAt ??= busyResampledAt;
+        this.transition(state, 'at-risk', 'active', 'recovery-verified-executor-busy', busyResampledAt, attempt.attemptId);
+        this.recordSample(state, busyResampledAt);
+        this.store.save(state);
+        this.project(state, 'active', busyResampledAt);
+      } else {
+        this.recordSample(state, busyResampledAt);
+      }
+      this.store.save(state);
+      return state;
+    }
     attempt.outcome = result.succeeded ? 'succeeded' : 'failed';
     attempt.detail = result.detail.slice(0, 500);
     attempt.resumedTaskRef = result.resumedTaskRef;
@@ -640,7 +692,9 @@ export class WindowRunLivenessAuthority {
     const workMs = Date.parse(sample.work?.observedAt ?? '');
     const expiresMs = Date.parse(sample.lifecycle.expiresAt ?? '');
     const executorOk = sample.executor.id === state.executorId && sample.executor.running;
-    const heartbeatOk = executorOk && Number.isFinite(heartbeatMs) && heartbeatMs <= nowMs && nowMs - heartbeatMs <= this.cfg.heartbeatMaxAgeMs;
+    const heartbeatOk = executorOk && Number.isFinite(heartbeatMs)
+      && heartbeatMs - nowMs <= WINDOW_RUN_HEARTBEAT_CLOCK_TOLERANCE_MS
+      && nowMs - heartbeatMs <= this.cfg.heartbeatMaxAgeMs;
     const deliveryOk = sample.deliveryReachable === true;
     const workMonotone = !!sample.work && (!state.lastWorkReceipt || sample.work.sequence >= state.lastWorkReceipt.sequence && (sample.work.sequence > state.lastWorkReceipt.sequence || sample.work.digest === state.lastWorkReceipt.digest));
     const workOk = workMonotone && Number.isFinite(workMs) && workMs <= nowMs && nowMs - workMs <= this.cfg.workEvidenceMaxAgeMs;

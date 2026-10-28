@@ -35,7 +35,15 @@ function report(files: ReturnType<typeof file>[]): string {
 describe('parseVitestJson', () => {
   it('counts per file and relativises the absolute name', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['passed', 'passed', 'skipped', 'todo', 'disabled'])]), ROOT);
-    expect(r.files.get('tests/unit/a.test.ts')).toEqual({ passed: 2, failed: 0, skipped: 2, todo: 1, message: '' });
+    expect(r.files.get('tests/unit/a.test.ts')).toMatchObject({ passed: 2, failed: 0, skipped: 2, todo: 1, message: '' });
+  });
+  it('records the file wall time from start/end when the report carries both, and nothing otherwise', () => {
+    const timed = { ...file('tests/unit/a.test.ts', ['passed']), startTime: 1000, endTime: 3500 };
+    const untimed = file('tests/unit/b.test.ts', ['passed']) as Record<string, unknown>;
+    delete untimed.startTime; delete untimed.endTime;
+    const r = parseVitestJson(report([timed, untimed as never]), ROOT);
+    expect(r.files.get('tests/unit/a.test.ts')!.ms).toBe(2500);
+    expect(r.files.get('tests/unit/b.test.ts')!.ms).toBeUndefined();
   });
   it('failed and pending (unfinished or .only) assertions count as failures', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['failed', 'pending', 'passed'])]), ROOT);
@@ -145,5 +153,33 @@ describe('evaluateRun', () => {
   it('rejects a report for a lane that is not defined', () => {
     const r = evaluateRun(inv, [...runs(), { lane: 'bogus' as never, seconds: 0, report: null }]);
     expect(r.reasons).toContain('unknown-lane:bogus');
+  });
+});
+
+describe('evaluateRun — fail-fast stopped lanes', () => {
+  it('a stoppedEarly flag on a lane that DID report is ignored: its report is judged as usual', async () => {
+    const { computeInventory } = await import('../../../src/localVerify/inventory.js');
+    const inv = computeInventory(['tests/unit/a.test.ts', 'tests/integration/b.test.ts', 'tests/e2e/c.test.ts']);
+    const rep = (f: string, failed: number) => ({ files: new Map([[f, { passed: failed ? 0 : 1, failed, skipped: 0, todo: 0 }]]) });
+    const ev = evaluateRun(inv, [
+      { lane: 'unit', report: rep('tests/unit/a.test.ts', 1), seconds: 1, exitCode: 1, stoppedEarly: true },
+      { lane: 'integration', report: rep('tests/integration/b.test.ts', 0), seconds: 1, exitCode: 0 },
+      { lane: 'e2e', report: rep('tests/e2e/c.test.ts', 0), seconds: 1, exitCode: 0 },
+    ]);
+    expect(ev.outcome).toBe('failure');
+    expect(ev.reasons[0]).toBe('lane-failed:unit:1');
+    expect(ev.reasons.some((x) => x.startsWith('lane-stopped-early'))).toBe(false);
+  });
+  it('stopped lanes alone can never make a run succeed', async () => {
+    const { computeInventory } = await import('../../../src/localVerify/inventory.js');
+    const inv = computeInventory(['tests/unit/a.test.ts', 'tests/integration/b.test.ts', 'tests/e2e/c.test.ts']);
+    const ok = (f: string) => ({ files: new Map([[f, { passed: 1, failed: 0, skipped: 0, todo: 0 }]]) });
+    const ev = evaluateRun(inv, [
+      { lane: 'unit', report: ok('tests/unit/a.test.ts'), seconds: 1, exitCode: 0 },
+      { lane: 'integration', report: null, seconds: 1, exitCode: null, stoppedEarly: true },
+      { lane: 'e2e', report: ok('tests/e2e/c.test.ts'), seconds: 1, exitCode: 0 },
+    ]);
+    expect(ev.outcome).toBe('failure');
+    expect(ev.reasons).toEqual(['lane-stopped-without-failure', 'lane-stopped-early:integration']);
   });
 });

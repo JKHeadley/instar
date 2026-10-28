@@ -77,6 +77,10 @@ export interface FeatureMetricsRecorder {
     framework?: string;
     /** Correlates a 'fired' verdict to a downstream record (e.g. a commitment id). */
     verdictId?: string;
+    /** Job-cost attribution (job-cost-reduction §9.1), passed through from options.attribution. */
+    jobSlug?: string;
+    machineId?: string;
+    runId?: string;
   }): void;
 }
 
@@ -163,6 +167,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       framework?: string;
       verdictId?: string;
     },
+    job?: { jobSlug?: string; machineId?: string; runId?: string },
   ): void {
     // Runtime backstop: an unlabeled llm row is a real escape past the
     // zero-baseline attribution ratchet. Signal-only, once per process.
@@ -177,6 +182,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         tokensCached: extra?.tokensCached,
         model: extra?.model, framework: extra?.framework,
         verdictId: extra?.verdictId,
+        ...(job?.jobSlug ? { jobSlug: job.jobSlug, machineId: job.machineId, runId: job.runId } : {}),
       });
     } catch {
       /* never break the LLM path on a metrics write */
@@ -236,7 +242,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         // was engaged.
         this.recordMetric(feature, 'shed', Date.now() - startedAt, waited, options?.rateLimitWaitMs, {
           verdictId: correlationId,
-        });
+        }, options?.attribution);
         throw new LlmCircuitOpenError(gate.retryAfterMs);
       }
     }
@@ -307,6 +313,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
           framework: resolved?.framework,
           verdictId: correlationId,
         },
+        options?.attribution,
       );
       return result;
     } catch (err) {
@@ -324,7 +331,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         model: resolved?.model,
         framework: resolved?.framework,
         verdictId: correlationId,
-      });
+      }, options?.attribution);
       if (err instanceof RateLimitError || parsed.isLimit) {
         // Pass the parsed retry-after hint through so the breaker can shorten
         // the open window when the provider told us when it resets.

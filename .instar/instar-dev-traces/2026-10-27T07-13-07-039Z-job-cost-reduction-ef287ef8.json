@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "slug": "job-cost-reduction",
+  "sessionId": "151db862-f0e5-4985-9614-540e5687e3fe",
+  "timestamp": "2026-10-27T07:13:07.039Z",
+  "artifactPath": "upgrades/side-effects/job-cost-reduction.md",
+  "artifactSha256": "22e6f16323856ce6cccb3952f4dcc372824ca90345218259c14ce8707aa1c057",
+  "specPath": "docs/specs/job-cost-reduction.md",
+  "coveredFiles": [
+    "dashboard/index.html",
+    "docs/specs/job-cost-reduction.eli16.md",
+    "docs/specs/job-cost-reduction.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scheduler/AgentMdLockFile.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/server/scriptSupervisionRoutes.ts",
+    "tests/e2e/feedback-factory-process-lifecycle.test.ts",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/integration/fresh-install.test.ts",
+    "tests/integration/job-supervision-route.test.ts",
+    "tests/unit/PostUpdateMigrator-scriptJobs.test.ts",
+    "tests/unit/ScriptJobSupervisor.test.ts",
+    "tests/unit/dashboard-job-script-card.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "upgrades/side-effects/job-cost-reduction.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Production scheduler dispatch, server routes, migration, and dashboard behavior change; unit, HTTP integration, and production-shaped E2E evidence required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-cost-reduction-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+      "howCaught": "A disabled script-supervision rollout skips the new supervisor before session dispatch; unit and E2E boundaries verify no fallback session or run row."
+    },
+    "prNumber": 2391,
+    "component": "JobScheduler"
+  }
+}

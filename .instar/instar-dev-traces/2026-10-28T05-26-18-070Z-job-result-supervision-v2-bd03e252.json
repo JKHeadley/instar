@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "job-result-supervision-v2",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T05:26:18.070Z",
+  "artifactPath": "upgrades/side-effects/job-result-supervision-v2.md",
+  "artifactSha256": "d20079db3f75c3dce4cda0f62b5bf846df341ff8a8d084b751386388e2ae64b5",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "upgrades/side-effects/job-result-supervision-v2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Keep the safety ratchet accurate for fail-closed roster reads and the logged canary timer.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

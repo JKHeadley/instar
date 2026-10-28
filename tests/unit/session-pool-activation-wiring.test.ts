@@ -54,8 +54,10 @@ describe('Session Pool activation wiring (§L4)', () => {
     // pairing (spec §3.3), the TOPIC-PROFILE-SPEC §5.3 acquire seam, and then
     // the WS1.1 ownerSupportsForward skew gate (MULTI-MACHINE-SEAMLESSNESS-SPEC)
     // added lines inside the construction, pushing the later assertions out
-    // (deliverMessage: now sits ~4200 chars in).
-    const block = src.slice(idx, idx + 5000);
+    // (deliverMessage: now sits ~4200 chars in). Window 5500: the
+    // trustworthy-machine-load C5 `overloadAwareRanking` placement seam
+    // (one line) moved it to ~5075.
+    const block = src.slice(idx, idx + 5500);
     // The registry dep filters suspect machines from placement candidates
     // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
     // still sourced from the REAL machinePoolRegistry capacities.

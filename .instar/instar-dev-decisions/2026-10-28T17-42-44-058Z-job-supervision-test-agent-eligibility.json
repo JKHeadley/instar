@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-28T17:42:44.058Z",
+  "slug": "job-supervision-test-agent-eligibility",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobSupervisionRollout.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 24,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

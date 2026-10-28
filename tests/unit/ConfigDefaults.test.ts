@@ -34,6 +34,17 @@ describe('ConfigDefaults', () => {
       expect((defaults.monitoring as any).quotaTracking).toBe(true);
     });
 
+    it('starts the script rollout with deterministic grading and preserves operator overrides', () => {
+      const initial = (getInitDefaults('managed-project').jobs as any).scriptRunners.disabledSlugs as string[];
+      expect(initial).not.toContain('llm-decision-grading');
+      expect(initial).toContain('correction-class-review-backstop');
+      expect(initial).toContain('health-check');
+      expect(initial).toContain('feedback-factory-process');
+      const existing: any = { jobs: { scriptRunners: { disabledSlugs: ['custom-job'] } } };
+      applyDefaults(existing, getMigrationDefaults('managed-project'));
+      expect(existing.jobs.scriptRunners.disabledSlugs).toEqual(['custom-job']);
+    });
+
     it('ships the pre-admission carrier dark and backfills it without clobbering overrides', () => {
       for (const t of ['managed-project', 'standalone'] as const) {
         const continuation = (getInitDefaults(t).autonomousSessions as any).codexTaskContinuation;

@@ -414,6 +414,26 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     expect(fs.existsSync(mergedPath)).toBe(false);
   });
 
+  it('keeps a merged checkout with ignored unique files that git would delete without --force', () => {
+    const mergedPath = path.join(worktreesDir, 'merged');
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '\naudit-data/\n');
+    fs.mkdirSync(path.join(mergedPath, 'audit-data'));
+    fs.writeFileSync(path.join(mergedPath, 'audit-data', 'unique.txt'), 'preserve this');
+
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    expect(deps.isClean(mergedPath)).toBe(false);
+    expect(fs.readFileSync(path.join(mergedPath, 'audit-data', 'unique.txt'), 'utf8')).toBe('preserve this');
+  });
+
+  it('keeps ignored files under a generated-output directory', () => {
+    const mergedPath = path.join(worktreesDir, 'merged');
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '\ndist/\n');
+    fs.mkdirSync(path.join(mergedPath, 'dist'));
+    fs.writeFileSync(path.join(mergedPath, 'dist', 'unique.txt'), 'preserve this too');
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    expect(deps.isClean(mergedPath)).toBe(false);
+  });
+
   it('AgentWorktreeReaper end-to-end with real deps: reaps merged+clean, keeps dirty + unmerged', () => {
     const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
     const reaper = new AgentWorktreeReaper(deps, { enabled: true, dryRun: true });
@@ -437,11 +457,14 @@ describe('makeAgentWorktreeReaperDeps.isClean — residue-aware + FAIL-CLOSED (w
   const mk = (readGit: ReadGit) =>
     makeAgentWorktreeReaperDeps({ instarRepo: '/repo', worktreesDir: '/repo/.worktrees', readGit }).isClean('/repo/.worktrees/a');
 
-  it('CLEAN when the only entry is the instar Spotlight marker (the dominant blocker)', () => {
-    expect(mk(withStatus('?? .metadata_never_index\n'))).toBe(true);
+  it('DIRTY (KEEP) even when the only entry has the Spotlight marker name', () => {
+    expect(mk(withStatus('?? .metadata_never_index\n'))).toBe(false);
   });
-  it('CLEAN when entries are only narrow residue (dist/, node_modules/, trace dir)', () => {
-    expect(mk(withStatus('?? dist/\n?? node_modules/\n?? .instar/instar-dev-traces/run.json\n'))).toBe(true);
+  it('DIRTY (KEEP) when generated-output directories contain untracked files', () => {
+    expect(mk(withStatus('?? dist/\n?? node_modules/\n'))).toBe(false);
+  });
+  it('DIRTY (KEEP) on a hand-authored trace under the audit directory', () => {
+    expect(mk(withStatus('?? .instar/instar-dev-traces/run.json\n'))).toBe(false);
   });
   it('DIRTY (KEEP) on a tracked modification', () => {
     expect(mk(withStatus(' M src/core/x.ts\n'))).toBe(false);
@@ -464,11 +487,14 @@ describe('makeAgentWorktreeReaperDeps.isClean — residue-aware + FAIL-CLOSED (w
   it('CLEAN on a truly empty worktree (no changes at all)', () => {
     expect(mk(withStatus(''))).toBe(true);
   });
-  it('REAPER_RESIDUE_DENYLIST is narrow — excludes the broad user-authorable entries', () => {
-    expect(REAPER_RESIDUE_DENYLIST).toContain('.metadata_never_index');
+  it('REAPER_RESIDUE_DENYLIST exempts no user-authorable entries', () => {
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('.metadata_never_index');
     expect(REAPER_RESIDUE_DENYLIST).not.toContain('out/');
     expect(REAPER_RESIDUE_DENYLIST).not.toContain('build/');
     expect(REAPER_RESIDUE_DENYLIST).not.toContain('*.log');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('dist/');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('node_modules/');
+    expect(REAPER_RESIDUE_DENYLIST).not.toContain('.instar/instar-dev-traces/');
   });
 });
 

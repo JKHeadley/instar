@@ -41,6 +41,12 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
   holderPollMs: 30_000,
   queueCap: 10,
   /**
+   * PRs labelled `merge-throughput` may queue past `queueCap` by at most this many: a full
+   * queue of ordinary PRs must not keep out the work that speeds the queue up (2026-10-26:
+   * two labelled PRs answered queue-full for hours, so their priority never applied).
+   */
+  throughputOverflow: 5,
+  /**
    * Isolation re-run (Throughput budget, evidence-per-run "known-flaky"): a lane whose ONLY
    * problem is 1..N failed files re-runs exactly those files once, one at a time. More than N
    * failed files is a real break (no re-run). N is also the cap across a whole verify.
@@ -51,7 +57,13 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
    * shard has its own TMPDIR and tmux server. Measured on the Studio 2026-10-22: one
    * e2e process 23-25 min; two shards 11 and 20 min, beside the other two lanes.
    */
-  e2eShards: 2,
+  e2eShards: 3,
+  /**
+   * The integration lane runs as this many processes (spec "Balanced shards"). Each has its
+   * own TMPDIR and tmux server, and stays at one worker inside, so the in-process port-reuse
+   * race the single worker avoids cannot cross processes.
+   */
+  integrationShards: 2,
   /** Unit-lane workers while the lanes run at once (pinned in the lane's env). */
   unitWorkersParallel: 4,
   /** Oldest queued entry waiting longer than this (capacity waits included) raises `local-verify:starved`. */
@@ -86,6 +98,7 @@ export function computePolicyHash(): string {
     toolchain: { packages: TOOLCHAIN_PACKAGES, scopes: TOOLCHAIN_SCOPES },
     deadlines: LOCAL_VERIFY_DEADLINES,
     e2eShards: LOCAL_VERIFY_LIMITS.e2eShards,
+    integrationShards: LOCAL_VERIFY_LIMITS.integrationShards,
     unitWorkersParallel: LOCAL_VERIFY_LIMITS.unitWorkersParallel,
   };
   return crypto.createHash('sha256').update(stable(policy)).digest('hex');

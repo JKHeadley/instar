@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "rust-trial-report",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-27T19:52:51.019Z",
+  "artifactPath": "upgrades/side-effects/rust-trial-report.md",
+  "artifactSha256": "e2f0fd3310a4b6ee8f8975274699849cd8dd571cf204315a709c190de08f61f2",
+  "coveredFiles": [
+    "docs/research/RUST-TRIAL-2026-10.md",
+    "docs/specs/rust-trial-report.eli16.md",
+    "upgrades/next/rust-trial-report.md",
+    "upgrades/side-effects/rust-trial-report.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation only: a measured research report; no runtime surface.",
+  "eli16Path": "docs/specs/rust-trial-report.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/rust-trial-report.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

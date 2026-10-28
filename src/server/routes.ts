@@ -1,4 +1,7 @@
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { getActiveWorkAdmission } from '../core/workAdmission.js';
+import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
+import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
@@ -150,6 +153,7 @@ import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { getJevCorrectionShadow } from '../core/JevCorrectionShadow.js';
 import { getJevCirclesShadow } from '../core/JevCirclesShadow.js';
 import { getJevReviewFlagShadow } from '../core/JevReviewFlagShadow.js';
+import { getMachineLoadAssessor } from '../core/MachineLoadAssessor.js';
 import { PasskeyGrantStore, canonicalEmail as canonicalPasskeyEmail } from '../core/PasskeyGrantStore.js';
 import { PasskeyIssuerSet, type IssuerMachineStatus } from '../core/PasskeyIssuerSet.js';
 import { PasskeyNonceLedger } from '../core/PasskeyNonceLedger.js';
@@ -198,7 +202,8 @@ import {
 } from '../core/PlaywrightProfileRegistry.js';
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
-import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
+import { buildViewTunnelUrl } from './viewTunnelUrl.js';
+import { rateLimiter, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS, bearerMatches } from './middleware.js';
 import { relayHoldHours } from '../threadline/relayVerdict.js';
 import {
   buildPeerDarkSentence,
@@ -249,9 +254,11 @@ import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrl
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
+import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
-import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
+import { runGradePassWithIdleProof } from '../core/JobGradePassIdleVerifier.js';
+import { buildDirectJobSupervisionQuality } from './directJobSupervisionQuality.js';
 import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
@@ -1112,6 +1119,8 @@ export interface RouteContext {
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
     /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
     lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
+    /** Why each needs-sign-in account on this machine has no repair (read-only). */
+    blockers?: () => Promise<import('../core/SubscriptionReloginRuntime.js').SubscriptionReloginBlocker[]>;
     close?: () => void;
   } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
@@ -1715,6 +1724,9 @@ export interface RouteContext {
   /** McpProcessReaper — reclaims leaked MCP-server children. Null when not wired.
    *  Powers GET /processes/mcp-reaper observability. */
   mcpProcessReaper?: import('../monitoring/McpProcessReaper.js').McpProcessReaper | null;
+  /** CodexArmSessionSweeper — closes orphaned `instar-codex-arm-*` tmux sessions.
+   *  Null when not wired. Powers GET /codex-arm-sweeper observability. */
+  codexArmSessionSweeper?: import('../monitoring/CodexArmSessionSweeper.js').CodexArmSessionSweeper | null;
   /** GeminiLoopRunner — multi-turn gemini loop-driver (need-gem-002). Null when not
    *  wired / dark. Powers POST + GET /gemini-loop/runs. */
   geminiLoopRunner?: import('../monitoring/GeminiLoopRunner.js').GeminiLoopRunner | null;
@@ -2396,6 +2408,41 @@ function pickDecisionQualityPointFields(row: Record<string, unknown>): Record<st
     if (k in row) out[k] = row[k];
   }
   return out;
+}
+
+/** Peer data for the direct-call lane is a separate, scalar allowlist. */
+function pickDirectJobSupervisionPeer(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  if (row.source !== 'job-supervision-store' || row.routerEnrollment !== 'pending'
+    || row.available !== true || typeof row.coverageIncomplete !== 'boolean') return null;
+  const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  const count = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  // bounded-input-reviewed: peer labels are displayed as data, never fed to a model prompt; 128 chars bounds response size.
+  const label = (value: unknown): string | null => typeof value === 'string' ? value.slice(0, 128) : null;
+  const grades = row.gradeDistribution && typeof row.gradeDistribution === 'object'
+    ? row.gradeDistribution as Record<string, unknown> : {};
+  const required = [row.denominator, row.missingRecords, row.orphanAttempts, row.callCount,
+    row.costUnknownCalls, grades.correct, grades.incorrect, grades.unknown];
+  if (required.some(value => count(value) === null)
+    || Number(grades.correct) + Number(grades.incorrect) + Number(grades.unknown) !== row.denominator) return null;
+  const callAudit = Array.isArray(row.callAudit) ? row.callAudit.slice(0, 500).flatMap((value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const r = value as Record<string, unknown>;
+    return [{ slug: label(r.slug), decisionPoint: label(r.decisionPoint), provider: label(r.provider), model: label(r.model),
+      promptHash: label(r.promptHash), calls: number(r.calls), settled: number(r.settled),
+      failed: number(r.failed), unknownOutcome: number(r.unknownOutcome),
+      incorrect: number(r.incorrect), tokensIn: number(r.tokensIn), tokensOut: number(r.tokensOut),
+      costUsd: number(r.costUsd), costUnknown: number(r.costUnknown),
+      averageLatencyMs: number(r.averageLatencyMs) }];
+  }) : [];
+  return { source: 'job-supervision-store', routerEnrollment: 'pending',
+    available: true, coverageIncomplete: row.coverageIncomplete,
+    denominator: number(row.denominator), missingRecords: number(row.missingRecords),
+    orphanAttempts: number(row.orphanAttempts), callCount: number(row.callCount),
+    costUnknownCalls: number(row.costUnknownCalls),
+    gradeDistribution: { correct: number(grades.correct), incorrect: number(grades.incorrect),
+      unknown: number(grades.unknown) }, callAudit };
 }
 
 /**
@@ -5165,6 +5212,12 @@ export function createRoutes(ctx: RouteContext): Router {
     // (`bearerMatches`): byte-identical to the inline check it replaced.
     const isAuthed = bearerMatches(req, ctx.config.authToken);
     if (isAuthed) {
+      // job-cost-reduction §5.3: the stable feature ids behind degradationSummary.
+      // The narrative strings carry per-occurrence values, so they are evidence
+      // only; health-check keys its `degradation:<feature>` reasons on these.
+      if (degradations.length > 0) {
+        base.degradationFeatures = [...new Set(degradations.map(e => e.feature).filter((f): f is string => typeof f === 'string' && f.length > 0))];
+      }
       const mem = process.memoryUsage();
       // Use ProcessIntegrity for truthful version reporting
       const integrity = ProcessIntegrity.getInstance();
@@ -6380,6 +6433,19 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(shadow.summary());
+  });
+
+  // GET /load-assessment/summary — the trustworthy-machine-load B4 model assessment
+  // log, summarised: labels, who decided (Jev / Luna referee), the conflicts that
+  // triggered them, outcomes 15 min later and right/wrong grades. Read-only,
+  // content-free rows. 503 when the assessor is not constructed on this agent.
+  router.get('/load-assessment/summary', (_req, res) => {
+    const assessor = getMachineLoadAssessor();
+    if (!assessor) {
+      res.status(503).json({ error: 'machine load assessment not constructed on this agent' });
+      return;
+    }
+    res.json(assessor.summary());
   });
 
   // GET /jev-review-flag/summary — the jev-review-flag-shadow log, summarised
@@ -10356,6 +10422,19 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.mcpProcessReaper.snapshot());
   });
 
+  // CodexArmSessionSweeper (spec codex-arm-session-leak-and-sweeper.md) — the
+  // read-only answer to "are the codex arm sessions still leaking?": the posture
+  // (enabled, dryRun, the clamped age threshold) plus cumulative killed/kept/error
+  // counts and the last kills. Read-only, Bearer-auth. 503 ONLY when not wired; a
+  // disabled sweeper answers 200 with `enabled: false` (read the field, not the code).
+  router.get('/codex-arm-sweeper', (_req, res) => {
+    if (!ctx.codexArmSessionSweeper) {
+      res.status(503).json({ error: 'codex arm session sweeper unavailable' });
+      return;
+    }
+    res.json(ctx.codexArmSessionSweeper.getStatus());
+  });
+
   // GeminiLoopRunner (need-gem-002) — the multi-turn gemini loop-driver. Lets a
   // caller hand the gemini mentee a goal it works across turns (turn 1 one-shot →
   // resume by handle, no transcript re-send). A run can take minutes, so POST
@@ -11123,6 +11202,10 @@ export function createRoutes(ctx: RouteContext): Router {
               failedReason: isSelf ? null : (peerFetchReason.get(machineId) ?? (capacity?.online ? null : 'offline')),
               routerReceivedAt: capacity?.routerReceivedAt,
               selfReportedLastSeen: capacity?.selfReportedLastSeen,
+              // trustworthy-machine-load A5: the evidence-derived state decides the
+              // wording; "offline" is never said without positive evidence.
+              liveness: capacity?.liveness,
+              nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id,
             },
             nowMs,
           );
@@ -13356,6 +13439,31 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.processFootprintMonitor.status());
   });
 
+  // ── Overload admission status (trustworthy-machine-load Part C) ──
+  // Registry First: is this machine open to new work, is it enforcing, who holds
+  // the host-wide recovery slot, and what has it refused. 503 when dark here.
+  router.get('/work-admission', (_req, res) => {
+    const wa = getActiveWorkAdmission();
+    if (!wa) {
+      res.status(503).json({ enabled: false, error: 'overload admission not enabled on this agent (monitoring.workAdmission — dev-agent gated)' });
+      return;
+    }
+    const prio = getActiveSessionPriorityLowerer();
+    res.json({ ...wa.status(), ...(prio ? { sessionPriority: prio.status() } : {}) });
+  });
+
+  // ── Overload shed status (trustworthy-machine-load Part D) ──
+  // Registry First: is this machine shedding existing conversations, which move is
+  // live, what is reserved on which target, and how close the breaker is. 503 when dark.
+  router.get('/overload-shed', (_req, res) => {
+    const p = getActiveOverloadShedPlanner();
+    if (!p) {
+      res.status(503).json({ enabled: false, error: 'overload shed not enabled on this agent (monitoring.overloadShed — dev-agent gated)' });
+      return;
+    }
+    res.json(p.status());
+  });
+
   // ── Fork-bomb prevention: host-wide spawn-cap status (forkbomb-prevention-simple §P1/§P3) ──
   // Read-only observability over the host-wide concurrent-LLM-subprocess cap.
   // Reports the live holder count (this host + foreign, never-reclaimed), the
@@ -13497,7 +13605,8 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.get('/test-runner-limiter', (_req, res) => {
     try {
-      const status = getHostTestRunnerSemaphore().status();
+      const sem = getHostTestRunnerSemaphore();
+      const status = sem.status();
       const projectHolder = (h: { pid: number; hostname: string; acquiredAt: number; ttlMs: number; state: string }) => ({
         pid: Number(h.pid),
         hostname: clampTestRunnerField(h.hostname),
@@ -13517,6 +13626,7 @@ export function createRoutes(ctx: RouteContext): Router {
         // over-admission is VISIBLE here, not merely ledgered (§2.7).
         admittedOpen: status.admittedOpen.map((w) => ({ pid: Number(w.pid), acquiredAt: Number(w.acquiredAt) })),
         suite: status.suite,
+        mergeGatePriority: { active: sem.hasMergeGatePriority() },
         targeted: status.targeted,
         // Additive DETAIL field (§4 freeze scope): a resolved cap above the
         // code default, surfaced as change-detection alongside ttlSignalArmed.
@@ -16075,6 +16185,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       redPrWatchdog: wd.config,
       snapshot: state.snapshot,
       namespaceMismatch: state.namespaceMismatch ?? null,
+      // merge-line-author-eligibility: listed PRs refused as not the agent's own. NON-OPTIONAL.
+      notAgentOwnedCount: (state.notAgentOwned ?? []).length,
+      notAgentOwned: state.notAgentOwned ?? [],
       configuration,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,
@@ -16681,6 +16794,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   function buildLocalJobs(): Array<Record<string, unknown>> {
     if (!ctx.scheduler) return [];
     const nextRunTimes = ctx.scheduler.getNextRunTimes();
+    const convertedDefaults = ctx.scheduler.getConvertedDefaultSlugs?.() ?? new Set<string>();
     return ctx.scheduler.getJobs().map((job) => {
       const jobState = ctx.state.getJobState(job.slug);
       // Merge live scheduler nextRun into state — fixes display bug where
@@ -16703,11 +16817,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const userMdPath = stateDir ? path.join(stateDir, 'jobs', 'user', `${job.slug}.md`) : null;
       const hasUserFork = userMdPath ? fs.existsSync(userMdPath) : false;
 
+      // job-cost-reduction §5.1/§8.3: runner, lock trust, the last 3 script
+      // outputs (the supervision pass reads these pool-wide), and the
+      // user-fork-shadows-a-converted-default flag.
+      // (Optional-called: test doubles of the scheduler predate these methods.)
+      const sched = ctx.scheduler!;
+      const isScriptRunner = sched.isScriptRunnerJob?.(job) ?? false;
       return {
         ...job,
         state: mergedState,
-        runsOnThisMachine: ctx.scheduler!.isJobLocal(job.slug),
+        runsOnThisMachine: sched.isJobLocal(job.slug),
         hasUserFork,
+        runner: isScriptRunner
+          ? (sched.scriptRunnersActiveFor(job.slug) ? 'script'
+            : job.slug === 'script-job-supervisor' ? 'inactive' : 'session-rollback')
+          : 'session',
+        lockTrust: job.lockTrust ?? null,
+        ...(isScriptRunner ? { recentOutputs: sched.recentScriptOutputs(job.slug, 3) } : {}),
+        shadowsConvertedDefault: sched.shadowsConvertedDefault?.(job, hasUserFork, convertedDefaults) ?? false,
       };
     });
   }
@@ -17820,8 +17947,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error'];
-    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' : undefined;
+    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error', 'skipped'];
+    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' | 'skipped' : undefined;
 
     const data = history.query({ slug, sinceHours, result: resultFilter, limit, offset });
     const stats = slug ? history.stats(slug, sinceHours) : history.allStats(sinceHours);
@@ -17846,8 +17973,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
     const offset = parseInt(req.query.offset as string) || 0;
 
-    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error'];
-    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' : undefined;
+    const validResults = ['pending', 'success', 'failure', 'timeout', 'spawn-error', 'skipped'];
+    const resultFilter = result && validResults.includes(result) ? result as 'success' | 'failure' | 'timeout' | 'spawn-error' | 'pending' | 'skipped' : undefined;
 
     const data = history.query({ slug, sinceHours, result: resultFilter, limit, offset });
     const stats = history.stats(slug, sinceHours);
@@ -18562,6 +18689,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // The send failed → release the in-flight reservation so the legitimate
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe
       // no-op when nothing was reserved (allowDuplicate / below-floor text).
+      if (err instanceof TelegramOriginHoldError && err.outcome === 'accepted-unrecorded') {
+        // Telegram accepted it; only the receipt write failed. Treat it as
+        // delivered for duplicate protection so a resend of this exact text,
+        // or a redrive of this delivery id, is not sent a second time.
+        if (!originOwnsContent) outboundContentDedup.record(topicId, text);
+        if (deliveryId && typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId)) deliveryLruRecord(deliveryId);
+        sendOriginHoldResponse(res, err);
+        return;
+      }
       if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
       if (err instanceof TelegramOriginHoldError) {
         sendOriginHoldResponse(res, err);
@@ -20309,6 +20445,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // attention-lifecycle-close-on-cause §3.1: a producer may name the CONDITION
+    // (stable, no timestamps) so repeats land on one row, and may mark a row
+    // sticky (never closed by the system). Both optional; both bounded.
+    const conditionKey = typeof req.body.conditionKey === 'string' && req.body.conditionKey.trim()
+      ? req.body.conditionKey.trim().slice(0, 200) : undefined; // bounded-input-reviewed: identity string, never fed to a model
+    if (req.body.conditionKey !== undefined && conditionKey === undefined) {
+      res.status(400).json({ error: '"conditionKey" must be a non-empty string under 200 characters' });
+      return;
+    }
+    if (req.body.sticky !== undefined && typeof req.body.sticky !== 'boolean') {
+      res.status(400).json({ error: '"sticky" must be a boolean' });
+      return;
+    }
+    const sticky = req.body.sticky === true ? true : undefined;
+
     try {
       const create = ctx.telegram.createAttentionItem({
         id,
@@ -20320,6 +20471,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         sourceContext: sourceContext || undefined,
         lane,
         healthKey,
+        conditionKey,
+        sticky,
       });
       // Acceptance of an attention item must not inherit Telegram latency.
       // The adapter persists/idempotently owns the item before its network
@@ -20567,6 +20720,62 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     const items = limit === undefined ? localItems : localItems.slice(0, limit);
     res.json({ items, count: items.length });
+  });
+
+  // ── Attention lifecycle (attention-lifecycle-close-on-cause §3.2 / §3.4) ──
+  // Registered BEFORE /attention/:id so "lifecycle" / "clear" are never read as ids.
+
+  /** Status of the one-row-per-condition + close-on-cause + bounded-expiry layer. */
+  router.get('/attention/lifecycle', (_req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    res.json(ctx.telegram.getAttentionLifecycleStatus());
+  });
+
+  /** Run one reconciliation pass now. `dryRun:true` lists what expiry would close without closing it. */
+  router.post('/attention/lifecycle/sweep', (req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['dryRun'])) return;
+    if (req.body?.dryRun !== undefined && typeof req.body.dryRun !== 'boolean') {
+      res.status(400).json({ error: '"dryRun" must be a boolean' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    res.json(ctx.telegram.runAttentionLifecyclePass({ dryRun: req.body?.dryRun === true }));
+  });
+
+  /** A producer (job, script, agent) reports that a condition cleared: close its open rows, silently. */
+  router.post('/attention/clear', (req, res) => {
+    if (!ctx.telegram) {
+      res.status(503).json({ error: 'Telegram not configured' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['conditionKey', 'id', 'idPrefix', 'resolution'])) return;
+    const { conditionKey, id, idPrefix, resolution } = req.body ?? {};
+    const given = [conditionKey, id, idPrefix].filter((v) => typeof v === 'string' && v.trim());
+    if (given.length !== 1) {
+      res.status(400).json({ error: 'give exactly one of "conditionKey", "id", "idPrefix" (a non-empty string)' });
+      return;
+    }
+    if (typeof idPrefix === 'string' && !/[:\-_./|]$/.test(idPrefix)) {
+      res.status(400).json({ error: '"idPrefix" must end in a delimiter (e.g. "my-producer:topic-123:") so it cannot match a longer id by accident' });
+      return;
+    }
+    if (typeof resolution !== 'string' || !resolution.trim()) {
+      res.status(400).json({ error: '"resolution" must be a non-empty string saying why the condition is over' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    const result = ctx.telegram.clearAttentionCondition(
+      { conditionKey: conditionKey?.trim(), id: id?.trim(), idPrefix: idPrefix?.trim() },
+      resolution.trim().slice(0, 2000), // bounded-input-reviewed: stored display text, never fed to a model
+    );
+    res.json(result);
   });
 
   router.get('/attention/:id', (req, res) => {
@@ -21579,10 +21788,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the rope-health monitor knows a peer's transports are down within one
     // evaluation. Attach the live classification so reachability renders
     // honestly without touching placement semantics. Monitor dark → absent.
+    const nickOf = (id: string): string => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id;
     const machines = decorateWithRopeCondition(
       ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
       ctx.ropeHealthMonitor?.status().peers,
-    );
+    ).map((m) => ({
+      ...m,
+      // trustworthy-machine-load A5: the one wording template, rendered server-side
+      // so every consumer (dashboard, digests, peers) says the same honest thing.
+      ...(m.liveness ? { livenessLine: formatLivenessLine(m.liveness, nickOf) } : {}),
+    }));
     const sshEnrollment = ctx.mutualSshHealth ? ctx.mutualSshHealth() : null;
     res.json({
       enabled: !!ctx.machinePoolRegistry,
@@ -21933,6 +22148,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const wiredButNoGrader = findWiredWithoutGraders();
+    let directJobSupervision: Record<string, unknown>;
+    try {
+      if (!ctx.scheduler || ctx.scheduler.isReadOnlyStandby()) throw new Error('journal unavailable');
+      directJobSupervision = buildDirectJobSupervisionQuality({
+        store: ctx.scheduler.getJobSupervisionStore(),
+        history: ctx.scheduler.getRunHistory(),
+        sinceHours,
+      });
+    } catch {
+      // The router meter remains available, while the missing direct-call
+      // source is explicit. Never make an absent journal look like zero calls.
+      directJobSupervision = { source: 'job-supervision-store', routerEnrollment: 'pending',
+        available: false, coverageIncomplete: true, reason: 'journal-unavailable' };
+    }
     return {
       sinceHours,
       gate: { enabled: true, dryRun: ctx.config.provenance?.uniformSeam?.dryRun !== false },
@@ -21941,6 +22170,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       counters: totalCounters,
       // The four §5.5 annotation-rejection counters, by class.
       rejections: getDecisionAnnotationRejectionCounters(),
+      directJobSupervision,
     };
   };
 
@@ -21974,6 +22204,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const dqExtraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
       const failed: Array<{ machineId: string; error: string }> = [];
       const remotePoints: Array<Record<string, unknown>> = [];
+      const remoteDirectJobSupervision: Array<Record<string, unknown>> = [];
+      const directJobSupervisionMissing: string[] = [];
       await Promise.all(
         peers.map(async (p) => {
           if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, dqExtraAllowlist).ok) {
@@ -21989,17 +22221,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` });
               return;
             }
-            const j = (await r.json()) as { points?: Array<Record<string, unknown>> };
+            const j = (await r.json()) as { points?: Array<Record<string, unknown>>; directJobSupervision?: unknown };
             for (const row of j.points ?? []) {
               if (JSON.stringify(row).length > 8_192) continue; // clamp oversized peer rows
               remotePoints.push({ ...pickDecisionQualityPointFields(row), machineId: p.machineId, remote: true });
             }
+            const direct = pickDirectJobSupervisionPeer(j.directJobSupervision);
+            if (direct) remoteDirectJobSupervision.push({ ...direct, machineId: p.machineId });
+            else directJobSupervisionMissing.push(p.machineId);
           } catch (err) {
             failed.push({ machineId: p.machineId, error: err instanceof Error ? err.name : 'unreachable' });
           }
         }),
       );
-      res.json({ ...local, scope: 'pool', pool: { peersQueried: peers.length, failed }, remotePoints });
+      res.json({ ...local, scope: 'pool', pool: { peersQueried: peers.length, failed }, remotePoints,
+        remoteDirectJobSupervision,
+        directJobSupervisionMissing,
+        directJobSupervisionCoverageIncomplete: failed.length > 0
+          || (local.directJobSupervision as Record<string, unknown>).coverageIncomplete === true
+          || directJobSupervisionMissing.length > 0
+          || remoteDirectJobSupervision.some(row => row.coverageIncomplete === true) });
     } catch (err) {
       res.status(500).json({ error: `decision-quality read failed: ${err instanceof Error ? err.message : String(err)}` });
     }
@@ -22044,18 +22285,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(503).json({ error: 'decision-quality substrate unavailable (feature-metrics ledger not constructed)' });
       return;
     }
+    const scriptRunId = _req.get('X-Instar-Job-Run-Id');
+    const scriptReceiptToken = _req.get('X-Instar-Job-Receipt-Token');
+    const receiptStore = scriptRunId ? ctx.scheduler?.getJobSupervisionStore() : null;
+    if (scriptRunId) {
+      if (!scriptReceiptToken || !receiptStore?.canRecordGradePassReceipt(scriptRunId, scriptReceiptToken)) {
+        res.status(409).json({ error: 'grade-pass run receipt is not available' });
+        return;
+      }
+    }
     try {
       const q = ctx.config.provenance?.quality ?? {};
       const maxDecisionsPerPass = typeof q.maxDecisionsPerPass === 'number' && q.maxDecisionsPerPass > 0 ? q.maxDecisionsPerPass : 200;
       const evidenceWindowHours = typeof q.evidenceWindowHours === 'number' && q.evidenceWindowHours > 0 ? q.evidenceWindowHours : 6;
-      const result = runDecisionGradingPass({
+      const checked = runGradePassWithIdleProof({ deps: {
         ledger: ctx.featureMetricsLedger,
         hogStore: ctx.externalHogSentinel?.decisionStoreRef?.() ?? null,
         annotate: annotateDecisionOutcome,
         maxDecisionsPerPass,
         evidenceWindowMs: evidenceWindowHours * 3_600_000,
         now: Date.now,
-      });
+      }, runId: scriptRunId ?? null,
+      allowProof: ctx.config.provenance?.uniformSeam?.dryRun === false
+        && decisionQualityRecordingLive(ctx.featureMetricsLedger) });
+      const result = checked.result;
+      if (scriptRunId && !receiptStore?.recordGradePassReceipt(
+        scriptRunId, scriptReceiptToken!, result.graded, Object.keys(result.cursors).length,
+        Date.now(), checked.idleProofHash ?? undefined)) {
+        res.status(500).json({ error: 'grade-pass receipt could not be recorded' });
+        return;
+      }
       res.json(result);
     } catch (err) {
       // @silent-fallback-ok: NOT silent — the failure is surfaced to the caller as
@@ -25023,14 +25282,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   /** Build a browser-clickable tunnel URL with HMAC signature for auth */
   function viewTunnelUrl(viewId: string): string | null {
-    const base = ctx.tunnel?.getExternalUrl(`/view/${viewId}`);
-    if (!base) return null;
-    if (ctx.config.authToken) {
-      const viewPath = `/view/${viewId}`;
-      const sig = signViewPath(viewPath, ctx.config.authToken);
-      return `${base}?sig=${sig}`;
-    }
-    return base;
+    return buildViewTunnelUrl(ctx.tunnel, ctx.config.authToken, viewId);
   }
 
   router.post('/view', (req, res) => {
@@ -32428,6 +32680,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         note: 'Restart the server for the submission cycle to begin.',
       });
     } catch (err) {
+      // @silent-fallback-ok — not silent: the failure is answered to the caller as a 500 naming the error.
       res.status(500).json({ error: `Failed to enable telemetry: ${err instanceof Error ? err.message : err}` });
     }
   });
@@ -32442,46 +32695,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const auth = ctx.telemetryHeartbeat.getAuth();
       const installationId = auth.getInstallationId();
 
-      // Attempt remote deletion if provisioned
-      let remoteDeletion = 'not_attempted';
+      // Capture what the remote deletion needs BEFORE the local mutations, then finish
+      // every local change (deprovision, log, config) before the awaited remote call —
+      // so a slow remote cleanup can never land the local "disabled" write after a
+      // later enable (feature-transition-applies-action review r2 §4).
+      let deletion: { timestamp: string; payload: Buffer; headers: Record<string, string> } | null = null;
       if (installationId) {
         try {
           const timestamp = Math.floor(Date.now() / 1000).toString();
-          const deletePayload = Buffer.from(JSON.stringify({ installationId }));
-          const signature = auth.sign(installationId, timestamp, deletePayload);
-
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 5000);
-
-          const deleteHeaders: Record<string, string> = {
+          const payload = Buffer.from(JSON.stringify({ installationId }));
+          const signature = auth.sign(installationId, timestamp, payload);
+          const headers: Record<string, string> = {
             'X-Instar-Signature': `hmac-sha256=${signature}`,
             'X-Instar-Timestamp': timestamp,
           };
           const fingerprint = auth.getKeyFingerprint();
-          if (fingerprint) {
-            deleteHeaders['X-Instar-Key-Fingerprint'] = fingerprint;
-          }
-
-          const resp = await fetch(`https://instar-telemetry.sagemind-ai.workers.dev/v1/telemetry/${installationId}`, {
-            method: 'DELETE',
-            headers: deleteHeaders,
-            signal: controller.signal,
-          });
-
-          clearTimeout(timeout);
-          remoteDeletion = resp.ok ? 'success' : `failed_${resp.status}`;
-        } catch {
-          remoteDeletion = 'network_error';
-          // Write pending-deletion for retry on next startup
-          try {
-            const pendingPath = path.join(ctx.config.stateDir, 'telemetry', 'pending-deletion.json');
-            fs.writeFileSync(pendingPath, JSON.stringify({
-              installationId,
-              timestamp: new Date().toISOString(),
-              retryCount: 0,
-            }) + '\n');
-          } catch { /* best-effort */ }
-        }
+          if (fingerprint) headers['X-Instar-Key-Fingerprint'] = fingerprint;
+          deletion = { timestamp, payload, headers };
+        } catch { /* @silent-fallback-ok — signing unavailable; remoteDeletion stays 'not_attempted' and is reported in the response */ }
       }
 
       // Delete local identity files
@@ -32501,6 +32732,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!fileConfig.monitoring.telemetry) fileConfig.monitoring.telemetry = {};
       fileConfig.monitoring.telemetry.enabled = false;
       fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
+
+      // Attempt remote deletion if provisioned (after the local state is final)
+      let remoteDeletion = 'not_attempted';
+      if (installationId && deletion) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const resp = await fetch(`https://instar-telemetry.sagemind-ai.workers.dev/v1/telemetry/${installationId}`, {
+            method: 'DELETE',
+            headers: deletion.headers,
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          remoteDeletion = resp.ok ? 'success' : `failed_${resp.status}`;
+        } catch {
+          remoteDeletion = 'network_error';
+          // Write pending-deletion for retry on next startup
+          try {
+            const pendingPath = path.join(ctx.config.stateDir, 'telemetry', 'pending-deletion.json');
+            fs.writeFileSync(pendingPath, JSON.stringify({
+              installationId,
+              timestamp: new Date().toISOString(),
+              retryCount: 0,
+            }) + '\n');
+          } catch { /* best-effort */ }
+        }
+      }
 
       res.json({
         success: true,
@@ -34508,8 +34766,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         state: state as import('../core/SubscriptionReloginStore.js').SubscriptionReloginState | undefined,
         accountId, limit,
       }) ?? [];
+      // A blocker read that fails leaves `blockers` absent (unknown), never an empty "nothing blocked".
+      const localBlockers = await ctx.subscriptionRelogin?.blockers?.().catch(() => undefined);
       if (req.query.scope !== 'pool') {
         res.json({ enabled: true, episodes: localEpisodes,
+          ...(localBlockers ? { blockers: localBlockers } : {}),
           lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
@@ -34524,6 +34785,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           return false;
         })
         .map((episode) => ({ ...episode, machineNickname: selfMachineNickname, remote: false }));
+      const blockers: Array<Record<string, unknown>> = (localBlockers ?? [])
+        .map((blocker) => ({ ...blocker, machineNickname: selfMachineNickname, remote: false }));
+      // Machines whose blockers could not be read (failed read, or an older peer without the
+      // field): unknown, never "nothing blocked".
+      const blockersUnknown: string[] = ctx.subscriptionRelogin && !localBlockers ? [selfMachineId] : [];
       if (!ctx.subscriptionRelogin) unavailable.push({ machineId: selfMachineId, reason: 'feature-unavailable' });
       const query = new URLSearchParams();
       if (state) query.set('state', state);
@@ -34544,7 +34810,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             failed.push({ machineId: peer.machineId, error: response.status === 401 || response.status === 403 ? 'unauthorized' : 'error' });
             return;
           }
-          const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>> };
+          const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>>;
+            blockers?: Array<Record<string, unknown>> };
           if (body.enabled === false) {
             unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
             return;
@@ -34553,12 +34820,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           for (const episode of body.episodes ?? []) {
             episodes.push({ ...episode, machineId: peer.machineId, machineNickname: nickname, remote: true } as typeof episodes[number]);
           }
+          if (!Array.isArray(body.blockers)) blockersUnknown.push(peer.machineId);
+          for (const blocker of Array.isArray(body.blockers) ? body.blockers : []) {
+            if (typeof blocker?.accountId !== 'string' || typeof blocker?.reason !== 'string') continue;
+            blockers.push({ accountId: blocker.accountId, framework: blocker.framework, reason: blocker.reason,
+              machineId: peer.machineId, machineNickname: nickname, remote: true });
+          }
         } catch (error) {
           const name = error instanceof Error ? error.name : '';
           failed.push({ machineId: peer.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
         }
       }));
-      res.json({ enabled: true, episodes, scope: 'pool', pool: { failed, unavailable } });
+      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown } });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'invalid re-login query' });
     }
@@ -39996,6 +40269,52 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //
   // Phase 1: Feature Registry — definitions, state, and summaries.
 
+  // ── Feature switches apply their setting (spec feature-transition-applies-action) ──
+  const featureEffective = (featureId: string, userId: string) => {
+    const reg = ctx.featureRegistry!;
+    return reg.getEffectiveState(featureId, userId, reg.readMergedConfig(ctx.config as unknown as Record<string, unknown>));
+  };
+  const withEffective = <T extends { definition: { id: string }; state: { userId: string } }>(infos: T[]) => {
+    const reg = ctx.featureRegistry!;
+    const merged = reg.readMergedConfig(ctx.config as unknown as Record<string, unknown>);
+    return infos.map((f) => ({ ...f, effective: reg.getEffectiveState(f.definition.id, f.state.userId, merged) }));
+  };
+  /**
+   * Send the feature's own enable/disable request to this server's route, over
+   * the socket the triggering request arrived on, and record the result.
+   * Applied only for the default user: config is agent-wide (spec §2.5).
+   */
+  // One switch at a time per feature: an earlier disable must not finish after a
+  // later enable and overwrite config + the recorded result (review r1 §4).
+  const featureSwitchChain = new Map<string, Promise<unknown>>();
+  const serializeFeatureSwitch = <T>(featureId: string, work: () => Promise<T>): Promise<T> => {
+    const prev = featureSwitchChain.get(featureId) ?? Promise.resolve();
+    const next = prev.then(work, work);
+    featureSwitchChain.set(featureId, next.catch(() => { /* @silent-fallback-ok — the chain tail only sequences; the failing request already answered its own caller */ }));
+    return next;
+  };
+  const applyFeatureSetting = async (
+    req: import('express').Request,
+    featureId: string,
+    userId: string,
+    newState: string,
+  ): Promise<import('../core/FeatureActionApplier.js').FeatureApplyResult | null> => {
+    const reg = ctx.featureRegistry!;
+    if (newState !== 'enabled' && newState !== 'disabled') return null;
+    const direction = newState === 'enabled' ? 'enable' : 'disable';
+    const { applyFeatureAction, loopbackHost, notApplied } = await import('../core/FeatureActionApplier.js');
+    const def = reg.getDefinition(featureId);
+    const result = userId !== 'default'
+      ? notApplied(direction, 'per-user state; the setting is agent-wide')
+      : await applyFeatureAction(direction === 'enable' ? def?.enableAction : def?.disableAction, direction, {
+          host: loopbackHost(req.socket.localAddress),
+          port: req.socket.localPort ?? ctx.config.port,
+          authToken: ctx.config.authToken ?? '',
+        });
+    reg.recordApply(featureId, userId, result);
+    return result;
+  };
+
   router.get('/features', (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
@@ -40006,9 +40325,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     if (stateFilter) {
       const states = stateFilter.split(',').map(s => s.trim()) as import('../core/FeatureRegistry.js').DiscoveryState[];
-      res.json({ features: ctx.featureRegistry.getFeaturesByState(states, userId) });
+      res.json({ features: withEffective(ctx.featureRegistry.getFeaturesByState(states, userId)) });
     } else {
-      res.json({ features: ctx.featureRegistry.getAllFeatures(userId) });
+      res.json({ features: withEffective(ctx.featureRegistry.getAllFeatures(userId)) });
     }
   });
 
@@ -40018,7 +40337,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const userId = (req.query.userId as string) || 'default';
-    res.json({ features: ctx.featureRegistry.getSummaries(userId) });
+    res.json({
+      features: ctx.featureRegistry.getSummaries(userId).map((f) => ({ ...f, effective: featureEffective(f.id, userId) ?? undefined })),
+    });
   });
 
   router.get('/features/events', (req, res) => {
@@ -40099,6 +40420,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     res.json({
       ...info,
+      effective: featureEffective(req.params.id, userId),
       validTransitions: ctx.featureRegistry.getValidTransitions(req.params.id, userId),
     });
   });
@@ -40124,7 +40446,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json(result);
   });
 
-  router.post('/features/:id/transition', (req, res) => {
+  router.post('/features/:id/transition', async (req, res) => {
     if (!ctx.featureRegistry) {
       res.status(501).json({ error: 'FeatureRegistry not initialized' });
       return;
@@ -40135,21 +40457,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const userId = (bodyUserId as string) || 'default';
-    const result = ctx.featureRegistry.transition(req.params.id, userId, to, {
-      trigger,
-      consentRecord,
-      context,
-      activationChallenge,
-    });
-    if (!result.success) {
-      const status = result.error?.code === 'FEATURE_NOT_FOUND' ? 404
-        : result.error?.code === 'INVALID_TRANSITION' ? 422
-        : result.error?.code === 'CONSENT_REQUIRED' ? 422
-        : 400;
-      res.status(status).json({ error: result.error });
+    const isSwitch = to === 'enabled' || to === 'disabled';
+    const switchDef = ctx.featureRegistry.getDefinition(req.params.id);
+    if (isSwitch && switchDef?.switchable === false) {
+      // A key the runtime ignores: a working-looking switch would be the original bug again.
+      res.status(409).json({ error: { code: 'FEATURE_NOT_SWITCHABLE', message: switchDef.honestyNote ?? `Feature '${req.params.id}' cannot be switched in this version.` } });
       return;
     }
-    res.json(result);
+    // The operator's switch (spec §2.4): a fresh dashboard PIN unlock is a person
+    // setting the switch, which is itself the consent the discovery graph collects.
+    // A proof that is PRESENT but invalid (expired, forged) is answered as such, never
+    // silently downgraded to the agent path (review r2: an expired proof must re-unlock,
+    // not strand the switch behind consent errors).
+    const proofPresent = req.headers['x-instar-operator-session'] !== undefined; // an EMPTY header is present, not omitted
+    const proofHeader = req.get('X-Instar-Operator-Session') ?? '';
+    const operatorSwitch = isSwitch && proofPresent && ctx.verifyDashboardOperatorSession?.(proofHeader) === true;
+    if (isSwitch && proofPresent && !operatorSwitch) {
+      res.status(401).json({ error: { code: 'OPERATOR_PROOF_INVALID', message: 'Your dashboard unlock has expired or is not valid here. Unlock with your PIN again and retry.' } });
+      return;
+    }
+    const outcome = await serializeFeatureSwitch(req.params.id, async () => {
+      const result = operatorSwitch
+        ? ctx.featureRegistry!.operatorSet(req.params.id, userId, to, { context })
+        : ctx.featureRegistry!.transition(req.params.id, userId, to, {
+            trigger,
+            consentRecord,
+            context,
+            activationChallenge,
+          });
+      if (!result.success) return { result, apply: null };
+      // The transition landed; now make the setting follow it. The recorded choice
+      // stays even if the setting change is refused — `apply` and `effective` say so.
+      const apply = await applyFeatureSetting(req, req.params.id, userId, result.newState ?? '');
+      return { result, apply };
+    });
+    if (!outcome.result.success) {
+      const code = outcome.result.error?.code;
+      const status = code === 'FEATURE_NOT_FOUND' ? 404
+        : code === 'INVALID_TRANSITION' ? 422
+        : code === 'CONSENT_REQUIRED' ? 422
+        : 400;
+      res.status(status).json({ error: outcome.result.error });
+      return;
+    }
+    res.json({
+      ...outcome.result,
+      viaOperatorSwitch: operatorSwitch,
+      apply: outcome.apply,
+      effective: featureEffective(req.params.id, userId),
+    });
   });
 
   router.delete('/features/discovery-data', (req, res) => {

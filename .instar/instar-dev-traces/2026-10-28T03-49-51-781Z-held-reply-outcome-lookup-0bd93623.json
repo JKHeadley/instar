@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "held-reply-outcome-lookup",
+  "sessionId": "cc172e56-ba01-4e56-818b-481f5b739b3b",
+  "timestamp": "2026-10-28T03:49:51.781Z",
+  "artifactPath": "upgrades/side-effects/held-reply-outcome-lookup.md",
+  "artifactSha256": "1008a9cd10b00e6aa9cb955a413d7328bb9f8ed9ee509354cd6c388398e2294c",
+  "coveredFiles": [
+    "tests/integration/telegram-origin-routes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One assertion in the integration test for the held-reply fix; test-only",
+  "eli16Path": "upgrades/held-reply-outcome-lookup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/held-reply-outcome-lookup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

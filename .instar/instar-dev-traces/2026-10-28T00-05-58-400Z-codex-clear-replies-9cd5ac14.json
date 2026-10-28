@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "codex-clear-replies",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T00:05:58.400Z",
+  "artifactPath": "upgrades/side-effects/codex-clear-replies.md",
+  "artifactSha256": "d532cdfdd82c67f03721a8df17dacb53496b0a51ef17cea5d2062ea6daad702c",
+  "coveredFiles": [
+    "upgrades/next/codex-clear-replies.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release note for the already-tested small Codex guidance change.",
+  "eli16Path": "upgrades/eli16/codex-clear-replies.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-clear-replies.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

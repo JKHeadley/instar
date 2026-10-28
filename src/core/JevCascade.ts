@@ -15,7 +15,7 @@
  * (browser-controller research: page-state questions had no confident errors,
  * goal-progress questions did).
  */
-import type { IntelligenceProvider } from './types.js';
+import type { IntelligenceOptions, IntelligenceProvider } from './types.js';
 
 export interface CascadeBand { lo: number; hi: number }
 /** The band the controller research measured: escalating 0.30–0.70 removed every observed error. */
@@ -123,7 +123,21 @@ export async function askReferee(
   referee: IntelligenceProvider,
   state: string,
   questions: CascadeQuestion[],
-  opts: { timeoutMs?: number; component: string; now?: () => number },
+  opts: {
+    timeoutMs?: number;
+    component: string;
+    now?: () => number;
+    /** Category for routing; default 'other'. */
+    category?: 'sentinel' | 'gate' | 'job' | 'reflector' | 'other';
+    /** Deferrable marker; default true (background work). */
+    deferrable?: boolean;
+    /**
+     * Extra attribution fields (e.g. jobSlug, machineId, runId) merged into the
+     * call's attribution, so per-slug spend is exact. They never override
+     * `component`, `category` or `deferrable`.
+     */
+    attribution?: Record<string, string | number | boolean | null | undefined>;
+  },
 ): Promise<RefereeOutcome> {
   const now = opts.now ?? Date.now;
   const t0 = now();
@@ -135,7 +149,12 @@ export async function askReferee(
       model: 'fast',
       timeoutMs,
       onModel: (m) => { model = m.model; },
-      attribution: { component: opts.component, category: 'other', deferrable: true },
+      attribution: {
+        ...(opts.attribution ?? {}),
+        component: opts.component,
+        category: opts.category ?? 'other',
+        deferrable: opts.deferrable ?? true,
+      } as IntelligenceOptions['attribution'],
     });
     const timeout = new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs + 1000); });
     const raw = await Promise.race([call, timeout]);

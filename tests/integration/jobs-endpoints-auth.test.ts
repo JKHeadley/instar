@@ -79,7 +79,10 @@ function request(port: number, method: string, urlPath: string, headers: Record<
         port,
         path: urlPath,
         method,
-        headers: { 'content-type': 'application/json', ...headers },
+        // A recycled ephemeral port must not reuse a socket from another
+        // fixture server in this shared integration worker.
+        agent: false,
+        headers: { 'content-type': 'application/json', connection: 'close', ...headers },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -102,8 +105,8 @@ describe('Phase 4 jobs endpoints — bearer-token auth', () => {
     fixture = await makeFixture();
   });
 
-  afterAll(() => {
-    fixture.server.close();
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve()));
     SafeFsExecutor.safeRmSync(workspace, { recursive: true, force: true, operation: 'jobs-endpoints-auth.test cleanup' });
   });
 

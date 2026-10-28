@@ -1,5 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
+import { supertestRetryAlias } from './tests/setup/supertest-alias.js';
+
 import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
 
 export default defineConfig(withTestRunnerBound('e2e', {
@@ -10,7 +12,7 @@ export default defineConfig(withTestRunnerBound('e2e', {
   // threadline-core is a workspace package that threadline-mcp imports by its published name.
   // Tests resolve it to the live source so cross-implementation tests need no install or build
   // (spec threadline-standalone-pairing).
-  resolve: { alias: { '@sagemindai/threadline-core': new URL('./packages/threadline-core/src/index.ts', import.meta.url).pathname } },
+  resolve: { alias: [{ find: '@sagemindai/threadline-core', replacement: new URL('./packages/threadline-core/src/index.ts', import.meta.url).pathname }, supertestRetryAlias] },
   test: {
     include: ['tests/e2e/**/*.test.ts'],
     environment: 'node',

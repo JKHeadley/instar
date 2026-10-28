@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-home-one-answer",
+  "sessionId": "6215a466-77bb-4f7e-a33b-02e7a5053727",
+  "timestamp": "2026-10-28T01:07:45.197Z",
+  "artifactPath": "upgrades/side-effects/console-home-one-answer.md",
+  "artifactSha256": "f3ab99962c28a814b4cbe50865c993ccba5e6b1f9390b50cb7b0d4083e13700d",
+  "coveredFiles": [
+    "tests/e2e/console-home-lifecycle.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "e2e expectation updated to the new display wording from this PR.",
+  "eli16Path": "docs/specs/console-home-one-answer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-home-one-answer.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

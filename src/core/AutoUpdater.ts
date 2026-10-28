@@ -34,6 +34,8 @@ import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDam
 import type { UpdateRestartHandshake } from './UpdateRestartHandshake.js';
 
 const DEFAULT_RESTART_RETRY_MS = 5 * 60_000;
+/** Retry delay once the local-verify hold that deferred a restart has ended. */
+const RESTART_HOLD_ENDED_RETRY_MS = 1_000;
 
 export interface AutoUpdaterConfig {
   /** How often to check for updates, in minutes. Default: 30 */
@@ -981,6 +983,24 @@ export class AutoUpdater {
       result.retryInMs ?? DEFAULT_RESTART_RETRY_MS,
       'session deferral elapsed',
     );
+  }
+
+  /**
+   * A local-verify restart hold just ended (its verify finished). When the restart is deferred
+   * on that hold and no hold is active now, retry it at once instead of at the next re-check
+   * (up to 5 minutes later): while an update waits, no new verify starts, so that gap was dead
+   * time for both the update and the verify line (35 pauses, 3.3 h, 2026-10-20..26). The retry
+   * runs the whole restart gate again, so anything else still blocking (sessions, the window)
+   * defers it exactly as before.
+   */
+  recheckRestartHolds(): void {
+    const deferral = this.restartDeferral;
+    // Only ever brings forward a retry that is already scheduled: after stop() (no timer) or
+    // while a retry runs, this does nothing, so it can never arm a restart on its own.
+    if (!deferral?.active || this.deferralRetryInFlight || !this.deferralTimer) return;
+    if (!(deferral.currentBlockers ?? []).some((b) => b.startsWith('local-verify'))) return;
+    if (this.gate.getActiveHolds().length > 0) return;
+    this.scheduleDeferredRestartRetry(deferral.targetVersion, RESTART_HOLD_ENDED_RETRY_MS, 'restart hold ended');
   }
 
   /**

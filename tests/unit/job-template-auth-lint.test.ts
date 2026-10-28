@@ -22,6 +22,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDefaultJobs } from '../../src/commands/init.js';
+import { THREADLINE_PUBLIC_ROUTES } from '../../src/server/middleware.js';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
 
 const TEMPLATE_DIR = path.resolve(__dirname, '../../src/scaffold/templates/jobs/instar');
 const MIDDLEWARE_PATH = path.resolve(__dirname, '../../src/server/middleware.ts');
@@ -40,8 +42,16 @@ const INIT_PATH = path.resolve(__dirname, '../../src/commands/init.ts');
  * `drift guard` test below asserts each entry still exists there, so this list
  * cannot silently rot into a false pass if a route stops being public.
  */
-const PUBLIC_PATHS = ['/health', '/ping', '/jobs/events', '/dashboard/unlock'];
-const PUBLIC_PREFIXES = ['/threadline/', '/secrets/drop/', '/mcp/approve/', '/mesh/rpc', '/a2a/'];
+const PUBLIC_PATHS = [
+  '/health', '/ping', '/jobs/events', '/dashboard/unlock',
+  // Threadline PEER-PROTOCOL routes — exempt by EXACT path (fb-829a7161-942:
+  // the old '/threadline/' PREFIX exemption let an unauthenticated tunnel
+  // request reach /threadline/relay-send). Mirrors THREADLINE_PUBLIC_ROUTES in
+  // middleware.ts; every other /threadline/* route needs the bearer.
+  ...THREADLINE_PUBLIC_ROUTES.map(r => r.path),
+  '/threadline/blobs/',
+];
+const PUBLIC_PREFIXES = ['/secrets/drop/', '/mcp/approve/', '/mesh/rpc', '/a2a/'];
 
 export interface AuthViolation {
   file: string;
@@ -52,6 +62,7 @@ export interface AuthViolation {
 
 function isPublic(endpointPath: string): boolean {
   if (PUBLIC_PATHS.includes(endpointPath)) return true;
+  if (/^\/threadline\/blobs\/[^/]+$/.test(endpointPath)) return true;
   return PUBLIC_PREFIXES.some(p => endpointPath.startsWith(p));
 }
 
@@ -71,7 +82,8 @@ export function findUnauthenticatedCalls(content: string, file = '<inline>'): Au
     const segments = line.split(/(?=curl\s)/).filter(s => s.includes('curl'));
 
     for (const segment of segments) {
-      const urlMatch = segment.match(/localhost:(?:\$\{INSTAR_PORT:-\d+\}|\$PORT|\d+)([^\s"'|)]*)/);
+      // A trailing backtick is prose markup (`curl …/health`), not part of the path.
+      const urlMatch = segment.match(/localhost:(?:\$\{INSTAR_PORT:-\d+\}|\$PORT|\d+)([^\s"'|)`]*)/);
       if (!urlMatch) continue;
 
       const endpointPath = (urlMatch[1] || '/').split('?')[0];
@@ -166,6 +178,15 @@ describe('built-in job template auth lint', () => {
     expect(found[0].endpoint).toBe('/evolution/proposals');
   });
 
+  it('flags an unauthenticated call to an own-surface /threadline route (the prefix is no longer public)', () => {
+    const bad = 'send it: curl -s -X POST http://localhost:${INSTAR_PORT:-4042}/threadline/relay-send -d "{}"';
+    const found = findUnauthenticatedCalls(bad, 'bad.md');
+    expect(found.map(v => v.endpoint)).toEqual(['/threadline/relay-send']);
+    // ...while the peer-protocol routes stay public by exact path.
+    const ok = 'probe: curl -s http://localhost:${INSTAR_PORT:-4042}/threadline/health';
+    expect(findUnauthenticatedCalls(ok, 'ok.md')).toEqual([]);
+  });
+
   it('does not flag public endpoints', () => {
     const ok = [
       'gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1',
@@ -242,6 +263,19 @@ describe('built-in job template auth lint', () => {
 
     const report = configOnly.map(({ n }) => `  init.ts:${n}`).join('\n');
     expect(configOnly, `Job bodies reading authToken from config.json only:\n${report}`).toEqual([]);
+  });
+
+  it('the generated CLAUDE.md never shows a token-less curl to a bearer-gated /threadline route', () => {
+    // The CLAUDE.md template carries illustrative curls for many routes (some
+    // deliberately token-less: the private-view routes, /health). This lint is
+    // SCOPED to /threadline/: since fb-829a7161-942 every own-surface threadline
+    // route needs the bearer, and a template that tells the agent to curl one
+    // without it produces a 401 the agent then reports as "the route is broken"
+    // (the second-pass review of that fix caught three such curls).
+    const md = generateClaudeMd('test', 'TestAgent', 4042, false);
+    const hits = findUnauthenticatedCalls(md, 'CLAUDE.md').filter(v => v.endpoint.startsWith('/threadline/'));
+    const report = hits.map(v => `  line ${v.line} → ${v.endpoint}\n    ${v.snippet}`).join('\n');
+    expect(hits, `Token-less curls to bearer-gated threadline routes in the CLAUDE.md template:\n${report}`).toEqual([]);
   });
 
   it('drift guard: every exempted path is still public in middleware.ts', () => {

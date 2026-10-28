@@ -32,6 +32,7 @@
  * poller runs hermetically with zero credentials and zero network in tests.
  */
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -152,7 +153,7 @@ export interface QuotaPollerConfig {
   /** Reconcile confirmed live attribution into the durable location ledger. */
   locationLedger?: CredentialLocationLedger;
   /** One deduped attention item per drift episode (id is stable until self-close). */
-  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
+  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string; conditionKey: string }) => void | Promise<void>;
   onIdentityRestored?: (accountId: string, attentionId: string) => void | Promise<void>;
   /** Passive evidence sink. It cannot select accounts, mutate pool authority, or trigger repair. */
   loginObservationSink?: (input: {
@@ -184,6 +185,18 @@ export type PoolLoginCheck = 'ok' | 'signed-out' | 'unavailable';
 export const CLI_LOGIN_EXPIRED_SESSIONS_REQUIRED = 2;
 export const CLI_LOGIN_EXPIRED_WINDOW_MS = 60 * 60_000;
 const CLI_LOGIN_EXPIRED_MAX_SIGHTINGS = 20;
+
+/**
+ * Pane authority over a READABLE credential (CMT-1008, 2026-10-25 sagemind "Luna"): the stored
+ * token still answered the OAuth usage endpoint, so the account stayed `active`, while every
+ * Claude Code session placed on it showed "Login expired · Please run /login" and did nothing.
+ * The CLI's own screen is the stronger evidence: once a session has shown it past the monitor's
+ * dwell, the account moves to needs-reauth and stays there while the stored credential is the
+ * SAME one the CLI refused. A changed credential (any fresh sign-in, assisted or by hand), a
+ * credential swap on the slot, or this ceiling releases the hold; a still-broken login is simply
+ * observed again by the next session that lands on it.
+ */
+export const CLI_LOGIN_EXPIRED_HOLD_MAX_MS = 12 * 60 * 60_000;
 
 /** Two consecutive CLI-signed-out + auth-refused polls move a Codex account to needs-reauth. */
 const CLI_SIGNED_OUT_POLLS_REQUIRED = 2;
@@ -426,6 +439,12 @@ export class QuotaPoller {
   private readonly cliSignedOutStreak = new Map<string, { count: number; lastAt: number }>();
   /** Pane sightings of Claude Code's "Login expired" frame, keyed by resolved config home. */
   private readonly cliLoginExpiredSightings = new Map<string, Array<{ session: string; at: number }>>();
+  /**
+   * Accounts held at needs-reauth by a pane-observed expired login over a readable credential,
+   * keyed by account id. `fingerprint` is a truncated hash of the credential the CLI refused
+   * (never the token itself); `home` is the resolved slot it was read from.
+   */
+  private readonly cliLoginExpiredHolds = new Map<string, { home: string; fingerprint: string; at: number; session: string }>();
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
@@ -485,7 +504,11 @@ export class QuotaPoller {
       this.identityCache.delete(slot);
       // A credential swap re-points the slot: sightings of the OLD login's dead screen must not
       // corroborate against whatever credential now sits there.
-      this.cliLoginExpiredSightings.delete(path.resolve(expandHome(slot)));
+      const key = path.resolve(expandHome(slot));
+      this.cliLoginExpiredSightings.delete(key);
+      for (const [accountId, hold] of this.cliLoginExpiredHolds) {
+        if (hold.home === key) this.cliLoginExpiredHolds.delete(accountId);
+      }
     }
   }
 
@@ -538,6 +561,9 @@ export class QuotaPoller {
     try {
       void this.emitIdentityDriftAttention?.({
         id: `credential-identity-drift-${expected.id}-${detectedAt}`,
+        // attention-lifecycle-close-on-cause §3.3 — the stable condition identity; the
+        // restore path clears by it so the close cannot miss a re-timestamped id.
+        conditionKey: `credential-identity-drift:${expected.id}`,
         title: `Credential identity drift: ${expected.id}`,
         summary: `Slot ${slot} is labelled ${expected.id} but live identity is ${actualId}. ${actual ? `Quota was attributed to ${actualId}` : 'The confirmed identity is not enrolled in the registry'}; the slot is excluded from swaps pending audited repair.`,
       });
@@ -828,9 +854,22 @@ export class QuotaPoller {
       return null;
     }
 
-    // The OAuth usage endpoint answered with this account's token: an authenticated read.
-    this.loginChecks.set(slotAccount.id, 'ok');
     const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date(this.now()).toISOString());
+    // A pane-observed expired login outranks this read while the stored credential is still the
+    // one the CLI refused (CMT-1008): keep the account out of placement instead of restoring it.
+    // The hold only ever stops the POLLER's own restore: anything else that set the account
+    // `active` again (the assisted repair's success, an operator) wins and releases it — a login
+    // still broken after that is simply seen again by the next session that lands on it.
+    if (slotAccount.status !== 'needs-reauth' && this.cliLoginExpiredHolds.has(slotAccount.id)) {
+      this.cliLoginExpiredHolds.delete(slotAccount.id);
+      this.logger.log(`[QuotaPoller] account ${slotAccount.id}: expired-login hold released (status was set ${slotAccount.status} outside the poller)`);
+    }
+    if (this.cliLoginExpiredHoldActive(slotAccount.id, slotAccount.configHome, token)) {
+      this.loginChecks.set(slotAccount.id, 'signed-out');
+    } else {
+      // The OAuth usage endpoint answered with this account's token: an authenticated read.
+      this.loginChecks.set(slotAccount.id, 'ok');
+    }
     // Shift the prior "last" down to "prev" so burnRate has a distinct baseline.
     const attributedId = slotAccount.id;
     const priorLast = this.lastByAccount.get(attributedId);
@@ -877,7 +916,9 @@ export class QuotaPoller {
       // A clean AUTHENTICATED read on an account previously flagged needs-reauth restores it. A
       // Codex rollout-file snapshot is usage history, not proof of login (spec
       // skill-driven-signin-repair), so it never restores `active`.
-      const restores = account.status === 'needs-reauth' && snap.source !== 'codex-rollout';
+      // A pane-observed expired login on the same credential is never undone by a usage read.
+      const restores = account.status === 'needs-reauth' && snap.source !== 'codex-rollout'
+        && !this.cliLoginExpiredHolds.has(attributedId) && !this.cliLoginExpiredHolds.has(account.id);
       if (restores) patch.status = 'active';
       // Email is provider-attested identity, not quota metadata. Quota polling
       // must never mutate it; drift detection and the identity registrar own
@@ -965,7 +1006,8 @@ export class QuotaPoller {
   /**
    * Record that a Claude Code session launched under `configHome` showed the CLI's own
    * "Login expired" frame (SessionManager's live-tail classifier). A SIGNAL only: it changes no
-   * pool state by itself. The next poll of the account using that home consults it, and only
+   * pool state by itself (server.ts calls {@link observeCliLoginExpired}, which records through
+   * here and then decides). The next poll of the account using that home consults it, and only
    * when the stored credential is also unreadable does it corroborate needs-reauth.
    */
   noteCliLoginExpired(input: { configHome: string; session: string; at?: number }): void {
@@ -976,6 +1018,71 @@ export class QuotaPoller {
       .filter((s) => at - s.at < CLI_LOGIN_EXPIRED_WINDOW_MS && s.session !== input.session);
     kept.push({ session: input.session, at });
     this.cliLoginExpiredSightings.set(key, kept.slice(-CLI_LOGIN_EXPIRED_MAX_SIGHTINGS));
+  }
+
+  /**
+   * A Claude Code session showed the CLI's own expired-login frame past the monitor's dwell
+   * (CMT-1008). Records the sighting (as {@link noteCliLoginExpired}) and, when the stored
+   * credential under that home READS, treats the screen as authoritative right away: the
+   * account moves to needs-reauth (cause `cli-login-expired-observed`, actionable, so the
+   * assisted sign-in repair can open) and is held there against later successful usage reads
+   * while the credential is unchanged. An unreadable credential is left to the corroborated
+   * two-session rule in {@link pollAccount}: a locked keychain fails the CLI AND the read on a
+   * login that is actually fine, and must never be flipped on one screen.
+   *
+   * Returns the pool account owning that home (null when none does) and whether this call moved
+   * it to needs-reauth. Never throws.
+   */
+  async observeCliLoginExpired(input: { configHome: string; session: string; at?: number }): Promise<{
+    accountId: string | null;
+    marked: boolean;
+    reason: 'marked' | 'already-held' | 'no-account' | 'credential-unreadable';
+    /** The account's pool status after this call (null when no account owns the home). */
+    accountStatus: SubscriptionAccount['status'] | null;
+  }> {
+    this.noteCliLoginExpired(input);
+    const key = path.resolve(expandHome(input.configHome || ''));
+    let owner: SubscriptionAccount | null = null;
+    try {
+      for (const a of this.pool.list()) {
+        if (a.framework !== 'claude-code' || a.provider !== 'anthropic') continue;
+        const routed = this.accountForReads(a);
+        if (path.resolve(expandHome(routed.configHome)) === key) { owner = routed; break; }
+      }
+    } catch { owner = null; } // @silent-fallback-ok — an unreadable pool owns no account
+    if (!owner) return { accountId: null, marked: false, reason: 'no-account', accountStatus: null };
+    let token: TokenResolution;
+    try { token = await this.tokenResolver(owner); }
+    catch { token = null; } // @silent-fallback-ok — unreadable: left to the corroborated rule
+    if (typeof token !== 'string' || token.length === 0) {
+      return { accountId: owner.id, marked: false, reason: 'credential-unreadable', accountStatus: owner.status };
+    }
+    const at = input.at ?? this.now();
+    const prior = this.cliLoginExpiredHolds.get(owner.id);
+    this.cliLoginExpiredHolds.set(owner.id, {
+      home: key, fingerprint: credentialFingerprint(token), at: prior && prior.home === key ? prior.at : at, session: input.session,
+    });
+    if (owner.status === 'needs-reauth') return { accountId: owner.id, marked: false, reason: 'already-held', accountStatus: 'needs-reauth' };
+    this.markNeedsReauth(owner, 'cli-login-expired-observed');
+    this.observe(owner.id, {
+      kind: 'transition-to-needs-reauth',
+      causeClass: 'cli-login-expired-observed',
+      corroboration: 'exchange-corroborated',
+    });
+    return { accountId: owner.id, marked: true, reason: 'marked', accountStatus: this.pool.get(owner.id)?.status ?? 'needs-reauth' };
+  }
+
+  /** True while a pane-observed expired-login hold still applies to this credential. */
+  private cliLoginExpiredHoldActive(accountId: string, configHome: string, token: string): boolean {
+    const hold = this.cliLoginExpiredHolds.get(accountId);
+    if (!hold) return false;
+    const fresh = this.now() - hold.at < CLI_LOGIN_EXPIRED_HOLD_MAX_MS;
+    const sameHome = hold.home === path.resolve(expandHome(configHome));
+    const sameCredential = hold.fingerprint === credentialFingerprint(token);
+    if (fresh && sameHome && sameCredential) return true;
+    this.cliLoginExpiredHolds.delete(accountId);
+    this.logger.log(`[QuotaPoller] account ${accountId}: expired-login hold released (${!fresh ? 'ceiling reached' : !sameHome ? 'credential moved to another slot' : 'credential changed'})`);
+    return false;
   }
 
   private cliLoginExpiredCorroborated(configHome: string): boolean {
@@ -990,6 +1097,11 @@ export class QuotaPoller {
   lastSnapshot(accountId: string): AccountQuotaSnapshot | null {
     return this.lastByAccount.get(accountId) ?? null;
   }
+}
+
+/** Truncated hash of a credential, for "is this still the same login?" — never the token itself. */
+function credentialFingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
 export function isQuotaPollSupportedAccount(account: SubscriptionAccount): boolean {

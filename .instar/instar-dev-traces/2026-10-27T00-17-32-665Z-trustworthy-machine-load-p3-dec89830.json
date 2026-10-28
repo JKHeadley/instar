@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "slug": "trustworthy-machine-load-p3",
+  "sessionId": "088b6134-7af3-471e-90a6-98c5fc9a1211",
+  "timestamp": "2026-10-27T00:17:32.665Z",
+  "artifactPath": "upgrades/side-effects/trustworthy-machine-load-p3.md",
+  "artifactSha256": "b42b371a74905302fdbda5d6cbeb3c9655d32a2c8457999ae8c88663e1dd30de",
+  "specPath": "docs/specs/trustworthy-machine-load-and-mesh-floor.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/OverloadShedPlanner.ts",
+    "src/core/OwnershipReconciler.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/RebalancePlanner.ts",
+    "src/core/StaleOwnerReleaseEngine.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/sessionPriority.ts",
+    "src/core/types.ts",
+    "src/data/state-coherence-registry.json",
+    "src/monitoring/guardManifest.ts",
+    "src/monitoring/selfaction/policies.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/overload-shed-lifecycle.test.ts",
+    "tests/integration/overload-shed-route.test.ts",
+    "tests/unit/overload-shed.test.ts",
+    "tests/unit/session-priority.test.ts",
+    "upgrades/next/trustworthy-machine-load-p3.md",
+    "upgrades/side-effects/trustworthy-machine-load-p3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Part D + C3 of a converged, approved spec; adds a dry-run-first, dev-gated proposer and reconciler inputs, with independent second-pass review (2 rounds, concurred).",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Under the pinned worst case (admission closed+enforced forever, peer never claims, transfer never started) the real OverloadShedPlanner settles at 2 tries + 2 refunds per topic per durable episode (5 topics -> 20 proposals), horizon-independent; the reconciler initiates at most one overload transfer per topic per episode."
+    },
+    "component": "OverloadShedPlanner"
+  }
+}

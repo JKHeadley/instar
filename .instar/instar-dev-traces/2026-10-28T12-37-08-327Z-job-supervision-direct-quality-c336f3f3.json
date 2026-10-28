@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "job-supervision-direct-quality",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T12:37:08.327Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-direct-quality.md",
+  "artifactSha256": "7803821ffcdc8a61f0681da2e47651597c826e60b3e13c59bc6a2b66975ba79d",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/scheduler/JobSupervisionStore.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/directJobSupervisionQuality.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read-only audit API and agent migration touch fleet-facing surfaces; the approved converged spec and second-pass review apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "grade_receipt_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-result-supervision-v2-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

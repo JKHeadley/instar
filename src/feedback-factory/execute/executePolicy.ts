@@ -25,9 +25,9 @@ export const CONFINED_COMMAND_TIMEOUT_MS = 20 * 60_000;
 export const CONFINED_OUTPUT_CAP_BYTES = 5 * 1024 * 1024;
 /** Workspace plus temp directory, checked between steps. */
 export const WORKSPACE_DISK_CAP_BYTES = 2 * 1024 * 1024 * 1024;
-/** Change set caps (§4 step 8). */
+/** Change set caps (§4 step 8). A modified server.ts alone is ~1.9 MB. */
 export const CHANGESET_MAX_FILES = 200;
-export const CHANGESET_MAX_BYTES = 2 * 1024 * 1024;
+export const CHANGESET_MAX_BYTES = 4 * 1024 * 1024;
 /** Result file notes cap (§4 step 7). */
 export const RESULT_NOTES_MAX = 1_000;
 /** merge-armed confirmation deadline and the single merge retry delay (§4 step 9). */
@@ -130,7 +130,7 @@ export function clampProbeDetail(text: string): string {
 export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
 /** Bump when a canary probe changes: a new stamp forces a fresh full-gate base canary. */
-export const CANARY_VERSION = 'feedback-canary-v2';
+export const CANARY_VERSION = 'feedback-canary-v3';
 /** The exact sandbox runtime version this feature is pinned to (package.json pins the same). */
 export const SANDBOX_RUNTIME_PACKAGE = '@anthropic-ai/sandbox-runtime';
 export const SANDBOX_RUNTIME_VERSION = '0.0.77';

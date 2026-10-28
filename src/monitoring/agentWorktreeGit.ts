@@ -18,20 +18,13 @@ import { type WorktreeEnumeration, summarizeEnumerationError } from './worktreeE
 
 /**
  * Reaper-specific residue denylist (spec: worktree-reaper-untracked-blindspot).
- * INTENTIONALLY NARROWER than worktreeDirtyCheck's DEFAULT_RESIDUE_DENYLIST: this
- * list gates an irreversible `git worktree remove`, so it contains ONLY paths that
- * are unambiguously never user work. It deliberately EXCLUDES the broad
- * `out/` / `build/` / `coverage/` / `*.log` entries of the shared default — users
- * legitimately hand-author files under those (a `build/deploy.md`, an `analysis.log`),
- * and an untracked one of those on a merged worktree must NEVER be silently reaped.
+ * Empty by design. This gates an irreversible `git worktree remove`, and even
+ * cache/marker names can hold unique user-authored bytes. Keep any such file
+ * until it is explicitly inspected or archived by a separate cleanup path.
  * We do NOT mutate DEFAULT_RESIDUE_DENYLIST (it feeds the separate yield-safety
  * config list + other consumers); the reaper carries its own list.
  */
-export const REAPER_RESIDUE_DENYLIST: readonly string[] = [
-  'dist/', 'node_modules/', '.cache/', '.turbo/', '*.tsbuildinfo',
-  '.metadata_never_index',          // instar-managed Spotlight-exclusion marker — never work
-  '.instar/instar-dev-traces/',     // instar audit-trace droppings — never work
-];
+export const REAPER_RESIDUE_DENYLIST: readonly string[] = [];
 
 /** Read-only git executor signature (injected so this module is testable). */
 export type ReadGit = (args: string[], cwd: string) => string;
@@ -265,13 +258,17 @@ export function makeAgentWorktreeReaperDeps(opts: {
     isClean: (p: string): boolean => {
       // Residue-aware via the PURE classifyPorcelain (NOT the fail-OPEN
       // makeWorktreeDirtyCheck wrapper): a worktree whose only entries are
-      // reaper-residue (build artifacts / instar markers) is clean; ANY
-      // non-residue change — tracked OR a hand-authored untracked file — is dirty.
+      // No file is assumed disposable. ANY change — tracked, untracked, or
+      // ignored — is dirty, because even a marker name may hold unique bytes.
       // FAIL-CLOSED on any error: cannot determine cleanliness → treat as dirty
       // (KEEP). This is the deletion-safe direction (spec
       // worktree-reaper-untracked-blindspot, convergence BLOCKER): a transient
       // `git status` failure must never make a worktree look reapable.
-      try { return !classifyPorcelain(readGit(['-C', p, 'status', '--porcelain'], p), REAPER_RESIDUE_DENYLIST); }
+      try {
+        if (classifyPorcelain(readGit(['-C', p, 'status', '--porcelain'], p), REAPER_RESIDUE_DENYLIST)) return false;
+        const ignored = readGit(['-C', p, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], p);
+        return ignored.length === 0;
+      }
       catch { return false; }
     },
 

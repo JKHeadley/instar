@@ -225,6 +225,23 @@ describe('green-pr-automerge routes (integration)', () => {
     expect(res.body.stuckRed[0].redForMs).toBeGreaterThanOrEqual(2 * 3_600_000);
   });
 
+  it('GET exposes notAgentOwnedCount/notAgentOwned (non-optional) and a tick fills them for a refused PR', async () => {
+    const empty = appWith(baseCtx(stateDir, { greenPrAutoMerger: fakeWatcher(stateDir, latches), guardLatchStore: latches }));
+    const before = await request(empty).get('/green-pr-automerge');
+    expect(before.body.notAgentOwnedCount).toBe(0);
+    expect(before.body.notAgentOwned).toEqual([]);
+    const other: PrSummary = {
+      number: 77, title: 'fix: x', labels: [], isDraft: false, headRefName: 'fix/x', headRefOid: 'sha77',
+      mergeable: 'MERGEABLE', statusRollup: 'SUCCESS', authorLogin: 'someone-else', isCrossRepository: false,
+    };
+    const own: PrSummary = { ...other, number: 78, headRefOid: 'sha78', authorLogin: 'echo-bot' };
+    const app = appWith(baseCtx(stateDir, { greenPrAutoMerger: fakeWatcher(stateDir, latches, [other, own]), guardLatchStore: latches }));
+    expect((await request(app).post('/green-pr-automerge/tick')).status).toBe(200);
+    const res = await request(app).get('/green-pr-automerge');
+    expect(res.body.notAgentOwnedCount).toBe(1);
+    expect(res.body.notAgentOwned[0]).toMatchObject({ pr: 77, reason: 'author-mismatch' });
+  });
+
   it('rollback is a null-safe no-op for disarm when the merger is absent (latch still set)', async () => {
     // guardLatchStore present, greenPrAutoMerger null → the route still rolls
     // back the latch and does not throw on the in-line disarm.

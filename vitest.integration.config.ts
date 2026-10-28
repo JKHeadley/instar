@@ -1,5 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
+import { supertestRetryAlias } from './tests/setup/supertest-alias.js';
+
 import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
 
 export default defineConfig(withTestRunnerBound('integration', {
@@ -7,6 +9,8 @@ export default defineConfig(withTestRunnerBound('integration', {
   // aborts on the first unreadable package.json (EPERM). The feedback executor's sandbox
   // read-denies the agent home around its workspace, so every confined vitest run failed.
   css: { postcss: {} },
+  // Test files that import Supertest get it with the suite-wide connect retry installed.
+  resolve: { alias: [supertestRetryAlias] },
   test: {
     include: ['tests/integration/**/*.test.ts'],
     environment: 'node',

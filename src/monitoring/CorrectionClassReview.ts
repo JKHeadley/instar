@@ -178,20 +178,21 @@ export class CorrectionClassReview {
       let initiativeId = existingOutcome?.initiativeId;
       let actionId = existingOutcome?.actionId;
       const isOperator = current.effectiveOrigin === 'operator-attributed';
-      const canPropose = judgment.confidence !== 'low' && (isOperator || judgment.confidence === 'high')
-        && this.opts.store.countOpen() <= this.maxOpenArtifacts;
+      let remainingArtifactSlots = Math.max(0, this.maxOpenArtifacts - this.opts.store.countOpenArtifacts());
+      const eligibleForWork = judgment.confidence !== 'low' && (isOperator || judgment.confidence === 'high');
       // The ClassReview judgment is durable before any downstream artifact is
       // admitted. This is the correspondence gate's required happens-before.
       let filled = this.opts.store.fill(correction.dedupeKey, { ...judgment, semanticClassId });
       if (!filled) return null;
-      if (!canPropose || judgment.standardReview.isPolicyRelaxation) {
+      if (!eligibleForWork || judgment.standardReview.isPolicyRelaxation) {
         await this.opts.attentionRoute?.({
           title: 'Correction class review needs disposition',
           body: `${correction.scrubbedSummary}\n${judgment.rationale}`,
           priority: judgment.standardReview.isPolicyRelaxation ? 'high' : 'medium',
         });
       } else {
-        if (!initiativeId && ['needs-upgrade', 'new-standard-needed'].includes(judgment.standardReview.verdict) && this.opts.createInitiative) {
+        if (!initiativeId && remainingArtifactSlots > 0
+          && ['needs-upgrade', 'new-standard-needed'].includes(judgment.standardReview.verdict) && this.opts.createInitiative) {
           const initiative = await this.opts.createInitiative({
             id: `class-review-${shortKey(correction.dedupeKey)}`,
             title: `Standards delta: ${judgment.standardReview.standardRef ?? 'new standard'}`,
@@ -201,8 +202,9 @@ export class CorrectionClassReview {
             classReviewRef: correction.dedupeKey, semanticClassId,
           });
           initiativeId = initiative.id;
+          remainingArtifactSlots--;
         }
-        if (!actionId && judgment.processReview.verdict === 'process-gap' && this.opts.addAction) {
+        if (!actionId && remainingArtifactSlots > 0 && judgment.processReview.verdict === 'process-gap' && this.opts.addAction) {
           const admission = this.opts.admitCorrectionAction?.({ correctionId: correction.id, classReviewRef: correction.dedupeKey })
             ?? { allow: false, reason: 'shared-admission-not-wired' };
           if (admission.allow) {
@@ -212,12 +214,26 @@ export class CorrectionClassReview {
               correctionId: correction.id, classReviewRef: correction.dedupeKey, semanticClassId,
             });
             actionId = action.id;
+            remainingArtifactSlots--;
           } else {
             this.opts.audit?.({ event: 'action-admission-refused', dedupeKey: correction.dedupeKey, reason: admission.reason });
           }
         }
       }
       filled = this.opts.store.attachArtifacts(correction.dedupeKey, { initiativeId, actionId }) ?? filled;
+      const heldAtCapacity = eligibleForWork && !judgment.standardReview.isPolicyRelaxation && remainingArtifactSlots === 0
+        && ((!initiativeId && ['needs-upgrade', 'new-standard-needed'].includes(judgment.standardReview.verdict) && !!this.opts.createInitiative)
+          || (!actionId && judgment.processReview.verdict === 'process-gap' && !!this.opts.addAction));
+      if (heldAtCapacity) {
+        this.opts.audit?.({ event: 'artifact-cap-held', dedupeKey: correction.dedupeKey });
+        try {
+          await this.opts.attentionRoute?.({
+            title: 'Correction class review at work-item capacity',
+            body: 'A correction has a reviewed improvement that could not receive a work item because the work-item limit is full. The review remains open for disposition.',
+            priority: 'medium',
+          });
+        } catch { /* notification failure cannot roll back the durable review */ }
+      }
       this.opts.audit?.({ event: 'filled', dedupeKey: correction.dedupeKey, initiativeId, actionId });
       return filled;
     } catch (error) { /* @silent-fallback-ok — durable bounded retry/dead-letter records the failed attempt */

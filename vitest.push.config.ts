@@ -15,6 +15,8 @@
  */
 import { defineConfig } from 'vitest/config';
 
+import { supertestRetryAlias } from './tests/setup/supertest-alias.js';
+
 import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
 
 const FLAKY_TESTS = [
@@ -239,7 +241,7 @@ export default defineConfig(withTestRunnerBound('push', {
   // (spec threadline-standalone-pairing). This mirrors vitest.config.ts: without it the push
   // gate's sharded unit tests cannot LOAD the threadline tests, and a collection failure fails
   // the whole shard — which is a REQUIRED check, so every pull request was blocked.
-  resolve: { alias: { '@sagemindai/threadline-core': new URL('./packages/threadline-core/src/index.ts', import.meta.url).pathname } },
+  resolve: { alias: [{ find: '@sagemindai/threadline-core', replacement: new URL('./packages/threadline-core/src/index.ts', import.meta.url).pathname }, supertestRetryAlias] },
 
   ...(ISOLATED_CACHE_DIR ? { cacheDir: ISOLATED_CACHE_DIR } : {}),
   test: {

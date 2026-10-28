@@ -181,6 +181,12 @@ const DEFAULT_GENERATED_PATTERNS = [
   // v1 (dashboard-door-model-controls §7, migrating-to-unified via #2085). Its
   // WriteDomainRegistry story names git-sync-excluded as the file-level arm.
   '.instar/state/new-topic-default-profile.json',
+  // Job cost reduction (job-cost-reduction §5.4, §13): the anomaly episode store
+  // and the triage caps/cooldown state are live observations of THIS machine
+  // (its disk, sessions, process slots), written directly outside guardWrite.
+  // Classified MACHINE-LOCAL with git-sync-excluded as the file-level arm.
+  '.instar/state/job-anomaly-episodes.json',
+  '.instar/state/job-triage-state.json',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
