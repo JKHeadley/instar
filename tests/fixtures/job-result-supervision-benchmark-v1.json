@@ -32,6 +32,11 @@
     { "id": "quiet-skipped", "expected": "cannot-tell", "sufficient": false, "evidence": "job: release-check\nresult: skipped\nreasonCode: not-needed" },
     { "id": "status-only-fine", "expected": "cannot-tell", "sufficient": false, "evidence": "job: source-sync\nresult: success\nreasonCode: fine" },
     { "id": "missing-probe", "expected": "cannot-tell", "sufficient": false, "evidence": "job: deployment-health\nresult: success\nreasonCode: verified\nfield deployment: healthy" },
-    { "id": "unknown-reason", "expected": "cannot-tell", "sufficient": false, "evidence": "job: replica-health\nresult: success\nreasonCode: novel-status" }
+    { "id": "unknown-reason", "expected": "cannot-tell", "sufficient": false, "evidence": "job: replica-health\nresult: success\nreasonCode: novel-status" },
+    { "id": "grade-pass-idle-receipt", "expected": "routine", "sufficient": true, "evidence": "job: llm-decision-grading\nresult: success\nreasonCode: none\nfield decision_points: 6\nfield graded: 0\nindependent-signal: decision-quality-grade-pass-receipt healthy 2026-10-28T00:00:00Z" },
+    { "id": "grade-pass-work-receipt", "expected": "routine", "sufficient": true, "evidence": "job: llm-decision-grading\nresult: success\nreasonCode: none\nfield decision_points: 6\nfield graded: 4\nindependent-signal: decision-quality-grade-pass-receipt healthy 2026-10-28T00:00:00Z" },
+    { "id": "grade-pass-no-receipt", "expected": "cannot-tell", "sufficient": false, "evidence": "job: llm-decision-grading\nresult: success\nreasonCode: none\nfield decision_points: 6\nfield graded: 0" },
+    { "id": "grade-pass-failed", "expected": "needs-session", "sufficient": false, "evidence": "job: llm-decision-grading\nresult: failure\nreasonCode: grade-pass-http-500\nanomaly: grade-pass-unavailable severity=2 class=recoverable" },
+    { "id": "grade-pass-feature-dark", "expected": "cannot-tell", "sufficient": false, "evidence": "job: llm-decision-grading\nresult: skipped\nreasonCode: feature-dark" }
   ]
 }

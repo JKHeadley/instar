@@ -25,4 +25,27 @@ describe('job-result supervision benchmark corpus', () => {
       if (item.expected === 'routine') expect(item.sufficient).toBe(true);
     }
   });
+
+  it('keeps every published benchmark call paired with a terminal audit record and excludes provider text', () => {
+    const dir = path.join(__dirname, '../../docs/research/job-result-supervision-v2-bench/results');
+    const rows = fs.readdirSync(dir).filter(name => name.endsWith('.jsonl'))
+      .flatMap(name => fs.readFileSync(path.join(dir, name), 'utf8').split('\n').filter(Boolean).map(JSON.parse)) as
+      Array<Record<string, unknown>>;
+    const starts = rows.filter(row => row.event === 'pre-call');
+    const ends = rows.filter(row => ['settled', 'failed', 'unknown'].includes(String(row.event)));
+    expect(starts.length).toBeGreaterThan(100);
+    expect(new Set(starts.map(row => row.callId)).size).toBe(starts.length);
+    expect(new Set(ends.map(row => row.callId)).size).toBe(ends.length);
+    expect(new Set(ends.map(row => row.callId))).toEqual(new Set(starts.map(row => row.callId)));
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('key');
+      expect(row).not.toHaveProperty('response');
+      expect(row).not.toHaveProperty('providerText');
+      if (row.event === 'pre-call') {
+        expect(row).toMatchObject({ taskId: 'job-result-supervision-v2',
+          promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          evidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      }
+    }
+  });
 });
