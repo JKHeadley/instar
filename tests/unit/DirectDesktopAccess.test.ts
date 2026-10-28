@@ -151,6 +151,41 @@ describe('DirectDesktopAccess', () => {
     await expect(capture).rejects.toThrow('capture-cancelled');
     expect(jpegCapture).not.toHaveBeenCalled();
   });
+  it('does not launch JPEG from the old stream after signed takeover during an AVC read', async () => {
+    const f = fixture('pin');
+    let rejectH264!: (error: Error) => void;
+    f.host.captureH264 = () => new Promise((_resolve, reject) => { rejectH264 = reject; });
+    const jpegCapture = vi.fn(async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    f.host.capture = jpegCapture;
+    const { requestId } = await f.begin('h264');
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    const ticketProof = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-browser-possession-v1',
+      requestId, state.connectionNonce])), f.browser.privateKey).toString('base64');
+    const ticket = f.authority.ticket(requestId, 'dashboard-proof', state.connectionNonce!, ticketProof);
+    const oldStream = await f.authority.admit({ headers: { origin: 'https://instar.example',
+      host: 'instar.example', 'x-forwarded-proto': 'https',
+      'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
+    url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    const pending = oldStream.captureEncrypted();
+    for (let i = 0; i < 20 && !rejectH264; i++) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(rejectH264).toBeTypeOf('function');
+    const replacement = crypto.generateKeyPairSync('ed25519');
+    const replacementEcdh = crypto.createECDH('prime256v1'); replacementEcdh.generateKeys();
+    const attemptId = 'avc-takeover-1234567890';
+    const input = { browserPublicKey: replacement.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+      browserEcdhPublicKey: replacementEcdh.getPublicKey().toString('base64'),
+      browserNonce: 'fedcba9876543210', previousVideoCodec: 'h264' as const, videoCodec: 'h264' as const };
+    const signature = crypto.sign(null, Buffer.from(JSON.stringify(['desktop-resume-v1', requestId,
+      state.connectionNonce, attemptId, input.browserPublicKey, input.browserEcdhPublicKey,
+      input.browserNonce, 'h264', 'h264'])), f.browser.privateKey).toString('base64');
+    const resumed = await f.authority.resume(requestId, 'dashboard-proof', input, attemptId,
+      state.connectionNonce!, signature);
+    expect(resumed.status).toBe('approved');
+    expect(resumed.connectionNonce).not.toBe(state.connectionNonce);
+    rejectH264(new Error('mac-desktop-host-capture-unavailable'));
+    await expect(pending).rejects.toThrow('capture-unavailable');
+    expect(jpegCapture).not.toHaveBeenCalled();
+  });
   it('downgrades an active grant after a hardware encoder failure', async () => {
     const f = fixture('pin');
     const h264Capture = vi.fn(async () => { throw new Error('mac-desktop-host-capture-unavailable'); });
