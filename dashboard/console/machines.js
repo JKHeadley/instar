@@ -89,7 +89,7 @@ async function openMachine(m, { get, health, guards, names }) {
     if (desktop.ok && desktop.data?.ready === true
       && (desktop.data.machineId === m.id || m.id === 'self')) {
       sb.insertBefore(block('Remote desktop',
-        el('p', { class: 'card-line', text: 'Open the logged-in desktop after Telegram approval.' }),
+        el('p', { class: 'card-line', text: 'Enter your dashboard PIN to open this machine’s signed-in desktop.' }),
         el('a', { href: '/dashboard/desktop.html', text: 'Open this machine' })), after);
     }
   }
