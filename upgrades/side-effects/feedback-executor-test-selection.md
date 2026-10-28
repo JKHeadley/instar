@@ -56,6 +56,8 @@ Concern raised on first pass: a fake positive summary on stderr could override a
 
 Live attempt `feedback-e4ee9e0a-d860-4825-b11d-2c18987d11dc:a2` recorded 33 skipped tests and zero executed in `/feedback-factory/execute/status` `lastCheckFailure` at 2026-10-28 09:35 UTC. Focused source tests: `tests/unit/feedback-factory/execute-units.test.ts` and `execute-service.test.ts`.
 
+The production lifecycle E2E fixture now reports a real-looking Vitest pass for its simulated successful head run; the targeted lifecycle E2E passed 2/2. A GitHub CI unit shard exposed a separate teardown race in `TopicProfileStore.test.ts`: a constructor-started boot flush could recreate the temporary `state/` directory during removal. The test now waits for each created store's active and trailing flushes before deleting its fixture. Its focused 40/40 tests passed, and independent review found no blocker. This test-only repair does not alter production behavior; the remaining risk is reliance on the store's private flush field names in that test helper.
+
 ## Class-Closure Declaration
 
 Closure class: a successful Vitest process that selected no named regression test. Base and head checks now both reject that class; conflicting summary lines also reject. The existing failing-then-passing and independent review gates continue to handle whether a running test actually proves the feedback fix.
