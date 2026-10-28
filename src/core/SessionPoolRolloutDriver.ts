@@ -62,7 +62,7 @@ export interface RolloutTickResult {
   /** The stage advanced TO this tick, or null if no advance happened. */
   advancedTo: SessionPoolStage | null;
   /** Why an advance did NOT happen this tick (null when one did, or when disabled). */
-  advanceSkippedReason: 'at-ceiling' | 'e2e-gate-not-passed' | 'already-at-or-past' | 'invalid-stage' | null;
+  advanceSkippedReason: 'at-ceiling' | 'e2e-gate-not-passed' | 'already-at-or-past' | 'invalid-stage' | 'not-applied' | null;
 }
 
 const DARK: SessionPoolStage = 'dark';
@@ -99,6 +99,15 @@ export class SessionPoolRolloutDriver {
     const nextStage = STAGES[currentIdx + 1];
     const res = this.d.advancer.advanceTo(nextStage);
     if (res.ok) {
+      // Log an advance only when the stage READS BACK as advanced (CMT-1117):
+      // the audit line is the operator's evidence of progress, so a write that
+      // did not land (a refused config write, a concurrent revert) is reported
+      // as such, never as "rollout-advanced".
+      const readBack = this.d.advancer.currentStage();
+      if (readBack !== res.stage) {
+        this.d.audit?.('rollout-advance-not-applied', { from: reconciledTo, intended: res.stage, readBack, ceiling });
+        return { ran: true, reconciledTo, advancedTo: null, advanceSkippedReason: 'not-applied' };
+      }
       this.d.audit?.('rollout-advanced', { from: reconciledTo, to: res.stage, ceiling });
       return { ran: true, reconciledTo, advancedTo: res.stage, advanceSkippedReason: null };
     }

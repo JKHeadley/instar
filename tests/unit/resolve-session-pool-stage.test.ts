@@ -41,3 +41,19 @@ describe('resolveSessionPoolStage', () => {
     expect(resolveSessionPoolStage({ enabled: true, stage: 42 as unknown as string })).toBe('42');
   });
 });
+
+describe('inboundQueuePoolGateOpen — the queue follows the pool switch, not its rollout stage (CMT-1117)', () => {
+  it('open whenever the pool is enabled, at EVERY stage including dark', async () => {
+    const { inboundQueuePoolGateOpen } = await import('../../src/core/inboundQueueConfig.js');
+    for (const stage of ['dark', 'shadow', 'live-transfer', 'rebalance', undefined]) {
+      expect(inboundQueuePoolGateOpen({ enabled: true, stage })).toBe(true);
+    }
+  });
+  it('closed when the pool is disabled or the block is absent', async () => {
+    const { inboundQueuePoolGateOpen } = await import('../../src/core/inboundQueueConfig.js');
+    expect(inboundQueuePoolGateOpen({ enabled: false, stage: 'live-transfer' })).toBe(false);
+    expect(inboundQueuePoolGateOpen({ stage: 'shadow' })).toBe(false);
+    expect(inboundQueuePoolGateOpen(undefined)).toBe(false);
+    expect(inboundQueuePoolGateOpen(null)).toBe(false);
+  });
+});

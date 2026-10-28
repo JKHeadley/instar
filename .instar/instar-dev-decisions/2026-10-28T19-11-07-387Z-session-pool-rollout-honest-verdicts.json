@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-28T19:11:07.387Z",
+  "slug": "session-pool-rollout-honest-verdicts",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 292,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionPoolRolloutDriver.ts",
+      "src/core/StageAdvancer.ts",
+      "src/core/inboundQueueConfig.ts",
+      "src/core/sessionPoolFailoverCheck.ts",
+      "src/core/testRunnerRunClassifier.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 267,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "session-pool-stage-promotion model: real StageAdvancer + driver under a target-only regression; promotion needs a green newer than the target's latest red and stops after MAX_TARGET_REDS_PER_COMMIT (2) reds per build, so 600 ticks yield exactly 2 promotions, restart-surviving"
+    }
+  },
+  "verdict": "pass"
+}

@@ -176,6 +176,17 @@ describe('§2.3 classifyTargetedRun — verify the MATCHED set, never argv exist
     expect(cls).toEqual({ targeted: true, matchedCount: 1, reason: 'exact-match-set' });
   });
 
+  it('a JSON report output flag keeps a single-file run targeted (CMT-1117: the failover runner writes one per run)', () => {
+    const root = fixtureRoot(['e.test.ts', 'core.test.ts']);
+    const included = resolveIncludedTestFiles(INCLUDE, root);
+    const argv = argvOf('run', '--config', 'vitest.e2e.config.ts', 'core.test.ts', '--reporter=dot', '--reporter=json', '--outputFile.json=/tmp/r.json');
+    expect(argv.unknownFlags).toEqual([]);
+    expect(classifyTargetedRun(argv, included, root)).toEqual({ targeted: true, matchedCount: 1, reason: 'exact-match-set' });
+    // The space-separated form consumes its value, never reading it as a positional.
+    const spaced = argvOf('run', 'core.test.ts', '--outputFile', '/tmp/r.json');
+    expect(spaced.positionals).toEqual(['core.test.ts']);
+  });
+
   it('a DIRECTORY positional routes suite-class', () => {
     const root = fixtureRoot(['a.test.ts']);
     const included = resolveIncludedTestFiles(INCLUDE, root);

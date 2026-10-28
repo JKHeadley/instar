@@ -13,6 +13,9 @@ import type { SessionPoolE2EResultStore } from './SessionPoolE2EResultStore.js';
 export const STAGES = ['dark', 'shadow', 'live-transfer', 'rebalance'] as const;
 export type SessionPoolStage = (typeof STAGES)[number];
 
+/** Verified reds at a target stage, per build, after which advanceTo stops re-promoting to it. */
+export const MAX_TARGET_REDS_PER_COMMIT = 2;
+
 export function stageIndex(stage: SessionPoolStage): number {
   return STAGES.indexOf(stage);
 }
@@ -58,6 +61,32 @@ export class StageAdvancer {
       this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail, commitSha: sha });
       return { ok: false, reason: 'e2e-gate-not-passed', detail };
     }
+    // Bounded re-promotion (CMT-1117): reconcile() lets a newer prior-stage
+    // green supersede an older red at the current stage, so a regression that
+    // only shows AT the target stage would otherwise be re-promoted on every
+    // lower-stage green. Cap it per build: after MAX_TARGET_REDS_PER_COMMIT
+    // verified reds at the target stage for this commit, stop re-promoting until
+    // a new build ships.
+    // Symmetric to reconcile()'s supersede rule: the promoting green must be
+    // NEWER than the target stage's latest same-commit red. Otherwise the tick
+    // that demotes on a fresh red would re-promote at once on the older green.
+    const targetLatest = this.d.resultStore.getLatestForStage(targetIdx);
+    if (
+      targetLatest && targetLatest.result === 'red' && targetLatest.commitSha === sha &&
+      this.d.resultStore.verify(targetLatest) && !(Date.parse(prior.ranAt) > Date.parse(targetLatest.ranAt))
+    ) {
+      const detail = 'target-red-newer-than-green';
+      this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail, commitSha: sha });
+      return { ok: false, reason: 'e2e-gate-not-passed', detail };
+    }
+    const targetReds = this.d.resultStore
+      .all()
+      .filter((r) => r.stage === targetIdx && r.result === 'red' && r.commitSha === sha && this.d.resultStore.verify(r)).length;
+    if (targetReds >= MAX_TARGET_REDS_PER_COMMIT) {
+      const detail = `target-stage-red-limit:${targetReds}`;
+      this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail, commitSha: sha });
+      return { ok: false, reason: 'e2e-gate-not-passed', detail };
+    }
     this.d.writeStageConfig(targetStage);
     this.d.audit?.('stage-advanced', { from: current, to: targetStage, commitSha: sha, evidenceRef: prior.evidenceRef });
     return { ok: true, stage: targetStage };
@@ -68,6 +97,11 @@ export class StageAdvancer {
    * mechanically revert to the prior stage until a fresh `green` is recorded. Returns
    * the stage after reconciliation.
    */
+  /** The stage the config holds right now (a read-back, never a write). */
+  currentStage(): SessionPoolStage {
+    return this.d.readStage();
+  }
+
   reconcile(): SessionPoolStage {
     const current = this.d.readStage();
     const idx = stageIndex(current);
@@ -78,6 +112,25 @@ export class StageAdvancer {
     // (2026-05-29 pre-merge review.)
     const regressed = !!latest && latest.result === 'red' && latest.commitSha === this.d.currentCommitSha() && this.d.resultStore.verify(latest);
     if (regressed) {
+      // A red is SUPERSEDED by a newer green at the prior stage for the same
+      // commit (CMT-1117). That green is exactly the evidence advanceTo() just
+      // promoted on, and the runner records each run against the stage running
+      // at the time — so after a revert the current stage's latest row stays
+      // the old red until the stage runs again. Without this, every advance on a
+      // fresh green was reverted on the next reconcile by that stale red, and the
+      // stage flapped dark↔shadow once a minute (69 times on 2026-10-28). A red
+      // recorded AFTER the promoting green still reverts, as before.
+      const priorGreen = this.d.resultStore.getLatestForStage(idx - 1);
+      const superseded =
+        !!priorGreen &&
+        priorGreen.result === 'green' &&
+        priorGreen.commitSha === latest.commitSha &&
+        this.d.resultStore.verify(priorGreen) &&
+        Date.parse(priorGreen.ranAt) > Date.parse(latest.ranAt);
+      if (superseded) {
+        this.d.audit?.('stage-revert-superseded', { stage: current, redRanAt: latest.ranAt, greenRanAt: priorGreen.ranAt, evidenceRef: priorGreen.evidenceRef });
+        return current;
+      }
       const reverted = STAGES[idx - 1];
       this.d.writeStageConfig(reverted);
       this.d.audit?.('stage-reverted', { from: current, to: reverted, reason: 'e2e-red', evidenceRef: latest.evidenceRef });
