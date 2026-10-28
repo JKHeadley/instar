@@ -144,10 +144,10 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
   const rows = current.slice(0, MAX_ROWS);
   const failed = (res.data.pool && Array.isArray(res.data.pool.failed)) ? res.data.pool.failed : [];
   const partial = failed.length > 0;
-  const tail = [
-    stale ? `${plural(stale, 'older item')} untouched for ${STALE_DAYS}+ days, listed separately.` : null,
-    routine > 0 ? `${plural(routine, 'automatic notice')} ${routine === 1 ? 'needs' : 'need'} nothing from you.` : null,
-  ].filter(Boolean).join(' ');
+  // Counts that ask nothing of the operator (routine notices, items untouched
+  // for weeks) stay off the front page; the older items remain under See all.
+  void routine;
+  const tail = '';
   const partialLine = unreachedLine(failed, names, 'items');
   if (current.length === 0) {
     return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
@@ -236,7 +236,8 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
   const yoursAll = open.filter(waitsOnOperator).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const yours = yoursAll.filter(fresh);
   const yoursStale = yoursAll.length - yours.length;
-  const violated = list.filter((c) => isMissed(c, now) && !waitsOnOperator(c));
+  // A miss nobody has touched for 14+ days is history, not a live problem.
+  const violated = list.filter((c) => isMissed(c, now) && !waitsOnOperator(c) && now - lastTouched(c) <= STALE_DAYS * DAY);
   const rest = open.filter((c) => fresh(c) && !waitsOnOperator(c) && !isMissed(c, now)).length;
   const olderCarried = open.filter((c) => !fresh(c) && !waitsOnOperator(c) && !isMissed(c, now)).length;
   const toRow = (c, tone) => ({
@@ -264,17 +265,19 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
       : missingPeers > 0 ? `Includes ${plural(origins.size, 'other machine')}; ${plural(missingPeers, 'machine')} not represented.`
       : `Includes all ${plural(origins.size, 'other machine')}.`)
     : "Only this machine's promises are visible.";
+  void olderCarried;
   const line = [
     yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
-    violated.length ? `${violated.length} missed ${violated.length === 1 ? 'its' : 'their'} deadline.` : null,
-    rest > 0 ? `${rest} more I'm working on.` : null,
-    olderCarried + yoursStale > 0 ? `${olderCarried + yoursStale} older ${olderCarried + yoursStale === 1 ? 'one' : 'ones'} not touched in ${STALE_DAYS}+ days, listed separately.` : null,
-  ].filter(Boolean).join(' ') || 'Nothing open.';
+    violated.length ? `${violated.length} recently missed ${violated.length === 1 ? 'its' : 'their'} deadline.` : null,
+    !yours.length && !violated.length ? (yoursStale > 0 ? 'Nothing recent waiting on you.' : rest > 0 ? `${rest} in progress, nothing waiting on you.` : 'Nothing open.') : null,
+  ].filter(Boolean).join(' ');
   const incomplete = origins.size === 0 || staleReplica || missingPeers === null || missingPeers > 0;
   const state = yours.length ? 'attn' : violated.length ? 'bad' : (incomplete ? 'partial' : 'ok');
   return {
     state, count: yours.length, coverage: incomplete ? 'partial view' : null, value: yours.length ? `${yours.length} waiting on you` : plural(open.length, 'open promise'),
-    line, note: coverage, rows: all.slice(0, MAX_ROWS), all,
+    // Promises waiting on the operator are listed in "What needs you"; this
+    // card's rows show the rest so the same item never appears twice.
+    line, note: coverage, rows: all.filter((r) => r.tone !== 'attn').slice(0, MAX_ROWS), all,
   };
 }
 
@@ -328,7 +331,8 @@ export function buildRunning(res, now = Date.now()) {
     state: worst,
     value: `${counts.ok} of ${ms.length} live`,
     line: counts.ok === ms.length ? 'Every machine is answering.' : parts.join(' · ') + '.',
-    machines: ms,
+    // When every machine is fine the list says nothing new; show it only when one isn't.
+    machines: counts.ok === ms.length ? [] : ms,
   };
 }
 
@@ -415,13 +419,16 @@ export function combineNeeds(needs, promised) {
   };
 }
 
+const AREA_NAME = { reach: 'message delivery', needs: 'what needs you', doing: 'sessions', promised: 'promises', running: 'machines', allowed: 'permissions' };
+
 // ── The headline ──────────────────────────────────────────────────────────
 /** One sentence over all six cards. Never says "all quiet" while a card can't tell. */
 export function headline(cards) {
   const list = Object.values(cards).filter(Boolean);
   const known = (c) => (c && Number.isFinite(c.count) ? c.count : 0);
   const bad = list.filter((c) => c.state === 'bad').length;
-  const blind = list.filter((c) => c.state === 'unknown' || c.state === 'partial' || c.state === 'stale' || c.coverage).length;
+  const blindIds = Object.entries(cards).filter(([, c]) => c && (c.state === 'unknown' || c.state === 'partial' || c.state === 'stale' || c.coverage)).map(([k]) => k);
+  const blind = blindIds.length;
   const otherAttn = Object.entries(cards).filter(([k, c]) => c && c.state === 'attn' && k !== 'needs' && k !== 'promised').length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
@@ -431,7 +438,7 @@ export function headline(cards) {
   const quals = [];
   if (bad) quals.push(`${plural(bad, 'area')} failing`);
   if (otherAttn) quals.push(`${plural(otherAttn, 'other area')} to look at`);
-  if (blind) quals.push(`${plural(blind, 'area')} I can't see fully`);
+  if (blind) quals.push(`can't fully see ${blindIds.map((k) => AREA_NAME[k] || k).join(' and ')}`);
   const qual = quals.length ? quals.join(', ').replace(/^./, (c) => c.toUpperCase()) + '.' : null;
   if (count > 0) return { text: count === 1 ? 'One thing needs you.' : `${count} things need you.`, tone: 'attn', sub: qual };
   if (bad) return { text: bad === 1 ? 'Something is failing.' : `${bad} areas are failing.`, tone: 'bad', sub: qual };

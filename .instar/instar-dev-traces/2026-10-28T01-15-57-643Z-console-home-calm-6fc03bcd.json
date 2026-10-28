@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "console-home-calm",
+  "sessionId": "6215a466-77bb-4f7e-a33b-02e7a5053727",
+  "timestamp": "2026-10-28T01:15:57.643Z",
+  "artifactPath": "upgrades/side-effects/console-home-calm.md",
+  "artifactSha256": "b64aaacc4e83bc132ed9966d6154bab6fe951a1857c53b7ee54acf98b61527aa",
+  "coveredFiles": [
+    "dashboard/console/home-model.js",
+    "docs/specs/console-home-calm.eli16.md",
+    "docs/specs/console-makeover.md",
+    "tests/unit/console-home-model.test.ts",
+    "tests/unit/console-home-one-answer.test.ts",
+    "upgrades/next/console-home-calm.md",
+    "upgrades/side-effects/console-home-calm.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only change to console Home; a revert fully undoes it.",
+  "eli16Path": "docs/specs/console-home-calm.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-home-calm.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

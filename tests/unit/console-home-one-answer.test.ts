@@ -84,7 +84,7 @@ describe('machines are named, never shown by id', () => {
   it('the reported line is gone', () => {
     const items = [...Array.from({ length: 420 }, () => item({ priority: 'LOW', category: 'telegram-origin' }))];
     const m = buildNeeds(ok({ items, pool: { failed: [{ machineId: RAW_ID, error: 'offline' }] } }), NOW, {});
-    expect(m.line).toBe("Couldn't reach a machine with no name on file, so its items may be missing. 420 automatic notices need nothing from you.");
+    expect(m.line).toBe("Couldn't reach a machine with no name on file, so its items may be missing.");
   });
 });
 
@@ -150,5 +150,33 @@ describe('no Home builder shows internal text', () => {
     const reported = `No answer from ${RAW_ID}. 420 routine notices kept in the log.`;
     expect(FORBIDDEN.some(([re]) => re.test(reported))).toBe(true);
     expect(FORBIDDEN.some(([re]) => re.test('1 need you'))).toBe(true);
+  });
+});
+
+describe('a calm front page', () => {
+  it('all machines healthy collapses to one line; a struggling one is listed', () => {
+    const m = (n: string, over = {}) => ({ machineId: n, nickname: n, online: true, routerReceivedAt: minsAgo(0.5), ...over });
+    const calm = buildRunning(ok({ machines: [m('A'), m('B'), m('C')] }), NOW);
+    expect(calm.line).toBe('Every machine is answering.');
+    expect(calm.machines).toHaveLength(0);
+    const one = buildRunning(ok({ machines: [m('A'), m('B', { routerReceivedAt: minsAgo(60) })] }), NOW);
+    expect(one.machines).toHaveLength(2);
+  });
+  it('a miss untouched for 14+ days is history, not a red row', () => {
+    const p = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [
+      promise({ status: 'violated', createdAt: minsAgo(60 * 24 * 70) }),
+      promise({ status: 'violated', createdAt: minsAgo(60) }),
+    ] }), NOW, 0);
+    expect(p.line).toBe('1 recently missed its deadline.');
+    expect(p.rows.filter((r: { tone: string }) => r.tone === 'bad')).toHaveLength(1);
+  });
+  it('a promise waiting on the operator is listed once, in What needs you', () => {
+    const p = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ blockedOn: 'user-input' }), promise({ status: 'violated', createdAt: minsAgo(60) })] }), NOW, 0);
+    expect(p.rows.some((r: { tone: string }) => r.tone === 'attn')).toBe(false);
+    const card = combineNeeds(buildNeeds(ok({ items: [], pool: { failed: [] } }), NOW), p);
+    expect(card.rows.filter((r: { tone: string }) => r.tone === 'attn')).toHaveLength(1);
+  });
+  it('the headline names what it cannot fully see', () => {
+    expect(headline({ needs: { state: 'ok', count: 0 }, promised: { state: 'partial', count: 0 } }).sub).toBe("Can't fully see promises.");
   });
 });
