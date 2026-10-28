@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "subpackages-ts7-node-types",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-28T01:12:15.785Z",
+  "artifactPath": "upgrades/side-effects/subpackages-ts7-node-types.md",
+  "artifactSha256": "727f221355c68b02d6b2cdbf27d2027a86d44a690e8dcb1cfaefb02e61ba4e2e",
+  "coveredFiles": [
+    "docs/specs/subpackages-ts7-node-types.eli16.md",
+    "packages/threadline-core/tsconfig.json",
+    "packages/witness/tsconfig.json",
+    "upgrades/next/subpackages-ts7-node-types.md",
+    "upgrades/side-effects/subpackages-ts7-node-types.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two package tsconfig lines naming @types/node; emit unchanged; revert fully undoes it.",
+  "eli16Path": "docs/specs/subpackages-ts7-node-types.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/subpackages-ts7-node-types.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
