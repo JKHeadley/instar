@@ -16,11 +16,9 @@ related:
   - docs/specs/llm-decision-quality-meter.md
   - docs/specs/jev-correction-live.md
   - docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md
-review-convergence: "2026-10-27T02:13:46.694Z"
-review-iterations: 6
-review-completed-at: "2026-10-27T02:13:46.694Z"
-review-report: "docs/specs/reports/job-model-routing-convergence.md"
-cross-model-review: "codex-cli:gpt-6-astra"
+prior-review-convergence: "2026-10-27T02:13:46.694Z"
+prior-review-report: "docs/specs/reports/job-model-routing-convergence.md"
+revision-note: "Jev-first result coverage corrected 2026-10-27; re-review required"
 single-run-completable: true
 frontloaded-decisions: 26
 cheap-to-change-tags: 0
@@ -38,14 +36,28 @@ spec (its §7):
 - **G2.** Jobs that genuinely need a model run on the best-value model the agent
   can reach, chosen from Instar benchmark evidence (for example Codex GPT-6
   Luna), with Claude as the fallback.
-- **G3.** Use Jev (TypeSafe) as much as possible, through the standing cascade:
-  Jev's answer when it is confident, GPT-6 Luna when Jev is unsure
-  (`src/core/JevCascade.ts`).
+- **G3.** Use Jev (TypeSafe) as the first check of every completed script
+  result. Haiku or Luna replaces Jev for each result only when Jev is
+  unavailable. An uncertain result requests an investigation session. The
+  optional before-work checks for selected jobs are described separately in
+  §6 and §7.
 
 Both are bounded by **G4, the single-provider floor**: an agent with one provider,
 no Jev key and no benchmark mirror stays fully functional. Jev, Codex and
 benchmark routing are optimizations only, and the one-provider path is measured
 first.
+
+**Clarified Jev-first rule (Justin, 2026-10-27).** After **every script run**, Jev
+checks the result and decides whether a full investigation session is needed.
+When Jev is unavailable, Haiku or Luna performs that check for **each result**;
+it is not a periodic sample. An uncertain answer starts an investigation
+session, subject to the existing safety and admission bounds. The fixed alert
+rules still report critical failures immediately, and a one-provider agent
+still works. This rule belongs to spec 1's result-supervision design and also
+applies to every script or pass job added by this spec. The separate Jev checks
+in §6 and §7 run *before* selected jobs do work; they do not replace the
+after-run result check. No live Jev result path is enabled until benchmark,
+per-call audit, outcome grading, and bulk review are proven.
 
 **G7, auditability of every model call.** Every Jev, Claude, Codex, referee,
 counterfactual, retry, and provider-swap call introduced here must enter the
@@ -588,7 +600,7 @@ both orders).
 - **No referee.** An unsure answer runs the job, the safe direction.
 - **No Jev:** no pre-gate; today's behaviour.
 
-The other pass jobs get no pre-gate: a pass is already one bounded call, and a
+The other pass jobs get no *before-work* pre-gate: a pass is already one bounded call, and a
 pre-gate there would save one call at the cost of its own grading machinery. The
 commitment-detection pass is the exception because it classifies many rows per
 run, and there Jev works per row (§6.3).

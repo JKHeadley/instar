@@ -30,11 +30,10 @@ problem, because they all use the same built-in job templates.
    that owns the problem tries to fix it. If a smaller problem is still there
    after 6 hours, you get one message about it.
    You hear about each problem once, not every 5 minutes.
-3. **Jev decides when a job's result needs a real session.** For five jobs whose
-   results can carry something a fixed rule cannot read (the health check, the
-   three feedback-factory jobs and the check-in reminder), any result that is
-   not a plain "all fine" goes to Jev with one question: is this routine, or
-   does it need a real AI session to look into it? When Jev is unsure, a bounded
+3. **Jev decides when a job's result needs a real session.** After every script
+   run, Jev checks its result with one question: is this routine, or does it
+   need a real AI session to look into it? This includes plain "all fine" and
+   skipped results, so a false healthy report is reviewable. When Jev is unsure, a bounded
    investigation session starts. Jev can only add
    sessions: a fixed rule (a job that fails twice in a row, or a serious
    problem like a nearly full disk) always gets one, whatever Jev says.
@@ -43,11 +42,10 @@ problem, because they all use the same built-in job templates.
      what it found is recorded on the dashboard.
    - At most one per job and problem every 6 hours, 3 per job and 6 per
      machine a day.
-   - The other script jobs report counters or let the server raise its own
-     alert, so nothing reads them per run.
+   - This applies to the other script jobs too, even when their server-side
+     work already raises its own alert.
 4. **Outage replacement, and one review a day.** Only while Jev is unavailable,
-   Luna or Haiku reads a sample of the results called routine at most every 6 hours, and
-   says how many it did not get to. Once a day, a single review looks across all
+   Luna or Haiku checks each result in its place. Once a day, a single review looks across all
    the jobs. A daily practice check also feeds every script a fake broken server
    and checks that each one still notices the failure.
 5. **One request comes in a second step, with its own spec.**
@@ -99,8 +97,10 @@ that the cheaper job still catches real problems as often as before.
 
 ## Expected savings
 
-About 95% of the measured job cost. For the five jobs that use the most, Echo
-goes from about 756 million to roughly 10 million weighted tokens a week, plus the few real sessions Jev asks for. The
-remaining agent jobs (about 40 million) are the second step's target, with similar cuts on every agent that
-uses the built-in jobs. The real numbers will come from the measurement, not this
-estimate.
+The earlier 95% forecast is no longer a usable estimate for the corrected
+design: checking every result, including outage replacement, costs more than
+checking five jobs selectively. We will recalculate it from measured result
+volume and benchmarked call costs before any rollout. The old forecast of
+roughly 10 million weighted tokens for the busiest five jobs also needs
+recalculation. The remaining agent jobs are the second step's target. Actual
+savings will be measured after the corrected path is reviewed and enabled.

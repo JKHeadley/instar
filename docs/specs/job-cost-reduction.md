@@ -14,17 +14,9 @@ related:
   - docs/specs/benchmark-divergence-detector.md
   - docs/LLM-SUPERVISED-EXECUTION.md
   - docs/specs/jev-job-supervision.md
-review-convergence: "2026-10-27T02:37:40.367Z"
-review-iterations: 6
-review-completed-at: "2026-10-27T02:37:40.367Z"
-review-report: "docs/specs/reports/job-cost-reduction-convergence.md"
-cross-model-review: "codex-cli:gpt-6-astra"
-approved: true
-approved-by: "justin (operator decision, Telegram topic 130742, 2026-10-26 19:04 PDT)"
-approval-basis: >
-  Justin set the supervision design this revision implements ("leverage Jev ... with haiku or
-  Luna replacing Jev only when unavailable ... then a single high-level daily review") and the build was directed to
-  proceed after re-convergence. Recorded transparently by Echo, not silently self-granted.
+prior-review-convergence: "2026-10-27T02:37:40.367Z"
+prior-review-report: "docs/specs/reports/job-cost-reduction-convergence.md"
+revision-note: "Jev-first result coverage corrected 2026-10-27; prior approval does not cover this revision"
 single-run-completable: true
 frontloaded-decisions: 19
 cheap-to-change-tags: 1
@@ -612,6 +604,40 @@ they are deterministic text. A triage session costs what a job session costs
 today, at most 6 a day per machine.
 
 ### 5.6 Supervision: per-run Jev triage, an outage replacement, one daily review
+
+**Draft correction from Justin (2026-10-27).** The original text below limited
+Jev to five jobs and skipped plain-healthy, skipped, and cached results. It also
+sampled results only every six hours during a Jev outage. Those limits do **not**
+match Justin's intended first line of defense and are superseded by this
+paragraph and the replacement rule below. The older tables, cost estimates,
+tests, and frontloaded decisions in this merged spec still describe the prior
+design; they are not approval or implementation instructions for the new path.
+This correction stays in draft until the detailed design, benchmarks, tests,
+and cost estimate have been reconciled and reviewed. The live Jev path remains
+off behind the existing audit gate.
+
+**Replacement result rule.** Every completed script run produces one structured
+result record, including success, failure, skipped, and script trust rejection.
+Jev receives a bounded, scrubbed projection of each *trusted* result and
+answers whether a full investigation session is needed. A trust-rejected run
+gets an immediate local failure alert and a safe status-only result check;
+untrusted script text is never sent to Jev or another model. Plain-healthy and
+repeated results are checked too; a cached verdict cannot silently stand in for
+a new per-run check. When Jev is unavailable, Haiku or Luna checks each result
+in its place, using the same evidence projection and audit record. If that
+replacement is also unavailable, the single-provider agent uses its reachable
+model; if no model is reachable, deterministic alerts remain live, the result
+is marked `unchecked`, and the missing coverage is surfaced. Uncertain or
+malformed answers ask for an investigation session under the existing admission
+bounds. A fixed critical alert is delivered without waiting for any model.
+Every check, fallback, refusal, and later outcome is recorded for benchmark and
+bulk accuracy review. A cost cap may limit spending, but cannot turn a result
+into an unreported silent skip.
+
+**Prior design detail below is retained as history pending reconciliation.**
+Its narrower `triage`/`deterministic` classes, bare-ok exclusions, fingerprint
+reuse, six-hour outage sample, and related tests are superseded by the
+replacement result rule above.
 
 `docs/LLM-SUPERVISED-EXECUTION.md` puts health checks at Tier 1, to "detect
 false-positive healthy reports". Today a Haiku session on every run pays for that
