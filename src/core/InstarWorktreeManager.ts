@@ -23,8 +23,13 @@ import { SafeGitExecutor } from './SafeGitExecutor.js';
 // ── Constants ────────────────────────────────────────────────────────────
 
 /** Default allowlist of remote-origin URLs for the canonical instar repo.
- *  Operators can extend via `worktree.repoUrlAllowlist` in `.instar/config.json`. */
+ *  `JKHeadley/instar` is where instar is developed and released; a checkout
+ *  cloned from it was refused until it was listed here (no config could be
+ *  assumed on a fresh machine). Operators can extend via
+ *  `worktree.repoUrlAllowlist` in `.instar/config.json`. */
 export const DEFAULT_INSTAR_REPO_URL_ALLOWLIST: ReadonlyArray<string> = [
+  'git@github.com:JKHeadley/instar.git',
+  'https://github.com/JKHeadley/instar.git',
   'git@github.com:instar-ai/instar.git',
   'https://github.com/instar-ai/instar.git',
 ];
@@ -606,12 +611,15 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   // configuration (user.signingkey, commit.gpgsign, gpg.format,
   // gpg.ssh.allowedSignersFile) is deliberately untouched.
   setLocalGitIdentity(worktreePath, instarRepo, opts.stateDir ?? path.join(agentHome, '.instar'));
-  ensureHuskyHooksActive(worktreePath);
 
+  // Share node_modules BEFORE activating hooks: the prepare script is `husky`, a
+  // node_modules binary, and a fresh worktree has none of its own. Activating first
+  // failed every real create with "husky: not found".
   const shareNodeModules = opts.shareNodeModules ?? true;
   if (shareNodeModules) {
     maybeSymlinkNodeModules(instarRepo, worktreePath);
   }
+  ensureHuskyHooksActive(worktreePath);
 
   // Audit ledger — local and durable mirror.
   const stateDir = opts.stateDir ?? path.join(agentHome, '.instar');

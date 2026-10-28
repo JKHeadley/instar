@@ -203,6 +203,48 @@ describe('createWorktree (integration)', () => {
     expect(git(['config', '--get', 'core.hooksPath'], result.worktreePath)).toBe('.husky/_');
   });
 
+  it('activates hooks when husky exists only in the source repo node_modules (the real prepare script)', async () => {
+    // The real package.json prepare script is `husky`, a node_modules binary. A fresh
+    // worktree has no node_modules of its own, so hook activation must run after the
+    // source repo's node_modules is shared into it.
+    const pkgPath = path.join(fix.bareRepo, 'package.json');
+    fs.writeFileSync(pkgPath, JSON.stringify({ name: 'instar', scripts: { prepare: 'husky' } }));
+    execFileSync('git', ['-C', fix.bareRepo, 'commit', '-qam', 'prepare: husky'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', fix.bareRepo, 'update-ref', 'refs/remotes/origin/main', 'HEAD'], { stdio: 'pipe' });
+    const bin = path.join(fix.bareRepo, 'node_modules', '.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'husky'), '#!/bin/sh\nexec node scripts/fake-husky.mjs\n');
+    fs.chmodSync(path.join(bin, 'husky'), 0o755);
+
+    // The test runner's own PATH carries this checkout's node_modules/.bin (with a real
+    // husky); without removing it, `npm run prepare` would find that one and the test
+    // would pass whatever the order of operations.
+    const savedPath = process.env.PATH;
+    process.env.PATH = (savedPath ?? '').split(path.delimiter).filter((d) => !/node_modules[\\/]\.bin/.test(d)).join(path.delimiter);
+    let result: Awaited<ReturnType<typeof createWorktree>>;
+    try {
+    result = await createWorktree({
+      branch: 'spec/husky-from-source-node-modules',
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    });
+    } finally {
+      process.env.PATH = savedPath;
+    }
+
+    const hookPath = path.join(result.worktreePath, '.husky', '_', 'pre-commit');
+    expect(fs.statSync(hookPath).mode & 0o111).not.toBe(0);
+    expect(git(['config', '--get', 'core.hooksPath'], result.worktreePath)).toBe('.husky/_');
+  });
+
   it('symlinks node_modules by default when the source exists; --no-share-node-modules opts out', async () => {
     // Provide a real node_modules in the bare repo.
     fs.mkdirSync(path.join(fix.bareRepo, 'node_modules', 'a-pkg'), { recursive: true });
@@ -334,8 +376,11 @@ describe('createWorktree (integration)', () => {
     ).rejects.toThrow(/integrity validation/);
   });
 
-  it('the default URL allowlist contains exactly the canonical two entries', () => {
+  it('the default URL allowlist contains exactly the canonical entries', () => {
+    // JKHeadley/instar is where instar is developed and released; instar-ai/instar is kept for existing checkouts.
     expect([...DEFAULT_INSTAR_REPO_URL_ALLOWLIST].sort()).toEqual([
+      'git@github.com:JKHeadley/instar.git',
+      'https://github.com/JKHeadley/instar.git',
       'git@github.com:instar-ai/instar.git',
       'https://github.com/instar-ai/instar.git',
     ].sort());

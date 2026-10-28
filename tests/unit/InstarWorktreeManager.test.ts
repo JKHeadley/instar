@@ -418,6 +418,14 @@ describe('resolveInstarRepo', () => {
     ).toThrow(/core.hooksPath .* resolves outside the repo/);
   });
 
+  it('accepts a checkout of the canonical JKHeadley/instar repo by default (https and ssh)', () => {
+    for (const remote of ['https://github.com/JKHeadley/instar.git', 'git@github.com:JKHeadley/instar.git']) {
+      const repo = makeRepo({ remote });
+      const result = resolveInstarRepo({ env: { INSTAR_REPO: repo }, fallbackChain: [], urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST });
+      expect(result.remoteUrl).toBe(remote);
+    }
+  });
+
   it('accepts a repo with allowlisted origin and sane hooksPath', () => {
     const repo = makeRepo({ remote: 'git@github.com:instar-ai/instar.git' });
     const result = resolveInstarRepo({
