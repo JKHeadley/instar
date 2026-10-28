@@ -736,10 +736,13 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   if (req.path === '/dashboard' || req.path.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
-    res.header(
-      'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'",
-    );
+    const host = req.get('host') ?? '';
+    const desktopConnect = /^[A-Za-z0-9.:[\]-]+$/.test(host)
+      ? `connect-src 'self' ws://${host} wss://${host}` : "connect-src 'self'";
+    res.header('Content-Security-Policy',
+      req.path === '/dashboard/desktop.html' || req.path === '/dashboard/desktop.js'
+        ? `default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: 'self'; ${desktopConnect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+        : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
   }
   next();

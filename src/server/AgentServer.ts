@@ -179,6 +179,11 @@ import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
+import { DesktopStreamManager } from './DesktopStreamManager.js';
+import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
+import { MacDesktopHost } from '../core/MacDesktopHost.js';
+import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
+import { DesktopAccessAudit } from '../core/DesktopAccessAudit.js';
 import { assertSqliteAvailable, PendingRelayStore } from '../messaging/pending-relay-store.js';
 import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
@@ -361,6 +366,8 @@ export class AgentServer {
   private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
+  private desktopStreamManager: DesktopStreamManager | null = null;
+  private directDesktopAccess: DirectDesktopAccess | null = null;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
@@ -375,6 +382,7 @@ export class AgentServer {
   private routeContext: {
     telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
+    directDesktopAccess?: DirectDesktopAccess | null;
     workQueue?: WorkQueueRegistry | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
@@ -2412,6 +2420,55 @@ export class AgentServer {
       // @silent-fallback-ok — reported via console.warn; an operator-store init failure must never block server boot.
       console.warn('[instar] topic-operator-store init failed (non-fatal):', err);
       this.topicOperatorStore = null;
+    }
+
+    // The first native desktop target is a local development Mac. The gate is
+    // explicit even on development agents; incomplete hosts cannot advertise
+    // access. Other platforms require their own host adapters and live proof.
+    if (options.config.remoteDesktop?.enabled === true && options.config.developmentAgent === true
+      && process.platform === 'darwin' && this.meshSelfId && this.telegramAdapter && this.topicOperatorStore) {
+      const label = options.listPoolMachines?.().find(peer => peer.machineId === this.meshSelfId)?.nickname;
+      if (label) {
+        try {
+          const machineIdentity = new MachineIdentityManager(options.config.stateDir);
+          const identity = machineIdentity.loadIdentity();
+          if (identity.machineId !== this.meshSelfId) throw new Error('machine identity mismatch');
+          const privateKey = machineIdentity.loadSigningKey();
+          const publicKeyPem = machineIdentity.getSigningPublicKeyPem(this.meshSelfId);
+          const proof = Buffer.from('instar-desktop-key-check-v1');
+          if (!publicKeyPem || !verifyMachinePayload(proof, signMachinePayload(proof, privateKey), publicKeyPem)) {
+            throw new Error('machine signing key mismatch');
+          }
+          const host = new MacDesktopHost();
+          this.directDesktopAccess = new DirectDesktopAccess(
+          this.meshSelfId, label, host, new FileRemoteStepUpLockouts(options.config.stateDir),
+          { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
+            sign: payload => Buffer.from(signMachinePayload(payload, privateKey), 'base64') },
+          (topicId, uid) => this.topicOperatorStore?.getOperator(topicId)?.uid === uid,
+          token => this.dashboardOperatorSessions.verify(token),
+          async (topicId, text) => {
+            const uid = this.topicOperatorStore?.getOperator(topicId)?.uid;
+            if (!uid || String(this.telegramAdapter!.getOwnerUserId() ?? '') !== uid) {
+              throw new Error('verified owner Telegram DM unavailable');
+            }
+            // sendToTopic persists outbound text in the ordinary message log.
+            // The challenge code is therefore sent only through the unlogged
+            // owner DM path; the authenticated reply is consumed before logging.
+            const sent = await this.telegramAdapter!.sendToOwnerDM(text);
+            if (!sent) throw new Error('verified owner Telegram DM unavailable');
+          },
+          grantId => this.desktopStreamManager?.closeGrant(grantId),
+          Date.now,
+          new DesktopAccessAudit(options.config.stateDir),
+        );
+        this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
+        this.telegramAdapter.setDesktopApprovalHandler(input => this.directDesktopAccess!.acceptAuthenticatedTelegramReply(input));
+        } catch (error) {
+          console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
+          this.directDesktopAccess = null;
+          this.desktopStreamManager = null;
+        }
+      }
     }
 
     // Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
@@ -4817,6 +4874,7 @@ export class AgentServer {
       correctionClassReview: this.correctionClassReview,
       completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
+      directDesktopAccess: this.directDesktopAccess,
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,
       growthMilestoneAnalyst: this.growthMilestoneAnalyst,
@@ -6730,6 +6788,7 @@ export class AgentServer {
           instarDir: this.config.stateDir,
           hookEventReceiver: this.hookEventReceiver,
           streamTicketStore: this.streamTicketStore,
+          desktopStreamManager: this.desktopStreamManager ?? undefined,
           poolStreamAllowRemoteInput: this.poolStreamAllowRemoteInput,
           poolStreamConnector: this.poolStreamConnector,
           selfMachineId: this.meshSelfId,
@@ -7171,6 +7230,9 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.directDesktopAccess?.killSwitch();
+    this.telegramAdapter?.setDesktopApprovalHandler(null);
+    this.desktopStreamManager?.closeAll();
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }

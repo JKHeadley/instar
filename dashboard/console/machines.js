@@ -76,7 +76,7 @@ async function openMachine(m, { get, health, guards, names }) {
   const panel = sheet({ title: m.name }, ...body, details(m.record, ['machineId', 'nickname', 'online', 'routerReceivedAt', 'selfReportedLastSeen', 'loadAvg', 'ropeCondition', 'clockSkewStatus', 'pollingActive']));
   if (m.isSelf) {
     const sb = panel.querySelector('.sheet-body');
-    const [sys, res] = await Promise.all([get('/systems/status'), get('/resources/summary?sinceHours=1')]);
+    const [sys, res, desktop] = await Promise.all([get('/systems/status'), get('/resources/summary?sinceHours=1'), get('/desktop/availability')]);
     const h = healthOf(sys);
     const u = usageOf(res, names);
     const g = guards.ok && guards.data && Array.isArray(guards.data.guards) ? guards.data.guards : null;
@@ -86,6 +86,12 @@ async function openMachine(m, { get, health, guards, names }) {
     sb.insertBefore(block('My parts here', h.ok ? el('p', { class: 'card-line', text: h.summary }) : note(`Can’t tell: ${h.reason}.`), h.ok ? rowsList(h.rows.slice(0, 12)) : null), after);
     sb.insertBefore(block('What’s using it', u.ok ? el('p', { class: 'card-line', text: u.summary }) : note(`Can’t tell: ${u.reason}.`), u.ok ? rowsList(u.rows) : null), after);
     sb.insertBefore(block('Safety checks', wrong === null ? note('Can’t tell: the safety checks did not answer.') : wrong.length ? rowsList(wrong.map((x) => ({ main: x.criticalPath || x.key, sub: x.criticalPath ? x.key : '', end: 'off', tone: 'attn' }))) : el('p', { class: 'card-line', text: 'Every safety check that should be on is on.' })), after);
+    if (desktop.ok && desktop.data?.ready === true
+      && (desktop.data.machineId === m.id || m.id === 'self')) {
+      sb.insertBefore(block('Remote desktop',
+        el('p', { class: 'card-line', text: 'Open the logged-in desktop after Telegram approval.' }),
+        el('a', { href: '/dashboard/desktop.html', text: 'Open this machine' })), after);
+    }
   }
   if (m.id !== 'self') panel.querySelector('.sheet-body').append(renameBlock(m, get));
 }

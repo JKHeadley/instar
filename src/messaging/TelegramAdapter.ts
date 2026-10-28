@@ -633,6 +633,22 @@ export class TelegramAdapter implements MessagingAdapter {
   private pairingHandler: PollingPairingHandler | null = null;
   setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
   hasPairingHandler(): boolean { return this.pairingHandler !== null; }
+  /** The desktop code is consumed before ordinary command routing or message
+   * logging. This callback is reachable only after Telegram sender auth. */
+  private desktopApprovalHandler: ((input: { requestId: string; code: string; topicId: number; senderUid: string }) => boolean) | null = null;
+  setDesktopApprovalHandler(handler: typeof this.desktopApprovalHandler): void { this.desktopApprovalHandler = handler; }
+  consumeDesktopApproval(input: { text: string; topicId: number; senderUid: string; trusted: boolean; forwarded: boolean }): { matched: boolean; approved: boolean } {
+    const trimmed = input.text.trim();
+    if (!/^\/desktop(?:\s|$)/i.test(trimmed)) return { matched: false, approved: false };
+    const reply = /^\/desktop ([0-9a-f-]{36}) (\d{6})$/.exec(trimmed);
+    if (!reply) return { matched: true, approved: false };
+    if (!input.trusted || input.forwarded || !this.isAuthorizedSender(Number(input.senderUid))) {
+      return { matched: true, approved: false };
+    }
+    return { matched: true, approved: this.desktopApprovalHandler?.({
+      requestId: reply[1], code: reply[2], topicId: input.topicId, senderUid: input.senderUid,
+    }) ?? false };
+  }
   /** Optional coherence-journal seam (COHERENCE-JOURNAL-SPEC §3.3). The adapter
    *  holds no StateManager, so the emergency-stop path's stopAutonomousTopic call
    *  cannot reach the wired journal on its own. server.ts injects this seam so the
@@ -5624,6 +5640,20 @@ export class TelegramAdapter implements MessagingAdapter {
     if (!msg.text) return;
 
     const text = msg.text;
+
+    const desktopApproval = this.consumeDesktopApproval({
+      text, topicId: numericTopicId, senderUid: String(msg.from.id), trusted: true,
+      forwarded: !!((msg as unknown as Record<string, unknown>).forward_origin
+        || (msg as unknown as Record<string, unknown>).forward_from
+        || (msg as unknown as Record<string, unknown>).forward_date),
+    });
+    if (desktopApproval.matched) {
+      await this.sendToTopic(numericTopicId, desktopApproval.approved
+        ? 'Remote desktop approved. Return to the dashboard to connect.'
+        : 'Remote desktop approval was not accepted. Check the request or ask for a new code.',
+      { provenance: 'automation' }).catch(() => {});
+      return;
+    }
 
     // Check for commands first
     if (text.startsWith('/')) {

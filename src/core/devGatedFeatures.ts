@@ -918,6 +918,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
   //    are the documented action-bearing exclusion cases). Even when enabled, every
   //    door stays deny-by-default until a per-door operator PIN go-live. ──
   {
+    configPath: 'remoteDesktop.enabled',
+    category: 'action-bearing',
+    reason: 'full human display and input access to the logged-in host requires an explicit local operator enable even on development agents',
+  },
+  {
     configPath: 'routingSpend.money.enabled',
     category: 'action-bearing',
     reason: 'real-dollar spending authority (metered-door money gate + PIN caps/arming); dark for everyone incl. dev agents until an explicit operator enable — FD-16',

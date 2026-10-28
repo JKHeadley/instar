@@ -155,6 +155,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'remoteDesktop',
+    prefixes: ['/desktop'],
+    description: 'Native operator remote desktop on this installed machine. The first host is a development Mac with a live display and input permission; other machines stay unavailable until their own host adapter passes live tests. The operator opens /dashboard/desktop.html, enters the dashboard PIN, confirms full desktop scope, approves a one-use code through their verified Telegram account, checks the target fingerprint, then can view and control the logged-in desktop. Stop, expiry, disconnect, or loss of the local control indicator ends both display and input. This direct action does not require a blocker. Registry First: GET /desktop/availability reports this machine only; 503 means the feature is off.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.directDesktopAccess,
+      endpoints: ['GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
+        'GET /desktop/requests/:id', 'POST /desktop/requests/:id/ticket',
+        'POST /desktop/requests/:id/revoke', 'WebSocket /desktop-stream'],
+    }),
+  },
+  {
     key: 'guardPosture',
     prefixes: ['/guards'],
     description: 'Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) — read every machine\'s safety-guard flags with HONEST verification-graded states: on-confirmed (live runtime confirms) / on-unverified (config-on only, grey not green) / on-stale (dead tick loop) / on-dry-run (watching but toothless) / off classified dark-default vs diverged-from-default (the load-shed signature — the only off that alerts) / diverged-pending-restart (disk edit not yet live) / errored / missing (expected runtime never registered) / off-runtime-divergent (runtime contradicts an on-config — the in-memory load-shed class). ?scope=pool accounts for EVERY registered machine by name (classified failure rows, never silent omission); the Machines tab shows last-known posture with age even for a dark peer (heartbeat piggyback + durable store). Read-only, always-on (deliberately no enabled gate — an off-switch on the guard-visibility surface would itself be an invisible disabled guard). When asked "are my guards on?" / "why didn\'t the watchdog fire on machine X?" / after any incident load-shed → read this, never guess. To re-enable a guard via PATCH /config, send the guard\'s FULL config block (one-level-deep merge erases sibling tuning).',

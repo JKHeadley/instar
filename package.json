@@ -18,7 +18,7 @@
     "generate:manifest": "node scripts/generate-builtin-manifest.cjs",
     "release:certify-telegram-origin": "node scripts/certify-telegram-origin-release.mjs",
     "release:local": "node scripts/release-local.mjs",
-    "build": "node scripts/generate-builtin-manifest.cjs && node node_modules/typescript-native/bin/tsc && node scripts/generate-standards-registry-asset.mjs && chmod 0755 dist/cli.js && node scripts/sign-instar-lockfile.mjs",
+    "build": "node scripts/generate-builtin-manifest.cjs && node node_modules/typescript-native/bin/tsc && node scripts/build-native-desktop-host.mjs && node scripts/generate-standards-registry-asset.mjs && chmod 0755 dist/cli.js && node scripts/sign-instar-lockfile.mjs",
     "dev": "node node_modules/typescript-native/bin/tsc --watch",
     "test": "vitest run",
     "test:push": "vitest run --config vitest.push.config.ts",
