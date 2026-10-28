@@ -4,6 +4,7 @@
  * TccProtectedPathGuard block beside the worktree detector).
  */
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
+import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * `instar server start|stop` — Manage the persistent agent server.
@@ -6294,6 +6295,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               try { _meshAttentionRaise?.({ id: key, title, body, priority: 'medium', sourceContext: 'lease-handback' }); } catch { /* notice is best-effort */ }
             },
             logger: (m) => console.log(pc.dim(`  ${m}`)),
+            // CMT-1119: durable per-run records so the dry-run soak has evidence.
+            record: (row) => {
+              appendGuardEvidence(path.join(config.stateDir, '..', 'logs', 'lease-handback.jsonl'), row);
+            },
           });
           // The /pool/lease-handback route surface (status + the R-r2-5 operator
           // latch levers). latchWrite is the flip-action's POST step — the
@@ -7909,6 +7914,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // their construction sites below; GET /guards reconciles registrations
     // against the declared manifest (missing = a state, never an omission).
     const guardRegistry = new GuardRegistry();
+    // CMT-1119: the U4.4 hand-back reconciler is constructed in the lease block
+    // above (before this registry exists); register its runtime getter here so
+    // GET /guards grades it from a real last observation.
+    guardRegistry.register('multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled', () =>
+      _leaseHandbackReconciler?.guardStatus() ?? { enabled: false });
 
     // ── Test-Runner Concurrency Bound guard row (test-runner-concurrency-bound §2.9) ──
     // The chokepoint lives in vitest globalSetup (out-of-process); this getter
@@ -30234,10 +30244,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
           return views;
         },
+        // CMT-1119: one durable record per completed check.
+        record: (row) => {
+          appendGuardEvidence(path.join(config.stateDir, '..', 'logs', 'identity-divergence-monitor.jsonl'), row);
+        },
         raise: (event) => {
           if (config.multiMachine?.identityReannounce?.dryRun !== false || !identityMutationCoherenceAllowed) {
             console.warn(`[identity-divergence] dry-run would raise ${event.id}`);
-            return;
+            return 'dry-run';
           }
           _meshAttentionRaise?.({
             id: event.id,
@@ -30246,8 +30260,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             priority: 'critical',
             sourceContext: 'identity-divergence',
           });
+          return 'raised';
         },
       });
+      guardRegistry.register('multiMachine.identityReannounce.identityDivergenceMonitor', () =>
+        identityDivergenceMonitor.guardStatus(config.multiMachine?.identityReannounce?.dryRun !== false));
       const identityDivergenceTimer = setInterval(() => {
         void identityDivergenceMonitor.tick().catch((err) => {
           console.warn(`[identity-divergence] scheduled check failed: ${err instanceof Error ? err.message : String(err)}`);
