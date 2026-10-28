@@ -215,13 +215,18 @@ describe('change set', () => {
     expect(claudeDirBreach(ws)).toBeNull();
   });
 
-  it('caps: more than 200 files or 2 MB fails', () => {
+  it('allows a large modified source file plus a small test, but caps at 200 files or 4 MB', () => {
     const { ws, pub } = trees();
     for (let i = 0; i < 201; i++) write(ws, `src/many/f${i}.ts`, 'x');
     expect(() => buildChangeSet(ws, pub)).toThrow(/changeset-too-large/);
     const t2 = trees();
-    write(t2.ws, 'src/big.ts', 'x'.repeat(2 * 1024 * 1024 + 1));
-    expect(() => buildChangeSet(t2.ws, t2.pub)).toThrow(/changeset-too-large/);
+    write(t2.pub, 'src/commands/server.ts', 'a'.repeat(1_900_000));
+    write(t2.ws, 'src/commands/server.ts', 'b'.repeat(1_900_000));
+    write(t2.ws, 'tests/unit/fix.test.ts', 'x'.repeat(250_000));
+    expect(buildChangeSet(t2.ws, t2.pub).totalBytes).toBe(2_150_000);
+    const t3 = trees();
+    write(t3.ws, 'src/big.ts', 'x'.repeat(4 * 1024 * 1024 + 1));
+    expect(() => buildChangeSet(t3.ws, t3.pub)).toThrow(/changeset-too-large/);
   });
 
   it('diff gate and secret gate (names only)', () => {

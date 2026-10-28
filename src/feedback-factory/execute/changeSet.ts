@@ -5,7 +5,7 @@
  * Trusted code walks the session workspace with lstat and never follows a link; it runs no git
  * and no tool there. Any symlink, device or other special file that is not byte-identical to
  * the publish clone fails the attempt (`special-file`). The change set is compared against the
- * publish clone (a tree the session can neither read nor write) and capped at 200 files / 2 MB.
+ * publish clone (a tree the session can neither read nor write) and capped at 200 files / 4 MB.
  */
 import fs from 'node:fs';
 import path from 'node:path';
