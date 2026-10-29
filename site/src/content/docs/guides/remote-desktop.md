@@ -1,0 +1,31 @@
+---
+title: Remote Desktop
+description: Open and control an Instar agent's desktop from the dashboard.
+---
+
+Remote Desktop lets the operator use a machine where their Instar agent is installed. Open the agent's dashboard desktop page, enter the existing dashboard PIN, choose a ready machine, and press **Stop** when finished. When only one machine is ready, the viewer opens it directly. The viewer fills a phone browser: one finger moves the pointer like a trackpad, a tap clicks, and two fingers scroll. Direct mode is available for touch-to-target control.
+
+The first live target is a Mac. It requires an active desktop session and macOS screen-recording and accessibility permissions. A Windows target, including a Windows host used from WSL, needs its own display and input adapter before it can appear as ready. Other installations keep remote control disabled by default.
+
+## Control and limits
+
+The PIN unlocks the existing dashboard session. Instar then checks operator identity and issues a short-lived grant for one target machine and one controller. The video stream is encrypted for that grant. A session ends when its grant expires, the operator presses **Stop**, or authority is revoked. Stop blanks the viewer and stops native capture and input helpers. Video and input queues are bounded so a slow connection cannot accumulate unbounded work.
+
+The Mac viewer prefers hardware H.264 and can fall back to JPEG when the browser or host cannot use that codec. The initial video ceiling is 15 frames per second at 960 × 540. This is a usable first-machine test, with physical phone behavior and measured latency still subject to device testing.
+
+## API and implementation map
+
+The dashboard uses the following authenticated routes. Applications should use the dashboard flow for operator control rather than building a separate PIN prompt.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /desktop/availability` | Check whether this installation can offer desktop access. |
+| `GET /desktop/targets` | List machine targets and their readiness. |
+| `POST /desktop/requests` | Create a scoped request for a target. |
+| `GET /desktop/requests/:id` | Read the request and grant state. |
+| `POST /desktop/requests/:id/resume` | Resume a disconnected stream under the existing grant. |
+| `GET /desktop/requests/:id/cursor` | Read pointer position for local cursor feedback. |
+| `POST /desktop/requests/:id/ticket` | Obtain a short-lived stream ticket. |
+| `POST /desktop/requests/:id/revoke` | End control and revoke the grant. |
+
+`DirectDesktopAccess` owns admission, one-controller enforcement, expiry, and revocation. `RemoteStepUpLockouts` bounds PIN attempts. `DesktopHost` is the platform interface and `MacDesktopHost` is the first implementation. `DesktopVideo` defines bounded video frames, `DesktopAead` protects the stream, and `DesktopAccessAudit` records content-free control events. `DesktopStreamManager` connects the grant to the live browser stream. The approved architecture and rollout gates are described in `docs/specs/blocker-handoff-across-machines-and-surfaces.md` and `docs/specs/native-remote-desktop-quality.md` in the repository.
