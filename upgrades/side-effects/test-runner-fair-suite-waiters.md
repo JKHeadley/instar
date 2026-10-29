@@ -86,3 +86,7 @@ The reviewer found no deadlock: the ordering is total and aging only moves forwa
 ## Follow-up commit
 
 The full unit run's No Silent Fallbacks check counted one new unmarked fallback: `listSuiteWaiters` returns `[]` when the waiter directory is missing. That is the intended barging fallback, so it now carries `@silent-fallback-ok`. No behavior change.
+
+## Local Verify evidence
+
+On head `52bc40c9e` (merged with `main` 4f88880): unit 53012 tests / 0 failed, integration 4954 / 0 failed, e2e 3617 / 0 failed. An earlier run on the Mini reported 1 integration failure that did not reproduce: the full integration lane run on the Studio against the same merge passed 4934 with 0 failures. The record is flagged harness-changing because of `tests/setup/test-runner-semaphore.globalSetup.ts` (the wait-line text and the new `waitersAhead` argument). The second-pass review above covers that file.
