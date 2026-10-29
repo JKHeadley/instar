@@ -29911,6 +29911,31 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   });
 
+  // Current same-kind groups of open correction records, as the analyzer
+  // would cluster them right now — cached meaning verdicts only, no model
+  // calls (docs/specs/correction-meaning-grouping.md). Served fields are the
+  // scrubbed summaries + metadata; raw `learning` text is never served.
+  router.get('/corrections/groups', async (req, res) => {
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    try {
+      const { CorrectionAnalyzer } = await import('../monitoring/CorrectionAnalyzer.js');
+      const { getJevCorrectionGrouper } = await import('../core/JevCorrectionGrouping.js');
+      const grouper = getJevCorrectionGrouper();
+      const analyzer = new CorrectionAnalyzer(ctx.correctionLedger, undefined, grouper);
+      analyzer.useCachedMeaningGrouping();
+      const minSize = Math.max(1, parseInt(String(req.query.minSize ?? '2'), 10) || 2);
+      const all = analyzer.groups();
+      const groups = all.filter((g) => g.length >= minSize).map((g) => ({
+        kind: g[0].kind,
+        size: g.length,
+        records: g.map((r) => ({ id: r.id, scrubbedSummary: r.scrubbedSummary, detectedAt: r.detectedAt, topicId: r.topicId ?? null })),
+      }));
+      res.json({ mode: grouper?.cachedLookup() ? 'meaning' : 'words', openRecords: all.reduce((n, g) => n + g.length, 0), groupCount: groups.length, groups });
+    } catch (err) {
+      res.status(500).json({ error: 'groups failed', detail: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/corrections/:id', (req, res) => {
     if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
     const rec = ctx.correctionLedger.get(req.params.id);
@@ -30269,12 +30294,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const { CorrectionLoopDriver } = await import('../monitoring/CorrectionLoopDriver.js');
       const { PreferencesManager } = await import('../core/PreferencesManager.js');
 
+      const { getJevCorrectionGrouper } = await import('../core/JevCorrectionGrouping.js');
       const analyzer = new CorrectionAnalyzer(ctx.correctionLedger, {
         minSupport: cl?.minSupport ?? 4,
         minDistinctDaysInfraGap: cl?.minDistinctDaysInfraGap ?? 3,
         minDistinctDaysPreference: cl?.minDistinctDaysPreference ?? 2,
         minDistinctSessionsPreference: cl?.minDistinctSessionsPreference ?? 2,
-      });
+      }, getJevCorrectionGrouper());
+      // Meaning grouping (docs/specs/correction-meaning-grouping.md): judge
+      // candidate pairs before the gate. Never throws; off/unavailable keeps
+      // the word-overlap edges alone, and the report says which ran.
+      const grouping = await analyzer.refreshMeaningGrouping();
 
       const prefs = new PreferencesManager(ctx.config.stateDir);
       // WS2.1 SEND-SIDE: this per-request PreferencesManager is the SOLE recordPreference
@@ -30374,7 +30404,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           considered: analysis.considered,
           crossed: analysis.crossed.length,
           belowThreshold: analysis.belowThreshold,
+          groups: analysis.verdicts.filter((v) => v.clusterRecords.length > 1).length,
+          largestGroup: analysis.verdicts.reduce((m, v) => Math.max(m, v.clusterRecords.length), 0),
         },
+        grouping: grouping ?? { mode: 'words', reason: 'disabled' },
         routed: {
           total: routed.routed.length,
           toFeedback: routed.toFeedback,

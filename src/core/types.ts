@@ -7396,6 +7396,26 @@ export interface MonitoringConfig {
     minDistinctDaysPreference?: number;
     /** Distinct context-reset sessions required for the preference path's second prong. */
     minDistinctSessionsPreference?: number;
+    /**
+     * Group reworded records of the same preference by meaning (Jev pair
+     * question, Luna referee for unsure pairs) before the recurrence gate.
+     * `enabled` omitted ⇒ live on a development agent, dark on the fleet; read
+     * live per analyzer run. Spec: docs/specs/correction-meaning-grouping.md.
+     */
+    meaningGrouping?: {
+      enabled?: boolean;
+      /** Same-kind pairs below this word overlap are never asked (default 0.05). */
+      candidateFloor?: number;
+      maxJevCallsPerRun?: number;
+      maxRefereeCallsPerRun?: number;
+      /** Wall-clock budget for one run's model calls (default 240000). */
+      runBudgetMs?: number;
+      timeoutMs?: number;
+      model?: string;
+      /** Unsure band for P(same) (default 0.3–0.7). */
+      band?: { lo: number; hi: number };
+      referee?: { enabled?: boolean };
+    };
     /** Auto-submit infra-gap learnings to /feedback (Slice 1b/3). Default false. */
     autoFeedback?: boolean;
     /** Post a periodic Telegram digest of learned preferences (Slice 2). Default false. */

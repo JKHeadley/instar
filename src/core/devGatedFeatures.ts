@@ -710,6 +710,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Signal into an existing authority-bounded pipeline: the sentinel\'s own distill can still call it noise, and the unchanged recurrence gate (4 occurrences, 2 days, 2 sessions) decides whether anything becomes a preference — which is itself an advisory, enveloped hint. Delivers nothing, blocks nothing. Inert unless the shadow is on and the sentinel is constructed; rides the sentinel\'s own LlmQueue daily cap, per-topic rate ceiling and load-shedding; kill switch read live. No destructive action.',
   },
   {
+    name: 'correctionMeaningGrouping',
+    configPath: 'monitoring.correctionLearning.meaningGrouping.enabled',
+    description: 'Correction meaning grouping (correction-meaning-grouping.md): before the recurrence gate, the correction analyzer asks Jev whether two same-kind records that share some words state the same core rule (GPT-6 Luna decides unsure pairs), and uses those answers as complete-link grouping edges beside word overlap.',
+    justification: 'Signal into an existing authority-bounded pipeline: complete-link grouping (every pair inside a group must match) and the unchanged recurrence gate (4 occurrences, 2 days, 2 sessions) decide; a learned preference is itself an advisory, enveloped hint. Runs only inside the off-by-default correction-analyzer job. Inert without the vault typesafe_api_key; learning text is secret-scrubbed before egress; each pair is asked once (cached), bounded by per-run call caps, a run time budget and fetch timeouts, metered in feature metrics; every failure falls back to word overlap. Kill switch read live. No destructive action.',
+  },
+  {
     name: 'jevCirclesShadow',
     configPath: 'intelligence.jevCirclesShadow.enabled',
     description: 'Jev "going in circles" shadow (jev-circles-shadow.md): every 5 tool actions per session, asks Jev the measured five-label question over the last 15 actions and logs a content-free would-nudge row.',

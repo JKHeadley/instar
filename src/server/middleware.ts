@@ -511,6 +511,16 @@ export const PARITY_PASS_TIMEOUT_MS = 360_000;
 export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
 
 /**
+ * `POST /corrections/analyze` awaits correction meaning grouping (one model
+ * call per uncached candidate pair, bounded by `DEFAULT_RUN_BUDGET_MS` = 240 s
+ * in JevCorrectionGrouping.ts, plus up to one 60 s referee call already in
+ * flight at the deadline) before routing. Under the 30 s default the job's
+ * request would 408 while the handler kept routing, and the job could never
+ * check what was routed. Budget = run budget + referee + slack.
+ */
+export const CORRECTIONS_ANALYZE_TIMEOUT_MS = 330_000;
+
+/**
  * Slack added on top of a configured parity-source TOTAL fetch budget when
  * deriving the parity-pass/import-dryrun route budgets: the route does the full
  * live fetch PLUS server-side compare/import work after it.
@@ -638,6 +648,7 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
     // The import dry-run does the same full live source fetch as a parity pass
     // (plus an in-memory import + gate, which is fast) — same budget.
