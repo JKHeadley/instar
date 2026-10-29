@@ -23,7 +23,7 @@ function helper(reply: string): MacDesktopHost {
     `  if (reply === 'h264' && process.argv[2] === 'capture-stream') { const head=Buffer.alloc(4);head.writeUInt32BE(jpeg.length);process.stdout.write(Buffer.concat([head,jpeg])); }\n` +
     `  if (reply === 'fragmented') { process.stdout.write(Buffer.from([0, 0])); setTimeout(() => process.stdout.write(Buffer.from([0, 4, 0xff, 0xd8])), 5); setTimeout(() => process.stdout.write(Buffer.from([0xff, 0xd9])), 10); }\n` +
     `  if (reply === 'zero') process.stdout.write(Buffer.alloc(4));\n` +
-    `  if (reply === 'oversize') { const h = Buffer.alloc(4); h.writeUInt32BE(625001); process.stdout.write(h); }\n` +
+    `  if (reply === 'oversize') { const h = Buffer.alloc(4); h.writeUInt32BE(1250001); process.stdout.write(h); }\n` +
     `  if (reply === 'trailing') { const h = Buffer.alloc(4); h.writeUInt32BE(4); process.stdout.write(Buffer.concat([h, jpeg, Buffer.from([1])])); }\n` +
     `  if (reply === 'midframe') { const h = Buffer.alloc(4); h.writeUInt32BE(4); process.stdout.write(Buffer.concat([h, jpeg.subarray(0, 2)]), () => process.exit(1)); }\n` +
     `  if (reply === 'silent') setInterval(() => {}, 1000);\n` +

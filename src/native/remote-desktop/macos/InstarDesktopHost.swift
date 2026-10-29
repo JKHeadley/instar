@@ -89,11 +89,11 @@ private final class DesktopH264Encoder {
               VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering,
                                    value: kCFBooleanFalse) == noErr,
               VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
-                                   value: kVTProfileLevel_H264_Baseline_3_1) == noErr,
+                                   value: kVTProfileLevel_H264_Baseline_4_0) == noErr,
               VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
                                    value: 60 as CFNumber) == noErr,
               VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
-                                   value: 2_500_000 as CFNumber) == noErr,
+                                   value: 5_000_000 as CFNumber) == noErr,
               VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                                    value: 15 as CFNumber) == noErr else { throw H264Error.unavailable }
         guard VTCompressionSessionPrepareToEncodeFrames(session) == noErr else {
@@ -125,14 +125,14 @@ private final class DesktopH264Encoder {
         lock.lock()
         let result = completed
         lock.unlock()
-        guard let result, result.0.count <= 600_000 else { throw H264Error.frameTooLarge }
+        guard let result, result.0.count <= 1_250_000 else { throw H264Error.frameTooLarge }
         return result
     }
 
     private func receive(_ sample: CMSampleBuffer) {
         guard let block = CMSampleBufferGetDataBuffer(sample) else { return }
         let length = CMBlockBufferGetDataLength(block)
-        guard length > 4, length <= 600_000 else { return }
+        guard length > 4, length <= 1_250_000 else { return }
         var avcc = Data(count: length)
         let status = avcc.withUnsafeMutableBytes { bytes in
             CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length,
@@ -168,7 +168,7 @@ private final class DesktopH264Encoder {
             annexB.append(avcc[offset..<offset+size])
             offset += size
         }
-        guard offset == avcc.count, annexB.count <= 600_000 else { return }
+        guard offset == avcc.count, annexB.count <= 1_250_000 else { return }
         lock.lock()
         completed = (annexB, keyframe)
         let wait = completion
@@ -235,9 +235,9 @@ struct InstarDesktopHost {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
                 let bitmap = NSBitmapImageRep(cgImage: image)
                 var jpeg: Data?
-                for quality in [0.65, 0.5, 0.35, 0.2] {
+                for quality in [0.8, 0.7, 0.6, 0.5, 0.35] {
                     if let encoded = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]),
-                       encoded.count <= 600_000 {
+                       encoded.count <= 1_250_000 {
                         jpeg = encoded
                         break
                     }
@@ -473,7 +473,7 @@ struct InstarDesktopHost {
         guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
             throw HostError.noMainDisplay
         }
-        let scale = min(1.0, min(960.0 / Double(display.width), 540.0 / Double(display.height)))
+        let scale = min(1.0, min(1920.0 / Double(display.width), 1080.0 / Double(display.height)))
         let configuration = SCStreamConfiguration()
         configuration.width = max(1, Int((Double(display.width) * scale).rounded()))
         configuration.height = max(1, Int((Double(display.height) * scale).rounded()))
@@ -512,9 +512,9 @@ struct InstarDesktopHost {
             }
             let bitmap = NSBitmapImageRep(cgImage: cgImage)
             var jpeg: Data?
-            for quality in [0.55, 0.4, 0.3, 0.2] {
+            for quality in [0.8, 0.7, 0.6, 0.5, 0.35] {
                 if let encoded = bitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]),
-                   encoded.count <= 600_000 {
+                   encoded.count <= 1_250_000 {
                     jpeg = encoded
                     break
                 }
@@ -534,7 +534,7 @@ struct InstarDesktopHost {
         guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
             throw HostError.noMainDisplay
         }
-        let scale = min(1.0, min(960.0 / Double(display.width), 540.0 / Double(display.height)))
+        let scale = min(1.0, min(1920.0 / Double(display.width), 1080.0 / Double(display.height)))
         let width = max(2, Int((Double(display.width) * scale).rounded()) & ~1)
         let height = max(2, Int((Double(display.height) * scale).rounded()) & ~1)
         let configuration = SCStreamConfiguration()
@@ -574,7 +574,7 @@ struct InstarDesktopHost {
                 continue
             }
             let (annexB, keyframe) = try encoder.encode(pixelBuffer, forceKeyframe: forceNext)
-            guard annexB.count + 5 <= 600_000 else { throw HostError.frameTooLarge }
+            guard annexB.count + 5 <= 1_250_000 else { throw HostError.frameTooLarge }
             var payload = Data([keyframe ? 1 : 0,
                                 UInt8((width >> 8) & 0xff), UInt8(width & 0xff),
                                 UInt8((height >> 8) & 0xff), UInt8(height & 0xff)])

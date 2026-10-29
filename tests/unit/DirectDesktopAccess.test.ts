@@ -97,7 +97,7 @@ describe('DirectDesktopAccess', () => {
     const publicKey = crypto.createPublicKey({ key: Buffer.from(state.targetSigningPublicKey!, 'base64'),
       format: 'der', type: 'spki' });
     expect(crypto.verify(null, payload, publicKey, Buffer.from(state.targetSignature!, 'base64'))).toBe(true);
-    const altered = Buffer.from(payload.toString().replace('960x540', '1920x1080'));
+    const altered = Buffer.from(payload.toString().replace('1920x1080', '1280x720'));
     expect(crypto.verify(null, altered, publicKey, Buffer.from(state.targetSignature!, 'base64'))).toBe(false);
   });
   it('requires a fresh H.264 keyframe after sender drop and switches to JPEG once', async () => {

@@ -24,10 +24,10 @@ export interface DesktopStreamSession {
 export type DesktopStreamAdmission = (request: IncomingMessage) => Promise<DesktopStreamSession>;
 
 const FRAME_INTERVAL_MS = 67; // at most 15 video requests per second
-const MAX_BUFFERED_BYTES = 1_000_024;
-const MAX_VIDEO_BUFFERED_BYTES = 750_000; // leave room for control and transport framing
-const MAX_FRAME_BYTES = 625_000;
-const VIDEO_BYTES_PER_SECOND = 625_000; // 5 Mbps per host
+const MAX_BUFFERED_BYTES = 1_600_000;
+const MAX_VIDEO_BUFFERED_BYTES = 1_400_000; // leave room for control and transport framing
+const MAX_FRAME_BYTES = 1_300_000;
+const VIDEO_BYTES_PER_SECOND = 1_250_000; // 10 Mbps per host
 const IDLE_MS = 2 * 60_000;
 const HELD_INPUT_LIVENESS_MS = 5_000;
 const KEYFRAME_REQUEST_INTERVAL_MS = 500;

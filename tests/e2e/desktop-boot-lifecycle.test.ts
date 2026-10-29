@@ -409,8 +409,8 @@ describe('native desktop production boot', () => {
         const frame = Buffer.concat([decipher.update(record.subarray(8, -16)), decipher.final()]);
         expect(frame.subarray(0, 6)).toEqual(Buffer.from([73, 68, 86, 49, 1, 1]));
         const width = frame.readUInt16BE(6), height = frame.readUInt16BE(8);
-        expect(width).toBeGreaterThan(1); expect(width).toBeLessThanOrEqual(960);
-        expect(height).toBeGreaterThan(1); expect(height).toBeLessThanOrEqual(540);
+        expect(width).toBeGreaterThan(1); expect(width).toBeLessThanOrEqual(1920);
+        expect(height).toBeGreaterThan(1); expect(height).toBeLessThanOrEqual(1080);
         const annexB = frame.subarray(18);
         const nalTypes: number[] = [];
         for (let i = 0; i + 4 < annexB.length; i++) {

@@ -11,7 +11,7 @@ The first live target is a Mac. It requires an active desktop session and macOS 
 
 The PIN unlocks the existing dashboard session. Instar then checks operator identity and issues a short-lived grant for one target machine and one controller. The video stream is encrypted for that grant. A session ends when its grant expires, the operator presses **Stop**, or authority is revoked. Stop blanks the viewer and stops native capture and input helpers. Video and input queues are bounded so a slow connection cannot accumulate unbounded work.
 
-The Mac viewer prefers hardware H.264 and can fall back to JPEG when the browser or host cannot use that codec. The initial video ceiling is 15 frames per second at 960 × 540. This is a usable first-machine test, with physical phone behavior and measured latency still subject to device testing.
+The Mac viewer prefers hardware H.264 and can fall back to JPEG when the browser or host cannot use that codec. The video ceiling is 15 frames per second at 1920 × 1080. The browser scales the image to fit its window; a laptop no longer receives a half-size copy of a 1080p Mac display. Physical phone behavior and measured latency remain subject to device testing.
 
 ## API and implementation map
 

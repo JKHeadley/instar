@@ -18,16 +18,17 @@ let videoCodec = 'jpeg';
 let activeVideoCodec = 'jpeg';
 let decoder = null;
 let decoderGeneration = 0;
+let decoderStartupTimer = 0;
 let decoderWidth = 0;
 let decoderHeight = 0;
 let needsVideoKeyframe = true;
 let lastKeyframeRequestAt = 0;
 let videoFallbackCount = 0;
-const H264_CODEC = 'avc1.42001F';
-const H264_CONFIG = { codec: H264_CODEC, codedWidth: 960, codedHeight: 540,
+const H264_CODEC = 'avc1.420028';
+const H264_CONFIG = { codec: H264_CODEC, codedWidth: 1920, codedHeight: 1080,
   optimizeForLatency: true };
 function videoContract(codec) {
-  return codec === 'h264' ? 'desktop-video-v1:annexb:avc1.42001F:960x540:g1'
+  return codec === 'h264' ? 'desktop-video-v1:annexb:avc1.420028:1920x1080:g1'
     : 'desktop-video-v1:jpeg:g1';
 }
 let lastMoveAt = 0;
@@ -245,6 +246,7 @@ function sendCommand(command) {
 }
 function resetVideoDecoder() {
   decoderGeneration++;
+  if (decoderStartupTimer) { clearTimeout(decoderStartupTimer); decoderStartupTimer = 0; }
   try { decoder?.close(); } catch { /* It may already have failed. */ }
   decoder = null;
   decoderWidth = 0;
@@ -277,13 +279,13 @@ function nalTypes(bytes) {
   return types;
 }
 function receiveH264(bytes, epoch) {
-  if (activeVideoCodec !== 'h264' || bytes.length < 23 || bytes.length > 600_018
+  if (activeVideoCodec !== 'h264' || bytes.length < 23 || bytes.length > 1_250_018
     || String.fromCharCode(...bytes.subarray(0, 4)) !== 'IDV1' || bytes[4] !== 1
     || (bytes[5] !== 0 && bytes[5] !== 1)) throw new Error('H.264 packet invalid.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const width = view.getUint16(6);
   const height = view.getUint16(8);
-  if (width < 2 || width > 960 || width % 2 || height < 2 || height > 540 || height % 2) {
+  if (width < 2 || width > 1920 || width % 2 || height < 2 || height > 1080 || height % 2) {
     throw new Error('H.264 geometry invalid.');
   }
   const data = bytes.subarray(18);
@@ -307,7 +309,7 @@ function receiveH264(bytes, epoch) {
         try {
           if (epoch !== streamEpoch || generation !== decoderGeneration || !inputEnabled) return;
           if (frame.displayWidth !== decoderWidth || frame.displayHeight !== decoderHeight
-            || frame.displayWidth > 960 || frame.displayHeight > 540) {
+            || frame.displayWidth > 1920 || frame.displayHeight > 1080) {
             throw new Error('Decoded video geometry invalid.');
           }
           const canvas = $('videoCanvas');
@@ -316,6 +318,7 @@ function receiveH264(bytes, epoch) {
           const context = canvas.getContext('2d');
           if (!context) throw new Error('Canvas unavailable.');
           context.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          if (decoderStartupTimer) { clearTimeout(decoderStartupTimer); decoderStartupTimer = 0; }
           canvas.hidden = false;
           $('screen').hidden = true;
           updateCursor();
@@ -326,6 +329,11 @@ function receiveH264(bytes, epoch) {
     });
     decoder.configure({ codec: H264_CODEC, codedWidth: width, codedHeight: height,
       optimizeForLatency: true });
+    decoderStartupTimer = setTimeout(() => {
+      if (generation === decoderGeneration && inputEnabled && activeVideoCodec === 'h264') {
+        fallbackVideo(epoch);
+      }
+    }, 2_500);
   }
   if (decoder.decodeQueueSize >= 3) {
     resetVideoDecoder();
@@ -341,7 +349,7 @@ function receiveH264(bytes, epoch) {
 async function receiveFrame(recordBuffer, epoch) {
   if (!inputEnabled || epoch !== streamEpoch) return;
   if (!aesKey || !(recordBuffer instanceof ArrayBuffer) || recordBuffer.byteLength < 28
-    || recordBuffer.byteLength > 1_000_024) throw new Error('Encrypted frame invalid.');
+    || recordBuffer.byteLength > 1_600_000) throw new Error('Encrypted frame invalid.');
   const record = new Uint8Array(recordBuffer);
   const sequence = new DataView(recordBuffer).getBigUint64(0);
   // The target may drop an already-encrypted frame under backpressure. A

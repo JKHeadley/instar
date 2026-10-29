@@ -10,7 +10,7 @@ import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
 
-const FRAME_LIMIT = 625_000;
+const FRAME_LIMIT = 1_250_000;
 const DESKTOP_KEYS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
   'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
   'ArrowUp', 'ArrowDown', 'a', 'c', 'v', 'x', 'z']);

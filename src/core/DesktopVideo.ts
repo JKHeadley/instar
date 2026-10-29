@@ -1,13 +1,13 @@
 /** Authenticated video payload inside the existing desktop AEAD frame record.
  * JPEG keeps its legacy bytes. H.264 uses one complete Annex B access unit
  * with a fixed header; the decoder may start only at an SPS/PPS/IDR key unit. */
-export const H264_CODEC = 'avc1.42001F';
-export const H264_MAX_WIDTH = 960;
-export const H264_MAX_HEIGHT = 540;
-export const H264_MAX_ACCESS_UNIT = 600_000;
+export const H264_CODEC = 'avc1.420028';
+export const H264_MAX_WIDTH = 1920;
+export const H264_MAX_HEIGHT = 1080;
+export const H264_MAX_ACCESS_UNIT = 1_250_000;
 export function desktopVideoContract(codec: 'jpeg' | 'h264'): string {
   return codec === 'h264'
-    ? 'desktop-video-v1:annexb:avc1.42001F:960x540:g1'
+    ? 'desktop-video-v1:annexb:avc1.420028:1920x1080:g1'
     : 'desktop-video-v1:jpeg:g1';
 }
 const MAGIC = Buffer.from('IDV1');
@@ -60,7 +60,7 @@ export function encodeDesktopH264(frame: DesktopH264Frame, capturedAt = Date.now
     || capturedAt < 0) throw new Error('desktop-h264-frame-invalid');
   const header = Buffer.alloc(HEADER_SIZE);
   MAGIC.copy(header);
-  header[4] = 1; // Annex B AVC baseline level 3.1
+  header[4] = 1; // Annex B AVC baseline level 4.0
   header[5] = frame.keyframe ? 1 : 0;
   header.writeUInt16BE(frame.width, 6);
   header.writeUInt16BE(frame.height, 8);

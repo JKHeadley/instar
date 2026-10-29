@@ -246,7 +246,7 @@ describe('DesktopStreamManager', () => {
       let queued = 0;
       const { ws } = await connect(async () => ({
         grantId: 'budget-drop', assertActive: async () => {},
-        captureEncrypted: async () => { captures++; return Buffer.alloc(625_000, 7); },
+        captureEncrypted: async () => { captures++; return Buffer.alloc(1_300_000, 7); },
         frameQueued: () => { queued++; },
         decryptCommand: data => JSON.parse(data.toString()),
         input: async () => {}, revoke: async () => {}, release: () => {},

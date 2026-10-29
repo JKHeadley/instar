@@ -59,12 +59,22 @@ function viewer() {
 }
 
 describe('desktop H.264 viewer resource bounds', () => {
+  it('switches to JPEG if a supported decoder never presents its first frame', async () => {
+    const v = viewer();
+    v.video.receiveH264(packet(1920, 1080), 0);
+    await new Promise(resolve => setTimeout(resolve, 2_600));
+    expect(v.video.getCodec()).toBe('jpeg');
+    expect(v.decoders[0].closed).toBe(true);
+    expect(v.commands).toEqual(['video-fallback']);
+    v.dom.window.close();
+  });
+
   it('closes oversized decoded output and switches to JPEG compatibility once', () => {
     const v = viewer();
     v.video.receiveH264(packet(), 0);
     expect(v.decoders).toHaveLength(1);
     let closes = 0;
-    v.decoders[0].output({ displayWidth: 1920, displayHeight: 1080, close: () => { closes++; } });
+    v.decoders[0].output({ displayWidth: 2560, displayHeight: 1440, close: () => { closes++; } });
     expect(closes).toBe(1);
     expect(v.decoders[0].closed).toBe(true);
     expect(v.video.getCodec()).toBe('jpeg');
