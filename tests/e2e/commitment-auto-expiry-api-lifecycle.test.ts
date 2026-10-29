@@ -102,6 +102,9 @@ describe('Commitment auto-expiry API lifecycle', () => {
       .set(auth())
       .expect(200);
     expect(lookup.body.status).toBe('expired');
-    expect(lookup.body.resolution).toBe('auto-expired: aged out >21d, presumed completed-but-unclosed');
+    expect(lookup.body.resolution).toBe('auto-expired after 30 days with no recorded activity; outcome unknown (not confirmed completed). Re-open it if it still matters.');
+    // CMT-1118: the sweep's ids are on the durable review ledger.
+    const ledgerRows = fs.readFileSync(path.join(stateDir, 'logs', 'commitments-auto-expiry.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(ledgerRows.at(-1)).toMatchObject({ dryRun: false, expired: 1, items: [{ id, class: 'no-activity' }] });
   });
 });

@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "auto-expiry-review-ledger",
+  "sessionId": "52ade543-f51c-4bfe-9364-f8f245a9d8df",
+  "timestamp": "2026-10-28T18:59:25.592Z",
+  "artifactPath": "upgrades/side-effects/auto-expiry-review-ledger.md",
+  "artifactSha256": "49ccd72a021a96993cc18c3d830df9fc40a9bc840938f8e019b2d4742d01d643",
+  "coveredFiles": [
+    "docs/specs/auto-expiry-review-ledger.eli16.md",
+    "docs/specs/auto-expiry-review-ledger.md",
+    "src/core/AutoExpiryLedger.ts",
+    "src/core/EvolutionManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/CommitmentTracker.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/commitment-auto-expiry-api-lifecycle.test.ts",
+    "tests/integration/evolution-action-auto-expiry.integration.test.ts",
+    "tests/unit/CommitmentTracker-auto-expiry.test.ts",
+    "tests/unit/PostUpdateMigrator-autoExpiryLedgerAwareness.test.ts",
+    "tests/unit/evolution-action-auto-expiry-ledger.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/next/auto-expiry-review-ledger.md",
+    "upgrades/side-effects/auto-expiry-review-ledger.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows two existing dry-run-default expiry sweeps and adds an observability ledger; a revert fully undoes it, no defaults change.",
+  "eli16Path": "docs/specs/auto-expiry-review-ledger.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/auto-expiry-review-ledger.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

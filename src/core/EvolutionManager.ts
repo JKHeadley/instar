@@ -33,6 +33,7 @@ import type { TrustElevationTracker } from './TrustElevationTracker.js';
 import type { AutonomousEvolution, ReviewResult } from './AutonomousEvolution.js';
 import type { AutonomyProfileManager } from './AutonomyProfileManager.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { AutoExpiryLedger, type AutoExpiryLedgerItem } from './AutoExpiryLedger.js';
 import type { TaskFlowRegistry } from '../tasks/TaskFlowRegistry.js';
 import type { TaskFlowRecord, TaskFlowPrincipal } from '../tasks/task-flow-types.js';
 import { TaskFlowError } from '../tasks/task-flow-types.js';
@@ -270,10 +271,12 @@ export class EvolutionManager {
   private lastEmittedLearningFp = new Map<string, string>();
   /* @self-action-controller: evolution-action-expiry-sweep */
   private actionAutoExpiryTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly actionAutoExpiryLedger: AutoExpiryLedger;
 
   constructor(config: EvolutionManagerConfig) {
     this.config = config;
     this.stateDir = config.stateDir;
+    this.actionAutoExpiryLedger = new AutoExpiryLedger({ stateDir: config.stateDir, feature: 'evolution-actions' });
     if (config.autoExpiry?.enabled === true) {
       const intervalMs = Math.max(60_000, config.autoExpiry.sweepIntervalMs ?? 21_600_000);
       setImmediate(() => { this.runActionAutoExpirySweep(); });
@@ -1260,17 +1263,30 @@ export class EvolutionManager {
     const maxAgeDays = Math.max(1, cfg?.maxAgeDays ?? 21);
     const cutoff = Date.now() - maxAgeDays * 86_400_000;
     const eligibleIds = new Set<string>();
+    const items: AutoExpiryLedgerItem[] = [];
     for (const action of state.actions) {
       if (action.status !== 'pending') continue;
-      if (action.priority === 'critical') continue;
+      // CMT-1118: high joins critical — undated high actions have their own
+      // resurfacer, and a dated high one is the overdue check's to bring back.
+      if (action.priority === 'critical' || action.priority === 'high') continue;
       if (action.tags?.some((tag) => tag.toLowerCase() === 'pinned')) continue;
       if (action.dueBy) {
+        // A dated action must be overdue by the full age bound, not merely past
+        // due: freshly-overdue items are what the overdue check resurfaces.
         const due = Date.parse(action.dueBy);
-        if (!Number.isFinite(due) || due > Date.now()) continue;
+        if (!Number.isFinite(due) || due >= cutoff) continue;
       }
       const created = Date.parse(action.createdAt);
       if (!Number.isFinite(created) || created >= cutoff) continue;
       eligibleIds.add(action.id);
+      const optOut = action.followThroughOptOutReason?.trim();
+      items.push({
+        id: action.id,
+        ageDays: Math.floor((Date.now() - created) / 86_400_000),
+        class: action.dueBy ? 'long-overdue' : optOut ? 'opted-out' : 'undated',
+        applied: !dryRun,
+        ...(optOut ? { reason: `created with no follow-through needed ("${optOut.slice(0, 200)}")` } : {}),
+      });
     }
     if (!dryRun && eligibleIds.size > 0) {
       const expiredActions = state.actions.filter((action) => eligibleIds.has(action.id));
@@ -1278,6 +1294,15 @@ export class EvolutionManager {
       this.saveActions(state, expiredActions); // ONE durable write + existing tombstone funnel.
     }
     const expired = dryRun ? 0 : eligibleIds.size;
+    // CMT-1118: the would-expire (or expired) ids, durable for the dry-run review.
+    this.actionAutoExpiryLedger.record({
+      dryRun,
+      maxAgeDays,
+      scanned: state.actions.length + expired,
+      eligible: eligibleIds.size,
+      expired,
+      items,
+    });
     console.log(`[EvolutionManager] Action auto-expiry sweep: scanned=${state.actions.length + expired} eligible=${eligibleIds.size} expired=${expired} dryRun=${dryRun} maxAgeDays=${maxAgeDays}`);
     return { scanned: state.actions.length + expired, eligible: eligibleIds.size, expired, dryRun };
   }

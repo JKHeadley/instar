@@ -35,5 +35,9 @@ describe('evolution action auto-expiry integration', () => {
 
     const persisted = JSON.parse(fs.readFileSync(path.join(stateDir, 'action-queue.json'), 'utf8')) as { actions: unknown[] };
     expect(persisted.actions).toEqual([]);
+    // CMT-1118: the removed ids are on the durable review ledger.
+    const ledger = fs.readFileSync(path.join(dir, 'logs', 'evolution-actions-auto-expiry.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(ledger.at(-1)).toMatchObject({ dryRun: false, expired: 3 });
+    expect(ledger.at(-1).items.map((i: { id: string }) => i.id).sort()).toEqual(['ACT-001', 'ACT-002', 'ACT-003']);
   });
 });

@@ -57,7 +57,7 @@ describe('CommitmentTracker auto-expiry sweep', () => {
     cleanup();
   });
 
-  it('expires an agent-owned old pending commitment with the rollout resolution note', async () => {
+  it('expires an agent-owned old pending commitment with an honest outcome-unknown note (CMT-1118)', async () => {
     const t = tracker(stateDir);
     const c = t.record({ type: 'one-time-action', userRequest: 'merge old PR', agentResponse: 'will do it' });
     await ageCommitment(t, c.id, daysBefore(now, 30));
@@ -67,7 +67,7 @@ describe('CommitmentTracker auto-expiry sweep', () => {
     expect(report).toMatchObject({ eligible: 1, expired: 1, dryRun: false, capped: false });
     expect(t.get(c.id)).toMatchObject({
       status: 'expired',
-      resolution: 'auto-expired: aged out >21d, presumed completed-but-unclosed',
+      resolution: 'auto-expired after 30 days with no recorded activity; outcome unknown (not confirmed completed). Re-open it if it still matters.',
       resolvedAt: now.toISOString(),
     });
   });
@@ -192,5 +192,111 @@ describe('CommitmentTracker auto-expiry sweep', () => {
     });
     expect(changes).toContain('commitments.autoExpiry.enabled (added)');
     expect(changes).toContain('commitments.autoExpiry.sweepIntervalMs (added)');
+  });
+  // ── CMT-1118: blockedOn, opt-out reason, probe activity, replicas, review ledger ──
+
+  function readLedger(): any[] {
+    const p = path.join(stateDir, 'logs', 'commitments-auto-expiry.jsonl');
+    if (!fs.existsSync(p)) return [];
+    return fs.readFileSync(p, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  it('never ages out an agent row blocked on an external dependency', async () => {
+    const t = tracker(stateDir);
+    const c = t.record({ type: 'one-time-action', userRequest: 'wait on vendor', agentResponse: 'will check', blockedOn: 'external' });
+    await ageCommitment(t, c.id, daysBefore(now, 30));
+    const report = t.sweepAutoExpiry(now);
+    expect(report.eligible).toBe(0);
+    expect(t.get(c.id)?.status).toBe('pending');
+  });
+
+  it('with operator-wait off, an agent row blocked on the user is left pending — not swept by the agent rule', async () => {
+    const t = tracker(stateDir, { operatorWait: { enabled: false } });
+    const c = t.record({ type: 'one-time-action', userRequest: 'needs approval', agentResponse: 'asked', blockedOn: 'user-input' });
+    await ageCommitment(t, c.id, daysBefore(now, 30));
+    const report = t.sweepAutoExpiry(now);
+    expect(report.eligible).toBe(0);
+    expect(t.get(c.id)?.status).toBe('pending');
+  });
+
+  it('cites the followThroughOptOutReason instead of claiming completion', async () => {
+    const t = tracker(stateDir);
+    const c = t.record({ type: 'one-time-action', userRequest: 'answered in turn', agentResponse: 'done', followThroughOptOutReason: 'answered in the same reply' });
+    await ageCommitment(t, c.id, daysBefore(now, 30));
+    const report = t.sweepAutoExpiry(now);
+    expect(report.dispositions[0]).toMatchObject({ id: c.id, class: 'opted-out' });
+    expect(t.get(c.id)?.resolution).toBe('auto-expired after 30 days: created with no follow-through needed ("answered in the same reply")');
+  });
+
+  it('measures age from the latest dependency probe, so an actively-checked row is not aged out', async () => {
+    const t = tracker(stateDir);
+    const c = t.record({ type: 'one-time-action', userRequest: 'watch CI', agentResponse: 'will watch' });
+    await t.mutate(c.id, (x) => ({ ...x, createdAt: daysBefore(now, 30), lastProbe: { at: daysBefore(now, 3), checked: 'ci', readinessSignal: 'pending' } }));
+    expect(t.sweepAutoExpiry(now).eligible).toBe(0);
+    await t.mutate(c.id, (x) => ({ ...x, lastProbe: { at: daysBefore(now, 25), checked: 'ci', readinessSignal: 'pending' } }));
+    expect(t.sweepAutoExpiry(now).eligible).toBe(1);
+  });
+
+  it("leaves another machine's commitment to its origin machine", async () => {
+    const t = new CommitmentTracker({
+      stateDir,
+      liveConfig: new LiveConfig(stateDir),
+      originMachineId: 'm_self',
+      autoExpiry: { enabled: true, maxAgeDays: 21, sweepIntervalMs: 21_600_000, dryRun: false },
+    });
+    const c = t.record({ type: 'one-time-action', userRequest: 'peer row', agentResponse: 'will do' });
+    await t.mutate(c.id, (x) => ({ ...x, createdAt: daysBefore(now, 30), originMachineId: 'm_peer' }));
+    expect(t.sweepAutoExpiry(now).eligible).toBe(0);
+    expect(t.get(c.id)?.status).toBe('pending');
+  });
+
+  it('dry-run writes the would-expire ids to the review ledger, then a short row while the set is unchanged', async () => {
+    const t = tracker(stateDir, true);
+    const a = t.record({ type: 'one-time-action', userRequest: 'old a', agentResponse: 'will do' });
+    const b = t.record({ type: 'one-time-action', userRequest: 'old b', agentResponse: 'will do', followThroughOptOutReason: 'no follow-up' });
+    await ageCommitment(t, a.id, daysBefore(now, 30));
+    await ageCommitment(t, b.id, daysBefore(now, 40));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    t.sweepAutoExpiry(now);
+    t.sweepAutoExpiry(now);
+
+    const rows = readLedger();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ dryRun: true, eligible: 2, expired: 0 });
+    expect(rows[0].items.map((i: any) => [i.id, i.class, i.ageDays]).sort()).toEqual([[a.id, 'no-activity', 30], [b.id, 'opted-out', 40]].sort());
+    expect(rows[1]).toMatchObject({ unchanged: true, setHash: rows[0].setHash, eligible: 2 });
+    expect(rows[1].items).toBeUndefined();
+    expect(rows[0].items.every((i: any) => i.applied === false)).toBe(true);
+    expect(t.get(a.id)?.status).toBe('pending');
+  });
+
+  it('writes one empty row when the eligible set drains, then nothing', async () => {
+    const t = tracker(stateDir, true);
+    const a = t.record({ type: 'one-time-action', userRequest: 'old a', agentResponse: 'will do' });
+    await ageCommitment(t, a.id, daysBefore(now, 30));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    t.sweepAutoExpiry(now);
+    t.withdraw(a.id, 'done by hand');
+    t.sweepAutoExpiry(now);
+    t.sweepAutoExpiry(now);
+    const rows = readLedger();
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ eligible: 0, items: [] });
+  });
+
+  it('marks operator-wait items applied when that branch is live while the agent branch is dry-run', async () => {
+    const t = tracker(stateDir, true); // agent dry-run; operator-wait defaults live
+    const u = t.record({ type: 'one-time-action', userRequest: 'user owes input', agentResponse: 'waiting', owner: 'user' });
+    const a = t.record({ type: 'one-time-action', userRequest: 'old a', agentResponse: 'will do' });
+    await ageCommitment(t, u.id, daysBefore(now, 30));
+    await ageCommitment(t, a.id, daysBefore(now, 30));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    t.sweepAutoExpiry(now);
+    const [row] = readLedger();
+    expect(row).toMatchObject({ dryRun: true, operatorWaitDryRun: false, expired: 1 });
+    const byId = Object.fromEntries(row.items.map((i: any) => [i.id, i]));
+    expect(byId[u.id]).toMatchObject({ class: 'operator-wait', applied: true });
+    expect(byId[a.id]).toMatchObject({ class: 'no-activity', applied: false });
   });
 });

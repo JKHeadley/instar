@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-28T18:59:40.142Z",
+  "slug": "auto-expiry-review-ledger",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 225,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoExpiryLedger.ts",
+      "src/core/EvolutionManager.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/CommitmentTracker.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 209,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
