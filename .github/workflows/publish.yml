@@ -53,8 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Always fetch latest HEAD, not the triggering SHA — avoids version
-          # collisions when a prior queued run already bumped the version.
+          # Use the native artifact's exact source revision for the release build.
           ref: ${{ needs.build-desktop-host.outputs.source_sha }}
           # RELEASE_TOKEN is a PAT that can bypass branch protection for version bump commits.
           # Falls back to GITHUB_TOKEN but that will fail if branch protection is enabled.
@@ -264,7 +263,7 @@ jobs:
           # only runs on a rejected push.
           pushed=false
           for attempt in 1 2 3 4 5; do
-            if git push origin main; then pushed=true; break; fi
+            if git push origin HEAD:main; then pushed=true; break; fi
             echo "push rejected — main moved (likely a concurrent merge); rebasing and retrying (attempt ${attempt})"
             git fetch origin main
             if ! git rebase origin/main; then

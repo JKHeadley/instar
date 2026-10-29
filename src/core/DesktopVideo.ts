@@ -12,6 +12,7 @@ export function desktopVideoContract(codec: 'jpeg' | 'h264'): string {
 }
 const MAGIC = Buffer.from('IDV1');
 const HEADER_SIZE = 18;
+const NATIVE_HEADER_SIZE = 5;
 
 export interface DesktopH264Frame {
   data: Buffer;
@@ -38,7 +39,7 @@ export function parseNativeH264(payload: Buffer): DesktopH264Frame {
   const height = payload.readUInt16BE(3);
   if (width < 2 || width > H264_MAX_WIDTH || height < 2 || height > H264_MAX_HEIGHT
     || width % 2 !== 0 || height % 2 !== 0) throw new Error('desktop-h264-geometry-invalid');
-  const data = payload.subarray(5);
+  const data = payload.subarray(NATIVE_HEADER_SIZE);
   if (!data.subarray(0, 4).equals(Buffer.from([0, 0, 0, 1]))) {
     throw new Error('desktop-h264-annexb-invalid');
   }
@@ -54,7 +55,7 @@ export function encodeDesktopH264(frame: DesktopH264Frame, capturedAt = Date.now
   if (!Number.isInteger(frame.width) || !Number.isInteger(frame.height)
     || frame.width < 2 || frame.width > H264_MAX_WIDTH || frame.width % 2 !== 0
     || frame.height < 2 || frame.height > H264_MAX_HEIGHT || frame.height % 2 !== 0
-    || frame.data.length < 5 || frame.data.length + HEADER_SIZE > H264_MAX_ACCESS_UNIT
+    || frame.data.length < 5 || frame.data.length + NATIVE_HEADER_SIZE > H264_MAX_ACCESS_UNIT
     || !frame.data.subarray(0, 4).equals(Buffer.from([0, 0, 0, 1]))
     || !Number.isSafeInteger(capturedAt)
     || capturedAt < 0) throw new Error('desktop-h264-frame-invalid');

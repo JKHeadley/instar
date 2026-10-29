@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { desktopVideoContract, encodeDesktopH264, parseNativeH264 } from '../../src/core/DesktopVideo.js';
+import { DesktopAead } from '../../src/core/DesktopAead.js';
+import { H264_MAX_ACCESS_UNIT, desktopVideoContract, encodeDesktopH264, parseNativeH264 } from '../../src/core/DesktopVideo.js';
 
 const start = Buffer.from([0, 0, 0, 1]);
 const key = Buffer.concat([start, Buffer.from([0x67, 1]), start, Buffer.from([0x68, 2]),
@@ -29,6 +30,19 @@ describe('DesktopVideo contract and native framing', () => {
     expect(packet.readBigUInt64BE(10)).toBe(1_800_000_000_000n);
     expect(packet.subarray(18)).toEqual(key);
     expect(parseNativeH264(native(0, 640, 360, delta)).keyframe).toBe(false);
+  });
+
+  it('carries a maximum native unit through the video wrapper and encryption', () => {
+    const data = Buffer.concat([key, Buffer.alloc(H264_MAX_ACCESS_UNIT - 5 - key.length, 0x7f)]);
+    const nativeUnit = native(1, 1920, 1080, data);
+    expect(nativeUnit.length).toBe(H264_MAX_ACCESS_UNIT);
+    const packet = encodeDesktopH264(parseNativeH264(nativeUnit));
+    expect(packet.length).toBe(H264_MAX_ACCESS_UNIT - 5 + 18);
+    const aead = new DesktopAead(Buffer.alloc(32, 7), '3c54c9d1-10f2-4d90-a4da-57a23397ef2b');
+    expect(aead.encryptFrame(packet).length).toBe(packet.length + 24);
+    expect(() => parseNativeH264(Buffer.concat([nativeUnit, Buffer.from([0x7f])]))).toThrow('frame-invalid');
+    expect(() => encodeDesktopH264({ data: Buffer.concat([data, Buffer.from([0x7f])]), keyframe: true,
+      width: 1920, height: 1080 })).toThrow('frame-invalid');
   });
 
   it('rejects incomplete key units, mislabeled deltas, and geometry outside the contract', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import crypto from 'node:crypto';
-import { DesktopAead, deriveDesktopKey } from '../../src/core/DesktopAead.js';
+import { DesktopAead, DESKTOP_MAX_PLAINTEXT_FRAME_BYTES, deriveDesktopKey } from '../../src/core/DesktopAead.js';
 
 const requestId = '3c54c9d1-10f2-4d90-a4da-57a23397ef2b';
 const machineId = 'machine-1';
@@ -18,6 +18,13 @@ function aad(direction: 'frame' | 'input'): Uint8Array {
 }
 
 describe('DesktopAead browser/target records', () => {
+  it('encrypts the largest supported video frame and rejects the next byte', () => {
+    const targetAead = new DesktopAead(Buffer.alloc(32, 7), requestId);
+    const frame = Buffer.alloc(DESKTOP_MAX_PLAINTEXT_FRAME_BYTES, 0x5a);
+    expect(targetAead.encryptFrame(frame).length).toBe(frame.length + 24);
+    expect(() => targetAead.encryptFrame(Buffer.alloc(frame.length + 1))).toThrow('size');
+  });
+
   it('decrypts in the browser and rejects forged or replayed input at the target', async () => {
     const subtle = crypto.webcrypto.subtle;
     const browser = await subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);

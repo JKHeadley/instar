@@ -2,8 +2,11 @@
  * ciphertext. Direction-specific IV domains and exact sequence progression
  * prevent reflection, reordering and replay. A new ECDH key is used per grant. */
 import crypto from 'node:crypto';
+import { H264_MAX_ACCESS_UNIT } from './DesktopVideo.js';
 
 export type DesktopDirection = 'frame' | 'input';
+// The native access unit may fill its cap; the authenticated H.264 wrapper adds 18 bytes.
+export const DESKTOP_MAX_PLAINTEXT_FRAME_BYTES = H264_MAX_ACCESS_UNIT + 18;
 
 function iv(direction: DesktopDirection, sequence: bigint): Buffer {
   const nonce = Buffer.alloc(12);
@@ -25,7 +28,7 @@ export class DesktopAead {
   }
 
   encryptFrame(frame: Buffer): Buffer {
-    if (frame.length < 4 || frame.length > 1_000_000) throw new Error('desktop frame size invalid');
+    if (frame.length < 4 || frame.length > DESKTOP_MAX_PLAINTEXT_FRAME_BYTES) throw new Error('desktop frame size invalid');
     const sequence = this.nextFrame++;
     const cipher = crypto.createCipheriv('aes-256-gcm', this.key, iv('frame', sequence));
     cipher.setAAD(aad(this.requestId, 'frame'));
