@@ -103,3 +103,20 @@ transient `ENOENT` case, at most three times; other packaging errors still
 fail immediately. The focused packaging test passes 7/7 after this change;
 the full suite must pass before release. Astra's final second pass concurs
 that a persistent or unrelated packaging error remains a failure.
+
+### Release-gate second pass, 2026-10-30
+
+**Reviewer:** Astra
+**Reviewed HEAD:** `1b28a726f160f1ffd43160a806a585fd207bffb7`
+**Concurrence:** Yes, for all 25 verifier-flagged paths listed in the accompanying trace.
+
+Astra independently inspected the protected workflows, package scripts, unit,
+HTTP integration, and production-boot tests at this exact source head. No P1/P2
+finding remains. The publish job builds and publishes the same checked-out
+source; the workflow additions keep the existing gates. Native cleanup still
+uses the canonical path guard, and packaging retries are bounded to a transient
+helper ENOENT. The added test skips are conditional on platform, explicit live
+opt-in, or host occupancy; none counts as successful live-device verification.
+This source review does not replace the independent verifier, CI, release, or
+real-device test. CI for this source head completed with all jobs green after
+rerunning a transient Chrome fixture failure.
