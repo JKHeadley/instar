@@ -36,13 +36,14 @@ written after startup.
 An independent second pass found a timing gap: a new hold could arrive while
 an asynchronous job gate ran, after the first hold check. The scheduler now
 checks again after that gate. A second synthetic job puts a hold in this exact
-window and asserts that its script never starts. This added race case awaits
-the queued expanded runs.
+window and asserts that its script never starts. The expanded focused run
+passed in a network-restricted operating-system sandbox on October 30: one
+test, 50.3 seconds of test execution.
 
 The test also asserts that the throwaway scheduler loaded only its synthetic
 job, that every recorded run belongs to that job, and that it spawned zero
-investigation sessions. The expanded operating-system sandbox repeat and the
-full three-tier suite are queued behind the shared test lane.
+investigation sessions. The full three-tier suite is queued behind the shared
+test lane.
 
 This does not yet prove pool-wide certificate revocation. The scheduler does
 not call the fixed-certificate resolver on a normal result, and the server has

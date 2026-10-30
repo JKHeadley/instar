@@ -34,6 +34,6 @@ The after-startup local hold gap is closed by the scheduler check and joined tes
 
 ## Second-pass review
 
-The independent reviewer found that a hold could arrive while `triggerJob` awaited a gate, after its first hold read. The scheduler now checks again after the gate and returns to the prior session route under its quota and capacity rules. The joined race test is pending its expanded run.
+The independent reviewer found that a hold could arrive while `triggerJob` awaited a gate, after its first hold read. The scheduler now checks again after the gate and returns to the prior session route under its quota and capacity rules. The joined race test passed in the expanded network-restricted sandbox run.
 
 **Follow-up second pass:** Concur with the review. The post-gate check closes the async wait window before script claim and launch; the fallback repeats quota and capacity checks. Pool-wide revocation remains a separate open gate.

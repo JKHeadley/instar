@@ -1890,6 +1890,7 @@ export class JobScheduler {
         return false;
       }
     } catch (error) {
+      // @silent-fallback-ok — supervisionWriteFailed reports degradation and blocks this slug.
       this.supervisionWriteFailed(slug, error);
       return false;
     }
