@@ -42,8 +42,10 @@ test, 50.3 seconds of test execution.
 
 The test also asserts that the throwaway scheduler loaded only its synthetic
 job, that every recorded run belongs to that job, and that it spawned zero
-investigation sessions. The full three-tier suite is queued behind the shared
-test lane.
+investigation sessions. The full three-tier local suite passed on October 30:
+53,037 unit tests, 4,937 integration tests, and 3,604 E2E tests. The expanded
+joined lifecycle case also passed within that E2E run. These are local results
+for this branch; the separate merge verifier is still required.
 
 This does not yet prove pool-wide certificate revocation. The scheduler does
 not call the fixed-certificate resolver on a normal result, and the server has
