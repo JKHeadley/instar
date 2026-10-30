@@ -55,9 +55,23 @@ describe('hardened reviewer ARGV (§1.4 — deterministic)', () => {
     expect(args).toContain('--print');
     expect(args).not.toContain('-p');
   });
+
+  it('adds a code-owned JSON schema only for an opted-in hardened call', () => {
+    const schema = '{"type":"object"}';
+    const constrained = buildClaudeReviewerArgs('claude-haiku-4-5', schema);
+    expect(constrained.slice(-2)).toEqual(['--json-schema', schema]);
+    expect(args).not.toContain('--json-schema');
+  });
 });
 
 describe('hardened reviewer ENV allowlist (§1.4 — deterministic)', () => {
+  it('turns off hidden schema retries so each model request has its own audit row', () => {
+    expect(buildClaudeReviewerChildEnv({ MAX_STRUCTURED_OUTPUT_RETRIES: '5' }, true)
+      .MAX_STRUCTURED_OUTPUT_RETRIES).toBe('0');
+    expect(buildClaudeReviewerChildEnv({ MAX_STRUCTURED_OUTPUT_RETRIES: '5' })
+      .MAX_STRUCTURED_OUTPUT_RETRIES).toBeUndefined();
+  });
+
   it('STRIPS agent secrets (INSTAR_AUTH_TOKEN, GITHUB_TOKEN) and session markers', () => {
     const env = buildClaudeReviewerChildEnv({
       PATH: '/usr/bin',

@@ -1129,7 +1129,9 @@ export interface IntelligenceOptions {
    * word resolves to opus, the penalized pair). Other providers ignore this
    * field (they are already hardened by their own scratch/stdin/env allowlist).
    */
-  reviewerHardening?: { model: string };
+  reviewerHardening?: { model: string; jsonSchema?: string };
+  /** Audited decisions require one CLI model attempt per durable call row. */
+  strictModelPin?: boolean;
   /** Maximum tokens for the response */
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
@@ -1265,6 +1267,8 @@ export interface IntelligenceOptions {
    * sets it to feed model/framework into the metrics ledger.
    */
   onModel?: (info: { model: string; framework?: string }) => void;
+  /** Provider-reported served model, when the CLI response exposes one. */
+  onServedModel?: (info: { model: string; framework?: string }) => void;
   /**
    * Observable Intelligence standard: let the caller classify whether THIS call
    * led the system to ACT (fired) vs take no action (noop). The funnel calls it

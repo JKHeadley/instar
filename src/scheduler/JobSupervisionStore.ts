@@ -551,14 +551,21 @@ export class JobSupervisionStore {
     })();
   }
 
-  failCall(attemptId: string, epoch: number, reason: string, now = Date.now()): boolean {
+  failCall(attemptId: string, epoch: number, reason: string, now = Date.now(), observed?: {
+    actualProvider?: string; actualModel?: string; latencyMs?: number;
+    tokensIn?: number; tokensOut?: number; costUsd?: number;
+  }): boolean {
     return this.db.transaction(() => {
       const call = this.db.prepare('SELECT settlement FROM calls WHERE attempt_id=? AND epoch=?')
         .get(attemptId, epoch) as { settlement: string } | undefined;
       if (!call || call.settlement !== 'pending') return false;
       const at = new Date(now).toISOString();
-      this.db.prepare(`UPDATE calls SET settled_at=?,settlement='failed',error_reason=? WHERE attempt_id=? AND epoch=?`)
-        .run(at, reason, attemptId, epoch);
+      this.db.prepare(`UPDATE calls SET settled_at=?,settlement='failed',error_reason=?,
+        actual_provider=?,actual_model=?,latency_ms=?,tokens_in=?,tokens_out=?,cost_usd=?
+        WHERE attempt_id=? AND epoch=?`)
+        .run(at, reason, observed?.actualProvider ?? null, observed?.actualModel ?? null,
+          observed?.latencyMs ?? null, observed?.tokensIn ?? null, observed?.tokensOut ?? null,
+          observed?.costUsd ?? null, attemptId, epoch);
       const row = this.get(attemptId);
       if (row?.epoch === epoch && row.status === 'pending') {
         const retryAt = RETRYABLE_REASONS.has(reason)
@@ -569,6 +576,22 @@ export class JobSupervisionStore {
       }
       return true;
     })();
+  }
+
+  /** A timed-out provider may report usage after the timeout has been journaled. */
+  recordLateFailedCallObservation(attemptId: string, epoch: number, observed: {
+    actualProvider?: string; actualModel?: string; tokensIn?: number;
+    tokensOut?: number; costUsd?: number;
+  }): boolean {
+    const result = this.db.prepare(`UPDATE calls SET
+      actual_provider=COALESCE(actual_provider,?),actual_model=COALESCE(actual_model,?),
+      tokens_in=COALESCE(tokens_in,?),tokens_out=COALESCE(tokens_out,?),
+      cost_usd=COALESCE(cost_usd,?)
+      WHERE attempt_id=? AND epoch=? AND settlement='failed'`)
+      .run(observed.actualProvider ?? null, observed.actualModel ?? null,
+        observed.tokensIn ?? null, observed.tokensOut ?? null,
+        observed.costUsd ?? null, attemptId, epoch);
+    return result.changes === 1;
   }
 
   blockInvestigation(attemptId: string, reason: string, now = Date.now()): boolean {

@@ -312,6 +312,20 @@ describe('JobSupervisionStore', () => {
     expect(store.expectedMachineIds()).toBeNull();
   });
 
+  it('adds late token usage to a failed call without reviving its verdict', () => {
+    const id = register(store);
+    store.recordResult(id, { result: 'success', completedAt: new Date(t0).toISOString(),
+      evidenceHash: 'evidence-v1', evidenceSufficient: true });
+    expect(begin(store, id, t0 + 1, 'replacement')?.epoch).toBe(1);
+    expect(store.failCall(id, 1, 'provider-timeout', t0 + 2)).toBe(true);
+    expect(store.recordLateFailedCallObservation(id, 1, {
+      actualProvider: 'codex-cli', actualModel: 'gpt-6-luna', tokensIn: 234, tokensOut: 5 })).toBe(true);
+    expect(store.callRows(id)[0]).toMatchObject({ settlement: 'failed', error_reason: 'provider-timeout',
+      actual_model: 'gpt-6-luna', tokens_in: 234, tokens_out: 5, verdict: null });
+    expect(store.get(id)).toMatchObject({ status: 'unchecked', verdict: null });
+    expect(store.recordLateFailedCallObservation(id, 2, { tokensIn: 999 })).toBe(false);
+  });
+
   it('retains independent outcome links and never lets a later correct grade hide a miss', () => {
     const id = register(store);
     store.recordResult(id, { result: 'success', completedAt: new Date(t0).toISOString(), evidenceHash: 'evidence-v1', evidenceSufficient: true });

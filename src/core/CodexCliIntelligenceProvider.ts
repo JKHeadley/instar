@@ -513,6 +513,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       return await this.evaluateWithModel(prompt, options, model, execJson, account);
     } catch (error) {
       if (
+        !options?.strictModelPin &&
         model !== CODEX_CHATGPT_FALLBACK_MODEL &&
         classifyCodexErrorMessage((error as Error).message) === 'unsupported' &&
         KNOWN_CODEX_MODEL_IDS.includes(CODEX_CHATGPT_FALLBACK_MODEL)
