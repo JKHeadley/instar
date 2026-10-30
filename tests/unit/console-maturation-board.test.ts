@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
   GROUPS, groupOf, headline, subline, parseState, stateQuery, openGroups, filterRows, orderInGroup, squares,
-  humanName, humanArea, ownerChip, statusLine, nextStep, timeline, attention,
+  humanName, humanArea, ownerChip, statusLine, nextStep, timeline, attention, card, measureText,
 } from '../../dashboard/console/maturation-board-model.js';
 
 const NOW = Date.parse('2026-10-30T16:00:00Z');
@@ -16,7 +16,7 @@ const NOW = Date.parse('2026-10-30T16:00:00Z');
 function feature(id: string, verdict: string | null, over: Record<string, unknown> = {}) {
   return {
     id, title: null,
-    review: verdict ? { date: '2026-10-28', verdict, verdictRaw: verdict, area: null, summary: null, nextStep: null, stage: 'dark', evidence: `evidence for ${id}`, evidenceReadToday: true, measures: null, rule: null, decision: 'improve', action: 'none', commitments: [] } : null,
+    review: verdict ? { date: '2026-10-28', verdict, verdictRaw: verdict, area: null, summary: null, nextStep: null, purpose: null, goal: null, plan: null, line: null, measure: null, stage: 'dark', evidence: `evidence for ${id}`, evidenceReadToday: true, measures: null, rule: null, decision: 'improve', action: 'none', commitments: [] } : null,
     history: verdict ? [{ date: '2026-10-25', verdict, carried: false }, { date: '2026-10-28', verdict, carried: false }] : [],
     unchangedReviews: 0,
     shippedAt: null, transitions: [], owners: [], deadlines: [],
@@ -51,8 +51,8 @@ describe('the answer is plain words', () => {
     const h = headline(board(fs));
     expect(h).toBe('3 features: 1 working, 2 need attention.');
     for (const word of ['blind', 'stalled', 'regressed', 'verdict', 'CMT']) expect(h.toLowerCase()).not.toContain(word.toLowerCase());
-    expect(attention(fs)).toEqual({ need: 2, nobody: 1 });
-    expect(subline(board(fs))).toContain('1 of those have nobody on them.');
+    expect(attention(fs)).toEqual({ need: 2, nobody: 1, plannedOnly: 0 });
+    expect(subline(board(fs))).toContain('Of those, 1 have nobody on them.');
   });
 
   it('is honest when the review cannot be read', () => {
@@ -92,12 +92,38 @@ describe('row wording', () => {
 
   it('the owner chip says who is on it in plain words', () => {
     expect(ownerChip(feature('a', 'stalled'))).toEqual({ text: 'Nobody on it', tone: 'bad' });
+    // A written plan without a linked task is not "nobody on it" — the chip must not contradict the line.
+    expect(ownerChip(withReview(feature('a', 'stalled'), { plan: 'Redesign queued for Nov 6.' }))).toEqual({ text: 'Planned, not started', tone: 'warn' });
+    expect(ownerChip(withReview(feature('a', 'stalled'), { plan: 'Nothing planned.' }))!.text).toBe('Nobody on it');
     expect(ownerChip(feature('a', 'live'))).toBeNull();
     expect(ownerChip(feature('a', 'stalled', { followUp: { state: 'unknown', items: [] } }))!.text).toBe('Can’t tell');
     const pending = { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'pending', label: 'pending', due: null, nextCheckIn: null }] };
     expect(ownerChip(feature('a', 'stalled', { followUp: pending }))!.text).toBe('Fix underway');
     const delivered = { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'delivered', label: 'handed off', due: null, nextCheckIn: null }] };
     expect(ownerChip(feature('a', 'stalled', { followUp: delivered }))).toEqual({ text: 'Fix assigned', tone: 'track' });
+  });
+});
+
+describe('the 80/20 card', () => {
+  const m = { what: 'checks failing', now: '41%', target: 'under 5%', before: '14%', trend: 'worse' };
+  const f = withReview(feature('a', 'regressed', { deadlines: [{ date: '2026-11-04', source: 'review', ref: 'r', milestone: 'm', open: true, overdueDays: null, machine: null }] }),
+    { purpose: 'Checks the agent’s “done” claims.', goal: 'Failures under 5% for 7 days.', plan: 'Log each failure and fix the path.', line: '41% failing (goal: under 5%) · up from 14% · fix due Nov 4', measure: m });
+
+  it('the row leads with the dense glance line', () => {
+    expect(statusLine(f)).toBe('41% failing (goal: under 5%) · up from 14% · fix due Nov 4');
+    expect(nextStep(f)).toBe('Log each failure and fix the path.');
+  });
+
+  it('puts the number beside its goal and its last value', () => {
+    expect(measureText(m)).toBe('41% checks failing · goal under 5% · was 14%, worse');
+    expect(measureText(null)).toBe('');
+  });
+
+  it('shows what it does, the goal, now, plan and due — and drops empty rows', () => {
+    const c = card(f);
+    expect(c.map(x => x.label)).toEqual(['What it does', 'To move up', 'Now', 'Plan', 'Due']);
+    expect(c.find(x => x.label === 'Now')!.tone).toBe('bad');
+    expect(card(feature('b', 'live')).map(x => x.label)).toEqual([]);
   });
 });
 
@@ -121,7 +147,7 @@ describe('order, map and URL state', () => {
     const fs = [feature('multiMachine.sessionPool.failoverRunner', 'regressed'), feature('b', 'live')];
     expect(filterRows(fs, { q: 'failover' }).map(f => f.id)).toEqual(['multiMachine.sessionPool.failoverRunner']);
     expect(filterRows(fs, { g: 'working' }).map(f => f.id)).toEqual(['b']);
-    expect(filterRows(fs, { nobody: '1' })).toHaveLength(2);
+    expect(filterRows(fs, { nobody: '1' }).map(f => f.id)).toEqual(['multiMachine.sessionPool.failoverRunner']);
   });
 
   it('timeline lists recorded dates in plain words, oldest first', () => {

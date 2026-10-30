@@ -1050,6 +1050,11 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .mb-line { font-size: 15.5px; color: var(--text-muted); line-height: 1.4; }
 .mb-chip { flex: none; padding: 5px 11px; border-radius: 999px; font-size: 14px; font-weight: 650; color: var(--mb-c); background: color-mix(in srgb, var(--mb-c) 14%, transparent); white-space: nowrap; }
 .mb-detail { padding: 0 16px 16px; font-size: 15.5px; line-height: 1.45; }
+.mb-card { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px 14px; margin: 2px 0 10px; }
+.mb-card dt { color: var(--text-faint); font-size: 14px; padding-top: 1px; }
+.mb-card dd { margin: 0; font-size: 16px; line-height: 1.4; }
+.mb-card dd[data-tone="bad"] { color: #ef5b5b; font-weight: 600; }
+.mb-card dd[data-tone="ok"] { color: #34c38f; font-weight: 600; }
 .mb-next { margin: 0 0 8px; }
 .mb-detail-line { margin: 0 0 8px; color: var(--text-muted); }
 .mb-steps { list-style: none; margin: 10px 0; padding: 0 0 0 14px; border-left: 2px solid var(--hairline); }
@@ -1070,4 +1075,6 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   .mb-sq.nobody::after { inset: 5px; }
   .mb-row { flex-direction: column; gap: 8px; }
   .mb-tech dl { grid-template-columns: 1fr; }
+  .mb-card { grid-template-columns: 1fr; gap: 2px; }
+  .mb-card dd { margin-bottom: 8px; }
 }

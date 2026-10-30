@@ -77,3 +77,11 @@ Display-only revision of a read-only page; safe to ship.
 passes none and keeps 750 ms / 2.5 s / 3 s. The integration suite passes wide values because one
 verifier run on a loaded peer machine failed a single integration test while GitHub's run passed;
 the pool tests depend on real peer servers answering in time.
+
+## Addendum — the 80/20 layer
+
+Optional review fields `purpose`, `goal`, `plan`, `line` and a structured `measure` are validated
+(capped strings; `measure` needs `what` and `now`; unknown trend → `unknown`) and passed through. The
+page leads each row with `line` and shows a five-line card on tap. The owner chip distinguishes a
+written plan with no linked task ("Planned, not started") from no plan at all ("Nobody on it"), so
+the chip never contradicts the row text. Display only; no authority or storage change.

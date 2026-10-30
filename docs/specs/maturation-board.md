@@ -360,8 +360,16 @@ The page is redesigned; nothing in the route's authority, storage or multi-machi
   dated list of what happened, the model-assessed label, and the evidence, decision, ids and live
   records folded under "Technical details".
 - **Tools**: one search box and one "nobody on it" switch; nothing else above the content.
-- **Review contract** gains three optional plain-language fields, written by the review job:
-  `area` (≤ 40), `summary` (≤ 240, one sentence, no ids or jargon), `nextStep` (≤ 200). The job's
+- **The 80/20 layer (Justin, 14:16: "either too generic and vague, or too technical").** Each row
+  leads with one dense `line` (≤ 90 chars: number vs goal · trend · next step with date). Tapping a
+  row opens a five-line card: What it does (`purpose`), To move up (`goal`), Now (`measure`: the one
+  number with its goal and its value at the last review, red when worse), Plan (`plan`), Due. The
+  owner chip never contradicts the line: no linked task but a written plan reads "Planned, not
+  started"; "Nobody on it" means neither. Raw evidence stays under Technical details.
+- **Review contract** gains optional plain-language fields, written by the review job:
+  `area` (≤ 40), `summary` (≤ 240), `nextStep` (≤ 200), `purpose`, `goal`, `plan` (≤ 160 each),
+  `line` (≤ 120), and `measure` `{what ≤ 60, now ≤ 40, target, before (≤ 40 or null), trend:
+  better|worse|flat|unknown}` — a malformed `measure` rejects the file like any other field. The job's
   instructions were updated on the Studio (manifestVersion 5) before the 2026-10-30 11:30 run.
 
 ## Decision points touched

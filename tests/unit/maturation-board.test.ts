@@ -83,6 +83,14 @@ describe('review JSON contract (§2)', () => {
     expect(r.ok && r.review.rows[0].nextStep!.length).toBe(200);
   });
 
+  it('keeps the 80/20 fields and validates the measure', () => {
+    const m = { what: 'checks failing', now: '41%', target: 'under 5%', before: '14%', trend: 'worse' };
+    const r = parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'regressed', { purpose: 'Checks done-claims.', goal: 'Under 5% for 7 days.', plan: 'Fix due Nov 4.', line: '41% failing · goal under 5%', measure: m })]), NOW);
+    expect(r.ok && r.review.rows[0]).toMatchObject({ purpose: 'Checks done-claims.', goal: 'Under 5% for 7 days.', plan: 'Fix due Nov 4.', line: '41% failing · goal under 5%', measure: m });
+    expect(parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live', { measure: { what: 'x' } })]), NOW).ok).toBe(false);
+    expect(parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live', { measure: { what: 'x', now: '1', trend: 'sideways' } })]), NOW).ok && true).toBe(true);
+  });
+
   it('drops a duplicate id and counts it', () => {
     const r = parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live'), row('a', 'stalled')]), NOW);
     expect(r.ok && r.review.rows.length).toBe(1);

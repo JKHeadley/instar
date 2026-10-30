@@ -8,7 +8,7 @@
 import { el, cantTell } from './ui.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
-  filterRows, orderInGroup, squares, humanName, humanArea, ownerChip, statusLine, nextStep, timeline, fmtDate,
+  filterRows, orderInGroup, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, card, isNobody,
 } from './maturation-board-model.js';
 
 const POOL_TIMEOUT_MS = 12_000;
@@ -88,7 +88,7 @@ function draw(main, board, nav) {
     const inGroup = orderInGroup(rows.filter((f) => groupOf(f).id === g.id));
     if (!inGroup.length) return null;
     const isOpen = open.has(g.id) || Boolean(st.q) || Boolean(st.nobody);
-    const nobodyN = inGroup.filter((f) => f.followUp && f.followUp.state === 'none-linked').length;
+    const nobodyN = inGroup.filter(isNobody).length;
     const head = el('button', {
       type: 'button', class: 'mb-group-head', 'data-tone': g.tone, 'aria-expanded': isOpen ? 'true' : 'false',
       onclick: () => {
@@ -130,16 +130,18 @@ function row(f, isOpen, toggle) {
 
 function detail(f) {
   const r = f.review;
-  const next = nextStep(f);
   const steps = timeline(f, Date.now());
   const fus = (f.followUp && f.followUp.items) || [];
+  const rows = card(f);
   return el('div', { class: 'mb-detail' },
-    next ? el('p', { class: 'mb-next' }, el('strong', { text: 'Next: ' }), document.createTextNode(next)) : null,
-    fus.length ? el('p', { class: 'mb-detail-line', text: `Being handled by ${fus.length === 1 ? 'one task' : `${fus.length} tasks`}${fus.some((i) => i.due) ? `, promised for ${fus.filter((i) => i.due).map((i) => fmtDate(i.due)).join(', ')}` : ''}.` }) : null,
+    rows.length ? el('dl', { class: 'mb-card' }, rows.flatMap((x) => [
+      el('dt', { text: x.label }),
+      el('dd', { text: x.text, 'data-tone': x.tone || null }),
+    ])) : el('p', { class: 'mb-detail-line', text: 'The review hasn’t described this one in plain words yet.' }),
     steps.length ? el('ol', { class: 'mb-steps', 'aria-label': 'What happened, by date' },
       steps.map((p) => el('li', { class: `${p.overdue ? 'overdue' : ''}${p.future ? ' future' : ''}` },
-        el('span', { class: 'mb-when', text: p.when }), el('span', { text: p.label })))) : el('p', { class: 'mb-detail-line', text: 'No dates recorded yet.' }),
-    r ? el('p', { class: 'mb-fine', text: `Assessment by the ${fmtDate(r.date)} review (an AI model’s judgement)${r.evidenceReadToday === false ? ', carried over, not re-checked' : ''}.` }) : el('p', { class: 'mb-fine', text: 'Not in the latest review.' }),
+        el('span', { class: 'mb-when', text: p.when }), el('span', { text: p.label })))) : null,
+    r ? el('p', { class: 'mb-fine', text: `From the ${fmtDate(r.date)} review (an AI model’s assessment)${r.evidenceReadToday === false ? ', carried over, not re-checked' : ''}.` }) : el('p', { class: 'mb-fine', text: 'Not in the latest review.' }),
     el('details', { class: 'mb-tech' },
       el('summary', { text: 'Technical details' }),
       el('dl', {},

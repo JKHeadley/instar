@@ -71,16 +71,31 @@ export function humanArea(f) {
 
 // ── follow-up in plain words ───────────────────────────────────────────────
 /** "Fix underway" / "Nobody on it" / "Can't tell" — from explicit links only. */
+/** True when the review wrote down a plan, even though no task is linked to it yet. */
+export function hasWrittenPlan(f) {
+  const p = f.review && (f.review.plan || f.review.nextStep);
+  return Boolean(p) && !/^\s*nothing (planned|needed)/i.test(p);
+}
+
+/** No linked task AND no written plan: the true "nobody on it". */
+export function isNobody(f) {
+  return Boolean(f.followUp && f.followUp.state === 'none-linked' && ATTENTION.has(groupOf(f).id) && !hasWrittenPlan(f));
+}
+
 export function ownerChip(f) {
   const fu = f.followUp || { state: 'unknown', items: [] };
   if (fu.state === 'unknown') return { text: 'Can’t tell', tone: 'muted' };
-  if (fu.state === 'none-linked') return ATTENTION.has(groupOf(f).id) ? { text: 'Nobody on it', tone: 'bad' } : null;
+  if (fu.state === 'none-linked') {
+    if (!ATTENTION.has(groupOf(f).id)) return null;
+    return hasWrittenPlan(f) ? { text: 'Planned, not started', tone: 'warn' } : { text: 'Nobody on it', tone: 'bad' };
+  }
   const open = fu.items.some((i) => i.status === 'pending' || i.kind === 'initiative');
   return open ? { text: 'Fix underway', tone: 'ok' } : { text: 'Fix assigned', tone: 'track' };
 }
 
 /** One short plain line under the name. Prefers the review's own plain summary. */
 export function statusLine(f) {
+  if (f.review && f.review.line) return f.review.line;
   if (f.review && f.review.summary) return f.review.summary;
   const g = groupOf(f);
   const d = nextOpenDeadline(f);
@@ -90,6 +105,7 @@ export function statusLine(f) {
 }
 
 export function nextStep(f) {
+  if (f.review && f.review.plan) return f.review.plan;
   if (f.review && f.review.nextStep) return f.review.nextStep;
   const d = nextOpenDeadline(f);
   if (d) return `Next date: ${fmtDate(d.date)}.`;
@@ -110,8 +126,9 @@ export function groupCounts(features) {
 
 export function attention(features) {
   const need = features.filter((f) => ATTENTION.has(groupOf(f).id));
-  const nobody = need.filter((f) => f.followUp && f.followUp.state === 'none-linked').length;
-  return { need: need.length, nobody };
+  const nobody = need.filter(isNobody).length;
+  const plannedOnly = need.filter((f) => f.followUp && f.followUp.state === 'none-linked' && !isNobody(f)).length;
+  return { need: need.length, nobody, plannedOnly };
 }
 
 /** The one-sentence answer. Plain words, no review jargon. */
@@ -128,7 +145,12 @@ export function subline(board) {
   const fs = board.features || [];
   const a = attention(fs);
   const bits = [];
-  if (a.need) bits.push(a.nobody ? `${a.nobody} of those have nobody on them.` : 'Each of those has someone on it.');
+  if (a.need) {
+    const parts = [];
+    if (a.nobody) parts.push(`${a.nobody} have nobody on them`);
+    if (a.plannedOnly) parts.push(`${a.plannedOnly} have a plan but no task yet`);
+    bits.push(parts.length ? `Of those, ${parts.join(' and ')}.` : 'Each of those has someone on it.');
+  }
   if (board.reviewDate) bits.push(`From the ${fmtDate(board.reviewDate)} review.`);
   const missing = (board.sources || []).find((s) => s.name === 'may-be-superseded');
   if (missing) bits.push(`${missing.machine} didn’t answer, so this may be out of date.`);
@@ -163,7 +185,7 @@ export function openGroups(st) {
 export function filterRows(features, st) {
   let rows = features.slice();
   if (st.g) rows = rows.filter((f) => groupOf(f).id === st.g);
-  if (st.nobody) rows = rows.filter((f) => f.followUp && f.followUp.state === 'none-linked');
+  if (st.nobody) rows = rows.filter(isNobody);
   if (st.q) {
     const q = st.q.toLowerCase();
     rows = rows.filter((f) => [humanName(f), humanArea(f), f.id, f.review && f.review.summary, f.review && f.review.evidence]
@@ -174,7 +196,7 @@ export function filterRows(features, st) {
 
 /** Inside a group: nobody-on-it first, then longest unchanged, then name. */
 export function orderInGroup(rows) {
-  const rank = (f) => (f.followUp && f.followUp.state === 'none-linked' ? 0 : f.followUp && f.followUp.state === 'unknown' ? 1 : 2);
+  const rank = (f) => (isNobody(f) ? 0 : f.followUp && f.followUp.state === 'none-linked' ? 1 : f.followUp && f.followUp.state === 'unknown' ? 2 : 3);
   return rows.slice().sort((a, b) => rank(a) - rank(b) || (b.unchangedReviews || 0) - (a.unchangedReviews || 0) || humanName(a).localeCompare(humanName(b)));
 }
 
@@ -183,7 +205,7 @@ export function squares(features) {
   const out = [];
   for (const g of GROUPS) {
     for (const f of orderInGroup(features.filter((x) => groupOf(x).id === g.id))) {
-      out.push({ id: f.id, group: g.id, tone: g.tone, title: `${humanName(f)} · ${g.label}`, nobody: !!(f.followUp && f.followUp.state === 'none-linked' && ATTENTION.has(g.id)) });
+      out.push({ id: f.id, group: g.id, tone: g.tone, title: `${humanName(f)} · ${g.label}`, nobody: isNobody(f) });
     }
   }
   return out;
@@ -198,4 +220,31 @@ export function timeline(f, now) {
   for (const d of f.deadlines || []) pts.push({ at: d.date, label: d.overdueDays != null ? `Due (${d.overdueDays} days ago)` : 'Due', overdue: d.overdueDays != null });
   const dated = pts.filter((p) => Number.isFinite(Date.parse(p.at))).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   return dated.map((p) => ({ ...p, when: fmtDate(p.at), future: Date.parse(p.at) > now }));
+}
+
+// ── the 80/20 card (what it does · goal · now · plan · due) ─────────────────
+const TREND_WORD = { better: 'better', worse: 'worse', flat: 'no change', unknown: '' };
+
+/** "41% failing · goal under 5% · was 14%, worse" — only the review's own numbers. */
+export function measureText(m) {
+  if (!m) return '';
+  const what = m.what ? m.what.charAt(0).toLowerCase() + m.what.slice(1) : '';
+  const bits = [`${m.now} ${what}`.trim()];
+  if (m.target) bits.push(`goal ${m.target}`);
+  if (m.before) bits.push(`was ${m.before}${TREND_WORD[m.trend] ? `, ${TREND_WORD[m.trend]}` : ''}`);
+  return bits.join(' · ');
+}
+
+/** The short card under a tapped row. Rows with nothing to say are left out. */
+export function card(f) {
+  const r = f.review || {};
+  const d = nextOpenDeadline(f);
+  const due = d ? `${fmtDate(d.date)}${d.overdueDays != null ? ` (${d.overdueDays} days late)` : ''}` : '';
+  return [
+    { label: 'What it does', text: r.purpose || '' },
+    { label: 'To move up', text: r.goal || '' },
+    { label: 'Now', text: measureText(r.measure) || r.summary || '', tone: r.measure && r.measure.trend === 'worse' ? 'bad' : r.measure && r.measure.trend === 'better' ? 'ok' : '' },
+    { label: 'Plan', text: r.plan || r.nextStep || '' },
+    { label: 'Due', text: due, tone: d && d.overdueDays != null ? 'bad' : '' },
+  ].filter((x) => x.text);
 }

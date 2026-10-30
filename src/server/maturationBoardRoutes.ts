@@ -451,7 +451,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
     const byDate = new Map<string, ReviewRow[]>();
     for (const h of p.history) {
       const rows = byDate.get(h.date) ?? [];
-      rows.push({ id: h.id, title: null, area: null, summary: null, nextStep: null, stage: null, verdict: h.verdict as ReviewRow['verdict'], verdictRaw: h.verdict, evidence: null, evidenceReadToday: !h.carried, measures: null, rule: null, decision: null, action: null, commitments: [], expectedBy: null, shippedAt: null });
+      rows.push({ id: h.id, title: null, area: null, summary: null, nextStep: null, purpose: null, goal: null, plan: null, line: null, measure: null, stage: null, verdict: h.verdict as ReviewRow['verdict'], verdictRaw: h.verdict, evidence: null, evidenceReadToday: !h.carried, measures: null, rule: null, decision: null, action: null, commitments: [], expectedBy: null, shippedAt: null });
       byDate.set(h.date, rows);
     }
     const older: ParsedReview[] = [...byDate.entries()].map(([date, rows]) => ({ date, format: 'json', fileName: `${date}.json`, rows, duplicatesDropped: 0, unparsedRows: 0 }));

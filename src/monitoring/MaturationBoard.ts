@@ -51,6 +51,13 @@ export interface ReviewRow {
   summary: string | null;
   /** One plain sentence: what happens next. */
   nextStep: string | null;
+  /** 80/20 plain fields (review-written): what it does, what must be true to move up, the plan, a one-line glance. */
+  purpose: string | null;
+  goal: string | null;
+  plan: string | null;
+  line: string | null;
+  /** The one number that best shows how it is doing — only numbers the review read. */
+  measure: PlainMeasure | null;
   stage: string | null;
   verdict: Verdict;
   verdictRaw: string;
@@ -63,6 +70,26 @@ export interface ReviewRow {
   commitments: string[];
   expectedBy: string | null;
   shippedAt: string | null;
+}
+
+export interface PlainMeasure {
+  what: string;
+  now: string;
+  target: string | null;
+  before: string | null;
+  trend: 'better' | 'worse' | 'flat' | 'unknown';
+}
+
+const TRENDS = new Set(['better', 'worse', 'flat', 'unknown']);
+function parseMeasure(v: unknown): PlainMeasure | null | 'invalid' {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) return 'invalid';
+  const m = v as Record<string, unknown>;
+  const what = clip(m.what, 60);
+  const now = clip(m.now, 40);
+  if (!what || !now) return 'invalid';
+  const trend = typeof m.trend === 'string' && TRENDS.has(m.trend) ? m.trend as PlainMeasure['trend'] : 'unknown';
+  return { what, now, target: clip(m.target, 40), before: clip(m.before, 40), trend };
 }
 
 export interface ParsedReview {
@@ -147,6 +174,8 @@ export function parseReviewJson(fileName: string, text: string, now: number): Re
         return { ok: false, fileName, reason: `features[${i}].${k}` };
       }
     }
+    const measure = parseMeasure(f.measure);
+    if (measure === 'invalid') return { ok: false, fileName, reason: `features[${i}].measure` };
     if (seen.has(f.id)) { duplicatesDropped++; continue; }
     seen.add(f.id);
     const verdictRaw = clip(f.verdict, 64) ?? '';
@@ -156,6 +185,11 @@ export function parseReviewJson(fileName: string, text: string, now: number): Re
       area: clip(f.area, 40),
       summary: clip(f.summary, 240),
       nextStep: clip(f.nextStep, 200),
+      purpose: clip(f.purpose, 160),
+      goal: clip(f.goal, 160),
+      plan: clip(f.plan, 160),
+      line: clip(f.line, 120),
+      measure,
       stage: clip(f.stage, 32),
       verdict: normalizeVerdict(verdictRaw),
       verdictRaw,
@@ -210,6 +244,11 @@ export function parseReviewMarkdown(fileName: string, text: string, now: number)
       area: null,
       summary: null,
       nextStep: null,
+      purpose: null,
+      goal: null,
+      plan: null,
+      line: null,
+      measure: null,
       stage: null,
       verdict: normalizeVerdict(verdictCell),
       verdictRaw: verdictCell.slice(0, 64),
@@ -328,6 +367,11 @@ export interface BoardFeature {
     area: string | null;
     summary: string | null;
     nextStep: string | null;
+    purpose: string | null;
+    goal: string | null;
+    plan: string | null;
+    line: string | null;
+    measure: PlainMeasure | null;
     stage: string | null;
     evidence: string | null;
     evidenceReadToday: boolean | null;
@@ -563,6 +607,11 @@ export function buildMaturationBoard(input: BoardInput): MaturationBoardResponse
         area: row.area,
         summary: row.summary,
         nextStep: row.nextStep,
+        purpose: row.purpose,
+        goal: row.goal,
+        plan: row.plan,
+        line: row.line,
+        measure: row.measure,
         stage: row.stage,
         evidence: row.evidence,
         evidenceReadToday: row.evidenceReadToday,
