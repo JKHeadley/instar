@@ -8,6 +8,14 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // it for the duration of each test, so the production path and trust check run.
 const helpers: string[] = [];
 let helperSerial = 0;
+function cleanupScope(filename: string): { localVerifyScopeOk?: { verifyRoot: string } } {
+  const marker = `${path.sep}.worktrees${path.sep}.verify${path.sep}`;
+  const at = filename.indexOf(marker);
+  // Local verify checks out a disposable source-tree copy. The destructive
+  // filesystem funnel admits only that exact verifier root when explicitly
+  // named; ordinary source-tree paths retain their normal protection.
+  return at < 0 ? {} : { localVerifyScopeOk: { verifyRoot: filename.slice(0, at + marker.length - 1) } };
+}
 function helper(reply: string): MacDesktopHost {
   const filename = path.resolve('dist/native', `instar-desktop-capture-test-${process.pid}-${helperSerial++}`);
   fs.mkdirSync(path.dirname(filename), { recursive: true });
@@ -43,15 +51,16 @@ function helper(reply: string): MacDesktopHost {
 describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes', () => {
   afterEach(() => {
     for (const filename of helpers.splice(0)) {
-      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup' });
+      const scope = cleanupScope(filename);
+      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup', ...scope });
       if (fs.existsSync(filename + '.release')) SafeFsExecutor.safeUnlinkSync(filename + '.release', {
-        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-release',
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-release', ...scope,
       });
       if (fs.existsSync(filename + '.fault')) SafeFsExecutor.safeUnlinkSync(filename + '.fault', {
-        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-fault',
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-fault', ...scope,
       });
       if (fs.existsSync(filename + '.commands')) SafeFsExecutor.safeUnlinkSync(filename + '.commands', {
-        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-commands',
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-commands', ...scope,
       });
     }
   });

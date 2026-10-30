@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-laptop-controls",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T15:32:12.316Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-laptop-controls.md",
+  "artifactSha256": "b326964228e5e6d43ebab63ac661095a42bc90ce3701be6634d817193fefe8cb",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/core/SafeFsExecutor.ts",
+    "tests/unit/MacDesktopHostCapture.test.ts",
+    "tests/unit/SafeFsExecutor.test.ts",
+    "upgrades/side-effects/native-remote-desktop-laptop-controls.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Narrow correction in the protected filesystem executor; exact verifier scope and outside-scope refusal are covered by a real fixture test and independent review.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

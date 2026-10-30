@@ -3,7 +3,7 @@
 **Version / slug:** `native-remote-desktop-laptop-controls`
 **Date:** 2026-10-30
 **Author:** Echo
-**Second-pass reviewer:** not required — reversible viewer input fix
+**Second-pass reviewer:** Astra — viewer and subsequent filesystem-scope correction
 
 ## Summary and decision points
 
@@ -64,3 +64,25 @@ The review checked the same-tick IME duplicate guard, visual viewport handling,
 bounded and encrypted wheel input, Stop cancellation, frame-size/publishing
 fixes, native scroll direction, and the browser smoke and E2E fixture changes.
 Physical iPhone keyboard behavior remains unverified by this source review.
+
+The independent Mac M5 local verifier later found 22 failures in the native
+capture test file. Its disposable checkout is a protected source tree, and the
+test's generated helper cleanup needed the verifier's exact scoped carve-out.
+The first test-only patch supplied that scope but missed that `safeUnlink` and
+`safeUnlinkSync` did not forward it to the canonical path guard. The correction
+forwards the scope in both wrappers and adds a regression test that admits
+only files inside the verifier clone and still refuses a protected file
+outside it. Astra independently reviewed this corrected patch, found no
+P1/P2 issue, and ran `SafeFsExecutor.test.ts` with 23/23 passing. The M5
+verifier must rerun on this commit before the release gate can be called green.
+
+For this filesystem-funnel correction: **over-block** is limited to a helper
+outside the explicitly named `.worktrees/.verify` root, which must remain
+protected; **under-block** is bounded by the existing canonical realpath and
+well-formed-root checks, including symlink escape refusal. The scope is
+forwarded at the existing `SafeFsExecutor` authority boundary, with no new
+parallel guard or heuristic block. It changes no operator UI, notices, URL,
+or persistent state and is machine-local by design because each verifier
+cleans only its own disposable checkout. Reverting the two wrapper arguments
+and test cleanup restores the prior behavior without migration. Astra's
+second pass concurs with this corrected review and found no P1/P2 issue.
