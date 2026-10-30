@@ -51,8 +51,10 @@ function ctxFor(fx: Fixture, over: Record<string, unknown> = {}) {
   } as never;
 }
 
+// Wide timings: this suite runs beside the full suite on a loaded verifier; the
+// production defaults (750 ms per peer, 2.5 s fan-out, 3 s review fetch) are unchanged.
 function appFor(ctx: never) {
-  return express().use(createMaturationBoardRoutes(ctx));
+  return express().use(createMaturationBoardRoutes(ctx, { peerTimeoutMs: 15_000, fanOutDeadlineMs: 30_000, reviewTimeoutMs: 15_000 }));
 }
 
 describe('GET /maturation/board', () => {

@@ -70,3 +70,10 @@ Display-only revision of a read-only page; safe to ship.
 ## Evidence pointers
 
 - `docs/specs/maturation-board.md` §11; `tests/unit/console-maturation-board.test.ts`; `tests/unit/maturation-board.test.ts`
+
+## Addendum — test timing seam
+
+`createMaturationBoardRoutes` takes optional pool timings (peer, fan-out, review fetch). Production
+passes none and keeps 750 ms / 2.5 s / 3 s. The integration suite passes wide values because one
+verifier run on a loaded peer machine failed a single integration test while GitHub's run passed;
+the pool tests depend on real peer servers answering in time.

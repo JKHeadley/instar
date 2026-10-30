@@ -393,7 +393,13 @@ interface ReviewPayload {
   duplicatesDropped: number;
 }
 
-export function createMaturationBoardRoutes(ctx: BoardCtx): Router {
+/** Pool timing. Production uses the defaults; tests on a loaded machine pass wider values. */
+export interface MaturationBoardTimings { peerTimeoutMs?: number; fanOutDeadlineMs?: number; reviewTimeoutMs?: number }
+
+export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBoardTimings = {}): Router {
+  const PEER_TIMEOUT_MS = timings.peerTimeoutMs ?? 750;
+  const FAN_OUT_DEADLINE_MS = timings.fanOutDeadlineMs ?? 2_500;
+  const REVIEW_TIMEOUT_MS = timings.reviewTimeoutMs ?? 3_000;
   const router = Router();
   /** Pool rebuilds per minute (cache hits are free): bounds peer fan-out like /guards?scope=pool. */
   const poolBuilds: number[] = [];
@@ -524,11 +530,11 @@ export function createMaturationBoardRoutes(ctx: BoardCtx): Router {
         await Promise.all(peers.slice(i, i + 4).map(async p => {
           const machine = nicknameOf(ctx, p.machineId);
           const fail = (reason: string) => { sources.push({ name: 'peer', machine, ok: false, reason }); missing.push(machine); };
-          if (Date.now() - started > 2_500) return fail('deadline');
+          if (Date.now() - started > FAN_OUT_DEADLINE_MS) return fail('deadline');
           if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) return fail('omitted-cap');
           try {
             const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/maturation/board?scope=local&part=owners', {
-              headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(750),
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
             });
             if (r.status === 404 || r.status === 503) return fail(r.status === 503 ? 'board-off' : 'unsupported');
             if (!r.ok) return fail('http-error');
@@ -583,7 +589,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx): Router {
       } else if (chosen && chosen.peer) {
         try {
           const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, chosen.peer, '/maturation/board?scope=local&part=review', {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(3_000),
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
           });
           const text = r.ok ? await r.text() : '';
           if (!r.ok) {
