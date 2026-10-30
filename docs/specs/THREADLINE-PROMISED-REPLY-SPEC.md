@@ -1,6 +1,6 @@
 ---
 title: Threadline promised reply — a "Composing response..." ack is always followed by a reply or a notice
-status: DRAFT v1 (split from THREADLINE-THREAD-LEDGER-SPEC v0 on Echo's review, 2026-10-30; spec-converge and ELI16 still owed)
+status: DRAFT v2 (v1 split from THREADLINE-THREAD-LEDGER-SPEC v0 on Echo's review, 2026-10-30; spec-converge and ELI16 still owed)
 author: Dawn
 reviewer: Echo
 closes: instar #2117 gaps F and H
@@ -37,7 +37,10 @@ interface PromisedReply {
   peer: string;               // verified fingerprint, or the relay address if unverified
   ackedAt: string;            // ISO
   ownerMachine: string;       // the machine that sent the ack (§4)
-  state: 'open' | 'replied' | 'noticed';
+  sessionName: string;        // the session that held the message when the ack settled
+  state: 'open' | 'replied' | 'closed' | 'noticed';
+  closeReason?: string;
+  noticeVerdict?: 'delivered' | 'queued' | 'rejected' | 'unconfirmed';
 }
 ```
 
@@ -50,9 +53,15 @@ thread-85deeba8 and thread-ff759fcf). This spec must work even while that defect
 
 - **A real reply closes it** only when the outbound reply's `inReplyTo` equals the recorded
   `inboundMessageId`. A message on another subject does not.
-- An outbound reply with no `inReplyTo` does not close it. (Every send path that answers a
-  specific inbound must set `inReplyTo`. Where one doesn't today, that is a bug this spec
-  surfaces.)
+- **Fallback, to prevent false notices.** `inReplyTo` is enforced on main only for warm-bound
+  replies, so a real reply can lack it. When an outbound has no `inReplyTo`, it closes the
+  obligation **only if** it comes from the same `sessionName` on the same thread **and** exactly
+  one obligation is open there. With two or more open, it closes none of them, and the notice
+  stays honest (`still-working` says a reply "may still follow").
+- **Deliberate close.** A session that decides no reply is needed calls
+  `threadline_promise_close { inboundMessageId, reason }`. The obligation becomes `closed` with
+  that reason. No notice goes out, and the peer sees nothing new. (Sending "Message received."
+  then would be noise.)
 - A late real reply is **always** sent, whatever the obligation's state. A notice never
   suppresses a reply.
 
@@ -67,8 +76,19 @@ thread-85deeba8 and thread-ff759fcf). This spec must work even while that defect
   - `restart-lost`: "This agent restarted while handling your message from HH:MM UTC. It may not be answered."
 - **Collapse.** Several open obligations on one thread with the same peer produce **one** notice
   listing the times.
-- The notice is sent with `type: 'ack'` (`AUTO_ACK_TYPE`), so a current peer recognizes it via
-  `isAutoAckInbound` and #2149 holds: no ack back, no routing, no session.
+- The notice is sent with a **new wire type, `type: 'reply-notice'`**, not `'ack'`. (v1 used
+  `'ack'`; Echo found that every receive path on main consumes an ack as "delivery ack ...
+  recorded — not routed", and the relay-agent path doesn't even store it, so nobody would ever
+  read the notice.) A current receiver handles `reply-notice` as its own case:
+  - **no** ack back, **no** routing to a session, **no** spawn (same guarantees as #2149);
+  - **kept and readable**: appended to the thread's canonical history as an inbound entry and
+    shown on that peer's health surface (`/threadline/peers`), where a session starting cold
+    or the operator will see it;
+  - not treated as a reply by the waiter logic, so a waiter still waiting stays waiting.
+- **Delivery is at most once.** The obligation moves to `noticed` only after the relay verdict
+  comes back, and the verdict (`delivered` / `queued` / `rejected` / `unconfirmed`) is stored on
+  the obligation. There is no retry on any verdict. A `rejected` notice is recorded locally and
+  that is the end of it.
 - **Older peers (honest bound).** A peer without #2149 may answer the notice with one auto-ack
   and possibly start one session. Our side recognizes that ack via `isAutoAckInbound` and must
   not answer it, so the exchange ends after at most one round. It cannot be bounded tighter
@@ -79,16 +99,34 @@ thread-85deeba8 and thread-ff759fcf). This spec must work even while that defect
 
 - The **machine that sent the ack** owns the obligation and its timer.
 - The timer survives a restart: obligations live in a durable store (JSONL beside the thread
-  log), and on startup every `open` obligation past T gets its notice (reason `restart-lost` if
-  the session that held the message is gone).
+  log).
+- **Choosing the reason** uses `sessionName`. It is `session-ended` if SessionManager reports
+  that session as no longer alive (the reaper's end event, or no tmux session of that name at
+  check time), and `restart-lost` only if the server restarted since `ackedAt` **and** the
+  session is gone. Sessions can outlive a server restart, so a restart alone never picks
+  `restart-lost`. If the session is alive, the reason is `still-working`.
+- **After an outage.** On startup, open obligations older than an **age ceiling (24h)** are
+  marked `closed` (reason `expired-during-outage`) with no notice. Across all threads, at most
+  **one notice per peer per hour**. Obligations over the cap fold into the next notice to that
+  peer, or expire at the ceiling.
+- **Store bounds.** Closed, replied and noticed rows are pruned after 7 days. Open rows are
+  never pruned before the age ceiling decides them.
 - **Handover.** If the owner machine goes away and another machine of the same agent becomes
   holder for the thread, the new holder adopts open obligations only if the store is shared or
   replicated to it. If it is not, **no notice is sent**, and that is the stated result. A
   missing notice is the honest failure here. A guessed one is not.
 
-### 5. What the sender shows
+### 5. What the asking side sees
 
-Nothing new is needed on the sending (asking) side: it sees the ack, then the reply or the notice.
+A current peer sees the ack, then either the reply, or the notice in the thread history and on
+peer health (§3). An older peer sees the notice as ordinary message content.
+
+### 6. Rollout
+
+Dev-gated (`threadline.promisedReply.enabled`, default off). The first stage is **dry-run**:
+obligations are recorded, and a notice that would have gone out is logged but not sent. A kill
+switch disables both. Ships enabled only after a dry-run window shows notices firing on real
+stalls and none on threads that did get a reply.
 
 ## Tests
 
@@ -98,7 +136,16 @@ Nothing new is needed on the sending (asking) side: it sees the ack, then the re
 4. Three acks on one thread, no replies: one collapsed notice.
 5. Restart with an open obligation past T: one notice, reason `restart-lost`.
 6. Late real reply after the notice: the reply is still sent.
-7. Current peer receives the notice: no ack, no route, no session (#2149).
+7. Current peer receives the notice: no ack, no route, no session, **and** the notice is in that
+   thread's history and on peer health (both halves asserted).
+11. Real reply without `inReplyTo`, same session, one open obligation: closed, no notice. With two
+    open: none closed.
+12. Deliberate close: no notice.
+13. Startup after a 3-day outage with 10 open obligations to one peer: none notice, all expire.
+    Mixed fresh ones: at most one notice per peer per hour.
+14. Session alive across a server restart: reason is `still-working`, not `restart-lost`.
+15. Notice rejected by the relay: recorded verdict, no retry.
+16. Dry-run: nothing sent, the would-be notice is logged.
 8. **Older peer** receives the notice and auto-acks it: our side does not answer; the exchange ends.
 9. Inbound absent from the canonical log: the obligation still closes on `inReplyTo` (it uses its own recorded id).
 10. Owner machine gone and store not replicated: no notice, and the miss is logged locally.
