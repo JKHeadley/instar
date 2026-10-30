@@ -155,3 +155,10 @@ installation. The job now runs `npm ci --ignore-scripts` first: this installs th
 local Husky executable without running installation hooks, then `npm pack`
 can inspect the actual built package. The companion compiler and lease self-test
 had passed on both earlier Windows CI runs.
+
+The first full CI pass also found that the new target-side classes lowered the
+public-guide coverage below its 55% class floor. The Remote Desktop guide now
+explains the designated front, target authority, Windows companion, and the
+five new assertion/session/host components in plain terms.
+`node scripts/docs-coverage.mjs --check` passes locally at the unchanged floor.
+This is documentation only; it does not change grant or input behavior.

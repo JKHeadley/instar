@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-echo-mesh",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T22:58:59.447Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-echo-mesh.md",
+  "artifactSha256": "5f05312a7972ba388fa95458a5c8a6129d5fec4d8bb75b979bdb34800436f545",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "site/src/content/docs/guides/remote-desktop.md",
+    "upgrades/side-effects/native-remote-desktop-echo-mesh.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Public guide documentation of new mesh target classes to meet the repository class-coverage floor; no runtime behavior change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
