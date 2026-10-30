@@ -64,6 +64,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
       - run: node scripts/build-native-desktop-host.mjs
       - name: Compile interactive Windows companion with the installer toolchain
         shell: powershell

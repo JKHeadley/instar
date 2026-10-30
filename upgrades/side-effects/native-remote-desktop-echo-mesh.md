@@ -148,3 +148,10 @@ failed only in the package inspection step because Node on Windows could not
 spawn `npm` as a bare child-process executable (`ENOENT`). That step now runs
 `npm pack` through the runner's PowerShell and checks the parsed JSON inventory.
 The package file set and runtime code are unchanged by this CI correction.
+
+The next Windows CI run reached `npm pack` but its mandatory `prepare` script
+could not find Husky because the lightweight Windows job had skipped dependency
+installation. The job now runs `npm ci --ignore-scripts` first: this installs the
+local Husky executable without running installation hooks, then `npm pack`
+can inspect the actual built package. The companion compiler and lease self-test
+had passed on both earlier Windows CI runs.
