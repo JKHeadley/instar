@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "window-run-repeat-task-receipts",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-30T15:22:36.679Z",
+  "artifactPath": "upgrades/side-effects/window-run-repeat-task-receipts.md",
+  "artifactSha256": "eef11e3d0f55e4fd2cea05cff7b8d33e20933dc902a1f5e3eeb0c338eb27758c",
+  "coveredFiles": [
+    "package-lock.json",
+    "package.json",
+    "src/core/WindowRunLivenessAuthority.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/window-run-liveness-production-wiring.test.ts",
+    "tests/integration/window-run-liveness-routes.test.ts",
+    "tests/unit/window-run-liveness-authority.test.ts",
+    "tests/unit/window-run-task-selection.test.ts",
+    "upgrades/next/window-run-repeat-task-receipts.md",
+    "upgrades/side-effects/window-run-repeat-task-receipts.md",
+    "upgrades/window-run-repeat-task-receipts.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible selector and digest-validation correction within the existing W32 authority; no new endpoint, state schema, external operation, or autonomous trigger.",
+  "eli16Path": "upgrades/window-run-repeat-task-receipts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/window-run-repeat-task-receipts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

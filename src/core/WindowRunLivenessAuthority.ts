@@ -466,6 +466,9 @@ export class WindowRunLivenessAuthority {
       const verified = this.deps.verifyWorkArtifact(structuredClone(state), { artifactRef: input.artifactRef, observedAt });
       if (!/^[a-f0-9]{64}$/.test(verified.digest) || !verified.artifact || !/^[A-Za-z0-9._:/-]{1,300}$/.test(verified.taskRef)) throw new Error('window-run-liveness-artifact-verification-invalid');
       if (state.lastWorkReceipt?.digest === verified.digest) throw new Error('window-run-liveness-artifact-unchanged');
+      if (state.audit.entries.some(entry => entry.kind === 'work-receipt' && entry.workReceipt?.digest === verified.digest)) {
+        throw new Error('window-run-liveness-artifact-replayed');
+      }
       const sequence = (state.lastWorkReceipt?.sequence ?? 0) + 1;
       const receipt: WindowRunWorkReceipt = {
         receiptId: digest({ windowId: state.windowId, autonomousRunId: state.autonomousRunId, executorId: state.executorId, taskRef: verified.taskRef, artifact: verified.artifact, digest: verified.digest, sequence, observedAt }),

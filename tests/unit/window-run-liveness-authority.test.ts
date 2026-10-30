@@ -276,7 +276,7 @@ describe('WindowRunLivenessAuthority', () => {
     expect(expired?.finalSnapshot?.reason).toBe('window-expired');
   });
 
-  it('mints sequence, timestamp, digest attribution server-side and rejects unchanged artifacts', async () => {
+  it('mints sequence, timestamp, digest attribution server-side and rejects unchanged or replayed artifacts', async () => {
     const h = harness();
     const binding = { windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-36966' };
     await h.authority.tick();
@@ -285,6 +285,9 @@ describe('WindowRunLivenessAuthority', () => {
     expect(receipt).toMatchObject({ sequence: 2, observedAt: new Date(BASE).toISOString(), digest: 'b'.repeat(64), artifact: 'src/b.ts', taskRef: 'task-7' });
     expect(receipt.receiptId).toMatch(/^[a-f0-9]{64}$/);
     expect(h.store.load()?.lastWorkReceipt).toEqual(receipt);
+    await h.authority.recordWorkAdvance({ ...binding, artifactRef: 'src/c.ts' });
+    await expect(h.authority.recordWorkAdvance({ ...binding, artifactRef: 'src/b.ts' })).rejects.toThrow('window-run-liveness-artifact-replayed');
+    expect(h.store.load()?.lastWorkReceipt?.sequence).toBe(3);
   });
 
   it('uses one fail-closed authority timestamp for artifact admission and receipt stamping', async () => {

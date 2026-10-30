@@ -313,6 +313,28 @@ export function readMentorConfigFromDisk(
   }
 }
 
+/** Select a live task for a W32 receipt or recovery, without inventing checklist work. */
+export function selectWindowWorkTask(content: string, runId: string, used: ReadonlySet<string>): string | null {
+  if (!content.startsWith('---\n')) throw new Error('window-run-liveness-task-ledger-frontmatter-missing');
+  const frontmatterEnd = content.indexOf('\n---', 4);
+  if (frontmatterEnd < 0) throw new Error('window-run-liveness-task-ledger-frontmatter-unclosed');
+  const frontmatter = content.slice(0, frontmatterEnd);
+  const runMatch = frontmatter.match(/^run_id:\s*["']?([^"'\s]+)["']?\s*$/m);
+  if (!runMatch || runMatch[1] !== runId) throw new Error('window-run-liveness-task-ledger-run-mismatch');
+  const tasks = parseContinuationTasks(content.slice(frontmatterEnd + 4));
+  let firstOpen: string | null = null;
+  for (let index = 0; index < tasks.length; index++) {
+    if (!tasks[index].open) continue;
+    const taskRef = `autonomous:${runId}:${index + 1}`;
+    firstOpen ??= taskRef;
+    if (!used.has(taskRef)) return taskRef;
+  }
+  // A long task may advance in several cadence intervals. Work receipts may
+  // reuse its task ref only after every open task has already received one;
+  // the authority still requires the artifact content to change each time.
+  return firstOpen;
+}
+
 /**
  * The request-time wiring for the live-test capstone runner (§6/§7.5). The route
  * builds a RealChannelDriver from whatever demo creds exist and calls `makeRunner`
@@ -4286,23 +4308,10 @@ export class AgentServer {
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
-      if (!content.startsWith('---\n')) throw new Error('window-run-liveness-task-ledger-frontmatter-missing');
-      const frontmatterEnd = content.indexOf('\n---', 4);
-      if (frontmatterEnd < 0) throw new Error('window-run-liveness-task-ledger-frontmatter-unclosed');
-      const frontmatter = content.slice(0, frontmatterEnd);
-      const runMatch = frontmatter.match(/^run_id:\s*["']?([^"'\s]+)["']?\s*$/m);
-      if (!runMatch || runMatch[1] !== state.autonomousRunId) throw new Error('window-run-liveness-task-ledger-run-mismatch');
-      const body = content.slice(frontmatterEnd + 4);
       const used = new Set(state.audit.entries
         .filter(entry => entry.kind === 'work-receipt' && entry.workReceipt)
         .map(entry => entry.workReceipt!.taskRef));
-      const tasks = parseContinuationTasks(body);
-      for (let index = 0; index < tasks.length; index++) {
-        if (!tasks[index].open) continue;
-        const taskRef = `autonomous:${state.autonomousRunId}:${index + 1}`;
-        if (!used.has(taskRef)) return taskRef;
-      }
-      return null;
+      return selectWindowWorkTask(content, state.autonomousRunId, used);
     };
     const windowRunLivenessAuthority = options.windowRunLivenessAuthority ?? (() => {
       const raw = options.config.monitoring?.windowRunLiveness;

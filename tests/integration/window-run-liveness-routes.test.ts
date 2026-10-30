@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore } from '../../src/core/WindowRunLivenessAuthority.js';
 import { WindowRunCadenceExecutor, WindowRunCadenceStore } from '../../src/core/WindowRunCadenceExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
-import { AgentServer } from '../../src/server/AgentServer.js';
+import { AgentServer, selectWindowWorkTask } from '../../src/server/AgentServer.js';
 import { createMockSessionManager, createTempProject, type TempProject } from '../helpers/setup.js';
 
 describe('window run liveness HTTP integration', () => {
@@ -26,7 +26,13 @@ describe('window run liveness HTTP integration', () => {
         work: state.lastWorkReceipt ?? null,
         lifecycle: { lifecycleRunId: state.lifecycleRunId, state: 'active_start', admitted: true, expiresAt: '2026-09-06T20:00:00.000Z' },
       }),
-      verifyWorkArtifact: (_state, input) => ({ artifact: input.artifactRef, digest: 'b'.repeat(64), taskRef: 'task-1' }),
+      verifyWorkArtifact: (state, input) => {
+        const content = '---\nrun_id: "run-w32"\n---\n\n- [ ] Implement fix\n- [ ] Verify fix\n';
+        const used = new Set(state.audit.entries.filter(entry => entry.kind === 'work-receipt' && entry.workReceipt).map(entry => entry.workReceipt!.taskRef));
+        const taskRef = selectWindowWorkTask(content, state.autonomousRunId, used);
+        if (!taskRef) throw new Error('window-run-liveness-no-open-unreceipted-task');
+        return { artifact: input.artifactRef, digest: (input.artifactRef === 'src/a.ts' ? 'b' : input.artifactRef === 'src/b.ts' ? 'c' : 'd').repeat(64), taskRef };
+      },
     }, { enabled: true, dryRun: true });
     const config: InstarConfig = {
       projectName: 'w32-integration', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: token,
@@ -55,7 +61,7 @@ describe('window run liveness HTTP integration', () => {
 
   it('mints a receipt, evaluates all five predicates, and exposes durable state', async () => {
     const minted = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/a.ts' }).expect(201);
-    expect(minted.body.receipt).toMatchObject({ sequence: 1, observedAt: now, digest: 'b'.repeat(64), taskRef: 'task-1' });
+    expect(minted.body.receipt).toMatchObject({ sequence: 1, observedAt: now, digest: 'b'.repeat(64), taskRef: 'autonomous:run-w32:1' });
     const active = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
     expect(active.body.status).toBe('active');
     expect(Object.values(active.body.predicates).every((entry: any) => entry.ok)).toBe(true);
@@ -66,5 +72,16 @@ describe('window run liveness HTTP integration', () => {
     const cadence = await auth(request(server.getApp()).get('/window-run-liveness/cadence')).expect(200);
     expect(cadence.body).toMatchObject({ enabled: true, dryRun: true, config: { receiptIntervalMs: 1_800_000, reportIntervalMs: 10_800_000 }, state: { windowId: 'w32', autonomousRunId: 'run-w32' } });
     expect(fs.existsSync(path.join(project.stateDir, 'window-run-cadence', 'state.json'))).toBe(true);
+  });
+
+  it('continues the HTTP work receipt chain on a still-open task after every task was receipted', async () => {
+    const second = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/b.ts' }).expect(201);
+    expect(second.body.receipt).toMatchObject({ sequence: 2, taskRef: 'autonomous:run-w32:2' });
+    const repeated = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/c.ts' }).expect(201);
+    expect(repeated.body.receipt).toMatchObject({ sequence: 3, taskRef: 'autonomous:run-w32:1' });
+    const unchanged = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/c.ts' }).expect(409);
+    expect(unchanged.body.error).toBe('window-run-liveness-artifact-unchanged');
+    const replayed = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/b.ts' }).expect(409);
+    expect(replayed.body.error).toBe('window-run-liveness-artifact-replayed');
   });
 });
