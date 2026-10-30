@@ -78,7 +78,7 @@ jobs:
           & "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" --self-test
           if ($LASTEXITCODE -ne 0) { throw "Windows companion lease self-test failed: $LASTEXITCODE" }
       - name: Check npm package contents
-        run: node -e "const p=JSON.parse(require('child_process').execFileSync('npm',['pack','--dry-run','--json','--ignore-scripts'],{encoding:'utf8'}))[0]; for(const f of ['dist/native/windows/InstarDesktopCompanion.cs','scripts/install-windows-desktop-companion.mjs','scripts/install-windows-desktop-companion.ps1']) if(!p.files.some(x=>x.path===f)) throw Error('Missing '+f)"
+        run: node -e "const p=JSON.parse(require('child_process').execFileSync('npm',['pack','--dry-run','--json','--ignore-scripts'],{encoding:'utf8',maxBuffer:16*1024*1024}))[0]; for(const f of ['dist/native/windows/InstarDesktopCompanion.cs','scripts/install-windows-desktop-companion.mjs','scripts/install-windows-desktop-companion.ps1']) if(!p.files.some(x=>x.path===f)) throw Error('Missing '+f)"
 
   desktop-macos-package:
     name: Desktop Mac package

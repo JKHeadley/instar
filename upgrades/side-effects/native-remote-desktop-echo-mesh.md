@@ -137,3 +137,9 @@ boundaries.
 **Second-pass reviewer:** Astra re-read the four fixes and concurred, with no
 remaining P1/P2 in focused source review. This is source review only; the full
 suite, CI, and live Windows checks remain release gates.
+
+The local npm package inventory is larger than Node's default child-process
+output buffer. The Windows CI packaging check now explicitly allows a 16 MB
+buffer. This changes only CI inspection capacity; it grants no runtime desktop
+authority. A local dry-run package check verifies the three Windows files are
+present before CI runs the companion compiler and self-test.
