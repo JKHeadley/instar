@@ -10,10 +10,10 @@
     "resolvedFindings": 1
   },
   "convergenceReport": "docs/specs/reports/standards-single-provider-floor-and-cadence-well-2026-10-26.md",
-  "convergenceSha256": "c931cb83a28060546020e3b6f36d460d5bdf5bdc026cb7aacdfc357b0d278a32",
+  "convergenceSha256": "f80ceb5fe0df292e7bf873fc0c664b307a6df041ac40845e44b4904fbc37a0be",
   "areas": {
     "Building": {
-      "areaSha256": "165b9387ff1a026e6d03bbeae8b6f674fd3182182ad3b901d5e6bdc43a12032f",
+      "areaSha256": "baba2157f5a9566a8ca825131c875e5ac4f4808211363ccb889abcb189e55595",
       "verdict": "accepted"
     },
     "The Substrate": {

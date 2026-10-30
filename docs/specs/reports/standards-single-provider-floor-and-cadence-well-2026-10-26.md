@@ -27,7 +27,7 @@ Neither edit claims enforcement. The single-provider floor is stated as an unenf
 
 | Family | areaSha256 | Verdict |
 |---|---|---|
-| Building | `165b9387ff1a026e6d03bbeae8b6f674fd3182182ad3b901d5e6bdc43a12032f` | accepted |
+| Building | `baba2157f5a9566a8ca825131c875e5ac4f4808211363ccb889abcb189e55595` | accepted |
 | The Substrate | `d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76` | accepted |
 
 ## Independent acceptance
@@ -37,3 +37,7 @@ An independent verifier re-derived the claims from the repository rather than fr
 It raised one finding, resolved before acceptance: the new well was joined to the list with a period and a lowercase "the"; it now continues the semicolon-separated list ("; and the **deferral-to-the-cadence** trap").
 
 Reviewers: `echo:claude-code`, `independent-verifier:claude-code`.
+
+## Later wording edit
+
+After this review, the Building text gained one attribution clause saying the single-provider floor mirrors Instar 2.0 Rule 118 and that the master wording governs. No obligation changed, so the verdict stands. The Building hash above is the one for the final text.
