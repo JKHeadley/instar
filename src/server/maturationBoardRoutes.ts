@@ -11,6 +11,9 @@
  *   scope=local&part=owners          — this machine's live owner facts + review digest (peer fan-out)
  *   scope=local&part=review          — this machine's review rows + history + commitment projection
  *   scope=pool                       — the merged board across answering machines
+ *
+ * E2E-PAIRING: EXEMPT — follow-on commit changes only catch-block tags and one log line; the route's
+ * production path is covered by tests/e2e/maturation-board-alive.test.ts.
  */
 
 import crypto from 'crypto';
@@ -544,7 +547,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx): Router {
               && dg.date <= new Date(now + 86_400_000).toISOString().slice(0, 10)) {
               candidates.push({ machineId: p.machineId, machine, date: dg.date, hash: dg.hash.slice(0, 64), peer: p });
             }
-          } catch (err) {
+          } catch (err) { // @silent-fallback-ok — the peer failure becomes a visible sources[] row and names the machine on the page
             fail(err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable');
           }
         }));
@@ -617,7 +620,8 @@ export function createMaturationBoardRoutes(ctx: BoardCtx): Router {
       });
       responseCache.set(cacheKey, { at: now, body });
       res.json(body);
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — logged and answered as an explicit 500, never an empty board
+      console.warn('[maturation-board] build failed:', err);
       res.status(500).json({ error: 'maturation board build failed', detail: err instanceof Error ? err.message.slice(0, 200) : 'unknown' });
     }
   });

@@ -107,3 +107,10 @@ authority.
 - Tests: `tests/unit/maturation-board.test.ts`, `tests/unit/console-maturation-board.test.ts`,
   `tests/integration/maturation-board-route.test.ts`, `tests/e2e/maturation-board-alive.test.ts`,
   `tests/unit/PostUpdateMigrator-maturationBoardSection.test.ts`
+
+## Addendum — 2026-10-30 (follow-on commit)
+
+Two catch blocks in `maturationBoardRoutes.ts` now carry the `@silent-fallback-ok` justification
+(neither is silent: a peer failure becomes a named `sources[]` row; a build failure is logged and
+answered as an explicit 500). The growth-analyst wiring test now checks the hoisted line, which still
+proves the analyst receives a real, machine-scoped registry. No behaviour change beyond the log line.

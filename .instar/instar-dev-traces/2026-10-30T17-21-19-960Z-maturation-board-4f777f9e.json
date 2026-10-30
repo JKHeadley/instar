@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "maturation-board",
+  "sessionId": "abbd2c0b-8fe5-4204-a8e2-47f3e8dceba1",
+  "timestamp": "2026-10-30T17:21:19.960Z",
+  "artifactPath": "upgrades/side-effects/maturation-board.md",
+  "artifactSha256": "5a9d51fa47d39ad57f3a2034b13b5e50b65ddb72de4b3c9bb8b82cd3107eeb05",
+  "specPath": "docs/specs/maturation-board.md",
+  "coveredFiles": [
+    "src/server/maturationBoardRoutes.ts",
+    "tests/unit/growth-analyst-darkflag-r7.test.ts",
+    "upgrades/side-effects/maturation-board.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the maturation board: tags two non-silent catches, updates the wiring test; same published interface.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
