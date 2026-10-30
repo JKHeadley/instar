@@ -71,6 +71,12 @@ describe('authenticated script-result coverage', () => {
         byStatus: { unchecked: 2 }, coverageIncomplete: false });
       expect(ledger.findByRunId(missing)).toMatchObject({ reason: 'missing-record', status: 'unchecked' });
       expect(ledger.findByRunId(canary)).toBeNull();
+      ledger.holdSlug('health-check', 'certificate-revoked');
+      const held = await request(app).get('/jobs/triage').set('Authorization', 'Bearer secret');
+      expect(held.status).toBe(200);
+      expect(held.body.supervision.holds).toEqual([
+        expect.objectContaining({ slug: 'health-check', reason: 'certificate-revoked' }),
+      ]);
     } finally {
       ledger.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/job-supervision-routes.test.ts' });

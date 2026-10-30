@@ -353,6 +353,11 @@ export class JobSupervisionStore {
     return rows.map(r => ({ slug: r.slug, reason: r.reason, heldAt: r.held_at }));
   }
 
+  /** A hold written after startup must still close the next script admission. */
+  isSlugHeld(slug: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM held_slugs WHERE slug=?').get(slug);
+  }
+
   /** Pairing-registry observations persist across peer outages and restarts.
    * An absent peer stays expected until its membership is explicitly revoked. */
   observeMachineMembership(entries: Array<{ machineId: string; status: 'active' | 'pending' | 'revoked' }>, now = Date.now()): void {

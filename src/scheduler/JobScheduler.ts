@@ -885,7 +885,7 @@ export class JobScheduler {
       }
       job = this.projectAsAgentmd(job);
     }
-    const runsAsScript = isScriptRunner && job.execute.type === 'script';
+    let runsAsScript = isScriptRunner && job.execute.type === 'script';
 
     if (this.paused) {
       this.skipLedger.recordSkip(slug, 'paused');
@@ -1058,6 +1058,38 @@ export class JobScheduler {
     if (job.gate) {
       if (!await this.runGateAsync(job)) {
         this.scheduleRetry(slug, 'gate');
+        return 'skipped';
+      }
+    }
+
+    // The gate above can wait for seconds. A safety hold recorded during that
+    // wait must take effect on this fire, before the script claim or launch.
+    if (runsAsScript && !this.scriptRunnersActiveFor(slug)) {
+      if (slug === 'script-job-supervisor') {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — script supervision is inactive`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, gateReason: 'script-supervision-inactive' },
+        });
+        return 'skipped';
+      }
+      job = this.projectAsAgentmd(job);
+      runsAsScript = false;
+      // The earlier quota check was bypassed while this was a script. The
+      // restored full-session route must pay the ordinary quota check.
+      const gateResult = this.normalizeCanRunResult(this.canRunJob(job.priority));
+      if (!gateResult.allowed) {
+        const skipReason: SkipReason = gateResult.reason ?? 'quota';
+        this.skipLedger.recordSkip(slug, skipReason);
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — ${skipReason}`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, priority: job.priority, gateReason: skipReason, gateDetail: gateResult.detail },
+        });
+        this.scheduleRetry(slug, skipReason);
         return 'skipped';
       }
     }
@@ -1852,6 +1884,15 @@ export class JobScheduler {
     }
     if (!this.supervisionCensusHealthy) return false;
     if (this.supervisionBlockedSlugs.has(slug)) return false;
+    try {
+      if (this.getJobSupervisionStore().isSlugHeld(slug)) {
+        this.supervisionBlockedSlugs.add(slug);
+        return false;
+      }
+    } catch (error) {
+      this.supervisionWriteFailed(slug, error);
+      return false;
+    }
     if (!JOB_COST_AUDIT_READY.laterScriptJobs && !AUDIT_READY_SCRIPT_SLUGS.has(slug)
       && (SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS as readonly string[]).includes(slug)) return false;
     if (!JOB_COST_AUDIT_READY.dailySupervision && slug === 'script-job-supervisor') return false;
