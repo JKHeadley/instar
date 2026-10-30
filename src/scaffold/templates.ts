@@ -543,6 +543,8 @@ With \`intelligence.jevMemoryPicker\` on (spec: jev-memory-picker.md), each sess
 
 ${jevCorrectionShadowAwareness(port).trim()}
 
+${correctionMeaningGroupingAwareness(port).trim()}
+
 ### Jev Circles Shadow (log-only "going in circles" measurement)
 
 A dark research instrument (spec: jev-circles-shadow.md). Every 5 tool actions in a Claude Code session, the server reads the last 15 actions from that session's own transcript, secret-scrubs them, and asks Jev (TypeSafe) whether the agent is going in circles (the third try at the same fix for the same failure), polling, converging, or working normally. It only writes a content-free row to \`logs/jev-circles-shadow.jsonl\` (label, confidence, and whether a nudge WOULD have fired, with a 30-minute cooldown per session). It never sends anything to any session, user or topic. Summary: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jev-circles/summary\` (checks run, would-nudges, per-session counts). Live on a development agent, dark on the fleet (omitted \`enabled\`); \`intelligence.jevCirclesShadow.enabled: false\` is the kill switch, read live. It needs the vault \`typesafe_api_key\` and has a daily call cap. If the user asks "would a going-in-circles nudge fire too often?" — this is the measurement; read the summary.
@@ -2689,6 +2691,16 @@ export function jevMemoryPickerAwareness(): string {
 
 export function jevSignalLiveAwareness(): string {
   return '\n\n' + '### Jev Artefact Signals (live advisory input to the tone gate)\n\nBefore an outbound message is judged, the tone gate lists "artefact signals" (a raw path, a command, a config key, an endpoint, code to paste, an env var, a cron line or internal slug) for its judge. With `intelligence.jevSignalLive` on (spec: jev-signal-live.md), Jev (TypeSafe) is asked those questions first, within about a second: where Jev is confident its answer decides that signal; where it is unsure, or slow, down, or erroring, the hand-written detectors decide exactly as before. A detector match that Jev confidently rejects is still shown to the judge, marked as a disagreement. It is advisory only: it takes effect only where the tone gate\'s B1–B7 rules are overridable (the advisory migration, with decision-quality recording live), never adds a hard block, and leaves the credential wall and the degraded-mode floor untouched. Live on a development agent, dark on the fleet (omitted `enabled`); `"enabled": false` is the kill switch, read live. It needs the vault `typesafe_api_key`; the text is secret-scrubbed before it leaves the machine. Each message\'s row in `logs/jev-signal-shadow.jsonl` records which source (jev / detector-fallback) decided each signal. If the user asks "what decides whether my messages are too technical?" — the judge decides; this only improves what it is shown.' + '\n';
+}
+
+/** Heading of the correction meaning-grouping card; the migrator sniffs it. */
+export const CORRECTION_GROUPING_CARD_HEADING = '### Correction Meaning Grouping (reworded repeats of one preference count together)';
+
+/** Correction meaning-grouping awareness card (spec: correction-meaning-grouping.md) —
+ * rendered by generateClaudeMd and appended by PostUpdateMigrator.migrateClaudeMd
+ * for existing agents (Agent Awareness + Migration Parity). */
+export function correctionMeaningGroupingAwareness(port: number): string {
+  return '\n\n' + CORRECTION_GROUPING_CARD_HEADING + '\n\n' + 'Before its recurrence gate, the correction analyzer groups open records that say the same thing. It used to group only on shared words, so a preference the user repeated in new words each time never added up (on 2026-10-29 it formed zero groups from 131 records). Now, for each pair of same-kind records that share at least a few words, Jev (TypeSafe) is asked whether they state the same core rule; GPT-6 Luna (the Codex fast tier) decides the pairs Jev is unsure about. A group still needs every pair inside it to match (no A~B~C chains), and the gate is unchanged (4 occurrences, 2 days, 2 sessions). Each pair is asked once and cached in `.instar/state/correction-pair-verdicts.json`; calls are logged content-free to `logs/correction-meaning-grouping.jsonl`. See the current groups (cached verdicts only, no model calls, summaries only): `curl -H "Authorization: Bearer $AUTH" http://localhost:PORT/corrections/groups`. `POST /corrections/analyze` reports which grouping ran in its `grouping` field (`mode: meaning` or `words`). Live on a development agent, dark on the fleet (omitted `enabled`); `monitoring.correctionLearning.meaningGrouping.enabled: false` is the kill switch, read live. Without the vault `typesafe_api_key`, or if Jev is down, it falls back to word overlap. If the user asks "why hasn\'t my repeated correction become a preference?": read `/corrections/groups` and see how big its group is.'.replace('PORT', String(port)) + '\n';
 }
 
 /** Heading of the Jev correction card; the migrator sniffs and replaces the card under it. */

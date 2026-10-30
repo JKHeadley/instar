@@ -25,6 +25,7 @@
  */
 import { CorrectionLedger, type CorrectionRecord } from './CorrectionLedger.js';
 import { LEARNING_DETERMINISTIC_THRESHOLD } from './HumanAsDetectorLog.js';
+import type { GroupingReport, JevCorrectionGrouper, SameMeaning } from '../core/JevCorrectionGrouping.js';
 
 export interface CorrectionGates {
   minSupport: number;
@@ -80,7 +81,7 @@ export interface CorrectionAnalyzeResult {
   belowThreshold: number;
 }
 
-function learningTokenSet(learning: string): Set<string> {
+export function learningTokenSet(learning: string): Set<string> {
   const normalized = CorrectionLedger.normalizeLearning(learning);
   return new Set(normalized ? normalized.split(' ') : []);
 }
@@ -100,13 +101,16 @@ export function correctionLearningSimilarity(a: string, b: string): number {
 /**
  * Deterministic complete-link clustering over analyzer-time records. Records
  * are considered in stable creation order and may join a cluster only when
- * they meet the floor against EVERY existing member. This bounded-diameter
- * posture deliberately rejects A~B~C bridges when A!~C. Stored record identity
- * is never rewritten; dedupeKey remains exact.
+ * they have an edge to EVERY existing member. An edge is word overlap at the
+ * floor, OR (when supplied) a "same standing preference" meaning verdict from
+ * the JevCorrectionGrouper. This bounded-diameter posture deliberately rejects
+ * A~B~C bridges when A!~C, whichever source each edge came from. Stored record
+ * identity is never rewritten; dedupeKey remains exact.
  */
 export function clusterCorrectionRecords(
   records: readonly CorrectionRecord[],
   similarityThreshold = DEFAULT_CORRECTION_SIMILARITY_THRESHOLD,
+  sameMeaning: SameMeaning | null = null,
 ): CorrectionRecord[][] {
   const threshold = Math.max(0, Math.min(1, similarityThreshold));
   const clusters: CorrectionRecord[][] = [];
@@ -117,7 +121,8 @@ export function clusterCorrectionRecords(
     const compatible = clusters.find((cluster) =>
       cluster[0].kind === candidate.kind
       && cluster.every((member) =>
-        correctionLearningSimilarity(member.learning, candidate.learning) >= threshold));
+        correctionLearningSimilarity(member.learning, candidate.learning) >= threshold
+        || (sameMeaning !== null && sameMeaning(member, candidate))));
     if (compatible) {
       compatible.push(candidate);
     } else {
@@ -129,10 +134,50 @@ export function clusterCorrectionRecords(
 }
 
 export class CorrectionAnalyzer {
+  /** Meaning edges from the last refreshMeaningGrouping(); null = word overlap only. */
+  private sameMeaning: SameMeaning | null = null;
+
   constructor(
     private readonly ledger: CorrectionLedger,
     private readonly gates: CorrectionGates = DEFAULT_CORRECTION_GATES,
+    private readonly grouper: JevCorrectionGrouper | null = null,
   ) {}
+
+  private openRecords(): CorrectionRecord[] {
+    const sinceMs = this.gates.windowDays && this.gates.windowDays > 0
+      ? Date.now() - this.gates.windowDays * 86400_000
+      : undefined;
+    return this.ledger
+      .list({ sinceMs, status: 'open', limit: 1000 })
+      .filter((r) => r.kind !== 'noise');
+  }
+
+  /**
+   * Ask the grouper about every candidate pair of the current open records
+   * (cached verdicts are reused) and use its "same preference" edges in the
+   * next analyze(). Without a grouper, or when it is off/unavailable, analyze()
+   * keeps the word-overlap rule alone. Never throws.
+   */
+  async refreshMeaningGrouping(): Promise<GroupingReport | null> {
+    if (!this.grouper) return null;
+    const prepared = await this.grouper.prepare(this.openRecords(), learningTokenSet);
+    this.sameMeaning = prepared.sameMeaning;
+    return prepared.report;
+  }
+
+  /** Use only already-cached meaning verdicts (no calls). For read surfaces. */
+  useCachedMeaningGrouping(): void {
+    this.sameMeaning = this.grouper ? this.grouper.cachedLookup() : null;
+  }
+
+  /** The current same-kind groups of open records, largest first. Pure read. */
+  groups(): CorrectionRecord[][] {
+    return clusterCorrectionRecords(
+      this.openRecords(),
+      this.gates.similarityThreshold ?? DEFAULT_CORRECTION_SIMILARITY_THRESHOLD,
+      this.sameMeaning,
+    ).sort((a, b) => b.length - a.length);
+  }
 
   /**
    * Evaluate the recurrence gate against same-kind clusters of `open` records.
@@ -141,17 +186,13 @@ export class CorrectionAnalyzer {
    * `noise`-kind records are never gate-considered.
    */
   analyze(): CorrectionAnalyzeResult {
-    const sinceMs = this.gates.windowDays && this.gates.windowDays > 0
-      ? Date.now() - this.gates.windowDays * 86400_000
-      : undefined;
     const threshold = this.gates.deterministicThreshold ?? LEARNING_DETERMINISTIC_THRESHOLD;
 
-    const records = this.ledger
-      .list({ sinceMs, status: 'open', limit: 1000 })
-      .filter((r) => r.kind !== 'noise');
+    const records = this.openRecords();
     const clusters = clusterCorrectionRecords(
       records,
       this.gates.similarityThreshold ?? DEFAULT_CORRECTION_SIMILARITY_THRESHOLD,
+      this.sameMeaning,
     );
 
     const verdicts: GateVerdict[] = [];

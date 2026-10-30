@@ -15905,6 +15905,33 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // Correction meaning grouping (docs/specs/correction-meaning-grouping.md):
+    // the analyzer's "same standing preference?" pair judge. Dev-gated, read
+    // live per analyzer run, inert without the vault typesafe_api_key; its own
+    // Codex referee (own breaker) decides Jev's unsure pairs.
+    try {
+      const { buildJevCorrectionGrouper, installJevCorrectionGrouper } = await import('../core/JevCorrectionGrouping.js');
+      const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+      const { SecretStore } = await import('../core/SecretStore.js');
+      let groupingReferee: import('../core/types.js').IntelligenceProvider | null = null;
+      try {
+        const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+        const { buildIntelligenceProvider: buildGroupingRefereeProvider } = await import('../core/intelligenceProviderFactory.js');
+        groupingReferee = buildGroupingRefereeProvider({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+      } catch { /* @silent-fallback-ok — no Codex CLI means no referee; unsure pairs stay ungrouped */ }
+      installJevCorrectionGrouper(buildJevCorrectionGrouper({
+        readLiveConfig: () => liveConfig.get<import('../core/JevCorrectionGrouping.js').MeaningGroupingConfig | undefined>('monitoring.correctionLearning.meaningGrouping', undefined),
+        developmentAgent: config.developmentAgent === true,
+        readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+        stateDir: config.stateDir,
+        referee: groupingReferee,
+        metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+      }));
+      console.log(pc.dim(`  Correction meaning grouping: constructed (referee ${groupingReferee ? 'Codex fast tier' : 'unavailable'})`));
+    } catch (err) {
+      console.log(pc.yellow(`  Correction meaning grouping: not constructed (${(err as Error)?.message ?? 'unknown'})`));
+    }
+
     let presenceProxy: import('../monitoring/PresenceProxy.js').PresenceProxy | undefined;
     // The unanswered-message watcher (and everything wired alongside it) used to
     // require a Telegram adapter to exist. Its Slack support is written and sits

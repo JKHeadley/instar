@@ -64,6 +64,8 @@ import {
   JEV_CORRECTION_CARD_V1_MARKER,
   jevCirclesShadowAwareness,
   jevCorrectionShadowAwareness,
+  correctionMeaningGroupingAwareness,
+  CORRECTION_GROUPING_CARD_HEADING,
   jevJobCompletionAuditAwareness,
   jevMemoryPickerAwareness,
   machineLoadAssessmentAwareness,
@@ -7526,6 +7528,12 @@ setTimeout(() => process.exit(0), 2000);
         patched = true;
         result.upgraded.push('CLAUDE.md: updated Jev correction card for the live sentinel feed');
       }
+    }
+
+    if (!content.includes(CORRECTION_GROUPING_CARD_HEADING)) {
+      content += correctionMeaningGroupingAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added correction meaning-grouping awareness card');
     }
 
     if (!content.includes('### Jev Circles Shadow')) {
