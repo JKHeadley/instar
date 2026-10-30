@@ -3852,6 +3852,15 @@ export interface InstarConfig {
    * price) is ever config — those live in a dedicated PIN-only store (Increment B),
    * NEVER a Bearer-`PATCH`able config key (S-F2).
    */
+  /**
+   * Maturation board (docs/specs/maturation-board.md): a read-only, advisory page of every
+   * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
+   */
+  maturationBoard?: {
+    enabled?: boolean;
+    /** Review files directory, relative to the project dir. Default docs/research/feature-maturation/reviews. */
+    reviewsDir?: string;
+  };
   routingSpend?: {
     /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
     enabled?: boolean;

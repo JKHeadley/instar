@@ -174,6 +174,7 @@ import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
+import { createMaturationBoardRoutes } from './maturationBoardRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
@@ -311,6 +312,28 @@ export function readMentorConfigFromDisk(
   } catch {
     return fallback;
   }
+}
+
+/** Select a live task for a W32 receipt or recovery, without inventing checklist work. */
+export function selectWindowWorkTask(content: string, runId: string, used: ReadonlySet<string>): string | null {
+  if (!content.startsWith('---\n')) throw new Error('window-run-liveness-task-ledger-frontmatter-missing');
+  const frontmatterEnd = content.indexOf('\n---', 4);
+  if (frontmatterEnd < 0) throw new Error('window-run-liveness-task-ledger-frontmatter-unclosed');
+  const frontmatter = content.slice(0, frontmatterEnd);
+  const runMatch = frontmatter.match(/^run_id:\s*["']?([^"'\s]+)["']?\s*$/m);
+  if (!runMatch || runMatch[1] !== runId) throw new Error('window-run-liveness-task-ledger-run-mismatch');
+  const tasks = parseContinuationTasks(content.slice(frontmatterEnd + 4));
+  let firstOpen: string | null = null;
+  for (let index = 0; index < tasks.length; index++) {
+    if (!tasks[index].open) continue;
+    const taskRef = `autonomous:${runId}:${index + 1}`;
+    firstOpen ??= taskRef;
+    if (!used.has(taskRef)) return taskRef;
+  }
+  // A long task may advance in several cadence intervals. Work receipts may
+  // reuse its task ref only after every open task has already received one;
+  // the authority still requires the artifact content to change each time.
+  return firstOpen;
 }
 
 /**
@@ -575,6 +598,8 @@ export class AgentServer {
    */
   private selfUnblockChecklist: SelfUnblockChecklist | null = null;
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
+  /** The analyst's dark-flag registry, hoisted for the read-only maturation board (null when the analyst is off). */
+  private darkFlagRegistry: DarkFlagMaturationRegistry | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
   /** Dashboard Live-LLM-Insights engine (docs/specs/dashboard-live-insights.md).
    *  Null when the feature is dark (dashboard.liveInsights.enabled resolves false
@@ -3704,14 +3729,16 @@ export class AgentServer {
               ),
             }).guards;
           },
-          darkFlagRegistry: new DarkFlagMaturationRegistry({
+          // Hoisted (maturation-board spec §6) so the read-only board route can
+          // load() the same instance; the analyst still owns every write.
+          darkFlagRegistry: (this.darkFlagRegistry = new DarkFlagMaturationRegistry({
             stateDir: options.config.stateDir,
             // Machine-local BY DESIGN: a guard's effective state is a fact about
             // the machine it runs on, so this registry grades THIS machine only.
             machineId: options.meshSelfId ?? 'single-machine',
             onError: (where, err) =>
               console.warn(`[DarkFlagMaturationRegistry] ${where}:`, err),
-          }),
+          })),
           // Owner derivation from a REAL code source only. A dev-gated feature
           // runs live on this agent under the dev gate, so the agent owns
           // graduating or killing it. Everything else stays un-owned, which is
@@ -4286,23 +4313,10 @@ export class AgentServer {
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
-      if (!content.startsWith('---\n')) throw new Error('window-run-liveness-task-ledger-frontmatter-missing');
-      const frontmatterEnd = content.indexOf('\n---', 4);
-      if (frontmatterEnd < 0) throw new Error('window-run-liveness-task-ledger-frontmatter-unclosed');
-      const frontmatter = content.slice(0, frontmatterEnd);
-      const runMatch = frontmatter.match(/^run_id:\s*["']?([^"'\s]+)["']?\s*$/m);
-      if (!runMatch || runMatch[1] !== state.autonomousRunId) throw new Error('window-run-liveness-task-ledger-run-mismatch');
-      const body = content.slice(frontmatterEnd + 4);
       const used = new Set(state.audit.entries
         .filter(entry => entry.kind === 'work-receipt' && entry.workReceipt)
         .map(entry => entry.workReceipt!.taskRef));
-      const tasks = parseContinuationTasks(body);
-      for (let index = 0; index < tasks.length; index++) {
-        if (!tasks[index].open) continue;
-        const taskRef = `autonomous:${state.autonomousRunId}:${index + 1}`;
-        if (!used.has(taskRef)) return taskRef;
-      }
-      return null;
+      return selectWindowWorkTask(content, state.autonomousRunId, used);
     };
     const windowRunLivenessAuthority = options.windowRunLivenessAuthority ?? (() => {
       const raw = options.config.monitoring?.windowRunLiveness;
@@ -5343,6 +5357,8 @@ export class AgentServer {
       this.windowRunLivenessTimer.unref?.();
     }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
+    // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
+    this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry }));
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });

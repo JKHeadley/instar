@@ -851,6 +851,11 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
     justification: 'Observe-only and machine-local: records already-persisted commitment lifecycle events into a bounded SQLite ledger; no LLM spend, outbound messages, autonomous action, scalar score, or gating authority. Routes are reads and pool scope only proxies bounded per-origin results.',
+  },  {
+    name: 'maturationBoard',
+    configPath: 'maturationBoard.enabled',
+    description: 'Read-only maturation board: every maturing feature with its review verdict, live owner facts, follow-ups and recorded dates (GET /maturation/board, /dashboard/maturation/).',
+    justification: 'Read-only and advisory (authority none): joins review files and existing owners at request time; stores nothing, writes nothing, no LLM spend, no outbound messages, no gating. Pool scope only proxies bounded per-machine projections.',
   },
 ];
 

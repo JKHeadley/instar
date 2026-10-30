@@ -19,6 +19,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { installBuiltinJobs } from '../../src/scheduler/InstallBuiltinJobs.js';
@@ -148,7 +149,9 @@ describe('feedback-factory-process job script — honest outcomes against a drai
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as { port: number }).port;
-    const failureFile = path.join(workspace, `failure-${port}.txt`);
+    // Ephemeral ports can be reused across cases; a prior failure must not
+    // make a later successful run look failed.
+    const failureFile = path.join(workspace, `failure-${randomUUID()}.txt`);
     try {
       const stdout = await new Promise<string>((resolve, reject) => {
         const child = spawn('python3', ['-'], {

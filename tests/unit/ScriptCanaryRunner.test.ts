@@ -193,6 +193,27 @@ describe('ScriptCanaryRunner', () => {
     expect(h.calls.every(c => c.extraArgs!.includes('--prober'))).toBe(true);
   });
 
+  it('doorway-scan has a must-fail canary for a healthy-looking run that wrote no state file', async () => {
+    const seen: Call[] = [];
+    const h = harness({ jobs: [{ slug: 'doorway-scan', runner: 'script' }], behaviour: async (c) => {
+      seen.push(c);
+      const stateDir = c.env?.INSTAR_STATE_DIR;
+      if (!stateDir) return parseScriptOutput('JOB_RESULT failed prober-exit-1', 1, {});
+      expect(fs.existsSync(stateDir)).toBe(false);
+      const p = c.extraArgs![c.extraArgs!.indexOf('--prober') + 1];
+      expect(execFileSync(process.execPath, [p], { encoding: 'utf-8' })).toMatch(/^doorway-scan: scope=/);
+      return parseScriptOutput('JOB_RESULT failed scan-state-missing', 1, {});
+    } });
+    const report = await new ScriptCanaryRunner(h.deps).tick();
+    expect(report?.failingSlugs).toEqual([]);
+    expect(seen.filter(c => c.env?.INSTAR_STATE_DIR)).toHaveLength(1);
+
+    // A script that fails for any other reason does not satisfy this canary.
+    const wrong = harness({ jobs: [{ slug: 'doorway-scan', runner: 'script' }], behaviour: async () => parseScriptOutput('JOB_RESULT failed something-else', 1, {}) });
+    const bad = await new ScriptCanaryRunner(wrong.deps).tick();
+    expect(bad?.failingSlugs).toEqual(['doorway-scan']);
+  });
+
   it('health-check drives the episode harness and the floor, both sides', async () => {
     const floorCalls: Array<{ consecutiveFailures: number; mode: string }> = [];
     const episodeRuns: string[] = [];
