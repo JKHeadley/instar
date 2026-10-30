@@ -1,6 +1,6 @@
 # Keep generated check output out of feedback change sets
 
-## What changed
+## What Changed
 
 The feedback executor now excludes six exact untracked files created by this repository's build, lint, and safe-operation checks when it compares a sandboxed builder's workspace with the trusted publish clone. A file already present in the clone remains a real change. Symlinks and unrelated files remain subject to the existing gates.
 
