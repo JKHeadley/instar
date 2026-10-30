@@ -86,3 +86,20 @@ or persistent state and is machine-local by design because each verifier
 cleans only its own disposable checkout. Reverting the two wrapper arguments
 and test cleanup restores the prior behavior without migration. Astra's
 second pass concurs with this corrected review and found no P1/P2 issue.
+
+The subsequent full unit rerun exposed two test-harness flakes unrelated to
+desktop behavior. The console pagination fixture computed its oldest timestamp
+twice, allowing a millisecond mismatch; it now reuses the actual last item.
+The package completeness test invoked npm lifecycle scripts while only
+inspecting the packed file list and tarball mode; it now uses `--ignore-scripts`
+for those two pack calls. These changes affect test execution only. They add
+no runtime gate, state, external notice, or deployment behavior, and can be
+reverted independently. The focused retest passed 31/31; the full unit rerun
+remains a required release gate.
+
+A further full run found npm listing a temporary native test helper just as
+that helper's test removed it. The package test now retries only this exact
+transient `ENOENT` case, at most three times; other packaging errors still
+fail immediately. The focused packaging test passes 7/7 after this change;
+the full suite must pass before release. Astra's final second pass concurs
+that a persistent or unrelated packaging error remains a failure.

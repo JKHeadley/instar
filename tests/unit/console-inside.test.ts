@@ -289,7 +289,7 @@ describe('how I’m doing inside, in a DOM', () => {
     const rel = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
     const c = { ...commitment({ t: rel(2), commitment: { mechanism: { type: 'scheduled-job', refResolvedAt: rel(3), refStatus: 'valid' }, status: 'open', deadline: rel(-4) } }) };
     const page1 = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, category: 'config-parse', summary: `Bad setting ${i}`, status: i === 0 ? 'open' : 'resolved', detectedAt: rel(i + 1), occurrenceCount: 1, attribution: 'automatic', detail: { redacted: '' } }));
-    const oldest = rel(10);
+    const oldest = page1[9].detectedAt;
     const sid = '11111111-1111-4111-8111-111111111111';
     const table: Record<string, { status?: number; body: unknown }> = {
       '/sessions': { body: { sessions: [] } },
