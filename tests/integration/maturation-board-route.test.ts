@@ -165,6 +165,34 @@ describe('GET /maturation/board', () => {
   });
 });
 
+describe('peer absence vs missing data', () => {
+  it('a peer that answers board-off or unsupported is not reported as possibly superseding the review', async () => {
+    const fx = makeFixture();
+    const servers: http.Server[] = [];
+    try {
+      fs.writeFileSync(path.join(fx.reviewsDir, `${today()}.json`), review(today(), [{ id: 'a', verdict: 'live', commitments: [] }]));
+      const off = express().get('/maturation/board', (_req, res) => { res.status(503).json({ error: 'off' }); });
+      const old = express(); // no route at all → 404
+      for (const app of [off, old]) {
+        const s = http.createServer(app); servers.push(s);
+        await new Promise<void>(r => s.listen(0, '127.0.0.1', () => r()));
+      }
+      const port = (i: number) => (servers[i].address() as { port: number }).port;
+      const res = await request(appFor(ctxFor(fx, { resolvePeerUrls: () => [
+        { machineId: 'm_off', url: `http://127.0.0.1:${port(0)}`, kind: 'lan' },
+        { machineId: 'm_old', url: `http://127.0.0.1:${port(1)}`, kind: 'lan' },
+      ] }))).get('/maturation/board?scope=pool');
+      expect(res.status).toBe(200);
+      expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'peer', machine: 'm_off', reason: 'board-off' }));
+      expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'peer', machine: 'm_old', reason: 'unsupported' }));
+      expect(res.body.sources.some((s: { name: string }) => s.name === 'may-be-superseded')).toBe(false);
+    } finally {
+      for (const s of servers) s.close();
+      rm(fx.root);
+    }
+  });
+});
+
 describe('reviews directory containment', () => {
   it('refuses a directory outside the project, under .instar, or a symlink escape', () => {
     const fx = makeFixture();

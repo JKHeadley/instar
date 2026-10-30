@@ -529,7 +529,12 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
       for (let i = 0; i < peers.length; i += 4) {
         await Promise.all(peers.slice(i, i + 4).map(async p => {
           const machine = nicknameOf(ctx, p.machineId);
-          const fail = (reason: string) => { sources.push({ name: 'peer', machine, ok: false, reason }); missing.push(machine); };
+          // A peer that answered "board off" (503) or "not supported" (404) is a confirmed absence,
+          // not missing data; only a peer we could not hear from makes the board possibly out of date.
+          const fail = (reason: string) => {
+            sources.push({ name: 'peer', machine, ok: false, reason });
+            if (reason !== 'board-off' && reason !== 'unsupported') missing.push(machine);
+          };
           if (Date.now() - started > FAN_OUT_DEADLINE_MS) return fail('deadline');
           if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) return fail('omitted-cap');
           try {
