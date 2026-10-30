@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-30T15:35:07.261Z",
+  "slug": "pre-push-fixture-stale-main-refs",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 40,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/pre-push-fixture-guard.mjs"
+    ],
+    "addedLines": 21,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

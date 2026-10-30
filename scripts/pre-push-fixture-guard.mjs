@@ -18,7 +18,8 @@
  * the remote because this hook refuses to push it.
  *
  * Behavior:
- *   - Scans commits on HEAD that aren't yet on origin/main.
+ *   - Scans commits on HEAD that aren't on the tracked branch or either
+ *     available remote main ref.
  *   - Fails the push if any of them match the fixture-pollution signature
  *     (author email test@instar.local / t@t.com / t@e.com, or commit
  *     messages "Initial commit" / "seed" / "Worktree commit <N>").
@@ -52,34 +53,35 @@ function git(args) {
   return execFileSync('git', args, { encoding: 'utf-8', env, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-let baseRef;
+const baseRefs = [];
 try {
-  // Prefer upstream tracking branch if one is configured.
-  baseRef = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).trim();
-} catch {
-  // No upstream — fall back to whichever remote main we can resolve.
-  for (const candidate of ['upstream/main', 'origin/main']) {
-    try {
-      git(['rev-parse', '--verify', '--quiet', candidate]);
-      baseRef = candidate;
-      break;
-    } catch { /* try next */ }
-  }
+  // The tracked branch may be the push target for an existing branch.
+  baseRefs.push(git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).trim());
+} catch { /* no tracking branch */ }
+
+// Include every available main ref. Choosing the first one can make a stale
+// upstream/main classify commits already on origin/main as new pollution.
+for (const candidate of ['upstream/main', 'origin/main']) {
+  try {
+    git(['rev-parse', '--verify', '--quiet', candidate]);
+    if (!baseRefs.includes(candidate)) baseRefs.push(candidate);
+  } catch { /* ref is unavailable */ }
 }
 
-if (!baseRef) {
+if (baseRefs.length === 0) {
   // No remote main to compare against — likely a fresh repo. Skip silently.
   process.exit(0);
 }
 
-// `<base>..HEAD` lists commits on HEAD that aren't on base. NUL-separated
+// `HEAD --not <refs>` lists commits on HEAD that aren't on any known base.
+// This also handles remote main refs that have diverged. NUL-separated
 // records of "<sha>\t<author_email>\t<author_name>\t<subject>" — using \0
 // between records lets us survive commit messages that contain newlines.
 let log;
 try {
   log = git([
     'log',
-    `${baseRef}..HEAD`,
+    'HEAD', '--not', ...baseRefs,
     '--pretty=format:%H%x09%ae%x09%an%x09%s%x00',
   ]);
 } catch (err) {
@@ -143,9 +145,9 @@ for (const v of violations) {
 }
 lines.push('');
 lines.push('How to recover:');
-lines.push(`  1. Inspect the commits:  git log ${baseRef}..HEAD`);
-lines.push(`  2. Drop them:            git reset --hard <last good sha>`);
-lines.push('  3. Force-push the cleaned branch.');
+lines.push('  1. Fetch main from your configured remotes, then retry the push.');
+lines.push(`  2. Inspect remaining commits:  git log HEAD --not ${baseRefs.join(' ')}`);
+lines.push('  3. If these are fixture commits, remove them from the branch.');
 lines.push('');
 lines.push('If this is intentional (e.g. a test-only branch you do not plan');
 lines.push('to merge), bypass with INSTAR_PRE_PUSH_FIXTURE_GUARD_SKIP=1.');

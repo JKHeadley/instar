@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "pre-push-fixture-stale-main-refs",
+  "sessionId": "3eb9636b-4689-4a26-adb7-230be178d0bc",
+  "timestamp": "2026-10-30T15:35:27.879Z",
+  "artifactPath": "upgrades/side-effects/pre-push-fixture-stale-main-refs.md",
+  "artifactSha256": "ed1f3837a77d4264d54d1355c1439a3688b837ed11e4599fa7d6cfa237fa54bd",
+  "coveredFiles": [
+    "scripts/pre-push-fixture-guard.mjs",
+    "tests/unit/scripts/pre-push-fixture-guard.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small correction to a local pre-push guard with focused regression tests and documented ref-staleness limits.",
+  "eli16Path": "docs/specs/pre-push-fixture-stale-main-refs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pre-push-fixture-stale-main-refs.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
