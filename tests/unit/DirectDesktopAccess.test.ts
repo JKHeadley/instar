@@ -19,6 +19,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   let now = 1_800_000_000_000;
   let binding = true;
   let sessionValid = true;
+  let sessionBrowserKey: string | null = null;
   let challenge = '';
   let cancelled = 0;
   let heldButton: string | null = null;
@@ -61,7 +62,8 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
     sign: (payload: Buffer) => crypto.sign(null, payload, targetKey.privateKey) };
   const authority = new DirectDesktopAccess('machine-1', 'Echo Mac', host, locks, targetIdentity,
     (topic, uid) => binding && topic === 131439 && uid === '7812716706',
-    token => sessionValid && token === 'dashboard-proof',
+    (token, browserPublicKey) => sessionValid && token === 'dashboard-proof'
+      && (sessionBrowserKey === null || sessionBrowserKey === browserPublicKey),
     async (_topic, text) => { challenge = text; },
     id => { closed.push(id); }, () => now, undefined, mode);
   const browser = crypto.generateKeyPairSync('ed25519');
@@ -76,6 +78,7 @@ function fixture(mode: 'telegram' | 'pin' = 'telegram') {
   return { authority, begin, code, browser, browserEcdh, browserPublicKey, host, closed, failures,
     setNow: (value: number) => { now = value; }, setBinding: (value: boolean) => { binding = value; },
     setSessionValid: (value: boolean) => { sessionValid = value; },
+    bindSessionBrowserKey: (value: string) => { sessionBrowserKey = value; },
     setFrame: (value: Buffer) => { image = value; },
     cancelled: () => cancelled, heldButton: () => heldButton, heldKeys: () => [...heldKeys], indicatorStops: () => indicatorStops,
     probes: () => probes,
@@ -232,6 +235,17 @@ describe('DirectDesktopAccess', () => {
     f.setSessionValid(false);
     await expect(stream.assertActive()).rejects.toThrow('grant');
     expect(f.closed).toEqual([stream.grantId]);
+  });
+  it('rejects a PIN session bound to a different browser key before granting access', async () => {
+    const f = fixture('pin');
+    const other = crypto.generateKeyPairSync('ed25519');
+    f.bindSessionBrowserKey(other.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'));
+    await expect(f.begin()).rejects.toThrow('recent dashboard PIN session required');
+    f.bindSessionBrowserKey(f.browserPublicKey);
+    const { requestId } = await f.begin();
+    expect(f.authority.status(requestId, 'dashboard-proof').status).toBe('approved');
+    f.bindSessionBrowserKey(other.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'));
+    expect(() => f.authority.status(requestId, 'dashboard-proof')).toThrow('dashboard operator session unavailable');
   });
   it('resumes only a transport loss under the original deadline and stable revocation identity', async () => {
     const f = fixture('pin');

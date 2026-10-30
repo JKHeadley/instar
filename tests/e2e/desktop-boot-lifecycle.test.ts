@@ -14,7 +14,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
 
-async function boot(enabled: boolean) {
+async function boot(enabled: boolean, frontConfigured = true) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-boot-'));
   const stateDir = path.join(dir, '.instar');
   fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
@@ -26,7 +26,7 @@ async function boot(enabled: boolean) {
   const config = {
     projectName: 'desktop-boot', projectDir: dir, stateDir, port: 0,
     authToken: 'desktop-e2e-token', dashboardPin: '123456', developmentAgent: true,
-    remoteDesktop: { enabled },
+    remoteDesktop: { enabled, ...(enabled && frontConfigured ? { frontMachineId: machineId } : {}) },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30,
       protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
@@ -55,6 +55,21 @@ describe('native desktop production boot', () => {
     }
   });
 
+  it('stays dark when enabled without a designated front machine', async () => {
+    const { server, dir } = await boot(true, false);
+    try {
+      const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
+      expect(unlock.status).toBe(200);
+      const listed = await request(server.getApp()).get('/desktop/targets')
+        .set('Authorization', 'Bearer desktop-e2e-token')
+        .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
+      expect(listed.status).toBe(503);
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop missing front cleanup' });
+    }
+  });
+
   it.skipIf(process.platform !== 'darwin')('wires a live Mac target into the production route', async () => {
     const { server, dir, machineId, config } = await boot(true);
     try {
@@ -65,11 +80,12 @@ describe('native desktop production boot', () => {
         .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
       expect(listed.status).toBe(200);
       expect(listed.body.machines).toEqual([{ machineId, label: 'Echo Mac', ready: expect.any(Boolean),
+        targetSigningPublicKey: expect.any(String),
         ...(listed.body.machines[0]?.ready ? {} : { unavailableReason: expect.any(String) }) }]);
       expect(listed.body.topics).toEqual([]);
       const viewer = await request(server.getApp()).get('/dashboard/desktop.html');
       expect(viewer.status).toBe(200);
-      expect(viewer.text).toContain('Remote desktop: Echo Mac');
+      expect(viewer.text).toContain('<h1>Remote desktop</h1>');
       expect(viewer.text).toContain('signed in and unlocked');
       expect(viewer.text).toContain('id="retryButton"');
       expect(viewer.text).toContain('id="dragButton"');

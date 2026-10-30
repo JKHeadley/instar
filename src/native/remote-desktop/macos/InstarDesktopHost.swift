@@ -7,6 +7,7 @@ import CoreGraphics
 import CoreImage
 import CoreMedia
 import CoreVideo
+import Darwin
 import Foundation
 import ScreenCaptureKit
 import VideoToolbox
@@ -205,6 +206,13 @@ struct InstarDesktopHost {
             print("{\"screenPermission\":\(screen),\"inputPermission\":\(input),\"displayCount\":\(displays),\"sessionActive\":\(session)}")
         case "indicator":
             guard activeSession() else { exit(69) }
+            // The indicator owns the physical host's controller lock for its
+            // whole lifetime. A second Instar process under this user cannot
+            // start another grant on the same Mac.
+            let lockPath = "/tmp/instar-desktop-\(geteuid()).lock"
+            let lockFd = open(lockPath, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+            guard lockFd >= 0, flock(lockFd, LOCK_EX | LOCK_NB) == 0 else { exit(73) }
+            defer { close(lockFd) }
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

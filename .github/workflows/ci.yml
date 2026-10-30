@@ -56,6 +56,30 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  desktop-windows-package:
+    name: Desktop Windows package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/build-native-desktop-host.mjs
+      - name: Compile interactive Windows companion with the installer toolchain
+        shell: powershell
+        run: |
+          Add-Type -Path 'dist/native/windows/InstarDesktopCompanion.cs' `
+            -ReferencedAssemblies @('System.Drawing', 'System.Windows.Forms', 'System.Web.Extensions') `
+            -OutputAssembly "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" `
+            -OutputType ConsoleApplication -ErrorAction Stop
+          if (-not (Test-Path "$env:RUNNER_TEMP\InstarDesktopCompanion.exe")) {
+            throw 'Windows desktop companion did not compile'
+          }
+          & "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Windows companion lease self-test failed: $LASTEXITCODE" }
+      - name: Check npm package contents
+        run: node -e "const p=JSON.parse(require('child_process').execFileSync('npm',['pack','--dry-run','--json','--ignore-scripts'],{encoding:'utf8'}))[0]; for(const f of ['dist/native/windows/InstarDesktopCompanion.cs','scripts/install-windows-desktop-companion.mjs','scripts/install-windows-desktop-companion.ps1']) if(!p.files.some(x=>x.path===f)) throw Error('Missing '+f)"
+
   desktop-macos-package:
     name: Desktop Mac package
     runs-on: macos-latest

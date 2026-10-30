@@ -1491,7 +1491,7 @@ export interface RouteContext {
   /** The audit log behind that surface — flushed before the restart supervisor handoff (§4/§7). */
   moneyLayerAudit?: import('../core/MoneyLayerAuditLog.js').MoneyLayerAuditLog | null;
   /** Initiate the server's existing SUPERVISED restart (the auto-updater's path, under launchd keepalive). No new restart machinery. */
-  requestSupervisedRestart?: (reason: string) => Promise<boolean> | boolean;
+  requestSupervisedRestart?: (reason: string, requestedBy?: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
@@ -1655,6 +1655,9 @@ export interface RouteContext {
    *  blocks a message; the true-blocker settle routes through the B17 authority. */
   blockerLedger?: import('../monitoring/BlockerLedger.js').BlockerLedger | null;
   directDesktopAccess?: import('../core/DirectDesktopAccess.js').DirectDesktopAccess | null;
+  desktopMeshBroker?: import('./DesktopMeshBroker.js').DesktopMeshBroker | null;
+  desktopTargetSigningKey?: (machineId: string) => string | null;
+  desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
   /** Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5/§7).
    *  Null/absent when monitoring.blockerLedger.selfUnblockChecklist.enabled is false
    *  (default, ships dark) → GET /blockers/self-unblock-runs 503s (after auth). The
@@ -2232,6 +2235,9 @@ export const PATCHABLE_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'evolution', 'threadline', 'publishing', 'tunnel', 'gitBackup',
   'externalOperations', 'responseReview', 'inputGuard', 'monitoring',
   'updates', 'sessions', 'jobs',
+  // Opt-in only opens the target adapter at the next boot. A dashboard PIN,
+  // target-bound assertion, and target-local grant still gate every stream.
+  'remoteDesktop',
   // `dispatches` and `feedback` each have a FeatureDefinition whose enableAction
   // patches that key; without them here those toggles 400 (the switch points at
   // a key the API refuses to change). Both are real config keys (types.ts:
@@ -12986,6 +12992,23 @@ export function createRoutes(ctx: RouteContext): Router {
     const target = ctx.directDesktopAccess.targetInfo();
     res.json({ ...target, ...await desktopReadiness() });
   });
+  // Config activation is an agent maintenance action. The normal Bearer
+  // middleware protects this route; the dashboard PIN never exposes it.
+  router.post('/desktop/activate-config', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!desktopIntent(req, res)) return;
+    if (ctx.config.remoteDesktop?.enabled !== true || !ctx.config.remoteDesktop.frontMachineId) {
+      res.status(409).json({ error: 'Remote desktop is not configured on this machine' }); return;
+    }
+    try {
+      const started = await ctx.requestSupervisedRestart?.(
+        'remote desktop configuration activation', 'remote-desktop-config');
+      if (!started) { res.status(503).json({ error: 'Supervised restart is unavailable' }); return; }
+      res.status(202).json({ restartRequested: true });
+    } catch {
+      res.status(503).json({ error: 'Supervised restart is unavailable' });
+    }
+  });
   router.get('/desktop/targets', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
@@ -12994,13 +13017,32 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     const target = ctx.directDesktopAccess.targetInfo();
+    const machines = [{ ...target, ...await desktopReadiness() }];
+    const knownPeers = (ctx.listPoolMachines?.() ?? [])
+      .filter(peer => peer.machineId !== target.machineId && /^m_[a-f0-9]{32}$/.test(peer.machineId))
+      .slice(0, 7);
+    const peerMachines = await Promise.all(knownPeers.map(async peer => {
+      try {
+        if (!ctx.desktopMeshBroker || !ctx.desktopProbePeer) throw new Error('desktop-peer-unavailable');
+        return await ctx.desktopProbePeer(peer.machineId);
+      } catch {
+        return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
+          unavailableReason: 'Remote desktop is not ready on this machine.' };
+      }
+    }));
     const topics = Object.entries(ctx.topicOperatorStore?.all() ?? {})
       .filter(([id, binding]) => /^\d+$/.test(id) && binding.platform === 'telegram')
       .map(([id]) => {
         const name = ctx.telegram?.getTopicName(Number(id))?.trim();
         return { topicId: Number(id), label: name || `Telegram topic ${id}` };
       });
-    res.json({ machines: [{ ...target, ...await desktopReadiness() }], topics });
+    const trustedMachines = [...machines, ...peerMachines].map(machine => {
+      const key = ctx.desktopTargetSigningKey?.(machine.machineId);
+      return key ? { ...machine, targetSigningPublicKey: key }
+        : { ...machine, ready: false, unavailableReason: 'This machine’s identity is not verified.',
+          targetSigningPublicKey: null };
+    });
+    res.json({ machines: trustedMachines, topics });
   });
   router.post('/desktop/requests', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -13018,6 +13060,16 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(403).json({ error: 'Verified Telegram operator required' }); return;
     }
     try {
+      if (req.body?.machineId !== ctx.directDesktopAccess.targetInfo().machineId) {
+        if (!ctx.desktopMeshBroker) { res.status(503).json({ error: 'Remote desktop mesh is unavailable' }); return; }
+        const result = await ctx.desktopMeshBroker.begin(session, {
+          machineId: req.body?.machineId, browserPublicKey: req.body?.browserPublicKey,
+          browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
+          browserNonce: req.body?.browserNonce, videoCodec: req.body?.videoCodec,
+        });
+        res.status(201).json(result);
+        return;
+      }
       const result = await ctx.directDesktopAccess.begin({
         machineId: req.body?.machineId, topicId: telegramStepUp ? topicId : 0,
         operatorUid: telegramStepUp ? operator!.uid : 'dashboard-pin',
@@ -13033,6 +13085,11 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      void ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'status')
+        .then(result => res.json(result)).catch(() => res.status(403).json({ error: 'Desktop request unavailable' }));
+      return;
+    }
     try { res.json(ctx.directDesktopAccess.status(req.params.id, desktopOperatorSession(req))); }
     catch { res.status(403).json({ error: 'Desktop request unavailable' }); }
   });
@@ -13040,6 +13097,11 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res) || !desktopIntent(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      try { res.json(await ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'resume', req.body)); }
+      catch { res.status(403).json({ error: 'Desktop resume unavailable' }); }
+      return;
+    }
     try {
       res.json(await ctx.directDesktopAccess.resume(req.params.id, desktopOperatorSession(req), {
         browserPublicKey: req.body?.browserPublicKey,
@@ -13057,6 +13119,11 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      try { res.json(await ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'cursor')); }
+      catch { res.status(403).json({ error: 'Desktop cursor unavailable' }); }
+      return;
+    }
     try { res.json(await ctx.directDesktopAccess.cursor(req.params.id, desktopOperatorSession(req))); }
     catch { res.status(403).json({ error: 'Desktop cursor unavailable' }); }
   });
@@ -13065,6 +13132,11 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      void ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'ticket', req.body)
+        .then(result => res.json(result)).catch(() => res.status(403).json({ error: 'Desktop ticket unavailable' }));
+      return;
+    }
     try {
       const ticket = ctx.directDesktopAccess.ticket(req.params.id, desktopOperatorSession(req),
         req.body?.connectionNonce, req.body?.signature);
@@ -13076,6 +13148,11 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      void ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'revoke')
+        .then(result => res.json(result)).catch(() => res.status(403).json({ error: 'Desktop revocation unavailable' }));
+      return;
+    }
     try { ctx.directDesktopAccess.revoke(req.params.id, desktopOperatorSession(req)); res.json({ revoked: true }); }
     catch { res.status(403).json({ error: 'Desktop revocation unavailable' }); }
   });
@@ -32643,6 +32720,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
+    }
+    if ('remoteDesktop' in patch) {
+      const desktop = (patch as Record<string, unknown>).remoteDesktop;
+      if (!desktop || typeof desktop !== 'object' || Array.isArray(desktop)
+        || Object.keys(desktop).length < 1
+        || Object.keys(desktop).some(key => key !== 'enabled' && key !== 'frontMachineId')
+        || ('enabled' in desktop && typeof (desktop as { enabled?: unknown }).enabled !== 'boolean')
+        || ('frontMachineId' in desktop
+          && (typeof (desktop as { frontMachineId?: unknown }).frontMachineId !== 'string'
+            || !/^m_[a-f0-9]{32}$/.test((desktop as { frontMachineId: string }).frontMachineId)))) {
+        res.status(400).json({ error: 'Invalid remoteDesktop enabled/frontMachineId patch' });
+        return;
+      }
     }
 
     // Allowlist of top-level config keys that can be patched via API.

@@ -25,6 +25,7 @@ function viewer() {
     <button id="stopButton"></button><input id="typeText">
     <button id="unlockButton"></button><button id="retryButton"></button><button id="requestButton"></button>
     <div id="status"></div><div id="liveStatus"></div><div id="control"></div><div id="request"></div>
+    <div id="unlock"></div><select id="machine"></select>
   </body>`, { url: 'https://instar.example/dashboard/desktop', runScripts: 'outside-only' });
   const { window } = dom;
   Object.defineProperty(window, 'matchMedia', { value: () => ({ matches: true }) });
@@ -50,7 +51,12 @@ function viewer() {
   const source = fs.readFileSync(new URL('../../dashboard/desktop.js', import.meta.url), 'utf8');
   window.eval(`${source}\ninputEnabled = true; activeVideoCodec = 'h264';
     sendCommand = command => { window.__commands.push(command.type); return Promise.resolve(true); };
-    window.__video = { receiveH264, fallbackVideo, leave, getCodec: () => activeVideoCodec };`);
+    window.__video = { receiveH264, fallbackVideo, leave, getCodec: () => activeVideoCodec };
+    window.__verifyTargetForTest = (trustedKey, result) => {
+      machineId = 'm_target'; requestId = 'request-1';
+      trustedTargetSigningPublicKey = trustedKey;
+      return verifyTarget(result);
+    };`);
   Object.assign(window, { __commands: commands });
   const video = (window as unknown as { __video: {
     receiveH264(data: Uint8Array, epoch: number): void;
@@ -110,6 +116,74 @@ describe('desktop H.264 viewer resource bounds', () => {
     expect(v.video.getCodec()).toBe('h264');
     expect(v.decoders[1].closed).toBe(false);
     expect(v.commands).toEqual([]);
+    v.dom.window.close();
+  });
+});
+
+describe('desktop target selection', () => {
+  it('refuses an attacker signing key before accepting a target grant', async () => {
+    const v = viewer();
+    const verification = (v.window as unknown as { __verifyTargetForTest:
+      (key: string, result: object) => Promise<void> }).__verifyTargetForTest('AQID', {
+        machineId: 'm_target', videoCodec: 'jpeg', expiresAt: v.window.Date.now() + 60_000,
+        targetSigningPublicKey: 'BAUG', targetSignature: 'AQID',
+      });
+    await expect(verification).rejects.toThrow('does not match the registered machine');
+    v.dom.window.close();
+  });
+
+  it('does not silently open another machine when a deep-linked target is unavailable', async () => {
+    const v = viewer();
+    v.window.history.replaceState({}, '', '?machineId=m_requested');
+    v.window.eval(`api = async () => ({ machines: [
+      { machineId: 'm_studio', label: 'Mac Studio', ready: true,
+        targetSigningPublicKey: 'registered-studio-key' },
+      { machineId: 'm_requested', label: 'Mama PC', ready: false,
+        unavailableReason: 'Mama PC is not ready yet.' }
+    ] });
+    requestDesktop = async () => { window.__opened = true; };
+    window.__loadTargets = loadTargetsAndMaybeOpen;`);
+    await (v.window as unknown as { __loadTargets: () => Promise<void> }).__loadTargets();
+    expect((v.window as unknown as { __opened?: boolean }).__opened).toBeUndefined();
+    expect(v.window.document.getElementById('status')!.textContent).toBe('Mama PC is not ready yet.');
+    expect((v.window.document.getElementById('retryButton') as HTMLButtonElement).hidden).toBe(false);
+    expect((v.window.document.getElementById('request') as HTMLDivElement).hidden).toBe(false);
+    v.dom.window.close();
+  });
+
+  it('shows every registered machine and its unavailable reason before opening the sole ready host', async () => {
+    const v = viewer();
+    v.window.eval(`api = async () => ({ machines: [
+      { machineId: 'm_mama', label: 'Mama PC', ready: false,
+        unavailableReason: 'Windows companion is not running.' },
+      { machineId: 'm_studio', label: 'Mac Studio', ready: true,
+        targetSigningPublicKey: 'registered-studio-key' }
+    ] });
+    requestDesktop = async () => { window.__opened = true; };
+    window.__loadTargets = loadTargetsAndMaybeOpen;`);
+    await (v.window as unknown as { __loadTargets: () => Promise<void> }).__loadTargets();
+    expect((v.window as unknown as { __opened?: boolean }).__opened).toBeUndefined();
+    expect((v.window.document.getElementById('request') as HTMLDivElement).hidden).toBe(false);
+    const options = [...(v.window.document.getElementById('machine') as HTMLSelectElement).options];
+    expect(options.map(option => [option.textContent, option.disabled])).toEqual([
+      ['Mama PC — Windows companion is not running.', true], ['Mac Studio', false],
+    ]);
+    expect((v.window.document.getElementById('machine') as HTMLSelectElement).value).toBe('m_studio');
+    v.dom.window.close();
+  });
+
+  it('shows unavailable machines but disables Open when none can be controlled', async () => {
+    const v = viewer();
+    v.window.eval(`api = async () => ({ machines: [
+      { machineId: 'm_mama', label: 'Mama PC', ready: false,
+        unavailableReason: 'Windows companion is not running.' }
+    ] });
+    window.__loadTargets = loadTargetsAndMaybeOpen;`);
+    await (v.window as unknown as { __loadTargets: () => Promise<void> }).__loadTargets();
+    expect((v.window.document.getElementById('request') as HTMLDivElement).hidden).toBe(false);
+    expect((v.window.document.getElementById('requestButton') as HTMLButtonElement).disabled).toBe(true);
+    expect((v.window.document.getElementById('machine') as HTMLSelectElement).options[0].textContent)
+      .toBe('Mama PC — Windows companion is not running.');
     v.dom.window.close();
   });
 });
