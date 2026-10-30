@@ -45,6 +45,12 @@ export const REVIEW_FILE_RE = /^(\d{4}-\d{2}-\d{2})\.(json|md)$/;
 export interface ReviewRow {
   id: string;
   title: string | null;
+  /** Plain one-word group, written by the review for the operator. */
+  area: string | null;
+  /** One plain sentence: what is going on right now (review-written, model-assessed). */
+  summary: string | null;
+  /** One plain sentence: what happens next. */
+  nextStep: string | null;
   stage: string | null;
   verdict: Verdict;
   verdictRaw: string;
@@ -147,6 +153,9 @@ export function parseReviewJson(fileName: string, text: string, now: number): Re
     rows.push({
       id: f.id,
       title: clip(f.title, MAX_SHORT),
+      area: clip(f.area, 40),
+      summary: clip(f.summary, 240),
+      nextStep: clip(f.nextStep, 200),
       stage: clip(f.stage, 32),
       verdict: normalizeVerdict(verdictRaw),
       verdictRaw,
@@ -198,6 +207,9 @@ export function parseReviewMarkdown(fileName: string, text: string, now: number)
     rows.push({
       id,
       title: null,
+      area: null,
+      summary: null,
+      nextStep: null,
       stage: null,
       verdict: normalizeVerdict(verdictCell),
       verdictRaw: verdictCell.slice(0, 64),
@@ -313,6 +325,9 @@ export interface BoardFeature {
     date: string;
     verdict: Verdict;
     verdictRaw: string;
+    area: string | null;
+    summary: string | null;
+    nextStep: string | null;
     stage: string | null;
     evidence: string | null;
     evidenceReadToday: boolean | null;
@@ -545,6 +560,9 @@ export function buildMaturationBoard(input: BoardInput): MaturationBoardResponse
         date: latest!.date,
         verdict: row.verdict,
         verdictRaw: row.verdictRaw,
+        area: row.area,
+        summary: row.summary,
+        nextStep: row.nextStep,
         stage: row.stage,
         evidence: row.evidence,
         evidenceReadToday: row.evidenceReadToday,

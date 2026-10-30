@@ -1,14 +1,14 @@
 /**
- * Maturation board view (docs/specs/maturation-board.md §7–§8): the pure view
- * model (headline from counts, the five F10 tiles, URL state, filters, sorts,
- * follow-up and date wording, recorded-dates-only timeline) and the rendered
- * page in jsdom (text-only rendering, first view without the table, 503 state).
+ * Maturation board view (docs/specs/maturation-board.md §7–§8), readability
+ * revision (Justin, 2026-10-30: "impossible to digest"): one answer sentence in
+ * plain words, a square per feature, plain groups, human names, one short plain
+ * line per row, technical detail only behind a tap — and still text-only.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  headline, subline, tiles, parseState, stateQuery, tableOpen, filterRows, sortRows,
-  followUpText, deadlineText, timeline, fmtDate, verdictInfo,
+  GROUPS, groupOf, headline, subline, parseState, stateQuery, openGroups, filterRows, orderInGroup, squares,
+  humanName, humanArea, ownerChip, statusLine, nextStep, timeline, attention,
 } from '../../dashboard/console/maturation-board-model.js';
 
 const NOW = Date.parse('2026-10-30T16:00:00Z');
@@ -16,117 +16,117 @@ const NOW = Date.parse('2026-10-30T16:00:00Z');
 function feature(id: string, verdict: string | null, over: Record<string, unknown> = {}) {
   return {
     id, title: null,
-    review: verdict ? { date: '2026-10-28', verdict, verdictRaw: verdict, stage: 'dark', evidence: `evidence for ${id}`, evidenceReadToday: true, measures: null, rule: null, decision: 'improve', action: 'none', commitments: [] } : null,
+    review: verdict ? { date: '2026-10-28', verdict, verdictRaw: verdict, area: null, summary: null, nextStep: null, stage: 'dark', evidence: `evidence for ${id}`, evidenceReadToday: true, measures: null, rule: null, decision: 'improve', action: 'none', commitments: [] } : null,
     history: verdict ? [{ date: '2026-10-25', verdict, carried: false }, { date: '2026-10-28', verdict, carried: false }] : [],
-    unchangedReviews: verdict ? 2 : 0,
+    unchangedReviews: 0,
     shippedAt: null, transitions: [], owners: [], deadlines: [],
     followUp: { state: 'none-linked', items: [] }, conflicts: [], flags: [],
     ...over,
   };
 }
+const withReview = (f: ReturnType<typeof feature>, r: Record<string, unknown>) => ({ ...f, review: { ...f.review!, ...r } });
 
 function board(features: ReturnType<typeof feature>[], over: Record<string, unknown> = {}) {
-  return {
-    schema: 'maturation-board/1', advisory: true, authority: 'none', generatedAt: new Date(NOW).toISOString(), scope: 'pool',
-    reviewDate: '2026-10-28', reviewMachine: 'Studio', reviewState: 'ok', reviewCachedAt: null,
-    sources: [{ name: 'd7', machine: 'Studio', ok: true }],
-    counts: { features: features.length, reviewed: features.length, byVerdict: { stalled: 2, live: 1 }, stalledRegressedBlind: 2, stalledRegressedBlindNoFollowUp: 1, stalledRegressedBlindFollowUpUnknown: 0, withDate: 1, pastDate: 1, conflicts: 0, live: 1 },
-    excluded: { ambiguousJoins: 0, unparsedRows: 0, duplicatesDropped: 0 },
-    features,
-    ...over,
-  };
+  return { schema: 'maturation-board/1', reviewDate: '2026-10-28', reviewState: 'ok', sources: [], counts: {}, features, ...over };
 }
 
-describe('headline and tiles come from response counts only', () => {
-  it('names the verdicts, never a combined board word', () => {
-    const h = headline(board([]));
-    expect(h).toMatch(/^Per the .* review: 2 stalled of 0; 1 of those have no linked follow-up\.$/);
-    expect(h.toLowerCase()).not.toContain('stuck');
-    expect(tiles(board([])).map(t => t.label)).toEqual([
-      'Stalled / regressed / blind (per review)', 'No linked follow-up', 'Past a recorded date', 'Sources disagree', 'Live (per review)',
-    ]);
-  });
-
-  it('says honestly when the review cannot be read or never ran', () => {
-    expect(headline(board([], { reviewState: 'unavailable' }))).toContain("can't be read right now: Studio is not answering");
-    expect(headline(board([], { reviewDate: null }))).toContain('No maturation review has run on this agent yet');
-  });
-
-  it('subline names a machine that did not answer', () => {
-    const s = subline(board([], { sources: [{ name: 'may-be-superseded', machine: 'Mac Mini', ok: false, reason: 'did-not-answer' }] }));
-    expect(s).toContain('May be out of date: Mac Mini did not answer.');
+describe('plain groups', () => {
+  it('maps every review verdict to exactly one plain group', () => {
+    expect(groupOf(feature('a', 'regressed')).label).toBe('Broken');
+    expect(groupOf(feature('a', 'stalled')).label).toBe('Stuck');
+    expect(groupOf(feature('a', 'blind')).label).toBe('Not measured');
+    expect(groupOf(feature('a', 'on-track')).id).toBe('progressing');
+    expect(groupOf(feature('a', 'ready')).id).toBe('progressing');
+    expect(groupOf(feature('a', 'live')).label).toBe('Working');
+    expect(groupOf(feature('a', 'retire-pending')).label).toBe('Being retired');
+    expect(groupOf(feature('a', null)).label).toBe('Not reviewed');
+    expect(new Set(GROUPS.flatMap(g => g.verdicts)).size).toBe(GROUPS.flatMap(g => g.verdicts).length);
   });
 });
 
-describe('URL state', () => {
-  it('round-trips and opens the table only when a filter is set', () => {
-    const st = parseState('?v=stalled,blind&fu=none-linked&q=queue');
-    expect(st).toEqual({ v: 'stalled,blind', fu: 'none-linked', q: 'queue' });
-    expect(parseState(stateQuery(st))).toEqual(st);
-    expect(tableOpen({})).toBe(false);
-    expect(tableOpen({ sort: 'due' })).toBe(false);
-    expect(tableOpen({ all: '1' })).toBe(true);
+describe('the answer is plain words', () => {
+  const fs = [feature('a', 'live'), feature('b', 'stalled'), feature('c', 'blind', { followUp: { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'pending', label: 'pending', due: null, nextCheckIn: null }] } })];
+
+  it('says how many are working and how many need attention, without review jargon', () => {
+    const h = headline(board(fs));
+    expect(h).toBe('3 features: 1 working, 2 need attention.');
+    for (const word of ['blind', 'stalled', 'regressed', 'verdict', 'CMT']) expect(h.toLowerCase()).not.toContain(word.toLowerCase());
+    expect(attention(fs)).toEqual({ need: 2, nobody: 1 });
+    expect(subline(board(fs))).toContain('1 of those have nobody on them.');
+  });
+
+  it('is honest when the review cannot be read', () => {
+    expect(headline(board([], { reviewState: 'unavailable' }))).toContain('isn’t answering');
   });
 });
 
-describe('filters and sorts', () => {
-  const rows = [
-    feature('b.stalled', 'stalled', { conflicts: [{ rule: 'C1', machine: 'Studio', a: 'x', b: 'y' }] }),
-    feature('a.live', 'live', { followUp: { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'pending', label: 'pending', due: null, nextCheckIn: null }] } }),
-    feature('c.blind', 'blind', { deadlines: [{ date: '2026-10-20', source: 'dark-flag', ref: 'g', milestone: 'w', open: true, overdueDays: 10, machine: 'Studio' }], owners: [{ machine: 'Mac Mini', source: 'guard', ownerId: 'c.blind', facts: {}, at: null }] }),
-    feature('d.none', null),
-  ];
-
-  it('filters by verdict, follow-up, past date, conflict, machine and text', () => {
-    expect(filterRows(rows, { v: 'stalled,blind' }).map(f => f.id)).toEqual(['b.stalled', 'c.blind']);
-    expect(filterRows(rows, { fu: 'linked' }).map(f => f.id)).toEqual(['a.live']);
-    expect(filterRows(rows, { past: '1' }).map(f => f.id)).toEqual(['c.blind']);
-    expect(filterRows(rows, { conflict: '1' }).map(f => f.id)).toEqual(['b.stalled']);
-    expect(filterRows(rows, { m: 'Mac Mini' }).map(f => f.id)).toEqual(['c.blind']);
-    expect(filterRows(rows, { q: 'EVIDENCE FOR A' }).map(f => f.id)).toEqual(['a.live']);
-    expect(filterRows(rows, { v: 'not-reviewed' }).map(f => f.id)).toEqual(['d.none']);
+describe('human names', () => {
+  it('turns setting paths into plain names and areas', () => {
+    const f = feature('multiMachine.sessionPool.failoverRunner', 'regressed');
+    expect(humanName(f)).toBe('Failover runner');
+    expect(humanArea(f)).toBe('Session pool');
+    expect(humanName(feature('monitoring.selfDeferralGuard', 'blind'))).toBe('Self deferral guard');
+    expect(humanName(feature('routingSpend (.money)', 'live'))).toBe('Routing spend');
+    expect(humanName(feature('intelligence.jevCirclesShadow.enabled', 'live'))).toBe('Jev circles shadow');
   });
 
-  it('sorts by verdict severity, then name; by due date with undated last', () => {
-    expect(sortRows(rows, 'verdict').map(f => f.id)).toEqual(['b.stalled', 'c.blind', 'a.live', 'd.none']);
-    expect(sortRows(rows, 'due')[0].id).toBe('c.blind');
-    expect(sortRows(rows, 'feature', 'desc')[0].id).toBe('d.none');
+  it('prefers the review’s own plain title and area', () => {
+    const f = { ...withReview(feature('x.y', 'live'), { area: 'Sessions' }), title: 'Session failover' };
+    expect(humanName(f)).toBe('Session failover');
+    expect(humanArea(f)).toBe('Sessions');
   });
 });
 
 describe('row wording', () => {
-  it('follow-up: no linked follow-up is red only for stalled/regressed/blind; unknown says can\'t tell', () => {
-    expect(followUpText(feature('x', 'stalled'))).toEqual({ text: 'No linked follow-up', tone: 'bad' });
-    expect(followUpText(feature('x', 'live')).tone).toBe('muted');
-    expect(followUpText(feature('x', 'stalled', { followUp: { state: 'unknown', items: [] } })).text).toBe("Can't tell");
+  it('uses the review’s plain summary and next step when present', () => {
+    const f = withReview(feature('a', 'stalled'), { summary: 'Hasn’t run since Tuesday.', nextStep: 'Fix due Friday.' });
+    expect(statusLine(f)).toBe('Hasn’t run since Tuesday.');
+    expect(nextStep(f)).toBe('Fix due Friday.');
   });
 
-  it('a review date past is amber and says it is the review\'s date; a recorded deadline is red', () => {
-    const rev = deadlineText(feature('x', 'stalled', { deadlines: [{ date: '2026-10-25', source: 'review', ref: 'r', milestone: 'm', open: true, overdueDays: 4, machine: null }] }));
-    expect(rev.tone).toBe('attn');
-    expect(rev.text).toContain("past the review's date");
-    const rec = deadlineText(feature('x', 'stalled', { deadlines: [{ date: '2026-10-25T00:00:00Z', source: 'commitment', ref: 'CMT-1', milestone: 'm', open: true, overdueDays: 5, machine: null }] }));
-    expect(rec.tone).toBe('bad');
-    expect(deadlineText(feature('x', 'stalled')).text).toBe('No date set');
+  it('never repeats the group blurb on every row', () => {
+    expect(statusLine(feature('a', 'stalled'))).toBe('');
+    expect(statusLine(feature('a', 'stalled', { unchangedReviews: 3 }))).toBe('Same for 3 reviews in a row.');
+    expect(statusLine(feature('a', 'stalled', { deadlines: [{ date: '2026-10-20', source: 'dark-flag', ref: 'g', milestone: 'w', open: true, overdueDays: 10, machine: 'Studio' }] }))).toBe('10 days past its date.');
   });
 
-  it('formats a date-only value as that calendar day', () => {
-    expect(fmtDate('2026-10-28')).toMatch(/28/);
-    expect(verdictInfo('nonsense').label).toBe('Other');
+  it('the owner chip says who is on it in plain words', () => {
+    expect(ownerChip(feature('a', 'stalled'))).toEqual({ text: 'Nobody on it', tone: 'bad' });
+    expect(ownerChip(feature('a', 'live'))).toBeNull();
+    expect(ownerChip(feature('a', 'stalled', { followUp: { state: 'unknown', items: [] } }))!.text).toBe('Can’t tell');
+    const pending = { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'pending', label: 'pending', due: null, nextCheckIn: null }] };
+    expect(ownerChip(feature('a', 'stalled', { followUp: pending }))!.text).toBe('Fix underway');
+    const delivered = { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'delivered', label: 'handed off', due: null, nextCheckIn: null }] };
+    expect(ownerChip(feature('a', 'stalled', { followUp: delivered }))).toEqual({ text: 'Fix assigned', tone: 'track' });
   });
 });
 
-describe('timeline uses recorded dates only', () => {
-  it('is empty when nothing is dated, and orders points otherwise', () => {
-    expect(timeline(feature('x', null), NOW).empty).toBe(true);
-    const t = timeline(feature('x', 'stalled', {
-      transitions: [{ at: '2026-10-13T00:00:00Z', from: null, to: 'incubating', source: 'dark-flag', machine: 'Studio' }],
-      deadlines: [{ date: '2026-10-20T00:00:00Z', source: 'dark-flag', ref: 'g', milestone: 'w', open: true, overdueDays: 10, machine: 'Studio' }],
-    }), NOW);
-    expect(t.empty).toBe(false);
-    expect(t.points[0].kind).toBe('transition');
-    expect(t.points.every((p, i, a) => i === 0 || a[i - 1].pct <= p.pct)).toBe(true);
-    expect(t.todayPct).toBeCloseTo(100, 0);
+describe('order, map and URL state', () => {
+  it('puts nobody-on-it first inside a group', () => {
+    const rows = [feature('b', 'stalled', { followUp: { state: 'linked', items: [] } }), feature('a', 'stalled')];
+    expect(orderInGroup(rows).map(f => f.id)).toEqual(['a', 'b']);
+  });
+
+  it('draws one square per feature in group order, dotting nobody-on-it', () => {
+    const sq = squares([feature('w', 'live'), feature('s', 'stalled'), feature('r', 'regressed')]);
+    expect(sq.map(s => s.group)).toEqual(['broken', 'stuck', 'working']);
+    expect(sq.find(s => s.id === 's')!.nobody).toBe(true);
+    expect(sq.find(s => s.id === 'w')!.nobody).toBe(false);
+  });
+
+  it('opens Broken and Stuck by default; filters and searches by plain name', () => {
+    expect([...openGroups({})]).toEqual(['broken', 'stuck']);
+    expect([...openGroups({ g: 'working' })]).toEqual(['working']);
+    expect(parseState(stateQuery({ g: 'stuck', q: 'runner' }))).toEqual({ g: 'stuck', q: 'runner' });
+    const fs = [feature('multiMachine.sessionPool.failoverRunner', 'regressed'), feature('b', 'live')];
+    expect(filterRows(fs, { q: 'failover' }).map(f => f.id)).toEqual(['multiMachine.sessionPool.failoverRunner']);
+    expect(filterRows(fs, { g: 'working' }).map(f => f.id)).toEqual(['b']);
+    expect(filterRows(fs, { nobody: '1' })).toHaveLength(2);
+  });
+
+  it('timeline lists recorded dates in plain words, oldest first', () => {
+    const t = timeline(feature('a', 'regressed', { history: [{ date: '2026-10-25', verdict: 'live', carried: false }, { date: '2026-10-28', verdict: 'regressed', carried: false }] }), NOW);
+    expect(t.map(p => p.label)).toEqual(['Review: Working', 'Review: Broken']);
   });
 });
 
@@ -139,26 +139,37 @@ describe('rendered page (jsdom)', () => {
   afterEach(() => { dom.window.close(); });
 
   async function render(data: unknown, search = '') {
-    const { renderMaturation } = await import('../../dashboard/console/maturation-board.js');
+    const mod = await import('../../dashboard/console/maturation-board.js');
     const main = document.getElementById('m')!;
     let q = search;
-    await renderMaturation(main, { get: async () => (data instanceof Error ? { ok: false, reason: data.message } : { ok: true, data }) }, { read: () => q, write: (n: string) => { q = n; } });
+    await mod.renderMaturation(main, { get: async () => (data instanceof Error ? { ok: false, reason: data.message } : { ok: true, data }) }, { read: () => q, write: (n: string) => { q = n; } });
     return main;
   }
 
-  it('first view is a headline and five tiles, without the table', async () => {
-    const main = await render(board([feature('a', 'stalled')]));
-    expect(main.querySelectorAll('.mb-tile')).toHaveLength(5);
-    expect(main.querySelector('.mb-list')).toBeNull();
-    expect(main.querySelector('.page-title')!.textContent).toContain('Per the');
+  it('shows the answer, a square per feature and plain groups — no ids on the first screen', async () => {
+    const main = await render(board([feature('multiMachine.sessionPool.failoverRunner', 'regressed'), feature('a.b', 'live')]));
+    expect(main.querySelector('.mb-answer')!.textContent).toBe('2 features: 1 working, 1 need attention.');
+    expect(main.querySelectorAll('.mb-sq')).toHaveLength(2);
+    expect(main.querySelector('.mb-group-name')!.textContent).toBe('Broken · 1');
+    const visible = [...main.querySelectorAll('.mb-row')].map(r => r.textContent).join(' ');
+    expect(visible).toContain('Failover runner');
+    expect(visible).not.toContain('multiMachine');
   });
 
   it('renders review text as text, never as markup', async () => {
-    const hostile = feature('x.y', 'stalled', { title: '<img src=x onerror="window.pwned=1">' });
-    const main = await render(board([hostile]), '?all=1');
+    const hostile = { ...feature('x.y', 'stalled'), title: '<img src=x onerror="window.pwned=1">' };
+    const main = await render(board([hostile]));
     expect(main.querySelector('img')).toBeNull();
     expect(main.textContent).toContain('<img src=x onerror="window.pwned=1">');
     expect((dom.window as unknown as { pwned?: number }).pwned).toBeUndefined();
+  });
+
+  it('keeps technical detail behind a tap', async () => {
+    const main = await render(board([feature('a.b', 'stalled')]), '?f=a.b&open=stuck');
+    const tech = main.querySelector('details.mb-tech') as HTMLDetailsElement;
+    expect(tech).not.toBeNull();
+    expect(tech.open).toBe(false);
+    expect(tech.textContent).toContain('evidence for a.b');
   });
 
   it('shows the switched-off state on 503', async () => {

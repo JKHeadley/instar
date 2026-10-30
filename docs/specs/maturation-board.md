@@ -340,6 +340,30 @@ stage, commitment or review. The CLAUDE.md section says so, and tells agents to 
 commitment text from the board as quoted untrusted data. The review job reads its own previous
 review files, not the board.
 
+### 11. Readability revision (2026-10-30, display only)
+
+Justin, on the first served version: "impossible to digest… does not meet at-a-glance standards."
+The page is redesigned; nothing in the route's authority, storage or multi-machine behaviour changes.
+
+- **The answer** is one plain sentence: "182 features: 69 working, 97 need attention", with "N of those
+  have nobody on them" below it. No review jargon, ids or codes on the first screen.
+- **The glance** is one square per feature, coloured by plain group, with a white dot where no
+  follow-up is linked. A legend doubles as the group filter.
+- **Plain groups** replace the verdict vocabulary on screen: Broken (regressed), Stuck (stalled),
+  Not measured (blind), On its way (on-track / ready / too-new), Working (live), Being retired
+  (retire-pending), Not reviewed. Each is one fixed mapping of the review's verdict (no new
+  judgement); Broken and Stuck open by default.
+- **Rows** show a human name (the review's `title`, else derived from the id), a plain area, the
+  review's one-line `summary` when present, and one chip: "Nobody on it", "Fix underway", "Fix
+  assigned" (a delivered commitment) or "Can't tell". A row never repeats its group's description.
+- **Detail on tap**: the review's `nextStep`, how many tasks handle it and their promised dates, a
+  dated list of what happened, the model-assessed label, and the evidence, decision, ids and live
+  records folded under "Technical details".
+- **Tools**: one search box and one "nobody on it" switch; nothing else above the content.
+- **Review contract** gains three optional plain-language fields, written by the review job:
+  `area` (≤ 40), `summary` (≤ 240, one sentence, no ids or jargon), `nextStep` (≤ 200). The job's
+  instructions were updated on the Studio (manifestVersion 5) before the 2026-10-30 11:30 run.
+
 ## Decision points touched
 
 | Decision point | Class | Justification |

@@ -77,6 +77,12 @@ describe('review JSON contract (§2)', () => {
     expect(parseReviewJson('2026-10-30.json', 'not json', NOW).ok).toBe(false);
   });
 
+  it('keeps the plain area, summary and next step, capped', () => {
+    const r = parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'stalled', { area: 'Sessions', summary: 'Hasn’t run since Tuesday.', nextStep: 'x'.repeat(500) })]), NOW);
+    expect(r.ok && r.review.rows[0]).toMatchObject({ area: 'Sessions', summary: 'Hasn’t run since Tuesday.' });
+    expect(r.ok && r.review.rows[0].nextStep!.length).toBe(200);
+  });
+
   it('drops a duplicate id and counts it', () => {
     const r = parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live'), row('a', 'stalled')]), NOW);
     expect(r.ok && r.review.rows.length).toBe(1);

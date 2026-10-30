@@ -1,30 +1,32 @@
 // Maturation board — view (docs/specs/maturation-board.md §7–§8).
 // Shared by the console page (#/work/maturation) and the standalone page
 // (/dashboard/maturation/). Every value is written with textContent via el().
+//
+// Layout, top to bottom: one answer sentence · a square per feature (the glance) ·
+// plain groups (Broken, Stuck, …) with one plain line per feature · details on tap.
 
 import { el, cantTell } from './ui.js';
 import {
-  verdictOf, verdictInfo, fmtDate, headline, subline, tiles, verdictCounts, parseState, stateQuery,
-  tableOpen, filterRows, sortRows, machines, followUpText, deadlineText, timeline,
+  GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
+  filterRows, orderInGroup, squares, humanName, humanArea, ownerChip, statusLine, nextStep, timeline, fmtDate,
 } from './maturation-board-model.js';
 
 const POOL_TIMEOUT_MS = 12_000;
 let lastBoard = null;
-let openId = null;
 
 /**
  * @param main   container element
  * @param api    { get(path, timeoutMs) → {ok,data}|{ok:false,reason} }
- * @param nav    { read() → query string, write(query) } — where filter state lives in the URL
+ * @param nav    { read() → query string, write(query) } — where view state lives in the URL
  */
 export async function renderMaturation(main, api, nav = consoleNav()) {
   if (!lastBoard) main.replaceChildren(el('p', { class: 'mb-loading', text: 'Reading every machine…' }));
   const r = await api.get('/maturation/board?scope=pool', POOL_TIMEOUT_MS);
   if (!r.ok) {
     if (r.reason === 'switched off on this agent') {
-      main.replaceChildren(el('section', { class: 'hero page-hero', 'data-tone': 'unknown' },
+      main.replaceChildren(el('section', { class: 'mb-hero' },
         el('div', { class: 'eyebrow', text: 'Feature maturation' }),
-        el('h1', { class: 'page-title', text: 'The maturation board is not switched on for this agent.' })));
+        el('h1', { class: 'mb-answer', text: 'The maturation board is not switched on for this agent.' })));
       return;
     }
     if (!lastBoard) { main.replaceChildren(cantTell(r.reason)); return; }
@@ -49,141 +51,119 @@ function draw(main, board, nav) {
     nav.write(stateQuery(next));
     draw(main, board, nav);
   };
+  const features = board.features || [];
+  const counts = groupCounts(features);
 
-  const head = el('section', { class: 'hero page-hero', 'data-tone': (board.counts.stalledRegressedBlindNoFollowUp ? 'attn' : 'ok') },
+  // 1. The answer.
+  const hero = el('section', { class: 'mb-hero' },
     el('div', { class: 'eyebrow', text: 'Feature maturation' }),
-    el('h1', { class: 'page-title', text: headline(board) }),
-    el('p', { text: subline(board) }),
-  );
+    el('h1', { class: 'mb-answer', text: headline(board) }),
+    el('p', { class: 'mb-sub', text: subline(board) }));
 
-  const tileRow = el('div', { class: 'mb-tiles' }, tiles(board).map((t) => el('button', {
-    class: 'mb-tile', type: 'button', 'data-tone': t.tone,
-    onclick: () => set({ v: '', fu: '', past: '', conflict: '', flag: '', all: '', ...t.filter }),
-  }, el('span', { class: 'mb-tile-n', text: String(t.n) }), el('span', { class: 'mb-tile-label', text: t.label }))));
+  // 2. The glance: one square per feature, coloured by group; a dot marks "nobody on it".
+  const legend = el('div', { class: 'mb-legend' }, GROUPS.filter((g) => counts[g.id]).map((g) => el('button', {
+    type: 'button', class: `mb-key${st.g === g.id ? ' on' : ''}`, 'data-tone': g.tone,
+    onclick: () => set({ g: st.g === g.id ? '' : g.id, open: '' }),
+  }, el('span', { class: 'mb-swatch' }), el('span', { class: 'mb-key-label', text: g.label }), el('span', { class: 'mb-key-n', text: String(counts[g.id]) }))));
+  const map = el('div', { class: 'mb-map', role: 'img', 'aria-label': GROUPS.filter((g) => counts[g.id]).map((g) => `${counts[g.id]} ${g.label.toLowerCase()}`).join(', ') },
+    squares(features).map((s) => el('button', {
+      type: 'button', class: `mb-sq${s.nobody ? ' nobody' : ''}`, 'data-tone': s.tone, title: s.title, 'aria-label': s.title,
+      onclick: () => set({ f: s.id, open: s.group }),
+    })));
+  const glance = el('section', { class: 'mb-glance' }, map, legend,
+    el('p', { class: 'mb-hint', text: 'Each square is one feature. A white dot means nobody is on it. Tap a colour to show only that group.' }));
 
-  const parts = [head, tileRow];
-
-  if (!tableOpen(st)) {
-    parts.push(el('button', { class: 'mb-btn mb-all', type: 'button', text: `All ${board.counts.features} features`, onclick: () => set({ all: '1' }) }));
-    parts.push(sourcesNote(board));
-    main.replaceChildren(...parts);
-    return;
-  }
-
-  // Verdict bar: one segment per verdict; tapping filters.
-  const vc = verdictCounts(board);
-  const total = vc.reduce((a, b) => a + b.n, 0) || 1;
-  parts.push(el('div', { class: 'mb-bar', role: 'group', 'aria-label': 'Features by review verdict' }, vc.map((v) => el('button', {
-    type: 'button', class: 'mb-seg', 'data-tone': v.tone, style: `flex:${v.n}`,
-    title: `${v.label}: ${v.n}`, 'aria-label': `${v.label}: ${v.n}`,
-    onclick: () => set({ v: st.v === v.id ? '' : v.id }),
-  }, v.n / total > 0.12 ? el('span', { text: `${v.label} ${v.n}` }) : null))));
-
-  // Controls.
-  const search = el('input', { type: 'search', class: 'mb-search', placeholder: 'Search features, evidence, decisions…', value: st.q || '', 'aria-label': 'Search' });
+  // 3. Tools: one search box and one switch, nothing else.
+  const search = el('input', { type: 'search', class: 'mb-search', placeholder: 'Find a feature', value: st.q || '', 'aria-label': 'Find a feature' });
   let t = null;
   search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => set({ q: search.value.trim() }), 250); });
-  const select = (label, key, options) => {
-    const s = el('select', { 'aria-label': label, class: 'mb-select' }, options.map(([val, text]) => el('option', { value: val, text, selected: (st[key] || '') === val })));
-    s.addEventListener('change', () => set({ [key]: s.value }));
-    return s;
-  };
-  parts.push(el('div', { class: 'mb-controls' },
-    search,
-    select('Verdict', 'v', [['', 'Every verdict'], ...verdictCounts(board).map((v) => [v.id, `${v.label} (${v.n})`]), ['stalled,regressed,blind', 'Stalled / regressed / blind']]),
-    select('Follow-up', 'fu', [['', 'Any follow-up'], ['none-linked', 'No linked follow-up'], ['unknown', "Can't tell"], ['linked', 'Has a follow-up']]),
-    select('Dates', 'past', [['', 'Any date'], ['1', 'Past a recorded date']]),
-    select('Flags', 'flag', [['', 'Any flag'], ['carried-evidence', 'Evidence carried, not re-read'], ['no-evidence', 'Positive verdict with no evidence'], ['not-in-latest-review', 'Not in the latest review'], ['ambiguous-join', 'Ambiguous match']]),
-    select('Machine', 'm', [['', 'Every machine'], ...machines(board).map((m) => [m, m])]),
-    select('Sort', 'sort', [['', 'Sort: verdict'], ['feature', 'Sort: name'], ['followup', 'Sort: follow-up'], ['due', 'Sort: next date'], ['unchanged', 'Sort: unchanged longest']]),
-    el('button', { type: 'button', class: 'mb-btn', text: 'Clear', onclick: () => { nav.write(''); draw(main, board, nav); } }),
-  ));
+  const nobody = el('button', { type: 'button', class: `mb-toggle${st.nobody ? ' on' : ''}`, text: 'Only “nobody on it”', 'aria-pressed': st.nobody ? 'true' : 'false', onclick: () => set({ nobody: st.nobody ? '' : '1' }) });
+  const tools = el('div', { class: 'mb-tools' }, search, nobody,
+    (st.g || st.q || st.nobody) ? el('button', { type: 'button', class: 'mb-link', text: 'Show everything', onclick: () => { nav.write(''); draw(main, board, nav); } }) : null);
 
-  const rows = sortRows(filterRows(board.features, st), st.sort || 'verdict', st.dir || 'asc');
-  parts.push(el('p', { class: 'mb-count', text: `Showing ${rows.length} of ${board.features.length}` }));
-  parts.push(el('div', { class: 'mb-colhead', 'aria-hidden': 'true' },
-    el('span', { text: 'Feature' }), el('span', { text: 'Review verdict' }), el('span', { text: 'What is being done' }), el('span', { text: 'Next date' })));
-  parts.push(el('div', { class: 'mb-list', role: 'list' }, rows.slice(0, 400).map((f) => featureRow(f, board, () => {
-    openId = openId === f.id ? null : f.id; draw(main, board, nav);
-  }))));
-  if (rows.length > 400) parts.push(el('p', { class: 'mb-count', text: 'Narrow the filters to see the rest.' }));
-  parts.push(sourcesNote(board));
-  main.replaceChildren(...parts);
+  // 4. Plain groups.
+  const rows = filterRows(features, st);
+  const open = openGroups(st);
+  const sections = GROUPS.map((g) => {
+    const inGroup = orderInGroup(rows.filter((f) => groupOf(f).id === g.id));
+    if (!inGroup.length) return null;
+    const isOpen = open.has(g.id) || Boolean(st.q) || Boolean(st.nobody);
+    const nobodyN = inGroup.filter((f) => f.followUp && f.followUp.state === 'none-linked').length;
+    const head = el('button', {
+      type: 'button', class: 'mb-group-head', 'data-tone': g.tone, 'aria-expanded': isOpen ? 'true' : 'false',
+      onclick: () => {
+        const next = new Set(open);
+        if (next.has(g.id)) next.delete(g.id); else next.add(g.id);
+        set({ open: [...next].join(',') || 'none', g: '' });
+      },
+    },
+    el('span', { class: 'mb-group-name', text: `${g.label} · ${inGroup.length}` }),
+    el('span', { class: 'mb-group-blurb', text: g.blurb + (nobodyN && g.tone !== 'ok' ? ` ${nobodyN} with nobody on it.` : '') }),
+    el('span', { class: 'mb-chev', text: isOpen ? '−' : '+' }));
+    const body = isOpen ? el('div', { class: 'mb-rows' }, inGroup.map((f) => row(f, st.f === f.id, () => set({ f: st.f === f.id ? '' : f.id })))) : null;
+    return el('section', { class: 'mb-group' }, head, body);
+  }).filter(Boolean);
+
+  main.replaceChildren(hero, glance, tools,
+    sections.length ? el('div', { class: 'mb-groups' }, sections) : el('p', { class: 'mb-sub', text: 'Nothing matches.' }),
+    sourcesNote(board));
+
+  if (st.f) {
+    const target = main.querySelector('.mb-row[aria-expanded="true"]');
+    if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' });
+  }
 }
 
-function chip(text, tone) { return el('span', { class: 'mb-chip', 'data-tone': tone, text }); }
-
-function featureRow(f, board, toggle) {
-  const v = verdictInfo(verdictOf(f));
-  const fu = followUpText(f);
-  const dl = deadlineText(f);
-  const hist = el('span', { class: 'mb-hist', 'aria-label': 'Verdict at each review' }, (f.history || []).map((h) => el('span', {
-    class: 'mb-dot', 'data-tone': verdictInfo(h.verdict).tone, title: `${fmtDate(h.date)}: ${verdictInfo(h.verdict).label}${h.carried ? ' (carried)' : ''}`,
-  })));
-  const flags = [
-    ...(f.conflicts || []).map((c) => chip(`Disagree (${c.machine})`, 'attn')),
-    ...(f.flags || []).filter((x) => x !== 'not-in-latest-review').map((x) => chip({ 'carried-evidence': 'Carried', 'no-evidence': 'No evidence', 'ambiguous-join': 'Ambiguous match' }[x] || x, 'muted')),
-    ...((f.flags || []).includes('not-in-latest-review') ? [chip('Not in latest review', 'muted')] : []),
-  ];
-  const head = el('button', { type: 'button', class: 'mb-row', 'aria-expanded': openId === f.id ? 'true' : 'false', onclick: toggle },
-    el('span', { class: 'mb-name' }, el('span', { class: 'mb-title', text: f.title || f.id }), f.title ? el('span', { class: 'mb-id', text: f.id }) : null),
-    el('span', { class: 'mb-verdict' }, chip(v.label, v.tone), hist,
-      f.unchangedReviews > 1 ? el('span', { class: 'mb-sub', text: `same for ${f.unchangedReviews} reviews` }) : null),
-    el('span', { class: 'mb-fu', 'data-tone': fu.tone, text: fu.text }),
-    el('span', { class: 'mb-due', 'data-tone': dl.tone, text: dl.text }),
-    flags.length ? el('span', { class: 'mb-flags' }, flags) : null,
-  );
-  const item = el('div', { class: 'mb-item', role: 'listitem' }, head);
-  if (openId === f.id) item.append(detail(f, board));
+function row(f, isOpen, toggle) {
+  const chip = ownerChip(f);
+  const area = humanArea(f);
+  const head = el('button', { type: 'button', class: 'mb-row', 'aria-expanded': isOpen ? 'true' : 'false', onclick: toggle },
+    el('span', { class: 'mb-row-main' },
+      el('span', { class: 'mb-name', text: humanName(f) }),
+      area ? el('span', { class: 'mb-area', text: area }) : null,
+      statusLine(f) ? el('span', { class: 'mb-line', text: statusLine(f) }) : null),
+    chip ? el('span', { class: 'mb-chip', 'data-tone': chip.tone, text: chip.text }) : null);
+  const item = el('div', { class: 'mb-item' }, head);
+  if (isOpen) item.append(detail(f));
   return item;
+}
+
+function detail(f) {
+  const r = f.review;
+  const next = nextStep(f);
+  const steps = timeline(f, Date.now());
+  const fus = (f.followUp && f.followUp.items) || [];
+  return el('div', { class: 'mb-detail' },
+    next ? el('p', { class: 'mb-next' }, el('strong', { text: 'Next: ' }), document.createTextNode(next)) : null,
+    fus.length ? el('p', { class: 'mb-detail-line', text: `Being handled by ${fus.length === 1 ? 'one task' : `${fus.length} tasks`}${fus.some((i) => i.due) ? `, promised for ${fus.filter((i) => i.due).map((i) => fmtDate(i.due)).join(', ')}` : ''}.` }) : null,
+    steps.length ? el('ol', { class: 'mb-steps', 'aria-label': 'What happened, by date' },
+      steps.map((p) => el('li', { class: `${p.overdue ? 'overdue' : ''}${p.future ? ' future' : ''}` },
+        el('span', { class: 'mb-when', text: p.when }), el('span', { text: p.label })))) : el('p', { class: 'mb-detail-line', text: 'No dates recorded yet.' }),
+    r ? el('p', { class: 'mb-fine', text: `Assessment by the ${fmtDate(r.date)} review (an AI model’s judgement)${r.evidenceReadToday === false ? ', carried over, not re-checked' : ''}.` }) : el('p', { class: 'mb-fine', text: 'Not in the latest review.' }),
+    el('details', { class: 'mb-tech' },
+      el('summary', { text: 'Technical details' }),
+      el('dl', {},
+        ...kv('Setting', f.id),
+        ...kv('Review verdict', r && r.verdictRaw),
+        ...kv('Evidence', r && r.evidence),
+        ...kv('Decision', r && r.decision),
+        ...kv('Action', r && r.action),
+        ...kv('Tasks', fus.map((i) => `${i.ref} (${i.label})`).join(', ')),
+        ...kv('Live records', (f.owners || []).map((o) => `${o.machine} · ${o.source}: ${Object.entries(o.facts).filter(([, v]) => v !== null && v !== '').map(([k, v]) => `${k} ${v}`).join(', ')}`).join('\n')),
+        ...kv('Sources disagree', (f.conflicts || []).map((c) => `${c.machine}: ${c.a} vs ${c.b}`).join('\n')),
+      )));
 }
 
 function kv(k, v) { return v ? [el('dt', { text: k }), el('dd', { text: v })] : []; }
 
-function detail(f, board) {
-  const r = f.review;
-  const tl = timeline(f, Date.now());
-  const strip = tl.empty
-    ? el('p', { class: 'mb-sub', text: 'No recorded dates for this feature yet.' })
-    : el('div', { class: 'mb-timeline', 'aria-label': 'Timeline' },
-      el('div', { class: 'mb-today', style: `left:${tl.todayPct}%`, title: 'Today' }),
-      tl.points.map((p) => el('div', {
-        class: `mb-pt mb-pt-${p.kind}`, style: `left:${p.pct}%`,
-        'data-tone': p.kind === 'review' ? verdictInfo(p.verdict).tone : p.kind === 'deadline' && p.overdue ? 'bad' : 'muted',
-        title: `${fmtDate(p.at)}: ${p.label}`,
-      })));
-  const owners = (f.owners || []).map((o) => el('li', {
-    text: `${o.machine} · ${o.source}: ${Object.entries(o.facts).filter(([, v]) => v !== null && v !== '').map(([k, v]) => `${k} ${v}`).join(', ')}`,
-  }));
-  const deadlines = (f.deadlines || []).map((d) => el('li', {
-    text: `${fmtDate(d.date)} · ${d.milestone} (${d.source}${d.source === 'review' ? ', model-assessed' : ''})${d.open ? '' : ' · closed'}${d.overdueDays != null ? ` · ${d.overdueDays} d past` : ''}`,
-  }));
-  const fus = (f.followUp && f.followUp.items || []).map((i) => el('li', {
-    text: `${i.ref} · ${i.label}${i.due ? ` · promised ${fmtDate(i.due)}` : ''}${i.nextCheckIn ? ` · next check-in ${fmtDate(i.nextCheckIn)}` : ''}`,
-  }));
-  return el('div', { class: 'mb-detail' },
-    strip,
-    r ? el('p', { class: 'mb-sub', text: `Per review ${fmtDate(r.date)} (model-assessed)${r.evidenceReadToday === false ? ' · evidence carried, not re-read' : ''}` }) : el('p', { class: 'mb-sub', text: 'Not in the latest review.' }),
-    el('dl', { class: 'mb-dl' },
-      ...kv('Stage (review)', r && r.stage), ...kv('Verdict', r && r.verdictRaw), ...kv('Evidence', r && r.evidence),
-      ...kv('Measured by', r && r.measures), ...kv('Its rule', r && r.rule), ...kv('Decision', r && r.decision), ...kv('Action', r && r.action),
-    ),
-    fus.length ? el('div', {}, el('h3', { text: 'Follow-up' }), el('ul', {}, fus)) : null,
-    deadlines.length ? el('div', {}, el('h3', { text: 'Dates' }), el('ul', {}, deadlines)) : null,
-    (f.conflicts || []).length ? el('div', {}, el('h3', { text: 'Sources disagree' }), el('ul', {}, f.conflicts.map((c) => el('li', { text: `${c.machine}: ${c.a} vs ${c.b}` })))) : null,
-    owners.length ? el('div', {}, el('h3', { text: 'Live records' }), el('ul', { class: 'mb-owners' }, owners)) : null,
-  );
-}
-
 function sourcesNote(board) {
   const bad = (board.sources || []).filter((s) => !s.ok);
-  const answered = (board.sources || []).filter((s) => s.name === 'peer' && s.ok).length + 1;
-  const peers = (board.sources || []).filter((s) => s.name === 'peer').length + 1;
+  const peers = (board.sources || []).filter((s) => s.name === 'peer');
+  const answered = peers.filter((s) => s.ok).length + 1;
   return el('details', { class: 'mb-sources' },
-    el('summary', { text: `${answered} of ${peers} machines answered · ${bad.length} source${bad.length === 1 ? '' : 's'} could not be read` }),
-    el('ul', {}, (board.sources || []).map((s) => el('li', { text: `${s.ok ? 'OK' : 'Not read'} · ${s.name}${s.machine ? ` · ${s.machine}` : ''}${s.reason ? ` · ${s.reason}` : ''}` }))),
-    el('p', { class: 'mb-sub', text: 'Advisory only: this page changes nothing. Verdicts are the review job’s written assessment.' }),
-  );
+    el('summary', { text: `Where this comes from · ${answered} of ${peers.length + 1} machines answered${bad.length ? ` · ${bad.length} source${bad.length === 1 ? '' : 's'} unreadable` : ''}` }),
+    el('p', { class: 'mb-fine', text: 'This page only reads what other parts of the system record. It changes nothing. Groups are the review’s judgement, put in plain words.' }),
+    el('ul', {}, (board.sources || []).map((s) => el('li', { text: `${s.ok ? 'OK' : 'Not read'} · ${s.name}${s.machine ? ` · ${s.machine}` : ''}${s.reason ? ` · ${s.reason}` : ''}` }))));
 }
 
 let probeResult = null; // checked once per page load
@@ -192,7 +172,7 @@ export function maturationTile(get) {
   const a = el('a', { class: 'tile', href: '#/work/maturation' },
     el('span', { class: 't-icon', icon: 'layers' }),
     el('span', {}, el('span', { class: 't-name', text: 'Feature maturation' }),
-      el('span', { class: 't-desc', text: 'Every feature on its way to switched-on: the latest review’s verdict, what measures it, what is being done, and its dates.' })));
+      el('span', { class: 't-desc', text: 'How every feature on its way to being switched on is doing, and who is on the ones that are stuck.' })));
   const host = el('div', { class: 'tiles tiles-maturation', hidden: true }, a);
   if (!probeResult) probeResult = get('/maturation/board?part=probe').then((r) => r.ok).catch(() => false);
   probeResult.then((ok) => { host.hidden = !ok; });
