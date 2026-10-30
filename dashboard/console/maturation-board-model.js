@@ -70,14 +70,14 @@ export function humanArea(f) {
 }
 
 // ── follow-up in plain words ───────────────────────────────────────────────
-/** "Fix underway" / "Nobody on it" / "Can't tell" — from explicit links only. */
+/** "Fix in progress" / "Fix handed to a builder" / "Fix planned, not started" / "No fix planned" / "Can't tell". */
 /** True when the review wrote down a plan, even though no task is linked to it yet. */
 export function hasWrittenPlan(f) {
   const p = f.review && (f.review.plan || f.review.nextStep);
   return Boolean(p) && !/^\s*nothing (planned|needed)/i.test(p);
 }
 
-/** No linked task AND no written plan: the true "nobody on it". */
+/** No linked task AND no written plan: "no fix planned". */
 export function isNobody(f) {
   return Boolean(f.followUp && f.followUp.state === 'none-linked' && ATTENTION.has(groupOf(f).id) && !hasWrittenPlan(f));
 }
@@ -87,10 +87,10 @@ export function ownerChip(f) {
   if (fu.state === 'unknown') return { text: 'Can’t tell', tone: 'muted' };
   if (fu.state === 'none-linked') {
     if (!ATTENTION.has(groupOf(f).id)) return null;
-    return hasWrittenPlan(f) ? { text: 'Planned, not started', tone: 'warn' } : { text: 'Nobody on it', tone: 'bad' };
+    return hasWrittenPlan(f) ? { text: 'Fix planned, not started', tone: 'warn' } : { text: 'No fix planned', tone: 'bad' };
   }
   const open = fu.items.some((i) => i.status === 'pending' || i.kind === 'initiative');
-  return open ? { text: 'Fix underway', tone: 'ok' } : { text: 'Fix assigned', tone: 'track' };
+  return open ? { text: 'Fix in progress', tone: 'ok' } : { text: 'Fix handed to a builder', tone: 'track' };
 }
 
 /** One short plain line under the name. Prefers the review's own plain summary. */
@@ -147,9 +147,9 @@ export function subline(board) {
   const bits = [];
   if (a.need) {
     const parts = [];
-    if (a.nobody) parts.push(`${a.nobody} have nobody on them`);
-    if (a.plannedOnly) parts.push(`${a.plannedOnly} have a plan but no task yet`);
-    bits.push(parts.length ? `Of those, ${parts.join(' and ')}.` : 'Each of those has someone on it.');
+    if (a.nobody) parts.push(`${a.nobody} have no fix planned`);
+    if (a.plannedOnly) parts.push(`${a.plannedOnly} have a fix planned that hasn’t started`);
+    bits.push(parts.length ? `Of those, ${parts.join(', and ')}.` : 'Each of those has a fix in progress.');
   }
   if (board.reviewDate) bits.push(`From the ${fmtDate(board.reviewDate)} review.`);
   const missing = (board.sources || []).find((s) => s.name === 'may-be-superseded');

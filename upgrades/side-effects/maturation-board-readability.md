@@ -85,3 +85,9 @@ Optional review fields `purpose`, `goal`, `plan`, `line` and a structured `measu
 page leads each row with `line` and shows a five-line card on tap. The owner chip distinguishes a
 written plan with no linked task ("Planned, not started") from no plan at all ("Nobody on it"), so
 the chip never contradicts the row text. Display only; no authority or storage change.
+
+## Addendum — plain fix-status wording
+
+Justin asked what "nobody on them" meant. The chips and summary now say what is true: "No fix
+planned" (no linked task, no written plan), "Fix planned, not started", "Fix in progress", "Fix handed
+to a builder", "Can't tell". Wording only.

@@ -60,7 +60,7 @@ function draw(main, board, nav) {
     el('h1', { class: 'mb-answer', text: headline(board) }),
     el('p', { class: 'mb-sub', text: subline(board) }));
 
-  // 2. The glance: one square per feature, coloured by group; a dot marks "nobody on it".
+  // 2. The glance: one square per feature, coloured by group; a dot marks "no fix planned".
   const legend = el('div', { class: 'mb-legend' }, GROUPS.filter((g) => counts[g.id]).map((g) => el('button', {
     type: 'button', class: `mb-key${st.g === g.id ? ' on' : ''}`, 'data-tone': g.tone,
     onclick: () => set({ g: st.g === g.id ? '' : g.id, open: '' }),
@@ -71,13 +71,13 @@ function draw(main, board, nav) {
       onclick: () => set({ f: s.id, open: s.group }),
     })));
   const glance = el('section', { class: 'mb-glance' }, map, legend,
-    el('p', { class: 'mb-hint', text: 'Each square is one feature. A white dot means nobody is on it. Tap a colour to show only that group.' }));
+    el('p', { class: 'mb-hint', text: 'Each square is one feature. A white dot means no fix is planned. Tap a colour to show only that group.' }));
 
   // 3. Tools: one search box and one switch, nothing else.
   const search = el('input', { type: 'search', class: 'mb-search', placeholder: 'Find a feature', value: st.q || '', 'aria-label': 'Find a feature' });
   let t = null;
   search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => set({ q: search.value.trim() }), 250); });
-  const nobody = el('button', { type: 'button', class: `mb-toggle${st.nobody ? ' on' : ''}`, text: 'Only “nobody on it”', 'aria-pressed': st.nobody ? 'true' : 'false', onclick: () => set({ nobody: st.nobody ? '' : '1' }) });
+  const nobody = el('button', { type: 'button', class: `mb-toggle${st.nobody ? ' on' : ''}`, text: 'Only “no fix planned”', 'aria-pressed': st.nobody ? 'true' : 'false', onclick: () => set({ nobody: st.nobody ? '' : '1' }) });
   const tools = el('div', { class: 'mb-tools' }, search, nobody,
     (st.g || st.q || st.nobody) ? el('button', { type: 'button', class: 'mb-link', text: 'Show everything', onclick: () => { nav.write(''); draw(main, board, nav); } }) : null);
 
@@ -98,7 +98,7 @@ function draw(main, board, nav) {
       },
     },
     el('span', { class: 'mb-group-name', text: `${g.label} · ${inGroup.length}` }),
-    el('span', { class: 'mb-group-blurb', text: g.blurb + (nobodyN && g.tone !== 'ok' ? ` ${nobodyN} with nobody on it.` : '') }),
+    el('span', { class: 'mb-group-blurb', text: g.blurb + (nobodyN && g.tone !== 'ok' ? ` ${nobodyN} with no fix planned.` : '') }),
     el('span', { class: 'mb-chev', text: isOpen ? '−' : '+' }));
     const body = isOpen ? el('div', { class: 'mb-rows' }, inGroup.map((f) => row(f, st.f === f.id, () => set({ f: st.f === f.id ? '' : f.id })))) : null;
     return el('section', { class: 'mb-group' }, head, body);
@@ -174,7 +174,7 @@ export function maturationTile(get) {
   const a = el('a', { class: 'tile', href: '#/work/maturation' },
     el('span', { class: 't-icon', icon: 'layers' }),
     el('span', {}, el('span', { class: 't-name', text: 'Feature maturation' }),
-      el('span', { class: 't-desc', text: 'How every feature on its way to being switched on is doing, and who is on the ones that are stuck.' })));
+      el('span', { class: 't-desc', text: 'How every feature on its way to being switched on is doing, and which stuck ones have a fix planned.' })));
   const host = el('div', { class: 'tiles tiles-maturation', hidden: true }, a);
   if (!probeResult) probeResult = get('/maturation/board?part=probe').then((r) => r.ok).catch(() => false);
   probeResult.then((ok) => { host.hidden = !ok; });

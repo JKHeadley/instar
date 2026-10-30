@@ -52,7 +52,7 @@ describe('the answer is plain words', () => {
     expect(h).toBe('3 features: 1 working, 2 need attention.');
     for (const word of ['blind', 'stalled', 'regressed', 'verdict', 'CMT']) expect(h.toLowerCase()).not.toContain(word.toLowerCase());
     expect(attention(fs)).toEqual({ need: 2, nobody: 1, plannedOnly: 0 });
-    expect(subline(board(fs))).toContain('Of those, 1 have nobody on them.');
+    expect(subline(board(fs))).toContain('Of those, 1 have no fix planned.');
   });
 
   it('is honest when the review cannot be read', () => {
@@ -91,16 +91,16 @@ describe('row wording', () => {
   });
 
   it('the owner chip says who is on it in plain words', () => {
-    expect(ownerChip(feature('a', 'stalled'))).toEqual({ text: 'Nobody on it', tone: 'bad' });
+    expect(ownerChip(feature('a', 'stalled'))).toEqual({ text: 'No fix planned', tone: 'bad' });
     // A written plan without a linked task is not "nobody on it" — the chip must not contradict the line.
-    expect(ownerChip(withReview(feature('a', 'stalled'), { plan: 'Redesign queued for Nov 6.' }))).toEqual({ text: 'Planned, not started', tone: 'warn' });
-    expect(ownerChip(withReview(feature('a', 'stalled'), { plan: 'Nothing planned.' }))!.text).toBe('Nobody on it');
+    expect(ownerChip(withReview(feature('a', 'stalled'), { plan: 'Redesign queued for Nov 6.' }))).toEqual({ text: 'Fix planned, not started', tone: 'warn' });
+    expect(ownerChip(withReview(feature('a', 'stalled'), { plan: 'Nothing planned.' }))!.text).toBe('No fix planned');
     expect(ownerChip(feature('a', 'live'))).toBeNull();
     expect(ownerChip(feature('a', 'stalled', { followUp: { state: 'unknown', items: [] } }))!.text).toBe('Can’t tell');
     const pending = { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'pending', label: 'pending', due: null, nextCheckIn: null }] };
-    expect(ownerChip(feature('a', 'stalled', { followUp: pending }))!.text).toBe('Fix underway');
+    expect(ownerChip(feature('a', 'stalled', { followUp: pending }))!.text).toBe('Fix in progress');
     const delivered = { state: 'linked', items: [{ ref: 'CMT-1', kind: 'commitment', status: 'delivered', label: 'handed off', due: null, nextCheckIn: null }] };
-    expect(ownerChip(feature('a', 'stalled', { followUp: delivered }))).toEqual({ text: 'Fix assigned', tone: 'track' });
+    expect(ownerChip(feature('a', 'stalled', { followUp: delivered }))).toEqual({ text: 'Fix handed to a builder', tone: 'track' });
   });
 });
 
