@@ -139,7 +139,12 @@ remaining P1/P2 in focused source review. This is source review only; the full
 suite, CI, and live Windows checks remain release gates.
 
 The local npm package inventory is larger than Node's default child-process
-output buffer. The Windows CI packaging check now explicitly allows a 16 MB
-buffer. This changes only CI inspection capacity; it grants no runtime desktop
-authority. A local dry-run package check verifies the three Windows files are
-present before CI runs the companion compiler and self-test.
+output buffer. A local dry-run package check with a 16 MB buffer verified that
+all three Windows files are present. This inspection changes no runtime desktop
+authority.
+
+The first Windows CI run did compile the companion and pass its self-test, then
+failed only in the package inspection step because Node on Windows could not
+spawn `npm` as a bare child-process executable (`ENOENT`). That step now runs
+`npm pack` through the runner's PowerShell and checks the parsed JSON inventory.
+The package file set and runtime code are unchanged by this CI correction.
