@@ -12,6 +12,21 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/health` | Health check (public, no auth). Returns version, session count, scheduler status, memory usage |
 | GET | `/status` | Running sessions + scheduler status |
 
+## Remote Desktop
+
+The dashboard uses these authenticated endpoints after the operator enters the existing dashboard PIN. The [Remote Desktop guide](/guides/remote-desktop/) explains target readiness, the Mac permissions, mobile controls, and revocation. A stream ticket is short lived and scoped to one target and controller.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/desktop/availability` | Report whether this installation can offer desktop access |
+| GET | `/desktop/targets` | List installed machine targets and readiness |
+| POST | `/desktop/requests` | Request access to one target under the operator's dashboard session |
+| GET | `/desktop/requests/:id` | Read the request and grant state |
+| POST | `/desktop/requests/:id/resume` | Resume a disconnected stream while its grant remains valid |
+| GET | `/desktop/requests/:id/cursor` | Read pointer position for viewer feedback |
+| POST | `/desktop/requests/:id/ticket` | Issue a short-lived ticket for the encrypted stream |
+| POST | `/desktop/requests/:id/revoke` | Revoke the grant and end screen capture and input |
+
 ## Sessions
 
 | Method | Path | Description |

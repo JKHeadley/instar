@@ -29,3 +29,5 @@ The dashboard uses the following authenticated routes. Applications should use t
 | `POST /desktop/requests/:id/revoke` | End control and revoke the grant. |
 
 `DirectDesktopAccess` owns admission, one-controller enforcement, expiry, and revocation. `RemoteStepUpLockouts` bounds PIN attempts. `DesktopHost` is the platform interface and `MacDesktopHost` is the first implementation. `DesktopVideo` defines bounded video frames, `DesktopAead` protects the stream, and `DesktopAccessAudit` records content-free control events. `DesktopStreamManager` connects the grant to the live browser stream. The approved architecture and rollout gates are described in `docs/specs/blocker-handoff-across-machines-and-surfaces.md` and `docs/specs/native-remote-desktop-quality.md` in the repository.
+
+For support, `GET /capabilities` shows which server capabilities are installed, `POST /telegram/dashboard-refresh` refreshes the dashboard link sent through the existing Telegram bot, and `GET /mesh/rope-health` reports cross-machine link health where that monitor is enabled. These diagnostic routes do not grant desktop control or replace the dashboard PIN.
