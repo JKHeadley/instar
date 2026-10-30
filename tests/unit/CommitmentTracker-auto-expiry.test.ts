@@ -299,4 +299,45 @@ describe('CommitmentTracker auto-expiry sweep', () => {
     expect(byId[u.id]).toMatchObject({ class: 'operator-wait', applied: true });
     expect(byId[a.id]).toMatchObject({ class: 'no-activity', applied: false });
   });
+
+  describe('CMT-1132 live obligations are not aged out', () => {
+    it('never ages out a behavioral commitment, on either branch', async () => {
+      const t = tracker(stateDir);
+      const rule = t.record({ type: 'behavioral', userRequest: 'never push to main', agentResponse: 'understood', behavioralRule: 'no pushes to main' });
+      const userRule = t.record({ type: 'behavioral', userRequest: 'standing', agentResponse: 'ok', behavioralRule: 'r', owner: 'user' });
+      await ageCommitment(t, rule.id, daysBefore(now, 60));
+      await ageCommitment(t, userRule.id, daysBefore(now, 60));
+      expect(t.sweepAutoExpiry(now)).toMatchObject({ eligible: 0, expired: 0 });
+      expect(t.get(rule.id)?.status).toBe('pending');
+      expect(t.get(userRule.id)?.status).toBe('pending');
+    });
+
+    it('leaves a violated commitment to its defect path', async () => {
+      const t = tracker(stateDir);
+      const c = t.record({ type: 'one-time-action', userRequest: 'x', agentResponse: 'y' });
+      await ageCommitment(t, c.id, daysBefore(now, 30));
+      await t.mutate(c.id, (prev) => ({ ...prev, status: 'violated' }));
+      expect(t.sweepAutoExpiry(now).eligible).toBe(0);
+      expect(t.get(c.id)?.status).toBe('violated');
+    });
+
+    it('a hold stops both branches until it is cleared, and the ledger counts it', async () => {
+      const t = tracker(stateDir);
+      const agent = t.record({ type: 'one-time-action', userRequest: 'token rotation', agentResponse: 'in 2027' });
+      const user = t.record({ type: 'one-time-action', userRequest: 'needs answer', agentResponse: 'asked', owner: 'user' });
+      for (const c of [agent, user]) {
+        await ageCommitment(t, c.id, daysBefore(now, 30));
+        await t.mutate(c.id, (prev) => ({ ...prev, autoExpiryHold: { reason: 'review 10-30', setAt: now.toISOString() } }));
+      }
+      const held = t.sweepAutoExpiry(now);
+      expect(held).toMatchObject({ eligible: 0, expired: 0 });
+      expect(held.operatorWait).toMatchObject({ eligible: 0, expired: 0 });
+      expect(t.get(agent.id)?.status).toBe('pending');
+      expect(t.get(user.id)?.status).toBe('pending');
+
+      await t.mutate(agent.id, (prev) => ({ ...prev, autoExpiryHold: undefined }));
+      expect(t.sweepAutoExpiry(now).expired).toBe(1);
+      expect(readLedger().at(-1)).toMatchObject({ held: 1 });
+    });
+  });
 });

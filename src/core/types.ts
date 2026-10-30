@@ -1753,6 +1753,31 @@ export interface ActionItem {
   };
   /** Tags for categorization */
   tags?: string[];
+  /** CMT-1132: exempts this action from auto-expiry until cleared. */
+  autoExpiryHold?: AutoExpiryHold;
+}
+
+/**
+ * A per-record exemption from auto-expiry (CMT-1132). Age proves nothing about
+ * a row a person or a review has said is still live, so a hold stops every
+ * expiry branch until it is cleared. No expiry date by design: a hold that
+ * lapsed by itself would hand the row back to the sweep unreviewed.
+ */
+export interface AutoExpiryHold {
+  reason: string;
+  setAt: string;
+}
+
+/** One action the auto-expiry sweep took out of the queue, with everything needed to put it back. */
+export interface ActionArchiveEntry {
+  /** The action exactly as it stood when it left the queue. */
+  action: ActionItem;
+  archivedAt: string;
+  ageDays: number;
+  class: string;
+  reason?: string;
+  /** Set when the action went back to the queue; the entry stays as history. */
+  restoredAt?: string;
 }
 
 /**

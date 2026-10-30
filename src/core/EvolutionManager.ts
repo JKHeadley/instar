@@ -27,6 +27,7 @@ import type {
   CapabilityGap,
   GapCategory,
   ActionItem,
+  ActionArchiveEntry,
   EvolutionManagerConfig,
 } from './types.js';
 import type { TrustElevationTracker } from './TrustElevationTracker.js';
@@ -1252,9 +1253,13 @@ export class EvolutionManager {
   }
 
   /**
-   * Expire only stale, ordinary PENDING actions. Removal is coalesced through one
-   * saveActions call, which also emits the existing replication tombstones for
-   * every removed record (the no-resurrection path).
+   * Archive only stale, ordinary PENDING actions (CMT-1132). Age cannot prove an
+   * action is dead, so nothing here is destroyed: the full record is written to
+   * the archive FIRST, and a failed archive write leaves the queue untouched.
+   * Taking the row out of the queue is coalesced through one saveActions call and
+   * emits NO tombstone; peers get a `cancelled` put instead, which a restore can
+   * undo. A row marked cancelled in place would not do: the queue cap prunes
+   * terminal rows first, so at saturation it would be gone in the same save.
    */
   runActionAutoExpirySweep(): { scanned: number; eligible: number; expired: number; dryRun: boolean } {
     const cfg = this.config.autoExpiry;
@@ -1270,6 +1275,7 @@ export class EvolutionManager {
       // resurfacer, and a dated high one is the overdue check's to bring back.
       if (action.priority === 'critical' || action.priority === 'high') continue;
       if (action.tags?.some((tag) => tag.toLowerCase() === 'pinned')) continue;
+      if (action.autoExpiryHold) continue;
       if (action.dueBy) {
         // A dated action must be overdue by the full age bound, not merely past
         // due: freshly-overdue items are what the overdue check resurfaces.
@@ -1282,18 +1288,25 @@ export class EvolutionManager {
       const optOut = action.followThroughOptOutReason?.trim();
       items.push({
         id: action.id,
+        title: action.title.slice(0, 200),
         ageDays: Math.floor((Date.now() - created) / 86_400_000),
         class: action.dueBy ? 'long-overdue' : optOut ? 'opted-out' : 'undated',
         applied: !dryRun,
         ...(optOut ? { reason: `created with no follow-through needed ("${optOut.slice(0, 200)}")` } : {}),
       });
     }
+    let expired = 0;
     if (!dryRun && eligibleIds.size > 0) {
-      const expiredActions = state.actions.filter((action) => eligibleIds.has(action.id));
-      state.actions = state.actions.filter((action) => !eligibleIds.has(action.id));
-      this.saveActions(state, expiredActions); // ONE durable write + existing tombstone funnel.
+      const archivedActions = state.actions.filter((action) => eligibleIds.has(action.id));
+      if (this.archiveActions(archivedActions, items)) {
+        state.actions = state.actions.filter((action) => !eligibleIds.has(action.id));
+        this.saveActions(state); // ONE durable write; removed here, so no tombstone.
+        this.emitArchivedActions(archivedActions);
+        expired = eligibleIds.size;
+      } else {
+        for (const item of items) item.applied = false;
+      }
     }
-    const expired = dryRun ? 0 : eligibleIds.size;
     // CMT-1118: the would-expire (or expired) ids, durable for the dry-run review.
     this.actionAutoExpiryLedger.record({
       dryRun,
@@ -1307,7 +1320,82 @@ export class EvolutionManager {
     return { scanned: state.actions.length + expired, eligible: eligibleIds.size, expired, dryRun };
   }
 
-  private saveActions(state: ActionState, explicitlyRemoved: ActionItem[] = []): void {
+  /**
+   * Strict read: a damaged archive must stop the sweep, because the tolerant
+   * `readFile` would hand back an empty archive and the next write would erase it.
+   */
+  private loadActionArchive(): ActionArchiveEntry[] {
+    const fp = this.filePath('action-archive');
+    if (!fs.existsSync(fp)) return [];
+    const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8')) as { entries?: ActionArchiveEntry[] };
+    if (!Array.isArray(parsed.entries)) throw new Error(`no entries array in ${fp}`);
+    return parsed.entries;
+  }
+
+  /** Returns false, having changed nothing, when the archive cannot be written. */
+  private archiveActions(actions: ActionItem[], items: AutoExpiryLedgerItem[]): boolean {
+    try {
+      const archivedAt = this.now();
+      const byId = new Map(items.map((item) => [item.id, item]));
+      const ids = new Set(actions.map((action) => action.id));
+      // An unrestored entry for the same id means a crash between archive and queue save.
+      const entries = this.loadActionArchive().filter((entry) => entry.restoredAt || !ids.has(entry.action.id));
+      for (const action of actions) {
+        const item = byId.get(action.id);
+        entries.push({
+          action,
+          archivedAt,
+          ageDays: item?.ageDays ?? 0,
+          class: item?.class ?? 'undated',
+          ...(item?.reason ? { reason: item.reason } : {}),
+        });
+      }
+      this.writeFile('action-archive', { entries });
+      return true;
+    } catch (err) {
+      // @silent-fallback-ok: refusing is the safe outcome; the rows stay queued and the next sweep retries.
+      console.warn(`[EvolutionManager] Action archive unavailable, nothing removed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** Tell peers an archived action is closed, in a form a later put can reverse. */
+  private emitArchivedActions(actions: ActionItem[]): void {
+    for (const action of actions) {
+      this.lastEmittedActionFp.delete(action.id);
+      if (!this.actionReplication) continue;
+      try {
+        this.actionReplication.emitPut({ ...action, status: 'cancelled', resolution: 'auto-archived after long inactivity; restorable' });
+      } catch {
+        // @silent-fallback-ok: replication is best-effort, as in saveActions; the archive is already durable.
+      }
+    }
+  }
+
+  listArchivedActions(): ActionArchiveEntry[] {
+    return this.loadActionArchive();
+  }
+
+  /**
+   * Put an archived action back in the queue. It returns held: its age is
+   * unchanged, so without a hold the next sweep would archive it again.
+   */
+  restoreArchivedAction(id: string): ActionItem | 'not-archived' | 'id-in-use' {
+    const entries = this.loadActionArchive();
+    const entry = entries.find((candidate) => candidate.action.id === id && !candidate.restoredAt);
+    if (!entry) return 'not-archived';
+    const state = this.loadActions();
+    if (state.actions.some((action) => action.id === id)) return 'id-in-use';
+    const restoredAt = this.now();
+    const action: ActionItem = { ...entry.action, autoExpiryHold: { reason: 'restored from the auto-expiry archive', setAt: restoredAt } };
+    state.actions.push(action);
+    this.saveActions(state);
+    entry.restoredAt = restoredAt;
+    this.writeFile('action-archive', { entries });
+    return action;
+  }
+
+  private saveActions(state: ActionState): void {
     let pending = 0, completed = 0, overdue = 0;
     const now = new Date();
     for (const a of state.actions) {
@@ -1349,10 +1437,7 @@ export class EvolutionManager {
     if (emitter) {
       const survivors = new Set(state.actions.map(a => a.id));
       const deletedAt = this.now();
-      const removedCandidates = new Map(
-        [...beforePrune, ...explicitlyRemoved].map(action => [action.id, action]),
-      );
-      for (const pruned of removedCandidates.values()) {
+      for (const pruned of beforePrune) {
         if (survivors.has(pruned.id)) continue;
         try {
           emitter.emitDelete(pruned.title, pruned.commitTo, pruned.createdAt, deletedAt);
@@ -1387,7 +1472,16 @@ export class EvolutionManager {
   }
 
   private nextActionId(state: ActionState): string {
-    const existing = new Set(state.actions.map(a => a.id));
+    // An archived id stays reserved so a restore does not collide with new work. A
+    // damaged archive must not stop new actions: restore refuses a colliding id anyway.
+    let archivedIds: string[] = [];
+    try {
+      archivedIds = this.loadActionArchive().map(e => e.action.id);
+    } catch (err) {
+      // @silent-fallback-ok: the sweep refuses on the same damage; id reservation is a courtesy to restore.
+      console.warn(`[EvolutionManager] Action archive unreadable, ids not reserved: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const existing = new Set([...state.actions.map(a => a.id), ...archivedIds]);
     let num = 1;
     while (existing.has(`ACT-${String(num).padStart(3, '0')}`)) num++;
     return `ACT-${String(num).padStart(3, '0')}`;
@@ -1426,10 +1520,14 @@ export class EvolutionManager {
   updateAction(id: string, updates: {
     status?: ActionItem['status'];
     resolution?: string;
+    /** CMT-1132: a hold to set, or null to clear one. */
+    autoExpiryHold?: ActionItem['autoExpiryHold'] | null;
   }): boolean {
     const state = this.loadActions();
     const action = state.actions.find(a => a.id === id);
     if (!action) return false;
+    if (updates.autoExpiryHold === null) delete action.autoExpiryHold;
+    else if (updates.autoExpiryHold) action.autoExpiryHold = updates.autoExpiryHold;
     if (updates.status) {
       action.status = updates.status;
       if (updates.status === 'completed') action.completedAt = this.now();

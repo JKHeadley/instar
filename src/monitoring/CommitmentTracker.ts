@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { LiveConfig } from '../config/LiveConfig.js';
-import type { ComponentHealth } from '../core/types.js';
+import type { AutoExpiryHold, ComponentHealth } from '../core/types.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { AutoExpiryLedger } from '../core/AutoExpiryLedger.js';
@@ -151,6 +151,8 @@ export interface Commitment {
    * record() or via the guarded transition route.
    */
   supersededBy?: string;
+  /** CMT-1132: exempts this row from both auto-expiry branches until cleared. */
+  autoExpiryHold?: AutoExpiryHold;
 
   // ── Type-specific fields ────────────────────────────────
 
@@ -1919,7 +1921,7 @@ export class CommitmentTracker extends EventEmitter {
     // rule — review what it would expire — can actually be met.
     this.autoExpiryLedger.record({
       dryRun: report.dryRun,
-      extra: { agentEnabled: config.enabled, operatorWaitEnabled: ow.enabled, operatorWaitDryRun: ow.dryRun, operatorWaitMaxAgeDays: ow.maxAgeDays },
+      extra: { held: this.store.commitments.filter((c) => c.autoExpiryHold && c.status === 'pending').length, agentEnabled: config.enabled, operatorWaitEnabled: ow.enabled, operatorWaitDryRun: ow.dryRun, operatorWaitMaxAgeDays: ow.maxAgeDays },
       maxAgeDays: report.maxAgeDays,
       scanned: report.scanned,
       eligible: report.eligible + report.operatorWait.eligible,
@@ -1947,13 +1949,15 @@ export class CommitmentTracker extends EventEmitter {
    * user-authorization, qualify; the wait starts at the later of creation and
    * the current blocker episode's start. Replicas (another machine's rows) are
    * the origin machine's to expire. Never expires a row with a future hard
-   * deadline. Returns the per-row reason, or null.
+   * deadline. A standing behavioral rule is never "waiting", and a held row is
+   * exempt (CMT-1132). Returns the per-row reason, or null.
    */
   private operatorWaitDisposition(commitment: Commitment, now: Date, maxAgeDays: number): { waitedDays: number; reason: string } | null {
     const owner = commitment.owner ?? 'agent';
     const blockedOn = commitment.blockedOn ?? 'none';
     const waitsOnOperator = owner === 'user' || blockedOn === 'user-input' || blockedOn === 'user-authorization';
     if (!waitsOnOperator) return null;
+    if (commitment.type === 'behavioral' || commitment.autoExpiryHold) return null;
     if (commitment.status !== 'pending' && commitment.status !== 'violated') return null;
     if (this.config.originMachineId && commitment.originMachineId && commitment.originMachineId !== this.config.originMachineId) return null;
     const createdMs = Date.parse(commitment.createdAt);
@@ -2036,7 +2040,11 @@ export class CommitmentTracker extends EventEmitter {
 
   /**
    * The agent-branch auto-expiry rule (CMT-1118). Only an UNBLOCKED, agent-owned,
-   * open, locally-originated row past the age bound qualifies:
+   * pending, locally-originated row past the age bound qualifies (CMT-1132):
+   *   - `behavioral` is out: a standing rule produces no activity, so "no
+   *     activity" says nothing about it.
+   *   - `violated` is out: it is a live defect, not a stale promise.
+   *   - a row with an `autoExpiryHold` is out until the hold is cleared.
    *   - `blockedOn: 'external'` is owned by the external-block dead-letter path;
    *     `user-input` / `user-authorization` belong to the operator-wait branch
    *     (and stay open when that branch is off) — neither is "aged out".
@@ -2052,8 +2060,9 @@ export class CommitmentTracker extends EventEmitter {
     maxAgeDays: number,
   ): { waitedDays: number; reason: string; class: 'opted-out' | 'no-activity' } | null {
     if (commitment.owner !== 'agent') return null;
+    if (commitment.type === 'behavioral' || commitment.autoExpiryHold) return null;
     if ((commitment.blockedOn ?? 'none') !== 'none') return null;
-    if (commitment.status !== 'pending' && commitment.status !== 'violated') return null;
+    if (commitment.status !== 'pending') return null;
     if (this.config.originMachineId && commitment.originMachineId && commitment.originMachineId !== this.config.originMachineId) return null;
     const createdAtMs = Date.parse(commitment.createdAt);
     if (!Number.isFinite(createdAtMs)) return null;
