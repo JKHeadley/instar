@@ -144,6 +144,7 @@ import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ClassReviewStore } from '../monitoring/ClassReviewStore.js';
 import { CorrectionClassReview } from '../monitoring/CorrectionClassReview.js';
 import { CompletionClaimVerifier, buildCompletionClaimFrameworkResolver } from '../monitoring/CompletionClaimVerifier.js';
+import { LlmQueue } from '../monitoring/LlmQueue.js';
 import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
 import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -3439,9 +3440,16 @@ export class AgentServer {
       );
       if (completionEnabled && options.config.stateDir) {
         const cfg = options.config.monitoring?.completionClaimVerification ?? {};
-        const sharedClaimQueue = options.llmQueue;
-        const claimIntelligence = options.intelligence && sharedClaimQueue ? {
-          evaluate: (prompt: string, intelligenceOptions: import('../core/types.js').IntelligenceOptions = {}) => sharedClaimQueue.enqueueMetered({
+        // Its own queue, on purpose. On the shared queue this verifier's per-call estimate
+        // used up the background share of PromiseBeacon's spend cap by about 06:00 UTC. Every
+        // later turn was then refused before any model ran, recorded as "invalid output"
+        // (the 41% of CMT-1131), and the other background callers were starved with it.
+        // enqueueMetered's component budget below is the bound that applies to this feature.
+        const claimQueue = options.llmQueue
+          ? new LlmQueue({ maxConcurrent: cfg.maxConcurrent ?? 4, interactiveReservePct: 0, maxDailyCents: 500 })
+          : null;
+        const claimIntelligence = options.intelligence && claimQueue ? {
+          evaluate: (prompt: string, intelligenceOptions: import('../core/types.js').IntelligenceOptions = {}) => claimQueue.enqueueMetered({
             component: 'claim-verification', estimatedInputTokens: Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4),
             maxOutputTokens: intelligenceOptions.maxTokens ?? 1_800, estimatedCostCents: 0.25,
             hourly: { requests: 300 }, daily: { requests: 2_000, inputTokens: 10_000_000, outputTokens: 4_000_000, costCents: 500 },

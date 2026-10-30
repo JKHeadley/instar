@@ -6,6 +6,7 @@ import { DP_COMPLETION_CLAIM_VERIFY } from '../data/provenanceCoverage.js';
 import { scrubSecrets } from './scrubSecrets.js';
 import type { EvidenceActionKind, TurnEvidence } from './TurnEvidence.js';
 import { buildClaimCandidates, parseGeneralClaimEnvelope, type GeneralClaimEnvelope } from './ClaimObservation.js';
+import { LlmAbortedError, LlmQueueAdmissionError } from './LlmQueue.js';
 
 export type ClaimClauseLabel = 'future-commitment' | 'completed-or-in-progress-assertion' | 'neither';
 
@@ -20,6 +21,20 @@ export interface ArbitratedClaimClause {
   rationale: string;
 }
 
+/**
+ * Why a turn produced no authoritative classification. Fixed codes only: never the
+ * model's text, an error message, or a model-authored key name, because those can
+ * carry the claim itself.
+ */
+export type ClaimFailureReason = 'no-intelligence' | 'daily-spend-cap' | 'lane-reserve' | 'component-budget'
+  | 'queue-aborted' | 'provider-error' | 'empty-output' | 'invalid-output';
+export interface ClaimArbitrationFailure {
+  reason: ClaimFailureReason;
+  branch: string;
+  model?: string;
+  framework?: string;
+}
+
 export interface ClaimClauseArbitration {
   clauses: ArbitratedClaimClause[];
   /** True only when the single structured classification pass was authoritative. */
@@ -27,6 +42,8 @@ export interface ClaimClauseArbitration {
   /** Dark general-claim projection. Never consumed by routeActionClaim. */
   general?: GeneralClaimEnvelope;
   generalModel?: { framework?: string; model: string; inputTokens?: number; outputTokens?: number };
+  /** Present whenever `authoritative` is false. */
+  failure?: ClaimArbitrationFailure;
 }
 
 export interface ClaimClauseArbiterOptions {
@@ -82,11 +99,13 @@ export class ClaimClauseArbiter {
   constructor(private readonly opts: ClaimClauseArbiterOptions) {}
 
   async arbitrate(message: string, evidence: TurnEvidence): Promise<ClaimClauseArbitration> {
-    if (!this.opts.intelligence) return { clauses: [], authoritative: false };
+    if (!this.opts.intelligence) return { clauses: [], authoritative: false, failure: { reason: 'no-intelligence', branch: 'precondition' } };
     const clauses = splitClaimClauses(message);
     if (clauses.length === 0) return { clauses: [], authoritative: true };
+    let resolvedModel: { framework?: string; model: string } | undefined;
+    const failed = (reason: ClaimFailureReason, branch: string): ClaimArbitrationFailure => ({ reason, branch,
+      ...(resolvedModel?.model ? { model: resolvedModel.model } : {}), ...(resolvedModel?.framework ? { framework: resolvedModel.framework } : {}) });
     try {
-      let resolvedModel: { framework?: string; model: string } | undefined;
       let usage: { inputTokens: number; outputTokens: number } | undefined;
       // Only ask for what can actually be admitted. A resolver that is absent, throws,
       // or cannot decide leaves this true — the old behavior — so this can never make a
@@ -119,22 +138,27 @@ export class ClaimClauseArbiter {
           promptId: includeGeneral ? CLAIM_ARBITER_PROMPT_ID : CLAIM_ARBITER_PROMPT_ID_LEGACY_ONLY,
         },
       });
-      const parsed = parseClauseArbitration(raw, clauses);
+      if (raw.trim().length === 0) return { clauses: [], authoritative: false, failure: failed('empty-output', 'parse:empty') };
+      const parsed = parseClauseArbitrationDetailed(raw, clauses);
       // General v1 is same-origin Claude-only. Legacy arbitration keeps its
       // existing behavior even if an installation routes that older lane
       // elsewhere; a non-Claude general result is simply not admitted.
-      const modelRoot = parseModelRoot(raw);
-      if (!modelRoot) return { clauses: [], authoritative: false };
+      const rootResult = parseModelRootDetailed(raw);
+      if ('failure' in rootResult) return { clauses: [], authoritative: false, failure: failed('invalid-output', `parse:${rootResult.failure}`) };
+      const modelRoot = rootResult.root;
       const parsedGeneral = parseGeneralClaimEnvelope(raw, message);
       const envelopeIncludesGeneral = Object.hasOwn(modelRoot, 'general');
-      if (envelopeIncludesGeneral && !parsedGeneral) return { clauses: [], authoritative: false };
+      if (envelopeIncludesGeneral && !parsedGeneral) return { clauses: [], authoritative: false, failure: failed('invalid-output', 'parse:general-envelope') };
       const general = resolvedModel?.framework === 'claude-code' ? parsedGeneral : null;
       const generalModel = general && resolvedModel ? { ...resolvedModel, ...usage } : undefined;
-      return parsed ? { clauses: parsed, authoritative: true, ...(general ? { general } : {}), ...(generalModel ? { generalModel } : {}) }
-        : { clauses: [], authoritative: false, ...(general ? { general } : {}), ...(generalModel ? { generalModel } : {}) };
-    } catch {
+      return 'clauses' in parsed ? { clauses: parsed.clauses, authoritative: true, ...(general ? { general } : {}), ...(generalModel ? { generalModel } : {}) }
+        : { clauses: [], authoritative: false, ...(general ? { general } : {}), ...(generalModel ? { generalModel } : {}),
+          failure: failed('invalid-output', `parse:${parsed.failure}`) };
+    } catch (error) {
       // Failure must never suppress the already-shipped Action-Claim behavior.
-      return { clauses: [], authoritative: false };
+      if (error instanceof LlmQueueAdmissionError) return { clauses: [], authoritative: false, failure: failed(error.code, 'admission') };
+      if (error instanceof LlmAbortedError) return { clauses: [], authoritative: false, failure: failed('queue-aborted', 'admission') };
+      return { clauses: [], authoritative: false, failure: failed('provider-error', 'provider') };
     }
   }
 }
@@ -190,23 +214,33 @@ export function splitClaimClauses(message: string): string[] {
 }
 
 export function parseClauseArbitration(raw: string, sourceClauses: string[]): ArbitratedClaimClause[] | null {
+  const parsed = parseClauseArbitrationDetailed(raw, sourceClauses);
+  return 'clauses' in parsed ? parsed.clauses : null;
+}
+
+type ClauseParse = { clauses: ArbitratedClaimClause[] } | { failure: string };
+
+function parseClauseArbitrationDetailed(raw: string, sourceClauses: string[]): ClauseParse {
   try {
-    const root = parseModelRoot(raw);
-    if (!root) return null;
+    const rootResult = parseModelRootDetailed(raw);
+    if ('failure' in rootResult) return rootResult;
+    const root = rootResult.root;
     const value = root.legacy && typeof root.legacy === 'object' ? root.legacy : root;
-    if (Object.keys(value).some((key) => key !== 'clauses')) return null;
-    if (!Array.isArray(value.clauses) || value.clauses.length > sourceClauses.length) return null;
+    if (Object.keys(value).some((key) => key !== 'clauses')) return { failure: 'unexpected-legacy-key' };
+    if (!Array.isArray(value.clauses)) return { failure: 'clauses-not-array' };
+    if (value.clauses.length > sourceClauses.length) return { failure: 'too-many-clauses' };
     const seen = new Set<number>();
     const out: ArbitratedClaimClause[] = [];
     for (const rawClause of value.clauses) {
-      if (!rawClause || typeof rawClause !== 'object' || Array.isArray(rawClause)) return null;
+      if (!rawClause || typeof rawClause !== 'object' || Array.isArray(rawClause)) return { failure: 'clause-not-object' };
       const clause = rawClause as Record<string, unknown>;
-      if (Object.keys(clause).some((key) => !['clauseId', 'label', 'actionKind', 'completionScope', 'target', 'corroborated', 'rationale'].includes(key))) return null;
+      if (Object.keys(clause).some((key) => !['clauseId', 'label', 'actionKind', 'completionScope', 'target', 'corroborated', 'rationale'].includes(key))) return { failure: 'unexpected-clause-key' };
       const id = clause.clauseId;
-      if (!Number.isInteger(id) || (id as number) < 0 || (id as number) >= sourceClauses.length || seen.has(id as number)) return null;
-      if (!LABELS.has(clause.label as ClaimClauseLabel) || !KINDS.has(clause.actionKind as EvidenceActionKind)
-        || !SCOPES.has(clause.completionScope as ArbitratedClaimClause['completionScope'])
-        || typeof clause.corroborated !== 'boolean') return null;
+      if (!Number.isInteger(id) || (id as number) < 0 || (id as number) >= sourceClauses.length || seen.has(id as number)) return { failure: 'bad-clause-id' };
+      if (!LABELS.has(clause.label as ClaimClauseLabel)) return { failure: 'bad-label' };
+      if (!KINDS.has(clause.actionKind as EvidenceActionKind)) return { failure: 'bad-action-kind' };
+      if (!SCOPES.has(clause.completionScope as ArbitratedClaimClause['completionScope'])) return { failure: 'bad-completion-scope' };
+      if (typeof clause.corroborated !== 'boolean') return { failure: 'bad-corroborated' };
       seen.add(id as number);
       out.push({
         clauseId: id as number,
@@ -224,20 +258,22 @@ export function parseClauseArbitration(raw: string, sourceClauses: string[]): Ar
       clauseId: id, text: sourceClauses[id], label: 'neither', actionKind: 'other',
       completionScope: 'none', corroborated: false, rationale: '',
     });
-    return out.sort((a, b) => a.clauseId - b.clauseId);
-  } catch { /* @silent-fallback-ok — malformed model output conservatively grants no arbitration authority */ return null; }
+    return { clauses: out.sort((a, b) => a.clauseId - b.clauseId) };
+  } catch { /* @silent-fallback-ok — malformed model output conservatively grants no arbitration authority */ return { failure: 'parser-exception' }; }
 }
 
-function parseModelRoot(raw: string): { clauses?: unknown; legacy?: { clauses?: unknown }; general?: unknown } | null {
+type ModelRoot = { clauses?: unknown; legacy?: { clauses?: unknown }; general?: unknown };
+
+function parseModelRootDetailed(raw: string): { root: ModelRoot } | { failure: string } {
   try {
     const match = raw.match(/\{[\s\S]*\}/);
     const root = JSON.parse(match?.[0] ?? raw) as Record<string, unknown>;
-    if (!root || typeof root !== 'object' || Array.isArray(root)) return null;
+    if (!root || typeof root !== 'object' || Array.isArray(root)) return { failure: 'root-not-object' };
     const allowed = Object.hasOwn(root, 'legacy') ? ['legacy', 'general'] : ['clauses'];
-    if (Object.keys(root).some((key) => !allowed.includes(key))) return null;
-    if (Object.hasOwn(root, 'legacy') && (!root.legacy || typeof root.legacy !== 'object' || Array.isArray(root.legacy))) return null;
-    return root as { clauses?: unknown; legacy?: { clauses?: unknown }; general?: unknown };
-  } catch { /* @silent-fallback-ok: malformed provider output is non-authoritative */ return null; }
+    if (Object.keys(root).some((key) => !allowed.includes(key))) return { failure: 'unexpected-root-key' };
+    if (Object.hasOwn(root, 'legacy') && (!root.legacy || typeof root.legacy !== 'object' || Array.isArray(root.legacy))) return { failure: 'legacy-not-object' };
+    return { root: root as ModelRoot };
+  } catch { /* @silent-fallback-ok: malformed provider output is non-authoritative */ return { failure: 'unparseable-json' }; }
 }
 
 export function buildCompletionClaimDecisionContext(input: {

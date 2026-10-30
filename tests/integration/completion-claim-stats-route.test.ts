@@ -28,6 +28,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { CompletionClaimVerifier } from '../../src/monitoring/CompletionClaimVerifier.js';
 
 const PROJECT_NAME = 'ccstats-test-' + Math.random().toString(36).slice(2, 8);
 let AUTH = '';
@@ -152,5 +153,37 @@ describe('GET /completion-claim/stats', () => {
       .set('Authorization', `Bearer ${AUTH}`);
     expect(res.status).toBe(200);
     expect(calls).toBe(1);
+  });
+});
+
+describe('GET /completion-claim/failures', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccfail-'));
+    AUTH = generateAgentToken(PROJECT_NAME);
+  });
+
+  afterEach(() => {
+    deleteAgentToken(PROJECT_NAME);
+    SafeFsExecutor.safeRmSync(tmpDir, {
+      recursive: true, force: true,
+      operation: 'tests/integration/completion-claim-stats-route.test.ts',
+    });
+  });
+
+  it('503s when the verifier is absent', async () => {
+    const res = await request(app(null)).get('/completion-claim/failures').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.status).toBe(503);
+  });
+
+  it('serves a real failed turn with its code, without claim text, and holds observe-only', async () => {
+    const verifier = new CompletionClaimVerifier({ stateDir: tmpDir, enabled: true, dryRun: false,
+      intelligence: { evaluate: async () => '{bad json' } as never });
+    await verifier.observe('I merged zebra-private-target', { toolCalls: [], unavailable: false, truncated: false, canaryOk: true } as never);
+    const res = await request(app(verifier)).get('/completion-claim/failures?limit=5').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    expect(res.body.records).toEqual([expect.objectContaining({ reason: 'invalid-output', branch: 'parse:unparseable-json' })]);
+    expect(res.body.observeOnly).toBe(true);
+    expect(res.body.gate.met).toBe(false);
+    expect(JSON.stringify(res.body)).not.toContain('zebra');
   });
 });

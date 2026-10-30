@@ -30179,12 +30179,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         observedAt: observationNow.toISOString() }]];
     }));
     const admission = ctx.completionClaimVerifier.enqueue(message, evidence, (arbitration) => {
-      if (ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+      if (ctx.completionClaimVerifier?.isObserveOnly() === false) {
         registerUnifiedFutureClaims({ message, topicId, rawBindToken, arbitration });
       }
     }, { ...(messageAttemptId ? { messageAttemptId } : {}), ...(boundObservationTopicId !== undefined ? { topicId: boundObservationTopicId } : {}),
       ...(sessionSnapshot ? { sessionSnapshot } : {}), commitmentSnapshots, guardSnapshots, originFramework: 'claude-code' });
-    if (!admission.accepted && ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+    if (!admission.accepted && !ctx.completionClaimVerifier.isObserveOnly()) {
       // Queue pressure/duplicate/provider uncertainty must never suppress the
       // already-shipped Action-Claim behavior.
       registerUnifiedFutureClaims({ message, topicId, rawBindToken });
@@ -30219,6 +30219,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       'classified-completion-claims': stats.classifiedTurns,
       scope: 'local',
     });
+  });
+
+  // Why turns failed, per turn: fixed reason codes, parser branch, model. Never claim text.
+  router.get('/completion-claim/failures', (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    const records = ctx.completionClaimVerifier.readFailures(limit);
+    res.json({ records, count: records.length, daily: ctx.completionClaimVerifier.failureDailyRollup(),
+      gate: ctx.completionClaimVerifier.failureGate(), observeOnly: ctx.completionClaimVerifier.isObserveOnly(), scope: 'local' });
   });
 
   router.get('/completion-claim/audit', async (req, res) => {
@@ -33931,7 +33940,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const completionLive = !!ctx.completionClaimVerifier
       && resolveDevAgentGate(ctx.config.monitoring?.completionClaimVerification?.enabled, ctx.config)
-      && ctx.config.monitoring?.completionClaimVerification?.dryRun === false;
+      && !ctx.completionClaimVerifier.isObserveOnly();
     if (completionLive && ctx.completionClaimVerifier!.getRecentAuthoritativeArbitration(message)?.authoritative) {
       res.json({ observed: true, registered: false, reason: 'shared-arbiter-authoritative', activityNote });
       return;

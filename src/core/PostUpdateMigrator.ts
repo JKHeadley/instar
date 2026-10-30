@@ -8274,6 +8274,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Claim Verification awareness v2');
     }
+    if (!content.includes('Completion-claim failure ledger')) {
+      content += `\n- **Completion-claim failure ledger.** The verifier records every turn it could not classify, with a fixed reason code, the failed branch and the model, never the claim text. Read it with \`curl -H "Authorization: Bearer \$AUTH" http://localhost:4042/completion-claim/failures\` (\`records\`, \`daily\`, \`gate\`, \`observeOnly\`). It stays observe-only until failures are under 5% on each of the last 7 complete days, even with \`dryRun: false\`. **When to use** (PROACTIVE): asked why the verifier fails, or whether it can leave observe-only → read this, never infer from the stats counters. \`invalid-output\` means the model answered badly; \`component-budget\`, \`daily-spend-cap\` and \`lane-reserve\` mean no model was asked.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Completion-claim failure ledger awareness');
+    }
 
     // Outbound Message Gate (gate-prompts-judge-by-meaning §Migration) — Agent
     // Awareness Standard: an agent that doesn't know its messages pass an LLM
