@@ -45,6 +45,6 @@ only makes a later decision to turn them on safe to take.
 
 ## What the reader needs to decide
 
-Nothing now. Turning either job on stays a separate decision, after someone
+Nothing now. Turning either job on stays a separate decision, made after someone
 re-reads the lists. The specific items the review named get their holds once this
 ships.

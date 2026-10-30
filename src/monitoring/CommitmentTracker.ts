@@ -23,10 +23,10 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { LiveConfig } from '../config/LiveConfig.js';
-import type { ComponentHealth } from '../core/types.js';
+import type { AutoExpiryHold, ComponentHealth } from '../core/types.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
-import { AutoExpiryLedger, type AutoExpiryHold } from '../core/AutoExpiryLedger.js';
+import { AutoExpiryLedger } from '../core/AutoExpiryLedger.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 

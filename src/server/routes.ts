@@ -1,4 +1,5 @@
-import { parseAutoExpiryHold, type AutoExpiryHold } from '../core/AutoExpiryLedger.js';
+import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
+import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';

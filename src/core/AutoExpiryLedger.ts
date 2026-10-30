@@ -24,17 +24,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-
-/**
- * A per-record exemption from auto-expiry (CMT-1132). Age proves nothing about
- * a row a person or a review has said is still live, so a hold stops every
- * expiry branch until it is cleared. No expiry date by design: a hold that
- * lapsed by itself would hand the row back to the sweep unreviewed.
- */
-export interface AutoExpiryHold {
-  reason: string;
-  setAt: string;
-}
+import type { AutoExpiryHold } from './types.js';
 
 const MAX_HOLD_REASON_CHARS = 500;
 

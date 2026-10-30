@@ -125,3 +125,8 @@ not read the replication merge code; the e2e test covers that path.
 Class: age-based closure of records that age cannot judge. Closed on both sweeps'
 every branch by the hold; the `expireCommitments` path is excluded because it acts
 on an explicit `expiresAt`, not on age.
+
+## Amendment: hold type location
+
+`AutoExpiryHold` moved to `src/core/types.ts`. Importing it from `AutoExpiryLedger.ts`
+would have pulled that file into the Stage-B certified import closure. No behavior change.

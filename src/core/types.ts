@@ -6,7 +6,6 @@
  */
 
 // Type-only import (erased at compile time — types.ts stays runtime-import-free).
-import type { AutoExpiryHold } from './AutoExpiryLedger.js';
 import type { DecisionProvenanceBlock } from './decisionQualityTypes.js';
 import type { AnomalyDecl } from '../scheduler/jobScriptProtocol.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
@@ -1752,6 +1751,17 @@ export interface ActionItem {
   tags?: string[];
   /** CMT-1132: exempts this action from auto-expiry until cleared. */
   autoExpiryHold?: AutoExpiryHold;
+}
+
+/**
+ * A per-record exemption from auto-expiry (CMT-1132). Age proves nothing about
+ * a row a person or a review has said is still live, so a hold stops every
+ * expiry branch until it is cleared. No expiry date by design: a hold that
+ * lapsed by itself would hand the row back to the sweep unreviewed.
+ */
+export interface AutoExpiryHold {
+  reason: string;
+  setAt: string;
 }
 
 /** One action the auto-expiry sweep took out of the queue, with everything needed to put it back. */
