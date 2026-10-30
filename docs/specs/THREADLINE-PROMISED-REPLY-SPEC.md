@@ -138,6 +138,9 @@ stalls and none on threads that did get a reply.
 6. Late real reply after the notice: the reply is still sent.
 7. Current peer receives the notice: no ack, no route, no session, **and** the notice is in that
    thread's history and on peer health (both halves asserted).
+8. **Older peer** receives the notice and auto-acks it: our side does not answer; the exchange ends.
+9. Inbound absent from the canonical log: the obligation still closes on `inReplyTo` (it uses its own recorded id).
+10. Owner machine gone and store not replicated: no notice, and the miss is logged locally.
 11. Real reply without `inReplyTo`, same session, one open obligation: closed, no notice. With two
     open: none closed.
 12. Deliberate close: no notice.
@@ -146,9 +149,6 @@ stalls and none on threads that did get a reply.
 14. Session alive across a server restart: reason is `still-working`, not `restart-lost`.
 15. Notice rejected by the relay: recorded verdict, no retry.
 16. Dry-run: nothing sent, the would-be notice is logged.
-8. **Older peer** receives the notice and auto-acks it: our side does not answer; the exchange ends.
-9. Inbound absent from the canonical log: the obligation still closes on `inReplyTo` (it uses its own recorded id).
-10. Owner machine gone and store not replicated: no notice, and the miss is logged locally.
 
 ## Out of scope
 
@@ -159,3 +159,25 @@ real need. See THREADLINE-THREAD-LEDGER-SPEC.md (v0, superseded for F/H by this 
 
 spec-converge, the ELI16 overview, and agent-awareness and migration parity (a new durable store
 and a startup sweep).
+
+## Inputs for spec-converge (Echo, review of f3880f648, 2026-10-30)
+
+Echo cleared v2 for convergence. These must be settled in it:
+
+1. **Trust gates.** `classifyRelayPlaintextOperation` treats any non-chat type as its own
+   operation, checked against the trust manager's table. Decide whether `reply-notice` is
+   allowed there; otherwise it is dropped under `relayUnknownSenderTrust` enforcement.
+   `refuseDowngrade` exempts only `'ack'`, so a plaintext `reply-notice` from an invite peer would
+   be refused as a downgrade. Decide both explicitly, and test them. Also test that an older peer
+   really treats an unknown type as content.
+2. **Untrusted text.** Send structured fields only (`reason` from the closed set, plus the times
+   and `inboundMessageId`). The receiver renders the template itself and stores no free text from
+   the peer.
+3. **At-most-once across a crash.** Write a `sending` mark before the send. On startup, a row
+   with `sending` and no verdict counts as sent, with verdict `unknown`, and is never re-sent.
+   Test it.
+4. **Symmetry.** The notice must go through the D-B append funnel on both ends, on every path.
+   The new receive case calls `recordThreadMessage` itself and does not rely on the relay path
+   (relay inbounds are currently missing from canonical logs).
+5. **Agent awareness.** `threadline_promise_close` needs agent-awareness text, and awareness and
+   migration parity must cover the warm-session prompt too.
