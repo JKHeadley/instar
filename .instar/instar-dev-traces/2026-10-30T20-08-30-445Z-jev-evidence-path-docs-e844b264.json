@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "jev-evidence-path-docs",
+  "sessionId": "3e34283f-217d-4ec4-bc78-616724924433",
+  "timestamp": "2026-10-30T20:08:30.445Z",
+  "artifactPath": "upgrades/side-effects/jev-evidence-path-docs.md",
+  "artifactSha256": "d48b1fe654d37cd8ecf068dbf31cf66d4829e63d7a73d09674f5a698fbbf26bc",
+  "coveredFiles": [
+    "docs/specs/jev-evidence-path-docs.eli16.md",
+    "docs/specs/jev-job-supervision.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/scaffold/templates.ts",
+    "src/scheduler/JevJobCompletionAudit.ts",
+    "tests/unit/jev-audit-wiring.test.ts",
+    "upgrades/next/jev-evidence-path-docs.md",
+    "upgrades/side-effects/jev-evidence-path-docs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Text correction plus an idempotent one-string CLAUDE.md patch; a revert fully undoes it and no state moves.",
+  "eli16Path": "docs/specs/jev-evidence-path-docs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-evidence-path-docs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

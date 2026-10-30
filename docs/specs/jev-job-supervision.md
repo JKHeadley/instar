@@ -148,7 +148,7 @@ tail-preferring — disproving evidence lives at the end). Everything else runs
 detached: the scrub chain over the slice, async `lstat`/`realpath`-contained
 stats over the (max 8, load-time-jailed) `declaredEffects` paths, and one
 atomic write of the scrubbed evidence pack to
-`state/jev-supervision-evidence/<runId>.json` (dir 0700 / files 0600). The
+`.instar/jev-supervision-evidence/<runId>.json` (dir 0700 / files 0600). The
 pack write IS the durable admission record; pack-file existence by `runId` is
 also the dedupe (racing completion writers produce one pack). Detached capture work is bounded by a global in-flight cap (16): the
 pipeline per completion is small (an 8 KB scrub, ≤ 8 stats, one ≤ 16 KB
@@ -293,7 +293,7 @@ completion callsite ──eligibility (in-memory)──▶ O(1) tail slice
                           scrub + jailed stats + deterministic verdict
                                        │ atomic write (durable admission)
                                        ▼
-                     state/jev-supervision-evidence/<runId>.json
+                     .instar/jev-supervision-evidence/<runId>.json
                                        │ every 6h, budgeted, uniform sample
                                        ▼
                        batch: Jev call (2.5s) ──▶ verdict row
@@ -310,7 +310,7 @@ completion callsite ──eligibility (in-memory)──▶ O(1) tail slice
 
 | Surface | Posture |
 |---|---|
-| `logs/jev-job-completion-audit.jsonl` + `state/jev-supervision-evidence/` | machine-local. `machine-local-justification: hardware-bound-resource` — the audited runs are tmux/scheduler sessions bound to this machine's hardware; each machine audits its own scheduler. (The sibling shadow spec's `physical-credential-locality` label for the same shape is arguably mis-keyed; correcting it is owned by evolution action ACT-037.) |
+| `logs/jev-job-completion-audit.jsonl` + `.instar/jev-supervision-evidence/` | machine-local. `machine-local-justification: hardware-bound-resource` — the audited runs are tmux/scheduler sessions bound to this machine's hardware; each machine audits its own scheduler. (The sibling shadow spec's `physical-credential-locality` label for the same shape is arguably mis-keyed; correcting it is owned by evolution action ACT-037.) |
 | Config | unified (ordinary per-machine `intelligence.*` block) |
 | `declaredEffects` / `completionAudit` manifest fields | travel with the job definition like every manifest field |
 

@@ -353,7 +353,7 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
 
   // POST /jev-audit/batch — the Jev job-completion audit batch
   // (jev-job-supervision spec). Writes ONLY this machine's evidence packs
-  // (state/jev-supervision-evidence), verdict rows (logs/) and retention
+  // (.instar/jev-supervision-evidence), verdict rows (logs/) and retention
   // sweep; each machine audits its own scheduler's runs by design.
   reg.add({
     kind: 'route',

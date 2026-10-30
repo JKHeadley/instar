@@ -7491,6 +7491,11 @@ setTimeout(() => process.exit(0), 2000);
       content += jevJobCompletionAuditAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Jev job-completion audit awareness card');
+    } else if (content.includes('.instar/state/jev-supervision-evidence/')) {
+      // EVO-027: the card named a directory the writer never used.
+      content = content.replaceAll('.instar/state/jev-supervision-evidence/', '.instar/jev-supervision-evidence/');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected the Jev evidence-pack path');
     }
 
     if (!content.includes('### Jev Artefact Signals')) {
