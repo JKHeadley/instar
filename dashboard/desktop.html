@@ -22,11 +22,19 @@
   <section id="control" hidden>
     <div class="desktop-bar"><strong id="machineName"></strong><span id="liveStatus" role="status"></span><button id="stopButton" class="danger">Stop</button></div>
     <div id="surface" aria-label="Remote desktop touch surface">
-      <img id="screen" alt="Live desktop of the selected machine" draggable="false">
-      <canvas id="videoCanvas" aria-label="Live desktop video" hidden></canvas>
-      <div id="localCursor" aria-hidden="true"></div>
+      <div id="viewTransform">
+        <img id="screen" alt="Live desktop of the selected machine" draggable="false">
+        <canvas id="videoCanvas" aria-label="Live desktop video" hidden></canvas>
+        <div id="localCursor" aria-hidden="true"></div>
+      </div>
     </div>
-    <div class="desktop-tools">
+    <div class="desktop-dock" aria-label="Remote desktop controls">
+      <button id="toolsButton" type="button" aria-label="More controls" aria-expanded="false" aria-controls="desktopTools">☰</button>
+      <button id="keyboardButton" type="button" aria-label="Show keyboard" aria-expanded="false" aria-controls="keyboardBar">⌨</button>
+      <button id="zoomResetButton" type="button" aria-label="Fit screen" hidden>Fit</button>
+      <button id="fullscreenButton" type="button" aria-label="Full screen">⛶</button>
+    </div>
+    <div class="desktop-tools" id="desktopTools" hidden>
       <button id="modeButton" type="button" aria-pressed="true">Trackpad</button>
       <button id="dragButton" type="button" aria-pressed="false">Drag</button>
       <button id="rightButton" type="button">Right click</button>
@@ -47,10 +55,12 @@
       <button data-remote-key="v" type="button">V</button>
       <button data-remote-key="x" type="button">X</button>
       <button data-remote-key="z" type="button">Z</button>
-      <label class="type-label">Type remotely <input id="typeText" maxlength="64" autocomplete="off" spellcheck="false"></label>
-      <button id="typeButton" type="button">Send text</button>
     </div>
-    <p class="gesture-help">One finger moves the pointer; tap clicks. Two fingers scroll. Tap Drag, move, then Release. Tap a modifier, then a key, then the modifier again to release it.</p>
+    <div id="keyboardBar" hidden>
+      <label class="type-label" for="typeText">Type on remote desktop</label>
+      <input id="typeText" maxlength="64" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
+      <button id="hideKeyboardButton" type="button" aria-label="Hide keyboard">Done</button>
+    </div>
   </section>
   <p id="status" role="status"></p>
   <button id="retryButton" hidden>Check again</button>

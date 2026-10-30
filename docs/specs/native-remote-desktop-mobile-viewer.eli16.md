@@ -1,0 +1,9 @@
+# Remote desktop on a phone, in plain language
+
+The first Instar remote desktop already opens Echo's Mac after you enter the dashboard PIN. It sends a live picture from the Mac and lets you move the pointer, click, type, and press Stop. Justin's phone screenshot showed a problem with the viewer: the picture sat in a short strip while a large row of controls and instructions took up much of the screen. The Mac was sending a full-size picture, but the page gave it too little room.
+
+This update lets the picture use the whole space available to the web page. Stop stays visible, and a small floating group of buttons opens the extra controls when needed. Pinching with two fingers enlarges the picture so small desktop text is easier to see. Moving two fingers together still scrolls the Mac when the picture is fitted to the screen. Tapping Fit returns to the whole picture. Tapping the keyboard icon focuses a typing box immediately, which is how a phone browser can bring up its software keyboard. Text goes through the same encrypted connection and short-lived permission as clicks.
+
+The browser may keep its own address bar or Telegram controls on screen. Instar can fill the page but cannot remove controls owned by the phone's browser. The fullscreen button appears only in browsers that support that feature. The remote Mac still needs to be awake and unlocked, and Stop still ends the picture and input at once. This update does not turn on remote control for Mama PC's Windows installation; Windows still needs its own display and input adapter.
+
+We tested a real encrypted 1920 × 1080 Mac stream through the public link in portrait and landscape phone-sized browser windows, including zoom, keyboard focus, and Stop. That proves the page and browser event path. A physical iPhone check is still needed to confirm the operating system's keyboard actually appears and feels right in Telegram's browser.

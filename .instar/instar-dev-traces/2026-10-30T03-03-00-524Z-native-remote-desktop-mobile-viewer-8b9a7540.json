@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-mobile-viewer",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T03:03:00.524Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-mobile-viewer.md",
+  "artifactSha256": "43470123f930a4956af73a9602399b05e2bc98150739cf9bef2614f018eb6704",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "dashboard/desktop.css",
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/native-remote-desktop-mobile-viewer.eli16.md",
+    "docs/specs/native-remote-desktop-quality.md",
+    "scripts/desktop-public-browser-smoke.mjs",
+    "site/src/content/docs/guides/remote-desktop.md",
+    "tests/unit/desktop-touch-gestures.test.ts",
+    "tests/unit/desktop-video-viewer.test.ts",
+    "upgrades/next/native-remote-desktop-mobile-viewer.md",
+    "upgrades/side-effects/native-remote-desktop-mobile-viewer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The change is reversible browser UI, but remote input and mobile operator control warrant the approved feature spec, independent UX review, and full test tiers.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

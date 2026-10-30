@@ -17,9 +17,12 @@ function packet(width = 960, height = 540): Uint8Array {
 
 function viewer() {
   const dom = new JSDOM(`<!doctype html><body>
-    <div id="surface"></div><img id="screen"><canvas id="videoCanvas" hidden></canvas><div id="localCursor"></div>
+    <div id="surface"></div><div id="viewTransform"><img id="screen"><canvas id="videoCanvas" hidden></canvas><div id="localCursor"></div></div>
+    <div id="desktopTools" hidden></div><div id="keyboardBar" hidden></div>
+    <button id="toolsButton"></button><button id="keyboardButton"></button><button id="hideKeyboardButton"></button>
+    <button id="zoomResetButton" hidden></button><button id="fullscreenButton"></button>
     <button id="modeButton"></button><button id="dragButton"></button><button id="rightButton"></button>
-    <button id="typeButton"></button><button id="stopButton"></button><input id="typeText">
+    <button id="stopButton"></button><input id="typeText">
     <button id="unlockButton"></button><button id="retryButton"></button><button id="requestButton"></button>
     <div id="status"></div><div id="liveStatus"></div><div id="control"></div><div id="request"></div>
   </body>`, { url: 'https://instar.example/dashboard/desktop', runScripts: 'outside-only' });

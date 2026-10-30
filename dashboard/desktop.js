@@ -49,6 +49,13 @@ let stopping = false;
 let trackpad = matchMedia('(pointer: coarse)').matches;
 let cursor = { x: 0.5, y: 0.5 };
 const pointers = new Map();
+let zoom = 1;
+let panX = 0;
+let panY = 0;
+let twoFinger = null;
+let composingText = false;
+let skipCompositionCommitKey = false;
+let recentlyCommittedText = '';
 let heldButton = null;
 let heldPhase = 'none';
 let holdHeartbeat = 0;
@@ -399,6 +406,15 @@ function leave(message) {
   pendingKeyTaps.clear();
   syncHoldHeartbeat();
   clearFrame();
+  closeKeyboard();
+  composingText = false;
+  skipCompositionCommitKey = false;
+  recentlyCommittedText = '';
+  resetZoom();
+  resetVisualViewport();
+  $('desktopTools').hidden = true;
+  $('toolsButton').setAttribute('aria-expanded', 'false');
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
   document.body.classList.remove('desktop-live', 'trackpad');
   $('control').hidden = true;
   if (token) $('request').hidden = false;
@@ -413,6 +429,7 @@ function unexpectedDisconnect(streamSocket) {
   $('request').hidden = true;
   $('control').hidden = false;
   document.body.classList.add('desktop-live');
+  syncVisualViewport();
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     status('Connection interrupted. Stop access, then open the desktop again.');
     return;
@@ -752,6 +769,7 @@ async function openStream(result, resume = null) {
     $('request').hidden = true;
     $('control').hidden = false;
     document.body.classList.add('desktop-live');
+    syncVisualViewport();
     document.body.classList.toggle('trackpad', trackpad);
     $('modeButton').textContent = trackpad ? 'Trackpad' : 'Direct';
     $('modeButton').setAttribute('aria-pressed', String(trackpad));
@@ -807,9 +825,9 @@ function position(event) {
 function updateCursor() {
   const area = imageArea();
   if (!area) return;
-  const rect = $('surface').getBoundingClientRect();
-  $('localCursor').style.left = `${area.left - rect.left + cursor.x * area.width}px`;
-  $('localCursor').style.top = `${area.top - rect.top + cursor.y * area.height}px`;
+  const rect = $('viewTransform').getBoundingClientRect();
+  $('localCursor').style.left = `${(area.left - rect.left + cursor.x * area.width) / zoom}px`;
+  $('localCursor').style.top = `${(area.top - rect.top + cursor.y * area.height) / zoom}px`;
 }
 function queueMove(at) {
   pendingMove = at;
@@ -830,6 +848,86 @@ function moveCursor(dx, dy) {
   queueMove(cursor);
 }
 function clickCursor(button = 'left') { if (!heldButton) send({ kind: 'click', ...cursor, button }); }
+function syncVisualViewport() {
+  const viewport = window.visualViewport;
+  if (!viewport || !document.body.classList.contains('desktop-live')) return;
+  const control = $('control');
+  control.style.setProperty('--desktop-visible-top', `${Math.max(0, viewport.offsetTop)}px`);
+  control.style.setProperty('--desktop-visible-left', `${Math.max(0, viewport.offsetLeft)}px`);
+  control.style.setProperty('--desktop-visible-width', `${Math.max(1, viewport.width)}px`);
+  control.style.setProperty('--desktop-visible-height', `${Math.max(1, viewport.height)}px`);
+  applyZoom();
+}
+function resetVisualViewport() {
+  for (const name of ['--desktop-visible-top', '--desktop-visible-left',
+    '--desktop-visible-width', '--desktop-visible-height']) $('control').style.removeProperty(name);
+}
+function applyZoom() {
+  const rect = $('surface').getBoundingClientRect();
+  panX = Math.max(-(zoom - 1) * rect.width / 2, Math.min((zoom - 1) * rect.width / 2, panX));
+  panY = Math.max(-(zoom - 1) * rect.height / 2, Math.min((zoom - 1) * rect.height / 2, panY));
+  $('viewTransform').style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  $('zoomResetButton').hidden = zoom <= 1.01;
+  updateCursor();
+}
+function resetZoom() { zoom = 1; panX = 0; panY = 0; twoFinger = null; applyZoom(); }
+function pairMetrics() {
+  const [a, b] = [...pointers.values()];
+  return { distance: Math.hypot(a.x - b.x, a.y - b.y),
+    x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
+    bothMoved: Math.hypot(a.x - a.startX, a.y - a.startY) > 3 &&
+      Math.hypot(b.x - b.startX, b.y - b.startY) > 3 };
+}
+function moveTwoFingers() {
+  if (!twoFinger || pointers.size !== 2) return;
+  const now = pairMetrics();
+  const scaleChange = Math.abs(now.distance - twoFinger.distance);
+  const travel = Math.hypot(now.x - twoFinger.x, now.y - twoFinger.y);
+  if (twoFinger.mode === 'pending' && (now.bothMoved || (scaleChange > 24 && scaleChange > travel * 1.4))) {
+    twoFinger.mode = zoom > 1.01 || scaleChange > Math.max(8, travel * .45) ? 'zoom' : 'scroll';
+  }
+  if (twoFinger.mode === 'zoom') {
+    const nextZoom = Math.max(1, Math.min(4, twoFinger.zoom * now.distance / Math.max(1, twoFinger.distance)));
+    const rect = $('surface').getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
+    panX = now.x - centerX - (nextZoom / twoFinger.zoom) * (twoFinger.x - centerX - twoFinger.panX);
+    panY = now.y - centerY - (nextZoom / twoFinger.zoom) * (twoFinger.y - centerY - twoFinger.panY);
+    zoom = nextZoom;
+    applyZoom();
+  } else if (twoFinger.mode === 'scroll') {
+    const dx = now.x - twoFinger.lastX, dy = now.y - twoFinger.lastY;
+    if (dx || dy) send({ kind: 'scroll', dx: Math.max(-200, Math.min(200, dx * 1.5)),
+      dy: Math.max(-200, Math.min(200, dy * 1.5)) });
+  }
+  twoFinger.lastX = now.x; twoFinger.lastY = now.y;
+}
+function closeKeyboard() {
+  $('typeText').blur();
+  $('keyboardBar').hidden = true;
+  $('keyboardButton').setAttribute('aria-expanded', 'false');
+  syncVisualViewport();
+}
+$('toolsButton').addEventListener('click', () => {
+  const open = $('desktopTools').hidden;
+  $('desktopTools').hidden = !open;
+  $('toolsButton').setAttribute('aria-expanded', String(open));
+});
+$('keyboardButton').addEventListener('click', () => {
+  if (!$('keyboardBar').hidden) { closeKeyboard(); return; }
+  $('desktopTools').hidden = true;
+  $('toolsButton').setAttribute('aria-expanded', 'false');
+  $('keyboardBar').hidden = false;
+  $('keyboardButton').setAttribute('aria-expanded', 'true');
+  $('typeText').focus(); // Must happen in the trusted tap for the iOS keyboard.
+  syncVisualViewport();
+});
+$('hideKeyboardButton').addEventListener('click', closeKeyboard);
+$('zoomResetButton').addEventListener('click', resetZoom);
+$('fullscreenButton').hidden = !document.fullscreenEnabled || !$('control').requestFullscreen;
+$('fullscreenButton').addEventListener('click', () => {
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  else if ($('control').requestFullscreen) void $('control').requestFullscreen().catch(() => {});
+});
 $('modeButton').addEventListener('click', () => {
   releaseButton();
   trackpad = !trackpad;
@@ -887,6 +985,10 @@ $('surface').addEventListener('pointerdown', event => {
     startX: event.clientX, startY: event.clientY, maxDistance: 0,
     at: Date.now(), multi: pointers.size > 0 });
   if (pointers.size > 1) for (const state of pointers.values()) state.multi = true;
+  if (pointers.size === 2 && event.pointerType !== 'mouse') {
+    const pair = pairMetrics();
+    twoFinger = { ...pair, zoom, panX, panY, lastX: pair.x, lastY: pair.y, mode: 'pending' };
+  }
   if (!trackpad || event.pointerType === 'mouse') {
     const at = position(event);
     if (at) { cursor = at; updateCursor(); queueMove(at); }
@@ -905,8 +1007,7 @@ $('surface').addEventListener('pointermove', event => {
   state.maxDistance = Math.max(state.maxDistance,
     Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
   if (pointers.size > 1 && event.pointerType !== 'mouse') {
-    if (dx || dy) send({ kind: 'scroll', dx: Math.max(-200, Math.min(200, dx * 1.5)),
-      dy: Math.max(-200, Math.min(200, dy * 1.5)) });
+    moveTwoFingers();
   } else if (state.multi && event.pointerType !== 'mouse') {
     // Do not turn the trailing finger of a scroll gesture into pointer motion.
   } else if (trackpad && event.pointerType !== 'mouse') moveCursor(dx, dy);
@@ -917,6 +1018,7 @@ $('surface').addEventListener('pointerup', event => {
   if (!state) return;
   event.preventDefault();
   pointers.delete(event.pointerId);
+  if (pointers.size < 2) twoFinger = null;
   if (event.pointerType === 'mouse' && heldButton) {
     const at = position(event);
     if (at) { cursor = at; queueMove(at); }
@@ -930,18 +1032,52 @@ $('surface').addEventListener('pointerup', event => {
     clickCursor(event.button === 2 ? 'right' : 'left');
   }
 });
-function cancelGestures() { pointers.clear(); releaseControls(); }
+function cancelGestures() { pointers.clear(); twoFinger = null; releaseControls(); }
 $('surface').addEventListener('pointercancel', cancelGestures);
 window.addEventListener('blur', cancelGestures);
 document.addEventListener('visibilitychange', () => { if (document.hidden) cancelGestures(); });
-window.addEventListener('resize', updateCursor);
+window.addEventListener('resize', () => { syncVisualViewport(); applyZoom(); updateCursor(); });
+window.visualViewport?.addEventListener('resize', syncVisualViewport);
+window.visualViewport?.addEventListener('scroll', syncVisualViewport);
 $('screen').addEventListener('load', updateCursor);
-$('typeButton').addEventListener('click', () => {
-  const text = $('typeText').value;
-  if (text) { releaseControls(); send({ kind: 'type', text }); }
-  $('typeText').value = '';
+$('typeText').addEventListener('focus', () => { releaseControls(); syncVisualViewport(); });
+$('typeText').addEventListener('compositionstart', () => { composingText = true; });
+$('typeText').addEventListener('keydown', event => {
+  if (composingText || event.isComposing || event.keyCode === 229) return;
+  if (skipCompositionCommitKey && (event.key === 'Enter' || event.key === 'Backspace')) {
+    event.preventDefault();
+    skipCompositionCommitKey = false;
+    return;
+  }
+  if (event.key === 'Enter' || event.key === 'Backspace') {
+    event.preventDefault();
+    void tapKey(event.key);
+  }
 });
-$('typeText').addEventListener('focus', releaseControls);
+$('typeText').addEventListener('input', event => {
+  if (composingText || event.isComposing) return;
+  const text = $('typeText').value;
+  if (recentlyCommittedText && text === recentlyCommittedText) {
+    $('typeText').value = '';
+    recentlyCommittedText = '';
+    return;
+  }
+  if (!text) {
+    if (event.inputType === 'deleteContentBackward') void tapKey('Backspace');
+    return;
+  }
+  $('typeText').value = '';
+  for (let i = 0; i < text.length; i += 64) void send({ kind: 'type', text: text.slice(i, i + 64) });
+});
+$('typeText').addEventListener('compositionend', () => {
+  composingText = false;
+  skipCompositionCommitKey = true;
+  setTimeout(() => { skipCompositionCommitKey = false; recentlyCommittedText = ''; }, 0);
+  const text = $('typeText').value;
+  $('typeText').value = '';
+  recentlyCommittedText = text;
+  if (text) void send({ kind: 'type', text });
+});
 $('stopButton').addEventListener('click', async () => {
   stopping = true;
   resumeGeneration++;

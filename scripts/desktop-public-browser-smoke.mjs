@@ -8,6 +8,8 @@ import WebSocket from 'ws';
 import { SafeFsExecutor } from '../dist/core/SafeFsExecutor.js';
 
 const url = process.argv[2];
+const landscape = process.argv.includes('--landscape');
+const mobile = process.argv.includes('--mobile') || landscape;
 if (!url || !url.startsWith('https://')) throw new Error('HTTPS desktop URL required');
 const pin = await new Promise(resolve => {
   let value = '';
@@ -69,6 +71,14 @@ try {
     return response.result?.result?.value;
   };
   await call('Runtime.enable');
+  if (mobile) {
+    await call('Emulation.setDeviceMetricsOverride', {
+      width: landscape ? 844 : 390, height: landscape ? 390 : 844,
+      deviceScaleFactor: 3, mobile: true,
+    });
+    await call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+    await call('Page.reload');
+  }
   let ready = false;
   for (let i = 0; i < 100 && !ready; i++) {
     try { ready = await evaluate("document.readyState === 'complete' && !!document.getElementById('unlockButton')"); }
@@ -105,6 +115,43 @@ try {
     }
     return { error: 'first frame timed out', status: document.getElementById('status')?.textContent };
   })()`);
+  let mobileResult;
+  if (mobile && !opened?.error) {
+    const layout = await evaluate(`(() => {
+      const s = document.getElementById('surface').getBoundingClientRect();
+      const c = document.getElementById('control').getBoundingClientRect();
+      const dock = document.querySelector('.desktop-dock').getBoundingClientRect();
+      return { surface: { x: s.x, y: s.y, width: s.width, height: s.height },
+        control: { width: c.width, height: c.height }, viewport: { width: innerWidth, height: innerHeight },
+        dockInside: dock.right <= c.right && dock.bottom <= c.bottom };
+    })()`);
+    if (Math.abs(layout.surface.width - layout.viewport.width) > 2
+      || Math.abs(layout.surface.height - layout.viewport.height) > 2 || !layout.dockInside) {
+      throw new Error(`mobile viewer did not fill viewport: ${JSON.stringify(layout)}`);
+    }
+    const x = layout.surface.x + layout.surface.width / 2;
+    const y = layout.surface.y + layout.surface.height / 2;
+    const touch = (type, points) => call('Input.dispatchTouchEvent', { type, touchPoints: points });
+    await touch('touchStart', [{ x: x - 60, y, id: 1 }, { x: x + 60, y, id: 2 }]);
+    await touch('touchMove', [{ x: x - 95, y, id: 1 }, { x: x + 95, y, id: 2 }]);
+    await touch('touchEnd', []);
+    const zoomed = await evaluate(`({ zoom: document.getElementById('viewTransform').style.transform,
+      fitVisible: !document.getElementById('zoomResetButton').hidden })`);
+    if (!zoomed.fitVisible || !/scale\((?:1\.[1-9]|[2-4])/.test(zoomed.zoom)) {
+      throw new Error(`mobile pinch did not zoom: ${JSON.stringify(zoomed)}`);
+    }
+    const keyboardRect = await evaluate(`(() => {
+      const r = document.getElementById('keyboardButton').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })()`);
+    await touch('touchStart', [{ ...keyboardRect, id: 3 }]);
+    await touch('touchEnd', []);
+    const keyboardOpen = await evaluate(`document.activeElement?.id === 'typeText'
+      && !document.getElementById('keyboardBar').hidden`);
+    if (!keyboardOpen) throw new Error('mobile keyboard control did not focus the typing field');
+    mobileResult = { viewport: `${layout.viewport.width}x${layout.viewport.height}`,
+      surface: `${layout.surface.width}x${layout.surface.height}`, pinch: true, keyboard: true };
+  }
   stopAttempted = true;
   const stopped = await evaluate(`(async () => {
     document.getElementById('stopButton')?.click();
@@ -122,7 +169,7 @@ try {
   }
   if (!stopped?.blank || !/stopped/i.test(stopped.status)) throw new Error('Stop did not blank and revoke');
   console.log(JSON.stringify({ geometry: `${opened.width}x${opened.height}`,
-    codec: opened.codec, stopped: true }));
+    codec: opened.codec, stopped: true, ...(mobileResult ? { mobile: mobileResult } : {}) }));
 } finally {
   if (evaluate && !stopAttempted) {
     try {

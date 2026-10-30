@@ -3,7 +3,7 @@ title: Remote Desktop
 description: Open and control an Instar agent's desktop from the dashboard.
 ---
 
-Remote Desktop lets the operator use a machine where their Instar agent is installed. Open the agent's dashboard desktop page, enter the existing dashboard PIN, choose a ready machine, and press **Stop** when finished. When only one machine is ready, the viewer opens it directly. The viewer fills a phone browser: one finger moves the pointer like a trackpad, a tap clicks, and two fingers scroll. Direct mode is available for touch-to-target control.
+Remote Desktop lets the operator use a machine where their Instar agent is installed. Open the agent's dashboard desktop page, enter the existing dashboard PIN, choose a ready machine, and press **Stop** when finished. When only one machine is ready, the viewer opens it directly. The live viewer fills the browser viewport. One finger moves the pointer like a trackpad, and a tap clicks. Two fingers move together to scroll or spread apart to zoom. When zoomed, two fingers pan the local view; **Fit** shows the whole desktop again. The floating keyboard button opens the phone's typing field, and the menu button reveals drag, direct touch, and shortcut controls. Rotate the phone to landscape for a wider desktop view.
 
 The first live target is a Mac. It requires an active desktop session and macOS screen-recording and accessibility permissions. A Windows target, including a Windows host used from WSL, needs its own display and input adapter before it can appear as ready. Other installations keep remote control disabled by default.
 
@@ -11,7 +11,7 @@ The first live target is a Mac. It requires an active desktop session and macOS 
 
 The PIN unlocks the existing dashboard session. Instar then checks operator identity and issues a short-lived grant for one target machine and one controller. The video stream is encrypted for that grant. A session ends when its grant expires, the operator presses **Stop**, or authority is revoked. Stop blanks the viewer and stops native capture and input helpers. Video and input queues are bounded so a slow connection cannot accumulate unbounded work.
 
-The Mac viewer prefers hardware H.264 and can fall back to JPEG when the browser or host cannot use that codec. The video ceiling is 15 frames per second at 1920 × 1080. The browser scales the image to fit its window; a laptop no longer receives a half-size copy of a 1080p Mac display. Physical phone behavior and measured latency remain subject to device testing.
+The Mac viewer prefers hardware H.264 and can fall back to JPEG when the browser or host cannot use that codec. The video ceiling is 15 frames per second at 1920 × 1080. The browser scales the image to fit its window; a laptop no longer receives a half-size copy of a 1080p Mac display. The viewer can ask for browser fullscreen where supported. Safari or Telegram may keep their own browser controls visible. Physical phone behavior and measured latency remain subject to device testing.
 
 ## API and implementation map
 
