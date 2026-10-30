@@ -263,6 +263,7 @@ import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnot
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
+import { CheckInReminderTicker, resolveCheckInTickIntervalMs } from '../monitoring/CheckInReminderTicker.js';
 import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
@@ -1000,6 +1001,8 @@ export interface RouteContext {
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
    * this from its owned timer; tests may invoke it deterministically. */
   windowLifecycleTick?: (() => void) | null;
+  /** Check-in reminder driver installed by createRoutes; AgentServer owns its timer. */
+  checkInReminderTicker?: import('../monitoring/CheckInReminderTicker.js').CheckInReminderTicker | null;
   /** W32 authoritative five-predicate run-liveness state. Null means dark. */
   windowRunLivenessAuthority?: WindowRunLivenessAuthority | null;
   /** Durable 30-minute receipt and 3-hour synthesis executor. Null means dark. */
@@ -33228,99 +33231,151 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * counter is the rollout hard-stop signal. MUST be registered before
    * `/commitments/:id` or Express routes the literal here to the :id handler.
    */
-  /**
-   * POST /commitments/check-in-reminder/pass — run ONE check-in reminder pass
-   * (ACT-724; docs/specs/dated-commitment-reminder.md).
-   *
-   * Driven by the `commitment-checkin-reminder` built-in job. Idempotent: the
-   * `checkInReminderSentAt` stamp means a re-run sends nothing, so a retried or
-   * duplicated trigger is safe.
-   */
-  router.post('/commitments/check-in-reminder/pass', async (_req, res) => {
-    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
-      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
-      | undefined;
-    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
-    if (!enabled || !ctx.commitmentTracker) {
-      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
-      return;
-    }
+  type CheckInReminderConfig = { enabled?: boolean; dryRun?: boolean; maxPerPass?: number; tickEnabled?: boolean; tickIntervalMs?: number };
+  // Live, so tickEnabled and dryRun take effect without a restart: ctx.config is the boot snapshot.
+  const checkInReminderConfig = () => ctx.liveConfig?.get?.<CheckInReminderConfig | undefined>('commitments.checkInReminder', undefined)
+    ?? ((ctx.config as Record<string, any>).commitments?.checkInReminder as CheckInReminderConfig | undefined);
+  const runCheckInReminderPass = async ({ quiet }: { quiet: boolean }) => {
+    const cfg = checkInReminderConfig();
+    const tracker = ctx.commitmentTracker;
+    if (!tracker) throw new Error('check-in-reminder-not-enabled');
     // Deterministic delivery — NOT the tone-gated path. A reminder must not be
     // holdable by a gate that fails closed; the text is a fixed template with
     // no agent prose, so there is nothing for a tone gate to judge.
     const telegram = ctx.telegram;
     const dryRun = cfg?.dryRun !== false;
+    const reconciler = new CheckInReminderReconciler(
+      {
+        tracker,
+        ...(quiet ? { log: () => {} } : {}),
+        send: async (topicId, text, identity) => {
+          if (!telegram) throw new Error('no-delivery-transport');
+          // The origin boundary owns the reservation for the private
+          // reminder scope below; legacy delivery reserves here instead.
+          const originOwnsContent = !!ctx.telegramOrigin;
+          // Route the send through the SAME durable content dedup the
+          // /telegram/reply route uses.
+          //
+          // This is load-bearing and was nearly a false claim: the reconciler
+          // sends first and stamps after, so a crash in between re-sends on
+          // the next pass. The spec justified that by saying "the relay
+          // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
+          // and `sendToTopic` bypasses it entirely. Asserting the mitigation
+          // without wiring it would have been a safety property that existed
+          // only in the comment. (Caught in review round 2, 2026-07-25.)
+          //
+          // A duplicate is treated as SUCCESS-equivalent: the user already has
+          // this exact reminder, so the send is complete and the caller may
+          // stamp. Treating it as a failure would retry-loop until the window
+          // expired and then genuinely double-send.
+          if (!originOwnsContent && outboundContentDedup.isDuplicate(topicId, text)) {
+            return { ok: true, suppressedDuplicate: true } as unknown;
+          }
+          if (!originOwnsContent && !outboundContentDedup.tryReserve(topicId, text)) {
+            return { ok: true, suppressedDuplicate: true } as unknown;
+          }
+          try {
+            const send = () => telegram.sendToTopic(topicId, text);
+            let r;
+            if (ctx.telegramOrigin) {
+              const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
+              service.registerAutomationProducer(producerId);
+              // A retry after send-before-stamp replays only this reminder's
+              // accepted receipt. Unknown acceptance remains held, never
+              // success-equivalent merely because its content is reserved.
+              const logicalSendId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+              const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
+              r = await service.runWithAutomationReply(token, topicId, body, send);
+            } else r = await send();
+            if (!originOwnsContent) outboundContentDedup.record(topicId, text);
+            return r;
+          } catch (err) {
+            // Release so a genuine transport failure is retried rather than
+            // suppressed as a "duplicate" on the next pass.
+            if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
+            throw err;
+          }
+        },
+      },
+      {
+        enabled: true,
+        // dryRun defaults TRUE: the graduated state is an explicit operator
+        // decision, never something that arrives by omission.
+        dryRun,
+        selfMachineId: ctx.meshSelfId ?? null,
+        ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
+      },
+    );
+    return reconciler.runPass();
+  };
+  // Server-side driver (docs/specs/check-in-reminder-server-tick.md): the pass
+  // needs no session, so a job that spawns one every 5 minutes must not be its
+  // only driver. AgentServer owns the timer; tests call the tick directly.
+  const checkInReminderTicker = new CheckInReminderTicker({
+    stateDir: ctx.config.stateDir,
+    intervalMs: resolveCheckInTickIntervalMs(checkInReminderConfig()?.tickIntervalMs),
+    skipReason: () => {
+      const cfg = checkInReminderConfig();
+      if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return 'feature-dark';
+      if (cfg?.tickEnabled === false) return 'tick-disabled';
+      if (!ctx.commitmentTracker) return 'no-tracker';
+      if (cfg?.dryRun === false && !ctx.telegram) return 'no-delivery-transport';
+      return null;
+    },
+    runPass: runCheckInReminderPass,
+    onUndelivered: async (report) => {
+      await ctx.telegram?.createAttentionItem({
+        id: 'check-in-reminder-undelivered',
+        title: 'Dated reminders could not be delivered',
+        summary: `${report.gaveUp} promised check-in reminder(s) failed after every retry, so they did not reach you. They are listed under undelivered on the check-in reminder status.`,
+        category: 'commitments',
+        priority: 'HIGH',
+        needsUser: true,
+        conditionKey: 'check-in-reminder-undelivered',
+        sourceContext: 'check-in-reminder',
+      });
+    },
+    onFailureStreak: (streak, error) => {
+      DegradationReporter.getInstance().report({
+        feature: 'CheckInReminderTicker.pass',
+        primary: 'Run the check-in reminder pass on the server timer',
+        fallback: 'No reminders run until a pass succeeds; the next tick retries',
+        reason: `${streak} consecutive passes failed: ${error}`,
+        impact: 'Dated promises may go unreminded',
+      });
+    },
+  });
+  ctx.checkInReminderTicker = ctx.commitmentTracker ? checkInReminderTicker : null;
+
+  /**
+   * POST /commitments/check-in-reminder/pass — run ONE check-in reminder pass
+   * (ACT-724; docs/specs/dated-commitment-reminder.md).
+   *
+   * Driven by the server tick above (and the optional built-in job). Idempotent: the
+   * `checkInReminderSentAt` stamp means a re-run sends nothing, so a retried or
+   * duplicated trigger is safe.
+   */
+  router.post('/commitments/check-in-reminder/pass', async (_req, res) => {
+    const cfg = checkInReminderConfig();
+    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
+    if (!enabled || !ctx.commitmentTracker) {
+      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
+      return;
+    }
     // A transport is required only to SEND. A dry run sends nothing, so demanding
     // one would make the soak — the whole point of the dark window — impossible
     // on an agent with no messaging configured, and would report the feature as
     // unavailable when it is merely quiet.
-    if (!telegram && !dryRun) {
+    if (!ctx.telegram && cfg?.dryRun === false) {
       res.status(503).json({ error: 'no-delivery-transport' });
       return;
     }
+    if (checkInReminderTicker.stalled()) {
+      res.status(503).json({ error: 'check-in-reminder-pass-stalled' });
+      return;
+    }
     try {
-      const reconciler = new CheckInReminderReconciler(
-        {
-          tracker: ctx.commitmentTracker,
-          send: async (topicId, text, identity) => {
-            if (!telegram) throw new Error('no-delivery-transport');
-            // The origin boundary owns the reservation for the private
-            // reminder scope below; legacy delivery reserves here instead.
-            const originOwnsContent = !!ctx.telegramOrigin;
-            // Route the send through the SAME durable content dedup the
-            // /telegram/reply route uses.
-            //
-            // This is load-bearing and was nearly a false claim: the reconciler
-            // sends first and stamps after, so a crash in between re-sends on
-            // the next pass. The spec justified that by saying "the relay
-            // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
-            // and `sendToTopic` bypasses it entirely. Asserting the mitigation
-            // without wiring it would have been a safety property that existed
-            // only in the comment. (Caught in review round 2, 2026-07-25.)
-            //
-            // A duplicate is treated as SUCCESS-equivalent: the user already has
-            // this exact reminder, so the send is complete and the caller may
-            // stamp. Treating it as a failure would retry-loop until the window
-            // expired and then genuinely double-send.
-            if (!originOwnsContent && outboundContentDedup.isDuplicate(topicId, text)) {
-              return { ok: true, suppressedDuplicate: true } as unknown;
-            }
-            if (!originOwnsContent && !outboundContentDedup.tryReserve(topicId, text)) {
-              return { ok: true, suppressedDuplicate: true } as unknown;
-            }
-            try {
-              const send = () => telegram.sendToTopic(topicId, text);
-              let r;
-              if (ctx.telegramOrigin) {
-                const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
-                service.registerAutomationProducer(producerId);
-                // A retry after send-before-stamp replays only this reminder's
-                // accepted receipt. Unknown acceptance remains held, never
-                // success-equivalent merely because its content is reserved.
-                const logicalSendId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
-                const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
-                r = await service.runWithAutomationReply(token, topicId, body, send);
-              } else r = await send();
-              if (!originOwnsContent) outboundContentDedup.record(topicId, text);
-              return r;
-            } catch (err) {
-              // Release so a genuine transport failure is retried rather than
-              // suppressed as a "duplicate" on the next pass.
-              if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
-              throw err;
-            }
-          },
-        },
-        {
-          enabled: true,
-          // dryRun defaults TRUE: the graduated state is an explicit operator
-          // decision, never something that arrives by omission.
-          dryRun,
-          ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
-        },
-      );
-      const report = await reconciler.runPass();
-      res.json(report);
+      res.json(await checkInReminderTicker.pass({ quiet: false }));
     } catch (err) {
       res.status(500).json({ error: 'check-in-reminder-pass-failed', detail: String(err) });
     }
@@ -33328,9 +33383,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   /** GET /commitments/check-in-reminder — read-only posture + the dated backlog. */
   router.get('/commitments/check-in-reminder', (_req, res) => {
-    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
-      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
-      | undefined;
+    const cfg = checkInReminderConfig();
     const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
     if (!enabled || !ctx.commitmentTracker) {
       res.status(503).json({ error: 'check-in-reminder-not-enabled' });
@@ -33350,6 +33403,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       pending: dated
         .filter((c) => !c.checkInReminderSentAt && !c.checkInReminderFailedAt)
         .map((c) => ({ id: c.id, topicId: c.topicId, checkInAt: c.checkInAt })),
+      tick: checkInReminderTicker.status(),
     });
   });
 

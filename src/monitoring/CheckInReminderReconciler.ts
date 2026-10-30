@@ -46,6 +46,8 @@ export interface CheckInReminderConfig {
   dryRun: boolean;
   /** Hard ceiling on reminders per pass — a bounded blast radius. */
   maxPerPass?: number;
+  /** This machine's id; see DuePredicateInput.selfMachineId. */
+  selfMachineId?: string | null;
 }
 
 export interface CheckInReminderPassReport {
@@ -57,6 +59,8 @@ export interface CheckInReminderPassReport {
   failed: number;
   wouldSend: number;
   capped: number;
+  /** Ids in this pass's batch (ids only — the soak ledger reads them). */
+  dueIds: string[];
   /** Retries exhausted this pass — genuinely undelivered reminders. */
   gaveUp: number;
   skippedByReason: Partial<Record<NotDueReason, number>>;
@@ -75,6 +79,7 @@ function emptyReport(over: Partial<CheckInReminderPassReport> = {}): CheckInRemi
     failed: 0,
     wouldSend: 0,
     capped: 0,
+    dueIds: [],
     gaveUp: 0,
     skippedByReason: {},
     errors: [],
@@ -97,7 +102,11 @@ export class CheckInReminderReconciler {
 
     const now = (this.deps.now ?? Date.now)();
     const all = this.deps.tracker.getAll();
-    const { due, skipped } = selectDueCommitments(all as Array<Commitment & { id: string }>, now);
+    const { due, skipped } = selectDueCommitments(
+      all as Array<Commitment & { id: string }>,
+      now,
+      this.config.selfMachineId,
+    );
 
     const skippedByReason: Partial<Record<NotDueReason, number>> = {};
     for (const s of skipped) skippedByReason[s.reason] = (skippedByReason[s.reason] ?? 0) + 1;
@@ -117,6 +126,7 @@ export class CheckInReminderReconciler {
       scanned: all.length,
       due: due.length,
       capped,
+      dueIds: batch.map((c) => c.id),
       skippedByReason,
     });
 
