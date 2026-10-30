@@ -8,11 +8,11 @@
  * its own view and attention item). Exit-code mapping:
  *   prober absent                  → skipped prober-absent (a non-source agent)
  *   "no canonical manifest" (0)    → skipped no-manifest
- *   exit 0 with "fatal (non-gating)" on stderr → skipped prober-fatal (the
- *                                    prober's own breaker escalates after 3)
- *   exit 0 with its scope line     → ok
- *   exit 0 without it              → failed prober-output-malformed
+ *   exit 0 without its scope line  → failed prober-output-malformed
+ *   exit 0 with no fresh scan-state → failed scan-state-missing|-unreadable|-stale
+ *   exit 0 with a fresh scan-state → ok
  *   any other exit, a timeout, or a spawn error → failed
+ * A run succeeds only when the state file exists and this run stamped it.
  * Canary flag: --prober <path>.
  */
 
@@ -221,18 +221,35 @@ function lastLine(text) {
 const PROBER = 'scripts/doorway-scan.mjs';
 const PROBER_TIMEOUT_MS = 8 * 60_000;
 
+/** Why this run's scan-state is not fresh, or null when it is. */
+function scanStateProblem(startedAtMs) {
+  const file = path.join(process.env.INSTAR_STATE_DIR || '.instar', 'state', 'doorway-scan.json');
+  if (!fs.existsSync(file)) return 'scan-state-missing';
+  let state;
+  try {
+    state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    // @silent-fallback-ok: reported to the scheduler as a failed run
+    return 'scan-state-unreadable';
+  }
+  const at = Date.parse(state?.lastScanAt);
+  return Number.isFinite(at) && at >= startedAtMs ? null : 'scan-state-stale';
+}
+
 async function main() {
   const file = proberPath(PROBER);
   if (!fs.existsSync(file)) finish('skipped', 'prober-absent');
+  const startedAtMs = Date.now();
   const p = await runProber(file, ['--scope', 'free-probes'], PROBER_TIMEOUT_MS);
   if (p.spawnError) finish('failed', `prober-spawn-error ${clean(p.spawnError, 100)}`);
   if (p.timedOut) finish('failed', 'prober-timeout');
   if (p.exitCode !== 0) finish('failed', `prober-exit-${p.exitCode} ${clean(lastLine(p.stderr) || lastLine(p.stdout), 200)}`);
-  if (/fatal \(non-gating\)/.test(p.stderr)) finish('skipped', `prober-fatal ${clean(lastLine(p.stderr), 200)}`);
   if (/no canonical manifest present/.test(p.stdout)) finish('skipped', 'no-manifest');
   // A real run always prints its scope line; exit 0 without it means the
   // prober did not run its main, not a clean scan.
   if (!/^doorway-scan: scope=/m.test(p.stdout)) finish('failed', 'prober-output-malformed: no scope line');
+  const problem = scanStateProblem(startedAtMs);
+  if (problem) finish('failed', problem);
   finish('ok', `scanned ${clean(lastLine(p.stdout), 200)}`);
 }
 

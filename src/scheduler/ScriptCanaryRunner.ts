@@ -63,8 +63,12 @@ export interface CanaryVariant {
   flags?: string[];
   /** When set, a stub prober exiting with this code is passed as --prober. */
   proberExitCode?: number;
+  /** Printed by the stub prober before it exits. */
+  proberStdout?: string;
+  /** Point the run at an empty state directory, so no real state file can answer for it. */
+  emptyStateDir?: boolean;
   /** What the run must show. */
-  expect: { result?: 'failure' | 'skipped'; anomalies?: string[] };
+  expect: { result?: 'failure' | 'skipped'; reasonCode?: string; anomalies?: string[] };
   /** Feed this variant's reasons into the real episode code (health-check). */
   episode?: boolean;
   /** Triage-floor assertions in audit-only mode (triage-class scripts only). */
@@ -148,7 +152,17 @@ export const CANARY_SPECS: Readonly<Record<string, () => CanaryVariant[]>> = {
       floor: [{ consecutiveFailures: 0, expect: 'needs_session' }],
     },
   ],
-  'doorway-scan': () => proberVariants([{ code: 1, expect: 'failure' }]),
+  'doorway-scan': () => [
+    ...proberVariants([{ code: 1, expect: 'failure' }]),
+    {
+      name: 'scan-state-missing',
+      fixture: { status: 200, body: '{}' },
+      proberExitCode: 0,
+      proberStdout: 'doorway-scan: scope=free-probes\n',
+      emptyStateDir: true,
+      expect: { result: 'failure', reasonCode: 'scan-state-missing' },
+    },
+  ],
   'stall-matrix-live-check': () => proberVariants([{ code: 1, expect: 'failure' }, { code: 2, expect: 'skipped' }]),
   'routing-price-refresh': () => proberVariants([{ code: 1, expect: 'failure' }]),
   'routing-price-web-verify': () => proberVariants([{ code: 1, expect: 'failure' }]),
@@ -308,12 +322,15 @@ export class ScriptCanaryRunner {
       const extraArgs = ['--canary', ...(variant.flags ?? [])];
       if (variant.proberExitCode !== undefined) {
         proberDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-canary-prober-'));
-        extraArgs.push('--prober', writeStubProber(proberDir, variant.proberExitCode));
+        extraArgs.push('--prober', writeStubProber(proberDir, variant.proberExitCode, variant.proberStdout));
       }
       const res = await this.d.scheduler.runScriptCanary(job.slug, {
         serverUrl: stub.url,
         extraArgs,
-        env: { INSTAR_SCRIPT_CANARY: '1' },
+        env: {
+          INSTAR_SCRIPT_CANARY: '1',
+          ...(variant.emptyStateDir && proberDir ? { INSTAR_STATE_DIR: path.join(proberDir, 'empty-state') } : {}),
+        },
       });
       parsed = res.parsed;
       problems.push(...checkExpectation(variant, res.parsed));
@@ -440,6 +457,9 @@ export function checkExpectation(variant: CanaryVariant, parsed: ParsedScriptRun
     const why = parsed.reasonCode === 'script-untrusted' ? ' (script failed its hash check)' : '';
     problems.push(`printed ${parsed.result}${why}, expected ${variant.expect.result}`);
   }
+  if (variant.expect.reasonCode && parsed.reasonCode !== variant.expect.reasonCode) {
+    problems.push(`reason ${parsed.reasonCode || 'none'}, expected ${variant.expect.reasonCode}`);
+  }
   for (const kind of variant.expect.anomalies ?? []) {
     if (!parsed.anomalies.some(a => a.kind === kind)) problems.push(`missing anomaly ${kind}`);
   }
@@ -466,8 +486,8 @@ export function startFixtureStub(fixture: CanaryFixture): Promise<{ url: string;
 }
 
 /** A stub prober that exits with the given code (shebang + mode 755: runnable directly or via node). */
-export function writeStubProber(dir: string, exitCode: number): string {
+export function writeStubProber(dir: string, exitCode: number, stdout = ''): string {
   const file = path.join(dir, `stub-prober-exit-${exitCode}.mjs`);
-  fs.writeFileSync(file, `#!/usr/bin/env node\nprocess.exit(${Math.trunc(exitCode)});\n`, { mode: 0o755 });
+  fs.writeFileSync(file, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(stdout)}, () => process.exit(${Math.trunc(exitCode)}));\n`, { mode: 0o755 });
   return file;
 }

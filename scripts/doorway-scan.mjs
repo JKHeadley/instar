@@ -3,7 +3,7 @@
  * doorway-scan.mjs — the deterministic doorway prober (the SECURITY SPINE).
  *
  * Spec: docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §2.0-§2.9.
- * Rollout increment 2 (dark: the doorway-scan job ships enabled:false).
+ * The doorway-scan job ships enabled:false; a run writes real scan-state.
  *
  * This script owns 100% of the network I/O, secret handling, timeouts,
  * size-caps, sanitization, scan-state read/write, diff/debounce/breaker, and
@@ -84,6 +84,7 @@ const MODEL_ID_RE = /^[A-Za-z0-9._/:-]+$/;
 const DOOR_ID_RE = /^[A-Za-z0-9._/:-]+$/;
 const VAULT_KEY_NAME_RE = /^[A-Za-z0-9._-]+$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ── Sanitization helpers (§2.0 clamp-at-source; §1.3 clamp-on-read) ───────────
 
@@ -216,6 +217,8 @@ export const SCAN_STATE_FIELDS = Object.freeze([
   'surfacedBaseline.doorways',
   'surfacedBaseline.at',
   'lastDeliveryFailedAt',
+  'maintainerViewId',
+  'escalationPending',
 ]);
 
 function clampDoorEntry(raw, knownCandidates) {
@@ -223,7 +226,8 @@ function clampDoorEntry(raw, knownCandidates) {
   const idc = clampDoorId(raw.id, knownCandidates);
   if (!idc) return null; // an id matching no known candidate / malformed is dropped
   const probeStatus = clampProbeStatus(raw.probeStatus);
-  const reachable = typeof raw.reachable === 'boolean' ? raw.reachable : false;
+  // Tri-state (§1.3): a stored null stays unknown, never an alarming false.
+  const reachable = typeof raw.reachable === 'boolean' ? raw.reachable : null;
   const topModels = Array.isArray(raw.topModels)
     ? raw.topModels.slice(0, ARRAY_CAP).map(clampModelId).filter((x) => x !== null)
     : [];
@@ -310,6 +314,8 @@ export function loadScanState(src, opts = {}) {
       at: clampIso(sb.at),
     },
     lastDeliveryFailedAt: clampIso(raw.lastDeliveryFailedAt),
+    maintainerViewId: typeof raw.maintainerViewId === 'string' && UUID_RE.test(raw.maintainerViewId) ? raw.maintainerViewId : null,
+    escalationPending: raw.escalationPending === true,
   };
 }
 
@@ -324,6 +330,8 @@ export function freshScanState() {
     lastDiff: emptyDiff(),
     surfacedBaseline: { doorways: [], at: null },
     lastDeliveryFailedAt: null,
+    maintainerViewId: null,
+    escalationPending: false,
   };
 }
 
@@ -740,6 +748,235 @@ function parseArgs(argv) {
   return out;
 }
 
+/** This machine's id, or '' when it has no machine identity. */
+export function readMachineId(stateDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'machine', 'identity.json'), 'utf-8'));
+    return clampMachineId(raw?.machineId);
+  } catch {
+    return '';
+  }
+}
+
+/** Run one door's free probe. A door with no supported free probe is recorded, never guessed. */
+export async function probeDoorFree(door, deps = {}) {
+  const probe = door?.probe;
+  if (!probe || probe.metered === true || probe.kind === 'none' || probe.vaultKeyName && probe.kind === 'http-model-list') {
+    return { probeStatus: 'not-probed-this-scope', topModels: [] };
+  }
+  if (probe.kind === 'cli-version' || probe.kind === 'cli-model-list') return probeCliDoor(door, deps);
+  if (probe.kind === 'http-model-list') return probeHttpModelListDoor(door, deps);
+  return { probeStatus: 'not-probed-this-scope', topModels: [] };
+}
+
+/** Atomic write of the ONE file this script may write (+ a temp sibling, §2.0). */
+export function writeScanState(scanStatePath, state) {
+  fs.mkdirSync(path.dirname(scanStatePath), { recursive: true });
+  const tmp = `${scanStatePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, scanStatePath);
+}
+
+function appendChange(history, ts, change) {
+  return [...history, { ts, change: sanitizeChangeText(change) }].slice(-CHANGE_HISTORY_CAP);
+}
+
+/**
+ * Probe every door, compose the next scan-state and the diff. Pure apart from
+ * the probes (no file or server I/O). Doors are probed one at a time; one
+ * door's failure never touches another, and a door not started by the
+ * deadline is recorded not-probed-this-run.
+ */
+export async function runScan({ manifest, prior, machineId, deps = {}, now = () => new Date() }) {
+  const nowIso = now().toISOString();
+  const deadline = now().getTime() + (deps.deadlineMs ?? GLOBAL_DEADLINE_MS);
+  const doors = manifest.doors ?? {};
+  const ids = [...new Set([...Object.keys(doors), ...resolveCandidateDoors(manifest)])].slice(0, ARRAY_CAP);
+  const priorById = new Map(prior.doorways.map((d) => [d.id, d]));
+  const baselineById = new Map(prior.surfacedBaseline.doorways.map((d) => [d.id, d]));
+
+  const observed = [];
+  for (const id of ids) {
+    const prev = priorById.get(id);
+    let result;
+    if (now().getTime() >= deadline) {
+      result = { probeStatus: 'not-probed-this-run', topModels: [] };
+    } else {
+      try {
+        result = await probeDoorFree(doors[id] ? { ...doors[id], id } : null, deps);
+      } catch {
+        result = { probeStatus: 'malformed-response', topModels: [] };
+      }
+    }
+    const probeStatus = clampProbeStatus(result.probeStatus);
+    const debounced = applyDebounce(prev ? prev.reachable : null, probeStatusToReachable(probeStatus), prev?.pendingFlip ?? null, nowIso);
+    const baseline = baselineById.get(id);
+    const changed = prev && prev.probeStatus !== probeStatus;
+    observed.push({
+      id,
+      known: true,
+      reachable: debounced.effectiveReachable,
+      probeStatus,
+      // A door that did not list this run keeps what it last listed; an absent
+      // list is not a top-model change.
+      topModels: probeStatus === 'ok' && result.topModels.length ? result.topModels : prev?.topModels ?? [],
+      lastScannedAt: nowIso,
+      pendingFlip: debounced.pendingFlip,
+      changeHistory: changed
+        ? appendChange(prev.changeHistory, nowIso, `probe ${prev.probeStatus} -> ${probeStatus}`)
+        : prev?.changeHistory ?? appendChange([], nowIso, `first observed ${probeStatus}`),
+      // Compared against the baseline, not this run's flip, so a notice whose
+      // delivery failed comes back on the next scan (§2.6).
+      surfacedUnreachable: debounced.effectiveReachable === false && baseline?.reachable === true,
+    });
+  }
+
+  const answered = observed.filter((d) => probeStatusToReachable(d.probeStatus) === true).length;
+  const breaker = advanceBreaker(prior.consecutiveCompleteFailures, answered);
+  const diff = computeDiff(observed, prior.surfacedBaseline.doorways);
+  const plan = planBaselineAdvance(prior.surfacedBaseline.at, diff);
+  const strip = ({ surfacedUnreachable, ...door }) => door;
+  const doorways = observed.map(strip);
+
+  const state = {
+    ...prior,
+    schemaVersion: SCAN_STATE_SCHEMA_VERSION,
+    machineId,
+    lastScanAt: nowIso,
+    scanScope: 'free-probes',
+    consecutiveCompleteFailures: breaker.consecutiveCompleteFailures,
+    doorways,
+    lastDiff: diff,
+  };
+  if (plan.action === 'seed') {
+    state.surfacedBaseline = { doorways, at: nowIso };
+  } else if (plan.action === 'noop') {
+    state.lastDeliveryFailedAt = null;
+    // The baseline learns what raises no notice: unknown → known and a recovery.
+    // Without this a later true → false would stay silent.
+    state.surfacedBaseline = {
+      ...prior.surfacedBaseline,
+      doorways: prior.surfacedBaseline.doorways.map((d) => {
+        const seen = doorways.find((o) => o.id === d.id);
+        return seen && (d.reachable === null || seen.reachable === true) ? { ...d, reachable: seen.reachable } : d;
+      }),
+    };
+  }
+  return { state, diff, plan, answered, breaker, doorways };
+}
+
+/** One authenticated in-process call to this agent's own server; never throws. */
+async function serverCall(ctx, method, route, body) {
+  try {
+    const res = await ctx.fetch(`${ctx.baseUrl}${route}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${ctx.token}`,
+        ...(ctx.agentId ? { 'X-Instar-AgentId': ctx.agentId } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(PER_PROBE_TIMEOUT_MS * 3),
+    });
+    let json = null;
+    try { json = await res.json(); } catch { /* a body-less answer keeps json null */ }
+    return { status: res.status, json };
+  } catch {
+    return { status: 0, json: null };
+  }
+}
+
+/** PUT the stable private view, creating it on first use (§2.6). Returns its id or null. */
+async function upsertMaintainerView(ctx, viewId, title, markdown) {
+  if (viewId) {
+    const put = await serverCall(ctx, 'PUT', `/view/${viewId}`, { title, markdown });
+    if (put.status >= 200 && put.status < 300) return viewId;
+  }
+  const post = await serverCall(ctx, 'POST', '/view', { title, markdown });
+  const id = post.json?.id;
+  return post.status >= 200 && post.status < 300 && typeof id === 'string' && UUID_RE.test(id) ? id : null;
+}
+
+/** Deliver a change notice. Confirmed 2xx only counts as delivered (§2.6). */
+export async function deliverDiff(ctx, diff, state) {
+  const tunnel = await serverCall(ctx, 'GET', '/tunnel');
+  const tunnelUrl = typeof tunnel.json?.url === 'string' ? tunnel.json.url : null;
+  const viewId = await upsertMaintainerView(ctx, state.maintainerViewId, 'Doorway map changes', buildPrivateViewMarkdown(diff, state.machineId));
+  const { title, body } = buildAttentionBody(diff, { tunnelUrl, viewId });
+  const res = await serverCall(ctx, 'POST', '/attention', {
+    id: `doorway-scan:changes:${state.machineId}`,
+    sourceContext: `doorway-scan:${state.machineId}`,
+    conditionKey: `doorway-scan:changes:${state.machineId}`,
+    title,
+    body,
+    priority: 'medium',
+    source: 'agent',
+  });
+  return { delivered: res.status >= 200 && res.status < 300, viewId };
+}
+
+/** ONE stable escalation at the breaker threshold (§2.3). */
+export async function deliverBreakerEscalation(ctx, machineId) {
+  const res = await serverCall(ctx, 'POST', '/attention', {
+    id: `doorway-scan:zero-doors:${machineId}`,
+    sourceContext: `doorway-scan:${machineId}`,
+    conditionKey: `doorway-scan:zero-doors:${machineId}`,
+    title: 'Doorway check found no working doorways',
+    body: `The doorway check found no working doorways for ${COMPLETE_FAILURE_ESCALATE_THRESHOLD} runs in a row. Check how the job runs on this machine.`,
+    priority: 'medium',
+    source: 'agent',
+  });
+  return res.status >= 200 && res.status < 300;
+}
+
+/** One full scan: load, probe, write, deliver, re-write. Returns a one-line summary. */
+export async function scanOnce({ manifest, scanStatePath, machineId, ctx, deps, now, log = () => {} }) {
+  const known = [...new Set([...Object.keys(manifest.doors ?? {}), ...resolveCandidateDoors(manifest)])];
+  const prior = fs.existsSync(scanStatePath)
+    ? loadScanState(scanStatePath, { knownCandidates: known, onCorrupt: log })
+    : freshScanState();
+  const { state, diff, plan, answered, breaker, doorways } = await runScan({ manifest, prior, machineId, deps, now });
+
+  // The observation lands first: a crash during delivery leaves the baseline
+  // behind, so the change comes back on the next scan.
+  writeScanState(scanStatePath, state);
+  let delivery = 'none';
+  if (plan.shouldDeliver) {
+    const { delivered, viewId } = await deliverDiff(ctx, diff, state);
+    delivery = delivered ? 'delivered' : 'held';
+    const next = { ...state, maintainerViewId: viewId ?? state.maintainerViewId };
+    if (delivered) {
+      next.surfacedBaseline = { doorways, at: state.lastScanAt };
+      next.lastDeliveryFailedAt = null;
+    } else {
+      next.lastDeliveryFailedAt = state.lastScanAt;
+    }
+    writeScanState(scanStatePath, next);
+  }
+  // A failed escalation is retried while the failure lasts: the breaker itself
+  // fires only once, exactly at the threshold.
+  const failing = breaker.consecutiveCompleteFailures >= COMPLETE_FAILURE_ESCALATE_THRESHOLD;
+  if (breaker.escalate || (failing && prior.escalationPending)) {
+    const delivered = await deliverBreakerEscalation(ctx, machineId);
+    writeScanState(scanStatePath, { ...JSON.parse(fs.readFileSync(scanStatePath, 'utf-8')), escalationPending: !delivered });
+  } else if (!failing && prior.escalationPending) {
+    writeScanState(scanStatePath, { ...JSON.parse(fs.readFileSync(scanStatePath, 'utf-8')), escalationPending: false });
+  }
+
+  // The file on disk is the claim this run makes, so it is read back.
+  const written = JSON.parse(fs.readFileSync(scanStatePath, 'utf-8'));
+  if (written.lastScanAt !== state.lastScanAt) throw new Error('scan-state did not persist');
+  return `scanned ${doorways.length} doors, ${answered} answered, baseline ${plan.action}, delivery ${delivery}`;
+}
+
+function readLocalConfig(stateDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) ?? {};
+  } catch {
+    return {};
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   // Belt-and-suspenders write-restraint (§2.0): this script only ever writes the
@@ -756,17 +993,29 @@ async function main() {
     return;
   }
 
-  // A metered scope from a scheduled session is refused up-front (self-standing).
-  if (args.scope !== 'free-probes' && (scheduled || !manualMarker)) {
-    console.log(`doorway-scan: metered scope "${args.scope}" refused (scheduled-session or manual-marker-missing) — running free-probes.`);
+  // Only free probes are built. A metered scope never spends: it is refused here,
+  // whoever asked and whatever marker is set.
+  if (args.scope !== 'free-probes') {
+    console.log(`doorway-scan: metered scope "${args.scope}" refused (scheduled=${scheduled} manualMarker=${manualMarker}) — running free-probes.`);
     args.scope = 'free-probes';
   }
 
   console.log(`doorway-scan: scope=${args.scope} scheduled=${scheduled} stateFile=${scanStatePath}`);
-  console.log('doorway-scan: increment 2 ships DARK — the job is enabled:false; this is the deterministic prober module.');
-  // The full cadence orchestration (probe → debounce → diff → deliver) is exercised
-  // via the exported pure functions and the enabled job (rollout step 4). Running
-  // main() by hand here confirms wiring + writes/refreshes scan-state harmlessly.
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  const config = readLocalConfig(stateDir);
+  const summary = await scanOnce({
+    manifest,
+    scanStatePath,
+    machineId: readMachineId(stateDir),
+    ctx: {
+      fetch: globalThis.fetch,
+      baseUrl: `http://127.0.0.1:${process.env.INSTAR_PORT || config.port || 4042}`,
+      token: process.env.INSTAR_AUTH_TOKEN || (typeof config.authToken === 'string' ? config.authToken : ''),
+      agentId: process.env.INSTAR_AGENT_ID || String(config.projectName ?? ''),
+    },
+    log: (msg) => console.error(`doorway-scan: ${msg}`),
+  });
+  console.log(`doorway-scan: ${summary}`);
 }
 
 const isDirect = (() => {
@@ -779,7 +1028,7 @@ const isDirect = (() => {
 
 if (isDirect) {
   main().catch((err) => {
-    console.error(`doorway-scan: fatal (non-gating): ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(0); // never a hard failure — next cadence retries (fail-safe)
+    console.error(`doorway-scan: fatal: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1); // a run with no fresh scan-state is a failed run; next cadence retries
   });
 }
