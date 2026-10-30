@@ -288,6 +288,17 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `POST /autonomous/:topic/ratify-deferral` — dashboard-PIN-gated operator ratification of deferred accreted artifacts (`{"artifacts": [...]}` or `{"all": true}`; the response echoes exactly what was ratified).
 - `POST /autonomous/:topic/scope-accretion-override` — dashboard-PIN-gated live mid-run lever (`{"enabled": false, "reason": "…"}`): overrides the registration-time snapshot for the running session; audited.
 
+## Codex task continuation
+
+These authenticated endpoints manage the bounded, per-topic Codex checklist. The server caps each generation's duration and continuation count; they do not activate an autonomous run on their own.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/continuation/:topic/status` | Show whether the ledger is enabled and active, its expiry, and the number of open tasks. |
+| POST | `/continuation/start` | Start a new checklist with `topicId`, `tasks`, and optional `sessionId`, `durationSeconds`, and `maxContinuations`. |
+| POST | `/continuation/:topic/renew` | Mint a fresh bounded generation for an existing checklist with open tasks after its prior duration expires; the tasks are preserved. This is not an operator-stop override. |
+| POST | `/continuation/:topic/complete` | Mark one task complete with its one-based `ordinal`. |
+
 ## /autonomy
 - `GET /autonomy`
 - `GET /autonomy/elevation`

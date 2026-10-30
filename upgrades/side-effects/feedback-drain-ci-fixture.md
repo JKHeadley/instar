@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-The integration fixture in `tests/integration/feedback-factory-process-job-body.test.ts` uses a random failure-file name for each invocation. This removes cross-case state when the operating system reuses an ephemeral port. The ELI16 note and internal release fragment document the change. No runtime code or installed file changes.
+The integration fixture in `tests/integration/feedback-factory-process-job-body.test.ts` uses a random failure-file name for each invocation. This removes cross-case state when the operating system reuses an ephemeral port. The API reference also documents the Codex continuation endpoints after the first CI pass exposed a route-coverage shortfall. The ELI16 note and internal release fragment document both changes. No runtime code or installed file changes.
 
 ## Decision-point inventory
 
@@ -39,7 +39,7 @@ The test server may reuse a port, but that no longer reuses an artifact path. Ot
 
 ## 6. External surfaces
 
-No API, network, user, or agent-installed surface changes.
+No API, network, user, or agent-installed behavior changes. The public API reference now describes existing continuation routes.
 
 ## 6b. Operator-surface quality (Operator-Surface Quality standard)
 
@@ -55,7 +55,7 @@ A revert restores the old flaky fixture. No data migration or agent state repair
 
 ## Conclusion
 
-Tier 1: a one-line test isolation fix with no production behavior change. One review round, one commit and gate attempt planned. The fix is proportional to the observed CI failure.
+Tier 1: a one-line test isolation fix plus a short API reference correction, with no production behavior change. One review round and two commit/gate attempts; the second was required by the first GitHub docs-coverage failure.
 
 ## Second-pass review (if required)
 
@@ -65,6 +65,7 @@ Not required for a Tier 1 test fixture change.
 
 - PR #2451 GitHub Integration Tests failure at `feedback-factory-process-job-body.test.ts:210`.
 - Focused integration test and exact-commit verifier for this fix.
+- `node scripts/docs-coverage.mjs --check` passes with route coverage at 55%.
 
 ## Class-Closure Declaration (display-only mirror)
 
