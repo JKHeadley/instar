@@ -4,7 +4,7 @@
 
 This review covers two edits to existing articles in `docs/STANDARDS-REGISTRY.md`. No article is added, removed, moved or renamed.
 
-1. **Building — *Framework-Agnostic — and Framework-Optimizing*.** Under "The floor — works everywhere", a new paragraph, "One provider is enough": an agent with exactly one AI provider is fully functional; a second provider is an optimization, never a requirement; every feature that uses a second provider must declare its single-provider behaviour (a working path on the agent's own provider, or the behaviour that existed before the feature), and may never be silently absent for a capability the agent needs. The paragraph names this as an UNENFORCED SUB-OBLIGATION with the countdown `2026-12-21`, tracked as `STD-SUBCOUNTDOWN-single-provider-floor`, and names the guard to build: a single-provider boot test per supported provider that exercises every feature, plus a declaration lint.
+1. **Building — *Framework-Agnostic — and Framework-Optimizing*.** Under "The floor — works everywhere", a new paragraph, "One provider is enough": an agent with exactly one AI provider is fully functional; a second provider is an optimization, never a requirement; every feature that uses a second provider must declare its single-provider behaviour, and that behaviour delivers the feature rather than refusing, holding or switching it off. The paragraph names this as an UNENFORCED SUB-OBLIGATION with the countdown `2026-12-21`, tracked as `STD-SUBCOUNTDOWN-single-provider-floor`, and names the guard to build: a single-provider boot test per supported provider that exercises every feature, plus a declaration lint.
 2. **The Substrate — *Name the Gravity Wells*.** A fifth named well, the **deferral-to-the-cadence** trap: tying ready, cheap work to the next scheduled meeting, check-in or review when it could start now. The tell is a due date equal to the next recurring slot with no named external wait; a cadence is a ceiling, never a due date. It is cross-referenced to *Deferral = Deletion*. The article's Earned-from gains one sentence citing 2026-10-14 and 2026-10-26 (topic 95267) and the structural guard filed as feedback `fb-72a0a193-ec3`; the text says the well is named, not guarded.
 
 The authority is the operator (Justin), in Telegram topic 95267 on 2026-10-26: "we should ALWAYS have a functional floor that allows an Instar agent to be fully functional with only a single AI provider (claude, codex, etc)", and "Why do we keep purposefully delaying tasks and stretching them out? This feels like a general AI pitfall/gravity well that Instar should be aware of." Both edits reach the registry only through his code-owner approval of the pull request.
@@ -27,7 +27,7 @@ Neither edit claims enforcement. The single-provider floor is stated as an unenf
 
 | Family | areaSha256 | Verdict |
 |---|---|---|
-| Building | `baba2157f5a9566a8ca825131c875e5ac4f4808211363ccb889abcb189e55595` | accepted |
+| Building | `f1e19aebd9bb8a1470a25c247528fe696b661e958d95de806e932b8b14d23328` | accepted |
 | The Substrate | `d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76` | accepted |
 
 ## Independent acceptance
@@ -41,3 +41,5 @@ Reviewers: `echo:claude-code`, `independent-verifier:claude-code`.
 ## Later wording edit
 
 After this review, the Building text gained one attribution clause saying the single-provider floor mirrors Instar 2.0 Rule 118 and that the master wording governs. No obligation changed, so the verdict stands. The Building hash above is the one for the final text.
+
+A second edit followed an independent review of the final diff, which found the first wording looser than the merged Rule 118: it let a feature's old pre-feature behaviour count as enough. The Building text now uses Rule 118's standard, and its citation says PR 182 rather than "proposed in". This makes the obligation stricter, so more of today's second-provider features fall short of it. That is the named, unenforced sub-obligation with its countdown, and no guard is claimed. The Building hash above is the one for this final text.

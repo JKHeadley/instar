@@ -4,8 +4,8 @@
     "Building": {
       "lastAuditedAt": "2026-10-26T18:24:09.000Z",
       "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "a745ce7a62414b88ce23608f7b1e174276179f3519fd291e8ee31a769f3c842d",
-      "areaSha256": "baba2157f5a9566a8ca825131c875e5ac4f4808211363ccb889abcb189e55595",
+      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
+      "areaSha256": "f1e19aebd9bb8a1470a25c247528fe696b661e958d95de806e932b8b14d23328",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
@@ -54,7 +54,7 @@
     "The Substrate": {
       "lastAuditedAt": "2026-10-26T18:24:09.000Z",
       "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "a745ce7a62414b88ce23608f7b1e174276179f3519fd291e8ee31a769f3c842d",
+      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
       "areaSha256": "d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76",
       "refResolutionFloor": {
         "enforced": 16,
