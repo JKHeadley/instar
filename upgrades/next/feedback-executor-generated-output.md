@@ -15,3 +15,11 @@ Live attempt `feedback-d2bf749f-6792-4477-846f-f2d023888597:a1` was rejected at 
 ## User-facing result
 
 Feedback builders can run repository checks without their generated files blocking a valid design draft. Only the requested draft goes to review.
+
+## What to Tell Your User
+
+Feedback design drafts can now pass the file-shape check after repository checks generate their normal output. The executor still refuses unrelated changes and protected tooling paths.
+
+## Summary of New Capabilities
+
+- The feedback executor recognizes six exact generated output paths and excludes them only when they are absent from the trusted publish clone.

@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
+import { GENERATED_STANDARDS_REGISTRY_OUTPUTS } from '../../core/standardsRegistryPath.js';
 import { CHANGESET_MAX_BYTES, CHANGESET_MAX_FILES, EVIDENCE_FILE, PREVIOUS_REVIEW_FILE, RESULT_FILE, isToolingPath } from './executePolicy.js';
 
 export interface ChangeEntry {
@@ -42,10 +43,8 @@ const GENERATED_OUTPUT_SKIP = new Set([
   '.instar/standards-coverage.json',
   'src/data/standards-guard-index.json',
   'src/data/standards-guard-index.meta.json',
-  'src/data/standards-registry.meta.json',
+  ...GENERATED_STANDARDS_REGISTRY_OUTPUTS,
 ]);
-// Match a generated output name; this is not a path used to read the standards registry.
-const GENERATED_REGISTRY_OUTPUT = /^src\/data\/standards-registry\.md$/;
 
 /**
  * A name git would treat as `.git` on a case-insensitive or Unicode-normalising filesystem
@@ -146,7 +145,7 @@ export function buildChangeSet(workspace: string, publishClone: string): ChangeS
   const base = walk(publishClone, { skipClaude: true });
   const entries: ChangeEntry[] = [];
   let totalBytes = 0;
-  const skipOutput = (rel: string) => GENERATED_OUTPUT_SKIP.has(rel) || GENERATED_REGISTRY_OUTPUT.test(rel) || OUTPUT_SKIP.some((re) => re.test(rel));
+  const skipOutput = (rel: string) => GENERATED_OUTPUT_SKIP.has(rel) || OUTPUT_SKIP.some((re) => re.test(rel));
   for (const [rel, w] of ws) {
     const b = base.get(rel);
     if (w.kind === 'link') {
