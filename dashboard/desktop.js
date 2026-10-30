@@ -47,12 +47,15 @@ let resumeTransportFailures = 0;
 const resumeControllers = new Set();
 let stopping = false;
 let trackpad = matchMedia('(pointer: coarse)').matches;
+let touchCapable = matchMedia('(any-pointer: coarse)').matches;
 let cursor = { x: 0.5, y: 0.5 };
 const pointers = new Map();
 let zoom = 1;
 let panX = 0;
 let panY = 0;
 let twoFinger = null;
+let wheelFrame = 0;
+let pendingWheel = null;
 let composingText = false;
 let skipCompositionCommitKey = false;
 let recentlyCommittedText = '';
@@ -398,6 +401,8 @@ function leave(message) {
   if (heartbeat) { clearInterval(heartbeat); heartbeat = 0; }
   if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
   pendingMove = null;
+  if (wheelFrame) { cancelAnimationFrame(wheelFrame); wheelFrame = 0; }
+  pendingWheel = null;
   pointers.clear();
   setHeldButton(null);
   for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
@@ -771,8 +776,7 @@ async function openStream(result, resume = null) {
     document.body.classList.add('desktop-live');
     syncVisualViewport();
     document.body.classList.toggle('trackpad', trackpad);
-    $('modeButton').textContent = trackpad ? 'Trackpad' : 'Direct';
-    $('modeButton').setAttribute('aria-pressed', String(trackpad));
+    syncTouchModeButton();
     updateCursor();
     $('machineName').textContent = ticket.label;
     status('Remote desktop is live.');
@@ -848,6 +852,22 @@ function moveCursor(dx, dy) {
   queueMove(cursor);
 }
 function clickCursor(button = 'left') { if (!heldButton) send({ kind: 'click', ...cursor, button }); }
+function syncTouchModeButton() {
+  $('modeButton').hidden = !touchCapable;
+  $('modeButton').textContent = trackpad ? 'Trackpad · swipe to move' : 'Direct · touch position';
+  $('modeButton').setAttribute('aria-pressed', String(trackpad));
+  $('modeButton').setAttribute('aria-label', trackpad
+    ? 'Touch mode: Trackpad. Swipe to move the pointer; tap to click.'
+    : 'Touch mode: Direct. The pointer follows your finger; tap to click.');
+}
+function flushWheel() {
+  wheelFrame = 0;
+  if (!pendingWheel) return;
+  const { dx, dy } = pendingWheel;
+  pendingWheel = null;
+  if (inputEnabled && (dx || dy)) void send({ kind: 'scroll',
+    dx: Math.max(-200, Math.min(200, dx)), dy: Math.max(-200, Math.min(200, dy)) });
+}
 function syncVisualViewport() {
   const viewport = window.visualViewport;
   if (!viewport || !document.body.classList.contains('desktop-live')) return;
@@ -933,8 +953,7 @@ $('modeButton').addEventListener('click', () => {
   trackpad = !trackpad;
   pointers.clear();
   document.body.classList.toggle('trackpad', trackpad);
-  $('modeButton').textContent = trackpad ? 'Trackpad' : 'Direct';
-  $('modeButton').setAttribute('aria-pressed', String(trackpad));
+  syncTouchModeButton();
 });
 $('dragButton').addEventListener('click', () => {
   if (heldButton) { releaseButton(); return; }
@@ -978,8 +997,19 @@ document.addEventListener('keyup', event => {
   releaseKey(key);
 });
 $('surface').addEventListener('contextmenu', event => event.preventDefault());
+$('surface').addEventListener('wheel', event => {
+  if (!inputEnabled || event.ctrlKey) return;
+  event.preventDefault();
+  const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2
+    ? Math.max(1, $('surface').clientHeight) : 1;
+  if (!pendingWheel) pendingWheel = { dx: 0, dy: 0 };
+  pendingWheel.dx += event.deltaX * scale;
+  pendingWheel.dy += event.deltaY * scale;
+  if (!wheelFrame) wheelFrame = requestAnimationFrame(flushWheel);
+}, { passive: false });
 $('surface').addEventListener('pointerdown', event => {
   event.preventDefault();
+  if (event.pointerType === 'touch' && !touchCapable) { touchCapable = true; syncTouchModeButton(); }
   $('surface').setPointerCapture(event.pointerId);
   pointers.set(event.pointerId, { x: event.clientX, y: event.clientY,
     startX: event.clientX, startY: event.clientY, maxDistance: 0,
@@ -1088,6 +1118,8 @@ $('stopButton').addEventListener('click', async () => {
   inputEnabled = false;
   if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
   pendingMove = null;
+  if (wheelFrame) { cancelAnimationFrame(wheelFrame); wheelFrame = 0; }
+  pendingWheel = null;
   pointers.clear();
   setHeldButton(null);
   for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }

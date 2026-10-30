@@ -64,6 +64,32 @@ describe('desktop touch gestures', () => {
     const finalActions = (window as unknown as { __commands: Array<{ action?: { kind: string } }> }).__commands
       .map(command => command.action?.kind);
     expect(finalActions).toEqual(['scroll', 'buttonDown', 'buttonUp']);
+    const wheelFrames: FrameRequestCallback[] = [];
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      value: (callback: FrameRequestCallback) => { wheelFrames.push(callback); return wheelFrames.length; },
+    });
+    const firstWheel = new window.WheelEvent('wheel', {
+      bubbles: true, cancelable: true, deltaX: 2, deltaY: 10,
+    });
+    const secondWheel = new window.WheelEvent('wheel', {
+      bubbles: true, cancelable: true, deltaX: 1, deltaY: 2, deltaMode: 1,
+    });
+    surface.dispatchEvent(firstWheel);
+    surface.dispatchEvent(secondWheel);
+    expect(firstWheel.defaultPrevented).toBe(true);
+    expect(secondWheel.defaultPrevented).toBe(true);
+    expect(wheelFrames).toHaveLength(1);
+    expect((window as unknown as { __commands: Array<{ action?: { kind: string } }> }).__commands
+      .map(command => command.action?.kind)).toEqual(['scroll', 'buttonDown', 'buttonUp']);
+    wheelFrames[0](0);
+    expect((window as unknown as { __commands: Array<{ action?: { kind: string; dx?: number; dy?: number } }> }).__commands.at(-1)?.action)
+      .toEqual({ kind: 'scroll', dx: 18, dy: 42 });
+    const pinchWheel = new window.WheelEvent('wheel', {
+      bubbles: true, cancelable: true, ctrlKey: true, deltaY: 5,
+    });
+    surface.dispatchEvent(pinchWheel);
+    expect(pinchWheel.defaultPrevented).toBe(false);
+    expect(wheelFrames).toHaveLength(1);
     await Promise.resolve();
     window.document.querySelector<HTMLElement>('[data-remote-key="Meta"]')!.click();
     window.document.querySelector<HTMLElement>('[data-remote-key="c"]')!.click();

@@ -25,7 +25,7 @@
       <div id="viewTransform">
         <img id="screen" alt="Live desktop of the selected machine" draggable="false">
         <canvas id="videoCanvas" aria-label="Live desktop video" hidden></canvas>
-        <div id="localCursor" aria-hidden="true"></div>
+        <svg id="localCursor" aria-hidden="true" viewBox="0 0 24 24"><path d="M2 1v19l5-5 3.5 7 3.5-2-3.5-7H18z" fill="#fff" stroke="#000" stroke-width="1.8" stroke-linejoin="round"/></svg>
       </div>
     </div>
     <div class="desktop-dock" aria-label="Remote desktop controls">
@@ -35,7 +35,7 @@
       <button id="fullscreenButton" type="button" aria-label="Full screen">⛶</button>
     </div>
     <div class="desktop-tools" id="desktopTools" hidden>
-      <button id="modeButton" type="button" aria-pressed="true">Trackpad</button>
+      <button id="modeButton" type="button" aria-pressed="true" hidden>Trackpad · swipe to move</button>
       <button id="dragButton" type="button" aria-pressed="false">Drag</button>
       <button id="rightButton" type="button">Right click</button>
       <button data-remote-key="Meta" data-modifier="true" type="button" aria-pressed="false">⌘</button>

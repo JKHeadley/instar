@@ -10,6 +10,7 @@ final class TestView: NSView {
     override func mouseDown(with event: NSEvent) { report("down") }
     override func mouseDragged(with event: NSEvent) { report("drag") }
     override func mouseUp(with event: NSEvent) { report("up") }
+    override func scrollWheel(with event: NSEvent) { report("scroll") }
     override func flagsChanged(with event: NSEvent) {
         report(event.modifierFlags.contains(.command) ? "metaDown" : "metaUp")
     }

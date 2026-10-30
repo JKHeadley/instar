@@ -10,6 +10,7 @@ import { SafeFsExecutor } from '../dist/core/SafeFsExecutor.js';
 const url = process.argv[2];
 const landscape = process.argv.includes('--landscape');
 const mobile = process.argv.includes('--mobile') || landscape;
+const wheel = process.argv.includes('--wheel');
 if (!url || !url.startsWith('https://')) throw new Error('HTTPS desktop URL required');
 const pin = await new Promise(resolve => {
   let value = '';
@@ -116,6 +117,33 @@ try {
     return { error: 'first frame timed out', status: document.getElementById('status')?.textContent };
   })()`);
   let mobileResult;
+  let wheelResult;
+  if (wheel && !opened?.error) {
+    const desktopControls = await evaluate(`({ touchModeHidden: document.getElementById('modeButton').hidden,
+      cursorOutline: document.querySelector('#localCursor path')?.getAttribute('stroke') })`);
+    if (!desktopControls.touchModeHidden || desktopControls.cursorOutline !== '#000') {
+      throw new Error(`laptop controls are stale: ${JSON.stringify(desktopControls)}`);
+    }
+    const center = await evaluate(`(() => {
+      const rect = document.getElementById('surface').getBoundingClientRect();
+      window.__desktopWheelCheck = null;
+      document.addEventListener('wheel', event => {
+        window.__desktopWheelCheck = { prevented: event.defaultPrevented,
+          dx: event.deltaX, dy: event.deltaY };
+      }, { once: true });
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    })()`);
+    await call('Input.dispatchMouseEvent', { type: 'mouseWheel', x: center.x,
+      y: center.y, deltaX: 0, deltaY: 60, pointerType: 'mouse' });
+    for (let i = 0; i < 20; i++) {
+      wheelResult = await evaluate('window.__desktopWheelCheck');
+      if (wheelResult) break;
+      await sleep(50);
+    }
+    if (!wheelResult?.prevented || wheelResult.dy !== 60) {
+      throw new Error(`laptop wheel was not handled by the desktop: ${JSON.stringify(wheelResult)}`);
+    }
+  }
   if (mobile && !opened?.error) {
     const layout = await evaluate(`(() => {
       const s = document.getElementById('surface').getBoundingClientRect();
@@ -169,7 +197,8 @@ try {
   }
   if (!stopped?.blank || !/stopped/i.test(stopped.status)) throw new Error('Stop did not blank and revoke');
   console.log(JSON.stringify({ geometry: `${opened.width}x${opened.height}`,
-    codec: opened.codec, stopped: true, ...(mobileResult ? { mobile: mobileResult } : {}) }));
+    codec: opened.codec, stopped: true, ...(wheelResult ? { wheel: true } : {}),
+    ...(mobileResult ? { mobile: mobileResult } : {}) }));
 } finally {
   if (evaluate && !stopAttempted) {
     try {

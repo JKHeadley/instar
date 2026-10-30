@@ -255,6 +255,8 @@ describe('native desktop production boot', () => {
         await waitForEvents(['metaDown']);
         sendLiveInput(ws, key, 6n, { kind: 'keyUp', key: 'Meta' });
         await waitForEvents(['metaUp']);
+        sendLiveInput(ws, key, 7n, { kind: 'scroll', dx: 0, dy: 60 });
+        await waitForEvents(['scroll']);
         const originalExpiry = status.body.expiresAt;
         const lost = once(ws, 'close');
         ws.terminate();
