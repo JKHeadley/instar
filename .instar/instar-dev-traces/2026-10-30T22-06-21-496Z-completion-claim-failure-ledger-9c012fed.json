@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "completion-claim-failure-ledger",
+  "sessionId": "d04320b1-a02e-4c49-9fe0-7d9e0d77c08e",
+  "timestamp": "2026-10-30T22:06:21.496Z",
+  "artifactPath": "upgrades/side-effects/completion-claim-failure-ledger.md",
+  "artifactSha256": "79983fb9af3e645a834d1c5c0cf2f5578b56a6aff03ed631ce4a72df9090cbb8",
+  "coveredFiles": [
+    "tests/integration/corrections-routes.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/completion-claim-failure-ledger.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test and artifact follow-up to the same change; no source changed, a revert undoes it.",
+  "eli16Path": "docs/specs/completion-claim-failure-ledger.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/completion-claim-failure-ledger.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

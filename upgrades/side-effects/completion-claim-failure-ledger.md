@@ -55,3 +55,7 @@ A revert. No migration is needed for state; the two new log files are inert. CLA
 Independent reviewer found parse behavior unchanged, no content path into the logs, every route site holding toward Action-Claim, and no bound lost. It raised one concern: this artifact overstated branch coverage. Resolved by adding tests for the missing parse codes and correcting section 5, and by disclosing the privacy-boundary counting and additive concurrency it also noted.
 
 Concur with the review, after the coverage correction above.
+
+## Local Verify follow-up
+
+The first verify found two real misses. `feature-delivery-completeness` needs every migrator section tracked, so the new awareness bullet is now listed. `corrections-routes` asserted that legacy Action-Claim stands down when the shared arbiter is authoritative, with `dryRun:false` and no ledger history. The new gate rightly keeps that verifier observe-only, so legacy Action-Claim keeps registering until the gate opens. That is the intended side effect: with the gate shut, `dryRun:false` no longer suppresses the legacy path. The test now seeds seven clean days, so it still proves suppression once the gate opens; no source changed.
