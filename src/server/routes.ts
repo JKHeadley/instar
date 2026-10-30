@@ -1,3 +1,4 @@
+import { parseAutoExpiryHold, type AutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
@@ -27507,6 +27508,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ actions: ctx.evolution.listActions({ status, priority }) });
   });
 
+  // CMT-1132: what the auto-expiry sweep took out of the queue, in full.
+  router.get('/evolution/actions/archive', (_req, res) => {
+    if (!ctx.evolution) {
+      res.status(503).json({ error: 'Evolution system not configured' });
+      return;
+    }
+    try {
+      const entries = ctx.evolution.listArchivedActions();
+      res.json({ entries, count: entries.length });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'archive unreadable' });
+    }
+  });
+
+  // CMT-1132: put an archived action back in the queue, held so it stays there.
+  router.post('/evolution/actions/:id/restore', (req, res) => {
+    if (!ctx.evolution) {
+      res.status(503).json({ error: 'Evolution system not configured' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    try {
+      const result = ctx.evolution.restoreArchivedAction(req.params.id);
+      if (result === 'not-archived') {
+        res.status(404).json({ error: `${req.params.id} has no unrestored archive entry` });
+        return;
+      }
+      if (result === 'id-in-use') {
+        res.status(409).json({ error: `${req.params.id} is already in the queue` });
+        return;
+      }
+      res.json({ ok: true, action: result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'restore failed' });
+    }
+  });
+
   router.get('/evolution/actions/overdue', (_req, res) => {
     if (!ctx.evolution) { res.json({ overdue: [] }); return; }
     res.json({ overdue: ctx.evolution.getOverdueActions() });
@@ -27605,7 +27643,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
       ? req.body as Record<string, unknown>
       : {};
-    const supportedFields = new Set(['status', 'resolution']);
+    const supportedFields = new Set(['status', 'resolution', 'autoExpiryHold']);
     const unsupportedFields = Object.keys(body).filter((field) => !supportedFields.has(field));
     if (unsupportedFields.length > 0) {
       res.status(400).json({
@@ -27628,11 +27666,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"resolution" must be a non-empty string' });
       return;
     }
-    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string } = {};
+    const hasHold = Object.prototype.hasOwnProperty.call(body, 'autoExpiryHold');
+    const parsedHold = hasHold ? parseAutoExpiryHold(body.autoExpiryHold, new Date().toISOString()) : null;
+    if (parsedHold === 'invalid') {
+      res.status(400).json({ error: '"autoExpiryHold" must be { reason: "<why>" } or null' });
+      return;
+    }
+    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string; autoExpiryHold?: AutoExpiryHold | null } = {};
+    if (parsedHold) updates.autoExpiryHold = parsedHold.hold ?? null;
     if (typeof status === 'string') updates.status = status as 'pending' | 'in_progress' | 'completed' | 'cancelled';
     if (typeof resolution === 'string') updates.resolution = resolution;
     if (Object.keys(updates).length === 0) {
-      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution' });
+      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution, autoExpiryHold' });
       return;
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
@@ -34130,7 +34175,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { nextUpdateDueAt, softDeadlineAt, hardDeadlineAt, cadenceMs, beaconEnabled } = req.body ?? {};
 
     // Reject unknown keys to surface typos early.
-    const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled']);
+    const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled', 'autoExpiryHold']);
     const unknown = Object.keys(req.body ?? {}).filter(k => !allowed.has(k));
     if (unknown.length > 0) {
       res.status(400).json({ error: `Unknown field(s): ${unknown.join(', ')}. Allowed: ${[...allowed].join(', ')}` });
@@ -34151,9 +34196,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // CMT-1132: { reason } sets the hold, null clears it.
+    const holdRequested = 'autoExpiryHold' in (req.body ?? {});
+    const parsedHold = holdRequested ? parseAutoExpiryHold(req.body.autoExpiryHold, new Date().toISOString()) : null;
+    if (parsedHold === 'invalid') {
+      res.status(400).json({ error: 'autoExpiryHold must be { reason: "<why>" } or null' });
+      return;
+    }
+
     // Effective-field validation (matches POST creation validator).
     const effBeaconEnabled = beaconEnabled ?? existing.beaconEnabled;
-    if (effBeaconEnabled) {
+    // A hold touches no beacon field, so it must not fail on a row's beacon shape.
+    const holdOnly = holdRequested && Object.keys(req.body ?? {}).length === 1;
+    if (effBeaconEnabled && !holdOnly) {
       if (!existing.topicId) {
         res.status(400).json({ error: 'beaconEnabled commitments require topicId (cannot be added via PATCH)' });
         return;
@@ -34181,6 +34236,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(hardDeadlineAt !== undefined ? { hardDeadlineAt } : {}),
         ...(cadenceMs !== undefined ? { cadenceMs } : {}),
         ...(beaconEnabled !== undefined ? { beaconEnabled } : {}),
+        ...(parsedHold ? { autoExpiryHold: parsedHold.hold } : {}),
       }));
       // Re-arm the beacon timer if the tracker is wired to a live beacon.
       try {

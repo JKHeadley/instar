@@ -6,6 +6,7 @@
  */
 
 // Type-only import (erased at compile time — types.ts stays runtime-import-free).
+import type { AutoExpiryHold } from './AutoExpiryLedger.js';
 import type { DecisionProvenanceBlock } from './decisionQualityTypes.js';
 import type { AnomalyDecl } from '../scheduler/jobScriptProtocol.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
@@ -1749,6 +1750,20 @@ export interface ActionItem {
   };
   /** Tags for categorization */
   tags?: string[];
+  /** CMT-1132: exempts this action from auto-expiry until cleared. */
+  autoExpiryHold?: AutoExpiryHold;
+}
+
+/** One action the auto-expiry sweep took out of the queue, with everything needed to put it back. */
+export interface ActionArchiveEntry {
+  /** The action exactly as it stood when it left the queue. */
+  action: ActionItem;
+  archivedAt: string;
+  ageDays: number;
+  class: string;
+  reason?: string;
+  /** Set when the action went back to the queue; the entry stays as history. */
+  restoredAt?: string;
 }
 
 /**

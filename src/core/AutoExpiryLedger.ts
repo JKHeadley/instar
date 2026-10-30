@@ -25,8 +25,35 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+/**
+ * A per-record exemption from auto-expiry (CMT-1132). Age proves nothing about
+ * a row a person or a review has said is still live, so a hold stops every
+ * expiry branch until it is cleared. No expiry date by design: a hold that
+ * lapsed by itself would hand the row back to the sweep unreviewed.
+ */
+export interface AutoExpiryHold {
+  reason: string;
+  setAt: string;
+}
+
+const MAX_HOLD_REASON_CHARS = 500;
+
+/**
+ * Validate a caller's hold request. `null` clears; `{ reason }` sets. Returns
+ * `invalid` for anything else, so a typo cannot read as a hold being in place.
+ */
+export function parseAutoExpiryHold(value: unknown, nowIso: string): { hold: AutoExpiryHold | undefined } | 'invalid' {
+  if (value === null) return { hold: undefined };
+  if (typeof value !== 'object' || Array.isArray(value)) return 'invalid';
+  const reason = (value as { reason?: unknown }).reason;
+  if (typeof reason !== 'string' || reason.trim().length === 0) return 'invalid';
+  return { hold: { reason: reason.trim().slice(0, MAX_HOLD_REASON_CHARS), setAt: nowIso } };
+}
+
 export interface AutoExpiryLedgerItem {
   id: string;
+  /** What the row is, so a reviewer can judge it without opening the store. */
+  title?: string;
   /** Whole days the row has aged by the sweep's own measure. */
   ageDays: number;
   /** Which eligibility class the row matched (sweep-specific vocabulary). */

@@ -72,7 +72,9 @@ describe('EvolutionManager evolution-action-record replication emit', () => {
       expect(result).toMatchObject({ eligible: 1, expired: 1, dryRun: false });
       expect(evo.listActions().map((a) => a.title)).not.toContain('expire-me');
       expect(evo.listActions()).toHaveLength(7);
-      expect(rec.deletes.map((d) => d.title)).toEqual(['expire-me']);
+      // CMT-1132: archived, not deleted, so peers get a reversible close and no tombstone.
+      expect(rec.deletes).toEqual([]);
+      expect(rec.puts.find((p) => p.title === 'expire-me')).toMatchObject({ status: 'cancelled' });
     } finally { cleanup(dir); }
   });
 

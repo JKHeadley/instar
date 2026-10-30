@@ -45,4 +45,14 @@ describe('PostUpdateMigrator — auto-expiry review ledger awareness (CMT-1118)'
     const md = (generateClaudeMd as unknown as (...a: unknown[]) => string)('test', 'Echo', 4042, false);
     expect(md).toContain(MARKER);
   });
+
+  it('CMT-1132: corrects the shipped delete wording and adds the hold line once', () => {
+    fs.writeFileSync(claudeMd, '# CLAUDE.md\n\n- **Evolution action auto-expiry:** x; turning dry-run off removes eligible items in one coalesced save and emits replication tombstones so peers cannot resurrect them.\n');
+    run(projectDir);
+    run(projectDir);
+    const after = fs.readFileSync(claudeMd, 'utf8');
+    expect(after).not.toContain('tombstones');
+    expect(after).toContain('archives eligible items with their full content');
+    expect(after.split('**Auto-expiry holds and archive:**').length - 1).toBe(1);
+  });
 });

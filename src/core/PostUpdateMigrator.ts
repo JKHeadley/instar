@@ -7758,7 +7758,7 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     if (!content.includes('Evolution action auto-expiry:')) {
-      content += '\n- **Evolution action auto-expiry:** `evolutionActions.autoExpiry` conservatively sweeps only stale ordinary `pending` items; `critical`, `pinned`, active, completed, cancelled, recent, invalid-dated, and future-deadline items are retained. It ships enabled in observation-only `dryRun:true` mode; turning dry-run off removes eligible items in one coalesced save and emits replication tombstones so peers cannot resurrect them.\n';
+      content += '\n- **Evolution action auto-expiry:** `evolutionActions.autoExpiry` conservatively sweeps only stale ordinary `pending` items; `critical`, `pinned`, active, completed, cancelled, recent, invalid-dated, and future-deadline items are retained. It ships enabled in observation-only `dryRun:true` mode; turning dry-run off archives eligible items with their full content (restorable) and deletes nothing.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added evolution action auto-expiry awareness');
     }
@@ -7767,6 +7767,20 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n- **Auto-expiry review ledgers:** every `commitments.autoExpiry` and `evolutionActions.autoExpiry` sweep that finds eligible rows appends one row to `logs/commitments-auto-expiry.jsonl` / `logs/evolution-actions-auto-expiry.jsonl` with the exact ids it would expire (dry-run) or did expire, each with its age and class; a sweep whose set is unchanged writes a short `unchanged: true` row with the same `setHash`. The commitment rule skips any row blocked on someone (`blockedOn` not `none`), measures age from the latest dependency probe, and never claims completion: a row created with a `followThroughOptOutReason` cites it, any other says outcome unknown. The evolution rule keeps `high` and `critical` actions and dated actions overdue by less than the age bound. **When to use** (PROACTIVE): before turning either sweep\'s `dryRun` off, or when asked "what would auto-expiry close?", read the last full row of that ledger and check the ids, never guess from the counts.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added auto-expiry review ledger awareness (CMT-1118)');
+    }
+
+    // CMT-1132: the sweep no longer deletes, so the shipped sentence is now false.
+    const staleExpirySentence = 'turning dry-run off removes eligible items in one coalesced save and emits replication tombstones so peers cannot resurrect them.';
+    if (content.includes(staleExpirySentence)) {
+      content = content.replace(staleExpirySentence, 'turning dry-run off archives eligible items with their full content (restorable) and deletes nothing.');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected evolution action auto-expiry wording (archive, not delete)');
+    }
+
+    if (!content.includes('Auto-expiry holds and archive:')) {
+      content += '\n- **Auto-expiry holds and archive:** neither sweep touches a held row, and a hold has no end date. Hold or release with `PATCH /commitments/ID` or `PATCH /evolution/actions/ID` and `{"autoExpiryHold":{"reason":"why"}}` (or `null` to clear). The commitment sweep also skips `behavioral` rows and anything not `pending`. The action sweep moves a row to an archive with its full content before taking it out of the queue, and sends no delete tombstone: read `GET /evolution/actions/archive`, undo with `POST /evolution/actions/ID/restore` (the action returns held, so the next sweep leaves it alone). **When to use** (PROACTIVE): a review or the user says a row must not expire, set a hold; "where did that action go?" read the archive before saying it is gone.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added auto-expiry hold and archive awareness (CMT-1132)');
     }
 
     // Real-check verification (ACT-152 / autonomous-completion-real-checks). The existing
@@ -13180,6 +13194,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Solo Codex load shedding is fail-safe:',
       '**Evolution action auto-expiry:',
       '**Auto-expiry review ledgers:',
+      '**Auto-expiry holds and archive:',
       // Durable Inbound Message Queue (CMT-1118): a Codex/Gemini agent that
       // never learns /pool/queue + the loss-notice semantics will guess at
       // "where did my message go" instead of reading the durable answer.

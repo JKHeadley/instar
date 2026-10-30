@@ -30,6 +30,7 @@
  *    re-validates every transition — mesh adds reach, not authority.
  */
 
+import { parseAutoExpiryHold } from './AutoExpiryLedger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -125,6 +126,12 @@ export async function applyOwnerMutation(
       const patch: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(payload.args ?? {})) {
         if (allowed.has(k)) patch[k] = v;
+      }
+      // CMT-1132: a hold forwarded to the owner is validated here, where it lands.
+      if (payload.args && 'autoExpiryHold' in payload.args) {
+        const parsed = parseAutoExpiryHold(payload.args.autoExpiryHold, new Date().toISOString());
+        if (parsed === 'invalid') return { verdict: 'invalid-transition', status: existing.status };
+        patch.autoExpiryHold = parsed.hold;
       }
       if (!Object.keys(patch).length) return { verdict: 'idempotent-noop', status: existing.status };
       const r = await tracker.mutate(payload.id, (c) => ({ ...c, ...patch } as Commitment));
