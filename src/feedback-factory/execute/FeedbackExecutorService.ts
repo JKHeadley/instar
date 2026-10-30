@@ -39,7 +39,7 @@ import {
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
-import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, judgeIndependentReview, renderReviewComment, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewerOutcome } from './independentReview.js';
+import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, isSpecReviewHead, judgeIndependentReview, renderReviewComment, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
 import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
@@ -1452,10 +1452,11 @@ export class FeedbackExecutorService {
     if (diff === null) { this.opts.audit.append('execute:gh-unknown', { attemptId: row.attemptId, pr: prNumber, what: 'diff' }); return null; }
     let outcome: IndependentReviewVerdict;
     if (Buffer.byteLength(diff, 'utf8') > REVIEW_DIFF_MAX_BYTES) outcome = { pass: false, reason: 'diff-too-large', reviewers: [] };
+    else if (row.needsSpec && !isSpecReviewHead(files, diff, `docs/specs/feedback-${safeSlug(row.initiativeId)}.md`)) outcome = { pass: false, reason: 'spec-head-shape', reviewers: [] };
     else {
       const triage = this.opts.triageStore.get(row.initiativeId);
       const prompt = buildExecutorReviewPrompt({
-        prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: files, diff,
+        kind: row.needsSpec ? 'spec' : 'fix', prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: files, diff,
       });
       let reviewers: ReviewerOutcome[];
       try { reviewers = await this.opts.review.run({ prompt }); } catch (error) {

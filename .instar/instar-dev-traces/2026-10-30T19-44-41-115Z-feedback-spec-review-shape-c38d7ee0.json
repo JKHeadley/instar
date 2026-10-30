@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "feedback-spec-review-shape",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-30T19:44:41.115Z",
+  "artifactPath": "upgrades/side-effects/feedback-spec-review-shape.md",
+  "artifactSha256": "d1839fe081ab4e7644c3e567bd5a3d48a00328d823c33085563192ad9bf96500",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/independentReview.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This changes the independent-review decision on executor PRs, so the merge safety boundary warrants a converged spec and second-pass review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

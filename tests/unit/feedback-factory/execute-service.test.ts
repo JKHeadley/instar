@@ -613,6 +613,8 @@ describe('verification and publication', () => {
     h = await createExecHarness();
     const id = await h.workItem('c1', { needsSpec: true });
     const draft = 'docs/specs/feedback-feedback-c1.md';
+    h.prFiles.value = [draft];
+    h.prDiff.value = `diff --git a/${draft} b/${draft}\nnew file mode 100644\n--- /dev/null\n+++ b/${draft}\n+draft\n`;
     h.sessions.behavior.fn = (ws) => {
       fs.mkdirSync(path.join(ws, 'docs', 'specs'), { recursive: true });
       fs.writeFileSync(path.join(ws, draft), '---\ntitle: x\n---\n# Draft\n');
@@ -624,6 +626,17 @@ describe('verification and publication', () => {
     await h.exec.tick();
     expect(h.execStore.latestFor(id)).toMatchObject({ state: 'spec-pr-open' });
     expect(Object.keys(h.pushes[0].files)).toContain(draft);
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.review.calls[0]).toContain('automated spec draft');
+    expect(h.review.calls[0]).toContain('not expected to implement the fix or add executable regression tests yet');
+    h.prs.get(100)!.headRefOid = 'e'.repeat(40);
+    h.prFiles.value = [draft, 'src/thing.ts'];
+    h.prDiff.value += 'diff --git a/src/thing.ts b/src/thing.ts\n+code\n';
+    h.now.value += DAY + 1;
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.execStore.latestFor(id)).toMatchObject({ reviewSha: 'e'.repeat(40), reviewVerdict: 'fail', reviewReason: 'spec-head-shape' });
+    expect(h.comments.at(-1)?.body).toContain('spec-head-shape');
   });
 
   it('a spec draft carrying an approval tag is refused', async () => {
