@@ -7,9 +7,9 @@
  * carry fixture-author identities or classic fixture commit messages,
  * and lets clean commits through.
  *
- * We spin up a throwaway tmp git repo, give it a fake "upstream/main"
- * via a second local branch, and run the guard with cwd pointing at
- * the test repo. Inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE
+ * We spin up a throwaway tmp git repo, give it fake remote-tracking
+ * main refs, and run the guard with cwd pointing at the test repo.
+ * Inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE
  * from a pre-push host run is the very condition the guard exists to
  * survive — so we strip those explicitly to keep the test deterministic.
  */
@@ -62,8 +62,7 @@ describe('pre-push-fixture-guard', () => {
     git(repo, ['config', 'user.name', 'Real Dev']);
     commit(repo, 'chore: initial real commit', { file: 'README.md', content: '# real\n' });
     // Create a fake remote pointer at the initial commit so the guard's
-    // fallback resolver (which tries refs/remotes/upstream/main then
-    // refs/remotes/origin/main via `rev-parse --verify`) finds a base.
+    // resolver finds a base through `rev-parse --verify`.
     // We deliberately skip `git branch --set-upstream-to` because that
     // requires the ref to be on a real remote, and we want the test to
     // exercise the fallback path that matters for the pre-push hook in
@@ -78,6 +77,55 @@ describe('pre-push-fixture-guard', () => {
   it('passes when ahead commits are clean', () => {
     commit(repo, 'feat: legitimate work');
     commit(repo, 'fix: another real change');
+    const r = runGuard(repo);
+    expect(r.exitCode).toBe(0);
+  });
+
+  it('ignores fixture commits already on origin/main when upstream/main is stale', () => {
+    git(repo, ['update-ref', 'refs/remotes/upstream/main', 'HEAD']);
+    commit(repo, 'fix: already on main', { authorEmail: 'test@test.com', authorName: 'Test' });
+    git(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    commit(repo, 'feat: legitimate branch work');
+
+    const r = runGuard(repo);
+    expect(r.exitCode).toBe(0);
+  });
+
+  it('ignores the same stale ref when the branch tracks upstream/main', () => {
+    git(repo, ['update-ref', 'refs/remotes/upstream/main', 'HEAD']);
+    git(repo, ['config', 'branch.main.remote', 'upstream']);
+    git(repo, ['config', 'branch.main.merge', 'refs/heads/main']);
+    commit(repo, 'fix: already on main', { authorEmail: 'test@test.com', authorName: 'Test' });
+    git(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    commit(repo, 'feat: legitimate branch work');
+
+    const r = runGuard(repo);
+    expect(r.exitCode).toBe(0);
+  });
+
+  it('still rejects a branch-only fixture commit when upstream/main is stale', () => {
+    git(repo, ['update-ref', 'refs/remotes/upstream/main', 'HEAD']);
+    commit(repo, 'fix: already on main', { authorEmail: 'test@test.com', authorName: 'Test' });
+    git(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    commit(repo, 'feat: legitimate branch work');
+    commit(repo, 'seed');
+
+    const r = runGuard(repo);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('"seed"');
+    expect(r.stderr).not.toContain('fix: already on main');
+    expect(r.stderr).toContain('Fetch main from your configured remotes');
+  });
+
+  it('ignores commits already on origin/main when the main refs diverge', () => {
+    git(repo, ['switch', '-q', '-c', 'upstream-side']);
+    commit(repo, 'chore: upstream-only work');
+    git(repo, ['update-ref', 'refs/remotes/upstream/main', 'HEAD']);
+    git(repo, ['switch', '-q', 'main']);
+    commit(repo, 'fix: already on origin main', { authorEmail: 'test@test.com', authorName: 'Test' });
+    git(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    commit(repo, 'feat: legitimate branch work');
+
     const r = runGuard(repo);
     expect(r.exitCode).toBe(0);
   });
