@@ -52,3 +52,15 @@ The focused unit test checks wheel normalization, batching, and Ctrl-wheel handl
 ## Class-Closure Declaration
 
 No agent-authored-artifact defect or self-triggered controller is added.
+## Second-pass review
+
+**Reviewer:** Astra
+**Reviewed HEAD:** `8b34f40200f135f5c6dbd4c97e43b55890aebc02`
+**Concurrence:** Yes.
+
+Astra independently reviewed the exact PR head for user experience, security,
+test harness, and protected-path effects. No remaining P1/P2 issue was found.
+The review checked the same-tick IME duplicate guard, visual viewport handling,
+bounded and encrypted wheel input, Stop cancellation, frame-size/publishing
+fixes, native scroll direction, and the browser smoke and E2E fixture changes.
+Physical iPhone keyboard behavior remains unverified by this source review.
