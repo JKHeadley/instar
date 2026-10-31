@@ -12,6 +12,8 @@ label{display:block;margin:.6rem 0}.row{display:flex;gap:.7rem;align-items:cente
 .danger{background:#fb7185;color:#4c0519}.muted{color:#94a3b8}
 body.desktop-live{position:fixed;inset:0;max-width:none;width:100%;height:100dvh;margin:0;padding:0;overflow:hidden;overscroll-behavior:none}
 body.desktop-live>#control{position:absolute;top:var(--desktop-visible-top,0px);left:var(--desktop-visible-left,0px);z-index:10;box-sizing:border-box;width:var(--desktop-visible-width,100%);height:var(--desktop-visible-height,100dvh);margin:0;padding:0;border:0;border-radius:0;background:#020617;overflow:hidden}
+body.desktop-live #control{touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+body.desktop-live #keyboardBar input{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}
 .desktop-bar{position:absolute;z-index:5;top:0;left:0;right:0;display:flex;align-items:center;gap:.45rem;padding:max(.35rem,env(safe-area-inset-top)) max(.55rem,env(safe-area-inset-right)) .35rem max(.55rem,env(safe-area-inset-left));background:linear-gradient(#020617d9,#02061700);font-size:.83rem;pointer-events:none}
 .desktop-bar strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 3px #000}.desktop-bar #liveStatus{margin-left:auto;font-size:.72rem;color:#e2e8f0}.desktop-bar button{margin-left:auto;pointer-events:auto;padding:.45rem .7rem}
 .desktop-dock{position:absolute;z-index:6;right:max(.5rem,env(safe-area-inset-right));bottom:max(.7rem,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:.45rem}

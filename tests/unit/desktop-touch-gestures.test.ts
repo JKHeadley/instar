@@ -38,13 +38,17 @@ describe('desktop touch gestures', () => {
     (window as unknown as { __commands: unknown[] }).__commands = [];
     window.eval(`${source}\ninputEnabled = true;
       window.__viewer = { setInputEnabled(value) { inputEnabled = value; }, leave,
-        setSendCommand(fn) { sendCommand = fn; } };
+        setSendCommand(fn) { sendCommand = fn; },
+        setZoomAndCursor(value, x, y) { zoom = value; cursor = { x, y }; applyZoom(); followCursor(); },
+        viewState() { return { zoom, panX, panY, cursor }; } };
       sendCommand = command => { window.__commands.push(command); return Promise.resolve(true); };`);
     type Command = { action?: { kind: string; key?: string } };
     const viewer = (window as unknown as { __viewer: {
       setInputEnabled(value: boolean): void;
       leave(message: string): void;
       setSendCommand(fn: (command: Command) => Promise<boolean>): void;
+      setZoomAndCursor(value: number, x: number, y: number): void;
+      viewState(): { zoom: number; panX: number; panY: number; cursor: { x: number; y: number } };
     } }).__viewer;
     touch(window, surface, 'pointerdown', 1, 40, 40);
     touch(window, surface, 'pointerdown', 2, 100, 40);
@@ -68,6 +72,7 @@ describe('desktop touch gestures', () => {
     Object.defineProperty(window, 'requestAnimationFrame', {
       value: (callback: FrameRequestCallback) => { wheelFrames.push(callback); return wheelFrames.length; },
     });
+    Object.defineProperty(window, 'cancelAnimationFrame', { value: () => {} });
     const firstWheel = new window.WheelEvent('wheel', {
       bubbles: true, cancelable: true, deltaX: 2, deltaY: 10,
     });
@@ -221,6 +226,43 @@ describe('desktop touch gestures', () => {
     Object.defineProperty(surface, 'getBoundingClientRect', { value: () => ({
       left: 0, top: 0, width: 400, height: 300, right: 400, bottom: 300,
     }) });
+    const screen = window.document.getElementById('screen')!;
+    Object.defineProperty(screen, 'naturalWidth', { value: 400 });
+    Object.defineProperty(screen, 'naturalHeight', { value: 300 });
+    const imageRect = () => {
+      const { zoom, panX, panY } = viewer.viewState();
+      const width = 400 * zoom, height = 300 * zoom;
+      const left = (400 - width) / 2 + panX, top = (300 - height) / 2 + panY;
+      return { left, top, width, height, right: left + width, bottom: top + height };
+    };
+    Object.defineProperty(screen, 'getBoundingClientRect', { value: imageRect });
+    Object.defineProperty(window.document.getElementById('viewTransform')!, 'getBoundingClientRect', { value: imageRect });
+    window.document.getElementById('modeButton')!.click();
+    window.document.getElementById('modeButton')!.click();
+    expect(window.document.getElementById('modeButton')!.getAttribute('aria-pressed')).toBe('false');
+    touch(window, surface, 'pointerdown', 10, 80, 90);
+    touch(window, surface, 'pointerup', 10, 80, 90);
+    touch(window, surface, 'pointerdown', 11, 80, 90);
+    touch(window, surface, 'pointerup', 11, 80, 90);
+    expect(gestureActions.filter(action => action.kind === 'click'))
+      .toEqual([{ kind: 'click', x: 0.2, y: 0.3, button: 'left' },
+        { kind: 'click', x: 0.2, y: 0.3, button: 'left' }]);
+    gestureActions.length = 0;
+    viewer.setZoomAndCursor(2, 0.9, 0.5);
+    expect(viewer.viewState().panX).toBeLessThan(0);
+    expect(imageRect().left + viewer.viewState().cursor.x * imageRect().width).toBeLessThanOrEqual(352);
+    viewer.setZoomAndCursor(2, 0.1, 0.5);
+    expect(imageRect().left + viewer.viewState().cursor.x * imageRect().width).toBeGreaterThanOrEqual(48);
+    window.document.getElementById('zoomResetButton')!.click();
+    viewer.setZoomAndCursor(2, 0.5, 0.5);
+    touch(window, surface, 'pointerdown', 12, 350, 150);
+    touch(window, surface, 'pointermove', 12, 398, 150);
+    const beforeEdge = viewer.viewState().panX;
+    wheelFrames.at(-1)!(100);
+    expect(viewer.viewState().panX).toBeLessThan(beforeEdge);
+    touch(window, surface, 'pointerup', 12, 398, 150);
+    window.document.getElementById('zoomResetButton')!.click();
+    gestureActions.length = 0;
     touch(window, surface, 'pointerdown', 5, 120, 150);
     touch(window, surface, 'pointerdown', 6, 280, 150);
     touch(window, surface, 'pointermove', 5, 90, 150);

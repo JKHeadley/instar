@@ -48,13 +48,16 @@ let resumeSetupFailures = 0;
 let resumeTransportFailures = 0;
 const resumeControllers = new Set();
 let stopping = false;
-let trackpad = matchMedia('(pointer: coarse)').matches;
+// Phone taps should click the point touched. Relative trackpad remains optional.
+let trackpad = false;
 let touchCapable = matchMedia('(any-pointer: coarse)').matches;
 let cursor = { x: 0.5, y: 0.5 };
 const pointers = new Map();
 let zoom = 1;
 let panX = 0;
 let panY = 0;
+let edgePanFrame = 0;
+let edgePointerId = null;
 let twoFinger = null;
 let wheelFrame = 0;
 let pendingWheel = null;
@@ -405,6 +408,7 @@ function leave(message) {
   pendingMove = null;
   if (wheelFrame) { cancelAnimationFrame(wheelFrame); wheelFrame = 0; }
   pendingWheel = null;
+  stopEdgePan();
   pointers.clear();
   setHeldButton(null);
   for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
@@ -868,8 +872,48 @@ function moveCursor(dx, dy) {
   if (!area) return;
   cursor = { x: clamp(cursor.x + dx * 1.3 / area.width),
     y: clamp(cursor.y + dy * 1.3 / area.height) };
+  followCursor();
   updateCursor();
   queueMove(cursor);
+}
+function followCursor() {
+  if (zoom <= 1.01) return;
+  const surface = $('surface').getBoundingClientRect();
+  const area = imageArea();
+  if (!area) return;
+  const margin = Math.min(48, surface.width / 4, surface.height / 4);
+  const x = area.left + cursor.x * area.width;
+  const y = area.top + cursor.y * area.height;
+  panX += Math.max(0, surface.left + margin - x) - Math.max(0, x - (surface.right - margin));
+  panY += Math.max(0, surface.top + margin - y) - Math.max(0, y - (surface.bottom - margin));
+  applyZoom();
+}
+function stopEdgePan() {
+  if (edgePanFrame) cancelAnimationFrame(edgePanFrame);
+  edgePanFrame = 0;
+  edgePointerId = null;
+}
+function edgePanTick() {
+  edgePanFrame = 0;
+  const state = pointers.get(edgePointerId);
+  if (!state || state.multi || trackpad || zoom <= 1.01 || !inputEnabled) return;
+  const rect = $('surface').getBoundingClientRect();
+  const margin = Math.min(48, rect.width / 4, rect.height / 4);
+  const edgeSpeed = (value, low, high) => value < low + margin
+    ? Math.max(-9, (value - low - margin) / 5)
+    : value > high - margin ? Math.min(9, (value - high + margin) / 5) : 0;
+  const dx = edgeSpeed(state.x, rect.left, rect.right);
+  const dy = edgeSpeed(state.y, rect.top, rect.bottom);
+  if (!dx && !dy) return;
+  const oldX = panX, oldY = panY;
+  panX -= dx;
+  panY -= dy;
+  applyZoom();
+  if (panX !== oldX || panY !== oldY) {
+    const at = position({ clientX: state.x, clientY: state.y });
+    if (at) { cursor = at; updateCursor(); queueMove(at); }
+    edgePanFrame = requestAnimationFrame(edgePanTick);
+  }
 }
 function clickCursor(button = 'left') { if (!heldButton) send({ kind: 'click', ...cursor, button }); }
 function syncTouchModeButton() {
@@ -910,7 +954,7 @@ function applyZoom() {
   $('zoomResetButton').hidden = zoom <= 1.01;
   updateCursor();
 }
-function resetZoom() { zoom = 1; panX = 0; panY = 0; twoFinger = null; applyZoom(); }
+function resetZoom() { stopEdgePan(); zoom = 1; panX = 0; panY = 0; twoFinger = null; applyZoom(); }
 function pairMetrics() {
   const [a, b] = [...pointers.values()];
   return { distance: Math.hypot(a.x - b.x, a.y - b.y),
@@ -969,6 +1013,7 @@ $('fullscreenButton').addEventListener('click', () => {
   else if ($('control').requestFullscreen) void $('control').requestFullscreen().catch(() => {});
 });
 $('modeButton').addEventListener('click', () => {
+  stopEdgePan();
   releaseButton();
   trackpad = !trackpad;
   pointers.clear();
@@ -1036,6 +1081,7 @@ $('surface').addEventListener('pointerdown', event => {
     at: Date.now(), multi: pointers.size > 0 });
   if (pointers.size > 1) for (const state of pointers.values()) state.multi = true;
   if (pointers.size === 2 && event.pointerType !== 'mouse') {
+    stopEdgePan();
     const pair = pairMetrics();
     twoFinger = { ...pair, zoom, panX, panY, lastX: pair.x, lastY: pair.y, mode: 'pending' };
   }
@@ -1061,12 +1107,20 @@ $('surface').addEventListener('pointermove', event => {
   } else if (state.multi && event.pointerType !== 'mouse') {
     // Do not turn the trailing finger of a scroll gesture into pointer motion.
   } else if (trackpad && event.pointerType !== 'mouse') moveCursor(dx, dy);
-  else { const at = position(event); if (at) { cursor = at; queueMove(at); } }
+  else {
+    const at = position(event);
+    if (at) { cursor = at; updateCursor(); queueMove(at); }
+    if (event.pointerType !== 'mouse' && zoom > 1.01 && state.maxDistance >= 10) {
+      edgePointerId = event.pointerId;
+      if (!edgePanFrame) edgePanFrame = requestAnimationFrame(edgePanTick);
+    }
+  }
 });
 $('surface').addEventListener('pointerup', event => {
   const state = pointers.get(event.pointerId);
   if (!state) return;
   event.preventDefault();
+  if (edgePointerId === event.pointerId) stopEdgePan();
   pointers.delete(event.pointerId);
   if (pointers.size < 2) twoFinger = null;
   if (event.pointerType === 'mouse' && heldButton) {
@@ -1082,7 +1136,7 @@ $('surface').addEventListener('pointerup', event => {
     clickCursor(event.button === 2 ? 'right' : 'left');
   }
 });
-function cancelGestures() { pointers.clear(); twoFinger = null; releaseControls(); }
+function cancelGestures() { stopEdgePan(); pointers.clear(); twoFinger = null; releaseControls(); }
 $('surface').addEventListener('pointercancel', cancelGestures);
 window.addEventListener('blur', cancelGestures);
 document.addEventListener('visibilitychange', () => { if (document.hidden) cancelGestures(); });
@@ -1140,6 +1194,7 @@ $('stopButton').addEventListener('click', async () => {
   pendingMove = null;
   if (wheelFrame) { cancelAnimationFrame(wheelFrame); wheelFrame = 0; }
   pendingWheel = null;
+  stopEdgePan();
   pointers.clear();
   setHeldButton(null);
   for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
