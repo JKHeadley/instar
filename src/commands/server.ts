@@ -3,6 +3,7 @@
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
+import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
@@ -18950,7 +18951,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       const threadline = await bootstrapThreadline({
         agentName: config.projectName,
         // Self-described, shown to the other side as "claimed" (invite pairing §7).
-        ownerName: (config.users ?? []).find((u) => u.permissions?.includes('admin'))?.name ?? config.users?.[0]?.name,
+        ownerName: () => {
+          const telegram = (config.messaging ?? []).find((m) => m.type === 'telegram')?.config as { ownerUserId?: unknown; promptGate?: { ownerId?: unknown } } | undefined;
+          return readPairingOwnerName(config.stateDir, config.users, telegram?.ownerUserId ?? telegram?.promptGate?.ownerId ?? config.monitoring?.promptGate?.ownerId);
+        },
         stateDir: config.stateDir,
         projectDir: config.projectDir,
         port: config.port,

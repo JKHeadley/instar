@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-31T05:03:29.794Z",
+  "slug": "pairing-owner-required",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 144,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/pairingHandshake.ts",
+      "src/threadline/pairingOwnerName.ts"
+    ],
+    "addedLines": 136,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
