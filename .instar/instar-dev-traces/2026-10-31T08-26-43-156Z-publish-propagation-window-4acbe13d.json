@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "publish-propagation-window",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T08:26:43.156Z",
+  "artifactPath": "upgrades/side-effects/publish-propagation-window.md",
+  "artifactSha256": "1e812a76d29e1831b3aec6450dc856816e673616886b6aeb8df9caec26e32a0c",
+  "coveredFiles": [
+    "scripts/post-publish-smoke.mjs",
+    "upgrades/next/publish-propagation-window.md",
+    "upgrades/publish-propagation-window.eli16.md",
+    "upgrades/side-effects/publish-propagation-window.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The post-publish smoke runs a bounded exact-version lookup and a production-aligned script-disabled package install.",
+  "eli16Path": "upgrades/publish-propagation-window.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/publish-propagation-window.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
