@@ -419,6 +419,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       }
     }
 
+    // Charge the optional preflight for its exact-base changed-file scan too.
+    // The scan remains necessary for isolation re-runs when preflight is off.
+    const mode = effectivePreflightMode(input.preflightMode, input.kind === 'main' ? 'main' : 'pr', input.preflightRediscoverable === true);
+    const preflightStartedAt = mode === 'off' ? null : seams.now();
+    if (preflightStartedAt !== null) enteredPreflight = true;
     // Changed files (merge-base→head) for the isolation re-run's PR rule; null = unreadable.
     if (input.kind !== 'main') {
       try {
@@ -429,21 +434,20 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
 
     // The installed verifier, not the PR's test code, decides whether this
     // synthetic merge may spend the bounded diagnostic preflight budget.
-    const mode = effectivePreflightMode(input.preflightMode, input.kind === 'main' ? 'main' : 'pr', input.preflightRediscoverable === true);
     if (mode !== 'off') {
       flags = await classify();
       classifiedBeforeLanes = true;
       if (flags.harnessChanging || changedForIsolation === null) {
         preflight = {
           mode, outcome: 'skip', reason: flags.harnessChanging ? 'harness-changing' : 'changed-files-unreadable',
-          elapsedMs: 0, changedFiles: Math.min(changedForIsolation?.size ?? 0, 10_000), selectedFiles: [], selectedCases: 0,
+          elapsedMs: Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt!)), changedFiles: Math.min(changedForIsolation?.size ?? 0, 10_000), selectedFiles: [], selectedCases: 0,
           headSha: input.headSha, baseSha: input.baseSha,
         };
       } else {
-        enteredPreflight = true;
         preflight = await runFocusedPreflight({
           seams, runDir: p.runDir, reportsDir: p.reportsDir, binDir, baseEnv: runEnv,
           baseSha: input.baseSha, headSha: input.headSha, mode,
+          startedAtMs: preflightStartedAt!,
           changedFiles: changedForIsolation.size, reporter,
           activeRemainingMs: remaining, onPid: (pid) => { ourPids.add(pid); },
         });

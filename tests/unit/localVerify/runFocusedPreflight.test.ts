@@ -33,7 +33,7 @@ function harness(runs: Array<{ status: number; json: string; errors?: string | n
       removeTree: async (p: string) => { files.delete(p); },
     },
   } as unknown as OrchestratorSeams;
-  const run = (mode: 'observe' | 'enforce') => runFocusedPreflight({ seams, runDir: root, reportsDir: path.join(root, 'reports'), binDir: '/tmp/bin', baseEnv: {}, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), mode, changedFiles: 1, reporter: '/trusted/reporter.js', activeRemainingMs: () => 120_000, onPid: () => undefined });
+  const run = (mode: 'observe' | 'enforce', startedAtMs?: number) => runFocusedPreflight({ seams, runDir: root, reportsDir: path.join(root, 'reports'), binDir: '/tmp/bin', baseEnv: {}, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), mode, startedAtMs, changedFiles: 1, reporter: '/trusted/reporter.js', activeRemainingMs: () => 120_000, onPid: () => undefined });
   return { run, calls };
 }
 
@@ -72,5 +72,10 @@ describe('focused verifier preflight', () => {
     expect(await timed.run('enforce')).toMatchObject({ outcome: 'timeout', reason: 'first-run-timeout' });
     const uncontained = harness([{ status: 0, json: filesList, quiescent: false }]);
     await expect(uncontained.run('enforce')).rejects.toThrow('process group did not exit');
+  });
+  it('charges exact-base selection time against the 90-second cap before starting Vitest', async () => {
+    const h = harness([]);
+    expect(await h.run('enforce', -90_001)).toMatchObject({ outcome: 'timeout', reason: 'aggregate-timeout', elapsedMs: 90_000 });
+    expect(h.calls).toHaveLength(0);
   });
 });

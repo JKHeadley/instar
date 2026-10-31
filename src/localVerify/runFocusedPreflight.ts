@@ -16,6 +16,8 @@ export interface FocusedPreflightInput {
   baseSha: string;
   headSha: string;
   mode: 'observe' | 'enforce';
+  /** Clock starts before exact-base changed-file selection and harness classification. */
+  startedAtMs?: number;
   changedFiles: number;
   reporter: string | null;
   /** The parent active-work clock, already extended by exactly 90 seconds. */
@@ -25,7 +27,7 @@ export interface FocusedPreflightInput {
 
 export async function runFocusedPreflight(i: FocusedPreflightInput): Promise<PreflightEvidence> {
   const { seams, runDir, reportsDir, binDir } = i;
-  const t0 = seams.now();
+  const t0 = i.startedAtMs ?? seams.now();
   const evidence: PreflightEvidence = {
     mode: i.mode, outcome: 'skip', reason: 'indeterminate', elapsedMs: 0,
     changedFiles: Math.min(i.changedFiles, 10_000), selectedFiles: [], selectedCases: 0,
