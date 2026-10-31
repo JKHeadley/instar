@@ -34,7 +34,8 @@ describe('one answer to "what needs you"', () => {
     expect(needs.value).toBe('Nothing needs you'); // the old card alone
     const card = combineNeeds(needs, promised);
     const h = headline({ needs: card, promised, reach: { state: 'ok' } });
-    expect(h.text).toBe('One thing needs you.');
+    expect(h.text).toBe(card.rows[0].main); // the headline is the one thing, a link to it
+    expect(h.sub).toBeNull();
     expect(card.value).toBe('1 thing');
     expect(card.count).toBe(1);
     expect(card.rows[0].main).toContain('Merge each PR');
@@ -46,7 +47,9 @@ describe('one answer to "what needs you"', () => {
     const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ blockedOn: 'user-input', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 })] }), NOW, 1);
     const card = combineNeeds(needs, promised);
     expect(card.count).toBe(3);
-    expect(headline({ needs: card, promised }).text).toBe('3 things need you.');
+    const h = headline({ needs: card, promised });
+    expect(h.text).toBe('Approve the deploy'); // the urgent item leads
+    expect(h.sub).toBe('2 more things need you, listed below.');
   });
   it('nothing anywhere: both say so', () => {
     const needs = buildNeeds(ok({ items: [], pool: { failed: [] } }), NOW);

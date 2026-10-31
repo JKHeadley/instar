@@ -90,4 +90,33 @@ describe('messages page in a DOM', () => {
     expect(JSON.parse(posts[0].body)).toEqual({ display: { enabled: true, machine: true, harness: true, model: false }, revision: 'r1' });
     expect(posts[0].headers['X-Instar-Operator-Session']).toBe('S1');
   });
+  it('never shows a PIN box this connection would refuse: it offers the secure address instead', async () => {
+    let unlockPosts = 0;
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://100.101.95.10:4040/dashboard/console/#/people/messages' });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    g.fetch = async (url: string) => {
+      const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body });
+      if (url === '/dashboard/unlock-check') return json(200, { accepted: false, reason: 'Your PIN can only be typed over a secure connection, and this address is not one.', secureUrl: 'https://mama-pc.example.ts.net' });
+      if (url === '/dashboard/unlock') { unlockPosts++; return json(403, { error: 'refused' }); }
+      if (url === '/sessions') return json(200, { sessions: [] });
+      if (url === '/health') return json(200, { project: { name: 'echo' }, telegramOrigin: { heldForward: { count: 0 } } });
+      if (url === '/telegram/origins/status') return json(403, { error: 'operator session required' });
+      return json(404, {});
+    };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
+    await tick(15);
+    const doc = dom.window.document;
+    (doc.querySelector('.need-card button') as HTMLButtonElement).click();
+    await tick(5);
+    expect(doc.querySelector('.pin-input')).toBeNull();
+    const link = doc.querySelector('.sheet a.btn-primary') as HTMLAnchorElement;
+    expect(link.textContent).toBe('Open the secure address');
+    expect(link.href).toBe('https://mama-pc.example.ts.net/dashboard/console/#/people/messages');
+    expect(doc.querySelector('.sheet')!.textContent).toContain('secure connection');
+    expect(unlockPosts).toBe(0);
+  });
 });

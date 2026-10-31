@@ -916,6 +916,7 @@ Inspect \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/quota/m
 - Authentication: Uses a 6-digit PIN (auto-generated in \`dashboardPin\` in \`.instar/config.json\`). NEVER mention "bearer tokens" or "auth tokens" to users — just give them the PIN.
 - Features: Real-time terminal streaming, session management, file browser/editor, model badges, mobile-responsive
 ${CONSOLE_BULLET}
+${DASHBOARD_PREVIEW_BULLET}
 ${remoteDesktopBullet(port)}
 - **One dashboard, every machine (Pool Dashboard Streaming)**: when you run on more than one machine, the dashboard lists sessions from ALL of them and you can CLICK any of them — including a session running on another machine — to stream its live terminal right there. No need to open that machine's dashboard separately. Watching is always available; TYPING into another machine's session is OFF by default (security) — enable it per machine via \`dashboard.poolStream.allowRemoteInput: true\` in that machine's \`.instar/config.json\`. Failure states are shown honestly on screen (unreachable / reconnecting / "remote typing disabled" / moved), never a frozen terminal. Proactive: if a user asks "why can't I click the Mac mini's session?" or wants to watch another machine's session — they now can, just click the tile; if typing doesn't work, that machine has remote input off.
 - **Sharing the dashboard**: When the user wants to check on sessions from their phone, give them the tunnel URL + PIN. Read the PIN from your config.json. Check tunnel status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/tunnel\`
@@ -2661,6 +2662,10 @@ export const READINESS_PAUSE_ALARM_BULLET = `- **${READINESS_PAUSE_ALARM_MARKER}
 
 /** Content-sniff marker for the standing-sessions bullet (Migration Parity). */
 export const CONSOLE_MARKER = 'The new console runs beside the dashboard';
+
+export const DASHBOARD_PREVIEW_MARKER = 'Feature previews before merge';
+/** One fixed, pinned address that always shows the work in progress (no merge needed). */
+export const DASHBOARD_PREVIEW_BULLET = `- **${DASHBOARD_PREVIEW_MARKER}**: \`{tunnelUrl}/dashboard/preview/\` serves the console pages from \`.instar/dashboard-preview/\` (outside the package, so updates never wipe it). This is the standard way to let the operator try page changes BEFORE they merge: publish from your checkout with \`node scripts/publish-dashboard-preview.mjs --state-dir <agent>/.instar\` (needs a build of that checkout), then tell them. Every preview screen shows a banner naming the branch and when it was published. It previews page code only; server changes still need a merge. Proactive: when you build any operator-facing page, publish it to the preview and pin that one link in the topic, instead of hand-copying files into the installed package.`;
 
 /** Console makeover awareness bullet (docs/specs/console-makeover.md). Shared by
  *  the generated CLAUDE.md and PostUpdateMigrator. */

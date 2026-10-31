@@ -169,9 +169,50 @@ export function operatorSession() {
 }
 export function forgetOperatorSession() { opSession = null; }
 
+/**
+ * Asks the server whether a PIN typed on this connection can be accepted.
+ * A PIN box is shown only when it can; otherwise the caller shows the reason
+ * and a link to the secure address. If the check itself cannot be read, the
+ * box is shown as before (the unlock route still answers for itself).
+ */
+export async function unlockCheck() {
+  try {
+    const r = await fetch('/dashboard/unlock-check', { cache: 'no-store' });
+    if (!r.ok) return { accepted: true };
+    const d = await r.json();
+    if (d && d.accepted === false) {
+      return { accepted: false, reason: typeof d.reason === 'string' ? d.reason : 'Your PIN cannot be accepted on this address.', secureUrl: secureHref(d.secureUrl) };
+    }
+  } catch { /* unreadable check: fall back to the box */ }
+  return { accepted: true };
+}
+
+/** The same page on the secure address, or null when none is known. */
+export function secureHref(url) {
+  if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return null;
+  try {
+    const u = new URL(url);
+    return `${u.origin}${location.pathname}${location.search}${location.hash}`;
+  } catch { return null; }
+}
+
+/** What to show instead of a PIN box the server would refuse. */
+export function refusedUnlock(check) {
+  return el('div', { class: 'pin-form' },
+    el('p', { class: 'confirm-text', text: check.reason }),
+    check.secureUrl
+      ? el('a', { class: 'btn-primary', href: check.secureUrl, text: 'Open the secure address' })
+      : el('p', { class: 'confirm-text', text: 'Open this dashboard from your usual dashboard link, or on the machine itself.' }),
+  );
+}
+
 export function askPin({ title, explain, adapter = 'body' }) {
   if (adapter === 'session' && operatorSession()) return Promise.resolve({ session: operatorSession() });
-  return new Promise((resolve) => {
+  return unlockCheck().then((check) => new Promise((resolve) => {
+    if (!check.accepted) {
+      sheet({ title: title || 'Your PIN', onClose: () => resolve(null) }, refusedUnlock(check));
+      return;
+    }
     const input = el('input', { class: 'pin-input', type: 'password', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '12', 'aria-label': 'Dashboard PIN' });
     const err = el('p', { class: 'unlock-error', role: 'alert' });
     const go = el('button', { class: 'btn-primary', type: 'submit', text: 'Continue' });
@@ -198,5 +239,5 @@ export function askPin({ title, explain, adapter = 'body' }) {
     });
     sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
     setTimeout(() => input.focus(), 50);
-  });
+  }));
 }

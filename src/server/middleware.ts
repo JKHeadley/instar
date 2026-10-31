@@ -217,6 +217,13 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
       return;
     }
 
+    // Whether this connection may unlock: a yes/no the console asks before it
+    // shows a PIN box. Carries no credential and changes nothing.
+    if (req.path === '/dashboard/unlock-check' && req.method === 'GET') {
+      next();
+      return;
+    }
+
     // Message relay endpoints use their own auth (agent tokens / machine-HMAC),
     // not the general API bearer token. Auth is enforced in the route handlers.
     // /a2a/inbox is the same-machine a2a transport — callers hold the TARGET

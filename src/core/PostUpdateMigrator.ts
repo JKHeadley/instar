@@ -89,6 +89,8 @@ import {
   STANDING_SESSIONS_MARKER,
   CONSOLE_BULLET,
   CONSOLE_MARKER,
+  DASHBOARD_PREVIEW_BULLET,
+  DASHBOARD_PREVIEW_MARKER,
   remoteDesktopBullet,
   REMOTE_DESKTOP_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
@@ -7486,6 +7488,17 @@ setTimeout(() => process.exit(0), 2000);
         : content + '\n' + CONSOLE_BULLET + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added the new console (beside the dashboard) awareness');
+    }
+
+    if (!content.includes(DASHBOARD_PREVIEW_MARKER)) {
+      // Feature previews: directly below the console bullet when it is present.
+      const at = content.indexOf(CONSOLE_MARKER);
+      const eol = at >= 0 ? content.indexOf('\n', at) : -1;
+      content = eol >= 0
+        ? content.slice(0, eol + 1) + DASHBOARD_PREVIEW_BULLET + '\n' + content.slice(eol + 1)
+        : content + '\n' + DASHBOARD_PREVIEW_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the dashboard preview (try features before merge) awareness');
     }
 
     if (!content.includes(REMOTE_DESKTOP_MARKER)) {
