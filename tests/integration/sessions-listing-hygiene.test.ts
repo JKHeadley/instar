@@ -244,10 +244,11 @@ describe('GET /sessions — listing hygiene', () => {
       expect(dup.platform).toBe('telegram');
       expect(String(dup.platformId)).toBe('999');
       expect(dup.machineIds.sort()).toEqual(['m_a', 'm_b']);
-      expect(dup.sessions.sort()).toEqual(['local-topic-999', 'peer-topic-999']);
       // Every flagged row carries the loud per-row marker.
       const flagged = res.body.sessions.filter((s: { duplicateTopic?: boolean }) => s.duplicateTopic === true);
-      expect(flagged.map((s: { name: string }) => s.name).sort()).toEqual(['local-topic-999', 'peer-topic-999']);
+      expect(flagged.map((s: { name: string }) => s.name)).toEqual(['Conversation name unavailable', 'Conversation name unavailable']);
+      expect(dup.sessions.sort()).toEqual(flagged.map((s: { tmuxSession: string }) => s.tmuxSession).sort());
+      expect(new Set(dup.sessions).size).toBe(2);
     });
 
     it('does NOT flag the benign shapes: same recurring job per machine; finished twin of a live session', async () => {

@@ -1,9 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSessionPlatform } from '../../src/server/sessionPlatform.js';
+import { resolveSessionPlatform, sessionDisplayName } from '../../src/server/sessionPlatform.js';
 
 const telegram = (map: Record<string, number>, names: Record<number, string> = {}) => ({
   getTopicForSession: (t: string) => map[t] ?? null,
   getTopicName: (id: number) => names[id] ?? null,
+});
+
+describe('sessionDisplayName', () => {
+  it('uses a verified title and never a project-prefixed Telegram routing name', () => {
+    expect(sessionDisplayName('echo-topic-127504', { platform: 'telegram', platformId: 127504, platformName: 'Instar dashboard makeover' }))
+      .toBe('Instar dashboard makeover');
+    expect(sessionDisplayName('echo-topic-127504', { platform: 'telegram', platformId: 127504 }))
+      .toBe('Conversation name unavailable');
+  });
+
+  it('keeps ordinary sessions and masks an unbound topic routing name', () => {
+    expect(sessionDisplayName('health-check', { platform: 'headless' })).toBe('health-check');
+    expect(sessionDisplayName('echo-topic-127504', { platform: 'headless' })).toBe('Conversation name unavailable');
+  });
 });
 const slack = (map: Record<string, string>, names: Record<string, string> = {}) => ({
   getChannelForSession: (t: string) => map[t] ?? null,
@@ -24,6 +38,11 @@ describe('resolveSessionPlatform', () => {
   it('falls through to slack when telegram has no topic for the session', () => {
     expect(resolveSessionPlatform('s', telegram({}), slack({ s: 'C1' }, { C1: 'general' })))
       .toEqual({ platform: 'slack', platformId: 'C1', platformName: 'general' });
+  });
+
+  it('does not advertise a Slack ID as a channel name', () => {
+    expect(resolveSessionPlatform('s', null, slack({ s: 'C123' }, { C123: 'C123' })))
+      .toEqual({ platform: 'slack', platformId: 'C123' });
   });
 
   it('reports headless when no adapter binds the session', () => {

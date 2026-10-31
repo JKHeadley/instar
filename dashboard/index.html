@@ -4471,11 +4471,11 @@
     // per-machine empty-state strip. Populated only when the pool is enabled with
     // 2+ machines — single-machine agents never see the strip (strict no-op).
     let poolMachinesView = [];
-    // Session-listing hygiene (CMT-1936 part c): names of sessions the server
+    // Session-listing hygiene (CMT-1936 part c): conversations the server
     // flagged as GENUINE cross-machine duplicates (the SAME conversation live on
     // >=2 machines at once). Same recurring job on each machine is benign and is
     // never flagged. Fed by pool.duplicateTopics from /sessions?scope=pool.
-    let poolDuplicateSessionNames = new Set();
+    let poolDuplicateConversations = new Set();
     let selfMachineNickname = null;
     let activeSession = null;
     let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
@@ -4837,7 +4837,7 @@
             <span class="model-badge ${modelFamilyClass(model)}" title="${escapeHtml(modelBadgeTitle(model))}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(friendlyModelName(model))}</span>
             <span class="platform-badge ${platform}" title="${escapeHtml(platformBadgeTitle(platform))}">${platformIcon}</span>
             ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
-            ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
+            ${(session.duplicateTopic === true || (session.platform && session.platformId != null && poolDuplicateConversations.has(`${session.platform}:${String(session.platformId)}`))) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
             <span title="Running for ${elapsed}">${elapsed}</span>
           </div>
           ${telemetryHtml}
@@ -5975,11 +5975,12 @@
           ? j.pool.machines
           : [];
         // Genuine cross-machine duplicates (server-computed): collect the flagged
-        // session NAMES so both local (WS-fed) and remote tiles can badge — the
+        // conversation pairs so both local (WS-fed) and remote tiles can badge — the
         // local row never carries the flag itself (it arrives via WebSocket).
-        poolDuplicateSessionNames = new Set(
+        poolDuplicateConversations = new Set(
           (j.pool && Array.isArray(j.pool.duplicateTopics) ? j.pool.duplicateTopics : [])
-            .flatMap(d => Array.isArray(d.sessions) ? d.sessions : [])
+            .filter(d => d && typeof d.platform === 'string' && d.platformId != null)
+            .map(d => `${d.platform}:${String(d.platformId)}`)
         );
         renderSessionList();
       } catch { /* best-effort — peers may be offline; next tick retries */ }

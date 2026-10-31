@@ -9,6 +9,8 @@
  * correctly (2026-10-21, topic 112490). Both surfaces now call this.
  */
 
+import { verifiedChannelIdentity, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+
 export interface SessionPlatformTelegram {
   getTopicForSession?: (tmuxSession: string) => number | null | undefined;
   getTopicName?: (topicId: number) => string | null | undefined;
@@ -25,6 +27,21 @@ export interface SessionPlatformInfo {
   platformName?: string;
 }
 
+/** Public session title; tmuxSession remains the internal routing key. */
+export function sessionDisplayName(name: unknown, platform: SessionPlatformInfo): string {
+  const raw = typeof name === 'string' ? name.trim() : '';
+  if (platform.platform === 'telegram') {
+    return verifiedChannelIdentity('telegram', platform.platformId ?? '', platform.platformName)?.name
+      ?? 'Conversation name unavailable';
+  }
+  if (platform.platform === 'slack') {
+    return verifiedChannelIdentity('slack', platform.platformId ?? '', platform.platformName)?.name
+      ?? 'Channel name unavailable';
+  }
+  if (/(?:^|-)topic-\d+$/i.test(raw)) return 'Conversation name unavailable';
+  return verifiedEntityName('__session__', raw) ?? 'Session name unavailable';
+}
+
 export function resolveSessionPlatform(
   tmuxSession: string,
   telegram: SessionPlatformTelegram | null | undefined,
@@ -35,7 +52,8 @@ export function resolveSessionPlatform(
     if (topicId) {
       const info: SessionPlatformInfo = { platform: 'telegram', platformId: topicId };
       const topicName = telegram.getTopicName?.(topicId);
-      if (topicName && !/^topic-\d+$/.test(topicName)) info.platformName = topicName;
+      const identity = verifiedChannelIdentity('telegram', topicId, topicName);
+      if (identity) info.platformName = identity.name;
       return info;
     }
   }
@@ -44,7 +62,8 @@ export function resolveSessionPlatform(
     if (channelId) {
       const info: SessionPlatformInfo = { platform: 'slack', platformId: channelId };
       const registry = slack.getChannelRegistry();
-      if (registry[channelId]?.channelName) info.platformName = registry[channelId]!.channelName;
+      const identity = verifiedChannelIdentity('slack', channelId.split(':')[0], registry[channelId]?.channelName);
+      if (identity) info.platformName = identity.name;
       return info;
     }
   }

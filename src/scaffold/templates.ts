@@ -876,6 +876,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - Search messages: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/search?q=QUERY"\`
 - Topic messages: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics/TOPIC_ID/messages\`
 - List topics: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics\`
+- Find verified topic names across my machines: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/topics?scope=pool"\`. A topic ID is routing data, never a name. If its name is unresolved, show that clearly and retry; never show \`topic-123\` in place of a title. Apply the same rule to channels, machines, and agents.
 - **Create topic**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/topics -H 'Content-Type: application/json' -d '{"name":"Project Name"}'\`
 - Reply to topic: \`cat <<'EOF' | .instar/scripts/telegram-reply.sh TOPIC_ID\` … \`EOF\` — ALWAYS the relay script, never a hand-rolled curl to \`/telegram/reply\` (the script carries auth + agent-id binding, durable queueing on delivery failure, and the automated-send advisory preflight; a raw curl silently loses all three).
 - Log stats: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/telegram/log-stats\`

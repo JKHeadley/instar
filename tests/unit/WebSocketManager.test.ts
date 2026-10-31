@@ -420,6 +420,26 @@ describe('WebSocketManager', () => {
   });
 
   describe('session list building', () => {
+    it('never presents a Telegram routing key as the session name', () => {
+      const { manager, sessionManager } = createTestManager({
+        resolveSessionPlatform: () => ({ platform: 'telegram', platformId: 127504, platformName: null }),
+      });
+      sessionManager.listRunningSessions.mockReturnValue([{
+        id: 'abc-123', name: 'topic-127504', tmuxSession: 'instar-topic-127504', status: 'running',
+      }]);
+      expect((manager as any).buildSessionList()[0].name).toBe('Conversation name unavailable');
+    });
+
+    it('uses a verified Telegram title from the platform metadata', () => {
+      const { manager, sessionManager } = createTestManager({
+        resolveSessionPlatform: () => ({ platform: 'telegram', platformId: 127504, platformName: 'Instar dashboard makeover' }),
+      });
+      sessionManager.listRunningSessions.mockReturnValue([{
+        id: 'abc-123', name: 'topic-127504', tmuxSession: 'instar-topic-127504', status: 'running',
+      }]);
+      expect((manager as any).buildSessionList()[0].name).toBe('Instar dashboard makeover');
+    });
+
     it('builds session list from listRunningSessions', () => {
       const { manager, sessionManager } = createTestManager();
       sessionManager.listRunningSessions.mockReturnValue([

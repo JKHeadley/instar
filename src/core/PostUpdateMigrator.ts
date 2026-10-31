@@ -7384,6 +7384,36 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    // Replace a shipped legacy section before any missing capability bullets
+    // are appended. An appended bullet at EOF would otherwise become part of
+    // that section and make its exact-text migration refuse the replacement.
+    {
+      const r = replaceOrAppendMarkdownSection(content, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(), NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
+      if (r.action !== 'present') {
+        content = r.content;
+        patched = true;
+        result.upgraded.push(
+          r.action === 'replaced' ? 'CLAUDE.md: replaced Normal-Chrome browser section (macOS + Windows)'
+            : r.action === 'appended-old-kept' ? 'CLAUDE.md: added Normal-Chrome browser section (macOS + Windows); the edited macOS-only section was kept'
+              : r.action === 'removed-stale' ? 'CLAUDE.md: removed the stale macOS-only Normal-Chrome browser section'
+                : 'CLAUDE.md: added Normal-Chrome browser section',
+        );
+      }
+    }
+
+    // A verified display name must follow its routing ID onto existing agents.
+    const nameRule = `- Find verified topic names across my machines: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/topics?scope=pool"\`. A topic ID is routing data, never a name. If its name is unresolved, show that clearly and retry; never show \`topic-123\` in place of a title. Apply the same rule to channels, machines, and agents.`;
+    if (!content.includes('Find verified topic names across my machines:')) {
+      const anchor = '- List topics:';
+      const at = content.indexOf(anchor);
+      const eol = at >= 0 ? content.indexOf('\n', at) : -1;
+      content = eol >= 0
+        ? content.slice(0, eol + 1) + nameRule + '\n' + content.slice(eol + 1)
+        : content + '\n' + nameRule + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added verified topic, channel, machine, and agent name rule');
+    }
+
     if (!content.includes(CONSOLE_MARKER)) {
       // Console makeover (docs/specs/console-makeover.md): one bullet under the Dashboard entry.
       const anchor = '- Features: Real-time terminal streaming';
@@ -8128,25 +8158,6 @@ setTimeout(() => process.exit(0), 2000);
       content += FEATURE_SWITCH_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Feature switches apply their setting section');
-    }
-
-    // Normal-Chrome browser (spec normal-chrome-builtin-skill) — Agent Awareness +
-    // Migration Parity: existing agents learn when to reach for /normal-chrome-browser
-    // and its helper scripts. Same text as generateClaudeMd. Content-sniff on the heading.
-    // The heading changed when the Windows driver joined (spec normal-chrome-cross-platform): a
-    // section under the v1 (macOS-only) heading is replaced IN PLACE, never left beside the new one.
-    {
-      const r = replaceOrAppendMarkdownSection(content, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(), NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
-      if (r.action !== 'present') {
-        content = r.content;
-        patched = true;
-        result.upgraded.push(
-          r.action === 'replaced' ? 'CLAUDE.md: replaced Normal-Chrome browser section (macOS + Windows)'
-            : r.action === 'appended-old-kept' ? 'CLAUDE.md: added Normal-Chrome browser section (macOS + Windows); the edited macOS-only section was kept'
-              : r.action === 'removed-stale' ? 'CLAUDE.md: removed the stale macOS-only Normal-Chrome browser section'
-                : 'CLAUDE.md: added Normal-Chrome browser section',
-        );
-      }
     }
 
     // Dark monitoring-route awareness: these two signal-only guards already
@@ -13519,6 +13530,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
           appended = appended.trimEnd() + '\n\n' + render();
           mirrored++;
         }
+      }
+
+      // The verified-name rule is a single line inside Telegram's existing
+      // capability block. Mirror that line to Codex/Gemini on update too.
+      const verifiedNameLine = claudeMd.split('\n').find(line => line.startsWith('- Find verified topic names across my machines:'));
+      if (verifiedNameLine && !appended.includes('Find verified topic names across my machines:')) {
+        appended = appended.trimEnd() + '\n\n' + verifiedNameLine + '\n';
+        mirrored++;
       }
 
       const refreshedInboxShadow = refreshFeedbackInboxTokenAwareness(appended);

@@ -5,7 +5,7 @@ import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
-import { resolveSessionPlatform } from './sessionPlatform.js';
+import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
@@ -25,6 +25,7 @@ import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
+import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
@@ -7435,7 +7436,14 @@ export function createRoutes(ctx: RouteContext): Router {
       sessions: {
         running: sessions.length,
         max: ctx.config.sessions.maxSessions,
-        list: sessions.map(s => ({ id: s.id, name: s.name, jobSlug: s.jobSlug })),
+        list: sessions.map(s => {
+          const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
+          const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
+          const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
+            ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
+            : detected;
+          return { id: s.id, name: sessionDisplayName(s.name, platform), jobSlug: s.jobSlug };
+        }),
       },
       scheduler: schedulerStatus,
     });
@@ -11054,7 +11062,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // on single-machine installs (no pool wired), so the dashboard hides the badge.
     const selfMachineId = ctx.meshSelfId ?? null;
     const selfMachineNickname = selfMachineId
-      ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+      ? verifiedEntityName(selfMachineId, ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname)
       : null;
 
     // Enrich sessions with hook event telemetry and platform info
@@ -11089,7 +11097,13 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Add platform indicator and display name (shared with the dashboard
       // WebSocket list so local and pooled rows can never disagree).
-      Object.assign(result, resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack));
+      const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
+      const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
+      const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
+        ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
+        : detected;
+      Object.assign(result, platform);
+      result.name = sessionDisplayName(s.name, platform);
 
       return result;
     });
@@ -11140,10 +11154,18 @@ export function createRoutes(ctx: RouteContext): Router {
             // re-introduces the finished-session wall into the pool view.
             if (!includeAll && !explicitStatus && !isActiveStatus(s.status)) continue;
             if (explicitStatus && s.status !== explicitStatus) continue;
+            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) ? s.telegramTopicId : undefined;
+            const remotePlatformId = typeof s.platformId === 'number' || typeof s.platformId === 'string' ? s.platformId : remoteTopicId;
+            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack'
+              ? { platform: s.platform, platformId: remotePlatformId, platformName: typeof s.platformName === 'string' ? s.platformName : undefined }
+              : remoteTopicId !== undefined
+                ? { platform: 'telegram', platformId: remoteTopicId }
+                : { platform: 'headless' };
             remote.push({
               ...s,
+              name: sessionDisplayName(s.name, remotePlatform),
               machineId: s.machineId ?? p.machineId,
-              machineNickname: s.machineNickname ?? nickname ?? undefined,
+              machineNickname: verifiedEntityName(p.machineId, s.machineNickname) ?? verifiedEntityName(p.machineId, nickname) ?? null,
               remote: true,
             });
           }
@@ -11189,10 +11211,10 @@ export function createRoutes(ctx: RouteContext): Router {
       for (const machineId of rosterIds) {
         const isSelf = machineId === selfMachineId;
         const capacity = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
-        const nickname = capacity?.nickname
+        const nickname = verifiedEntityName(machineId, capacity?.nickname
           ?? knownMachines.find((m) => m.machineId === machineId)?.nickname
           ?? (isSelf ? selfMachineNickname : null)
-          ?? null;
+          ?? null);
         const sessionCount = sessionCountByMachine.get(machineId)
           ?? (isSelf ? (sessionCountByMachine.get('__local__') ?? 0) : 0);
         const entry: (typeof machines)[number] = { machineId, nickname, isSelf, sessionCount };
@@ -11208,7 +11230,7 @@ export function createRoutes(ctx: RouteContext): Router {
               // trustworthy-machine-load A5: the evidence-derived state decides the
               // wording; "offline" is never said without positive evidence.
               liveness: capacity?.liveness,
-              nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id,
+              nicknameOf: (id) => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine',
             },
             nowMs,
           );
@@ -11242,7 +11264,7 @@ export function createRoutes(ctx: RouteContext): Router {
         const entry = byConversation.get(key)
           ?? { platform, platformId: platformId as string | number, machineIds: new Set<string>(), sessions: [] };
         entry.machineIds.add(mid);
-        entry.sessions.push(String(s.name ?? s.tmuxSession ?? s.id ?? ''));
+        entry.sessions.push(String(s.tmuxSession ?? s.id ?? ''));
         byConversation.set(key, entry);
       }
       const duplicateTopics: Array<{
@@ -18284,12 +18306,69 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Telegram ────────────────────────────────────────────────────
 
-  router.get('/telegram/topics', (_req, res) => {
-    if (!ctx.telegram) {
-      res.json({ topics: [] });
+  router.get('/telegram/topics', async (req, res) => {
+    if (req.query.scope !== undefined && req.query.scope !== 'pool') {
+      res.status(400).json({ error: 'invalid-topic-scope' });
       return;
     }
-    res.json({ topics: ctx.telegram.getAllTopicMappings() });
+    const local = ctx.telegram?.getAllTopicMappings() ?? [];
+    if (req.query.scope !== 'pool') {
+      res.json({ topics: local, serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
+      return;
+    }
+    // A session can run on a standby whose local registry still says
+    // "topic-127504" while the Telegram-serving machine has the real title.
+    // Read every reachable registry and prefer actual titles over placeholders.
+    const named = new Map<number, { topicId: number; sessionName: string | null; topicName: string }>();
+    const knownIds = new Set<number>();
+    const realName = (id: number, value: unknown): value is string => isVerifiedChannelName('telegram', id, value);
+    const absorb = (rows: unknown) => {
+      if (!Array.isArray(rows)) return;
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const t = row as { topicId?: unknown; topicName?: unknown; sessionName?: unknown };
+        const id = Number(t.topicId);
+        if (!Number.isSafeInteger(id) || id <= 0) continue;
+        knownIds.add(id);
+        if (!realName(id, t.topicName) || named.has(id)) continue;
+        named.set(id, { topicId: id, topicName: t.topicName.trim(), sessionName: typeof t.sessionName === 'string' ? t.sessionName : null });
+      }
+    };
+    absorb(local);
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const servingCandidates: unknown[][] = [];
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    await Promise.all(peers.map(async p => {
+      try {
+        const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        const verdict = isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist);
+        if (!verdict.ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/telegram/topics', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+        });
+        if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
+        const body = await r.json() as { topics?: unknown; serving?: boolean };
+        if (body.serving === true && Array.isArray(body.topics)) servingCandidates.push(body.topics);
+        else absorb(body.topics);
+      } catch (error) {
+        failed.push({ machineId: p.machineId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }));
+    // A rename is observed by the Telegram lease holder first. Its verified
+    // title wins over a stale standby copy, regardless of response order.
+    for (const rows of servingCandidates) {
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const candidate = row as { topicId?: unknown; topicName?: unknown; sessionName?: unknown };
+        const id = Number(candidate.topicId);
+        if (!Number.isSafeInteger(id) || id <= 0 || !realName(id, candidate.topicName)) continue;
+        named.set(id, { topicId: id, topicName: candidate.topicName.trim(), sessionName: typeof candidate.sessionName === 'string' ? candidate.sessionName : null });
+      }
+    }
+    res.json({
+      topics: [...named.values()].sort((a, b) => a.topicId - b.topicId),
+      pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
+    });
   });
 
   router.post('/telegram/topics', async (req, res) => {
@@ -26166,6 +26245,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             if (resolved) topicName = resolved;
           } catch { /* fall through to default */ }
         }
+        const resolvedName = await resolveTopicNameAcrossPool(topicId);
+        topicName = resolvedName ?? (verifiedTopicName(topicId, topicName) ? topicName : `topic-${topicId}`);
 
         // Build context with thread history
         const historyLines: string[] = [];
@@ -26176,7 +26257,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               historyLines.push(`--- Thread History (last ${history.length} messages) ---`);
               historyLines.push(`IMPORTANT: Read this history carefully before taking any action.`);
               historyLines.push(`Your task is to continue THIS conversation, not start something new.`);
-              historyLines.push(`Topic: ${topicName}`);
+              historyLines.push(`Topic: ${verifiedTopicName(topicId, topicName) ? topicName : 'Conversation name unavailable'}`);
               historyLines.push(``);
               for (const m of history) {
                 const sender = historySenderLabel(m);
@@ -26216,6 +26297,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           try {
             const reg = fs.existsSync(sdRegistryPath) ? JSON.parse(fs.readFileSync(sdRegistryPath, 'utf-8')) : { topicToSession: {}, topicToName: {} };
             reg.topicToSession[String(topicId)] = newSessionName;
+            if (verifiedTopicName(topicId, topicName)) {
+              reg.topicToName ??= {};
+              reg.topicToName[String(topicId)] = topicName;
+            }
             fs.writeFileSync(sdRegistryPath, JSON.stringify(reg, null, 2));
           } catch { /* @silent-fallback-ok — registry write non-critical */ }
           // Proactive UUID save — always run, even after --resume (new session = new UUID)
@@ -26444,6 +26529,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // One-shot guard for pre-Stage-B lifeline observability log (see versionMissing
   // handler below). Avoids per-request log spam while preserving the signal.
   let _versionMissingLogged = false;
+
+  // The serving machine may know the title while this standby only has the ID.
+  // Keep the ID/name pair intact at the inbound handoff, including auto-spawn.
+  const verifiedTopicName = (id: number, value: unknown): value is string => isVerifiedChannelName('telegram', id, value);
+  const resolveTopicNameAcrossPool = async (topicId: number): Promise<string | null> => {
+    const live = ctx.telegram?.getTopicName(topicId);
+    if (ctx.telegramOrigin?.options.holdsLease?.() === true && verifiedTopicName(topicId, live)) return live.trim();
+    let localName: string | null = verifiedTopicName(topicId, live) ? live.trim() : null;
+    try {
+      const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+      const reg = JSON.parse(fs.readFileSync(registryPath, 'utf-8')) as { topicToName?: Record<string, unknown> };
+      const stored = reg.topicToName?.[String(topicId)];
+      if (!localName && verifiedTopicName(topicId, stored)) localName = stored.trim();
+    } catch { /* @silent-fallback-ok: registry is optional on a standby; peers remain authoritative */ }
+    const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    const peerNames = await Promise.all((ctx.resolvePeerUrls?.() ?? []).map(async peer => {
+      if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allowlist).ok) return null;
+      try {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/telegram/topics', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(1500), redirect: 'manual',
+        });
+        if (!response.ok) return null;
+        const body = await response.json() as { topics?: Array<{ topicId?: unknown; topicName?: unknown }>; serving?: boolean };
+        const found = body.topics?.find(row => Number(row.topicId) === topicId && verifiedTopicName(topicId, row.topicName));
+        return found && verifiedTopicName(topicId, found.topicName) ? { name: found.topicName.trim(), serving: body.serving === true } : null;
+      } catch { /* @silent-fallback-ok: a peer may be offline; use another verified source */ return null; }
+    }));
+    return peerNames.find(candidate => candidate?.serving)?.name ?? localName ?? peerNames.find(candidate => candidate)?.name ?? null;
+  };
 
   router.post('/internal/telegram-forward', async (req, res) => {
     const { topicId, text, messageId, lifelineVersion } = req.body;
@@ -26963,6 +27077,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             injectedTopicName = reg.topicToName?.[String(topicId)] ?? undefined;
           }
         } catch { /* fall through without name */ }
+        injectedTopicName = await resolveTopicNameAcrossPool(topicId) ?? (verifiedTopicName(topicId, injectedTopicName) ? injectedTopicName : undefined);
         console.log(`[telegram-forward] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
         const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId, typeof messageId === 'number' ? messageId : undefined);
 
@@ -27027,6 +27142,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             if (resolved) topicName = resolved;
           } catch { /* fall through to default */ }
         }
+        topicName = await resolveTopicNameAcrossPool(topicId) ?? (verifiedTopicName(topicId, topicName) ? topicName : `topic-${topicId}`);
         console.log(`[telegram-forward] No live session for topic ${topicId}, spawning "${topicName}"...`);
 
         // Fetch thread history so auto-spawned sessions have full conversational context
@@ -27120,6 +27236,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           try {
             const reg = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf-8')) : { topicToSession: {}, topicToName: {} };
             reg.topicToSession[String(topicId)] = newSessionName;
+            if (verifiedTopicName(topicId, topicName)) {
+              reg.topicToName ??= {};
+              reg.topicToName[String(topicId)] = topicName;
+            }
             fs.writeFileSync(registryPath, JSON.stringify(reg, null, 2));
           } catch { /* @silent-fallback-ok — registry write non-critical */ }
           // Proactive UUID save — always run, even after --resume (new session = new UUID)
@@ -27144,7 +27264,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           console.error(`[telegram-forward] Spawn failed:`, err);
         });
 
-        res.json({ ok: true, forwarded: true, method: 'spawn', topicName });
+        res.json({ ok: true, forwarded: true, method: 'spawn', topicName: verifiedTopicName(topicId, topicName) ? topicName : null });
       }
     } else {
       res.status(503).json({ error: 'No message routing available' });

@@ -123,6 +123,16 @@ describe('Slack thread→session routing key resolution', () => {
 });
 
 describe('Slack registry + resume map are routing-key aware', () => {
+  it('keeps the verified channel name across channel and thread bindings', () => {
+    const { adapter } = makeAdapter({ enabledChannelIds: [CH] });
+    adapter.registerChannelSession(CH, 'channel-session', 'project-work');
+    adapter.registerChannelSession(`${CH}:${THREAD_A}`, 'thread-session', `${CH} (thread ${THREAD_A})`);
+    expect(adapter.getChannelRegistry()[CH]?.channelName).toBe('project-work');
+    expect(adapter.getChannelRegistry()[`${CH}:${THREAD_A}`]?.channelName).toBe('project-work');
+    adapter.registerChannelSession(CH, 'new-channel-session', CH);
+    expect(adapter.getChannelRegistry()[CH]?.channelName).toBe('project-work');
+  });
+
   it('a channel session and a thread session in the same channel are distinct registry entries', () => {
     const { adapter } = makeAdapter({ enabledChannelIds: [CH] });
     const channelKey = adapter.resolveRoutingKey(CH, undefined);
