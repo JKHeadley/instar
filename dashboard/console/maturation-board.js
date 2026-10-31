@@ -71,7 +71,7 @@ function draw(main, board, nav) {
       onclick: () => set({ f: s.id, open: s.group }),
     })));
   const glance = el('section', { class: 'mb-glance' }, map, legend,
-    el('p', { class: 'mb-hint', text: 'Each square is one feature. A white dot means no fix is planned. Tap a colour to show only that group.' }));
+    el('p', { class: 'mb-hint', text: 'Each square is one feature. The colour says how it is doing. A white dot means no fix is planned yet; no dot means a fix is planned or under way. Tap a colour to show only that group.' }));
 
   // 3. Tools: one search box, one switch and a sort choice.
   const search = el('input', { type: 'search', class: 'mb-search', placeholder: 'Find a feature', value: st.q || '', 'aria-label': 'Find a feature' });

@@ -9,7 +9,7 @@
 Dashboard-only: `maturation-board-model.js` adds `SORTS` + pure `sortRows(rows, sort)` and a
 `sort` URL-state key; `maturation-board.js` adds a `<select>` and uses `sortRows` per group;
 `console.css` styles it. The subline wording for the may-be-superseded source changes from
-"<machines> didn't answer" to "Couldn't check <machines>". Six new unit tests.
+"<machines> didn't answer" to "Couldn't check <machines>". Six new unit tests. The legend hint also says what a square without a dot means (operator asked).
 
 ## Decision-point inventory
 None — display ordering of a read-only page.
