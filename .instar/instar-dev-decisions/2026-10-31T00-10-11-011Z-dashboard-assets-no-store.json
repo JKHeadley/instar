@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-31T00:10:11.011Z",
+  "slug": "dashboard-assets-no-store",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 45,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/middleware.ts"
+    ],
+    "addedLines": 25,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

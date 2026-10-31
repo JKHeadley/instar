@@ -200,6 +200,7 @@ export class TunnelManager extends EventEmitter {
   private readonly reachabilityRetryDelaysMs: number[];
 
   private currentHandle: TunnelProviderHandle | null = null;
+  private _connectionGeneration = 0;
   private currentProviderName: ProviderName | null = null;
   private _legacyState: TunnelState;
   private _autoReconnect = true; // always-on under the new design
@@ -273,6 +274,9 @@ export class TunnelManager extends EventEmitter {
 
   get isRunning(): boolean { return this.currentHandle !== null && !this._stopped; }
 
+  /** Changes whenever the owned connector changes, including same-URL replacement. */
+  get connectionGeneration(): number { return this._connectionGeneration; }
+
   get state(): TunnelState { return { ...this._legacyState }; }
 
   /** Additive new accessor — lifecycle snapshot. */
@@ -307,6 +311,9 @@ export class TunnelManager extends EventEmitter {
     this._startPromise = null;
 
     if (this.currentHandle) {
+      // Invalidate in-flight wake probes as soon as shutdown begins, before
+      // the provider's asynchronous stop can wait on a hung connector.
+      this._connectionGeneration++;
       try { await this.currentHandle.stop(); } catch { /* handle may be dead */ }
       this.currentHandle = null;
     }
@@ -550,6 +557,7 @@ export class TunnelManager extends EventEmitter {
 
         // Success.
         this.currentHandle = handle;
+        this._connectionGeneration++;
         this.currentProviderName = provider.name;
         this._legacyState.url = handle.url;
         this._legacyState.startedAt = new Date().toISOString();
@@ -746,6 +754,7 @@ export class TunnelManager extends EventEmitter {
 
       // new-then-old: the new Tier-1 handle is already up + verified.
       this.currentHandle = newHandle;
+      this._connectionGeneration++;
       this.currentProviderName = provider.name;
       this._legacyState.url = newHandle.url;
       this._legacyState.startedAt = new Date().toISOString();
@@ -773,6 +782,7 @@ export class TunnelManager extends EventEmitter {
     } catch {
       // Switch failed — try to stay on the relay rather than go dark.
       this.currentHandle = oldHandle;
+      this._connectionGeneration++;
       this.currentProviderName = oldProviderName;
       this._legacyState.url = oldUrl;
       const stateNow: TunnelLifecycleState = this.lifecycle.state;
@@ -890,6 +900,7 @@ export class TunnelManager extends EventEmitter {
       }
 
       this.currentHandle = handle;
+      this._connectionGeneration++;
       this.currentProviderName = provider.name;
       this._legacyState.url = handle.url;
       this._legacyState.startedAt = new Date().toISOString();

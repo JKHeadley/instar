@@ -52,6 +52,12 @@ export interface MachineRouteContext {
   localMachineId: string;
   /** This machine's signing private key (PEM) */
   localSigningKeyPem: string;
+  /** Target-local desktop admission. The callback verifies the signed,
+   * browser-bound operator assertion before it creates a grant. */
+  onDesktopOperatorBegin?: (body: unknown, authenticatedFrontId: string) => Promise<{ requestId: string; targetSessionToken: string }>;
+  onDesktopOperatorKeepAlive?: (body: unknown, authenticatedFrontId: string) => boolean;
+  onDesktopAvailability?: () => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
+  onDesktopOperatorCommand?: (body: unknown, authenticatedFrontId: string) => Promise<unknown>;
   /**
    * Agent state dir + agent name, for the agent-identity handover on pairing
    * (docs/specs/agent-identity-continuity-on-expansion.md §1). Optional so an
@@ -161,6 +167,37 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Code-authenticated pool join: the active pairing session (written by
   // `instar pair`) is the shared secret that authorizes a non-interactive join.
   const pairingStore = new PairingSessionStore(ctx.identityManager.baseDir);
+
+  router.post('/api/desktop/availability', authMiddleware, async (_req, res) => {
+    if (!ctx.onDesktopAvailability) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopAvailability()); }
+    catch { res.status(503).json({ error: 'Remote desktop is unavailable on this machine' }); }
+  });
+
+  router.post('/api/desktop/operator-begin', authMiddleware, async (req, res) => {
+    if (!ctx.onDesktopOperatorBegin) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.status(201).json(await ctx.onDesktopOperatorBegin(req.body, frontId)); }
+    catch (error) { res.status(403).json({ error: error instanceof Error ? error.message : 'desktop access refused' }); }
+  });
+
+  router.post('/api/desktop/operator-keepalive', authMiddleware, (req, res) => {
+    if (!ctx.onDesktopOperatorKeepAlive) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    if (!ctx.onDesktopOperatorKeepAlive(req.body, frontId)) { res.status(403).json({ error: 'desktop operator session unavailable' }); return; }
+    res.json({ ok: true });
+  });
+
+  router.post('/api/desktop/operator-command', authMiddleware, async (req, res) => {
+    if (!ctx.onDesktopOperatorCommand) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopOperatorCommand(req.body, frontId)); }
+    // E2E-PAIRING: EXEMPT — this edit only explains the existing HTTP denial; production-boot coverage was paired with the route implementation.
+    catch {
+      // @silent-fallback-ok — the caller receives an explicit refusal; no remote input is admitted.
+      res.status(403).json({ error: 'Desktop request unavailable' });
+    }
+  });
 
   const hasBearer = (req: import('express').Request): boolean => {
     const expected = ctx.getIdentityRecoveryBearerToken?.();

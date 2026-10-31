@@ -1,0 +1,47 @@
+/** Build the local macOS desktop adapter into the package's dist tree.
+ * Other platforms use their own adapters and must not claim this one exists. */
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const releaseUniversal = process.argv.includes('--release-universal');
+const universal = releaseUniversal || (process.env.INSTAR_RELEASE_BUILD === '1' && process.platform === 'darwin');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const windowsSource = path.join(root, 'src/native/remote-desktop/windows/InstarDesktopCompanion.cs');
+const windowsPackageDir = path.join(root, 'dist/native/windows');
+fs.mkdirSync(windowsPackageDir, { recursive: true });
+fs.copyFileSync(windowsSource, path.join(windowsPackageDir, 'InstarDesktopCompanion.cs'));
+if (releaseUniversal && process.platform !== 'darwin') {
+  throw new Error('The universal macOS desktop host must be built on macOS');
+}
+
+if (process.platform === 'darwin') {
+  const source = path.join(root, 'src/native/remote-desktop/macos/InstarDesktopHost.swift');
+  const binary = path.join(root, 'dist/native/instar-desktop-host');
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  const compile = (output, target) => execFileSync('xcrun', [
+    'swiftc', ...(target ? ['-target', target] : []),
+    '-parse-as-library', '-O', source, '-o', output,
+  ], { cwd: root, stdio: 'inherit', timeout: 120_000 });
+  if (universal) {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-desktop-host-'));
+    // The macOS publish runner is ephemeral; its intermediate slices stay
+    // outside the npm package and disappear with the runner.
+    const arm = path.join(temp, 'arm64');
+    const intel = path.join(temp, 'x86_64');
+    compile(arm, 'arm64-apple-macosx13.0');
+    compile(intel, 'x86_64-apple-macosx13.0');
+    execFileSync('lipo', ['-create', arm, intel, '-output', binary], { cwd: root, stdio: 'inherit', timeout: 30_000 });
+    execFileSync('codesign', ['--force', '--sign', '-', binary], { cwd: root, stdio: 'inherit', timeout: 30_000 });
+    const archs = execFileSync('lipo', ['-archs', binary], { encoding: 'utf8', timeout: 10_000 }).trim().split(/\s+/);
+    if (!archs.includes('arm64') || !archs.includes('x86_64')) {
+      throw new Error(`Desktop host is missing a release architecture: ${archs.join(', ')}`);
+    }
+  } else {
+    compile(binary);
+  }
+  fs.chmodSync(binary, 0o755);
+  console.log(universal ? 'Built universal macOS desktop host' : 'Built local macOS desktop host');
+}

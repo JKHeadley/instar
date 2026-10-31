@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Remote desktop · Instar</title>
+  <link rel="stylesheet" href="/dashboard/desktop.css?v=__INSTAR_DESKTOP_ASSET_VERSION__">
+</head>
+<body>
+  <a href="/dashboard/">← Dashboard</a>
+  <h1>Remote desktop</h1>
+  <p>Enter your dashboard PIN, then choose the machine you want to use. Its desktop must be signed in and unlocked. You can see and control its open apps for up to ten minutes, including changing files or settings. Press Stop access at any time.</p>
+  <section id="unlock">
+    <label>Dashboard PIN <input id="pin" type="password" inputmode="numeric" autocomplete="off"></label>
+    <button id="unlockButton">Continue</button>
+  </section>
+  <section id="request" hidden>
+    <label>Machine <select id="machine"></select></label>
+    <button id="requestButton">Open selected machine</button>
+  </section>
+  <section id="control" hidden>
+    <div class="desktop-bar"><strong id="machineName"></strong><span id="liveStatus" role="status"></span><button id="stopButton" class="danger">Stop</button></div>
+    <div id="surface" aria-label="Remote desktop touch surface">
+      <div id="viewTransform">
+        <img id="screen" alt="Live desktop of the selected machine" draggable="false">
+        <canvas id="videoCanvas" aria-label="Live desktop video" hidden></canvas>
+        <svg id="localCursor" aria-hidden="true" viewBox="0 0 24 24"><path d="M2 1v19l5-5 3.5 7 3.5-2-3.5-7H18z" fill="#fff" stroke="#000" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      </div>
+    </div>
+    <div class="desktop-dock" aria-label="Remote desktop controls">
+      <button id="toolsButton" type="button" aria-label="More controls" aria-expanded="false" aria-controls="desktopTools">☰</button>
+      <button id="keyboardButton" type="button" aria-label="Show keyboard" aria-expanded="false" aria-controls="keyboardBar">⌨</button>
+      <button id="zoomResetButton" type="button" aria-label="Fit screen" hidden>Fit</button>
+      <button id="fullscreenButton" type="button" aria-label="Full screen">⛶</button>
+    </div>
+    <div class="desktop-tools" id="desktopTools" hidden>
+      <button id="modeButton" type="button" aria-pressed="true" hidden>Trackpad · swipe to move</button>
+      <button id="dragButton" type="button" aria-pressed="false">Drag</button>
+      <button id="rightButton" type="button">Right click</button>
+      <button data-remote-key="Meta" data-modifier="true" type="button" aria-pressed="false">⌘</button>
+      <button data-remote-key="Control" data-modifier="true" type="button" aria-pressed="false">Ctrl</button>
+      <button data-remote-key="Alt" data-modifier="true" type="button" aria-pressed="false">⌥</button>
+      <button data-remote-key="Shift" data-modifier="true" type="button" aria-pressed="false">⇧</button>
+      <button data-remote-key="Tab" type="button">Tab</button>
+      <button data-remote-key="Enter" type="button">Enter</button>
+      <button data-remote-key="Escape" type="button">Esc</button>
+      <button data-remote-key="Backspace" type="button">⌫</button>
+      <button data-remote-key="ArrowLeft" type="button">←</button>
+      <button data-remote-key="ArrowUp" type="button">↑</button>
+      <button data-remote-key="ArrowDown" type="button">↓</button>
+      <button data-remote-key="ArrowRight" type="button">→</button>
+      <button data-remote-key="a" type="button">A</button>
+      <button data-remote-key="c" type="button">C</button>
+      <button data-remote-key="v" type="button">V</button>
+      <button data-remote-key="x" type="button">X</button>
+      <button data-remote-key="z" type="button">Z</button>
+    </div>
+    <div id="keyboardBar" hidden>
+      <label class="type-label" for="typeText">Type on remote desktop</label>
+      <input id="typeText" maxlength="64" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
+      <button id="hideKeyboardButton" type="button" aria-label="Hide keyboard">Done</button>
+    </div>
+  </section>
+  <p id="status" role="status"></p>
+  <button id="retryButton" hidden>Check again</button>
+  <script type="module" src="/dashboard/desktop.js?v=__INSTAR_DESKTOP_ASSET_VERSION__"></script>
+</body>
+</html>

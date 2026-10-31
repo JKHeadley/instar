@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-laptop-controls",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T12:06:24.880Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-laptop-controls.md",
+  "artifactSha256": "303bde3839ace0ba5a30eb376ae2e5432f7d0f0728f11f32b5ebec6b2b8311fb",
+  "coveredFiles": [
+    "scripts/desktop-public-browser-smoke.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible viewer input fix; no identity, grant, persistence, or migration change",
+  "eli16Path": "docs/specs/native-remote-desktop-laptop-controls.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-remote-desktop-laptop-controls.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

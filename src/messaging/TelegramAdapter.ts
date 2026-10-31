@@ -12,6 +12,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
+import { verifiedChannelIdentity } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
 import path from 'node:path';
@@ -633,6 +634,22 @@ export class TelegramAdapter implements MessagingAdapter {
   private pairingHandler: PollingPairingHandler | null = null;
   setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
   hasPairingHandler(): boolean { return this.pairingHandler !== null; }
+  /** The desktop code is consumed before ordinary command routing or message
+   * logging. This callback is reachable only after Telegram sender auth. */
+  private desktopApprovalHandler: ((input: { requestId: string; code: string; topicId: number; senderUid: string }) => boolean) | null = null;
+  setDesktopApprovalHandler(handler: typeof this.desktopApprovalHandler): void { this.desktopApprovalHandler = handler; }
+  consumeDesktopApproval(input: { text: string; topicId: number; senderUid: string; trusted: boolean; forwarded: boolean }): { matched: boolean; approved: boolean } {
+    const trimmed = input.text.trim();
+    if (!/^\/desktop(?:\s|$)/i.test(trimmed)) return { matched: false, approved: false };
+    const reply = /^\/desktop ([0-9a-f-]{36}) (\d{6})$/.exec(trimmed);
+    if (!reply) return { matched: true, approved: false };
+    if (!input.trusted || input.forwarded || !this.isAuthorizedSender(Number(input.senderUid))) {
+      return { matched: true, approved: false };
+    }
+    return { matched: true, approved: this.desktopApprovalHandler?.({
+      requestId: reply[1], code: reply[2], topicId: input.topicId, senderUid: input.senderUid,
+    }) ?? false };
+  }
   /** Optional coherence-journal seam (COHERENCE-JOURNAL-SPEC §3.3). The adapter
    *  holds no StateManager, so the emergency-stop path's stopAutonomousTopic call
    *  cannot reach the wired journal on its own. server.ts injects this seam so the
@@ -2723,8 +2740,11 @@ export class TelegramAdapter implements MessagingAdapter {
   registerTopicSession(topicId: number, sessionName: string, topicName?: string): void {
     this.topicToSession.set(topicId, sessionName);
     this.sessionToTopic.set(sessionName, topicId);
-    if (topicName) {
-      this.topicToName.set(topicId, topicName);
+    // A generated topic-N string is a lookup failure, never a topic title.
+    // Keep an earlier verified title when a standby rebinds the session.
+    const identity = verifiedChannelIdentity('telegram', topicId, topicName);
+    if (identity) {
+      this.topicToName.set(topicId, identity.name);
     }
     this.saveRegistry();
     console.log(`[telegram] Registered topic ${topicId} <-> session "${sessionName}"${topicName ? ` (name: "${topicName}")` : ''}`);
@@ -2797,7 +2817,8 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   getTopicName(topicId: number): string | null {
-    return this.topicToName.get(topicId) ?? null;
+    const name = this.topicToName.get(topicId);
+    return verifiedChannelIdentity('telegram', topicId, name)?.name ?? null;
   }
 
   /**
@@ -2869,10 +2890,8 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   async resolveUnknownTopicNames(): Promise<void> {
     const unknowns: number[] = [];
-    for (const [topicId, name] of this.topicToName) {
-      if (/^topic-\d+$/.test(name)) {
-        unknowns.push(topicId);
-      }
+    for (const topicId of this.topicToSession.keys()) {
+      if (!this.getTopicName(topicId)) unknowns.push(topicId);
     }
     if (unknowns.length === 0) return;
     console.log(`[telegram] Resolving ${unknowns.length} unknown topic names...`);
@@ -2963,13 +2982,15 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Get all topic-session mappings (for admin/debug UIs).
    */
-  getAllTopicMappings(): Array<{ topicId: number; sessionName: string; topicName: string | null }> {
-    const result: Array<{ topicId: number; sessionName: string; topicName: string | null }> = [];
-    for (const [topicId, sessionName] of this.topicToSession) {
+  getAllTopicMappings(): Array<{ topicId: number; sessionName: string | null; topicName: string | null }> {
+    const result: Array<{ topicId: number; sessionName: string | null; topicName: string | null }> = [];
+    // A conversation keeps its identity when its session closes. Listing only
+    // active sessions made known topic names disappear from cross-machine reads.
+    for (const topicId of new Set([...this.topicToSession.keys(), ...this.topicToName.keys()])) {
       result.push({
         topicId,
-        sessionName,
-        topicName: this.topicToName.get(topicId) ?? null,
+        sessionName: this.topicToSession.get(topicId) ?? null,
+        topicName: this.getTopicName(topicId),
       });
     }
     return result;
@@ -5354,7 +5375,8 @@ export class TelegramAdapter implements MessagingAdapter {
       }
       if (data.topicToName) {
         for (const [k, v] of Object.entries(data.topicToName)) {
-          this.topicToName.set(Number(k), v as string);
+          const identity = verifiedChannelIdentity('telegram', k, v);
+          if (identity) this.topicToName.set(Number(k), identity.name);
         }
       }
       if (data.topicToPurpose) {
@@ -5624,6 +5646,20 @@ export class TelegramAdapter implements MessagingAdapter {
     if (!msg.text) return;
 
     const text = msg.text;
+
+    const desktopApproval = this.consumeDesktopApproval({
+      text, topicId: numericTopicId, senderUid: String(msg.from.id), trusted: true,
+      forwarded: !!((msg as unknown as Record<string, unknown>).forward_origin
+        || (msg as unknown as Record<string, unknown>).forward_from
+        || (msg as unknown as Record<string, unknown>).forward_date),
+    });
+    if (desktopApproval.matched) {
+      await this.sendToTopic(numericTopicId, desktopApproval.approved
+        ? 'Remote desktop approved. Return to the dashboard to connect.'
+        : 'Remote desktop approval was not accepted. Check the request or ask for a new code.',
+      { provenance: 'automation' }).catch(() => {});
+      return;
+    }
 
     // Check for commands first
     if (text.startsWith('/')) {

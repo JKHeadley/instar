@@ -61,6 +61,8 @@ describe('release-local mirrors publish.yml', () => {
     expect(local).toContain('`chore: release v${VERSION} [skip ci]`');
     expect(workflow).toContain('for attempt in 1 2 3 4 5');
     expect(local).toContain('maxAttempts = 5');
+    expect(workflow).toContain('git push origin HEAD:main');
+    expect(workflow).not.toContain('git push origin main');
     expect(workflow).toContain('git tag "v${{ steps.bump.outputs.version }}"');
     expect(local).toContain("['push', '--atomic', remote, 'HEAD:main', tag]");
   });

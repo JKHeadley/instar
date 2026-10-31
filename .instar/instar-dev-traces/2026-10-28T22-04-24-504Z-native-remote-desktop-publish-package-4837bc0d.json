@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-publish-package",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T22:04:24.504Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-publish-package.md",
+  "artifactSha256": "08aec99388e86909f7098b51f1b0ed826a50bf3d8fbdf7cfd5f6b9023b1fe302",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "docs/specs/native-remote-desktop-quality.md",
+    "scripts/build-native-desktop-host.mjs",
+    "scripts/check-native-desktop-release.mjs",
+    "upgrades/next/native-remote-desktop-first-mac.md",
+    "upgrades/side-effects/native-remote-desktop-publish-package.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Release packaging and npm publish gating affect every installed Mac; requires the approved desktop spec, side-effects review, and CI.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

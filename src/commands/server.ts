@@ -3,6 +3,7 @@
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
+import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
 import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
@@ -20,6 +21,8 @@ import { vitestConfigForTestPath } from '../localVerify/inventory.js';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import fs from 'node:fs';
+import { classifyWindowsDesktopBootstrapError, writeWindowsDesktopBootstrapStatus,
+  type WindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -3287,7 +3290,8 @@ export function wireTelegramRouting(
     const senderUserId = typeof sender?.userId === 'number' ? sender.userId : Number(sender?.userId ?? 0) || 0;
     const resolvedUser = senderUserId && userManager ? userManager.resolveFromTelegramUserId(senderUserId) : null;
     const targetSession = telegram.getSessionForTopic(topicId);
-    const topicName = telegram.getTopicName(topicId) || `topic-${topicId}`;
+    const verifiedTopicName = telegram.getTopicName(topicId);
+    const topicName = verifiedTopicName || `topic-${topicId}`; // unique internal spawn key
 
     if (targetSession && sessionManager.isSessionAlive(targetSession)) {
       // Direct inject: receipt FIRST (the §3.4 handover point), stop re-check,
@@ -3297,7 +3301,7 @@ export function wireTelegramRouting(
       if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
       try {
         const injected = sessionManager.injectTelegramMessage(
-          targetSession, topicId, dmsg.payload, topicName, senderFirstName, senderUserId,
+          targetSession, topicId, dmsg.payload, verifiedTopicName ?? 'Conversation name unavailable', senderFirstName, senderUserId,
           Number(dmsg.messageId.replace(/^\D*/, '')) || undefined,
         );
         if (injected === false) {
@@ -17105,6 +17109,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     let _machineLoadSampler: import('../core/machineLoadReport.js').MachineLoadSampler | null = null;
     let _workAdmission: import('../core/workAdmission.js').WorkAdmission | null = null;
     let _eventLoopLagReader: (() => number | null) | null = null;
+    let wakeTunnelRecoveryInFlight = false;
+    let wakeTunnelRestartTask: Promise<void> | null = null;
     const _tmuxAsyncHotPathWakeGuard = resolveDevAgentGate(
       config.monitoring?.tmuxResilience?.asyncHotPath?.enabled,
       config,
@@ -17173,59 +17179,96 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.warn('[SleepWake] tmux check failed after wake');
       }
 
-      // Restart tunnel if configured — disable auto-reconnect first to prevent
-      // a cascade of competing reconnection attempts, then forceStop to handle
-      // zombie cloudflared processes that may be hung after sleep.
-      if (tunnel) {
+      // Serialize wake recovery. A later wake must not apply an old probe
+      // result to a connector already being repaired by this handler.
+      if (tunnel && wakeTunnelRecoveryInFlight) {
+        console.log('[SleepWake] Tunnel recovery already in progress');
+      } else if (tunnel) {
+        wakeTunnelRecoveryInFlight = true;
         try {
-          await Promise.race([
-            (async () => {
-              tunnel.disableAutoReconnect();
-              await tunnel.forceStop(5000);
-              tunnel.enableAutoReconnect();
-              const tunnelUrl = await tunnel.start();
-              console.log(`[SleepWake] Tunnel restarted: ${tunnelUrl}`);
+          const observedGeneration = tunnel.connectionGeneration;
+          // Timer drift can look like sleep while a public desktop session is healthy.
+          // Verify the current URL reaches THIS agent before replacing the connector;
+          // a half-open or local-only desktop socket never suppresses recovery.
+          const { probeCurrentTunnelIdentity } = await import('../tunnel/probeCurrentTunnelIdentity.js');
+          const tunnelReachable = await probeCurrentTunnelIdentity({
+            url: tunnel.url,
+            agentId: config.projectName,
+            port: config.port,
+            authToken: config.authToken,
+          });
+          if (observedGeneration !== tunnel.connectionGeneration) {
+            console.log('[SleepWake] Tunnel changed during probe; leaving the replacement intact');
+          } else if (tunnelReachable) {
+            console.log('[SleepWake] Current tunnel reached this agent; keeping active connections');
+          } else {
+            // Disable auto-reconnect first to prevent competing attempts, then
+            // forceStop to handle a zombie cloudflared process after a true sleep.
+            try {
+              const restartTask = (async () => {
+                  tunnel.disableAutoReconnect();
+                  await tunnel.forceStop(5000);
+                  tunnel.enableAutoReconnect();
+                  const tunnelUrl = await tunnel.start();
+                  console.log(`[SleepWake] Tunnel restarted: ${tunnelUrl}`);
 
-              // Re-advertise the mesh URL — a quick tunnel gets a NEW URL after a
-              // sleep/wake restart, so the previously-advertised lastKnownUrl is
-              // now stale; peers must learn the new one or cross-machine routing
-              // silently breaks post-wake.
-              if (coordinator.enabled && coordinator.identity) {
-                const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
-                advertiseSelfMeshUrl(
-                  coordinator.managers.identityManager,
-                  coordinator.identity.machineId,
-                  cfUrl,
-                  (m) => console.log(pc.dim(m)),
-                );
-                // multi-transport-mesh-comms — re-advertise endpoints post-wake.
-                await advertiseSelfMeshEndpointsNow(
-                  coordinator.managers.identityManager,
-                  coordinator.identity.machineId,
-                  config,
-                  cfUrl,
-                );
-              }
+                  // Re-advertise the mesh URL — a quick tunnel gets a NEW URL after a
+                  // sleep/wake restart, so the previously-advertised lastKnownUrl is
+                  // now stale; peers must learn the new one or cross-machine routing
+                  // silently breaks post-wake.
+                  if (coordinator.enabled && coordinator.identity) {
+                    const cfUrl = resolveAdvertisedMeshUrl(config.tunnel, tunnelUrl);
+                    advertiseSelfMeshUrl(
+                      coordinator.managers.identityManager,
+                      coordinator.identity.machineId,
+                      cfUrl,
+                      (m) => console.log(pc.dim(m)),
+                    );
+                    // multi-transport-mesh-comms — re-advertise endpoints post-wake.
+                    await advertiseSelfMeshEndpointsNow(
+                      coordinator.managers.identityManager,
+                      coordinator.identity.machineId,
+                      config,
+                      cfUrl,
+                    );
+                  }
 
-              // Re-broadcast dashboard URL after tunnel restart (quick tunnels get new URL)
-              if (tunnelUrl) {
-                const tunnelType = config.tunnel?.type || 'quick';
-                if (telegram) {
-                  await telegram.broadcastDashboardUrl(tunnelUrl, tunnelType as 'quick' | 'named').catch(() => {});
-                }
-                if (_slackAdapter) {
-                  await _slackAdapter.broadcastDashboardUrl(tunnelUrl).catch(() => {});
-                }
+                  // Re-broadcast dashboard URL after tunnel restart (quick tunnels get new URL)
+                  if (tunnelUrl) {
+                    const tunnelType = config.tunnel?.type || 'quick';
+                    if (telegram) {
+                      await telegram.broadcastDashboardUrl(tunnelUrl, tunnelType as 'quick' | 'named').catch(() => {});
+                    }
+                    if (_slackAdapter) {
+                      await _slackAdapter.broadcastDashboardUrl(tunnelUrl).catch(() => {});
+                    }
+                  }
+              })().finally(() => tunnel.enableAutoReconnect());
+              wakeTunnelRestartTask = restartTask;
+              await Promise.race([
+                restartTask,
+                new Promise<void>((_, reject) =>
+                  setTimeout(() => reject(new Error('Tunnel restart timed out after 15s')), 15_000)
+                ),
+              ]);
+            } catch (err) { // @silent-fallback-ok — logs the restart failure; auto-reconnect remains armed.
+              console.error(`[SleepWake] Tunnel restart failed:`, err);
+              // The restart task owns auto-reconnect and the singleflight lock
+              // even if this 15-second reporting window expires first.
+            }
+          }
+        } finally {
+          const pendingRestart = wakeTunnelRestartTask;
+          if (pendingRestart) {
+            void pendingRestart.then(() => {}, () => {}).finally(() => {
+              if (wakeTunnelRestartTask === pendingRestart) {
+                wakeTunnelRestartTask = null;
+                wakeTunnelRecoveryInFlight = false;
               }
-            })(),
-            new Promise<void>((_, reject) =>
-              setTimeout(() => reject(new Error('Tunnel restart timed out after 15s')), 15_000)
-            ),
-          ]);
-        } catch (err) {
-          console.error(`[SleepWake] Tunnel restart failed:`, err);
-          // Re-enable auto-reconnect even on failure so it can self-heal
-          tunnel.enableAutoReconnect();
+            });
+          } else {
+            wakeTunnelRecoveryInFlight = false;
+          }
         }
       }
 
@@ -18908,7 +18951,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       const threadline = await bootstrapThreadline({
         agentName: config.projectName,
         // Self-described, shown to the other side as "claimed" (invite pairing §7).
-        ownerName: (config.users ?? []).find((u) => u.permissions?.includes('admin'))?.name ?? config.users?.[0]?.name,
+        ownerName: () => {
+          const telegram = (config.messaging ?? []).find((m) => m.type === 'telegram')?.config as { ownerUserId?: unknown; promptGate?: { ownerId?: unknown } } | undefined;
+          return readPairingOwnerName(config.stateDir, config.users, telegram?.ownerUserId ?? telegram?.promptGate?.ownerId ?? config.monitoring?.promptGate?.ownerId);
+        },
         stateDir: config.stateDir,
         projectDir: config.projectDir,
         port: config.port,
@@ -29382,6 +29428,30 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     } catch (err) {
       console.log(pc.yellow(`  Agent identity runtime: not wired (${err instanceof Error ? err.message : String(err)})`));
+    }
+
+    // Explicit WSL desktop opt-in installs the fixed packaged companion in
+    // the interactive Windows session before target admission is wired.
+    if (process.platform === 'linux' && /microsoft|wsl/i.test(os.release())) {
+      let bootstrapStatus: WindowsDesktopBootstrapStatus = { state: 'off' };
+      if (config.remoteDesktop?.enabled === true && config.remoteDesktop.frontMachineId) {
+        try {
+          execFileSync(process.execPath,
+            [path.resolve(__dirname, '../../scripts/install-windows-desktop-companion.mjs'), '--enable'],
+            { timeout: 140_000, maxBuffer: 16_384, stdio: 'pipe' });
+          bootstrapStatus = { state: 'ready' };
+          console.log(pc.dim('  Windows desktop companion installed for this WSL host'));
+        } catch (error) {
+          // @silent-fallback-ok — the authenticated desktop diagnostic reports a
+          // fixed failure code; the target stays dark and boot continues.
+          bootstrapStatus = classifyWindowsDesktopBootstrapError(error);
+          config.remoteDesktop.enabled = false;
+          console.warn('[instar] Windows desktop companion install failed; remote desktop stays dark:',
+            bootstrapStatus.phase, bootstrapStatus.code);
+        }
+      }
+      try { writeWindowsDesktopBootstrapStatus(config.stateDir, bootstrapStatus); }
+      catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
     const server = new AgentServer({ config, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was

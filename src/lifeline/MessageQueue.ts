@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { QueueReason } from './queueDeliveryNotice.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
+import { isEphemeralCredentialCommand } from './ephemeralCredentialCommand.js';
 
 export interface QueuedMessage {
   id: string;
@@ -64,7 +65,8 @@ export class MessageQueue {
   enqueue(msg: QueuedMessage): boolean {
     // A pairing invite carries a one-time secret: it is never written to disk here
     // (docs/specs/a2a-pairing-invite-link.md §6.1). The sender forwards it again later.
-    if (typeof msg.text === 'string' && msg.text.includes(INVITE_PREFIX)) return false;
+    if (typeof msg.text === 'string' && (msg.text.includes(INVITE_PREFIX)
+      || isEphemeralCredentialCommand(msg.text))) return false;
     if (this.deliveredIds.has(msg.id)) return false;       // already handled — never re-queue
     if (this.queue.some(m => m.id === msg.id)) return false; // already queued — no duplicate copy
     this.queue.push(msg);
@@ -152,7 +154,9 @@ export class MessageQueue {
     try {
       if (fs.existsSync(this.queuePath)) {
         const data = JSON.parse(fs.readFileSync(this.queuePath, 'utf-8'));
-        this.queue = Array.isArray(data) ? data : [];
+        this.queue = Array.isArray(data) ? data.filter((row: QueuedMessage) =>
+          typeof row?.text !== 'string' || !isEphemeralCredentialCommand(row.text)) : [];
+        if (Array.isArray(data) && this.queue.length !== data.length) this.save();
       }
     } catch {
       this.queue = [];

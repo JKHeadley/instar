@@ -280,7 +280,7 @@ export { afterAll, describe, expect, it };
  * mapping fixtures common to all of them, and the canary-writes-nothing rule.
  * `proberName` is the prober's file name under scripts/.
  */
-export function proberContractCases(slug: string, okStdout: string): void {
+export function proberContractCases(slug: string, okStdout: string, ok: { stubCode?: string; env?: (dir: string) => Record<string, string> } = {}): void {
   describe(`${slug}: shared prober contract`, () => {
     let dir: string;
     let cwd: string;
@@ -334,11 +334,11 @@ export function proberContractCases(slug: string, okStdout: string): void {
       const envDump = path.join(dir, 'env.json');
       const p = path.join(dir, 'p.mjs');
       // The stub prober is the one writer here, and only into its own temp dir.
-      fs.writeFileSync(p, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(envDump)}, JSON.stringify(Object.keys(process.env))); process.stdout.write(${JSON.stringify(okStdout)});`);
+      fs.writeFileSync(p, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(envDump)}, JSON.stringify(Object.keys(process.env))); ${ok.stubCode ?? ''} process.stdout.write(${JSON.stringify(okStdout)});`);
       const home = makeTmp('home');
       try {
         const before = [snapshot(cwd), snapshot(home)];
-        const r = await runScript(slug, { args: ['--canary', '--prober', p], cwd, home, env: { SECRET_THING: 'x' } as Record<string, string> });
+        const r = await runScript(slug, { args: ['--canary', '--prober', p], cwd, home, env: { SECRET_THING: 'x', ...(ok.env?.(dir) ?? {}) } as Record<string, string> });
         expect(r.resultLine).toMatch(/^JOB_RESULT ok /);
         const keys: string[] = JSON.parse(fs.readFileSync(envDump, 'utf8'));
         for (const k of keys) expect(k === 'PATH' || k === 'HOME' || k.startsWith('INSTAR_') || k === '__CF_USER_TEXT_ENCODING').toBe(true);

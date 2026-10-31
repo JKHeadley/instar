@@ -1,9 +1,11 @@
+import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
+import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
-import { resolveSessionPlatform } from './sessionPlatform.js';
+import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
 import { readSystemTopicIds } from '../messaging/SystemTopicAdoption.js';
 import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
@@ -14,6 +16,8 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
  */
 
 import { Router } from 'express';
+import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
@@ -22,6 +26,7 @@ import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
+import { isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
@@ -263,6 +268,7 @@ import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnot
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
+import { CheckInReminderTicker, resolveCheckInTickIntervalMs } from '../monitoring/CheckInReminderTicker.js';
 import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
@@ -1000,6 +1006,8 @@ export interface RouteContext {
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
    * this from its owned timer; tests may invoke it deterministically. */
   windowLifecycleTick?: (() => void) | null;
+  /** Check-in reminder driver installed by createRoutes; AgentServer owns its timer. */
+  checkInReminderTicker?: import('../monitoring/CheckInReminderTicker.js').CheckInReminderTicker | null;
   /** W32 authoritative five-predicate run-liveness state. Null means dark. */
   windowRunLivenessAuthority?: WindowRunLivenessAuthority | null;
   /** Durable 30-minute receipt and 3-hour synthesis executor. Null means dark. */
@@ -1488,7 +1496,7 @@ export interface RouteContext {
   /** The audit log behind that surface — flushed before the restart supervisor handoff (§4/§7). */
   moneyLayerAudit?: import('../core/MoneyLayerAuditLog.js').MoneyLayerAuditLog | null;
   /** Initiate the server's existing SUPERVISED restart (the auto-updater's path, under launchd keepalive). No new restart machinery. */
-  requestSupervisedRestart?: (reason: string) => Promise<boolean> | boolean;
+  requestSupervisedRestart?: (reason: string, requestedBy?: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
@@ -1651,6 +1659,11 @@ export interface RouteContext {
    *  POST /blockers/:id/advance, POST /blockers/:id/settle. Signal-only — it never
    *  blocks a message; the true-blocker settle routes through the B17 authority. */
   blockerLedger?: import('../monitoring/BlockerLedger.js').BlockerLedger | null;
+  directDesktopAccess?: import('../core/DirectDesktopAccess.js').DirectDesktopAccess | null;
+  desktopLocalDiagnostics?: () => Promise<Record<string, unknown>>;
+  desktopMeshBroker?: import('./DesktopMeshBroker.js').DesktopMeshBroker | null;
+  desktopTargetSigningKey?: (machineId: string) => string | null;
+  desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
   /** Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5/§7).
    *  Null/absent when monitoring.blockerLedger.selfUnblockChecklist.enabled is false
    *  (default, ships dark) → GET /blockers/self-unblock-runs 503s (after auth). The
@@ -2228,6 +2241,9 @@ export const PATCHABLE_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'evolution', 'threadline', 'publishing', 'tunnel', 'gitBackup',
   'externalOperations', 'responseReview', 'inputGuard', 'monitoring',
   'updates', 'sessions', 'jobs',
+  // Opt-in only opens the target adapter at the next boot. A dashboard PIN,
+  // target-bound assertion, and target-local grant still gate every stream.
+  'remoteDesktop',
   // `dispatches` and `feedback` each have a FeatureDefinition whose enableAction
   // patches that key; without them here those toggles 400 (the switch points at
   // a key the API refuses to change). Both are real config keys (types.ts:
@@ -7422,7 +7438,14 @@ export function createRoutes(ctx: RouteContext): Router {
       sessions: {
         running: sessions.length,
         max: ctx.config.sessions.maxSessions,
-        list: sessions.map(s => ({ id: s.id, name: s.name, jobSlug: s.jobSlug })),
+        list: sessions.map(s => {
+          const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
+          const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
+          const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
+            ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
+            : detected;
+          return { id: s.id, name: sessionDisplayName(s.name, platform), jobSlug: s.jobSlug };
+        }),
       },
       scheduler: schedulerStatus,
     });
@@ -11041,7 +11064,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // on single-machine installs (no pool wired), so the dashboard hides the badge.
     const selfMachineId = ctx.meshSelfId ?? null;
     const selfMachineNickname = selfMachineId
-      ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+      ? verifiedEntityName(selfMachineId, ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname)
       : null;
 
     // Enrich sessions with hook event telemetry and platform info
@@ -11076,7 +11099,13 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Add platform indicator and display name (shared with the dashboard
       // WebSocket list so local and pooled rows can never disagree).
-      Object.assign(result, resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack));
+      const detected = resolveSessionPlatform(s.tmuxSession, ctx.telegram, ctx.slack);
+      const topicName = ctx.telegram?.getTopicName(s.telegramTopicId ?? 0);
+      const platform = detected.platform === 'headless' && Number.isSafeInteger(s.telegramTopicId)
+        ? { platform: 'telegram', platformId: s.telegramTopicId, ...(isVerifiedChannelName('telegram', s.telegramTopicId!, topicName) ? { platformName: topicName } : {}) }
+        : detected;
+      Object.assign(result, platform);
+      result.name = sessionDisplayName(s.name, platform);
 
       return result;
     });
@@ -11127,10 +11156,18 @@ export function createRoutes(ctx: RouteContext): Router {
             // re-introduces the finished-session wall into the pool view.
             if (!includeAll && !explicitStatus && !isActiveStatus(s.status)) continue;
             if (explicitStatus && s.status !== explicitStatus) continue;
+            const remoteTopicId = typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) ? s.telegramTopicId : undefined;
+            const remotePlatformId = typeof s.platformId === 'number' || typeof s.platformId === 'string' ? s.platformId : remoteTopicId;
+            const remotePlatform: SessionPlatformInfo = s.platform === 'telegram' || s.platform === 'slack'
+              ? { platform: s.platform, platformId: remotePlatformId, platformName: typeof s.platformName === 'string' ? s.platformName : undefined }
+              : remoteTopicId !== undefined
+                ? { platform: 'telegram', platformId: remoteTopicId }
+                : { platform: 'headless' };
             remote.push({
               ...s,
+              name: sessionDisplayName(s.name, remotePlatform),
               machineId: s.machineId ?? p.machineId,
-              machineNickname: s.machineNickname ?? nickname ?? undefined,
+              machineNickname: verifiedEntityName(p.machineId, s.machineNickname) ?? verifiedEntityName(p.machineId, nickname) ?? null,
               remote: true,
             });
           }
@@ -11176,10 +11213,10 @@ export function createRoutes(ctx: RouteContext): Router {
       for (const machineId of rosterIds) {
         const isSelf = machineId === selfMachineId;
         const capacity = ctx.machinePoolRegistry?.getCapacity(machineId) ?? null;
-        const nickname = capacity?.nickname
+        const nickname = verifiedEntityName(machineId, capacity?.nickname
           ?? knownMachines.find((m) => m.machineId === machineId)?.nickname
           ?? (isSelf ? selfMachineNickname : null)
-          ?? null;
+          ?? null);
         const sessionCount = sessionCountByMachine.get(machineId)
           ?? (isSelf ? (sessionCountByMachine.get('__local__') ?? 0) : 0);
         const entry: (typeof machines)[number] = { machineId, nickname, isSelf, sessionCount };
@@ -11195,7 +11232,7 @@ export function createRoutes(ctx: RouteContext): Router {
               // trustworthy-machine-load A5: the evidence-derived state decides the
               // wording; "offline" is never said without positive evidence.
               liveness: capacity?.liveness,
-              nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id,
+              nicknameOf: (id) => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine',
             },
             nowMs,
           );
@@ -11229,7 +11266,7 @@ export function createRoutes(ctx: RouteContext): Router {
         const entry = byConversation.get(key)
           ?? { platform, platformId: platformId as string | number, machineIds: new Set<string>(), sessions: [] };
         entry.machineIds.add(mid);
-        entry.sessions.push(String(s.name ?? s.tmuxSession ?? s.id ?? ''));
+        entry.sessions.push(String(s.tmuxSession ?? s.id ?? ''));
         byConversation.set(key, entry);
       }
       const duplicateTopics: Array<{
@@ -12946,8 +12983,213 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(ctx.growthMilestoneAnalyst.buildDigest());
     } catch (err) {
+      // @silent-fallback-ok — HTTP 500 is returned; nearby desktop intent is a separate helper.
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  // ── Native operator remote desktop (explicit dev-agent opt-in) ─────────────
+  const desktopOperatorSession = (req: ExpressRequest): string =>
+    typeof req.headers['x-instar-operator-session'] === 'string' ? req.headers['x-instar-operator-session'] : '';
+  const desktopTransport = (req: ExpressRequest, res: ExpressResponse): boolean => {
+    if (req.secure || isLoopbackPeer(req.socket.remoteAddress)) return true;
+    res.status(403).json({ error: 'Remote desktop requires the HTTPS tunnel or local access' });
+    return false;
+  };
+  const desktopIntent = (req: ExpressRequest, res: ExpressResponse): boolean => {
+    if (req.headers['x-instar-request'] === '1') return true;
+    res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+    return false;
+  };
+  const desktopReadiness = async (): Promise<{ ready: boolean; unavailableReason?: string }> => {
+    try {
+      const probe = await ctx.directDesktopAccess!.probe();
+      if (probe.ready) return { ready: true };
+      return { ready: false, unavailableReason: desktopProbeUnavailableReason(probe) };
+    } catch {
+      // @silent-fallback-ok — probe uncertainty denies desktop access and returns an explicit unavailable reason.
+    }
+    return { ready: false, unavailableReason: 'Remote desktop is not ready on this machine.' };
+  };
+  router.get('/desktop/availability', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    const target = ctx.directDesktopAccess.targetInfo();
+    res.json({ ...target, ...await desktopReadiness() });
+  });
+  // Bearer-only maintenance view of this host's own probe. Target machines do
+  // not serve the browser admission route, so a 503 there cannot diagnose a
+  // headless Mac or a Windows companion failure. No frame or input is read.
+  router.get('/desktop/diagnostics', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.desktopLocalDiagnostics) {
+      res.status(503).json({ error: 'Desktop diagnostics unavailable' }); return;
+    }
+    res.json(await ctx.desktopLocalDiagnostics());
+  });
+  // Config activation is an agent maintenance action. The normal Bearer
+  // middleware protects this route; the dashboard PIN never exposes it.
+  router.post('/desktop/activate-config', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!desktopIntent(req, res)) return;
+    if (ctx.config.remoteDesktop?.enabled !== true || !ctx.config.remoteDesktop.frontMachineId) {
+      res.status(409).json({ error: 'Remote desktop is not configured on this machine' }); return;
+    }
+    try {
+      const started = await ctx.requestSupervisedRestart?.(
+        'remote desktop configuration activation', 'remote-desktop-config');
+      if (!started) { res.status(503).json({ error: 'Supervised restart is unavailable' }); return; }
+      res.status(202).json({ restartRequested: true });
+    } catch {
+      res.status(503).json({ error: 'Supervised restart is unavailable' });
+    }
+  });
+  router.get('/desktop/targets', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
+    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+      res.status(403).json({ error: 'Dashboard operator session required' }); return;
+    }
+    const target = ctx.directDesktopAccess.targetInfo();
+    const machines = [{ ...target, ...await desktopReadiness() }];
+    const knownPeers = (ctx.listPoolMachines?.() ?? [])
+      .filter(peer => peer.machineId !== target.machineId && /^m_[a-f0-9]{32}$/.test(peer.machineId))
+      .slice(0, 7);
+    const peerMachines = await Promise.all(knownPeers.map(async peer => {
+      try {
+        if (!ctx.desktopMeshBroker || !ctx.desktopProbePeer) throw new Error('desktop-peer-unavailable');
+        return await ctx.desktopProbePeer(peer.machineId);
+      } catch {
+        return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
+          unavailableReason: 'Remote desktop is not ready on this machine.' };
+      }
+    }));
+    const topics = Object.entries(ctx.topicOperatorStore?.all() ?? {})
+      .filter(([id, binding]) => /^\d+$/.test(id) && binding.platform === 'telegram')
+      .map(([id]) => {
+        const name = ctx.telegram?.getTopicName(Number(id))?.trim();
+        return { topicId: Number(id), label: name || `Telegram topic ${id}` };
+      });
+    const trustedMachines = [...machines, ...peerMachines].map(machine => {
+      const key = ctx.desktopTargetSigningKey?.(machine.machineId);
+      return key ? { ...machine, targetSigningPublicKey: key }
+        : { ...machine, ready: false, unavailableReason: 'This machine’s identity is not verified.',
+          targetSigningPublicKey: null };
+    });
+    res.json({ machines: trustedMachines, topics });
+  });
+  router.post('/desktop/requests', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
+    if (!desktopIntent(req, res)) return;
+    const session = desktopOperatorSession(req);
+    if (!ctx.verifyDashboardOperatorSession?.(session)) {
+      res.status(403).json({ error: 'Dashboard operator session required' }); return;
+    }
+    const topicId = Number(req.body?.topicId);
+    const telegramStepUp = ctx.directDesktopAccess.requiresTelegramStepUp();
+    const operator = telegramStepUp ? ctx.topicOperatorStore?.getOperator(topicId) : null;
+    if (telegramStepUp && (!operator || operator.platform !== 'telegram')) {
+      res.status(403).json({ error: 'Verified Telegram operator required' }); return;
+    }
+    try {
+      if (req.body?.machineId !== ctx.directDesktopAccess.targetInfo().machineId) {
+        if (!ctx.desktopMeshBroker) { res.status(503).json({ error: 'Remote desktop mesh is unavailable' }); return; }
+        const result = await ctx.desktopMeshBroker.begin(session, {
+          machineId: req.body?.machineId, browserPublicKey: req.body?.browserPublicKey,
+          browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
+          browserNonce: req.body?.browserNonce, videoCodec: req.body?.videoCodec,
+        });
+        res.status(201).json(result);
+        return;
+      }
+      const result = await ctx.directDesktopAccess.begin({
+        machineId: req.body?.machineId, topicId: telegramStepUp ? topicId : 0,
+        operatorUid: telegramStepUp ? operator!.uid : 'dashboard-pin',
+        operatorSessionToken: session, browserPublicKey: req.body?.browserPublicKey,
+        browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
+        browserNonce: req.body?.browserNonce, videoCodec: req.body?.videoCodec,
+        scopeConfirmed: req.body?.scopeConfirmed,
+      });
+      res.status(201).json(result);
+    } catch (error) { res.status(403).json({ error: (error as Error).message }); }
+  });
+  router.get('/desktop/requests/:id', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      void ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'status')
+        .then(result => res.json(result)).catch(() => res.status(403).json({ error: 'Desktop request unavailable' }));
+      return;
+    }
+    try { res.json(ctx.directDesktopAccess.status(req.params.id, desktopOperatorSession(req))); }
+    catch { res.status(403).json({ error: 'Desktop request unavailable' }); }
+  });
+  router.post('/desktop/requests/:id/resume', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res) || !desktopIntent(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      try { res.json(await ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'resume', req.body)); }
+      catch { res.status(403).json({ error: 'Desktop resume unavailable' }); }
+      return;
+    }
+    try {
+      res.json(await ctx.directDesktopAccess.resume(req.params.id, desktopOperatorSession(req), {
+        browserPublicKey: req.body?.browserPublicKey,
+        browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
+        browserNonce: req.body?.browserNonce,
+        videoCodec: req.body?.videoCodec,
+        previousVideoCodec: req.body?.previousVideoCodec,
+      }, req.body?.attemptId, req.body?.previousConnectionNonce, req.body?.previousSignature));
+    } catch { res.status(403).json({ error: 'Desktop resume unavailable' }); }
+  });
+  router.get('/desktop/requests/:id/cursor', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
+    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+      res.status(403).json({ error: 'Dashboard operator session required' }); return;
+    }
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      try { res.json(await ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'cursor')); }
+      catch { res.status(403).json({ error: 'Desktop cursor unavailable' }); }
+      return;
+    }
+    try { res.json(await ctx.directDesktopAccess.cursor(req.params.id, desktopOperatorSession(req))); }
+    catch { res.status(403).json({ error: 'Desktop cursor unavailable' }); }
+  });
+  router.post('/desktop/requests/:id/ticket', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
+    if (!desktopIntent(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      void ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'ticket', req.body)
+        .then(result => res.json(result)).catch(() => res.status(403).json({ error: 'Desktop ticket unavailable' }));
+      return;
+    }
+    try {
+      const ticket = ctx.directDesktopAccess.ticket(req.params.id, desktopOperatorSession(req),
+        req.body?.connectionNonce, req.body?.signature);
+      res.json({ ticket, ...ctx.directDesktopAccess.targetInfo() });
+    } catch { res.status(403).json({ error: 'Desktop ticket unavailable' }); }
+  });
+  router.post('/desktop/requests/:id/revoke', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
+    if (!desktopIntent(req, res)) return;
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      void ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'revoke')
+        .then(result => res.json(result)).catch(() => res.status(403).json({ error: 'Desktop revocation unavailable' }));
+      return;
+    }
+    try { ctx.directDesktopAccess.revoke(req.params.id, desktopOperatorSession(req)); res.json({ revoked: true }); }
+    catch { res.status(403).json({ error: 'Desktop revocation unavailable' }); }
   });
 
   // ── Blocker Ledger (Autonomy Principles Enforcement, Piece 1) ────────────────
@@ -18074,12 +18316,69 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Telegram ────────────────────────────────────────────────────
 
-  router.get('/telegram/topics', (_req, res) => {
-    if (!ctx.telegram) {
-      res.json({ topics: [] });
+  router.get('/telegram/topics', async (req, res) => {
+    if (req.query.scope !== undefined && req.query.scope !== 'pool') {
+      res.status(400).json({ error: 'invalid-topic-scope' });
       return;
     }
-    res.json({ topics: ctx.telegram.getAllTopicMappings() });
+    const local = ctx.telegram?.getAllTopicMappings() ?? [];
+    if (req.query.scope !== 'pool') {
+      res.json({ topics: local, serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
+      return;
+    }
+    // A session can run on a standby whose local registry still says
+    // "topic-127504" while the Telegram-serving machine has the real title.
+    // Read every reachable registry and prefer actual titles over placeholders.
+    const named = new Map<number, { topicId: number; sessionName: string | null; topicName: string }>();
+    const knownIds = new Set<number>();
+    const realName = (id: number, value: unknown): value is string => isVerifiedChannelName('telegram', id, value);
+    const absorb = (rows: unknown) => {
+      if (!Array.isArray(rows)) return;
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const t = row as { topicId?: unknown; topicName?: unknown; sessionName?: unknown };
+        const id = Number(t.topicId);
+        if (!Number.isSafeInteger(id) || id <= 0) continue;
+        knownIds.add(id);
+        if (!realName(id, t.topicName) || named.has(id)) continue;
+        named.set(id, { topicId: id, topicName: t.topicName.trim(), sessionName: typeof t.sessionName === 'string' ? t.sessionName : null });
+      }
+    };
+    absorb(local);
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const servingCandidates: unknown[][] = [];
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    await Promise.all(peers.map(async p => {
+      try {
+        const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        const verdict = isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist);
+        if (!verdict.ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/telegram/topics', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+        });
+        if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
+        const body = await r.json() as { topics?: unknown; serving?: boolean };
+        if (body.serving === true && Array.isArray(body.topics)) servingCandidates.push(body.topics);
+        else absorb(body.topics);
+      } catch (error) {
+        failed.push({ machineId: p.machineId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }));
+    // A rename is observed by the Telegram lease holder first. Its verified
+    // title wins over a stale standby copy, regardless of response order.
+    for (const rows of servingCandidates) {
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const candidate = row as { topicId?: unknown; topicName?: unknown; sessionName?: unknown };
+        const id = Number(candidate.topicId);
+        if (!Number.isSafeInteger(id) || id <= 0 || !realName(id, candidate.topicName)) continue;
+        named.set(id, { topicId: id, topicName: candidate.topicName.trim(), sessionName: typeof candidate.sessionName === 'string' ? candidate.sessionName : null });
+      }
+    }
+    res.json({
+      topics: [...named.values()].sort((a, b) => a.topicId - b.topicId),
+      pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
+    });
   });
 
   router.post('/telegram/topics', async (req, res) => {
@@ -25956,6 +26255,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             if (resolved) topicName = resolved;
           } catch { /* fall through to default */ }
         }
+        const resolvedName = await resolveTopicNameAcrossPool(topicId);
+        topicName = resolvedName ?? (verifiedTopicName(topicId, topicName) ? topicName : `topic-${topicId}`);
 
         // Build context with thread history
         const historyLines: string[] = [];
@@ -25966,7 +26267,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               historyLines.push(`--- Thread History (last ${history.length} messages) ---`);
               historyLines.push(`IMPORTANT: Read this history carefully before taking any action.`);
               historyLines.push(`Your task is to continue THIS conversation, not start something new.`);
-              historyLines.push(`Topic: ${topicName}`);
+              historyLines.push(`Topic: ${verifiedTopicName(topicId, topicName) ? topicName : 'Conversation name unavailable'}`);
               historyLines.push(``);
               for (const m of history) {
                 const sender = historySenderLabel(m);
@@ -26006,6 +26307,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           try {
             const reg = fs.existsSync(sdRegistryPath) ? JSON.parse(fs.readFileSync(sdRegistryPath, 'utf-8')) : { topicToSession: {}, topicToName: {} };
             reg.topicToSession[String(topicId)] = newSessionName;
+            if (verifiedTopicName(topicId, topicName)) {
+              reg.topicToName ??= {};
+              reg.topicToName[String(topicId)] = topicName;
+            }
             fs.writeFileSync(sdRegistryPath, JSON.stringify(reg, null, 2));
           } catch { /* @silent-fallback-ok — registry write non-critical */ }
           // Proactive UUID save — always run, even after --resume (new session = new UUID)
@@ -26235,6 +26540,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // handler below). Avoids per-request log spam while preserving the signal.
   let _versionMissingLogged = false;
 
+  // The serving machine may know the title while this standby only has the ID.
+  // Keep the ID/name pair intact at the inbound handoff, including auto-spawn.
+  const verifiedTopicName = (id: number, value: unknown): value is string => isVerifiedChannelName('telegram', id, value);
+  const resolveTopicNameAcrossPool = async (topicId: number): Promise<string | null> => {
+    const live = ctx.telegram?.getTopicName(topicId);
+    if (ctx.telegramOrigin?.options.holdsLease?.() === true && verifiedTopicName(topicId, live)) return live.trim();
+    let localName: string | null = verifiedTopicName(topicId, live) ? live.trim() : null;
+    try {
+      const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+      const reg = JSON.parse(fs.readFileSync(registryPath, 'utf-8')) as { topicToName?: Record<string, unknown> };
+      const stored = reg.topicToName?.[String(topicId)];
+      if (!localName && verifiedTopicName(topicId, stored)) localName = stored.trim();
+    } catch { /* @silent-fallback-ok: registry is optional on a standby; peers remain authoritative */ }
+    const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    const peerNames = await Promise.all((ctx.resolvePeerUrls?.() ?? []).map(async peer => {
+      if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allowlist).ok) return null;
+      try {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/telegram/topics', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(1500), redirect: 'manual',
+        });
+        if (!response.ok) return null;
+        const body = await response.json() as { topics?: Array<{ topicId?: unknown; topicName?: unknown }>; serving?: boolean };
+        const found = body.topics?.find(row => Number(row.topicId) === topicId && verifiedTopicName(topicId, row.topicName));
+        return found && verifiedTopicName(topicId, found.topicName) ? { name: found.topicName.trim(), serving: body.serving === true } : null;
+      } catch { /* @silent-fallback-ok: a peer may be offline; use another verified source */ return null; }
+    }));
+    return peerNames.find(candidate => candidate?.serving)?.name ?? localName ?? peerNames.find(candidate => candidate)?.name ?? null;
+  };
+
   router.post('/internal/telegram-forward', async (req, res) => {
     const { topicId, text, messageId, lifelineVersion } = req.body;
     // The sender-identity fields are `let`: a request accepted WITHOUT proof of
@@ -26383,6 +26717,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       } catch { /* the invite is still consumed: it must never fall through to a session */ }
       res.json({ ok: true, pairingInvite: true });
+      return;
+    }
+
+    // Desktop approval codes are credentials. Consume them before the sentinel,
+    // inbound log, topic memory, and session injection. A malformed code is
+    // consumed too, so a typo cannot leak into durable conversation history.
+    if (typeof text === 'string' && /^\/desktop(?:\s|$)/i.test(text.trim())) {
+      const approval = ctx.telegram?.consumeDesktopApproval({
+        text, topicId: Number(topicId), senderUid: String(fromUserId ?? ''),
+        trusted: !senderUntrusted, forwarded: req.body.forwarded === true,
+      });
+      if (ctx.telegram) await ctx.telegram.sendToTopic(Number(topicId), approval?.approved
+        ? 'Remote desktop approved. Return to the dashboard to connect.'
+        : 'Remote desktop approval was not accepted. Check the request or ask for a new code.',
+      { provenance: 'automation' }).catch(() => {});
+      res.json({ ok: true, desktopApproval: approval?.approved === true });
       return;
     }
 
@@ -26737,6 +27087,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             injectedTopicName = reg.topicToName?.[String(topicId)] ?? undefined;
           }
         } catch { /* fall through without name */ }
+        injectedTopicName = await resolveTopicNameAcrossPool(topicId) ?? (verifiedTopicName(topicId, injectedTopicName) ? injectedTopicName : undefined);
         console.log(`[telegram-forward] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
         const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId, typeof messageId === 'number' ? messageId : undefined);
 
@@ -26801,6 +27152,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             if (resolved) topicName = resolved;
           } catch { /* fall through to default */ }
         }
+        topicName = await resolveTopicNameAcrossPool(topicId) ?? (verifiedTopicName(topicId, topicName) ? topicName : `topic-${topicId}`);
         console.log(`[telegram-forward] No live session for topic ${topicId}, spawning "${topicName}"...`);
 
         // Fetch thread history so auto-spawned sessions have full conversational context
@@ -26894,6 +27246,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           try {
             const reg = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf-8')) : { topicToSession: {}, topicToName: {} };
             reg.topicToSession[String(topicId)] = newSessionName;
+            if (verifiedTopicName(topicId, topicName)) {
+              reg.topicToName ??= {};
+              reg.topicToName[String(topicId)] = topicName;
+            }
             fs.writeFileSync(registryPath, JSON.stringify(reg, null, 2));
           } catch { /* @silent-fallback-ok — registry write non-critical */ }
           // Proactive UUID save — always run, even after --resume (new session = new UUID)
@@ -26918,7 +27274,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           console.error(`[telegram-forward] Spawn failed:`, err);
         });
 
-        res.json({ ok: true, forwarded: true, method: 'spawn', topicName });
+        res.json({ ok: true, forwarded: true, method: 'spawn', topicName: verifiedTopicName(topicId, topicName) ? topicName : null });
       }
     } else {
       res.status(503).json({ error: 'No message routing available' });
@@ -27507,6 +27863,43 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ actions: ctx.evolution.listActions({ status, priority }) });
   });
 
+  // CMT-1132: what the auto-expiry sweep took out of the queue, in full.
+  router.get('/evolution/actions/archive', (_req, res) => {
+    if (!ctx.evolution) {
+      res.status(503).json({ error: 'Evolution system not configured' });
+      return;
+    }
+    try {
+      const entries = ctx.evolution.listArchivedActions();
+      res.json({ entries, count: entries.length });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'archive unreadable' });
+    }
+  });
+
+  // CMT-1132: put an archived action back in the queue, held so it stays there.
+  router.post('/evolution/actions/:id/restore', (req, res) => {
+    if (!ctx.evolution) {
+      res.status(503).json({ error: 'Evolution system not configured' });
+      return;
+    }
+    if (refuseInadmissibleWrite(req, res)) return;
+    try {
+      const result = ctx.evolution.restoreArchivedAction(req.params.id);
+      if (result === 'not-archived') {
+        res.status(404).json({ error: `${req.params.id} has no unrestored archive entry` });
+        return;
+      }
+      if (result === 'id-in-use') {
+        res.status(409).json({ error: `${req.params.id} is already in the queue` });
+        return;
+      }
+      res.json({ ok: true, action: result });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'restore failed' });
+    }
+  });
+
   router.get('/evolution/actions/overdue', (_req, res) => {
     if (!ctx.evolution) { res.json({ overdue: [] }); return; }
     res.json({ overdue: ctx.evolution.getOverdueActions() });
@@ -27605,7 +27998,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
       ? req.body as Record<string, unknown>
       : {};
-    const supportedFields = new Set(['status', 'resolution']);
+    const supportedFields = new Set(['status', 'resolution', 'autoExpiryHold']);
     const unsupportedFields = Object.keys(body).filter((field) => !supportedFields.has(field));
     if (unsupportedFields.length > 0) {
       res.status(400).json({
@@ -27628,11 +28021,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"resolution" must be a non-empty string' });
       return;
     }
-    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string } = {};
+    const hasHold = Object.prototype.hasOwnProperty.call(body, 'autoExpiryHold');
+    const parsedHold = hasHold ? parseAutoExpiryHold(body.autoExpiryHold, new Date().toISOString()) : null;
+    if (parsedHold === 'invalid') {
+      res.status(400).json({ error: '"autoExpiryHold" must be { reason: "<why>" } or null' });
+      return;
+    }
+    const updates: { status?: 'pending' | 'in_progress' | 'completed' | 'cancelled'; resolution?: string; autoExpiryHold?: AutoExpiryHold | null } = {};
+    if (parsedHold) updates.autoExpiryHold = parsedHold.hold ?? null;
     if (typeof status === 'string') updates.status = status as 'pending' | 'in_progress' | 'completed' | 'cancelled';
     if (typeof resolution === 'string') updates.resolution = resolution;
     if (Object.keys(updates).length === 0) {
-      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution' });
+      res.status(400).json({ error: 'Request body must include at least one supported field: status, resolution, autoExpiryHold' });
       return;
     }
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
@@ -30179,12 +30579,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         observedAt: observationNow.toISOString() }]];
     }));
     const admission = ctx.completionClaimVerifier.enqueue(message, evidence, (arbitration) => {
-      if (ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+      if (ctx.completionClaimVerifier?.isObserveOnly() === false) {
         registerUnifiedFutureClaims({ message, topicId, rawBindToken, arbitration });
       }
     }, { ...(messageAttemptId ? { messageAttemptId } : {}), ...(boundObservationTopicId !== undefined ? { topicId: boundObservationTopicId } : {}),
       ...(sessionSnapshot ? { sessionSnapshot } : {}), commitmentSnapshots, guardSnapshots, originFramework: 'claude-code' });
-    if (!admission.accepted && ctx.config.monitoring?.completionClaimVerification?.dryRun === false) {
+    if (!admission.accepted && !ctx.completionClaimVerifier.isObserveOnly()) {
       // Queue pressure/duplicate/provider uncertainty must never suppress the
       // already-shipped Action-Claim behavior.
       registerUnifiedFutureClaims({ message, topicId, rawBindToken });
@@ -30219,6 +30619,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       'classified-completion-claims': stats.classifiedTurns,
       scope: 'local',
     });
+  });
+
+  // Why turns failed, per turn: fixed reason codes, parser branch, model. Never claim text.
+  router.get('/completion-claim/failures', (req, res) => {
+    if (!ctx.completionClaimVerifier) { res.status(503).json({ error: 'completion-claim verification disabled' }); return; }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
+    const records = ctx.completionClaimVerifier.readFailures(limit);
+    res.json({ records, count: records.length, daily: ctx.completionClaimVerifier.failureDailyRollup(),
+      gate: ctx.completionClaimVerifier.failureGate(), observeOnly: ctx.completionClaimVerifier.isObserveOnly(), scope: 'local' });
   });
 
   router.get('/completion-claim/audit', async (req, res) => {
@@ -32454,6 +32863,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'Request body must be a JSON object' });
       return;
     }
+    if ('remoteDesktop' in patch) {
+      const desktop = (patch as Record<string, unknown>).remoteDesktop;
+      if (!desktop || typeof desktop !== 'object' || Array.isArray(desktop)
+        || Object.keys(desktop).length < 1
+        || Object.keys(desktop).some(key => key !== 'enabled' && key !== 'frontMachineId')
+        || ('enabled' in desktop && typeof (desktop as { enabled?: unknown }).enabled !== 'boolean')
+        || ('frontMachineId' in desktop
+          && (typeof (desktop as { frontMachineId?: unknown }).frontMachineId !== 'string'
+            || !/^m_[a-f0-9]{32}$/.test((desktop as { frontMachineId: string }).frontMachineId)))) {
+        res.status(400).json({ error: 'Invalid remoteDesktop enabled/frontMachineId patch' });
+        return;
+      }
+    }
 
     // Allowlist of top-level config keys that can be patched via API.
     // Prevents callers from overwriting auth tokens, project paths, etc.
@@ -33228,99 +33650,151 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * counter is the rollout hard-stop signal. MUST be registered before
    * `/commitments/:id` or Express routes the literal here to the :id handler.
    */
-  /**
-   * POST /commitments/check-in-reminder/pass — run ONE check-in reminder pass
-   * (ACT-724; docs/specs/dated-commitment-reminder.md).
-   *
-   * Driven by the `commitment-checkin-reminder` built-in job. Idempotent: the
-   * `checkInReminderSentAt` stamp means a re-run sends nothing, so a retried or
-   * duplicated trigger is safe.
-   */
-  router.post('/commitments/check-in-reminder/pass', async (_req, res) => {
-    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
-      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
-      | undefined;
-    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
-    if (!enabled || !ctx.commitmentTracker) {
-      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
-      return;
-    }
+  type CheckInReminderConfig = { enabled?: boolean; dryRun?: boolean; maxPerPass?: number; tickEnabled?: boolean; tickIntervalMs?: number };
+  // Live, so tickEnabled and dryRun take effect without a restart: ctx.config is the boot snapshot.
+  const checkInReminderConfig = () => ctx.liveConfig?.get?.<CheckInReminderConfig | undefined>('commitments.checkInReminder', undefined)
+    ?? ((ctx.config as Record<string, any>).commitments?.checkInReminder as CheckInReminderConfig | undefined);
+  const runCheckInReminderPass = async ({ quiet }: { quiet: boolean }) => {
+    const cfg = checkInReminderConfig();
+    const tracker = ctx.commitmentTracker;
+    if (!tracker) throw new Error('check-in-reminder-not-enabled');
     // Deterministic delivery — NOT the tone-gated path. A reminder must not be
     // holdable by a gate that fails closed; the text is a fixed template with
     // no agent prose, so there is nothing for a tone gate to judge.
     const telegram = ctx.telegram;
     const dryRun = cfg?.dryRun !== false;
+    const reconciler = new CheckInReminderReconciler(
+      {
+        tracker,
+        ...(quiet ? { log: () => {} } : {}),
+        send: async (topicId, text, identity) => {
+          if (!telegram) throw new Error('no-delivery-transport');
+          // The origin boundary owns the reservation for the private
+          // reminder scope below; legacy delivery reserves here instead.
+          const originOwnsContent = !!ctx.telegramOrigin;
+          // Route the send through the SAME durable content dedup the
+          // /telegram/reply route uses.
+          //
+          // This is load-bearing and was nearly a false claim: the reconciler
+          // sends first and stamps after, so a crash in between re-sends on
+          // the next pass. The spec justified that by saying "the relay
+          // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
+          // and `sendToTopic` bypasses it entirely. Asserting the mitigation
+          // without wiring it would have been a safety property that existed
+          // only in the comment. (Caught in review round 2, 2026-07-25.)
+          //
+          // A duplicate is treated as SUCCESS-equivalent: the user already has
+          // this exact reminder, so the send is complete and the caller may
+          // stamp. Treating it as a failure would retry-loop until the window
+          // expired and then genuinely double-send.
+          if (!originOwnsContent && outboundContentDedup.isDuplicate(topicId, text)) {
+            return { ok: true, suppressedDuplicate: true } as unknown;
+          }
+          if (!originOwnsContent && !outboundContentDedup.tryReserve(topicId, text)) {
+            return { ok: true, suppressedDuplicate: true } as unknown;
+          }
+          try {
+            const send = () => telegram.sendToTopic(topicId, text);
+            let r;
+            if (ctx.telegramOrigin) {
+              const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
+              service.registerAutomationProducer(producerId);
+              // A retry after send-before-stamp replays only this reminder's
+              // accepted receipt. Unknown acceptance remains held, never
+              // success-equivalent merely because its content is reserved.
+              const logicalSendId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+              const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
+              r = await service.runWithAutomationReply(token, topicId, body, send);
+            } else r = await send();
+            if (!originOwnsContent) outboundContentDedup.record(topicId, text);
+            return r;
+          } catch (err) {
+            // Release so a genuine transport failure is retried rather than
+            // suppressed as a "duplicate" on the next pass.
+            if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
+            throw err;
+          }
+        },
+      },
+      {
+        enabled: true,
+        // dryRun defaults TRUE: the graduated state is an explicit operator
+        // decision, never something that arrives by omission.
+        dryRun,
+        selfMachineId: ctx.meshSelfId ?? null,
+        ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
+      },
+    );
+    return reconciler.runPass();
+  };
+  // Server-side driver (docs/specs/check-in-reminder-server-tick.md): the pass
+  // needs no session, so a job that spawns one every 5 minutes must not be its
+  // only driver. AgentServer owns the timer; tests call the tick directly.
+  const checkInReminderTicker = new CheckInReminderTicker({
+    stateDir: ctx.config.stateDir,
+    intervalMs: resolveCheckInTickIntervalMs(checkInReminderConfig()?.tickIntervalMs),
+    skipReason: () => {
+      const cfg = checkInReminderConfig();
+      if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return 'feature-dark';
+      if (cfg?.tickEnabled === false) return 'tick-disabled';
+      if (!ctx.commitmentTracker) return 'no-tracker';
+      if (cfg?.dryRun === false && !ctx.telegram) return 'no-delivery-transport';
+      return null;
+    },
+    runPass: runCheckInReminderPass,
+    onUndelivered: async (report) => {
+      await ctx.telegram?.createAttentionItem({
+        id: 'check-in-reminder-undelivered',
+        title: 'Dated reminders could not be delivered',
+        summary: `${report.gaveUp} promised check-in reminder(s) failed after every retry, so they did not reach you. They are listed under undelivered on the check-in reminder status.`,
+        category: 'commitments',
+        priority: 'HIGH',
+        needsUser: true,
+        conditionKey: 'check-in-reminder-undelivered',
+        sourceContext: 'check-in-reminder',
+      });
+    },
+    onFailureStreak: (streak, error) => {
+      DegradationReporter.getInstance().report({
+        feature: 'CheckInReminderTicker.pass',
+        primary: 'Run the check-in reminder pass on the server timer',
+        fallback: 'No reminders run until a pass succeeds; the next tick retries',
+        reason: `${streak} consecutive passes failed: ${error}`,
+        impact: 'Dated promises may go unreminded',
+      });
+    },
+  });
+  ctx.checkInReminderTicker = ctx.commitmentTracker ? checkInReminderTicker : null;
+
+  /**
+   * POST /commitments/check-in-reminder/pass — run ONE check-in reminder pass
+   * (ACT-724; docs/specs/dated-commitment-reminder.md).
+   *
+   * Driven by the server tick above (and the optional built-in job). Idempotent: the
+   * `checkInReminderSentAt` stamp means a re-run sends nothing, so a retried or
+   * duplicated trigger is safe.
+   */
+  router.post('/commitments/check-in-reminder/pass', async (_req, res) => {
+    const cfg = checkInReminderConfig();
+    const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
+    if (!enabled || !ctx.commitmentTracker) {
+      res.status(503).json({ error: 'check-in-reminder-not-enabled' });
+      return;
+    }
     // A transport is required only to SEND. A dry run sends nothing, so demanding
     // one would make the soak — the whole point of the dark window — impossible
     // on an agent with no messaging configured, and would report the feature as
     // unavailable when it is merely quiet.
-    if (!telegram && !dryRun) {
+    if (!ctx.telegram && cfg?.dryRun === false) {
       res.status(503).json({ error: 'no-delivery-transport' });
       return;
     }
+    if (checkInReminderTicker.stalled()) {
+      res.status(503).json({ error: 'check-in-reminder-pass-stalled' });
+      return;
+    }
     try {
-      const reconciler = new CheckInReminderReconciler(
-        {
-          tracker: ctx.commitmentTracker,
-          send: async (topicId, text, identity) => {
-            if (!telegram) throw new Error('no-delivery-transport');
-            // The origin boundary owns the reservation for the private
-            // reminder scope below; legacy delivery reserves here instead.
-            const originOwnsContent = !!ctx.telegramOrigin;
-            // Route the send through the SAME durable content dedup the
-            // /telegram/reply route uses.
-            //
-            // This is load-bearing and was nearly a false claim: the reconciler
-            // sends first and stamps after, so a crash in between re-sends on
-            // the next pass. The spec justified that by saying "the relay
-            // absorbs the duplicate" — but the dedup lives in the reply ROUTE,
-            // and `sendToTopic` bypasses it entirely. Asserting the mitigation
-            // without wiring it would have been a safety property that existed
-            // only in the comment. (Caught in review round 2, 2026-07-25.)
-            //
-            // A duplicate is treated as SUCCESS-equivalent: the user already has
-            // this exact reminder, so the send is complete and the caller may
-            // stamp. Treating it as a failure would retry-loop until the window
-            // expired and then genuinely double-send.
-            if (!originOwnsContent && outboundContentDedup.isDuplicate(topicId, text)) {
-              return { ok: true, suppressedDuplicate: true } as unknown;
-            }
-            if (!originOwnsContent && !outboundContentDedup.tryReserve(topicId, text)) {
-              return { ok: true, suppressedDuplicate: true } as unknown;
-            }
-            try {
-              const send = () => telegram.sendToTopic(topicId, text);
-              let r;
-              if (ctx.telegramOrigin) {
-                const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
-                service.registerAutomationProducer(producerId);
-                // A retry after send-before-stamp replays only this reminder's
-                // accepted receipt. Unknown acceptance remains held, never
-                // success-equivalent merely because its content is reserved.
-                const logicalSendId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
-                const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
-                r = await service.runWithAutomationReply(token, topicId, body, send);
-              } else r = await send();
-              if (!originOwnsContent) outboundContentDedup.record(topicId, text);
-              return r;
-            } catch (err) {
-              // Release so a genuine transport failure is retried rather than
-              // suppressed as a "duplicate" on the next pass.
-              if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
-              throw err;
-            }
-          },
-        },
-        {
-          enabled: true,
-          // dryRun defaults TRUE: the graduated state is an explicit operator
-          // decision, never something that arrives by omission.
-          dryRun,
-          ...(typeof cfg?.maxPerPass === 'number' ? { maxPerPass: cfg.maxPerPass } : {}),
-        },
-      );
-      const report = await reconciler.runPass();
-      res.json(report);
+      res.json(await checkInReminderTicker.pass({ quiet: false }));
     } catch (err) {
       res.status(500).json({ error: 'check-in-reminder-pass-failed', detail: String(err) });
     }
@@ -33328,9 +33802,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   /** GET /commitments/check-in-reminder — read-only posture + the dated backlog. */
   router.get('/commitments/check-in-reminder', (_req, res) => {
-    const cfg = (ctx.config as Record<string, any>).commitments?.checkInReminder as
-      | { enabled?: boolean; dryRun?: boolean; maxPerPass?: number }
-      | undefined;
+    const cfg = checkInReminderConfig();
     const enabled = resolveDevAgentGate(cfg?.enabled, ctx.config);
     if (!enabled || !ctx.commitmentTracker) {
       res.status(503).json({ error: 'check-in-reminder-not-enabled' });
@@ -33350,6 +33822,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       pending: dated
         .filter((c) => !c.checkInReminderSentAt && !c.checkInReminderFailedAt)
         .map((c) => ({ id: c.id, topicId: c.topicId, checkInAt: c.checkInAt })),
+      tick: checkInReminderTicker.status(),
     });
   });
 
@@ -33931,7 +34404,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const completionLive = !!ctx.completionClaimVerifier
       && resolveDevAgentGate(ctx.config.monitoring?.completionClaimVerification?.enabled, ctx.config)
-      && ctx.config.monitoring?.completionClaimVerification?.dryRun === false;
+      && !ctx.completionClaimVerifier.isObserveOnly();
     if (completionLive && ctx.completionClaimVerifier!.getRecentAuthoritativeArbitration(message)?.authoritative) {
       res.json({ observed: true, registered: false, reason: 'shared-arbiter-authoritative', activityNote });
       return;
@@ -34130,7 +34603,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { nextUpdateDueAt, softDeadlineAt, hardDeadlineAt, cadenceMs, beaconEnabled } = req.body ?? {};
 
     // Reject unknown keys to surface typos early.
-    const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled']);
+    const allowed = new Set(['nextUpdateDueAt', 'softDeadlineAt', 'hardDeadlineAt', 'cadenceMs', 'beaconEnabled', 'autoExpiryHold']);
     const unknown = Object.keys(req.body ?? {}).filter(k => !allowed.has(k));
     if (unknown.length > 0) {
       res.status(400).json({ error: `Unknown field(s): ${unknown.join(', ')}. Allowed: ${[...allowed].join(', ')}` });
@@ -34151,9 +34624,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // CMT-1132: { reason } sets the hold, null clears it.
+    const holdRequested = 'autoExpiryHold' in (req.body ?? {});
+    const parsedHold = holdRequested ? parseAutoExpiryHold(req.body.autoExpiryHold, new Date().toISOString()) : null;
+    if (parsedHold === 'invalid') {
+      res.status(400).json({ error: 'autoExpiryHold must be { reason: "<why>" } or null' });
+      return;
+    }
+
     // Effective-field validation (matches POST creation validator).
     const effBeaconEnabled = beaconEnabled ?? existing.beaconEnabled;
-    if (effBeaconEnabled) {
+    // A hold touches no beacon field, so it must not fail on a row's beacon shape.
+    const holdOnly = holdRequested && Object.keys(req.body ?? {}).length === 1;
+    if (effBeaconEnabled && !holdOnly) {
       if (!existing.topicId) {
         res.status(400).json({ error: 'beaconEnabled commitments require topicId (cannot be added via PATCH)' });
         return;
@@ -34181,6 +34664,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(hardDeadlineAt !== undefined ? { hardDeadlineAt } : {}),
         ...(cadenceMs !== undefined ? { cadenceMs } : {}),
         ...(beaconEnabled !== undefined ? { beaconEnabled } : {}),
+        ...(parsedHold ? { autoExpiryHold: parsedHold.hold } : {}),
       }));
       // Re-arm the beacon timer if the tracker is wired to a live beacon.
       try {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -21,18 +21,32 @@ import path from 'node:path';
 const ROOT = process.cwd();
 const SRC_DIR = path.join(ROOT, 'src');
 
+function packWhileTestsRun(args: string[]): string {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return execFileSync('npm', ['pack', ...args, '--ignore-scripts'], {
+        cwd: ROOT,
+        encoding: 'utf-8',
+        maxBuffer: 16 * 1024 * 1024,
+      });
+    } catch (error) {
+      // MacDesktopHostCapture creates and removes native test helpers while
+      // this suite runs. npm can list one just before its afterEach deletes it.
+      const stderr = String((error as { stderr?: Buffer }).stderr ?? error);
+      if (attempt >= 3 || !stderr.includes('ENOENT') || !stderr.includes('instar-desktop-capture-test-')) throw error;
+    }
+  }
+}
+
 /**
  * Get the list of files that would be included in `npm pack`.
  * This is the definitive source of truth for what ships.
  */
 function getPackedFiles(): string[] {
-  const output = execSync('npm pack --dry-run --json 2>/dev/null', {
-    cwd: ROOT,
-    encoding: 'utf-8',
-    // The pack file-list JSON is ~1.05MB — over execSync's 1MB default maxBuffer
-    // (ENOBUFS). Same headroom as npm-pack-templates-smoke.test.ts.
-    maxBuffer: 16 * 1024 * 1024,
-  });
+  // Packaging scripts do not affect the file list. Avoid running prepare/husky
+  // concurrently with the full suite, where it can fail for unrelated reasons.
+  // The file-list JSON is ~1.05MB, so packWhileTestsRun uses a 16MB buffer.
+  const output = packWhileTestsRun(['--dry-run', '--json']);
   const parsed = JSON.parse(output);
   // npm pack --json returns an array with one entry
   const entry = Array.isArray(parsed) ? parsed[0] : parsed;
@@ -321,11 +335,7 @@ describe('Package completeness', () => {
 
     const tmpDir = fsDyn.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-mode-'));
     try {
-      const packOut = execSync('npm pack --silent --pack-destination ' + JSON.stringify(tmpDir), {
-        cwd: ROOT,
-        encoding: 'utf-8',
-        maxBuffer: 16 * 1024 * 1024,
-      }).trim();
+      const packOut = packWhileTestsRun(['--silent', '--pack-destination', tmpDir]).trim();
       const tarballName = packOut.split('\n').pop() as string;
       const tarballPath = path.join(tmpDir, tarballName);
       expect(fsDyn.existsSync(tarballPath), `tarball not produced: ${tarballPath}`).toBe(true);

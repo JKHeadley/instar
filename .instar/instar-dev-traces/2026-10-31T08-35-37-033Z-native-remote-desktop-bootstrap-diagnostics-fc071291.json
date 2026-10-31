@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-bootstrap-diagnostics",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T08:35:37.033Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "artifactSha256": "4859a00bd3a2e229e30f0a5206601850fd7f590c753beeb514ca2c886568fc8c",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-echo-mesh.md",
+    "docs/specs/windows-desktop-bootstrap-diagnostics.eli16.md",
+    "scripts/install-windows-desktop-companion.mjs",
+    "src/commands/server.ts",
+    "src/core/DesktopProbeReadiness.ts",
+    "src/core/WindowsDesktopBootstrapStatus.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/desktop-probe-readiness.test.ts",
+    "tests/unit/windows-desktop-bootstrap-status.test.ts",
+    "upgrades/next/native-remote-desktop-bootstrap-diagnostics.md",
+    "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible boot diagnostic and picker wording fix; no new access authority or external side effect.",
+  "eli16Path": "docs/specs/windows-desktop-bootstrap-diagnostics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

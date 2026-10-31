@@ -209,6 +209,21 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Queue-pace tuner extra triage ticks (docs/specs/queue-pace.md §3). Counts the tuner's
+    // DECISIONS to add a tick (the triage tick's own calls stay on feedback-triage-tick). Telemetry
+    // only: the binding bounds are the tuner's minGapMinutes, durable daily counter and cooldown.
+    controllerId: 'queue-pace-extra-run',
+    actionVerb: 'nudge-triage-extra-tick',
+    direction: 'amplifying',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 12,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Overload shed (trustworthy-machine-load D3): moving existing conversations off a
     // machine that stayed overloaded. Telemetry first: the planner's own breaker
     // (2 moves/hour, one live move at a time, 30 min per-topic cooldown) binds it in code.

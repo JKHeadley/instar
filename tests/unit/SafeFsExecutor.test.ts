@@ -126,6 +126,32 @@ describe('SafeFsExecutor.safeUnlinkSync', () => {
     ).toThrow(SourceTreeGuardError);
     expect(fs.existsSync(file)).toBe(true);
   });
+
+  it('unlinks only inside an explicitly scoped local verifier clone', async () => {
+    const verifyRoot = path.join(benign, '.worktrees', '.verify');
+    const clone = path.join(verifyRoot, 'runs', 'one');
+    fs.mkdirSync(clone, { recursive: true });
+    fs.writeFileSync(path.join(clone, '.instar-source-tree'), 'marker');
+    fs.mkdirSync(path.join(clone, '.git'));
+    fs.writeFileSync(path.join(clone, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n');
+    const syncFile = path.join(clone, 'sync-helper');
+    const asyncFile = path.join(clone, 'async-helper');
+    const outsideFile = path.join(fakeInstar, 'outside-helper');
+    for (const file of [syncFile, asyncFile, outsideFile]) fs.writeFileSync(file, 'x');
+
+    expect(() => SafeFsExecutor.safeUnlinkSync(syncFile, {
+      operation: 'verifier-cleanup-test', localVerifyScopeOk: { verifyRoot },
+    })).not.toThrow();
+    await expect(SafeFsExecutor.safeUnlink(asyncFile, {
+      operation: 'verifier-cleanup-test', localVerifyScopeOk: { verifyRoot },
+    })).resolves.toBeUndefined();
+    expect(fs.existsSync(syncFile)).toBe(false);
+    expect(fs.existsSync(asyncFile)).toBe(false);
+    expect(() => SafeFsExecutor.safeUnlinkSync(outsideFile, {
+      operation: 'verifier-cleanup-test', localVerifyScopeOk: { verifyRoot },
+    })).toThrow(SourceTreeGuardError);
+    expect(fs.existsSync(outsideFile)).toBe(true);
+  });
 });
 
 describe('SafeFsExecutor.safeRm (async)', () => {

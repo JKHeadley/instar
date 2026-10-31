@@ -14,7 +14,7 @@ import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, createHmac, timingSafeEqual, createPrivateKey, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual, createPrivateKey, createPublicKey, randomBytes, randomUUID } from 'node:crypto';
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
@@ -144,6 +144,7 @@ import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { ClassReviewStore } from '../monitoring/ClassReviewStore.js';
 import { CorrectionClassReview } from '../monitoring/CorrectionClassReview.js';
 import { CompletionClaimVerifier, buildCompletionClaimFrameworkResolver } from '../monitoring/CompletionClaimVerifier.js';
+import { LlmQueue } from '../monitoring/LlmQueue.js';
 import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
 import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
@@ -174,11 +175,31 @@ import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
+import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
+import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
+import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
+import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
+import { dateMs as maturationDateMs, historySeries as maturationHistorySeries } from '../monitoring/MaturationBoard.js';
+import type { QueueAdapter } from '../monitoring/QueuePaceLedger.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
+import { DesktopStreamManager } from './DesktopStreamManager.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
+import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
+import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { MacDesktopHost } from '../core/MacDesktopHost.js';
+import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
+import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
+import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
+import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
+import type { DesktopHost } from '../core/DesktopHost.js';
+import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
+import { DesktopAccessAudit } from '../core/DesktopAccessAudit.js';
 import { assertSqliteAvailable, PendingRelayStore } from '../messaging/pending-relay-store.js';
 import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
@@ -220,6 +241,11 @@ import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
 import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
 import { MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
+import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionStore.js';
+import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
+import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
+import { signRequest } from './machineAuth.js';
+import { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
 import { ProviderReconciliationSweep } from '../monitoring/ProviderReconciliationSweep.js';
@@ -313,6 +339,28 @@ export function readMentorConfigFromDisk(
   }
 }
 
+/** Select a live task for a W32 receipt or recovery, without inventing checklist work. */
+export function selectWindowWorkTask(content: string, runId: string, used: ReadonlySet<string>): string | null {
+  if (!content.startsWith('---\n')) throw new Error('window-run-liveness-task-ledger-frontmatter-missing');
+  const frontmatterEnd = content.indexOf('\n---', 4);
+  if (frontmatterEnd < 0) throw new Error('window-run-liveness-task-ledger-frontmatter-unclosed');
+  const frontmatter = content.slice(0, frontmatterEnd);
+  const runMatch = frontmatter.match(/^run_id:\s*["']?([^"'\s]+)["']?\s*$/m);
+  if (!runMatch || runMatch[1] !== runId) throw new Error('window-run-liveness-task-ledger-run-mismatch');
+  const tasks = parseContinuationTasks(content.slice(frontmatterEnd + 4));
+  let firstOpen: string | null = null;
+  for (let index = 0; index < tasks.length; index++) {
+    if (!tasks[index].open) continue;
+    const taskRef = `autonomous:${runId}:${index + 1}`;
+    firstOpen ??= taskRef;
+    if (!used.has(taskRef)) return taskRef;
+  }
+  // A long task may advance in several cadence intervals. Work receipts may
+  // reuse its task ref only after every open task has already received one;
+  // the authority still requires the artifact content to change each time.
+  return firstOpen;
+}
+
 /**
  * The request-time wiring for the live-test capstone runner (§6/§7.5). The route
  * builds a RealChannelDriver from whatever demo creds exist and calls `makeRunner`
@@ -352,6 +400,22 @@ export class AgentServer {
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
+  private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
+  private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
+  private dashboardPinVersion: string | null = null;
+
+  private syncDashboardPinVersion(): void {
+    const version = createHash('sha256').update(this.config.dashboardPin ?? '').digest('hex');
+    if (this.dashboardPinVersion !== null && this.dashboardPinVersion !== version) {
+      this.dashboardOperatorSessions.clear();
+    }
+    this.dashboardPinVersion = version;
+  }
+
+  private verifyDashboardOperatorSession(token: string | undefined): boolean {
+    this.syncDashboardPinVersion();
+    return this.dashboardOperatorSessions.verify(token);
+  }
   /** multi-transport-mesh-comms (Layer 0.5) — see the bind site in start(). */
   private meshBindActive: boolean;
   private startTime: Date;
@@ -361,6 +425,9 @@ export class AgentServer {
   private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
+  private desktopStreamManager: DesktopStreamManager | null = null;
+  private directDesktopAccess: DirectDesktopAccess | null = null;
+  private desktopMeshBroker: DesktopMeshBroker | null = null;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
@@ -375,6 +442,7 @@ export class AgentServer {
   private routeContext: {
     telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
+    directDesktopAccess?: DirectDesktopAccess | null;
     workQueue?: WorkQueueRegistry | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
@@ -441,11 +509,20 @@ export class AgentServer {
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
   private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
+  /** Queue pace (docs/specs/queue-pace.md): tick-row sink, ledger, tuner and their timers. */
+  private queuePaceTicks: QueuePaceTickLog | null = null;
+  private queuePaceLedger: QueuePaceLedger | null = null;
+  private queuePaceTuner: QueuePaceTuner | null = null;
+  private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
+  private feedbackOwnerServing: (() => boolean) | null = null;
+  private feedbackDrainDb: (() => import('better-sqlite3').Database | null) | null = null;
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
   private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
+  private checkInReminderTimer: ReturnType<typeof setInterval> | null = null;
   private scriptCanaryTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionWorkerTimer: ReturnType<typeof setInterval> | null = null;
@@ -575,6 +652,8 @@ export class AgentServer {
    */
   private selfUnblockChecklist: SelfUnblockChecklist | null = null;
   private growthMilestoneAnalyst: GrowthMilestoneAnalyst | null = null;
+  /** The analyst's dark-flag registry, hoisted for the read-only maturation board (null when the analyst is off). */
+  private darkFlagRegistry: DarkFlagMaturationRegistry | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
   /** Dashboard Live-LLM-Insights engine (docs/specs/dashboard-live-insights.md).
    *  Null when the feature is dark (dashboard.liveInsights.enabled resolves false
@@ -1253,6 +1332,16 @@ export class AgentServer {
     // Dashboard security headers — set before static serving so they apply to all dashboard responses
     this.app.use(dashboardSecurityHeaders);
 
+    // PIN-only desktop access requires a durable guess budget. Construct it
+    // before any dashboard unlock can mint an operator session.
+    try {
+      this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir });
+    } catch (err) {
+      // @silent-fallback-ok — the warning is visible and desktop admission stays dark without a durable PIN budget.
+      console.warn('[instar] PIN attempt store unavailable; remote desktop stays dark:', err);
+      this.pinAttemptStore = null;
+    }
+
     // Dashboard static files — served BEFORE auth middleware so the page loads
     // without a token. Auth happens via WebSocket/API calls from the page itself.
     const dashboardDir = this.resolveDashboardDir();
@@ -1270,6 +1359,30 @@ export class AgentServer {
         lastModified: true,
       });
     });
+    this.app.get('/dashboard/desktop.html', (_req, res) => {
+      dashboardCacheControl(res);
+      const label = this.directDesktopAccess?.targetInfo().label ?? 'this machine';
+      const escaped = label.replace(/[&<>"']/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      })[character] ?? character);
+      const html = fs.readFileSync(path.join(dashboardDir, 'desktop.html'), 'utf8')
+        .replace('__INSTAR_DESKTOP_TARGET_NAME__', escaped)
+        .replaceAll('__INSTAR_DESKTOP_ASSET_VERSION__',
+          createHash('sha256')
+            .update(fs.readFileSync(path.join(dashboardDir, 'desktop.js')))
+            .update(fs.readFileSync(path.join(dashboardDir, 'desktop.css')))
+            .digest('hex').slice(0, 16));
+      res.setHeader('Cache-Control', 'no-store');
+      res.type('html').send(html);
+    });
+    this.app.get('/dashboard/desktop.js', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(path.join(dashboardDir, 'desktop.js'), { cacheControl: false });
+    });
+    this.app.get('/dashboard/desktop.css', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(path.join(dashboardDir, 'desktop.css'), { cacheControl: false });
+    });
     this.app.use('/dashboard', express.static(dashboardDir, DASHBOARD_STATIC_OPTIONS));
 
     // PIN-based dashboard unlock — exchanges a short PIN for the auth token.
@@ -1281,9 +1394,16 @@ export class AgentServer {
     const pinAttempts = new Map<string, { count: number; resetAt: number }>();
     const MAX_ATTEMPTS = 5;
     const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
+    const GLOBAL_MAX_ATTEMPTS = 20;
+    const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+    let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
+      if (this.directDesktopAccess && !req.secure && !isLoopbackPeer(req.socket.remoteAddress)) {
+        res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
+        return;
+      }
       if (!configRef.dashboardPin || !configRef.authToken) {
         res.status(503).json({ error: 'PIN authentication not yet available. Try again shortly.' });
         return;
@@ -1293,12 +1413,18 @@ export class AgentServer {
 
       // Rate limit by IP
       const now = Date.now();
+      if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
+      if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS
+        || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
+        return;
+      }
       let entry = pinAttempts.get(ip);
       if (entry && now > entry.resetAt) {
         pinAttempts.delete(ip);
         entry = undefined;
       }
-      if (entry && entry.count >= MAX_ATTEMPTS) {
+      if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
         res.status(429).json({ error: 'Too many attempts. Try again later.' });
         return;
       }
@@ -1318,7 +1444,9 @@ export class AgentServer {
           pinAttempts.set(ip, entry);
         }
         entry.count++;
-        const remaining = MAX_ATTEMPTS - entry.count;
+        globalPinAttempts.count++;
+        const remaining = this.pinAttemptStore?.recordFailure(ip) ?? (MAX_ATTEMPTS - entry.count);
+        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
         res.status(403).json({
           error: 'Incorrect PIN',
           attemptsRemaining: remaining,
@@ -1326,9 +1454,14 @@ export class AgentServer {
         return;
       }
 
+      pinAttempts.delete(ip);
+      this.pinAttemptStore?.recordSuccess(ip);
+      globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
+      this.pinAttemptStore?.recordSuccess(GLOBAL_PIN_KEY);
       // The ordinary API token is also available to agents, so it cannot prove
       // that a human unlocked the dashboard. Issue a separate short-lived proof
       // for explicitly operator-gated actions.
+      this.syncDashboardPinVersion();
       const operatorSession = this.dashboardOperatorSessions.issue();
       res.json({
         token: configRef.authToken,
@@ -1353,6 +1486,98 @@ export class AgentServer {
         },
         localMachineId: coord.identity!.machineId,
         localSigningKeyPem: options.localSigningKeyPem ?? '',
+        onDesktopAvailability: async () => {
+          if (!this.directDesktopAccess) throw new Error('desktop-target-unavailable');
+          const target = this.directDesktopAccess.targetInfo();
+          let probe: Awaited<ReturnType<DirectDesktopAccess['probe']>>;
+          try {
+            probe = await this.directDesktopAccess.probe();
+          } catch {
+            return { ...target, ready: false,
+              unavailableReason: 'Desktop capture is not available on this machine.' };
+          }
+          const reason = desktopProbeUnavailableReason(probe);
+          return { ...target, ready: probe.ready,
+            ...(!probe.ready ? { unavailableReason: reason } : {}) };
+        },
+        onDesktopOperatorBegin: async (untrustedBody, frontId) => {
+          if (!this.directDesktopAccess || !this.meshSelfId) throw new Error('desktop-target-unavailable');
+          const body = untrustedBody as Record<string, unknown> | null;
+          const assertion = body?.assertion as DesktopOperatorAssertion | undefined;
+          if (options.config.remoteDesktop?.frontMachineId !== frontId) {
+            throw new Error('desktop pool front not authorized');
+          }
+          const browserPublicKey = typeof body?.browserPublicKey === 'string' ? body.browserPublicKey : '';
+          const browserNonce = typeof body?.browserNonce === 'string' ? body.browserNonce : '';
+          const nowMs = Date.now();
+          this.desktopAssertionReplay ??= new DesktopAssertionReplayStore(
+            path.join(options.config.stateDir, 'state', 'desktop-operator-replay.json'));
+          const verdict = verifyDesktopOperatorAssertion({
+            assertion: assertion!, expectedTargetMachineId: this.meshSelfId,
+            expectedIssuerMachineId: frontId, browserPublicKey, browserNonce, nowMs,
+            resolveIssuerKey: machineId => coord.managers.identityManager.getSigningPublicKeyPem(machineId),
+            verifySignature: (canonical, signature, publicKey) => verifyMachinePayload(canonical, signature, publicKey),
+            seenJti: jti => this.desktopAssertionReplay!.seen(jti),
+          });
+          if (!verdict.ok) throw new Error(`desktop-operator-${verdict.reason}`);
+          this.desktopAssertionReplay.record(verdict.jti, assertion!.expiresAtMs);
+          const delegated = this.desktopDelegatedSessions.issue(frontId, browserPublicKey);
+          try {
+            const result = await this.directDesktopAccess.begin({
+              machineId: this.meshSelfId, topicId: 0, operatorUid: 'dashboard-pin',
+              operatorSessionToken: delegated.token, browserPublicKey,
+              browserEcdhPublicKey: typeof body?.browserEcdhPublicKey === 'string' ? body.browserEcdhPublicKey : '',
+              browserNonce, videoCodec: body?.videoCodec === 'h264' ? 'h264' : 'jpeg',
+              scopeConfirmed: true,
+            });
+            return { ...result, targetSessionToken: delegated.token };
+          } catch (error) {
+            this.desktopDelegatedSessions.revoke(delegated.token);
+            throw error;
+          }
+        },
+        onDesktopOperatorKeepAlive: (untrustedBody, frontId) => {
+          const body = untrustedBody as Record<string, unknown> | null;
+          return typeof body?.targetSessionToken === 'string'
+            && this.desktopDelegatedSessions.keepAlive(body.targetSessionToken, frontId);
+        },
+        onDesktopOperatorCommand: async (untrustedBody, frontId) => {
+          const body = untrustedBody as Record<string, unknown> | null;
+          const token = typeof body?.targetSessionToken === 'string' ? body.targetSessionToken : '';
+          const requestId = typeof body?.requestId === 'string' ? body.requestId : '';
+          if (!this.directDesktopAccess || !this.desktopDelegatedSessions.keepAlive(token, frontId)
+            || !this.desktopDelegatedSessions.belongsTo(token, frontId)
+            || !/^[a-f0-9-]{36}$/i.test(requestId)) throw new Error('desktop-request-unavailable');
+          const payload = body?.payload as Record<string, unknown> | null;
+          switch (body?.operation) {
+            case 'status': return this.directDesktopAccess.status(requestId, token);
+            case 'cursor': return this.directDesktopAccess.cursor(requestId, token);
+            case 'ticket': return { ...this.directDesktopAccess.targetInfo(),
+              ticket: this.directDesktopAccess.ticket(requestId, token,
+                typeof payload?.connectionNonce === 'string' ? payload.connectionNonce : '',
+                typeof payload?.signature === 'string' ? payload.signature : '') };
+            case 'resume': {
+              const nextKey = typeof payload?.browserPublicKey === 'string' ? payload.browserPublicKey : '';
+              if (!this.desktopDelegatedSessions.allowResumeKey(token, frontId, nextKey)) {
+                throw new Error('desktop-resume-key-unavailable');
+              }
+              return this.directDesktopAccess.resume(requestId, token, {
+                browserPublicKey: nextKey,
+                browserEcdhPublicKey: typeof payload?.browserEcdhPublicKey === 'string' ? payload.browserEcdhPublicKey : '',
+                browserNonce: typeof payload?.browserNonce === 'string' ? payload.browserNonce : '',
+                videoCodec: payload?.videoCodec === 'h264' ? 'h264' : 'jpeg',
+                previousVideoCodec: payload?.previousVideoCodec === 'h264' ? 'h264' : 'jpeg',
+              }, typeof payload?.attemptId === 'string' ? payload.attemptId : '',
+              typeof payload?.previousConnectionNonce === 'string' ? payload.previousConnectionNonce : '',
+              typeof payload?.previousSignature === 'string' ? payload.previousSignature : '');
+            }
+            case 'revoke':
+              this.directDesktopAccess.revoke(requestId, token);
+              this.desktopDelegatedSessions.revoke(token);
+              return { revoked: true };
+            default: throw new Error('desktop-operation-unknown');
+          }
+        },
         // Agent-identity handover on pairing (agent-identity-continuity-on-expansion §1) —
         // without these the pair route hands over nothing and a joiner fails loudly.
         stateDir: options.config.stateDir,
@@ -1710,21 +1935,10 @@ export class AgentServer {
               stateDir: options.config.stateDir,
             });
           } catch (err) {
+            // @silent-fallback-ok — this read-only price view reports its startup failure and stays unavailable.
             console.warn('[instar] routing-price-authority init failed (non-fatal):', err);
             this.routingPriceAuthority = null;
           }
-        }
-
-        // Durable per-IP PIN-attempt lockout (S2-1) — hardens EVERY PIN route
-        // (mandates, money surfaces, external-hog arm) so a restart no longer
-        // resets brute-force lockout. Independent of the money layer.
-        try {
-          this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir });
-        } catch (err) {
-          // @silent-fallback-ok: loud warn + degrade to the pre-existing in-memory
-          // lockout (defence-in-depth layer, never the auth decision itself).
-          console.warn('[instar] pin-attempt store init failed (non-fatal — in-memory lockout only):', err);
-          this.pinAttemptStore = null;
         }
 
         // ── Layer 1c provider-report store + reconciliation sweep (FD-21 —
@@ -2415,6 +2629,81 @@ export class AgentServer {
       this.topicOperatorStore = null;
     }
 
+    // Every host remains dark without explicit opt-in. WSL delegates to the
+    // separately installed interactive Windows companion; it never captures
+    // the Linux guest display as a substitute for the Windows desktop.
+    if (options.config.remoteDesktop?.enabled === true
+      && (process.platform === 'darwin' || process.platform === 'linux')
+      && this.meshSelfId && this.pinAttemptStore) {
+      const label = options.listPoolMachines?.().find(peer => peer.machineId === this.meshSelfId)?.nickname;
+      if (label) {
+        try {
+          const machineIdentity = new MachineIdentityManager(options.config.stateDir);
+          const identity = machineIdentity.loadIdentity();
+          if (identity.machineId !== this.meshSelfId) throw new Error('machine identity mismatch');
+          const privateKey = machineIdentity.loadSigningKey();
+          const publicKeyPem = machineIdentity.getSigningPublicKeyPem(this.meshSelfId);
+          const proof = Buffer.from('instar-desktop-key-check-v1');
+          if (!publicKeyPem || !verifyMachinePayload(proof, signMachinePayload(proof, privateKey), publicKeyPem)) {
+            throw new Error('machine signing key mismatch');
+          }
+          const host: DesktopHost = process.platform === 'darwin'
+            ? new MacDesktopHost()
+            : (() => {
+                const companion = discoverWindowsDesktopCompanion();
+                return new WindowsDesktopHost(companion.endpoint, companion.secret);
+              })();
+          this.directDesktopAccess = new DirectDesktopAccess(
+          this.meshSelfId, label, host, new FileRemoteStepUpLockouts(options.config.stateDir),
+          { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
+            sign: payload => Buffer.from(signMachinePayload(payload, privateKey), 'base64') },
+          (topicId, uid) => this.topicOperatorStore?.getOperator(topicId)?.uid === uid,
+          (token, browserPublicKey) => this.verifyDashboardOperatorSession(token)
+            || this.desktopDelegatedSessions.verify(token, browserPublicKey),
+          async (topicId, text) => {
+            const uid = this.topicOperatorStore?.getOperator(topicId)?.uid;
+            if (!uid || String(this.telegramAdapter!.getOwnerUserId() ?? '') !== uid) {
+              throw new Error('verified owner Telegram DM unavailable');
+            }
+            // sendToTopic persists outbound text in the ordinary message log.
+            // The challenge code is therefore sent only through the unlogged
+            // owner DM path; the authenticated reply is consumed before logging.
+            const sent = await this.telegramAdapter!.sendToOwnerDM(text);
+            if (!sent) throw new Error('verified owner Telegram DM unavailable');
+          },
+          grantId => this.desktopStreamManager?.closeGrant(grantId),
+          Date.now,
+          new DesktopAccessAudit(options.config.stateDir),
+          'pin',
+          (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
+        );
+        this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
+        } catch (error) {
+          // @silent-fallback-ok — warn and leave desktop admission dark when target identity cannot be proven.
+          console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
+          this.directDesktopAccess = null;
+          this.desktopStreamManager = null;
+        }
+      }
+    }
+
+    if (options.config.remoteDesktop?.enabled === true
+      && options.config.remoteDesktop.frontMachineId === this.meshSelfId && this.meshSelfId
+      && options.coordinator?.enabled && options.resolvePeerUrls) {
+      try {
+        this.desktopMeshBroker = new DesktopMeshBroker({
+          selfMachineId: this.meshSelfId,
+          signingKeyPem: options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey(),
+          peers: options.resolvePeerUrls,
+          recordRopeResult: options.recordRopeResult,
+          verifyFrontSession: token => this.verifyDashboardOperatorSession(token),
+          onForget: requestId => this.wsManager?.closeDesktopMeshRequest(requestId),
+        });
+      } catch (error) {
+        console.warn('[instar] remote desktop mesh front unavailable:', error instanceof Error ? error.message : String(error));
+      }
+    }
+
     // Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
     // Deny-by-default: with NO valid mandate issued, the gate denies every
     // autonomous A2A action — the system is inert until the operator authors a
@@ -2749,6 +3038,9 @@ export class AgentServer {
         let restorePending = store.restorePending();
         const holdsCanonicalLease = () => ownerHost !== null && selfMachineId === ownerHost && (options.coordinator?.enabled ? options.coordinator.holdsLease() : true);
         const isCanonicalOwner = () => !restorePending && holdsCanonicalLease();
+        this.feedbackOwnerServing = isCanonicalOwner;
+        // Queue pace measures the feedback queues only on their configured operated host.
+        if (ownerHost !== null && selfMachineId === ownerHost) this.feedbackDrainDb = () => store.sharedDatabase();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
@@ -2858,6 +3150,7 @@ export class AgentServer {
                 await enqueue.call(this.telegramAdapter, item);
               },
               tunnelUrl: () => options.tunnel?.url ?? null,
+              paceTicks: this.queuePaceTickLog(options.config),
               overrides: options.feedbackTriageDeps,
             });
             console.log('[feedback-factory] triage live (awaiting operator approval until the triage authority is registered)');
@@ -2894,6 +3187,7 @@ export class AgentServer {
                   await enqueue.call(this.telegramAdapter, item);
                 },
                 tunnelUrl: () => options.tunnel?.url ?? null,
+                paceTicks: this.queuePaceTickLog(options.config),
                 overrides: options.feedbackExecuteDeps,
               });
               const executor = this.feedbackExecute.service;
@@ -3414,9 +3708,16 @@ export class AgentServer {
       );
       if (completionEnabled && options.config.stateDir) {
         const cfg = options.config.monitoring?.completionClaimVerification ?? {};
-        const sharedClaimQueue = options.llmQueue;
-        const claimIntelligence = options.intelligence && sharedClaimQueue ? {
-          evaluate: (prompt: string, intelligenceOptions: import('../core/types.js').IntelligenceOptions = {}) => sharedClaimQueue.enqueueMetered({
+        // Its own queue, on purpose. On the shared queue this verifier's per-call estimate
+        // used up the background share of PromiseBeacon's spend cap by about 06:00 UTC. Every
+        // later turn was then refused before any model ran, recorded as "invalid output"
+        // (the 41% of CMT-1131), and the other background callers were starved with it.
+        // enqueueMetered's component budget below is the bound that applies to this feature.
+        const claimQueue = options.llmQueue
+          ? new LlmQueue({ maxConcurrent: cfg.maxConcurrent ?? 4, interactiveReservePct: 0, maxDailyCents: 500 })
+          : null;
+        const claimIntelligence = options.intelligence && claimQueue ? {
+          evaluate: (prompt: string, intelligenceOptions: import('../core/types.js').IntelligenceOptions = {}) => claimQueue.enqueueMetered({
             component: 'claim-verification', estimatedInputTokens: Math.ceil(Buffer.byteLength(prompt, 'utf8') / 4),
             maxOutputTokens: intelligenceOptions.maxTokens ?? 1_800, estimatedCostCents: 0.25,
             hourly: { requests: 300 }, daily: { requests: 2_000, inputTokens: 10_000_000, outputTokens: 4_000_000, costCents: 500 },
@@ -3704,14 +4005,16 @@ export class AgentServer {
               ),
             }).guards;
           },
-          darkFlagRegistry: new DarkFlagMaturationRegistry({
+          // Hoisted (maturation-board spec §6) so the read-only board route can
+          // load() the same instance; the analyst still owns every write.
+          darkFlagRegistry: (this.darkFlagRegistry = new DarkFlagMaturationRegistry({
             stateDir: options.config.stateDir,
             // Machine-local BY DESIGN: a guard's effective state is a fact about
             // the machine it runs on, so this registry grades THIS machine only.
             machineId: options.meshSelfId ?? 'single-machine',
             onError: (where, err) =>
               console.warn(`[DarkFlagMaturationRegistry] ${where}:`, err),
-          }),
+          })),
           // Owner derivation from a REAL code source only. A dev-gated feature
           // runs live on this agent under the dev gate, so the agent owns
           // graduating or killing it. Everything else stays un-owned, which is
@@ -4286,23 +4589,10 @@ export class AgentServer {
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
-      if (!content.startsWith('---\n')) throw new Error('window-run-liveness-task-ledger-frontmatter-missing');
-      const frontmatterEnd = content.indexOf('\n---', 4);
-      if (frontmatterEnd < 0) throw new Error('window-run-liveness-task-ledger-frontmatter-unclosed');
-      const frontmatter = content.slice(0, frontmatterEnd);
-      const runMatch = frontmatter.match(/^run_id:\s*["']?([^"'\s]+)["']?\s*$/m);
-      if (!runMatch || runMatch[1] !== state.autonomousRunId) throw new Error('window-run-liveness-task-ledger-run-mismatch');
-      const body = content.slice(frontmatterEnd + 4);
       const used = new Set(state.audit.entries
         .filter(entry => entry.kind === 'work-receipt' && entry.workReceipt)
         .map(entry => entry.workReceipt!.taskRef));
-      const tasks = parseContinuationTasks(body);
-      for (let index = 0; index < tasks.length; index++) {
-        if (!tasks[index].open) continue;
-        const taskRef = `autonomous:${state.autonomousRunId}:${index + 1}`;
-        if (!used.has(taskRef)) return taskRef;
-      }
-      return null;
+      return selectWindowWorkTask(content, state.autonomousRunId, used);
     };
     const windowRunLivenessAuthority = options.windowRunLivenessAuthority ?? (() => {
       const raw = options.config.monitoring?.windowRunLiveness;
@@ -4634,7 +4924,7 @@ export class AgentServer {
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionRelogin: options.subscriptionRelogin ?? null,
-      verifyDashboardOperatorSession: (token: string | undefined) => this.dashboardOperatorSessions.verify(token),
+      verifyDashboardOperatorSession: (token: string | undefined) => this.verifyDashboardOperatorSession(token),
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,
@@ -4752,7 +5042,7 @@ export class AgentServer {
       spendPlanStore: this.spendPlanStore,
       moneyLayerEnableSurface: this.moneyLayerEnableSurface,
       moneyLayerAudit: this.moneyLayerAudit,
-      requestSupervisedRestart: (reason: string) => this.requestSupervisedRestart(reason),
+      requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
@@ -4818,6 +5108,87 @@ export class AgentServer {
       correctionClassReview: this.correctionClassReview,
       completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
+      directDesktopAccess: options.config.remoteDesktop?.frontMachineId === this.meshSelfId
+        ? this.directDesktopAccess : null,
+      desktopLocalDiagnostics: async () => {
+        const configured = options.config.remoteDesktop?.enabled === true;
+        if (!configured || !this.directDesktopAccess) {
+          const bootstrap = process.platform === 'linux'
+            ? readWindowsDesktopBootstrapStatus(options.config.stateDir) : null;
+          return { configured, targetConstructed: !!this.directDesktopAccess,
+            status: configured ? 'target-unavailable' : 'off',
+            ...(bootstrap?.state === 'install-failed'
+              ? { bootstrapFailure: { phase: bootstrap.phase, code: bootstrap.code } } : {}) };
+        }
+        try {
+          const probe = await this.directDesktopAccess.probe();
+          return { configured, targetConstructed: true, status: probe.ready ? 'ready' : 'not-ready',
+            screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
+            displayCount: probe.displayCount, sessionActive: probe.sessionActive,
+            ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
+              .reduce((details, key) => {
+                if (typeof probe[key] === 'boolean') details[key] = probe[key];
+                return details;
+              }, {} as Record<string, boolean>) };
+        } catch (error) {
+          // @silent-fallback-ok — the authenticated diagnostic reports a sanitized probe-error;
+          // the target stays unavailable and no grant or frame is emitted.
+          const message = error instanceof Error ? error.message : '';
+          const safeCode = /^(?:mac|windows)-desktop-[a-z-]+$/.test(message) ? message : 'probe-failed';
+          const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : null;
+          const networkCode = typeof cause?.code === 'string'
+            && /^(?:ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)$/.test(cause.code)
+            ? cause.code : undefined;
+          return { configured, targetConstructed: true, status: 'probe-error', code: safeCode,
+            ...(networkCode ? { networkCode } : {}) };
+        }
+      },
+      desktopMeshBroker: this.desktopMeshBroker,
+      desktopTargetSigningKey: machineId => {
+        if (this.directDesktopAccess?.targetInfo().machineId === machineId) {
+          return this.directDesktopAccess.targetSigningPublicKey();
+        }
+        const pem = options.coordinator?.managers.identityManager.getSigningPublicKeyPem(machineId);
+        if (!pem) return null;
+        try { return createPublicKey(pem).export({ format: 'der', type: 'spki' }).toString('base64'); }
+        catch { return null; }
+      },
+      desktopProbePeer: async machineId => {
+        const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled
+          || !await desktopPeerUrlAllowed(peer)) {
+          throw new Error('desktop-peer-unreachable');
+        }
+        const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
+        const body = {};
+        const response = await poolPeerFetch(options.recordRopeResult,
+          { ...peer, url: peer.url.replace(/\/+$/, '') }, '/api/desktop/availability', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
+          body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(3_000),
+        });
+        if (!response.ok) throw new Error('desktop-peer-unavailable');
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('desktop-peer-response-empty');
+        const chunks: Uint8Array[] = [];
+        let bytes = 0;
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > 2_048) {
+            await reader.cancel();
+            throw new Error('desktop-peer-response-bound');
+          }
+          chunks.push(value);
+        }
+        const raw = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), bytes).toString('utf8');
+        const result = JSON.parse(raw) as { machineId?: unknown; label?: unknown; ready?: unknown; unavailableReason?: unknown };
+        if (result.machineId !== machineId || typeof result.label !== 'string' || typeof result.ready !== 'boolean') {
+          throw new Error('desktop-peer-identity-mismatch');
+        }
+        return { machineId, label: result.label.slice(0, 80), ready: result.ready,
+          ...(typeof result.unavailableReason === 'string' ? { unavailableReason: result.unavailableReason.slice(0, 160) } : {}) };
+      },
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,
       growthMilestoneAnalyst: this.growthMilestoneAnalyst,
@@ -5026,6 +5397,14 @@ export class AgentServer {
       }));
     }
     const routes = createRoutes(routeCtx);
+    // Runs the LLM-free check-in reminder pass with no session. The first tick
+    // waits one interval: Telegram may not be up yet at this point in boot.
+    const checkInReminderTicker = routeCtx.checkInReminderTicker;
+    if (checkInReminderTicker) {
+      this.checkInReminderTimer = setInterval(() => { void checkInReminderTicker.tick(); }, checkInReminderTicker.status().intervalMs);
+      this.checkInReminderTimer.unref?.();
+      checkInReminderTicker.setArmed(true);
+    }
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
     // routes. A missing ledger is reported in the response, not replaced with
@@ -5343,6 +5722,12 @@ export class AgentServer {
       this.windowRunLivenessTimer.unref?.();
     }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
+    // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
+    this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry }));
+    // Queue pace (docs/specs/queue-pace.md): measure-only ledger + route (dev-gated, read each
+    // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
+    this.startQueuePace(options);
+    this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -6627,13 +7012,13 @@ export class AgentServer {
    * `503` naming the reason and leaves the state unchanged rather than
    * reporting a restart that will never happen.
    */
-  private requestSupervisedRestart(reason: string): boolean {
+  private requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): boolean {
     try {
       const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
       fs.mkdirSync(path.dirname(flagPath), { recursive: true });
       const data = {
         requestedAt: new Date().toISOString(),
-        requestedBy: 'money-layer-enable',
+        requestedBy,
         reason,
         plannedRestart: true, // maintenance, not a crash — the supervisor reads this
         expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
@@ -6642,10 +7027,10 @@ export class AgentServer {
       const tmp = `${flagPath}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
       fs.renameSync(tmp, flagPath);
-      console.log(`[instar] supervised restart requested by the money-layer enable surface (${reason})`);
+      console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
       return true;
     } catch (err) {
-      console.error(`[instar] money-layer restart request could not be written: ${String(err)}`);
+      console.error(`[instar] supervised restart request could not be written: ${String(err)}`);
       return false;
     }
   }
@@ -6732,6 +7117,10 @@ export class AgentServer {
           instarDir: this.config.stateDir,
           hookEventReceiver: this.hookEventReceiver,
           streamTicketStore: this.streamTicketStore,
+          desktopStreamManager: this.desktopStreamManager ?? undefined,
+          desktopMeshBroker: this.desktopMeshBroker,
+          desktopMeshSigningKeyPem: this.desktopMeshBroker?.signingKeyPem(),
+          desktopPeerAuth: this.machineRouteContext?.authDeps,
           poolStreamAllowRemoteInput: this.poolStreamAllowRemoteInput,
           poolStreamConnector: this.poolStreamConnector,
           selfMachineId: this.meshSelfId,
@@ -7173,6 +7562,10 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.desktopMeshBroker?.close();
+    this.directDesktopAccess?.killSwitch();
+    if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
+    this.desktopStreamManager?.closeAll();
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
@@ -7191,6 +7584,10 @@ export class AgentServer {
     if (this.jobAnomalyTimer) {
       clearInterval(this.jobAnomalyTimer);
       this.jobAnomalyTimer = null;
+    }
+    if (this.checkInReminderTimer) {
+      clearInterval(this.checkInReminderTimer);
+      this.checkInReminderTimer = null;
     }
     if (this.scriptCanaryTimer) {
       clearInterval(this.scriptCanaryTimer);
@@ -7327,6 +7724,8 @@ export class AgentServer {
       clearInterval(this.feedbackExecuteDisarmTimer); // clearInterval cannot throw
       this.feedbackExecuteDisarmTimer = null;
     }
+    for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
+    this.queuePaceTimers = [];
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
@@ -7408,6 +7807,77 @@ export class AgentServer {
   /**
    * Expose the Express app for testing with supertest.
    */
+  /** The shared queue-pace tick-row sink; writes only while queuePace resolves enabled (read per row). */
+  private queuePaceTickLog(config: InstarConfig): QueuePaceTickLog {
+    if (!this.queuePaceTicks) {
+      this.queuePaceTicks = new QueuePaceTickLog(path.join(config.stateDir, 'logs', 'queue-pace-ticks.jsonl'), () => isQueuePaceEnabled(config));
+    }
+    return this.queuePaceTicks;
+  }
+
+  /** Build the queue-pace ledger + tuner over the owners this machine actually runs. */
+  private startQueuePace(options: { config: InstarConfig; commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker; evolution?: EvolutionManager }): void {
+    const config = options.config;
+    if (!config.stateDir) return;
+    try {
+      const machineId = this.meshSelfId ?? config.projectName;
+      const ticks = this.queuePaceTickLog(config);
+      const adapters: QueueAdapter[] = [];
+      const ownerServing = () => { try { return this.feedbackOwnerServing?.() ?? false; } catch { return false; } }; // @silent-fallback-ok: an unreadable predicate is "not serving"
+      if (this.feedbackDrainDb) {
+        const db = this.feedbackDrainDb;
+        adapters.push(feedbackTriageAdapter({ db, ownerServing }), feedbackFixAdapter({ db, ownerServing }));
+      }
+      const projectDir = path.dirname(config.stateDir);
+      adapters.push(maturationAdapter(async () => {
+        const { dir, error } = resolveReviewsDir(projectDir, maturationBoardConfig(config).reviewsDir);
+        if (!dir) return error === 'no-reviews-dir' ? null : { error: error ?? 'reviews-dir-unreadable' };
+        const rv = await readReviewDir(dir, Date.now(), machineId);
+        if (rv.dirError) return { error: rv.dirError };
+        return maturationHistorySeries(rv.reviews).map((r) => ({ date: r.date, at: maturationDateMs(r.date), rows: r.rows.map((x) => ({ id: x.id, verdict: x.verdict })) }));
+      }));
+      if (options.commitmentTracker) adapters.push(commitmentsAdapter(options.commitmentTracker, this.meshSelfId ?? null));
+      if (options.evolution) adapters.push(evolutionAdapter(options.evolution));
+      const triagePort = () => this.feedbackTriage?.service ?? null;
+      let tuner: QueuePaceTuner | null = null;
+      const ledger = new QueuePaceLedger({
+        stateDir: config.stateDir, machineId, config: () => config, adapters, ticks,
+        executorFacts: () => (this.feedbackDrainDb ? readExecutorFacts(this.feedbackDrainDb(), () => this.feedbackExecute?.service.status().reason === 'approver-not-independent', () => this.feedbackExecute?.service.repoSlug() ?? null) : null),
+        triageCalls: () => { const t = triagePort(); return t ? { callsUsedToday: t.callsUsedToday(), maxCallsPerDay: t.maxCallsPerDay() } : null; },
+        extraTicksAllowed: () => tuner?.extraTicksAllowed() ?? 0,
+        tunerView: () => tuner?.view() ?? null,
+        attention: {
+          raise: async (item) => {
+            if (!this.telegramAdapter) throw new Error('durable attention enqueue unavailable');
+            await this.telegramAdapter.createAttentionItem(item);
+          },
+          clear: (key, resolution) => { this.telegramAdapter?.clearAttentionCondition({ conditionKey: key }, resolution); },
+        },
+        feedbackReportsPerDay: () => {
+          if (!this.feedbackProcessing) return null;
+          const since = Date.now() - 24 * 3_600_000;
+          let n = 0;
+          for (const items of this.feedbackProcessing.feedbackByCluster().values()) for (const f of items) { const t = f.receivedAt ? Date.parse(f.receivedAt) : NaN; if (t >= since) n++; }
+          return n;
+        },
+      });
+      tuner = new QueuePaceTuner({ stateDir: config.stateDir, config: () => config, ledger, ticks, triage: triagePort, ownerServing });
+      this.queuePaceLedger = ledger;
+      this.queuePaceTuner = tuner;
+      const runLedger = () => { void ledger.tick().catch((e) => console.warn('[queue-pace] tick failed:', e instanceof Error ? e.message : e)); };
+      const first = setTimeout(runLedger, 60_000); first.unref?.();
+      this.queuePaceTimers.push(first as unknown as ReturnType<typeof setInterval>);
+      const every = setInterval(runLedger, 5 * 60_000); every.unref?.();
+      this.queuePaceTimers.push(every);
+      const pump = setInterval(() => { void tuner!.pump(); }, 60_000); pump.unref?.();
+      this.queuePaceTimers.push(pump);
+    } catch (error) { // @silent-fallback-ok: logged; the ledger stays null so GET /queue-pace answers 503 and nothing else is affected
+      console.warn('[queue-pace] init failed (non-fatal):', error instanceof Error ? error.message : error);
+      this.queuePaceLedger = null;
+      this.queuePaceTuner = null;
+    }
+  }
+
   getApp(): Express {
     return this.app;
   }

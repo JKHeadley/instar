@@ -135,6 +135,24 @@ describe('A2ADeliveryTracker — overdue / escalation work-list', () => {
 });
 
 describe('A2ADeliveryTracker — peer health (is the channel alive?)', () => {
+  it('does not surface a fingerprint as an agent name, including old saved rows', () => {
+    t = A2ADeliveryTracker.openMemory();
+    t.recordSent({ messageId: 'm1', peerFp: FP, peerName: FP });
+    t.recordInboundFrom(FP, FP);
+    // A deployed database can already contain the old fingerprint-as-name bug.
+    const db = (t as any).db;
+    db.prepare('UPDATE a2a_delivery SET peer_name = ? WHERE message_id = ?').run(FP, 'm1');
+    db.prepare('UPDATE a2a_peer_inbound SET peer_name = ? WHERE peer_fp = ?').run(FP, FP);
+    expect(t.get('m1')!.peerName).toBeNull();
+    expect(t.peerHealth(FP).peerName).toBeNull();
+    const short = FP.slice(0, 8);
+    t.recordSent({ messageId: 'm2', peerFp: FP, peerName: short });
+    expect(t.get('m2')!.peerName).toBeNull();
+    db.prepare('UPDATE a2a_delivery SET peer_name = ? WHERE message_id = ?').run(short, 'm1');
+    db.prepare('UPDATE a2a_peer_inbound SET peer_name = ? WHERE peer_fp = ?').run(short, FP);
+    expect(t.get('m1')!.peerName).toBeNull();
+    expect(t.peerHealth(FP).peerName).toBeNull();
+  });
   it('composes last-sent / last-acked / last-inbound / pending', () => {
     t = A2ADeliveryTracker.openMemory();
     t.recordSent({ messageId: 'm1', peerFp: FP, peerName: 'dawn', sentAt: '2026-06-06T10:00:00Z' });

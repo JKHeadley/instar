@@ -232,3 +232,15 @@ describe('GET /commitments/check-in-reminder', () => {
     expect(res.status).toBe(503);
   });
 });
+
+describe('server tick status (CMT-1130)', () => {
+  it('a route pass shares the ticker, so its report shows on the read route', async () => {
+    const app = appWith({ commitments: [commitment()], enabled: true, dryRun: true });
+    const auth = { Authorization: `Bearer ${AUTH}` };
+    await request(app).post('/commitments/check-in-reminder/pass').set(auth).send({}).expect(200);
+    const res = await request(app).get('/commitments/check-in-reminder').set(auth).expect(200);
+    expect(res.body.tick.lastReport).toMatchObject({ dryRun: true, wouldSend: 1, sent: 0, dueIds: ['CMT-1'] });
+    expect(res.body.tick.intervalMs).toBe(300_000);
+    expect(sent).toHaveLength(0);
+  });
+});

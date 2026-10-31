@@ -155,6 +155,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'remoteDesktop',
+    prefixes: ['/desktop'],
+    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.directDesktopAccess,
+      endpoints: ['GET /desktop/diagnostics', 'GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
+        'GET /desktop/requests/:id', 'POST /desktop/requests/:id/ticket',
+        'POST /desktop/requests/:id/revoke', 'WebSocket /desktop-stream'],
+    }),
+  },
+  {
     key: 'guardPosture',
     prefixes: ['/guards'],
     description: 'Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) — read every machine\'s safety-guard flags with HONEST verification-graded states: on-confirmed (live runtime confirms) / on-unverified (config-on only, grey not green) / on-stale (dead tick loop) / on-dry-run (watching but toothless) / off classified dark-default vs diverged-from-default (the load-shed signature — the only off that alerts) / diverged-pending-restart (disk edit not yet live) / errored / missing (expected runtime never registered) / off-runtime-divergent (runtime contradicts an on-config — the in-memory load-shed class). ?scope=pool accounts for EVERY registered machine by name (classified failure rows, never silent omission); the Machines tab shows last-known posture with age even for a dark peer (heartbeat piggyback + durable store). Read-only, always-on (deliberately no enabled gate — an off-switch on the guard-visibility surface would itself be an invisible disabled guard). When asked "are my guards on?" / "why didn\'t the watchdog fire on machine X?" / after any incident load-shed → read this, never guess. To re-enable a guard via PATCH /config, send the guard\'s FULL config block (one-level-deep merge erases sibling tuning).',
@@ -233,6 +244,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /doorways'],
+    }),
+  },
+  {
+    key: 'queuePace',
+    prefixes: ['/queue-pace'],
+    description: 'Queue pace (docs/specs/queue-pace.md) — an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items) with a plain 7-day verdict (falling-behind / catching-up / holding / shrinking-by-exits / unknown / owner-not-serving) and, for a queue that is behind, the named reason (person / quota / cap / worker / unknown). GET /queue-pace (?scope=pool merges every machine) returns per-queue inflowPerDay, outflowPerDay, exitedPerDay, open, daysToClear, bottleneck, coverage and tuner state. Dev-gated measure-only (queuePace.enabled); 503 when dark. The triage pace tuner has its own flag queuePace.tuner.enabled (default false, dry-run). When asked "are we keeping up with feedback / promises / action items?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /queue-pace'],
     }),
   },
   {

@@ -12,6 +12,21 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/health` | Health check (public, no auth). Returns version, session count, scheduler status, memory usage |
 | GET | `/status` | Running sessions + scheduler status |
 
+## Remote Desktop
+
+The dashboard uses these authenticated endpoints after the operator enters the existing dashboard PIN. The [Remote Desktop guide](/guides/remote-desktop/) explains target readiness, the Mac permissions, mobile controls, and revocation. A stream ticket is short lived and scoped to one target and controller.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/desktop/availability` | Report whether this installation can offer desktop access |
+| GET | `/desktop/targets` | List installed machine targets and readiness |
+| POST | `/desktop/requests` | Request access to one target under the operator's dashboard session |
+| GET | `/desktop/requests/:id` | Read the request and grant state |
+| POST | `/desktop/requests/:id/resume` | Resume a disconnected stream while its grant remains valid |
+| GET | `/desktop/requests/:id/cursor` | Read pointer position for viewer feedback |
+| POST | `/desktop/requests/:id/ticket` | Issue a short-lived ticket for the encrypted stream |
+| POST | `/desktop/requests/:id/revoke` | Revoke the grant and end screen capture and input |
+
 ## Sessions
 
 | Method | Path | Description |
@@ -287,6 +302,17 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `POST /autonomous/:topic/run-end` — every exit surface reports here (scope-accretion R44): runs the non-blocking advisory sweep and enumerates any unbuilt accreted work loudly; marks the run record ended.
 - `POST /autonomous/:topic/ratify-deferral` — dashboard-PIN-gated operator ratification of deferred accreted artifacts (`{"artifacts": [...]}` or `{"all": true}`; the response echoes exactly what was ratified).
 - `POST /autonomous/:topic/scope-accretion-override` — dashboard-PIN-gated live mid-run lever (`{"enabled": false, "reason": "…"}`): overrides the registration-time snapshot for the running session; audited.
+
+## Codex task continuation
+
+These authenticated endpoints manage the bounded, per-topic Codex checklist. The server caps each generation's duration and continuation count; they do not activate an autonomous run on their own.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/continuation/:topic/status` | Show whether the ledger is enabled and active, its expiry, and the number of open tasks. |
+| POST | `/continuation/start` | Start a new checklist with `topicId`, `tasks`, and optional `sessionId`, `durationSeconds`, and `maxContinuations`. |
+| POST | `/continuation/:topic/renew` | Mint a fresh bounded generation for an existing checklist with open tasks after its prior duration expires; the tasks are preserved. This is not an operator-stop override. |
+| POST | `/continuation/:topic/complete` | Mark one task complete with its one-based `ordinal`. |
 
 ## /autonomy
 - `GET /autonomy`

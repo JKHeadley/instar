@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-30T21:26:40.527Z",
+  "slug": "maturation-board-readability",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/MaturationBoard.ts",
+      "src/server/maturationBoardRoutes.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

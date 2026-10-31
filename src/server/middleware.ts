@@ -747,44 +747,53 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   if (req.path === '/dashboard' || req.path.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
-    res.header(
-      'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'",
-    );
+    const host = req.get('host') ?? '';
+    const desktopConnect = /^[A-Za-z0-9.:[\]-]+$/.test(host)
+      ? `connect-src 'self' ws://${host} wss://${host}` : "connect-src 'self'";
+    res.header('Content-Security-Policy',
+      req.path === '/dashboard/desktop.html' || req.path === '/dashboard/desktop.js'
+        ? `default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: 'self'; ${desktopConnect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+        : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
   }
   next();
 }
 
 /**
- * #1441 — dashboard static assets must never outlive a deploy. Stamp a
- * revalidate-always `Cache-Control: no-cache` on every dashboard response.
+ * #1441 — dashboard static assets must never outlive a deploy.
  *
- * Before this, express.static served `Cache-Control: public, max-age=0`, which
- * Cloudflare's edge silently overrode with its default multi-hour TTL for
- * .js/.css. A warm-cache browser then paired a FRESH index.html (sent each load)
- * with a STALE glance.js and threw `glance.blockersGlanceSpec is not a function`,
- * blanking a whole tab for up to 4h after every phase deploy. `no-cache` (not
- * `no-store`) keeps the ETag/Last-Modified revalidation express already generates,
- * so every asset — index.html AND its transitively-imported ES modules
- * (glance.js → subscriptions.js) — 304-revalidates on each load; a deploy can never
- * leave a skewed pair. `no-cache` is also a directive Cloudflare honors by NOT
- * edge-caching, so it kills the stale-edge-copy half of the skew too.
+ * Before #1441, express.static served `Cache-Control: public, max-age=0`, which
+ * Cloudflare's edge overrode with a multi-hour browser TTL for .js/.css, so a fresh
+ * index.html met a stale glance.js and a tab went blank for up to 4h after a deploy.
+ * #1441 switched everything to `no-cache`, believing Cloudflare honors it.
  *
- * This runs via `express.static({ setHeaders })` (below) so it wins over
- * serve-static's own default Cache-Control, and is called directly for the
- * index.html `res.sendFile` route.
+ * Measured 2026-10-30 through the named tunnel (echo-studio.dawn-tunnel.dev): it
+ * honors `no-cache` for HTML (passes through, `cf-cache-status: DYNAMIC`) but still
+ * REWRITES it to `max-age=14400` for .js and .css (`cf-cache-status: REVALIDATED`),
+ * while `no-store` passes through untouched (`BYPASS`). The operator's phone then
+ * kept a 4h-old console.css after a release and the new maturation board rendered
+ * unstyled. So scripts and stylesheets get `no-store`: every load re-downloads them
+ * (a few hundred KB over the agent's own tunnel), and a release reaches the screen
+ * at once. Pages keep `no-cache` with ETag revalidation. ES modules import each
+ * other by bare relative path, so a version query on the page's links alone could
+ * not reach them — the header has to be right on every module.
+ *
+ * Runs via `express.static({ setHeaders })` (it wins over serve-static's own
+ * header) and is called directly for the index.html `res.sendFile` routes.
  */
-export function dashboardCacheControl(res: Response): void {
-  res.setHeader('Cache-Control', 'no-cache');
+// E2E-PAIRING: EXEMPT — static header helper; covered by the unit and integration static-serving suites, no route added.
+const NO_STORE_ASSET_RE = /\.(?:m?js|css)$/i;
+
+export function dashboardCacheControl(res: Response, filePath?: string): void {
+  res.setHeader('Cache-Control', filePath && NO_STORE_ASSET_RE.test(filePath) ? 'no-store' : 'no-cache');
 }
 
 /**
  * The `express.static` options for the dashboard directory — exported so the
  * AgentServer wiring and its integration test exercise the SAME object (no drift).
- * `setHeaders` applies {@link dashboardCacheControl} after serve-static would set
- * its own header, so `no-cache` is the final Cache-Control; etag/lastModified stay
- * on for cheap 304 revalidation.
+ * `setHeaders` applies {@link dashboardCacheControl} (with the served file's path)
+ * after serve-static would set its own header, so it is the final Cache-Control;
+ * etag/lastModified stay on for cheap 304 revalidation of pages.
  */
 export const DASHBOARD_STATIC_OPTIONS = {
   etag: true,

@@ -25,6 +25,8 @@ import { renderLearned } from './learned.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
+import { renderMaturation, maturationTile } from './maturation-board.js';
+import { paceCard } from './pace.js';
 import { sheetIsOpen, closeSheet } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -423,6 +425,8 @@ function renderGroup(main, g) {
     ),
     el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
+    ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
+    ...(g.id === 'work' ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
   ];
   if (g.hood && g.hood.length) {
     parts.push(
@@ -450,6 +454,7 @@ const NATIVE = {
   'work/plans/in-the-way': renderPlans,
   'work/schedule': renderSchedule,
   'work/development': renderDevelopment,
+  'work/maturation': renderMaturation,
   'work/sessions': renderSessions,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,

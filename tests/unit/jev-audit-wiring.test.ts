@@ -17,6 +17,8 @@ import { validateManifest } from '../../src/scheduler/AgentMdJobLoader.js';
 import { installBuiltinJobs } from '../../src/scheduler/InstallBuiltinJobs.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { JEV_EVIDENCE_DIR_NAME, buildJevJobCompletionAudit } from '../../src/scheduler/JevJobCompletionAudit.js';
+import { jevJobCompletionAuditAwareness } from '../../src/scaffold/templates.js';
 
 type Result = { upgraded: string[]; skipped: string[]; errors: string[] };
 const dirs: string[] = [];
@@ -192,5 +194,48 @@ describe('conditionalEffects shares the declaredEffects jail at load', () => {
     expect(() => validateManifest(baseManifest({ conditionalEffects: ['../escape.md'] }))).toThrow(/conditionalEffects.*repo-relative/);
     expect(() => validateManifest(baseManifest({ conditionalEffects: ['/etc/passwd'] }))).toThrow(/conditionalEffects.*repo-relative/);
     expect(() => validateManifest(baseManifest({ conditionalEffects: Array.from({ length: 9 }, (_, i) => `f${i}`) }))).toThrow(/at most 8/);
+  });
+});
+
+describe('documented evidence path matches the writer (EVO-027)', () => {
+  const documented = `.instar/${JEV_EVIDENCE_DIR_NAME}/`;
+  const stale = '.instar/state/jev-supervision-evidence/';
+
+  function migrateCard(existing: string): { after: string; result: Result } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-path-'));
+    dirs.push(dir);
+    const claudeMd = path.join(dir, 'CLAUDE.md');
+    fs.writeFileSync(claudeMd, existing);
+    const stateDir = path.join(dir, '.instar');
+    fs.mkdirSync(stateDir);
+    const migrator = new PostUpdateMigrator({ projectDir: dir, stateDir, port: 4042, hasTelegram: false, projectName: 't' });
+    const result: Result = { upgraded: [], skipped: [], errors: [] };
+    (migrator as unknown as { migrateClaudeMd(r: Result): void }).migrateClaudeMd(result);
+    return { after: fs.readFileSync(claudeMd, 'utf8'), result };
+  }
+
+  it('the audit writes packs to the path the card and spec cite', () => {
+    const stateDir = path.join('/agent', '.instar');
+    const audit = buildJevJobCompletionAudit({
+      stateDir,
+      readLiveIntelligence: () => undefined,
+      readSecret: () => undefined,
+    } as unknown as Parameters<typeof buildJevJobCompletionAudit>[0]);
+    const written = (audit as unknown as { deps: { evidenceDir: string } }).deps.evidenceDir;
+    expect(written + '/').toBe(path.join('/agent', documented));
+
+    const spec = fs.readFileSync(path.join(process.cwd(), 'docs/specs/jev-job-supervision.md'), 'utf8');
+    for (const text of [jevJobCompletionAuditAwareness(), spec]) {
+      expect(text).toContain(documented);
+      expect(text).not.toMatch(/state\/jev-supervision-evidence/);
+    }
+  });
+
+  it('corrects the stale path in an existing card, once', () => {
+    const { after, result } = migrateCard(`### Jev Job-Completion Audit\npacks under \`${stale}\`\n`);
+    expect(after).not.toContain(stale);
+    expect(after).toContain(documented);
+    expect(result.upgraded.filter(u => u.includes('Jev evidence-pack path'))).toHaveLength(1);
+    expect(migrateCard(after).result.upgraded.filter(u => u.includes('Jev evidence-pack path'))).toHaveLength(0);
   });
 });

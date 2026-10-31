@@ -425,7 +425,7 @@ describe('verification and publication', () => {
     expect(push.branch).toMatch(/^feedback\/feedback-c1-[0-9a-f]{8}-a1$/);
     // Pushed to the configured FORK, never the canonical repository; the PR is cross-repository.
     expect(push.remoteUrl).toBe('https://github.com/agent-bot/repo.git');
-    expect(h.prs.get(100)!.headRefName).toBe(`agent-bot:${push.branch}`);
+    expect(h.prs.get(100)!.createHead).toBe(`agent-bot:${push.branch}`);
     expect(push.files['src/thing.ts']).toBe('export const thing = 2;\n');
     expect(push.files[RESULT_FILE]).toBeUndefined();
     expect(push.files[EVIDENCE_FILE]).toBeUndefined();
@@ -577,6 +577,21 @@ describe('verification and publication', () => {
     expect(h.exec.actionItems().some((i) => /touched build tooling/.test(i.line))).toBe(true);
   });
 
+  it('holds an automated fix that supplies its own decision record before the publish clone is committed', async () => {
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    h.fixWith({
+      'src/thing.ts': 'export const thing = 2;\n',
+      'tests/fix.test.ts': 'x',
+      '.instar/instar-dev-decisions/worker.json': '{"scope":{"files":["src/thing.ts"]}}',
+    });
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.latestFor(id)).toMatchObject({ state: 'held', reason: 'needs-review-tooling' });
+    expect(h.pushes).toHaveLength(0);
+  });
+
   it('secret-shaped content is held (names only), and published only through the PIN-bound path', async () => {
     h = await createExecHarness();
     const id = await h.workItem('c1');
@@ -613,6 +628,8 @@ describe('verification and publication', () => {
     h = await createExecHarness();
     const id = await h.workItem('c1', { needsSpec: true });
     const draft = 'docs/specs/feedback-feedback-c1.md';
+    h.prFiles.value = [draft];
+    h.prDiff.value = `diff --git a/${draft} b/${draft}\nnew file mode 100644\n--- /dev/null\n+++ b/${draft}\n+draft\n`;
     h.sessions.behavior.fn = (ws) => {
       fs.mkdirSync(path.join(ws, 'docs', 'specs'), { recursive: true });
       fs.writeFileSync(path.join(ws, draft), '---\ntitle: x\n---\n# Draft\n');
@@ -624,6 +641,17 @@ describe('verification and publication', () => {
     await h.exec.tick();
     expect(h.execStore.latestFor(id)).toMatchObject({ state: 'spec-pr-open' });
     expect(Object.keys(h.pushes[0].files)).toContain(draft);
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.review.calls[0]).toContain('automated spec draft');
+    expect(h.review.calls[0]).toContain('not expected to implement the fix or add executable regression tests yet');
+    h.prs.get(100)!.headRefOid = 'e'.repeat(40);
+    h.prFiles.value = [draft, 'src/thing.ts'];
+    h.prDiff.value += 'diff --git a/src/thing.ts b/src/thing.ts\n+code\n';
+    h.now.value += DAY + 1;
+    await h.exec.tick();
+    expect(h.review.calls).toHaveLength(1);
+    expect(h.execStore.latestFor(id)).toMatchObject({ reviewSha: 'e'.repeat(40), reviewVerdict: 'fail', reviewReason: 'spec-head-shape' });
+    expect(h.comments.at(-1)?.body).toContain('spec-head-shape');
   });
 
   it('a spec draft carrying an approval tag is refused', async () => {
@@ -751,7 +779,8 @@ describe('review gate and merge', () => {
     expect(h.comments[0].body).toContain('deletes a test');
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'review-failed:serious:claude-code', reviewSha: HEAD_SHA, reviewVerdict: 'fail' });
     expect(h.store.get(initiativeId)!.state).toBe('work');
-    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/did not pass the independent review \(serious:claude-code\)/);
+    // Close-eligible: the line names the automatic close and the rework (docs/specs/feedback-executor-review-failed-recovery.md §6).
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/did not pass the independent review; it closes on its own at /);
     // Judged once per head: later ticks ask nothing and comment nothing.
     await h.exec.tick();
     expect(h.review.calls).toHaveLength(1);
@@ -1331,7 +1360,7 @@ describe('focused review round regressions', () => {
   it('A: an existing cross-repository PR still goes through the review gate and merges at the approved head', async () => {
     h = await createExecHarness();
     const { initiativeId, row } = await toPrOpen();
-    expect(h.prs.get(row.prNumber!)!.headRefName).toMatch(/^agent-bot:feedback\//);
+    expect(h.prs.get(row.prNumber!)!.createHead).toMatch(/^agent-bot:feedback\//);
     approveHead();
     await h.exec.tick();
     expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);

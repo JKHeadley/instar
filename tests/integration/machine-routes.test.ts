@@ -23,7 +23,7 @@ import { HeartbeatManager } from '../../src/core/HeartbeatManager.js';
 import { NonceStore } from '../../src/core/NonceStore.js';
 import { SecurityLog } from '../../src/core/SecurityLog.js';
 import { signRequest } from '../../src/server/machineAuth.js';
-import { createMachineRoutes } from '../../src/server/machineRoutes.js';
+import { createMachineRoutes, type MachineRouteContext } from '../../src/server/machineRoutes.js';
 import type { MachineAuthDeps } from '../../src/server/machineAuth.js';
 import type { MachineIdentity } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -40,7 +40,8 @@ function cleanup(dir: string): void {
  * Create a full test environment simulating Machine A (the server) receiving
  * requests from Machine B (the client).
  */
-function createTestEnv(tmpDir: string) {
+function createTestEnv(tmpDir: string, desktop?: Pick<MachineRouteContext,
+  'onDesktopOperatorBegin' | 'onDesktopOperatorCommand' | 'onDesktopAvailability'>) {
   const identityManager = new MachineIdentityManager(tmpDir);
 
   // Machine A (local — the server)
@@ -105,6 +106,7 @@ function createTestEnv(tmpDir: string) {
     authDeps,
     localMachineId: aId,
     localSigningKeyPem: aSigning.privateKey,
+    ...desktop,
     onDemote: () => { demoteCalled = true; },
     onPromote: () => { promoteCalled = true; },
     onHandoffRequest: async () => ({ ready: true, state: { jobs: [], sessions: [] } }),
@@ -147,6 +149,34 @@ describe('Machine Routes Integration', () => {
   afterEach(() => {
     env.nonceStore.destroy();
     cleanup(tmpDir);
+  });
+
+  it('accepts desktop admission only from an authenticated mesh machine', async () => {
+    env.nonceStore.destroy(); cleanup(tmpDir);
+    tmpDir = createTempDir();
+    const callers: string[] = [];
+    env = createTestEnv(tmpDir, {
+      onDesktopOperatorBegin: async (_body, frontId) => {
+        callers.push(frontId);
+        return { requestId: '12345678-1234-1234-1234-123456789abc', targetSessionToken: 'T'.repeat(43) };
+      },
+      onDesktopOperatorCommand: async (_body, frontId) => { callers.push(frontId); return { status: 'approved' }; },
+      onDesktopAvailability: async () => ({ machineId: env.aId, label: 'Mac A', ready: true }),
+    });
+    const body = { assertion: { targetMachineId: env.aId }, browserPublicKey: 'browser-key' };
+    expect((await request(env.app).post('/api/desktop/operator-begin').send(body)).status).toBe(401);
+    expect(callers).toEqual([]);
+    const admitted = await request(env.app).post('/api/desktop/operator-begin')
+      .set(signRequest(env.bId, env.bSigning.privateKey, body)).send(body);
+    expect(admitted.status).toBe(201);
+    expect(admitted.body.requestId).toBe('12345678-1234-1234-1234-123456789abc');
+    expect(callers).toEqual([env.bId]);
+    const command = { operation: 'status', requestId: admitted.body.requestId, targetSessionToken: admitted.body.targetSessionToken };
+    const answered = await request(env.app).post('/api/desktop/operator-command')
+      .set(signRequest(env.bId, env.bSigning.privateKey, command)).send(command);
+    expect(answered.status).toBe(200);
+    expect(answered.body.status).toBe('approved');
+    expect(callers).toEqual([env.bId, env.bId]);
   });
 
   // ── Heartbeat ──────────────────────────────────────────────────

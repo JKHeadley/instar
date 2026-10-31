@@ -275,6 +275,11 @@ describe('/corrections routes (integration)', () => {
     (ctx.config.monitoring as any).completionClaimVerification = { enabled: true, dryRun: false };
     ctx.liveConfig = { get: (key: string, fallback: unknown) => key === 'actionClaim.enabled' ? true : fallback } as any;
     ctx.commitmentTracker = { record, getActive: () => [] } as any;
+    // Suppression needs the verifier out of observe-only: seven clean days in the failure ledger's rollup.
+    const days: Record<string, unknown> = {};
+    for (let back = 1; back <= 7; back++) days[new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10)] = { turns: 100, failed: 0, byReason: {} };
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'logs', 'completion-claim-daily.json'), JSON.stringify(days));
     const verifier = new CompletionClaimVerifier({ enabled: true, dryRun: false, stateDir,
       intelligence: { evaluate: async () => JSON.stringify({ clauses: [
         { clauseId: 0, label: 'completed-or-in-progress-assertion', completionScope: 'this-turn', actionKind: 'pushed', target: 'X', corroborated: false, rationale: 'no push' },

@@ -195,7 +195,7 @@ export class SafeFsExecutor {
 
   /** Async fs.promises.unlink wrapper. */
   static async safeUnlink(target: string, opts: SafeFsOptions): Promise<void> {
-    const canonical = guard(target, opts.operation, 'safeUnlink');
+    const canonical = guard(target, opts.operation, 'safeUnlink', opts.localVerifyScopeOk);
     try {
       await fsp.unlink(target);
       audit('safeUnlink', opts.operation, canonical, 'allowed');
@@ -207,7 +207,7 @@ export class SafeFsExecutor {
 
   /** Sync fs.unlinkSync wrapper. */
   static safeUnlinkSync(target: string, opts: SafeFsOptions): void {
-    const canonical = guard(target, opts.operation, 'safeUnlinkSync');
+    const canonical = guard(target, opts.operation, 'safeUnlinkSync', opts.localVerifyScopeOk);
     try {
       fs.unlinkSync(target);
       audit('safeUnlinkSync', opts.operation, canonical, 'allowed');

@@ -26,6 +26,25 @@ function jsonOut(over: Record<string, unknown> = {}): string {
 }
 
 describe('parseJsonResult', () => {
+  it('uses the CLI structured output only for a schema-constrained call', () => {
+    const out = jsonOut({ result: 'explanation outside JSON', structured_output: { verdict: 'routine' } });
+    expect(parseJsonResult(out)).toBe('explanation outside JSON');
+    expect(parseJsonResult(out, undefined, true)).toBe('{"verdict":"routine"}');
+    expect(parseJsonResult(jsonOut({ is_error: true, structured_output: { verdict: 'routine' } }),
+      undefined, true)).toBe('');
+    expect(parseJsonResult(jsonOut({ result: '{"verdict":"routine"}' }), undefined, true)).toBe('');
+  });
+
+  it('reports a served model only when the CLI usage names exactly one', () => {
+    const served = vi.fn();
+    parseJsonResult(jsonOut({ modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 10 } } }),
+      undefined, true, served);
+    expect(served).toHaveBeenCalledWith({ model: 'claude-haiku-4-5-20251001', framework: 'claude-code' });
+    served.mockClear();
+    parseJsonResult(jsonOut({ modelUsage: { first: {}, second: {} } }), undefined, true, served);
+    expect(served).not.toHaveBeenCalled();
+  });
+
   it('returns the trimmed .result text', () => {
     expect(parseJsonResult(jsonOut({ result: '  the answer  ' }))).toBe('the answer');
   });

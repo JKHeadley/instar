@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "short-identity-fragments",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T07:11:08.517Z",
+  "artifactPath": "upgrades/side-effects/short-identity-fragments.md",
+  "artifactSha256": "916c384c42825e6ad61e14b9a133788982e112ccac58dd00026624d0a22cf9e5",
+  "coveredFiles": [
+    "src/messaging/shared/channelIdentity.ts",
+    "tests/unit/A2ADeliveryTracker.test.ts",
+    "tests/unit/channelIdentity.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only rejection of observed short fingerprint labels; routing and trust unchanged",
+  "eli16Path": "upgrades/short-identity-fragments.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/short-identity-fragments.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

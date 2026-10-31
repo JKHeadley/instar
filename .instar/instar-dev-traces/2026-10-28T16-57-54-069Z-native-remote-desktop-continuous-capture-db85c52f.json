@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-continuous-capture",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T16:57:54.069Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-continuous-capture.md",
+  "artifactSha256": "16a01aadb2259bbc5138b72eb0d6a98e86a630c91701cbaaff98eafca0d05763",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "dashboard/desktop.js",
+    "docs/specs/native-remote-desktop-quality.md",
+    "src/core/DirectDesktopAccess.ts",
+    "src/scaffold/templates.ts",
+    "src/server/DesktopStreamManager.ts",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/DesktopStreamManager.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "upgrades/next/native-remote-desktop-continuous-capture.md",
+    "upgrades/side-effects/native-remote-desktop-continuous-capture.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

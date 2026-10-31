@@ -112,6 +112,20 @@ Recovery mechanisms (in preference order):
 
 **Test**: Can a solo admin who lost their only machine regain access to their agent without external help?
 
+### Rule 7: Identifiers Are Never Names
+
+Every person-facing title, headline, row label, picker, and notification uses a
+name tied to the underlying platform ID. A topic number, channel ID, machine
+ID, agent fingerprint, or shortened hash is routing or diagnostic data, never
+a substitute for a name. Capture and keep the ID/name pair at the source; on
+another machine, resolve it from the authoritative holder. An unresolved name
+is stated plainly and retried. It must not be silently replaced with an ID,
+nor treated as a user action or a failed agent.
+
+**Test**: With a missing name and with a stale copy on another machine, does
+the user see a verified current name or an explicit missing-name state, with
+the identifier confined to links and diagnostic details?
+
 ## Applying the Standard
 
 ### For New Features
@@ -123,6 +137,7 @@ Before implementation, every feature spec must include:
 3. **Dead-end audit** — Every terminal state has an actionable next step
 4. **Recovery path audit** — Every auth/verification flow has a recovery mechanism for the most common failure
 5. **Default audit** — Defaults match the common case, not the most cautious case
+6. **Identity audit** — Every person-facing name is bound to its ID; missing names never fall back to IDs
 
 ### For Existing Features
 

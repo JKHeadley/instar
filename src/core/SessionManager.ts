@@ -3456,7 +3456,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Thresholds are unchanged; only the measurement source moved.
    */
   private currentMemoryPressure(deps: MemReadDeps = {}): MemoryPressure {
-    const usedPercent = Math.round(100 - hostFreeMemPct(deps));
+    return this.memoryPressureTier(Math.round(100 - hostFreeMemPct(deps)));
+  }
+
+  private memoryPressureTier(usedPercent: number): MemoryPressure {
     if (usedPercent >= 90) return 'critical';
     if (usedPercent >= 75) return 'high';
     if (usedPercent >= 60) return 'moderate';
@@ -6461,9 +6464,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const freeMemMB = Math.round((totalMem * (freePct / 100)) / 1048576);
     const totalMemMB = Math.round(totalMem / 1048576);
 
-    // Shared with the reroute pre-spawn gate (june15-headless-spawn-reroute O2)
-    // via currentMemoryPressure() — one definition of the pressure tiers.
-    const memoryPressure: MemoryPressure = this.currentMemoryPressure();
+    // Use the same sampled percentage for the number and its tier. A second
+    // host read can cross a threshold while diagnostics are being assembled.
+    const memoryPressure: MemoryPressure = this.memoryPressureTier(usedPercent);
 
     // Build actionable suggestions
     const suggestions: string[] = [];
@@ -7183,6 +7186,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const session: Session = {
       id: interactiveSessionId,
       name: name || tmuxSession,
+      ...(options?.telegramTopicId !== undefined ? { telegramTopicId: options.telegramTopicId } : {}),
       status: 'running',
       tmuxSession,
       startedAt: new Date().toISOString(),

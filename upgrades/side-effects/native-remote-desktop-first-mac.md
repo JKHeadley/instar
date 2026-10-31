@@ -1,0 +1,95 @@
+# Side effects review: native remote desktop first Mac
+
+## Summary
+
+Tier 2 security-sensitive first-machine slice of the approved blocker hand-off spec, incorporating Justin's direct-access and PIN-only clarifications. This adds one local macOS display/input host, a browser viewer, and a process-local ten-minute grant after dashboard PIN entry. It is dark by default, limited to development agents, and does not advertise Windows or Linux as ready. Justin superseded the Telegram challenge in topic 131439 on 2026-10-27 at 23:41 PDT after reviewing the first live page.
+
+Direct desktop access remains a permanent operator action even when no blocker exists; blocker hand-off may link to the same viewer when that action is appropriate. The ELI16 and spec now state that distinction plainly.
+
+## Decision points touched
+
+- Desktop admission in `DirectDesktopAccess`: added. Requires an explicit target, live dashboard PIN session, browser key proof, healthy local host, and a ten-minute lease. The PIN page states the full-control scope.
+- Stream and input admission in `DesktopStreamManager`: added. Rechecks the live grant at point of use, enforces one controller, queue and rate bounds, expiry and revocation.
+- Production boot in `AgentServer`: added. Explicit config plus development role, macOS and machine identity; uncertainty leaves it dark. Telegram is not required for desktop admission.
+
+## 1. Over-block
+
+A legitimate operator without macOS Screen Recording/Accessibility permission cannot begin control. A second browser or changed target key is refused even if the dashboard PIN is correct. If the PIN is unavailable or its operator session expires, display and input are refused. The PIN-only choice loses independent Telegram identity assurance; this is an explicit operator revision.
+
+## 2. Under-block
+
+This first target is local to Echo. It does not provide cross-machine grant routing or a Windows/Linux host. The macOS helper has an ad-hoc local code signature, so the test package is not suitable as a signed fleet installer. A desktop grants the human control of the logged-in OS session; actions performed in other apps remain governed by those apps. Frame/input data stays in memory and is not recorded by this feature.
+
+## 3. Level of abstraction
+
+The target owns grant authority because only it can prove its display/input session and stop the stream. `DesktopHost` isolates the OS adapter. The browser cannot mint or extend a grant. A successful dashboard PIN unlock mints a short-lived operator session which the target rechecks while streaming. The write-domain registry marks requests machine-local and ephemeral; restart destroys keys and grants.
+
+## 4. Signal vs authority compliance
+
+Per `docs/signal-vs-authority.md`, no lexical detector decides whether a person may control the host. Admission is a finite security policy over the PIN-derived session, browser possession proof, target key, lease, and live OS state. Each failed proof denies the specific privileged operation. The lower-level readiness probe is only a signal for availability; it does not grant access. The PIN proves credential possession, not a named human identity.
+
+## 5. Interactions
+
+The desktop viewer uses the existing dashboard PIN session. Server boot keeps the feature dark unless the host and machine identity are available. Revoke closes the WebSocket and cancels held input; a server restart drops all grants. The new route prefix is classified in `WriteDomainRegistry` and listed in `CapabilityIndex`.
+
+The capability description and generated agent awareness both describe the same PIN-only path. A stale capability description that still named Telegram approval and a fingerprint was corrected after the live flow changed.
+
+## 6. External surfaces
+
+On an explicitly enabled development Mac, the Machines page offers “Open this machine.” The viewer uses the same named tunnel and opens from PIN submission. It presents machine control in plain language and requires no Telegram setup, copied command, topic picker, checkbox, or fingerprint dialog. No cross-agent notice is emitted by this slice. The local Swift helper displays a menu bar indicator during control.
+
+## 6b. Operator-surface quality
+
+The viewer leads with its primary action: enter the existing dashboard PIN and open this machine. Its heading names the Mac Studio before access, and the explanation says plainly that clicks and typing affect open apps and can change files or settings. It exposes no keys, request IDs, fingerprints, topic numbers, or protocol details as primary content. Stop access is visible during control but styled as a secondary danger action rather than the first call to action. The form and live image fit phone width, with short labels and readable text. Justin's phone screenshot caught a stale-script error before PIN entry; the page now loads a content-versioned script with no-store headers. A fresh real Chrome browser completed the public HTTPS PIN-to-frame, click, and Stop path after deployment.
+
+The Mac Studio later locked itself during the test window. The adapter refuses capture and input while its desktop session is locked, and the viewer now explains that requirement before PIN entry. After PIN entry, the viewer shows the specific locked-state reason and offers Check again without requiring the PIN again while that operator session is valid. The authenticated availability API also exposes the same non-sensitive reason. This is a verified limit of the first Mac adapter; the operator's PIN-only browser flow remains intact when the Mac is unlocked. An unattended locked Mac is not yet remotely usable.
+
+## 7. Multi-machine posture
+
+Machine-local by design for this first target: display, input, grants, keys, and redacted audit belong to the physical host. Nothing is transferred with a conversation owner. The machine ID and signing key bind the browser to this target. A peer is not listed as controllable until it has its own live adapter and target server. The existing named tunnel is used for the local viewer link; no ephemeral URL is persisted.
+
+## 8. Rollback cost
+
+Set `remoteDesktop.enabled` false and restart Echo: admission and streams close. The local package overlay can be replaced with the saved installed package; no grant state needs migration. A redacted local audit may remain. Other dashboard functions are unaffected. A failed local enablement must restore the package and config before claiming success.
+
+## Conclusion
+
+The revised first-Mac design is appropriate for a controlled operator test after PIN-to-stream, frame, input and revoke checks pass. It cannot be described as all-machine access or as independent human identity verification. The code preserves a generic host adapter seam for the Windows/WSL and Linux work tracked in topic 131439.
+
+## 2026-10-28 phone quality pass
+
+Justin's first phone run exposed short connections, a small viewer, and difficult pointer motion. The stream now accepts increasing encrypted frame sequence numbers when the sender drops a frame under pressure. It retries isolated capture failures, coalesces pointer motion and scroll input while preserving clicks and typing, and uses one persistent native input helper. The active phone viewer fills the dynamic viewport, prevents document scrolling, provides relative trackpad and direct modes, and renders a local pointer. Stop fences browser input synchronously before target revocation. Capture remains screenshot based, so this pass does not establish video-class frame rate or latency. The ten-minute grant and two-minute input inactivity expiry still apply.
+
+**Over-block:** A large burst of discrete commands still closes the stream at its bounded queue limit. A viewing-only session reaches the two-minute inactivity expiry; heartbeat traffic is not counted as operator input.
+
+**Under-block:** The preview package can still be replaced by an auto-update before this branch merges. Browser gesture behavior has been checked in emulated Chrome, while physical Safari and Android behavior require device evidence. The remote desktop is local to the Mac; Windows and Linux adapters are not yet present.
+
+**Layer and authority:** Queue pressure and capture retry stay in the stream layer. Grant validity, PIN session, and revocation remain in the target authority. Gesture heuristics are presentation only and cannot mint a grant. The native helper has no network listener and exits when its input pipe closes.
+
+**Interactions and external surface:** The public viewer gains fullscreen controls. A local cursor replaces the embedded delayed cursor. A scoped cursor readback is admitted only for the active PIN session. The new CSS asset version follows its content hash so an updated script cannot be paired with stale cached layout. A page Stop can race with pending encrypted input, but the browser fence drops queued input; target revoke remains authoritative. Any socket close or permission loss stops without replay.
+
+**Multi-machine and rollback:** This remains machine-local by design, with one viewer per target and no replicated image or grant. Disabling `remoteDesktop.enabled` and restarting the target revokes access. Reverting this change restores the prior first-Mac viewer; no persisted grant migration is needed.
+
+**Second-pass code review:** Astra found stale native-helper callbacks, duplicate right click, a swipe-to-tap misclassification, duplicate cursor rendering, initial cursor placement, Stop's input window, and notch overlap. The implementation now guards child identity, uses one click dispatch, tracks maximum gesture displacement, captures without an embedded cursor, paints the initial cursor on image load, fences input on Stop, and applies the top safe area. Astra also confirmed the heartbeat does not extend the grant's input inactivity clock; this review records that limit explicitly.
+
+**Live evidence:** A public HTTPS Chrome phone-emulation run at 390×844 stayed connected for eight active minutes, updated the frame at every 30-second sample, rejected page scrolling during touch, and cleared the frame on Stop. The redacted target audit records start at 12:52:44 UTC and Stop at 13:00:46 UTC. A ten-second browser count observed 24 displayed frames, about 2.4 fps; this first pass addresses disconnection and control ergonomics but does not establish smooth video. Physical phone evidence and continuous capture remain open acceptance criteria in `docs/specs/native-remote-desktop-quality.md`.
+
+## Second-pass review
+
+**Original reviewer:** desktop_side_effects_review. **Independent read: concur with condition.** This review covered the earlier Telegram design. Justin superseded its approval flow after live UX feedback; Astra's review found the PIN-only direction consistent with the dashboard surface standard if the loss of independent-factor assurance is recorded and session, revocation, audit, and PIN limits remain enforced. A code review of the revised path is still required before claiming it verified. Before deployment, preserve installed 1.3.1482 changes and verify the installed package version after overlay.
+
+**Revised-path reviewer:** Astra reviewed the changed code and found no concrete replay or expired-session admission bypass. It identified a direct-network plaintext PIN path and three viewer retry failures. The revised code now limits desktop PIN and stream admission to local or TLS transport, keeps the Unlock form reachable when the target is unavailable, revokes a grant if setup fails, and returns to PIN entry when the session expires. The first-use fingerprint dialog is gone; the target key is pinned on first authenticated dashboard use and refused if it later changes. The residual is that first-use trust comes from the dashboard server, not an independent out-of-band fingerprint comparison.
+
+**Locked-state follow-up:** Astra concurred that an unlocked-session prerequisite is acceptable for an explicitly scoped first-machine test, but not as completion of unattended remote access. It found that the viewer unnecessarily asked for the PIN again on every locked-state retry and did not disclose the unlocked prerequisite before PIN entry. The viewer now keeps a valid operator session for Check again, and the page discloses the prerequisite. The availability API wording was aligned with the spec.
+
+The full integration suite exposed a dark-feature shutdown mock without `setDesktopApprovalHandler`. Shutdown now clears the handler only when desktop access was initialized and the adapter offers that method. Grant revocation still runs first. The same reviewer checked this teardown fix and concurred.
+
+## Evidence pointers
+
+`tests/unit/DirectDesktopAccess.test.ts`, `tests/integration/desktop-routes.test.ts`, `tests/e2e/desktop-boot-lifecycle.test.ts`; live Mac test command used `DESKTOP_LIVE_TEST=1` and exercised real ScreenCaptureKit capture, CGEvent pointer movement and revoke. A fresh Chrome DevTools session loaded the public named tunnel, entered the real dashboard PIN from the encrypted local config, received a 1920×1080 frame, clicked the image, and confirmed Stop cleared control. The first full suite found two scanner false positives in `AgentServer.ts` (one new fail-dark PIN-store catch, one read-only price catch shifted outside a 20-line marker window); both now have in-window documented exemptions and the focused ratchet returns its 494 baseline.
+
+## Class-Closure Declaration
+
+No agent-authored-artifact defect or recurring autonomous controller was introduced.
+
+`unbounded-self-action`: **guard**. The stream may retry a failed capture on its own, but `DesktopStreamManager` stops after three consecutive failures and releases the session once. `tests/unit/DesktopStreamManager.test.ts` proves the exact cap and release count; the unit test is the ratchet for this bounded retry. This is an in-session screen retry, not an agent-authored artifact or a recurring autonomous controller.

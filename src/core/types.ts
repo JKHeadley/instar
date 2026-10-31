@@ -52,6 +52,8 @@ export interface Session {
   jobSlug?: string;
   /** tmux session name */
   tmuxSession: string;
+  /** Telegram topic routing ID, retained with the session so display-name reads can verify its title. */
+  telegramTopicId?: number;
   /** When the session was created */
   startedAt: string;
   /** When the session ended (if completed) */
@@ -1129,7 +1131,9 @@ export interface IntelligenceOptions {
    * word resolves to opus, the penalized pair). Other providers ignore this
    * field (they are already hardened by their own scratch/stdin/env allowlist).
    */
-  reviewerHardening?: { model: string };
+  reviewerHardening?: { model: string; jsonSchema?: string };
+  /** Audited decisions require one CLI model attempt per durable call row. */
+  strictModelPin?: boolean;
   /** Maximum tokens for the response */
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
@@ -1265,6 +1269,8 @@ export interface IntelligenceOptions {
    * sets it to feed model/framework into the metrics ledger.
    */
   onModel?: (info: { model: string; framework?: string }) => void;
+  /** Provider-reported served model, when the CLI response exposes one. */
+  onServedModel?: (info: { model: string; framework?: string }) => void;
   /**
    * Observable Intelligence standard: let the caller classify whether THIS call
    * led the system to ACT (fired) vs take no action (noop). The funnel calls it
@@ -1749,6 +1755,31 @@ export interface ActionItem {
   };
   /** Tags for categorization */
   tags?: string[];
+  /** CMT-1132: exempts this action from auto-expiry until cleared. */
+  autoExpiryHold?: AutoExpiryHold;
+}
+
+/**
+ * A per-record exemption from auto-expiry (CMT-1132). Age proves nothing about
+ * a row a person or a review has said is still live, so a hold stops every
+ * expiry branch until it is cleared. No expiry date by design: a hold that
+ * lapsed by itself would hand the row back to the sweep unreviewed.
+ */
+export interface AutoExpiryHold {
+  reason: string;
+  setAt: string;
+}
+
+/** One action the auto-expiry sweep took out of the queue, with everything needed to put it back. */
+export interface ActionArchiveEntry {
+  /** The action exactly as it stood when it left the queue. */
+  action: ActionItem;
+  archivedAt: string;
+  ageDays: number;
+  class: string;
+  reason?: string;
+  /** Set when the action went back to the queue; the entry stays as history. */
+  restoredAt?: string;
 }
 
 /**
@@ -3548,6 +3579,9 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Operator-initiated native desktop access. Explicit opt-in on a
+   * development agent only; omitted and false both leave every route dark. */
+  remoteDesktop?: { enabled?: boolean; frontMachineId?: string };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;
   /** Project root directory */
@@ -3848,6 +3882,38 @@ export interface InstarConfig {
    * price) is ever config — those live in a dedicated PIN-only store (Increment B),
    * NEVER a Bearer-`PATCH`able config key (S-F2).
    */
+  /**
+   * Maturation board (docs/specs/maturation-board.md): a read-only, advisory page of every
+   * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
+   */
+  maturationBoard?: {
+    enabled?: boolean;
+    /** Review files directory, relative to the project dir. Default docs/research/feature-maturation/reviews. */
+    reviewsDir?: string;
+  };
+  /**
+   * Queue pace (docs/specs/queue-pace.md): arrivals vs completions for every work queue, and a
+   * bounded pace tuner for feedback sorting. `enabled` is omitted by default so the
+   * developmentAgent gate decides (measure-only). The tuner has its OWN explicit flag, never
+   * dev-gated, because extra ticks spend real quota.
+   */
+  queuePace?: {
+    enabled?: boolean;
+    tuner?: {
+      /** Default false. */
+      enabled?: boolean;
+      /** Default true: log would-tick, tick nothing. */
+      dryRun?: boolean;
+      /** Minimum minutes between extra ticks (default 10, floor 10). */
+      minGapMinutes?: number;
+      /** Extra ticks per local day (default 12, ceiling 12). */
+      maxExtraRunsPerDay?: number;
+    };
+    notices?: {
+      /** Default true: log would-raise, raise nothing. */
+      dryRun?: boolean;
+    };
+  };
   routingSpend?: {
     /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
     enabled?: boolean;
@@ -5675,6 +5741,8 @@ export interface ThreadlineConfig {
   warmSessionA2A?: ThreadlineWarmSessionConfig;
   /** Secure A2A Verified Pairing — SAS mutual verification + credential-share gate (§3.10). */
   verifiedPairing?: ThreadlineVerifiedPairingConfig;
+  /** The owner's name stated in pairing invites. Omitted: the registered users, then the verified Telegram operator. */
+  ownerName?: string;
   /**
    * A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md). Read
    * live. `enabled` omitted ⇒ the developmentAgent gate (live on a dev agent,

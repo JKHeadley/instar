@@ -78,6 +78,7 @@ describe('exact fixed-result certificates', () => {
     const store = new JobSupervisionStore(dir);
     try {
       const { cert, authority } = fixture();
+      expect(store.isSlugHeld('health-check')).toBe(false);
       const add = (runId: string) => {
         const id = store.register({ runId, fireId: `fire:${runId}`, slug: 'health-check',
           templateDigest: attempt.templateDigest, featureStateHash: attempt.featureStateHash,
@@ -93,6 +94,7 @@ describe('exact fixed-result certificates', () => {
         authority: { ...authority, revokedIds: new Set([cert.id]) } })).toBe(false);
       expect(store.get(revoked)).toMatchObject({ status: 'unchecked', reason: 'certificate-revoked' });
       expect(store.heldSlugs()).toEqual([expect.objectContaining({ slug: 'health-check', reason: 'certificate-revoked' })]);
+      expect(store.isSlugHeld('health-check')).toBe(true);
     } finally {
       store.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/job-fixed-result-certificate.test.ts' });

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-29T18:50:54.731Z",
+  "slug": "native-remote-desktop-resolution",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 184,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/desktop-public-browser-smoke.mjs",
+      "src/core/DesktopVideo.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/server/DesktopStreamManager.ts"
+    ],
+    "addedLines": 161,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This commit changes only capture size and bandwidth constants in the existing bounded frame loop; its new decoder startup timer is a one-shot action inside a user-opened desktop grant and never reschedules itself."
+  },
+  "verdict": "blocked"
+}

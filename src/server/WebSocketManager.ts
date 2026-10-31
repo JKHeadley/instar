@@ -37,6 +37,14 @@ import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { StreamTicketStore } from './StreamTicketStore.js';
 import { PeerStreamProxy, type UpstreamTransport, type UpstreamHandlers } from './PeerStreamProxy.js';
 import type { SessionPlatformInfo } from './sessionPlatform.js';
+import { sessionDisplayName } from './sessionPlatform.js';
+import { isVerifiedChannelName } from '../messaging/shared/channelIdentity.js';
+import type { DesktopStreamManager } from './DesktopStreamManager.js';
+import type { DesktopMeshBroker } from './DesktopMeshBroker.js';
+import { DesktopMeshStreamRelay } from './DesktopMeshStreamRelay.js';
+import { machineAuthMiddleware, type MachineAuthDeps, type MachineAuthContext } from './machineAuth.js';
+import { isLoopbackPeer } from '../core/desktopTransport.js';
+import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 
 /** Pool Dashboard Streaming §2.1: only tmux-safe session names ever reach tmux. */
 const SAFE_SESSION_NAME = /^[A-Za-z0-9_.:@-]+$/;
@@ -65,6 +73,7 @@ interface ClientState {
 }
 
 export class WebSocketManager {
+  private readonly desktopMeshRelay?: DesktopMeshStreamRelay;
   private wss: WebSocketServer;
   private clients: Map<WebSocket, ClientState> = new Map();
   private sessionOutputCache: Map<string, string> = new Map();
@@ -98,6 +107,10 @@ export class WebSocketManager {
     instarDir?: string;
     hookEventReceiver?: HookEventReceiver;
     streamTicketStore?: StreamTicketStore;
+    desktopStreamManager?: DesktopStreamManager;
+    desktopMeshBroker?: DesktopMeshBroker | null;
+    desktopMeshSigningKeyPem?: string;
+    desktopPeerAuth?: MachineAuthDeps;
     poolStreamAllowRemoteInput?: boolean;
     poolStreamConnector?: PoolStreamConnector;
     selfMachineId?: string;
@@ -115,6 +128,9 @@ export class WebSocketManager {
     this.poolStreamConnector = options.poolStreamConnector;
     this.selfMachineId = options.selfMachineId;
     this.resolveSessionPlatform = options.resolveSessionPlatform;
+    if (options.desktopMeshBroker && options.selfMachineId && options.desktopMeshSigningKeyPem) {
+      this.desktopMeshRelay = new DesktopMeshStreamRelay(options.selfMachineId, options.desktopMeshSigningKeyPem);
+    }
     if (options.instarDir) {
       this.registryPath = path.join(options.instarDir, 'topic-session-registry.json');
     }
@@ -126,6 +142,54 @@ export class WebSocketManager {
     // Handle upgrade manually for auth
     options.server.on('upgrade', (request, socket, head) => {
       const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+
+      if (url.pathname === '/desktop-stream') {
+        const offered = typeof request.headers['sec-websocket-protocol'] === 'string'
+          ? request.headers['sec-websocket-protocol'].split(',').map(part => part.trim()) : [];
+        const ticket = offered[0] === 'instar-desktop-v1' && offered[1]?.startsWith('ticket.')
+          ? offered[1].slice(7) : '';
+        if (!request.headers['x-machine-id'] && ticket && options.desktopMeshBroker) {
+          const tlsSocket = 'encrypted' in socket && socket.encrypted === true;
+          const loopback = isLoopbackPeer(request.socket?.remoteAddress);
+          const scheme = tlsSocket || (loopback && request.headers['x-forwarded-proto'] === 'https')
+            ? 'https' : 'http';
+          if ((!tlsSocket && !loopback) || request.headers.origin !== `${scheme}://${request.headers.host}`) {
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+            socket.destroy();
+            return;
+          }
+          const remote = options.desktopMeshBroker.consumeTicket(ticket);
+          if (remote && this.desktopMeshRelay) {
+            this.desktopMeshRelay.handleUpgrade(request, socket, head, remote.requestId, ticket, remote.url);
+            return;
+          }
+        }
+        if (request.headers['x-machine-id']) {
+          if (!options.desktopPeerAuth) {
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+          }
+          const machineRequest = request as IncomingMessage & { body: object; machineAuth?: MachineAuthContext; desktopRelayMachineId?: string };
+          machineRequest.body = {};
+          let accepted = false;
+          const refusal = { status: (_code: number) => refusal, json: (_body: unknown) => refusal };
+          machineAuthMiddleware(options.desktopPeerAuth)(
+            machineRequest as unknown as ExpressRequest,
+            refusal as unknown as ExpressResponse,
+            () => { accepted = true; },
+          );
+          if (!accepted || !machineRequest.machineAuth) {
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+          }
+          machineRequest.desktopRelayMachineId = machineRequest.machineAuth.machineId;
+        }
+        if (!options.desktopStreamManager) {
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        void options.desktopStreamManager.handleUpgrade(request, socket, head);
+        return;
+      }
 
       // ── /pool-stream: a PEER machine streaming a remote session (§2.3) ──
       // Authenticated by a single-use bearer ticket minted over the machine-
@@ -534,8 +598,8 @@ export class WebSocketManager {
    * Resolve display names by cross-referencing the topic-session registry.
    * Maps tmux session names to their Telegram topic names.
    */
-  private getTopicDisplayNames(): Map<string, string> {
-    const map = new Map<string, string>();
+  private getTopicDisplayNames(): Map<string, { topicId: number; name: string }> {
+    const map = new Map<string, { topicId: number; name: string }>();
     if (!this.registryPath) return map;
     try {
       const data = JSON.parse(fs.readFileSync(this.registryPath, 'utf-8'));
@@ -544,8 +608,8 @@ export class WebSocketManager {
       // Build reverse map: tmux session name → topic display name
       for (const [topicId, tmuxSession] of Object.entries(topicToSession)) {
         const name = topicToName[topicId];
-        if (name) {
-          map.set(tmuxSession, name);
+        if (isVerifiedChannelName('telegram', topicId, name)) {
+          map.set(tmuxSession, { topicId: Number(topicId), name });
         }
       }
     } catch {
@@ -560,7 +624,7 @@ export class WebSocketManager {
     return running.map(s => {
       const base: Record<string, unknown> = {
         id: s.id,
-        name: displayNames.get(s.tmuxSession) || s.name,
+        name: s.name,
         tmuxSession: s.tmuxSession,
         status: s.status,
         startedAt: s.startedAt,
@@ -576,6 +640,15 @@ export class WebSocketManager {
           // Adapter lookup failed — leave platform unset (dashboard shows headless)
         }
       }
+      if ((!base.platform || base.platform === 'headless') && Number.isSafeInteger(s.telegramTopicId)) {
+        base.platform = 'telegram';
+        base.platformId = s.telegramTopicId;
+      }
+      const registeredTitle = displayNames.get(s.tmuxSession);
+      if (base.platform === 'telegram' && !base.platformName && registeredTitle?.topicId === Number(base.platformId)) {
+        base.platformName = registeredTitle.name;
+      }
+      base.name = sessionDisplayName(base.name, base as unknown as SessionPlatformInfo);
 
       // Enrich with hook event telemetry when available
       if (this.hookEventReceiver) {
@@ -666,7 +739,10 @@ export class WebSocketManager {
   /**
    * Graceful shutdown — close all connections and stop intervals.
    */
+  closeDesktopMeshRequest(requestId: string): void { this.desktopMeshRelay?.closeRequest(requestId); }
+
   shutdown(): void {
+    this.desktopMeshRelay?.close();
     if (this.streamInterval) clearInterval(this.streamInterval);
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     if (this.sessionBroadcastInterval) clearInterval(this.sessionBroadcastInterval);

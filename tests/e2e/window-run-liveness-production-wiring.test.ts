@@ -172,6 +172,36 @@ describe('window run liveness production wiring', () => {
     expect(advanced.body.receipt.taskRef).toBe(`autonomous:${binding.autonomousRunId}:2`);
   });
 
+  it('keeps accepting changed work for an open task after every open task has a receipt', async () => {
+    const ledgerPath = path.join(project.stateDir, 'autonomous', '36966.local.md');
+    const original = fs.readFileSync(ledgerPath, 'utf8');
+    const twoOpen = original.replace('- [ ] Verify recovery', '- [x] Verify recovery')
+      .replace('- [ ] Freeze receipts', '- [x] Freeze receipts');
+    expect(twoOpen).not.toBe(original);
+    try {
+      fs.writeFileSync(ledgerPath, twoOpen);
+      fs.writeFileSync(artifact, 'third durable result\n');
+      const repeated = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'artifact.txt' }).expect(201);
+      expect(repeated.body.receipt).toMatchObject({ sequence: 3, taskRef: `autonomous:${binding.autonomousRunId}:1` });
+      await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'artifact.txt' }).expect(409);
+
+      fs.writeFileSync(ledgerPath, twoOpen.replace('- [ ] Build model', '- [x] Build model'));
+      fs.writeFileSync(artifact, 'fourth durable result\n');
+      const nextOpen = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'artifact.txt' }).expect(201);
+      expect(nextOpen.body.receipt).toMatchObject({ sequence: 4, taskRef: `autonomous:${binding.autonomousRunId}:2` });
+      fs.writeFileSync(artifact, 'third durable result\n');
+      const replayed = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'artifact.txt' }).expect(409);
+      expect(replayed.body.error).toBe('window-run-liveness-artifact-replayed');
+
+      fs.writeFileSync(ledgerPath, twoOpen.replace('- [ ] Build model', '- [x] Build model').replace('- [ ] Add tests', '- [x] Add tests'));
+      fs.writeFileSync(artifact, 'fifth durable result\n');
+      const noOpen = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'artifact.txt' }).expect(409);
+      expect(noOpen.body.error).toBe('window-run-liveness-no-open-unreceipted-task');
+    } finally {
+      fs.writeFileSync(ledgerPath, original);
+    }
+  });
+
   it('revokes active from transcript heartbeat staleness and durably records the sole dry-run recovery', async () => {
     // A future-dated lease is valid for the collision-avoidance helper's
     // fail-open startup posture, but must never count as positive liveness.

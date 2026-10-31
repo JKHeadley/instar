@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-30T19:44:58.440Z",
+  "slug": "feedback-spec-review-shape",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/independentReview.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

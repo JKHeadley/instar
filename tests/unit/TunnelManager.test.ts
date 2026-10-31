@@ -219,6 +219,21 @@ describe('TunnelManager (provider/tier architecture)', () => {
       expect(fetchCalls).toContain('https://abc.trycloudflare.com/health');
     });
 
+    it('changes connection generation when the same named URL receives a replacement handle', async () => {
+      const provider = new FakeProvider('cloudflare-named', 1, 'https://same.example.test');
+      const tm = createManager([provider], { type: 'named' });
+      const initial = tm.connectionGeneration;
+      await tm.start();
+      const first = tm.connectionGeneration;
+      expect(first).toBeGreaterThan(initial);
+      await tm.forceStop();
+      expect(tm.connectionGeneration).toBeGreaterThan(first);
+      const stopped = tm.connectionGeneration;
+      await tm.start();
+      expect(tm.url).toBe('https://same.example.test');
+      expect(tm.connectionGeneration).toBeGreaterThan(stopped);
+    });
+
     it('emits the url event on success', async () => {
       const tm = createManager([new FakeProvider('cloudflare-quick', 1, 'https://u.example.test')]);
       const seen: string[] = [];

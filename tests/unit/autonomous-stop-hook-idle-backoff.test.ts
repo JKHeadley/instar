@@ -225,9 +225,20 @@ describe('IDLE_BACKOFF — early breaks (responsiveness + safety)', () => {
 
   it('the emergency-stop flag appearing mid-sleep exits 0 and clears state', async () => {
     const now = Math.floor(Date.now() / 1000);
-    writeSidecar({ lastResumedAt: now, quickStops: 12 }); // T3 = 4s
-    const pending = runHookAsync();
-    await new Promise((res) => setTimeout(res, 1200));
+    writeSidecar({ lastResumedAt: now, quickStops: 12 });
+    // Wait for the actual sleep, not an elapsed-time guess: the hook's setup
+    // can take longer than 1.2 s when the full suite is running.
+    const bin = path.join(tmp, 'bin');
+    const marker = path.join(tmp, 'backoff-sleep-started');
+    fs.mkdirSync(bin);
+    const sleep = path.join(bin, 'sleep');
+    fs.writeFileSync(sleep, `#!/bin/sh\n: > "$INSTAR_BACKOFF_SLEEP_MARKER"\nexec /bin/sleep "$@"\n`, { mode: 0o755 });
+    const pending = runHookAsync({ INSTAR_HOOK_BACKOFF_T3: '8', INSTAR_BACKOFF_SLEEP_MARKER: marker, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` });
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    expect(fs.existsSync(marker)).toBe(true);
     fs.writeFileSync(path.join(tmp, '.instar', 'autonomous-emergency-stop'), '');
     const r = await pending;
     expect(r.exitCode).toBe(0);
