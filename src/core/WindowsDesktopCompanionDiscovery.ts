@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
-import { readWindowsDesktopUnicastAddresses, resolveWindowsDesktopBridgeAddress } from './WindowsDesktopBridgeAddress.js';
+import { readWindowsDesktopUnicastAddresses, resolveWindowsDesktopLocalAddress } from './WindowsDesktopBridgeAddress.js';
 
 export interface WindowsDesktopCompanionLocation {
   endpoint: string;
@@ -49,7 +49,7 @@ export function discoverWindowsDesktopCompanion(): WindowsDesktopCompanionLocati
   const addressPath = path.join(appDataPath, 'InstarDesktop', 'bridge.address');
   const persistedAddress = fs.existsSync(addressPath) ? fs.readFileSync(addressPath, 'utf8').trim() : undefined;
   const windowsAddresses = readWindowsDesktopUnicastAddresses();
-  const address = resolveWindowsDesktopBridgeAddress(persistedAddress, gateway, windowsAddresses);
+  const address = resolveWindowsDesktopLocalAddress(persistedAddress, gateway, windowsAddresses);
   const localTransportPath = path.join(appDataPath, 'InstarDesktop', 'local-transport.ps1');
   if (!fs.existsSync(localTransportPath)) throw new Error('windows-desktop-local-transport-unavailable');
   return { endpoint: `http://${address}:44818/`, secret, appDataPath,
