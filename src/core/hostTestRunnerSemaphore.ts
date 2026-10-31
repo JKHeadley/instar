@@ -185,7 +185,7 @@ export interface TestRunnerHolderRow {
 export interface TestRunnerTuningFile {
   v: 1;
   enforcing?: boolean;
-  /** Independent of the host limiter's enforcing posture; dark by default. */
+  /** Independent of the host limiter's enforcing posture; dark by default and never a test verdict. */
   alternatingSuiteTurns?: 'off' | 'observe' | 'enforce';
   clampActive?: boolean;
   maxConcurrent?: number;

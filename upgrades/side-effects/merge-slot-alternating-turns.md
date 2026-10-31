@@ -60,6 +60,8 @@ Set `alternatingSuiteTurns: off` on the host. A current bounded offer expires wi
 
 The only new blocking side effect is a bounded extra wait for one ordinary suite in opt-in enforce mode. The failure direction leaves the existing slot policy in place and never changes a verification result.
 
+The installed agent guidance and status projection now state the authority boundary explicitly: the host-local turn setting schedules a test slot and cannot mark a PR green. The existing full-suite Local Verify record remains the merge decision input.
+
 ## Evidence pointers
 
 - `tests/unit/host-test-runner-semaphore.test.ts`
