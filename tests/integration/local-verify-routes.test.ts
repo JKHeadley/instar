@@ -59,6 +59,14 @@ function record(): LocalVerifyRecord {
 function setup(views: Record<number, PrView>, existingStateDir?: string) {
   const stateDir = existingStateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
   if (!existingStateDir) dirs.push(stateDir);
+  if (!existingStateDir) {
+    const healthDir = path.join(stateDir, 'state', 'local-verify');
+    fs.mkdirSync(healthDir, { recursive: true });
+    fs.writeFileSync(path.join(healthDir, 'main-health.json'), JSON.stringify({
+      v: 1, machineId: 'm1', state: 'healthy', redHead: null, lastGreenHead: null,
+      reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z',
+    }));
+  }
   const children: Array<{ resultPath: string; inputPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
   const priorities: boolean[] = [];
   let holders: number[] = [];
