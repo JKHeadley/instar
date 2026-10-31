@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-31T08:49:51.494Z",
+  "slug": "feedback-executor-audit-path-guard",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

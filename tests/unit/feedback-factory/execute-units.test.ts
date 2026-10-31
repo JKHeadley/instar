@@ -44,7 +44,9 @@ describe('policy', () => {
     for (const p of ['.husky/pre-push', 'scripts/x.mjs', 'package.json', 'packages/a/package.json', 'pnpm-lock.yaml', 'package-lock.json', 'vitest.config.ts',
       'vitest.e2e.config.ts', '.github/workflows/ci.yml', '.claude/settings.json', '.gitattributes', 'sub/.gitmodules', 'tsconfig.json',
       'src/monitoring/GreenPrAutoMerger.ts', 'src/feedback-factory/execute/changeSet.ts', 'docs/audits/x.md', 'eslint.config.mjs', '.eslintrc.json',
-      'vitest.workspace.ts', '.nvmrc', '.node-version', 'Makefile', '.env', '.env.local', 'commitlint.config.js']) expect(isToolingPath(p), p).toBe(true);
+      'vitest.workspace.ts', '.nvmrc', '.node-version', 'Makefile', '.env', '.env.local', 'commitlint.config.js',
+      '.instar', '.instar/instar-dev-decisions/fix.json', './.instar/instar-dev-traces/fix.json',
+      '.INSTAR/instar-dev-decisions/fix.json', 'nested/../.instar/config.json', '../.instar/config.json']) expect(isToolingPath(p), p).toBe(true);
     for (const p of ['src/core/x.ts', 'tests/unit/a.test.ts', 'docs/specs/feedback-x.md', 'README.md']) expect(isToolingPath(p), p).toBe(false);
   });
 
@@ -53,7 +55,7 @@ describe('policy', () => {
     const s = buildSandboxRuntimeSettings(p);
     expect(s.network.allowedDomains).toEqual([]);
     expect(s.filesystem.allowWrite).toEqual(['/h/.worktrees/w', '/h/.worktrees/w-tmp', ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile)]);
-    expect(s.filesystem.denyWrite).toEqual(expect.arrayContaining(['/h/.worktrees/w/.git', `/h/.worktrees/w/${EVIDENCE_FILE}`, '/h/.worktrees/w/.claude', p.depsCache, p.publishClone, '/tmp']));
+    expect(s.filesystem.denyWrite).toEqual(expect.arrayContaining(['/h/.worktrees/w/.git', `/h/.worktrees/w/${EVIDENCE_FILE}`, '/h/.worktrees/w/.claude', '/h/.worktrees/w/.instar', p.depsCache, p.publishClone, '/tmp']));
     expect(s.filesystem.denyRead).toEqual(expect.arrayContaining(['/u', '/tmp', '/h', p.publishClone, '/u/.ssh', '/u/.claude', '/u/.config']));
     expect(s.filesystem.allowRead).toEqual([p.workspace, p.depsCache, p.tmpDir]);
     // Production shape: the attempt temp is a SHORT path under the system temp. denyWrite must not
@@ -94,7 +96,7 @@ describe('policy', () => {
     expect(s.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
     expect(s.sandbox.filesystem.denyWrite).not.toContain('/tmp');
     expect(s.permissions.defaultMode).toBe('dontAsk');
-    expect(s.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch', 'mcp__*', 'Read(//h/.instar/**)', 'Read(//h/src/**)', 'Read(//h/.worktrees/w-publish/**)', 'Edit(//h/.worktrees/w/.git/**)', 'Edit(//h/.worktrees/w/.claude/**)']));
+    expect(s.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch', 'mcp__*', 'Read(//h/.instar/**)', 'Read(//h/src/**)', 'Read(//h/.worktrees/w-publish/**)', 'Edit(//h/.worktrees/w/.git/**)', 'Edit(//h/.worktrees/w/.claude/**)', 'Edit(//h/.worktrees/w/.instar/**)']));
     expect(s.permissions.deny.some((d) => d === 'Read(//h/.worktrees/w/**)')).toBe(false);
     expect(s.permissions.deny.some((d) => d.startsWith('Write('))).toBe(false);
     // Sibling worktrees are covered by the sandbox's whole-home read deny and the dontAsk allowlist,
@@ -238,6 +240,29 @@ describe('change set', () => {
     expect(secretGate(cs, { notes: 'clean', prTitle: 't', prBody: 'b' })).toEqual(['tests/fixtures/k.ts']);
     expect(secretGate({ entries: [], totalBytes: 0 }, { notes: `AKIA${'A'.repeat(16)}`, prTitle: 't', prBody: 'b' })).toEqual(['(result notes)']);
     expect(credentialShaped('nothing secret here')).toBe(false);
+  });
+
+  it('holds worker-supplied audit paths when added, edited or deleted', () => {
+    const { ws, pub } = trees();
+    write(ws, '.instar/instar-dev-decisions/new.json', '{}');
+    write(ws, '.instar/instar-dev-traces/old.json', 'changed');
+    write(pub, '.instar/instar-dev-traces/old.json', 'before');
+    write(pub, '.instar/instar-dev-decisions/deleted.json', '{}');
+    expect(toolingPathsTouched(buildChangeSet(ws, pub))).toEqual([
+      '.instar/instar-dev-decisions/deleted.json',
+      '.instar/instar-dev-decisions/new.json',
+      '.instar/instar-dev-traces/old.json',
+    ]);
+  });
+
+  it('does not normalize a literal POSIX backslash filename out of the protected tree', () => {
+    if (path.sep === String.fromCharCode(92)) return;
+    const { ws, pub } = trees();
+    const odd = ['a', '..', '..', '..', 'src', 'record.json'].join(String.fromCharCode(92));
+    const rel = `.instar/instar-dev-decisions/${odd}`;
+    write(ws, rel, 'untrusted');
+    expect(buildChangeSet(ws, pub).entries.map((entry) => entry.path)).toContain(rel);
+    expect(toolingPathsTouched(buildChangeSet(ws, pub))).toContain(rel);
   });
 
   it('spec draft shape: exactly one new file at the expected path, no approval/convergence tags', () => {

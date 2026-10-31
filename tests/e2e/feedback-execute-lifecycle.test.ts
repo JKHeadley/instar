@@ -64,6 +64,7 @@ function executorEdge(root: string, clock: { now: number }) {
     pr: null as null | { number: number; headRefOid: string; mergedAt: string | null; mergeCommit: string | null; labels: string[] },
     reviews: [] as Array<{ login: string; state: string; commitId: string; submittedAt: string }>,
     merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
+    confinedGuardChecks: 0,
     release: 'none' as { tag: string; taggedAt: number } | 'none',
   };
   const source = path.join(root, 'source');
@@ -91,7 +92,9 @@ function executorEdge(root: string, clock: { now: number }) {
     },
     runner: {
       available: () => ({ ok: true as const, version: '0.0.77' }),
-      run: async (cmd: { command: string; cwd: string }) => {
+      run: async (cmd: { command: string; cwd: string; settings: { filesystem: { denyWrite: string[] } } }) => {
+        expect(cmd.settings.filesystem.denyWrite).toContain(path.join(cmd.cwd, '.instar'));
+        state.confinedGuardChecks++;
         const c = cmd.command;
         // The (a) base-check clone still has the crashing source; every other tree has the fix.
         const atBase = /-base$/.test(cmd.cwd) && fs.readFileSync(path.join(cmd.cwd, 'src', 'scheduler.ts'), 'utf8').includes('crash');
@@ -107,7 +110,14 @@ function executorEdge(root: string, clock: { now: number }) {
       evict: () => 0, sizeBytes: () => 0,
     },
     sessions: {
-      spawnConfined: async (input: { name: string; prompt: string; cwd: string }) => {
+      spawnConfined: async (input: { name: string; prompt: string; cwd: string; settingsPath: string }) => {
+        const settings = JSON.parse(fs.readFileSync(input.settingsPath, 'utf8')) as {
+          sandbox: { filesystem: { denyWrite: string[] } };
+          permissions: { deny: string[] };
+        };
+        expect(settings.sandbox.filesystem.denyWrite).toContain(path.join(input.cwd, '.instar'));
+        expect(settings.permissions.deny).toContain(`Edit(/${path.resolve(input.cwd, '.instar')}/**)`);
+        state.confinedGuardChecks++;
         state.spawned.push(input.name);
         if (input.name.startsWith('feedback-canary-')) {
           fs.writeFileSync(/create (\S+\.feedback-canary-ok-[0-9a-f]+)/.exec(input.prompt)![1], 'ok');
@@ -249,6 +259,7 @@ describe('feedback executor — production lifecycle (live on a development agen
     expect(status.counts).toMatchObject({ running: 1 });
     expect(edge.state.spawned[0]).toMatch(/^feedback-canary-/);
     expect(edge.state.spawned[1]).toMatch(/^feedback-.*-a1$/);
+    expect(edge.state.confinedGuardChecks).toBeGreaterThan(1);
     expect((await request(app).get('/feedback-factory/triage/queue').set(H)).body.items[0].executionState).toBe('running');
 
     // The session ended → confined verification → publication with the hold label.

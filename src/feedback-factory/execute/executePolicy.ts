@@ -242,7 +242,15 @@ const TOOLING_PATTERNS = [
 
 /** True when a change to `relPath` must never reach a PR without the operator. */
 export function isToolingPath(relPath: string): boolean {
-  const p = relPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  // On POSIX a backslash is a literal filename character. Rewriting it as a separator
+  // before checking the original path can normalize an actual .instar entry away.
+  if (path.sep !== '\\' && relPath.includes('\\')) return true;
+  const p = relPath.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+  if (p.startsWith('/') || p.split('/').includes('..')) return true;
+  // The confined session must never supply repository audit or agent state bytes to the
+  // trusted publisher. Case-fold this prefix so a macOS checkout cannot alias it.
+  const folded = p.toLowerCase();
+  if (folded === '.instar' || folded.startsWith('.instar/')) return true;
   if (TOOLING_PREFIXES.some((prefix) => p === prefix.slice(0, -1) || p.startsWith(prefix))) return true;
   if (PROTECTED_PATH_PREFIXES.some((prefix) => (prefix.endsWith('/') ? p.startsWith(prefix) : p === prefix))) return true;
   const base = p.split('/').pop() ?? p;
@@ -306,7 +314,7 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
       denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace, p.tmpDir)])],
       allowRead: [p.workspace, p.depsCache, p.tmpDir],
       allowWrite: [p.workspace, p.tmpDir, ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile), ...(opts.extraWrite ?? [])],
-      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, PREVIOUS_REVIEW_FILE), path.join(p.workspace, '.claude'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
+      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, PREVIOUS_REVIEW_FILE), path.join(p.workspace, '.claude'), path.join(p.workspace, '.instar'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
     },
     enableWeakerNestedSandbox: false,
     enableWeakerNetworkIsolation: false,
@@ -416,7 +424,7 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
   // The dependency cache (and every cache beside it) is read-only, and the workspace's
   // node_modules link points into it: an Edit/Write through either path is denied explicitly, so a
   // file tool can never write into the shared cache even where it resolves the link.
-  for (const d of [path.join(p.workspace, '.git'), path.join(p.workspace, '.claude'), path.join(p.workspace, 'node_modules'), p.depsCache, path.dirname(p.depsCache)]) {
+  for (const d of [path.join(p.workspace, '.git'), path.join(p.workspace, '.claude'), path.join(p.workspace, '.instar'), path.join(p.workspace, 'node_modules'), p.depsCache, path.dirname(p.depsCache)]) {
     deny.push(`Edit(${abs(d)}/**)`, `Edit(${abs(d)})`);
   }
   deny.push(`Edit(${abs(path.join(p.workspace, EVIDENCE_FILE))})`, `Edit(${abs(path.join(p.workspace, PREVIOUS_REVIEW_FILE))})`);
