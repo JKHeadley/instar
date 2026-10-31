@@ -8,7 +8,7 @@
 import { el, cantTell } from './ui.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
-  filterRows, orderInGroup, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, card, isNobody,
+  filterRows, orderInGroup, sortRows, SORTS, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, card, isNobody,
 } from './maturation-board-model.js';
 
 const POOL_TIMEOUT_MS = 12_000;
@@ -71,21 +71,24 @@ function draw(main, board, nav) {
       onclick: () => set({ f: s.id, open: s.group }),
     })));
   const glance = el('section', { class: 'mb-glance' }, map, legend,
-    el('p', { class: 'mb-hint', text: 'Each square is one feature. A white dot means no fix is planned. Tap a colour to show only that group.' }));
+    el('p', { class: 'mb-hint', text: 'Each square is one feature. The colour says how it is doing. A white dot means no fix is planned yet; no dot means a fix is planned or under way. Tap a colour to show only that group.' }));
 
-  // 3. Tools: one search box and one switch, nothing else.
+  // 3. Tools: one search box, one switch and a sort choice.
   const search = el('input', { type: 'search', class: 'mb-search', placeholder: 'Find a feature', value: st.q || '', 'aria-label': 'Find a feature' });
   let t = null;
   search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => set({ q: search.value.trim() }), 250); });
   const nobody = el('button', { type: 'button', class: `mb-toggle${st.nobody ? ' on' : ''}`, text: 'Only “no fix planned”', 'aria-pressed': st.nobody ? 'true' : 'false', onclick: () => set({ nobody: st.nobody ? '' : '1' }) });
-  const tools = el('div', { class: 'mb-tools' }, search, nobody,
-    (st.g || st.q || st.nobody) ? el('button', { type: 'button', class: 'mb-link', text: 'Show everything', onclick: () => { nav.write(''); draw(main, board, nav); } }) : null);
+  const sort = el('select', { class: 'mb-sort', 'aria-label': 'Sort features' },
+    SORTS.map((o) => el('option', { value: o.id, text: `Sort: ${o.label}`, selected: (st.sort || 'worst') === o.id ? 'selected' : null })));
+  sort.addEventListener('change', () => set({ sort: sort.value === 'worst' ? '' : sort.value }));
+  const tools = el('div', { class: 'mb-tools' }, search, nobody, sort,
+    (st.g || st.q || st.nobody || st.sort) ? el('button', { type: 'button', class: 'mb-link', text: 'Show everything', onclick: () => { nav.write(''); draw(main, board, nav); } }) : null);
 
   // 4. Plain groups.
   const rows = filterRows(features, st);
   const open = openGroups(st);
   const sections = GROUPS.map((g) => {
-    const inGroup = orderInGroup(rows.filter((f) => groupOf(f).id === g.id));
+    const inGroup = sortRows(rows.filter((f) => groupOf(f).id === g.id), st.sort);
     if (!inGroup.length) return null;
     const isOpen = open.has(g.id) || Boolean(st.q) || Boolean(st.nobody);
     const nobodyN = inGroup.filter(isNobody).length;

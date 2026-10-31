@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  GROUPS, groupOf, headline, subline, parseState, stateQuery, openGroups, filterRows, orderInGroup, squares,
+  GROUPS, groupOf, headline, subline, sortRows, SORTS, parseState, stateQuery, openGroups, filterRows, orderInGroup, squares,
   humanName, humanArea, ownerChip, statusLine, nextStep, timeline, attention, card, measureText,
 } from '../../dashboard/console/maturation-board-model.js';
 
@@ -201,5 +201,34 @@ describe('rendered page (jsdom)', () => {
   it('shows the switched-off state on 503', async () => {
     const main = await render(new Error('switched off on this agent'));
     expect(main.textContent).toContain('not switched on for this agent');
+  });
+});
+
+describe('sort choice', () => {
+  const f = (id: string, extra: Record<string, unknown> = {}) => ({ id, review: null, followUp: { state: 'linked', items: [] }, deadlines: [], unchangedReviews: 0, ...extra });
+  const rows = [
+    f('beta', { unchangedReviews: 1, deadlines: [{ date: '2026-10-01', open: true, overdueDays: 29 }] }),
+    f('alpha', { unchangedReviews: 5, deadlines: [{ date: '2026-10-20', open: true, overdueDays: 10 }] }),
+    f('gamma', { unchangedReviews: 3 }),
+  ];
+  it('offers four sorts with worst-first first', () => {
+    expect(SORTS.map((s: { id: string }) => s.id)).toEqual(['worst', 'overdue', 'stuck', 'name']);
+  });
+  it('most overdue puts the furthest-past date first and undated last', () => {
+    expect(sortRows(rows, 'overdue').map((r: { id: string }) => r.id)).toEqual(['beta', 'alpha', 'gamma']);
+  });
+  it('longest stuck orders by reviews in a row unchanged', () => {
+    expect(sortRows(rows, 'stuck').map((r: { id: string }) => r.id)).toEqual(['alpha', 'gamma', 'beta']);
+  });
+  it('A–Z orders by name; an unknown sort falls back to worst first', () => {
+    expect(sortRows(rows, 'name').map((r: { id: string }) => r.id)).toEqual(['alpha', 'beta', 'gamma']);
+    expect(sortRows(rows, 'bogus').map((r: { id: string }) => r.id)).toEqual(sortRows(rows, undefined).map((r: { id: string }) => r.id));
+  });
+  it('the sort survives in the page address', () => {
+    expect(parseState(stateQuery({ sort: 'stuck' }))).toEqual({ sort: 'stuck' });
+  });
+  it('names machines it could not check, without claiming they failed to answer', () => {
+    const b = { features: [], sources: [{ name: 'may-be-superseded', machine: 'Mama PC, Laptop', ok: false }] };
+    expect(subline(b)).toContain('Couldn’t check Mama PC, Laptop');
   });
 });
