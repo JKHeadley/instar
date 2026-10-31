@@ -21,7 +21,7 @@ describe('QueuePaceTuner', () => {
   let now: number;
   let ev: QueueEvaluation | null;
   let ticks: QueuePaceTickLog;
-  let triage: TriagePort & { calls: number; answer: { status: number; body: Record<string, unknown> }; used: number | null; callsToday: number | null };
+  let triage: TriagePort & { calls: number; quotaCeiling: number | undefined; answer: { status: number; body: Record<string, unknown> }; used: number | null; callsToday: number | null };
   let serving: boolean;
   let cfg: Record<string, unknown>;
 
@@ -46,8 +46,8 @@ describe('QueuePaceTuner', () => {
     serving = true;
     cfg = { developmentAgent: true, queuePace: { tuner: { enabled: true, dryRun: false } } };
     triage = {
-      calls: 0, answer: { status: 202, body: { runId: 'run-1', accepted: true } }, used: 40, callsToday: 10,
-      acceptTick() { this.calls++; return this.answer; },
+      calls: 0, quotaCeiling: undefined, answer: { status: 202, body: { runId: 'run-1', accepted: true } }, used: 40, callsToday: 10,
+      acceptTick(maxQuotaUsedPercent) { this.calls++; this.quotaCeiling = maxQuotaUsedPercent; return this.answer; },
       async quotaStatus() { return { usedPercent: this.used, pauseThreshold: 75 }; },
       callsUsedToday() { return this.callsToday; },
       maxCallsPerDay() { return 10_000; },
@@ -98,6 +98,7 @@ describe('QueuePaceTuner', () => {
     ev = worker(now - 30_000, 2);
     expect(await t.pump()).toBe('ticked');
     expect(triage.calls).toBe(1);
+    expect(triage.quotaCeiling).toBe(65);
   });
 
   it('dry-run reserves and logs would-tick but never calls the service', async () => {

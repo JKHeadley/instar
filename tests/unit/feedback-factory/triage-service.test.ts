@@ -27,6 +27,43 @@ describe('verified primary account admission', () => {
   const selected = { accountId: 'pool-a', configHome: '/verified/a', credentialVersion: 'v1',
     loginAccountId: 'login-a', limitFamily: 'codex' as const, usedPercent: 10, acquiredAt: T0 };
 
+  it('gives the pace tuner the selected account quota, not the ambient login quota', async () => {
+    let chosen = 1;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async (mode) => {
+        expect(mode).toBe('on');
+        return { state: 'eligible', account: { ...selected, usedPercent: chosen } };
+      }, revalidate: () => true } });
+    h.quota.value = 93;
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 1, pauseThreshold: 75 });
+    h.quota.value = 10;
+    chosen = 70;
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 70, pauseThreshold: 75 });
+  });
+
+  it('refuses pace margin when the selected account is stale or unreadable', async () => {
+    let valid = false;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => valid } });
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: null, pauseThreshold: 75 });
+    valid = true;
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 10, pauseThreshold: 75 });
+  });
+
+  it('rechecks the pace margin inside the accepted tick before spending a model call', async () => {
+    let chosen = 20;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: { ...selected, usedPercent: chosen } }),
+        revalidate: () => true } });
+    await h.addItem('pace-margin');
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 20, pauseThreshold: 75 });
+    chosen = 70;
+    expect(await h.service.tick(65)).toMatchObject({ reason: 'quota-margin-lost', calls: 0, decided: 0 });
+    expect(h.calls).toHaveLength(0);
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(0);
+  });
+
   it('selects and launches a charged call through the transactional token', async () => {
     h = await createHarness({ config: { accountSelectionMode: 'on' },
       primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }), revalidate: () => true } });

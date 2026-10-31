@@ -42,7 +42,7 @@ No static heuristic resolves competing feedback signals. The 75% floor was alrea
 - **Shadowing:** strict routing runs before the provider call, and provider-level `strictModelPin` prevents its older unsupported-model fallback. The arbiter's post-response model check remains defense in depth.
 - **Double-fire:** one transactionally unique reservation token charges each primary call. A competing release and launch have one winner; repeated release is inert. The service's explicit retry selects and reserves again.
 - **Races:** after asynchronous quota reads, owner, authority, credential version and deadline are rechecked. Launch and refund are fenced in the shared SQLite ledger. A child already launched remains charged through handoff.
-- **Feedback loops:** a quota refusal records a pause, not a model failure, so it does not increment unusable/healing counters or trigger a mistaken retry escalation.
+- **Feedback loops:** a quota refusal records a pause, not a model failure, so it does not increment unusable/healing counters or trigger a mistaken retry escalation. The queue-pace tuner reads the same verified account quota that primary triage can spend. It passes its stricter 65% ceiling into an extra tick, which rechecks the selected account before any model-call reservation; a lost margin stops the tick and steps the tuner down. The shared queue diagnostic classifies that stop as quota evidence rather than a normal run. This prevents an ambient 93% login from suppressing a healthy spare account and an ambient 10% login from accelerating work on a selected account already above the pace margin.
 
 ## 6. External surfaces
 
@@ -69,10 +69,12 @@ The main tradeoff is a visible pause when identity or quota cannot be proved. Th
 **Reviewer:** GPT-6 Astra (`/root/account_side_effect_review`), read-only.  
 **Independent read of the artifact:** The reviewer concurred with the signal/authority boundary, deliberate pause behavior, post-launch identity risk, machine-local choice, and rollback limits. It found that the first class-closure wording overstated what the convergence fixture tests. I narrowed that declaration below: the ratchet covers the durable per-item 24-hour throttle, while separate reservation tests cover daily and per-kind caps. The reviewer re-read the correction and concurred, with no remaining mismatch. The reviewer did not run tests.
 
+After the queue-pace integration was rebased in, the same reviewer identified two cross-system mismatches: the tuner read ambient quota while triage could spend from a selected account, and the shared bottleneck classifier treated a new margin refusal as a normal tick. The candidate now reads verified selected-account quota, carries the tuner's stricter ceiling into the accepted tick, and classifies `quota-margin-lost` as quota evidence. The reviewer re-read both fixes and reported no remaining findings. The reviewer did not run tests.
+
 ## Evidence pointers
 
 - Focused reader/model tests: 45/45, including a SIGTERM-resistant child.
-- Focused selector/arbiter/service tests: 80/80, including post-launch credential change and handoff reconstruction.
+- Focused selector/arbiter/service tests: 80/80, including post-launch credential change and handoff reconstruction. Follow-up triage and queue-pace focused tests: 127/127, including selected-versus-ambient quota, an accepted tick whose account loses the pace margin before spend, and bottleneck classification that preserves quota refusal evidence.
 - HTTP integration: 9/9, including an over-limit ambient login and eligible spare.
 - TypeScript and full lint: exit 0; production lifecycle and aggregate suite are pending the shared test lane.
 

@@ -163,6 +163,8 @@ export class FeedbackTriageService {
   private executor: TriageExecutorHooks | null = null;
   /** Candidates counted by the tick in flight (queue pace: queueDepthAfter). Null until counted. */
   private tickCandidates: number | null = null;
+  /** A pace-triggered tick may require more quota headroom than scheduled ticks. */
+  private tickQuotaCeiling = QUOTA_PAUSE_PERCENT;
 
   constructor(private readonly opts: FeedbackTriageServiceOptions) {
     this.now = opts.clock ?? Date.now;
@@ -202,31 +204,33 @@ export class FeedbackTriageService {
   // ── tick admission (owner-only, single-flight, rate-limited) ─────────────────
 
   /** Admit a tick and run it in the background (HTTP returns 202 with the run id). */
-  acceptTick(): { status: 202 | 409 | 429; body: Record<string, unknown> } {
+  acceptTick(maxQuotaUsedPercent?: number): { status: 202 | 409 | 429; body: Record<string, unknown> } {
     if (!this.opts.isCanonicalOwner()) { this.paceRefused('not-canonical-owner'); return { status: 409, body: { error: 'not-canonical-owner' } }; }
     if (this.running) { this.paceRefused('tick-in-flight'); return { status: 409, body: { error: 'tick-in-flight' } }; }
     if (this.now() - this.lastStartedAt < TICK_MIN_INTERVAL_MS) { this.paceRefused('rate-limited'); return { status: 429, body: { error: 'rate-limited', retryAfterMs: TICK_MIN_INTERVAL_MS - (this.now() - this.lastStartedAt) } }; }
     const runId = `triage-run:${randomUUID()}`;
     this.running = true;
     this.lastStartedAt = this.now();
-    setImmediate(() => { void this.runTick(runId).catch(() => { /* recorded in last_tick */ }); });
+    setImmediate(() => { void this.runTick(runId, maxQuotaUsedPercent).catch(() => { /* recorded in last_tick */ }); });
     return { status: 202, body: { runId, accepted: true } };
   }
 
   /** Synchronous variant for tests and the job-less path; same admission rules. */
-  async tick(): Promise<TriageTickResult> {
+  async tick(maxQuotaUsedPercent?: number): Promise<TriageTickResult> {
     if (!this.opts.isCanonicalOwner()) { this.paceRefused('not-canonical-owner'); return { runId: '', result: 'degraded', reason: 'not-canonical-owner', decided: 0, requeued: 0, calls: 0 }; }
     if (this.running) { this.paceRefused('tick-in-flight'); return { runId: '', result: 'no-op', reason: 'tick-in-flight', decided: 0, requeued: 0, calls: 0 }; }
     this.running = true;
     this.lastStartedAt = this.now();
-    return this.runTick(`triage-run:${randomUUID()}`);
+    return this.runTick(`triage-run:${randomUUID()}`, maxQuotaUsedPercent);
   }
 
-  private async runTick(runId: string): Promise<TriageTickResult> {
+  private async runTick(runId: string, maxQuotaUsedPercent = QUOTA_PAUSE_PERCENT): Promise<TriageTickResult> {
     const out: TriageTickResult = { runId, result: 'no-op', decided: 0, requeued: 0, calls: 0 };
     const startedAt = this.now();
     const epoch = this.opts.ownerEpoch();
     this.tickCandidates = null;
+    this.tickQuotaCeiling = Number.isFinite(maxQuotaUsedPercent)
+      ? Math.max(0, Math.min(QUOTA_PAUSE_PERCENT, maxQuotaUsedPercent)) : 0;
     try {
       await this.tickBody(runId, epoch, startedAt, out);
     } catch (error) {
@@ -239,6 +243,7 @@ export class FeedbackTriageService {
         this.accountObservation = null;
       }
       this.running = false;
+      this.tickQuotaCeiling = QUOTA_PAUSE_PERCENT;
       try {
         this.opts.store.fenced(epoch, () => this.opts.store.setMeta('last_tick', JSON.stringify({ ...out, startedAt, finishedAt: this.now() })));
       } catch { /* @silent-fallback-ok: a stale-epoch writer must not record a tick; the owner's next tick does */ }
@@ -257,14 +262,18 @@ export class FeedbackTriageService {
     try { this.opts.paceTicks?.append({ source: 'triage', kind: 'refused', reason }); } catch { /* @silent-fallback-ok: evidence only */ }
   }
 
-  /**
-   * Live quota reading for the queue-pace tuner (the same provider the quota pause uses).
-   * pauseThreshold is the constant QUOTA_PAUSE_PERCENT (75), so the tuner's 10-point margin
-   * means "below 65%". usedPercent is null when unreadable or no authority is registered.
-   */
+  /** The queue-pace tuner checks the account that a primary call can actually use. */
   async quotaStatus(): Promise<{ usedPercent: number | null; pauseThreshold: number }> {
     const authority = this.authority();
     if (!authority) return { usedPercent: null, pauseThreshold: QUOTA_PAUSE_PERCENT };
+    if (this.opts.primaryAccountAdmission) {
+      const selected = await this.opts.primaryAccountAdmission.select(
+        this.opts.config().accountSelectionMode, this.now() + 30_000,
+      ).catch(() => ({ state: 'unreadable' as const }));
+      const used = selected.state === 'eligible' && this.opts.primaryAccountAdmission.revalidate(selected.account)
+        ? selected.account.usedPercent : selected.state === 'saturated' ? QUOTA_PAUSE_PERCENT : null;
+      return { usedPercent: used, pauseThreshold: QUOTA_PAUSE_PERCENT };
+    }
     const used = await this.opts.quotaUsedPercent(authority.provider).catch(() => null);
     return { usedPercent: used, pauseThreshold: QUOTA_PAUSE_PERCENT };
   }
@@ -350,6 +359,10 @@ export class FeedbackTriageService {
       ? pendingSelection.state === 'eligible' ? pendingSelection.account.usedPercent
         : pendingSelection.state === 'saturated' ? QUOTA_PAUSE_PERCENT : null
       : await this.opts.quotaUsedPercent(authority.provider).catch(() => null);
+    if (used !== null && used < QUOTA_PAUSE_PERCENT && used >= this.tickQuotaCeiling) {
+      out.reason = 'quota-margin-lost';
+      return;
+    }
     if (used === null || used >= QUOTA_PAUSE_PERCENT) {
       const waiting = this.selectCandidates(initiativeById, clusterById).length;
       this.tickCandidates = waiting;
@@ -408,6 +421,7 @@ export class FeedbackTriageService {
             if (lastError) this.opts.audit.append('attempt-failed-before-quota-pause', { runId, attempt, check: lastError instanceof Error ? lastError.name : 'unknown' });
             return; // A declined retry is not a second unusable model answer.
           }
+          if (selected.account.usedPercent >= this.tickQuotaCeiling) { out.reason = 'quota-margin-lost'; return; }
           primary = this.beginPrimaryCall(authority, epoch, selected.account, retriage ? 'retriage' : null);
           if (!primary) { out.reason = this.opts.isCanonicalOwner() ? 'call-cap-reached' : 'owner-lost'; return; }
           out.calls++;
@@ -506,7 +520,8 @@ export class FeedbackTriageService {
     finish: (outcome: 'succeeded' | 'failed') => void;
   } | null {
     const admission = this.opts.primaryAccountAdmission;
-    if (!admission || !this.opts.isCanonicalOwner() || this.opts.ownerEpoch() !== epoch ||
+    if (!admission || account.usedPercent >= this.tickQuotaCeiling ||
+      !this.opts.isCanonicalOwner() || this.opts.ownerEpoch() !== epoch ||
       !admission.revalidate(account) || this.now() >= this.tickDeadline) return null;
     const token = this.opts.drainStore.reserveTriageCall({
       authority, ownerHost: this.opts.ownerHost, ownerEpoch: epoch,
@@ -812,6 +827,10 @@ export class FeedbackTriageService {
     if (selected && selected.state !== 'eligible') {
       await this.pauseForQuota(epoch, selected.state === 'saturated' ? QUOTA_PAUSE_PERCENT : null, true, out);
       return false; // No canary attempt, so the healing count and schedule stay put.
+    }
+    if (selected?.state === 'eligible' && selected.account.usedPercent >= this.tickQuotaCeiling) {
+      out.reason = 'quota-margin-lost';
+      return false;
     }
     const primary = selected?.state === 'eligible' ? this.beginPrimaryCall(authority, epoch, selected.account, null) : null;
     if (this.opts.primaryAccountAdmission ? !primary : !this.reserveCall(authority, epoch, null)) return false;

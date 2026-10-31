@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-31T07:44:51.677Z",
+  "slug": "feedback-triage-account-selection",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 49,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/triage/FeedbackTriageService.ts",
+      "src/monitoring/QueuePace.ts",
+      "src/monitoring/QueuePaceTuner.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

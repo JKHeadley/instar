@@ -355,7 +355,7 @@ export const PRECEDENCE: readonly BottleneckKind[] = ['person', 'quota', 'cap', 
 export const TIME_EXHAUSTED = 'triage-time-exhausted-rest-due';
 export const REPO_RE = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const CAP_STOPS = new Set(['call-cap-reached']);
-const QUOTA_STOPS = new Set(['quota-pause', 'quota-unreadable-pause']);
+const QUOTA_STOPS = new Set(['quota-pause', 'quota-unreadable-pause', 'quota-margin-lost']);
 const CAP_ADMISSIONS = new Set(['max-open-prs', 'max-starts-per-day', 'max-concurrent']);
 const QUOTA_ADMISSIONS = new Set(['quota-shedding']);
 

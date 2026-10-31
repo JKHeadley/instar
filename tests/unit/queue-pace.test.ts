@@ -207,6 +207,7 @@ describe('tick rows, worker evidence and projection', () => {
     expect(classifyTickRow(tick(0, { stopReason: 'call-cap-reached' }))).toMatchObject({ refusal: 'cap' });
     expect(classifyTickRow(tick(0, { stopReason: 'quota-pause' }))).toMatchObject({ refusal: 'quota' });
     expect(classifyTickRow(tick(0, { stopReason: 'quota-unreadable-pause' }))).toMatchObject({ refusal: 'quota' });
+    expect(classifyTickRow(tick(0, { stopReason: 'quota-margin-lost' }))).toEqual({ refusal: 'quota', normal: false, reason: 'quota-margin-lost' });
     expect(classifyTickRow(tick(0))).toMatchObject({ refusal: null, normal: true });
     expect(classifyTickRow({ at: 0, source: 'executor', kind: 'admission', admission: 'max-open-prs' })).toMatchObject({ refusal: 'cap' });
     expect(classifyTickRow({ at: 0, source: 'executor', kind: 'admission', admission: 'quota-shedding' })).toMatchObject({ refusal: 'quota' });
@@ -264,6 +265,13 @@ describe('bottleneck', () => {
     const b = evaluateBottleneck({ queue: 'feedback.triage', now, ticks, projection: okProjection });
     expect(b.kind).toBe('quota');
     expect(b.matched).toContain('quota');
+  });
+  it('an extra tick that loses account quota margin keeps the quota bottleneck', () => {
+    const ticks = [tick(60_000, { stopReason: 'quota-margin-lost', decided: 0, calls: 0 }), ...workerTicks.slice(1)];
+    const b = evaluateBottleneck({ queue: 'feedback.triage', now, ticks, projection: okProjection });
+    expect(b.kind).toBe('quota');
+    expect(b.matched).toContain('quota');
+    expect(b.history['quota-margin-lost']).toBe(1);
   });
   it('a refusal cleared by a later normal tick no longer counts', () => {
     const ticks = [tick(60_000), tick(16 * 60_000), tick(31 * 60_000, { stopReason: 'call-cap-reached' }), tick(46 * 60_000)];
