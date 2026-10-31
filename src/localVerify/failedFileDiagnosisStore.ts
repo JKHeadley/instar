@@ -2,8 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ATTEMPT_ID_RE } from './record.js';
-import { classifyTestPath } from './inventory.js';
-import { classifyComparisonSet, diagnosisKey, type DiagnosisClass, type DiagnosisFileComparison, type DiagnosisIdentity } from './failedFileDiagnosis.js';
+import { classifyComparisonSet, diagnosisKey, isDiagnosisIdentity, type DiagnosisClass, type DiagnosisFileComparison, type DiagnosisIdentity } from './failedFileDiagnosis.js';
 
 export const DIAGNOSIS_LIMITS = Object.freeze({ maxAgeMs: 14 * 24 * 60 * 60_000, maxTerminal: 200, maxRunMs: 15 * 60_000 });
 
@@ -23,16 +22,7 @@ function validMarker(x: unknown): x is DiagnosisMarker {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
   const m = x as DiagnosisMarker;
   const i = m.identity;
-  if (!i || typeof i !== 'object' || !Array.isArray(i.failedFiles) || i.failedFiles.length < 1 || i.failedFiles.length > 3
-    || !i.failedFiles.every((f) => typeof f === 'string' && f.length <= 300
-      && /^[A-Za-z0-9_./-]+\.test\.ts$/.test(f)
-      && !f.split('/').some((part) => part === '' || part === '.' || part === '..')
-      && classifyTestPath(f).kind === 'laned')
-    || new Set(i.failedFiles).size !== i.failedFiles.length
-    || [...i.failedFiles].sort().some((f, n) => f !== i.failedFiles[n])
-    || typeof i.repo !== 'string' || !Number.isSafeInteger(i.pr) || i.pr <= 0
-    || ![i.headSha, i.baseSha].every((s) => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s))
-    || typeof i.baseRefName !== 'string' || typeof i.verifierVersion !== 'string' || typeof i.policyHash !== 'string') return false;
+  if (!isDiagnosisIdentity(i)) return false;
   return typeof m.key === 'string' && m.key === diagnosisKey(i)
     && typeof m.attemptId === 'string' && ATTEMPT_ID_RE.test(m.attemptId)
     && typeof m.peerMachineId === 'string' && !!m.peerMachineId && m.peerMachineId.length <= 200

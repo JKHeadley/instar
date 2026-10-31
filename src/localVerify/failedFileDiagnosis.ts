@@ -1,6 +1,7 @@
 /** Advisory failed-file comparison. It never feeds Local Verify's merge index. */
 import { createHash } from 'node:crypto';
 import type { LocalVerifyRecord } from './record.js';
+import { classifyTestPath } from './inventory.js';
 
 export type DiagnosisMode = 'off' | 'observe' | 'auto';
 export type FileObservation = 'pass' | 'assertion-fail' | 'unknown';
@@ -27,10 +28,34 @@ export interface DiagnosisIdentity {
   failedFiles: string[];
 }
 
+/** Canonical paths only; aliases could make a peer test a different file. */
+export function isBoundedFailedFileSet(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 3
+    && value.every((f) => typeof f === 'string' && f.length <= 300
+      && /^[A-Za-z0-9_./-]+\.test\.ts$/.test(f)
+      && !f.split('/').some((part) => part === '' || part === '.' || part === '..')
+      && classifyTestPath(f).kind === 'laned')
+    && new Set(value).size === value.length
+    && [...value].sort().every((f, i) => f === value[i]);
+}
+
+export function isDiagnosisIdentity(value: unknown): value is DiagnosisIdentity {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const i = value as DiagnosisIdentity;
+  return typeof i.repo === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(i.repo)
+    && Number.isSafeInteger(i.pr) && i.pr > 0
+    && [i.headSha, i.baseSha].every((s) => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s))
+    && typeof i.baseRefName === 'string' && /^[A-Za-z0-9._/-]{1,200}$/.test(i.baseRefName)
+    && typeof i.verifierVersion === 'string' && i.verifierVersion.length >= 1 && i.verifierVersion.length <= 200
+    && typeof i.policyHash === 'string' && /^[0-9a-f]{64}$/.test(i.policyHash)
+    && isBoundedFailedFileSet(i.failedFiles)
+    && Object.keys(i).every((k) => ['repo', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'failedFiles'].includes(k));
+}
+
 /** Only a complete small test-file failure from an ordinary full PR verify qualifies. */
 export function diagnosisCandidate(record: LocalVerifyRecord): DiagnosisIdentity | null {
   if (record.kind === 'main' || record.outcome !== 'failure' || record.harnessChanging || record.protectedPath
-    || !record.failedFiles?.length || record.failedFiles.length > 3 || !record.lanes.some((lane) => lane.failed > 0)) return null;
+    || !isBoundedFailedFileSet(record.failedFiles) || !record.lanes.some((lane) => lane.failed > 0)) return null;
   return {
     repo: record.repo, pr: record.pr, headSha: record.headSha, baseSha: record.baseSha,
     baseRefName: record.baseRefName, verifierVersion: record.verifierVersion,
