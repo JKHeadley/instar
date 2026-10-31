@@ -135,6 +135,12 @@ import type { DerivedTarget } from '../monitoring/selfaction/types.js';
 import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS } from './VetoedKillBackoff.js';
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 import { ensureAgentOwnedMemory, defaultClaudeConfigHome } from './AgentOwnedMemory.js';
+import {
+  CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS,
+  type ThreadlineMcpSpawnWiring,
+  type ThreadlineSpawnPlan,
+  type ThreadlineSpawnRequest,
+} from './threadlineMcpSpawn.js';
 
 /* @self-action-controller: age-kill-backoff */
 // Unified self-action backpressure (Increment B, OBSERVE-ONLY): the age-limit
@@ -767,6 +773,97 @@ export class SessionManager extends EventEmitter {
   /** Production wires the preparation-only token authority before any new launch. */
   setOriginLifecycle(lifecycle: OriginSessionLifecycle): void { this.originLifecycle = lifecycle; }
 
+  /**
+   * The persisted transport tag for a session (threadline-mcp-local-http D4). Only a
+   * plan the wiring actually made is recorded; a stripped spawn records nothing.
+   */
+  private threadlineTransportTag(plan: ThreadlineSpawnPlan): { threadlineMcpTransport?: 'http' | 'stdio' } {
+    if (plan.transport === 'http') return { threadlineMcpTransport: 'http' };
+    if (['not-wired', 'not-applicable', 'stripped', 'plan-failed', 'framework-unsupported'].includes(plan.reason)) return {};
+    return { threadlineMcpTransport: 'stdio' };
+  }
+
+  /**
+   * Headless lane plan (threadline-mcp-local-http D2/D3): a stripped spawn (no agent
+   * authority, confined, or an empty strict MCP config) is never offered the HTTP
+   * entry. Codex is only re-wired where today's per-spawn stdio override applies.
+   */
+  private planHeadlessThreadlineMcp(
+    framework: IntelligenceFramework,
+    binaryPath: string,
+    options: { omitAuthEnv?: boolean; confinement?: unknown; disableProjectMcp?: boolean; confinedTools?: string[]; accountPin?: { configHome: string } },
+  ): ThreadlineSpawnPlan {
+    if (!(framework === 'claude-code' || (framework === 'codex-cli' && !!this.config.codexThreadlineMcp))) {
+      return { transport: 'stdio', reason: 'not-applicable', secretEnvFlags: [] };
+    }
+    return this.planThreadlineMcp({
+      framework,
+      binaryPath,
+      knownVersion: this.claudeLaunchVersions.get(binaryPath) ?? null,
+      stripped: Boolean(options.omitAuthEnv) || Boolean(options.confinement)
+        || Boolean(options.disableProjectMcp) || Boolean(options.confinedTools),
+      codexHome: options.accountPin && framework === 'codex-cli' ? options.accountPin.configHome : process.env.CODEX_HOME,
+    });
+  }
+
+  /**
+   * Interactive lane plan (threadline-mcp-local-http D3). This lane has no stripped
+   * mode. Claude Code: dynamic MCP's per-topic strict config wins (its threadline
+   * entry is replaced by the HTTP one); otherwise the stable per-agent file,
+   * non-strict. Returns the plan, the claude MCP flags and the session tag.
+   */
+  private planInteractiveThreadlineMcp(
+    framework: IntelligenceFramework,
+    binaryPath: string,
+    options: { telegramTopicId?: number; configHome?: string } | undefined,
+  ): { plan: ThreadlineSpawnPlan; mcpFlags: string[]; tag: { threadlineMcpTransport?: 'http' | 'stdio' } } {
+    const plan: ThreadlineSpawnPlan =
+      framework === 'claude-code' || (framework === 'codex-cli' && !!this.config.codexThreadlineMcp)
+        ? this.planThreadlineMcp({
+            framework,
+            binaryPath,
+            knownVersion: this.claudeLaunchVersions.get(binaryPath) ?? null,
+            stripped: false,
+            codexHome: framework === 'codex-cli' ? (options?.configHome ?? process.env.CODEX_HOME) : undefined,
+          })
+        : { transport: 'stdio', reason: 'not-applicable', secretEnvFlags: [] };
+    const out: { threadline?: 'http' | 'stdio' | 'absent' } = {};
+    const dynamicFlags = this.buildSessionMcpFlags(options?.telegramTopicId, framework, {
+      ...(plan.transport === 'http' && plan.claudeEntry ? { httpEntry: plan.claudeEntry } : {}),
+      out,
+    });
+    let mcpFlags = dynamicFlags;
+    let tag = this.threadlineTransportTag(plan);
+    if (framework === 'claude-code') {
+      if (dynamicFlags.length > 0) {
+        // The resolved lean set decides: HTTP entry swapped in, stdio entry kept, or none.
+        tag = out.threadline === 'http' ? { threadlineMcpTransport: 'http' }
+          : out.threadline === 'stdio' ? this.threadlineTransportTag(plan)
+            : {};
+      } else if (plan.transport === 'http' && plan.claudeConfigPath) {
+        mcpFlags = ['--mcp-config', plan.claudeConfigPath];
+      }
+    }
+    return { plan, mcpFlags, tag };
+  }
+
+  /** Late-bind the Threadline MCP spawn wiring (server.ts, after Threadline boots). */
+  setThreadlineMcpWiring(wiring: ThreadlineMcpSpawnWiring | null): void { this.threadlineMcpWiring = wiring; }
+
+  /**
+   * The Threadline MCP plan for one spawn. Never throws and never waits: any
+   * failure (or no wiring) is today's stdio behaviour with no secret.
+   */
+  private planThreadlineMcp(req: ThreadlineSpawnRequest): ThreadlineSpawnPlan {
+    if (!this.threadlineMcpWiring) return { transport: 'stdio', reason: 'not-wired', secretEnvFlags: [] };
+    try {
+      return this.threadlineMcpWiring.planSpawn(req);
+    } catch (err) {
+      console.warn(`[SessionManager] Threadline MCP spawn plan failed (stdio): ${err instanceof Error ? err.message : String(err)}`);
+      return { transport: 'stdio', reason: 'plan-failed', secretEnvFlags: [] };
+    }
+  }
+
   /** Existing processes survive a server update. Publish their new preparation
    * credential into their own tmux environment, which the refreshed relay reads.
    * Do not infer a legacy record's harness from the current topic defaults.
@@ -1118,6 +1215,15 @@ export class SessionManager extends EventEmitter {
    */
   private readonly claudeBinaryRetainer: ClaudeBinaryRetainer;
   private lastClaudeBinaryPruneAt = 0;
+  /** Version of the last claude-code binary resolveLaunchBinary chose, keyed by the path it returned. */
+  private readonly claudeLaunchVersions = new Map<string, string | null>();
+  /**
+   * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md):
+   * the in-server wiring that decides, per spawn, whether a session gets the
+   * HTTP entry or today's stdio helper. Set late (Threadline boots after the
+   * SessionManager); unset ⇒ every spawn plans stdio with no secret.
+   */
+  private threadlineMcpWiring: ThreadlineMcpSpawnWiring | null = null;
   private static readonly CLAUDE_BINARY_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
   constructor(config: SessionManagerConfig, state: StateManager, opts: SessionManagerOptions = {}) {
@@ -3903,6 +4009,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // headless build below.
     }
 
+    const headlessThreadline = this.planHeadlessThreadlineMcp(headlessFramework, headlessBinaryPath, options); // threadline-mcp-local-http D2/D3
     const headlessSpec = buildHeadlessLaunch(headlessFramework, {
       binaryPath: headlessBinaryPath,
       prompt: options.prompt,
@@ -3913,6 +4020,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // spawn — uses THIS agent's threadline MCP, not whichever agent last won
       // the shared ~/.codex/config.toml.
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
+      ...(headlessThreadline.transport === 'http' && headlessThreadline.codexArgs
+        ? { codexThreadlineHttpArgs: headlessThreadline.codexArgs } : {}),
       // Reply spawns set this so the codex worker can call threadline_send;
       // jobs leave it unset and keep the workspace-write sandbox.
       ...(options.codexAllowMcpTools ? { codexAllowMcpTools: true } : {}),
@@ -3946,6 +4055,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     if (options.confinedTools && headlessFramework === 'claude-code') {
       applyClaudeToolConfinement(headlessSpec.argv, options.confinedTools);
+    }
+    // Claude Code HTTP wiring: one per-spawn `--mcp-config` (non-strict) naming the
+    // stable per-agent file; its same-named `threadline` entry replaces the global stdio one.
+    if (headlessFramework === 'claude-code' && headlessThreadline.transport === 'http' && headlessThreadline.claudeConfigPath) {
+      const dashPIndex = headlessSpec.argv.indexOf('-p');
+      if (dashPIndex > 0) headlessSpec.argv.splice(dashPIndex, 0, '--mcp-config', headlessThreadline.claudeConfigPath);
     }
 
     // Threadline A2A continuity (claude-code HEADLESS only): set/resume the
@@ -4059,6 +4174,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${options.omitAuthEnv ? '' : this.config.authToken}`,
+        ...headlessThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
+        // Long waits (threadline-mcp-local-http "Bounds", deadline 5): the client
+        // outlasts the 300 s reply wait on every claude-code spawn, stdio and HTTP alike.
+        ...(headlessFramework === 'claude-code' ? CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS : []),
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -4159,6 +4278,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       launchLane: 'headless',
       completionMode: 'exit',
       ...(options.confinement ? { confinedConfigHome: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
+      ...this.threadlineTransportTag(headlessThreadline),
     };
 
     try {
@@ -4384,6 +4504,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
       launchSpec.argv.push(...extraClaudeFlags);
     }
     if (options.confinedTools) applyClaudeToolConfinement(launchSpec.argv, options.confinedTools);
+    // Threadline MCP over local HTTP (threadline-mcp-local-http D2/D3): never for a
+    // stripped spawn (no agent authority, confined, or an empty strict MCP config).
+    const reroutedThreadline = this.planThreadlineMcp({
+      framework: 'claude-code',
+      binaryPath,
+      knownVersion: this.claudeLaunchVersions.get(binaryPath) ?? null,
+      stripped: Boolean(options.omitAuthEnv) || Boolean(options.confinement)
+        || Boolean(options.disableProjectMcp) || Boolean(options.confinedTools),
+    });
+    if (reroutedThreadline.transport === 'http' && reroutedThreadline.claudeConfigPath) {
+      launchSpec.argv.push('--mcp-config', reroutedThreadline.claudeConfigPath);
+    }
 
     // K9: build PATH env with shim prepended (when shim was installed) — same as
     // the headless block.
@@ -4468,6 +4600,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : this.config.authToken}`,
+        ...reroutedThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only; blank when stripped)
+        ...CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS, // long waits: the client outlasts the 300 s reply wait
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -4554,6 +4688,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // A triage session (omitAuthEnv) has its own bound too (job-cost-reduction §5.6.2: 2× expected, ≤30 min).
       maxLifetimeMinutes: omitAuth ? (options.maxDurationMinutes ?? lifetimeMinutes) : lifetimeMinutes,
       ...(confinement ? { confinedConfigHome: launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
+      ...this.threadlineTransportTag(reroutedThreadline),
     };
     // Saved BEFORE any startup step: the monitor and both auto-answerers see this session only
     // from this save on, and the save already carries the confinement marker (spec D3, Restart boundary).
@@ -6071,6 +6206,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   resolveLaunchBinary(framework: IntelligenceFramework, binaryPath: string): string {
     if (framework !== 'claude-code') return binaryPath;
     const resolution = this.claudeBinaryRetainer.resolve(binaryPath);
+    this.claudeLaunchVersions.set(resolution.path, resolution.version);
     if (resolution.source === 'retained') {
       const now = Date.now();
       if (now - this.lastClaudeBinaryPruneAt >= SessionManager.CLAUDE_BINARY_PRUNE_INTERVAL_MS) {
@@ -6697,7 +6833,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * the EXPLICIT `dynamicMcp.enabled` flag (NOT the dev-agent gate) so trimming
    * cannot go live before there is a way to load a heavy server back.
    */
-  private buildSessionMcpFlags(topicId: number | undefined, framework: string): string[] {
+  private buildSessionMcpFlags(
+    topicId: number | undefined,
+    framework: string,
+    /**
+     * Threadline MCP over local HTTP (threadline-mcp-local-http D3): when the HTTP
+     * entry was chosen, the per-topic strict config's `threadline` entry is
+     * REPLACED by it (one writer, one `--mcp-config`); `out.threadline` reports
+     * what the resolved set ended up carrying.
+     */
+    threadline?: { httpEntry?: Record<string, unknown>; out?: { threadline?: 'http' | 'stdio' | 'absent' } },
+  ): string[] {
     try {
       const cfg = this.config.dynamicMcp;
       const enabled = cfg?.enabled === true; // explicit-dark until the full path lands
@@ -6745,6 +6891,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
 
       const filtered = filterMcpConfig(full, allowed);
+      if (threadline?.out) {
+        const servers = (filtered as { mcpServers?: Record<string, unknown> }).mcpServers;
+        if (servers && Object.prototype.hasOwnProperty.call(servers, 'threadline')) {
+          if (threadline.httpEntry) {
+            servers.threadline = threadline.httpEntry;
+            threadline.out.threadline = 'http';
+          } else {
+            threadline.out.threadline = 'stdio';
+          }
+        } else {
+          threadline.out.threadline = 'absent';
+        }
+      }
       const outDir = path.join(this.config.projectDir, '.instar', 'state', 'session-mcp-config');
       fs.mkdirSync(outDir, { recursive: true });
       const outPath = path.join(outDir, `mcp-${topicId}-${Date.now()}.json`);
@@ -6988,6 +7147,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
+    const { plan: interactiveThreadline, mcpFlags: interactiveMcpFlags, tag: interactiveTransportTag } =
+      this.planInteractiveThreadlineMcp(framework, binaryPath, options); // threadline-mcp-local-http D3
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
@@ -7002,10 +7163,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(effectiveConfigHome ? { configHome: effectiveConfigHome } : {}),
       // Per-agent codex threadline MCP override (ignored by non-codex builders).
       ...(this.config.codexThreadlineMcp ? { codexThreadlineMcp: this.config.codexThreadlineMcp } : {}),
+      ...(interactiveThreadline.transport === 'http' && interactiveThreadline.codexArgs
+        ? { codexThreadlineHttpArgs: interactiveThreadline.codexArgs } : {}),
       // Dynamic MCP Lifecycle (claude-code only): launch with a lean/explicit MCP
       // subset when resolved. Fail-safe to [] (full .mcp.json) — a no-op while the
       // feature is dark, and never strands a launch. Ignored by other frameworks.
-      ...(() => { const f = this.buildSessionMcpFlags(options?.telegramTopicId, framework); return f.length > 0 ? { mcpFlags: f } : {}; })(),
+      // Threadline HTTP (when chosen and dynamic MCP is off) rides the same flag slot.
+      ...(interactiveMcpFlags.length > 0 ? { mcpFlags: interactiveMcpFlags } : {}),
       // pi-cli: pin session transcripts into the agent state dir so they are
       // durable + discoverable (PI-HARNESS-INTEGRATION-SPEC §2.2). Ignored by
       // every other framework's builder.
@@ -7061,6 +7225,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        ...interactiveThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only)
+        ...(framework === 'claude-code' ? CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS : []), // long waits
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -7195,6 +7361,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // R2.8/L13: record the spawn cwd so a resume-queue entry can revive
       // this session in ITS tree (worktree round-trip).
       cwd: options?.cwd ?? this.config.projectDir,
+      ...interactiveTransportTag,
     };
     this.state.saveSession(session);
 
@@ -7605,8 +7772,28 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     this.linkAgentOwnedMemory('claude-code', {}, this.config.projectDir);
+    // Planned once the triage binary is resolved (below); the env slot needs it first.
+    let triageThreadline: ThreadlineSpawnPlan = { transport: 'stdio', reason: 'not-wired', secretEnvFlags: [] };
+    const triageBinaryForPlan = resolveFrameworkBinaryPath({
+      framework: 'claude-code',
+      frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+      claudePath: this.config.claudePath,
+      configuredFramework: this.config.framework,
+    });
 
     try {
+      const triageLaunchBinary = triageBinaryForPlan ? this.resolveLaunchBinary('claude-code', triageBinaryForPlan) : null;
+      if (triageLaunchBinary) {
+        // Threadline MCP over local HTTP (threadline-mcp-local-http D2/D3): this lane
+        // has no stripped mode and always carries the agent token, so it gets the
+        // HTTP entry like any other non-stripped claude-code spawn.
+        triageThreadline = this.planThreadlineMcp({
+          framework: 'claude-code',
+          binaryPath: triageLaunchBinary,
+          knownVersion: this.claudeLaunchVersions.get(triageLaunchBinary) ?? null,
+          stripped: false,
+        });
+      }
       const tmuxArgs = [
         'new-session', '-d',
         '-s', tmuxSession,
@@ -7621,6 +7808,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
+        ...triageThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only)
+        ...CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS, // long waits: the client outlasts the 300 s reply wait
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
         // A worktree session's project dir has no `.instar/config.json` and no
@@ -7680,6 +7869,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         tmuxArgs.push('--resume', options.resumeSessionId);
         console.log(`[SessionManager] Resuming triage session: ${options.resumeSessionId}`);
       }
+      if (triageThreadline.transport === 'http' && triageThreadline.claudeConfigPath) {
+        tmuxArgs.push('--mcp-config', triageThreadline.claudeConfigPath);
+      }
 
       withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
       this.retainFailedExitStatus(tmuxSession);
@@ -7710,6 +7902,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // the deterministic provenance here. Set explicitly so no claude-code spawn record is
       // provenance-blind (an env-token lane that forgot the flag would be a lint-caught bug).
       credentialSource: 'store',
+      ...this.threadlineTransportTag(triageThreadline),
     };
     this.state.saveSession(session);
 

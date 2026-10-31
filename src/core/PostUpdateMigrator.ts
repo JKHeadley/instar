@@ -9178,6 +9178,17 @@ The automatic "Message received. Composing response..." ack I send a peer over t
       result.upgraded.push('CLAUDE.md: added A2A ack waits for a live session section');
     }
 
+    // Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D6,
+    // Agent awareness). OWN sniff key `Threadline MCP over local HTTP` — content-sniffed.
+    if (!content.includes('Threadline MCP over local HTTP')) {
+      content += '\n\n' + `### Threadline MCP over local HTTP
+
+My \`threadline_*\` tools normally come from one small helper process per session. With \`threadline.mcpHttp.enabled: true\` in \`.instar/config.json\` (default false, read at each spawn) new sessions get the same tools from my server instead, over \`POST /mcp/threadline\` on loopback, authenticated by a per-machine secret in \`.instar/state/local-mcp-secret\` (key material: never synced, served or backed up). Tool names and behaviour are unchanged; on Codex the server is named \`threadline_local\`. Anything doubtful (an older Claude Code or Codex, a failed self-check, a session started without my authority) falls back to the helper and is counted. Switching the flag off only affects new sessions. A \`threadline_send\` with \`waitForReply\` now really gets its full 300 s on both transports, and one that times out is reported as "outcome unknown: the message may already have been sent", never as not sent. **When to use** (PROACTIVE): the user asks "is the Threadline helper per session still running?" or "why did this session fall back?" → read the authed \`GET /health\` → \`threadline.mcpHttp\` (\`sessionsOnHttp\`, \`sessionsOnStdio\`, \`sessionsOnHttpNeverCalled\`, \`fallbacks\` by framework and reason, \`stuckOperations\`); a send that says outcome unknown → check \`threadline_history\` before resending.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Threadline MCP over local HTTP section');
+    }
+
     // A2A new thread with a peer (Echo Bugs 10000000781, Agent awareness). OWN
     // sniff key `A2A new thread with a peer` — content-sniffed.
     if (!content.includes('A2A new thread with a peer')) {
@@ -12732,6 +12743,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // A2A new thread with a peer: a server-side relay-send option,
       // framework-agnostic — a Codex/Gemini agent must know how to open a
       // second thread with a peer and what the 400/502 mean.
+      // Threadline MCP over local HTTP: the transport the threadline_* tools ride,
+      // framework-agnostic — a Codex agent sees them as `threadline_local`.
+      '### Threadline MCP over local HTTP',
       '### A2A new thread with a peer',
       // A2A local-route trust: a server-side check on the same-machine inbound
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and

@@ -535,6 +535,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'the guard evidence (armed / graduated / counters) describes this disk\'s lifeline-to-server loopback hop and its own secret; it lives under the key-material prefix state/lifeline-ingress-secret*, which is gitignored, backup-excluded and never served',
     },
   });
+  // POST /mcp/threadline — this machine's own sessions calling this machine's
+  // Threadline MCP tools over loopback (docs/specs/threadline-mcp-local-http.md).
+  // A standby's sessions are served by their own server, so it is admitted on
+  // every machine; its credential is this disk's local secret
+  // (state/local-mcp-secret, key material: gitignored, backup-excluded, never served).
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mcp/threadline',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'a loopback call from a session to the server on the same host; the route writes no state of its own (tool calls go through the same loopback routes and admission as the stdio helper), and its secret lives under the key-material prefix state/local-mcp-secret',
+    },
+  });
   // Promotion writes the coherence-critical, git-synced session-pool stage.
   // Keep it behind the cluster lease holder; a standby must never create a
   // competing rollout history even when its local signed evidence is green.

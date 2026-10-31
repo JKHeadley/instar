@@ -797,6 +797,23 @@
       "grandfathered": false
     },
     {
+      "category": "threadline-mcp-local-secret",
+      "description": "Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D2): the 0600 per-agent local secret the agent's own sessions present on POST /mcp/threadline. MACHINE-LOCAL: it authorises only loopback calls on its own host; each machine generates its own at first boot, and a copy elsewhere would authorise nothing there. In KEY_MATERIAL_PATHS (never served, edited, backed up or committed).",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-mcp-secret"
+      ],
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One 64-character secret, replaced only by the operator (delete the file, restart)."
+      },
+      "grandfathered": false
+    },
+    {
       "category": "process-restart-coordination",
       "description": "Process/restart coordination: boot-id, restart markers, auto-updater state, caffeinate pid, slept-marker. Per-process lifecycle.",
       "scope": "machine-local",

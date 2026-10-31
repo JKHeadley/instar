@@ -86,6 +86,11 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // request are on a persisted budget; a file-editor write would step around
   // it and spend the lifeline's shared daily restart cap.
   'state/lifeline-restart-requested.json',
+  // Threadline MCP local secret (32 random bytes, hex, 0600): the credential the
+  // agent's own sessions present on POST /mcp/threadline. Covers the creator's
+  // temp names (`local-mcp-secret.<pid>.<rand>.tmp`) too.
+  // docs/specs/threadline-mcp-local-http.md D2
+  'state/local-mcp-secret',
 ]);
 
 /**
@@ -114,6 +119,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'remediation-keys.age',
   'telemetry/local-secret',
   'state/lifeline-ingress-secret',
+  'state/local-mcp-secret',
   'config.json',
 ]);
 

@@ -2,6 +2,7 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
@@ -147,8 +148,32 @@ export function bearerMatches(req: { headers: Record<string, unknown> }, authTok
   return timingSafeEqual(ha, hb);
 }
 
-export function authMiddleware(authToken?: string | (() => string | undefined), agentId?: string) {
+export function authMiddleware(
+  authToken?: string | (() => string | undefined),
+  agentId?: string,
+  /**
+   * The `/mcp/threadline` admission (docs/specs/threadline-mcp-local-http.md D2):
+   * the per-agent local secret, loopback only, no Origin / forwarding headers.
+   * Writes its own refusal and returns false, or returns true to continue. When
+   * absent the route is refused (401) — fail closed, never the agent token.
+   */
+  localMcpGate?: (req: Request, res: Response) => boolean,
+) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
+    // no-token-configured skip (so an install with no agent token still protects
+    // it) and before the agent-id check (a mismatched id cannot change the
+    // outcome). On this path the local secret replaces the agent token; the
+    // agent token alone is refused. Never a prefix match.
+    if (req.path === '/mcp/threadline') {
+      if (!localMcpGate) {
+        res.status(401).json({ error: 'threadline-mcp-local-secret-required' });
+        return;
+      }
+      if (localMcpGate(req, res)) next();
+      return;
+    }
+
     // Resolve the token per-request so runtime rotation takes effect
     // immediately (a getter is re-read on every request).
     const resolvedToken = typeof authToken === 'function' ? authToken() : authToken;
@@ -618,6 +643,11 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/subscription-pool/matrix/start-cell': followMe.startCellRouteMs,
     '/subscription-pool/follow-me/submit-code': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
     '/subscription-pool/follow-me/cancel': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
+    // Threadline long waits (docs/specs/threadline-mcp-local-http.md "Bounds",
+    // deadline 4): relay-send's reply wait is capped at 300 s and the MCP route
+    // answers by 320 s; the generic 30 s cut-off 408'd every wait past it.
+    '/threadline/relay-send': THREADLINE_MCP_DEADLINES.middlewareMs,
+    '/mcp/threadline': THREADLINE_MCP_DEADLINES.middlewareMs,
   };
 }
 
