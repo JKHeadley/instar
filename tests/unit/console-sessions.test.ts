@@ -47,6 +47,9 @@ describe('words', () => {
   it('the title is the topic name when there is one; keys never collide across machines', () => {
     expect(sessionTitle(sess())).toBe('Bug: login loop');
     expect(sessionTitle({ name: '[job] digest' })).toBe('digest');
+    expect(sessionTitle({ name: 'topic-127504', platform: 'telegram', platformId: 127504 }, { '127504': 'Instar dashboard makeover' })).toBe('Instar dashboard makeover');
+    expect(sessionTitle({ name: 'topic-127504', platform: 'telegram', platformId: 127504 })).toBe('Conversation name unavailable');
+    expect(sessionTitle({ name: 'C123456', platform: 'slack', platformId: 'C123456' })).toBe('Channel name unavailable');
     expect(sessionKey(sess())).toBe('echo-fix');
     expect(sessionKey(sess({ remote: true, machineId: 'm-mini' }))).toBe('remote:m-mini:echo-fix');
   });
@@ -77,11 +80,11 @@ describe('the list', () => {
   });
   it('quiet and duplicate sessions need a look; the rest are working; rows name their machine', () => {
     const quiet = sess({ tmuxSession: 'drain', name: 'drain', platformName: 'Feedback drain', platformId: 1, startedAt: iso(NOW - 3 * 3600_000), telemetry: { lastActivity: iso(NOW - 25 * 60_000) } });
-    const dup = sess({ tmuxSession: 'dup', name: 'dup', platformName: 'Topic 9', platformId: 9, remote: true, machineId: 'm-mini', machineNickname: 'Mac Mini' });
+    const dup = sess({ tmuxSession: 'dup', name: 'dup', platformName: 'Release plan', platformId: 9, remote: true, machineId: 'm-mini', machineNickname: 'Mac Mini' });
     const m = buildSessions(poolOf([sess(), quiet, dup, sess({ tmuxSession: 'old', status: 'completed' })], { duplicateTopics: [{ platform: 'telegram', platformId: 9, sessions: ['dup'] }] }), { now: NOW });
     if (!m.ok) throw new Error('model failed');
-    expect(m.rows.map((r) => r.title)).toEqual(['Bug: login loop', 'Topic 9', 'Feedback drain']);
-    expect(m.needsLook.map((r) => r.title)).toEqual(['Topic 9', 'Feedback drain']);
+    expect(m.rows.map((r) => r.title)).toEqual(['Bug: login loop', 'Release plan', 'Feedback drain']);
+    expect(m.needsLook.map((r) => r.title)).toEqual(['Release plan', 'Feedback drain']);
     expect(m.working.map((r) => r.title)).toEqual(['Bug: login loop']);
     expect(m.rows[0].sub).toBe('Mac Studio · 40 min · active 1 min ago');
     expect(m.needsLook[0].sub).toBe('Mac Mini · 40 min · running on two machines at once');

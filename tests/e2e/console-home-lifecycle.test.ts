@@ -549,7 +549,7 @@ describe('Console Home E2E (feature is alive)', () => {
       const r = await request(server.getApp()).get(p).set(auth);
       return r.status === 200 ? { ok: true, status: 200, data: r.body } : { ok: false, status: r.status, data: r.body, reason: r.status === 503 ? 'switched off on this agent' : `the server answered ${r.status}` };
     };
-    const [pendingRes, ctxRes, syncRes, topicsRes] = await Promise.all([read('/secrets/pending'), read('/self-knowledge/session-context?full=1'), read('/secrets/sync-status'), read('/telegram/topics')]);
+    const [pendingRes, ctxRes, syncRes, topicsRes] = await Promise.all([read('/secrets/pending'), read('/self-knowledge/session-context?full=1'), read('/secrets/sync-status'), read('/telegram/topics?scope=pool')]);
     expect(pendingRes.status).toBe(200);
     expect([200, 503]).toContain(ctxRes.status); // dev-gated key list: on, or honestly off
     expect(syncRes.status).toBe(503);            // single-machine: sync is off, the page hides it
@@ -707,6 +707,23 @@ describe('Console Home E2E (feature is alive)', () => {
     expect((await request(server.getApp()).delete('/sessions/x')).status).toBe(401);
     expect((await request(server.getApp()).post('/sessions/x/remote-close').send({ machineId: 'm', sessionUuid: 'u' })).status).toBe(401);
     expect((await request(server.getApp()).post('/sessions/create').send({ name: 'x' })).status).toBe(401);
+  });
+
+  it('a real internal pipeline wake remains Echo work after its due date, not a Home request', async () => {
+    const internal = tracker.record({ userRequest: 'Pipeline wake: restore a usable fallback',
+      agentResponse: 'Echo will check the login after reset', type: 'one-time-action',
+      source: 'pipeline-wake-2026-10-27T17:50:02Z', owner: 'agent', blockedOn: 'external',
+      hardDeadlineAt: new Date(Date.now() - 60_000).toISOString(), verificationMethod: 'manual' } as never);
+    const response = await request(server.getApp()).get('/commitments?scope=mesh').set(auth);
+    expect(response.status).toBe(200);
+    const record = response.body.commitments.find((x: { id: string }) => x.id === internal.id);
+    expect(record.source).toMatch(/^pipeline-wake-/);
+    const source = { ok: true, data: response.body };
+    const home = buildPromised(source);
+    const page = buildPromisesPage(source);
+    expect(home.rows.some((r) => r.key?.endsWith(`:${internal.id}`))).toBe(false);
+    expect(page.sections.missed.some((r) => r.id === internal.id)).toBe(false);
+    expect(page.sections.carrying.some((r) => r.id === internal.id)).toBe(true);
   });
 });
 
@@ -868,4 +885,5 @@ describe('Console "How I\'m doing inside" E2E (feature is alive)', () => {
       expect((await request(server.getApp()).get(path)).status, path).toBe(401);
     }
   });
+
 });

@@ -1,6 +1,6 @@
 // Instar console — shell, auth, routing, Home rendering.
-// Spec: docs/specs/console-makeover.md. Read-only in MVP: every write action
-// lives in the legacy dashboard, reached by an ordinary link.
+// Spec: docs/specs/console-makeover.md. Home is read-only; the Promises page
+// can close or resume a promise through its existing bearer-protected routes.
 //
 // SAFETY CONTRACT: every dynamic value reaches the DOM through textContent.
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
@@ -9,7 +9,7 @@ import {
   failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
-import { renderPromises } from './promises.js';
+import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
@@ -22,6 +22,7 @@ import { renderAgents } from './agents.js';
 import { renderMandates } from './mandates.js';
 import { renderSecrets } from './secrets.js';
 import { renderLearned } from './learned.js';
+import { topicNameMap } from './topic-names.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
@@ -31,10 +32,11 @@ import { sheetIsOpen, closeSheet, unlockCheck } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
-const TIMEOUT_MS = 5000;
-// Pool reads wait on peers for up to 5 s server-side, so the browser waits longer
-// and says it is still checking rather than discarding a partial answer.
-const POOL_TIMEOUT_MS = 8000;
+const TIMEOUT_MS = 20000;
+// Cross-machine reads can outlive a local read. A missed browser deadline is
+// retried while Home is open; it is never treated as a final check result.
+const POOL_TIMEOUT_MS = 25000;
+const COMMITMENTS_TIMEOUT_MS = 25000;
 const REFRESH_MS = 30000;
 
 let token = '';
@@ -43,6 +45,8 @@ let lastGood = {};                      // card id → last model that was not u
 const expanded = new Set();             // cards the operator expanded; kept across refreshes
 const openRows = new Set();             // rows the operator opened; kept across refreshes
 let rowSeq = 0;
+let homeChatId = null;
+let homeRun = null;
 
 // ── tiny DOM helpers ──────────────────────────────────────────────────────
 function el(tag, attrs = {}, ...kids) {
@@ -88,6 +92,15 @@ async function get(path, timeoutMs = TIMEOUT_MS) {
   } catch (e) {
     return failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached');
   } finally { clearTimeout(t); }
+}
+
+async function getCommitments() {
+  const path = '/commitments?scope=mesh';
+  const first = await get(path, COMMITMENTS_TIMEOUT_MS);
+  if (first.ok || first.reason === 'not signed in') return first;
+  // A single missed read should not erase the operator's action queue.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  return get(path, COMMITMENTS_TIMEOUT_MS);
 }
 
 /** POST with the bearer token; returns { ok, data } or { ok:false, reason } with the server's own words. */
@@ -218,6 +231,17 @@ const CARDS = [
 
 const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'partial', stale: 'out of date' };
 
+function actionHref(action) {
+  if (!action) return null;
+  if (action.kind === 'promise') {
+    const params = new URLSearchParams({ id: String(action.id) });
+    if (action.origin) params.set('origin', String(action.origin));
+    return `#/work/promises?${params}`;
+  }
+  if (action.kind === 'topic') return topicLink(homeChatId, action.topicId);
+  return null;
+}
+
 function cardShell(def) {
   const card = el('section', { class: `card${def.feature ? ' feature' : ''}`, id: `card-${def.id}`, 'data-state': 'loading', 'aria-busy': 'true' },
     el('div', { class: 'card-head' },
@@ -245,7 +269,7 @@ function paintCard(def, model, repaint = false) {
   // (See all toggled) re-renders the model it was given without touching this.
   if (!repaint && model.state === 'unknown' && lastGood[def.id]) {
     const prev = lastGood[def.id];
-    model = { ...prev.model, state: 'stale', line: `${model.line} Showing what I saw ${ago(prev.at)}.`, age: ago(prev.at) };
+    model = { ...prev.model, state: 'stale', retrying: model.retrying, line: `${model.line} Showing what I saw ${ago(prev.at)}.`, age: ago(prev.at) };
   } else if (!repaint && model.state !== 'unknown') {
     lastGood[def.id] = { model, at: Date.now() };
   }
@@ -260,6 +284,7 @@ function paintCard(def, model, repaint = false) {
   });
   const visual = model.state === 'partial' || model.state === 'stale' ? 'unknown' : model.state;
   card.setAttribute('data-state', visual);
+  if (def.id === 'needs') card.hidden = (model.count === 1 && Boolean(actionHref(model.rows?.[0]?.action))) || (model.count === 0 && model.state !== 'unknown' && !model.retrying);
   card.removeAttribute('aria-busy');
   card.classList.add('resolved');
   card.querySelector('.dot').className = dotClass(model.state);
@@ -304,12 +329,18 @@ function paintCard(def, model, repaint = false) {
   if (list && list.length) {
     const rows = el('div', { class: 'rows' });
     for (const r of list) {
-      const row = el(r.expandable || r.detail ? 'button' : 'div', { class: 'row', type: r.expandable || r.detail ? 'button' : null },
+      const href = actionHref(r.action);
+      const expandable = !href && (r.expandable || r.detail);
+      const row = el(href ? 'a' : expandable ? 'button' : 'div', { class: 'row', href, type: expandable ? 'button' : null,
+        target: href && href.startsWith('https://') ? '_blank' : null, rel: href && href.startsWith('https://') ? 'noopener' : null },
         el('span', { class: r.tone === 'bad' ? 'dot bad' : r.tone === 'attn' ? 'dot attn' : r.tone === 'unknown' ? 'dot unknown' : 'dot' }),
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: r.main || '' }), r.sub ? el('span', { class: r.mono ? 'row-sub mono' : 'row-sub', text: r.sub }) : null),
         el('span', { class: 'row-end', text: r.end || '' }),
       );
-      if (r.expandable || r.detail) {
+      if (href) {
+        row.querySelector('.row-end').append(el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+        rows.append(row);
+      } else if (expandable) {
         const id = `row-${++rowSeq}`;
         const key = `${def.id}:${r.key || r.main}`;
         row.setAttribute('data-focus-key', key);
@@ -349,56 +380,46 @@ function paintHeadline(models) {
   if (!h1) return;
   h1.closest('.hero').setAttribute('data-tone', h.tone);
   h1.replaceChildren();
-  if (h.target) {
-    // The headline is the first thing to do: one tap opens it in the list below.
-    const go = el('button', { class: 'hero-link', type: 'button', text: h.text });
-    go.append(el('span', { class: 'hero-arrow', 'aria-hidden': 'true', text: ' ›' }));
-    go.addEventListener('click', () => openNeed(h.target.key));
-    h1.append(go);
-  } else if (h.tone === 'attn') {
-    const m = /^(\d+|One)(.*)$/.exec(h.text);
-    if (m) h1.append(el('span', { class: 'attn', text: m[1] }), document.createTextNode(m[2]));
-    else h1.textContent = h.text;
+  const href = h.href || actionHref(h.action);
+  if ((h.tone === 'attn' || h.tone === 'bad') && href) {
+    h1.append(el('a', { class: 'hero-action', href, target: href.startsWith('https://') ? '_blank' : null,
+      rel: href.startsWith('https://') ? 'noopener' : null, text: h.text }));
   } else if (h.tone === 'ok') {
     const words = h.text.split(' ');
     h1.append(document.createTextNode(words.slice(0, -1).join(' ') + (words.length > 1 ? ' ' : '')), el('span', { class: 'accent', text: words[words.length - 1] }));
   } else h1.textContent = h.text;
   // The count itself is explained by the "What needs you" card underneath; the sub-line only qualifies it.
   sub.textContent = h.sub || '';
-  $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  const statusSummary = $('.home-details summary');
+  if (statusSummary) {
+    const incomplete = Object.values(models).some((m) => m && ['unknown', 'partial', 'stale'].includes(m.state));
+    statusSummary.textContent = incomplete ? 'See agent status · some checks incomplete' : 'See agent status';
+  }
+  const statusNote = $('#homeStatusNote');
+  if (statusNote) {
+    statusNote.textContent = models.needs?.statusNote || '';
+    statusNote.hidden = !statusNote.textContent;
+  }
+  const issueLink = $('#heroIssueLink');
+  if (issueLink) {
+    issueLink.hidden = !((h.tone === 'bad' || h.tone === 'attn') && h.linkLabel && href);
+    if (!issueLink.hidden) { issueLink.href = href; issueLink.textContent = `${h.linkLabel || 'Inspect the issue'} →`; }
+  }
+  $('#heroTime').textContent = `${h.tone === 'attn' ? 'What needs you' : 'Updated'} · ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-/** Open one row of "What needs you" and bring it into view. */
-function openNeed(key) {
-  const fk = `needs:${key}`;
-  const esc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(fk) : fk.replace(/["\\]/g, '\\$&');
-  const row = document.querySelector(`#card-needs [data-focus-key="${esc}"]`);
-  const card = $('#card-needs');
-  if (row) {
-    if (row.getAttribute('aria-expanded') !== 'true') row.click();
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    row.focus({ preventScroll: true });
-  } else if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function pooled(id, path, build, set, namesP) {
-  const slow = setTimeout(() => {
-    const card = $(`#card-${id}`);
-    if (card && card.getAttribute('data-state') === 'loading') {
-      const line = card.querySelector('.card-line');
-      line.textContent = 'Still checking the other machines…';
-    }
-  }, TIMEOUT_MS);
-  Promise.all([get(path, POOL_TIMEOUT_MS), namesP]).then(([r, names]) => { clearTimeout(slow); set(id, build(r, Date.now(), names)); });
-}
-
-async function loadHome() {
-  const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
-  const raw = {};
+function loadHome() {
+  const run = homeRun;
+  if (!run || !run.active || run.document !== document) return;
+  const { models, raw, results } = run;
   const paint = (id) => {
     // "What needs you" is the one answer: queue items plus promises waiting on the operator.
     const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised) : raw[id];
-    models[id] = paintCard(CARDS.find((c) => c.id === id), model) || model;
+    const shown = paintCard(CARDS.find((c) => c.id === id), model) || model;
+    models[id] = shown;
+    // The action queue must use the same last-known promise reading as its
+    // companion card. Otherwise a transient refresh failure hides known work.
+    if (id === 'promised') raw.promised = shown;
   };
   const set = (id, model) => {
     raw[id] = model;
@@ -406,31 +427,75 @@ async function loadHome() {
     if (id === 'promised' && raw.needs) paint('needs');
     paintHeadline(models);
   };
-  // Each card fetches and renders on its own (spec §1): one slow source never blocks the rest.
-  const poolP = get('/pool');
-  const namesP = poolP.then(machineNames);
-  pooled('needs', '/attention?scope=pool', buildNeeds, set, namesP);
-  Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
-    const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
-    set('promised', buildPromised(r, Date.now(), peers));
-  });
-  pooled('doing', '/sessions?scope=pool', buildDoing, set, namesP);
-  poolP.then((r) => set('running', buildRunning(r)));
-  Promise.all([get('/guards'), get('/mandate')]).then(([g, m]) => set('allowed', buildAllowed(g, m)));
+  const annotate = (model, ...reads) => reads.some((r) => r && (r.retrying || (!r.ok && r.reason !== 'not signed in' && r.reason !== 'switched off on this agent')))
+    ? { ...model, retrying: true, line: [model.line, 'Checking again automatically.'].filter(Boolean).join(' ') } : model;
+  const refresh = (key) => {
+    const names = results.pool ? machineNames(results.pool) : {};
+    if ((key === 'attention' || key === 'pool') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
+    if ((key === 'sessions' || key === 'pool' || key === 'topics') && results.sessions) set('doing', annotate(buildDoing(results.sessions, Date.now(), names, topicNameMap(results.topics)), results.sessions));
+    if (key === 'pool' && results.pool) set('running', annotate(buildRunning(results.pool), results.pool));
+    if ((key === 'commitments' || key === 'pool') && results.commitments) {
+      const pool = results.pool;
+      const peers = pool?.ok && Array.isArray(pool.data?.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
+      set('promised', annotate(buildPromised(results.commitments, Date.now(), peers), results.commitments));
+    }
+    if ((key === 'guards' || key === 'mandate') && results.guards && results.mandate) set('allowed', annotate(buildAllowed(results.guards, results.mandate), results.guards, results.mandate));
+  };
+  const read = (key, path, timeoutMs) => {
+    if (run.pending[key]) return;
+    const attempt = async () => {
+      if (!run.active || run.document !== document) return;
+      run.pending[key] = true;
+      const result = await get(path, timeoutMs);
+      if (!run.active || run.document !== document) return;
+      // A 200 that omitted a peer is a partial answer, so keep it visible and
+      // retry for coverage just as we do after a transport timeout.
+      const partial = result.ok && (['attention', 'sessions'].includes(key) && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
+        || key === 'topics' && ((result.data?.pool?.failed?.length || 0) > 0 || (result.data?.pool?.unresolved?.length || 0) > 0));
+      const retryable = partial || (!result.ok && !['not signed in', 'switched off on this agent'].includes(result.reason));
+      results[key] = partial ? { ...result, retrying: true } : result;
+      if (key === 'pool' && result.ok) {
+        const self = (result.data?.machines || []).find((m) => m.isSelf || m.machineId === result.data.selfMachineId);
+        homeChatId = self?.servesChannels?.telegram?.chatIds?.[0] || null;
+      }
+      refresh(key);
+      if (retryable) {
+        run.failures[key] = (run.failures[key] || 0) + 1;
+        const delay = Math.min(15000, 300 * (2 ** Math.min(run.failures[key] - 1, 6)));
+        run.pending[key] = setTimeout(attempt, delay);
+      } else { run.failures[key] = 0; run.pending[key] = null; }
+    };
+    attempt();
+  };
+  // Every source has one in-flight request and its own bounded retry timer.
+  // A slow source cannot block another card or start overlapping refreshes.
+  read('pool', '/pool', POOL_TIMEOUT_MS);
+  read('attention', '/attention?scope=pool', POOL_TIMEOUT_MS);
+  read('sessions', '/sessions?scope=pool', POOL_TIMEOUT_MS);
+  read('topics', '/telegram/topics?scope=pool', POOL_TIMEOUT_MS);
+  read('commitments', '/commitments?scope=mesh', COMMITMENTS_TIMEOUT_MS);
+  read('guards', '/guards', TIMEOUT_MS);
+  read('mandate', '/mandate', TIMEOUT_MS);
 }
 
 function renderHome(main) {
+  homeRun = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {} };
   main.replaceChildren(
     el('section', { class: 'hero' },
       el('div', { class: 'eyebrow', id: 'heroTime', text: 'Checking in' }),
       el('h1', { id: 'heroTitle', text: 'Checking in…' }),
       el('p', { id: 'heroSub' }),
+      el('a', { id: 'heroIssueLink', class: 'hero-issue-link', hidden: true }),
     ),
-    el('div', { class: 'home-cols' },
-      el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main').map(cardShell)),
-      el('div', { class: 'col col-side' }, CARDS.filter((c) => c.col === 'side').map(cardShell)),
+    cardShell(CARDS[0]),
+    el('details', { class: 'home-details' },
+      el('summary', { text: 'See agent status' }),
+      el('p', { id: 'homeStatusNote', class: 'home-status-note', hidden: true }),
+      el('div', { class: 'home-cols' },
+        el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main' && c.id !== 'needs').map(cardShell)),
+        el('div', { class: 'col col-side' }, CARDS.filter((c) => c.col === 'side').map(cardShell)),
+      ),
     ),
-    footNote(),
   );
   loadHome();
   if (refreshTimer) clearInterval(refreshTimer);
@@ -500,6 +565,7 @@ const NATIVE = {
 };
 
 function route() {
+  if (homeRun) { homeRun.active = false; for (const p of Object.values(homeRun.pending)) if (p && p !== true) clearTimeout(p); homeRun = null; }
   closeSheet();
   const path = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
   const id = path.split('/')[0];
@@ -508,10 +574,10 @@ function route() {
   const main = renderShell(active);
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (NATIVE[path]) {
-    NATIVE[path](main, { get, post });
+    NATIVE[path](main, { get, post, getCommitments });
     // Pages refresh in place every 30 s while visible, never over an open sheet.
     refreshTimer = setInterval(() => {
-      if (document.visibilityState === 'visible' && !sheetIsOpen() && (location.hash.replace(/^#\/?/, '').split('?')[0]) === path) NATIVE[path](main, { get, post });
+      if (document.visibilityState === 'visible' && !sheetIsOpen() && (location.hash.replace(/^#\/?/, '').split('?')[0]) === path) NATIVE[path](main, { get, post, getCommitments });
     }, REFRESH_MS);
   } else if (group) renderGroup(main, group); else renderHome(main);
   window.scrollTo(0, 0);

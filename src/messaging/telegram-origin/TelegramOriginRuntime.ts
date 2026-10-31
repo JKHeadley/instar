@@ -283,18 +283,18 @@ export class TelegramOriginRuntime {
     const seen = new Set(memory.map(row => row.operationId));
     const rows: Array<Record<string, unknown>> = memory.map(row => {
       const match = durable.find(d => d.operationId === row.operationId);
-      return match ? { ...row, hold_reason: match.holdReason, durable: true, topicId: match.destination.topicId, holder: match.executionOwnerMachineId, deadlineAt: match.deadlineAt } : row;
+      return match ? { ...row, hold_reason: match.holdReason, durable: true, topicId: match.destination.topicId, holder: match.executionOwnerMachineId, deadlineAt: match.deadlineAt, producerKind: match.producerKind } : row;
     });
     for (const row of durable) {
       if (seen.has(row.operationId) || row.state !== 'held') continue;
       rows.push({ operationId: row.operationId, reason: row.holdReason, hold_reason: row.holdReason, since: row.preparedAt,
         payloadRetainedInMemory: false, durable: true, deadlineAt: row.deadlineAt, topicId: row.destination.topicId,
-        holder: row.executionOwnerMachineId, recovery: row.recovery });
+        holder: row.executionOwnerMachineId, recovery: row.recovery, producerKind: row.producerKind });
     }
     return rows;
   }
-  #heldForward: { count: number; topics: string[]; oldestSince: number | null; observedAt: number | null; expiredUnreported: number } =
-    { count: 0, topics: [], oldestSince: null, observedAt: null, expiredUnreported: 0 };
+  #heldForward: { count: number; sessionReplies: number; automaticMessages: number; otherMessages: number; topics: string[]; oldestSince: number | null; observedAt: number | null; expiredUnreported: number } =
+    { count: 0, sessionReplies: 0, automaticMessages: 0, otherMessages: 0, topics: [], oldestSince: null, observedAt: null, expiredUnreported: 0 };
   #heldForwardRefreshedAt = 0;
   /** Direct-path lease holds already reported (bounded: pruned to the live held set). */
   #observedLeaseHolds = new Set<string>();
@@ -328,7 +328,10 @@ export class TelegramOriginRuntime {
       try { await this.store.recordOperationState({ operationId: row.operationId, state: 'held', holdDetail: { kind: 'direct-lease-hold', reportedAt: now } }); }
       catch { /* the in-memory set still dedupes this process; a restart may repeat the notice once */ }
     }
-    this.#heldForward = { count: held.length, topics: [...new Set(held.map(row => row.destination.topicId).filter((t): t is string => t !== null))],
+    const sessionReplies = held.filter(row => row.producerKind === 'session').length;
+    const automaticMessages = held.filter(row => row.producerKind === 'server-automation').length;
+    this.#heldForward = { count: held.length, sessionReplies, automaticMessages, otherMessages: held.length - sessionReplies - automaticMessages,
+      topics: [...new Set(held.map(row => row.destination.topicId).filter((t): t is string => t !== null))],
       oldestSince: held.length ? Math.min(...held.map(row => row.preparedAt)) : null, observedAt: now, expiredUnreported: expired.length };
     for (const row of expired) {
       if (this.closed) return;

@@ -169,7 +169,7 @@ describe('passwords & keys in a DOM', () => {
       '/secrets/pending': { body: () => ({ pending }) },
       '/self-knowledge/session-context?full=1': { body: () => ({ names: ['openai_api_key', 'github_token'], factCount: 1, vaultState: 'ok', block: 'VALUE-SHOULD-NEVER-RENDER sk-live-123' }) },
       '/secrets/sync-status': { status: 503, body: () => ({ error: 'secret-sync not available' }) },
-      '/telegram/topics': { body: () => ({ topics: [{ topicId: 52075, sessionName: 's', topicName: 'Instar 2.0' }] }) },
+      '/telegram/topics?scope=pool': { body: () => ({ topics: [{ topicId: 52075, sessionName: 's', topicName: 'Instar 2.0' }] }) },
       '/pool': { body: () => ({ enabled: false, machines: [] }) },
     };
     g.fetch = async (url: string, opts?: { method?: string; body?: string; headers?: Record<string, string> }) => {

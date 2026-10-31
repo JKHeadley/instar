@@ -9,6 +9,7 @@ import {
 } from './plans-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { topicNameMap } from './topic-names.js';
 import { topicLink } from './promises.js';
 
 const EYEBROW = 'Work · Plans';
@@ -22,8 +23,8 @@ let last = null;                                // the last data read, repainted
 export async function renderPlans(main, ctx) {
   const { get, post } = ctx;
   if (!main.querySelector('.plans-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading plans' })));
-  const [initiatives, digest, projects, blockers, floor, pool] = await Promise.all([
-    get('/initiatives'), get('/initiatives/digest'), get('/projects'), get('/blockers'), get('/autonomous/throughput-floor'), get('/pool'),
+  const [initiatives, digest, projects, blockers, floor, pool, topics] = await Promise.all([
+    get('/initiatives'), get('/initiatives/digest'), get('/projects'), get('/blockers'), get('/autonomous/throughput-floor'), get('/pool'), get('/telegram/topics?scope=pool'),
   ]);
   // Rounds and pieces come from one read per open project, capped like the legacy tab.
   const open = projects.ok && Array.isArray(projects.data && projects.data.items) ? projects.data.items.filter((p) => p && OPEN_STATUSES.has(p.status)).slice(0, PROJECT_DETAIL_CAP) : [];
@@ -33,13 +34,13 @@ export async function renderPlans(main, ctx) {
   const selfId = pool.ok && pool.data ? pool.data.selfMachineId : null;
   const self = machines.find((m) => m.isSelf || (selfId && m.machineId === selfId)) || {};
   const chatId = self.servesChannels && self.servesChannels.telegram && (self.servesChannels.telegram.chatIds || [])[0];
-  last = { res: { initiatives, digest, projects, details: detailsById, blockers, floor }, chatId, post, main, ctx };
+  last = { res: { initiatives, digest, projects, details: detailsById, blockers, floor }, chatId, post, main, ctx, topicNames: topicNameMap(topics) };
   paint();
 }
 
 function paint() {
-  const { res, chatId, post, main, ctx } = last;
-  const page = buildPlansPage(res, Date.now(), { filter });
+  const { res, chatId, post, main, ctx, topicNames } = last;
+  const page = buildPlansPage(res, Date.now(), { filter, topicNames });
   const refresh = () => renderPlans(main, ctx);
   if (!page.ok) { setKids(main, el('div', { class: 'plans-page' }, pageHead({ eyebrow: EYEBROW, headline: 'Plans', tone: 'muted' }), cantTell(page.reason), legacyLink())); return; }
   const { sections: s, counts: n, inTheWay: w, runs } = page;
