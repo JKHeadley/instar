@@ -63,6 +63,7 @@ interface FakeOpts {
   /** Per-step durations (ms) for exec steps, by step key: npm-ci, build, lint, unit, integration, e2e. */
   durations?: Partial<Record<string, number>>;
   gitTimeout?: string; // a git verb that times out
+  gitDurations?: Partial<Record<string, number>>;
   mergeTreeStatus?: number;
   npmCiStatus?: number;
   lintStatus?: number;
@@ -95,6 +96,10 @@ interface FakeOpts {
   laneExit?: Partial<Record<'unit' | 'integration' | 'e2e', number | null>>;
   /** Isolation re-runs that only end when the run's fail-fast signal aborts them. */
   rerunHang?: string[];
+  /** Results of the focused first run and optional retry. */
+  preflightStatuses?: Array<'passed' | 'failed'>;
+  preflightQuiescent?: boolean;
+  preflightRunDurationMs?: number;
 }
 
 function fake(o: FakeOpts = {}) {
@@ -102,11 +107,12 @@ function fake(o: FakeOpts = {}) {
   const files = new Map<string, string>();
   const dirs = new Set<string>();
   const removed: string[] = [];
-  const gitCalls: Array<{ args: string[]; cwd: string; gitDir: string; workTree?: string }> = [];
+  const gitCalls: Array<{ args: string[]; cwd: string; gitDir: string; workTree?: string; timeoutMs: number }> = [];
   const execCalls: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; deadlineMs: number }> = [];
   const logs: Array<Record<string, unknown>> = [];
   let holderCall = 0;
   let pid = 1000;
+  let preflightRun = 0;
   const shardLists: Array<{ lane: string; files: string[] }> = [];
 
   files.set(path.join(P.runDir, 'package.json'), PKG);
@@ -154,12 +160,37 @@ function fake(o: FakeOpts = {}) {
 
   const seams: OrchestratorSeams = {
     async git(args, opts) {
-      gitCalls.push({ args, cwd: opts.cwd, gitDir: opts.gitDir, workTree: opts.workTree });
+      gitCalls.push({ args, cwd: opts.cwd, gitDir: opts.gitDir, workTree: opts.workTree, timeoutMs: opts.timeoutMs });
+      const duration = o.gitDurations?.[args[0]] ?? 0;
+      t += Math.min(duration, opts.timeoutMs);
+      if (duration > opts.timeoutMs) return { status: null, stdout: '', stderr: 'timeout', timedOut: true };
       return gitImpl(args);
     },
     async exec(command, args, opts) {
       execCalls.push({ command, args, env: opts.env, deadlineMs: opts.deadlineMs });
       opts.onPid?.(++pid);
+      if (args.includes('vitest.push.config.ts')) {
+        const out = args.find((a) => a.startsWith('--json=') || a.startsWith('--outputFile.json='))!.split('=')[1];
+        const selected = 'tests/unit/a.test.ts';
+        if (args[0] === 'list') {
+          files.set(out, JSON.stringify(args.includes('--filesOnly')
+            ? [{ file: path.join(P.runDir, selected) }]
+            : [{ file: path.join(P.runDir, selected), name: 'a' }]));
+          t += 1000;
+          return { status: 0, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid, quiescent: o.preflightQuiescent ?? true };
+        }
+        const status = o.preflightStatuses?.[preflightRun++] ?? 'passed';
+        const duration = o.preflightRunDurationMs ?? 1000;
+        if (duration > opts.deadlineMs) {
+          t += opts.deadlineMs;
+          return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', deadlineKilled: true, pid,
+            quiescent: o.preflightQuiescent ?? true };
+        }
+        files.set(out, vitestReport(selected, [status]));
+        if (opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE) files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE, JSON.stringify({ v: 1, unhandledErrors: 0, messages: [] }));
+        t += duration;
+        return { status: status === 'failed' ? 1 : 0, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid, quiescent: o.preflightQuiescent ?? true };
+      }
       const key = stepKey(command, args);
       const dur = o.durations?.[key] ?? 1000;
       const r = (status: number | null): ExecResult => ({ status, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid });
@@ -395,6 +426,65 @@ describe('runVerify — happy path', () => {
     expect(lanes[1].env.AUDIT_CHANGE_KIND).toBeUndefined();
     // Temp dirs removed: the run's pair plus one pair per lane process.
     expect(f.removed.filter((p) => p.startsWith('/tmp/lv-'))).toHaveLength(2 + 2 * LANE_PROCS);
+  });
+});
+
+describe('runVerify — focused PR preflight', () => {
+  const focused = (mode: 'observe' | 'enforce') => input({ preflightMode: mode, preflightRediscoverable: true });
+  it('keeps an observed stable red diagnostic while the complete lanes determine green', async () => {
+    const f = fake({ preflightStatuses: ['failed', 'failed'] });
+    const r = await runVerify(focused('observe'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { mode: 'observe', outcome: 'red', reason: 'observed-stable-red' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.push.config.ts'))).toHaveLength(4);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+  });
+  it('stops only an eligible stable assertion red before the full-suite slot', async () => {
+    const f = fake({ preflightStatuses: ['failed', 'failed'] });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'failure', lanes: [], preflight: { mode: 'enforce', outcome: 'red', reason: 'preflight-red' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('continues all full lanes after a failed first attempt passes its retry', async () => {
+    const f = fake({ preflightStatuses: ['failed', 'passed'] });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { mode: 'enforce', outcome: 'pass', reason: 'retry-green' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+  });
+  it('turns an unconfirmed process-group cleanup into an infrastructure error before lanes', async () => {
+    const f = fake({ preflightQuiescent: false });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'preflight-cleanup', lanes: [] });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('charges a slow post-preflight cleanliness check to the 90-second cap', async () => {
+    const f = fake({ gitDurations: { status: 100_000 } });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'deadline:preflight-porcelain', lanes: [] });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThanOrEqual(90_000);
+    expect(f.gitCalls.find((c) => c.args[0] === 'status')?.timeoutMs).toBeLessThanOrEqual(90_000);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('continues full verification after a contained preflight deadline and a clean final status check', async () => {
+    const f = fake({ preflightRunDurationMs: 100_000 });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'timeout', reason: 'first-run-timeout' } });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThanOrEqual(90_000);
+    expect(f.gitCalls.find((c) => c.args[0] === 'status')?.timeoutMs).toBeGreaterThan(0);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+  });
+  it('freezes preflight elapsed time before the full suite runs', async () => {
+    const f = fake({ durations: { unit: 60_000, integration: 60_000, e2e: 60_000 } });
+    const r = await runVerify(focused('observe'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'pass' } });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThan(10_000);
+  });
+  it('skips focused work for a changed harness file while the full lanes still decide green', async () => {
+    const f = fake({ diff: 'M\ttests/vitest-setup.ts\n' });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'skip', reason: 'harness-changing' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.push.config.ts'))).toHaveLength(0);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+    expect(f.gitCalls.find((c) => c.args[0] === 'merge-base')?.timeoutMs).toBeLessThanOrEqual(80_000);
   });
 });
 

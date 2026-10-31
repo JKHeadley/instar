@@ -1,4 +1,5 @@
 /**
+ * The optional focused preflight cannot loosen full-suite merge criteria.
  * The fixed policy local-verify runs under (spec local-verify-merge-authority.md §2).
  *
  * Deadlines are constants reviewed at Acceptance, never derived from a run's own
@@ -10,6 +11,7 @@
 import crypto from 'node:crypto';
 import { LANES, INVENTORY_INCLUDE, INVENTORY_EXCLUDE, type LaneName } from './inventory.js';
 import { HARNESS_GLOBS, TOOLCHAIN_PACKAGES, TOOLCHAIN_SCOPES } from './harnessClassifier.js';
+import { PREFLIGHT_LIMITS } from './preflight.js';
 
 const MIN = 60_000;
 
@@ -100,6 +102,7 @@ export function computePolicyHash(): string {
     e2eShards: LOCAL_VERIFY_LIMITS.e2eShards,
     integrationShards: LOCAL_VERIFY_LIMITS.integrationShards,
     unitWorkersParallel: LOCAL_VERIFY_LIMITS.unitWorkersParallel,
+    preflight: PREFLIGHT_LIMITS,
   };
   return crypto.createHash('sha256').update(stable(policy)).digest('hex');
 }

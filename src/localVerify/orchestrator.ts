@@ -1,4 +1,5 @@
 /**
+ * Focused preflight may shorten a stable red, but a green still requires every full lane.
  * The local-verify run orchestrator (spec local-verify-merge-authority.md §2 Run
  * steps 1–5 and 8): one verify of one (head, base) merge, driven entirely through
  * injected seams (git, process, fs, clock, test-runner holders) so it is unit
@@ -22,7 +23,9 @@ import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, 
 import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
-import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord } from './record.js';
+import { FLAKY_RETRIED_MAX, isValidSha, validateRecord, type FlakyRetry, type LocalVerifyRecord, type PreflightEvidence } from './record.js';
+import { effectivePreflightMode, PREFLIGHT_LIMITS } from './preflight.js';
+import { PreflightCleanupError, runFocusedPreflight } from './runFocusedPreflight.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_IDENTITY, LOCAL_VERIFY_LIMITS, type LocalVerifyDeadlines } from './policy.js';
 import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } from './shardPlan.js';
 
@@ -47,6 +50,8 @@ export interface ExecResult {
   /** Stopped through `opts.signal` (fail-fast: a sibling lane already failed); never set with `deadlineKilled`. */
   aborted?: boolean;
   pid: number | null;
+  /** For isolated preflight commands, every process in the dedicated group exited. */
+  quiescent?: boolean;
 }
 
 export interface GitCallOpts {
@@ -81,7 +86,7 @@ export interface OrchestratorSeams {
   exec(
     command: string,
     args: string[],
-    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal },
+    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean },
   ): Promise<ExecResult>;
   fs: OrchestratorFs;
   now(): number;
@@ -141,6 +146,10 @@ export interface VerifyRunInput {
    * the other lanes (the verdict is already `failure`). Absent/false ⇒ every lane runs to the end.
    */
   failFast?: boolean;
+  /** Host-local focused preflight posture, read once when this attempt starts. */
+  preflightMode?: 'off' | 'observe' | 'enforce';
+  /** True only for an automatic watcher candidate that can be rediscovered after a lease move. */
+  preflightRediscoverable?: boolean;
   /**
    * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service).
    * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards`.
@@ -280,8 +289,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let mergeCommit = '';
   let worktreeCreated = false;
   let flags: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
+  let enteredPreflight = false;
+  let preflight: PreflightEvidence | undefined;
+  let preflightStartedAt: number | null = null;
+  let preflightEnded = false;
 
-  const remaining = () => d.totalActiveMs - (seams.now() - startedAtMs);
+  const remaining = () => d.totalActiveMs + (enteredPreflight ? PREFLIGHT_LIMITS.totalMs : 0) - (seams.now() - startedAtMs);
   /** Deadline for a step: its own budget, capped by what is left of the total. */
   const budget = (stepMs: number) => {
     const left = remaining();
@@ -408,12 +421,60 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       }
     }
 
+    // Charge the optional preflight for its exact-base changed-file scan too.
+    // The scan remains necessary for isolation re-runs when preflight is off.
+    const mode = effectivePreflightMode(input.preflightMode, input.kind === 'main' ? 'main' : 'pr', input.preflightRediscoverable === true);
+    preflightStartedAt = mode === 'off' ? null : seams.now();
+    if (preflightStartedAt !== null) enteredPreflight = true;
+    const preflightGitBudget = (reserveMs: number = PREFLIGHT_LIMITS.teardownReserveMs) => {
+      if (preflightStartedAt === null) return d.gitStepMs;
+      const left = PREFLIGHT_LIMITS.totalMs - (seams.now() - preflightStartedAt) - reserveMs;
+      if (left <= 0) throw new RunError('deadline:preflight', 'preflight budget exhausted');
+      return Math.min(d.gitStepMs, left);
+    };
     // Changed files (merge-base→head) for the isolation re-run's PR rule; null = unreadable.
     if (input.kind !== 'main') {
       try {
-        const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base')).trim();
-        changedForIsolation = new Set(parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', mb, input.headSha], 'diff')).map((r) => r.path));
+        const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base', undefined, preflightGitBudget())).trim();
+        changedForIsolation = new Set(parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', mb, input.headSha], 'diff', undefined, preflightGitBudget())).map((r) => r.path));
       } catch { changedForIsolation = null; }
+    }
+
+    // The installed verifier, not the PR's test code, decides whether this
+    // synthetic merge may spend the bounded diagnostic preflight budget.
+    if (mode !== 'off') {
+      // Full classification reads every changed test and remains on the ordinary
+      // record path below. The early check needs only a conservative harness
+      // veto; package changes without both revisions are deliberately skipped.
+      const harnessChanging = changedForIsolation !== null && classifyHarness({
+        changedPaths: [...changedForIsolation], packageJson: { base: null, head: pkgText },
+        extraGlobs: input.extraHarnessGlobs,
+      }).harnessChanging;
+      if (harnessChanging || changedForIsolation === null) {
+        preflight = {
+          mode, outcome: 'skip', reason: harnessChanging ? 'harness-changing' : 'changed-files-unreadable',
+          elapsedMs: Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt!)), changedFiles: Math.min(changedForIsolation?.size ?? 0, 10_000), selectedFiles: [], selectedCases: 0,
+          headSha: input.headSha, baseSha: input.baseSha,
+        };
+      } else {
+        preflight = await runFocusedPreflight({
+          seams, runDir: p.runDir, reportsDir: p.reportsDir, binDir, baseEnv: runEnv,
+          baseSha: input.baseSha, headSha: input.headSha, mode,
+          startedAtMs: preflightStartedAt!,
+          changedFiles: changedForIsolation.size, reporter,
+          activeRemainingMs: remaining, onPid: (pid) => { ourPids.add(pid); },
+        });
+        const wtGitDir = worktreeGitDir(seams, p);
+        if (!wtGitDir) throw new RunError('preflight-porcelain', 'run worktree admin dir unreadable');
+        const clean = await git(['status', '--porcelain'], 'preflight-porcelain', { gitDir: wtGitDir, workTree: p.runDir }, preflightGitBudget(0));
+        if (clean.status !== 0 || clean.stdout.trim()) throw new RunError('preflight-dirty-tree', 'preflight changed the merge worktree');
+      }
+      preflight.elapsedMs = Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt!));
+      preflightEnded = true;
+      seams.log({ event: 'preflight', mode, outcome: preflight.outcome, reason: preflight.reason, elapsedMs: preflight.elapsedMs,
+        changedFiles: preflight.changedFiles, selectedFiles: preflight.selectedFiles.length, selectedCases: preflight.selectedCases,
+        headSha: input.headSha, baseSha: input.baseSha, baseRefName: input.baseRefName });
+      if (mode === 'enforce' && preflight.outcome === 'red') throw new RunFailure('preflight-red');
     }
 
     // The inventory comes first: the isolation re-run needs each lane's assigned files.
@@ -596,6 +657,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     }
     flags = await classify();
   } catch (e) {
+    if (preflight && preflightStartedAt !== null && !preflightEnded) {
+      preflight.elapsedMs = Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt));
+      preflightEnded = true;
+    }
     if (e instanceof Requeue) {
       await cleanup(false);
       return { kind: 'requeue', reason: e.reason, overlaps };
@@ -607,7 +672,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       flags = await classify().catch(() => ({ ...flags, harnessChanging: true }));
     } else {
       outcome = 'error';
-      errorStep = e instanceof RunError ? e.step : 'crash';
+      errorStep = e instanceof RunError ? e.step : e instanceof PreflightCleanupError ? 'preflight-cleanup' : 'crash';
       evaluationReasons = [e instanceof Error ? e.message : String(e)];
     }
   }
@@ -623,6 +688,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   if (input.kind === 'main') record.kind = 'main';
   if (input.attempt && input.kind !== 'main') record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
   if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
+  if (preflight) record.preflight = preflight;
   const kept = await cleanup(outcome !== 'success');
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };

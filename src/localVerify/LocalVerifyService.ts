@@ -1,4 +1,5 @@
 /**
+ * A preflight red creates a durable full-suite replay obligation; only full green is merge authority.
  * LocalVerifyService — the server-side queue, in-flight protocol, completion
  * path and record index for local-verify (spec local-verify-merge-authority.md
  * §2: "Who starts a verify" (POST path), Keys, Retry transitions, Single flight,
@@ -48,12 +49,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
+import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult } from './orchestrator.js';
+import { PREFLIGHT_LIMITS } from './preflight.js';
 import {
   PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
@@ -249,6 +252,12 @@ export interface QueueEntry {
   headSha: string;
   baseSha: string;
   baseRefName: string;
+  /** Set only by the automatic merge watcher, whose candidates can be rediscovered after lease movement. */
+  preflightRediscoverable?: boolean;
+  /** This attempt consumes the durable full-suite replay, never a new preflight. */
+  preflightReplay?: boolean;
+  /** A contained preflight infrastructure error retries in a fresh tree without another preflight. */
+  preflightBypassRetry?: true;
   /** First time this (pr, head) was queued; capacity waits never reset it. */
   firstQueuedAt: number;
   attempts: number;
@@ -483,6 +492,8 @@ interface InFlight {
   suiteSlotAcquired?: boolean;
   /** When the run child started (restart-hold bound). */
   startedAt: number;
+  /** Latched at spawn: a live setting change cannot shorten this child's restart hold. */
+  preflightAllowanceMs: number;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -531,6 +542,7 @@ export interface PersistedQueueEntry {
   /** A peer reservation (Part D), kept as written so a restart resumes polling the same attempt. */
   remote?: RemoteMarker;
   remoteAttempts?: number;
+  preflightBypassRetry?: true;
 }
 
 /** What the AutoUpdater tells the verifier (spec §2 Restarts rule (b)); null = unknown (never pauses). */
@@ -581,19 +593,21 @@ export function decideUpdatePause(u: UpdatePendingState | null, now: number, max
  * The longest a verify that started at `startedAt` can still be running: its whole
  * active-work budget plus the in-place waits it may make before lanes 2 and 3 (the
  * child's own hard bounds — the server cannot see how much of either it has used, so
- * this is the run's own ceiling, never longer). Capped at `now + maxDeferralMs`.
+ * this is the run's own ceiling, never longer). A child that can enter focused
+ * preflight has one additional bounded allowance. Capped at `now + maxDeferralMs`.
  */
 export function restartHoldUntil(
   startedAt: number,
   now: number,
   maxDeferralMs: number,
+  preflightAllowanceMs: number = 0,
   limits: { totalActiveMs: number; waitInPlaceMs: number; inPlaceWaits: number } = {
     totalActiveMs: LOCAL_VERIFY_DEADLINES.totalActiveMs,
     waitInPlaceMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs,
     inPlaceWaits: 2,
   },
 ): number {
-  const runCeiling = startedAt + limits.totalActiveMs + limits.inPlaceWaits * limits.waitInPlaceMs;
+  const runCeiling = startedAt + limits.totalActiveMs + limits.inPlaceWaits * limits.waitInPlaceMs + preflightAllowanceMs;
   return Math.min(runCeiling, now + maxDeferralMs);
 }
 
@@ -679,6 +693,14 @@ export class LocalVerifyService {
   private peerState: PeerAttemptState = { current: null, results: [], tombstones: {} };
   /** Fail-fast for PR verifies (`monitoring.localVerify.failFast`; absent ⇒ on). */
   private failFastEnabled: (() => boolean) | null = null;
+  /** Focused preflight is dark unless a host explicitly selects observe or enforce. */
+  private preflightModeSetting: (() => unknown) | null = null;
+  /** Null means the durable replay store could not be read; fail to observe mode. */
+  private readonly preflightReplays: PreflightReplayStore | null;
+  private replayAdmissionRunning = false;
+  private replayWakeAt = 0;
+  private replayCapacitySweepAt = 0;
+  private replayCapacitySweepCursor = 0;
   /** Processes per slow lane (`monitoring.localVerify.laneShards`; absent ⇒ the policy defaults). */
   private laneShardsSetting: (() => unknown) | null = null;
   /** pr → the red head it was audited as held for (one `main-red-held` line per PR per episode). */
@@ -695,6 +717,11 @@ export class LocalVerifyService {
     this.seams = seams;
     this.now = seams.now ?? (() => Date.now());
     this.policyHash = cfg.policyHash ?? computePolicyHash();
+    try { this.preflightReplays = new PreflightReplayStore(path.join(cfg.stateDir, 'state')); }
+    catch (e) {
+      this.preflightReplays = null;
+      this.audit({ event: 'preflight-replay-store-unreadable', detail: e instanceof Error ? e.message : String(e) });
+    }
     this.health = new MainHealth(cfg.stateDir, cfg.machineId, {
       now: this.now,
       isAncestor: (a, d) => (seams.isAncestor ? seams.isAncestor(a, d) : Promise.resolve(null)),
@@ -751,6 +778,17 @@ export class LocalVerifyService {
 
   private failFastOn(): boolean {
     try { return this.failFastEnabled ? this.failFastEnabled() !== false : true; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (every lane runs, today's behaviour)
+  }
+
+  setPreflightMode(fn: (() => unknown) | null): void { this.preflightModeSetting = fn; }
+
+  private preflightMode(): 'off' | 'observe' | 'enforce' {
+    try {
+      const mode = this.preflightModeSetting?.();
+      return mode === 'enforce' && (!this.preflightReplays || !this.preflightReplays.hasCapacityForNew()
+        || this.preflightReplays.list().some((r) => r.state === 'blocked'))
+        ? 'observe' : mode === 'observe' || mode === 'enforce' ? mode : 'off';
+    } catch { return 'off'; } // @silent-fallback-ok: unreadable tuning keeps the optional check dark
   }
 
   /** The live kill switch for the main-red hold (`monitoring.localVerify.mainRedHold`; absent ⇒ on). */
@@ -817,7 +855,7 @@ export class LocalVerifyService {
     try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
   }
 
-  snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']>; peers: ReturnType<LocalVerifyService['peersInfo']> } {
+  snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']>; peers: ReturnType<LocalVerifyService['peersInfo']>; preflight: { mode: 'off' | 'observe' | 'enforce'; replayStoreReady: boolean; replays: Array<{ pr: number; headSha: string; baseRefName: string; state: PreflightReplay['state']; admissionAttempts: number; executionAttempts: number; blockedReason?: string }> } } {
     const h = this.verifierHold;
     const hold = this.holdDecision();
     const heldWhy = new Map<number, 'no-overlap' | 'files-unknown'>(hold.active ? hold.heldPrs.map((x) => [x.pr, x.reason] as const) : []);
@@ -825,6 +863,10 @@ export class LocalVerifyService {
       // `text` (the PR body) stays out of the read surface; `files` is bounded and useful.
       queue: this.queue.map((e) => { const { text: _t, ...rest } = e; void _t; const why = heldWhy.get(e.pr); return why && e.kind !== 'main' ? { ...rest, held: { reason: 'main-red' as const, why } } : { ...rest }; }),
       mainRedHold: hold.active ? { ...this.holdInfo(hold), since: this.mainFailure ? this.mainFailure.recordedAt : null } : null,
+      preflight: { mode: this.preflightMode(), replayStoreReady: this.preflightReplays !== null,
+        replays: this.preflightReplays?.list().filter((r) => r.state !== 'completed').map((r) => ({ pr: r.pr, headSha: r.headSha, baseRefName: r.baseRefName,
+          state: r.state, admissionAttempts: r.admissionAttempts, executionAttempts: r.executionAttempts,
+          ...(r.blockedReason ? { blockedReason: r.blockedReason } : {}) })) ?? [] },
       inFlight: this.inFlight
         ? { pr: this.inFlight.entry.pr, headSha: this.inFlight.entry.headSha, ...(this.inFlight.entry.kind ? { kind: this.inFlight.entry.kind } : {}) }
         : null,
@@ -877,7 +919,9 @@ export class LocalVerifyService {
     await this.reapOrphan();
     this.loadPeerState(); // after the reap: an interrupted peer attempt is tombstoned, never resumed
     await this.rebuildIndex();
+    if (!this.cfg.peerOnly) await this.reconcilePreflightReplays();
     if (!this.cfg.peerOnly) await this.restoreQueue();
+    this.scheduleReplayAdmission();
   }
 
   /**
@@ -892,7 +936,7 @@ export class LocalVerifyService {
     const what = f.entry.kind === 'main' ? `main ${f.entry.headSha.slice(0, 12)}` : `PR #${f.entry.pr} at ${f.entry.headSha.slice(0, 12)}`;
     return [{
       name: f.entry.kind === 'main' ? 'local-verify:main' : `local-verify:pr-${f.entry.pr}`,
-      until: restartHoldUntil(f.startedAt, now, maxDeferralMs),
+      until: restartHoldUntil(f.startedAt, now, maxDeferralMs, f.preflightAllowanceMs),
       reason: `a local verify of ${what} is running`,
     }];
   }
@@ -916,9 +960,19 @@ export class LocalVerifyService {
   private async doRestoreQueue(): Promise<{ restored: number; dropped: number }> {
     const saved = this.readQueueFile();
     let restored = 0;
-    const drops = { closed: 0, 'head-or-base-moved': 0, 'already-recorded': 0, duplicate: 0, 'queue-full': 0, 'server-restarted': 0 };
+    const drops = { closed: 0, 'head-or-base-moved': 0, 'already-recorded': 0, duplicate: 0, 'queue-full': 0, 'server-restarted': 0, 'replay-managed': 0 };
     for (const e of saved) {
       if (this.queue.some((q) => q.pr === e.pr) || (this.inFlight && this.inFlight.entry.pr === e.pr)) { drops.duplicate++; continue; }
+      const replay = this.preflightReplays?.get(replayKey({ repo: this.cfg.repo, pr: e.pr, headSha: e.headSha,
+        baseRefName: e.baseRefName, policyHash: this.policyHash }));
+      // The replay marker is the durable admission authority. A queued copy from
+      // before a restart must not bypass its backoff or execution breaker. The
+      // replay admission loop will re-read the PR and requeue when due.
+      if (replay && (replay.state === 'pending' || replay.state === 'retryable-error' || e.inFlight)) {
+        drops['replay-managed']++;
+        this.audit({ event: 'queue-restore-dropped', pr: e.pr, headSha: e.headSha, reason: 'replay-managed', replayState: replay.state });
+        continue;
+      }
       const open = await this.seams.isPrOpen(e.pr).catch(() => null);
       const view = open === false ? null : await this.seams.prView(e.pr).catch(() => null);
       const why = open === false ? 'closed'
@@ -948,6 +1002,7 @@ export class LocalVerifyService {
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
         ...(e.remote ? { remote: e.remote } : {}),
         ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
+        ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
         ...(e.interruptions ? { interruptions: e.interruptions } : {}),
         ...(e.resumeFirst ? { resumeFirst: true as const } : {}),
       };
@@ -1106,9 +1161,14 @@ export class LocalVerifyService {
     this.execIndex.clear();
     const lines = this.readJournal();
     const latest = new Map<string, JournalLine>();
+    const replayReds = new Map<string, JournalLine>();
     for (const l of lines) {
       const k = recordKey(l.record.repo, l.record.pr, l.record.headSha, l.record.baseRefName);
       latest.set(k, l); // later lines win
+      if (l.record.preflight?.mode === 'enforce' && l.record.preflight.reason === 'preflight-red') {
+        const marker = this.preflightReplays?.get(replayKey(l.record));
+        if (marker && marker.state !== 'completed') replayReds.set(marker.key, l);
+      }
     }
     const closedSeen = this.readClosedSeen();
     const nowMs = this.now();
@@ -1130,11 +1190,17 @@ export class LocalVerifyService {
       }
       if (open !== true) { skippedClosed++; continue; }
       this.index.set(k, r);
-      if (r.outcome !== 'error') this.execIndex.set(executionKey(r.headSha, r.baseSha), r);
+      if (r.outcome !== 'error' && r.preflight?.reason !== 'preflight-red') this.execIndex.set(executionKey(r.headSha, r.baseSha), r);
       this.noteFlaky(r, { signal: false });
     }
     keep.sort((a, b) => (a.writtenAt < b.writtenAt ? -1 : a.writtenAt > b.writtenAt ? 1 : 0));
-    const capped = keep.slice(-LOCAL_VERIFY_LIMITS.journalCap);
+    // A pending replay's red proof must survive journal compaction even when a later
+    // infrastructure-error record superseded it in the latest-value index.
+    const essential = [...replayReds.values()];
+    const ordinary = keep.filter((l) => !essential.includes(l));
+    const ordinaryRoom = Math.max(0, LOCAL_VERIFY_LIMITS.journalCap - essential.length);
+    const capped = [...(ordinaryRoom > 0 ? ordinary.slice(-ordinaryRoom) : []), ...essential]
+      .sort((a, b) => (a.writtenAt < b.writtenAt ? -1 : a.writtenAt > b.writtenAt ? 1 : 0));
     this.rewriteJournal(capped);
     for (const pr of Object.keys(closedSeen)) {
       if (nowMs - closedSeen[Number(pr)] >= LOCAL_VERIFY_LIMITS.retentionAfterCloseMs) delete closedSeen[Number(pr)];
@@ -1144,9 +1210,56 @@ export class LocalVerifyService {
     return { loaded: this.index.size, skippedVersion, skippedClosed, kept: capped.length };
   }
 
+  /** Repair both crash windows around red-record publication and replay-marker persistence. */
+  private async reconcilePreflightReplays(): Promise<void> {
+    const store = this.preflightReplays;
+    if (!store) return;
+    const reds = new Map<string, LocalVerifyRecord>();
+    for (const line of this.readJournal()) {
+      const r = line.record;
+      if (r.repo === this.cfg.repo && r.policyHash === this.policyHash && r.preflight?.mode === 'enforce'
+        && r.preflight.outcome === 'red' && r.preflight.reason === 'preflight-red') reds.set(replayKey(r), r);
+    }
+    for (const marker of store.list()) {
+      if (marker.policyHash !== this.policyHash) { store.cancel(marker.key); continue; }
+      const [view, open] = await Promise.all([this.seams.prView(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
+      if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
+        store.cancel(marker.key);
+        continue;
+      }
+      // The terminal marker is the durable evidence that this exact head already
+      // received its one full-suite replay. Its red journal line may have been
+      // compacted, and an upgrade may exclude the old full record from the index.
+      if (marker.state === 'completed') continue;
+      const latest = this.index.get(recordKey(marker.repo, marker.pr, marker.headSha, marker.baseRefName));
+      if (latest && latest.outcome !== 'error' && latest.preflight?.reason !== 'preflight-red') {
+        store.completeFromJournal(marker.key, this.now());
+        continue;
+      }
+      if (!reds.has(marker.key)) {
+        store.cancel(marker.key); // phantom marker: no validated red record authorizes admission
+        this.audit({ event: 'preflight-replay-phantom-cancelled', pr: marker.pr });
+        continue;
+      }
+      if (marker.state === 'running') store.recoverInterrupted(marker.key, this.now());
+      if (marker.state === 'blocked' && marker.verifierVersion !== this.cfg.verifierVersion && open === true && view) {
+        if (store.rearmOnce(marker.key, this.now())) this.audit({ event: 'preflight-replay-rearmed', pr: marker.pr, trigger: 'verifier-upgrade' });
+      }
+    }
+    for (const [key, red] of reds) {
+      if (store.get(key)) continue;
+      const latest = this.index.get(recordKey(red.repo, red.pr, red.headSha, red.baseRefName));
+      if (latest && latest.preflight?.reason !== 'preflight-red') continue;
+      const [view, open] = await Promise.all([this.seams.prView(red.pr).catch(() => null), this.seams.isPrOpen(red.pr).catch(() => null)]);
+      if (open !== true || !view || view.headRefOid !== red.headSha || view.baseRefName !== red.baseRefName) continue;
+      store.ensureRed(red, this.now());
+      this.audit({ event: 'preflight-replay-repaired-from-red', pr: red.pr, headSha: red.headSha });
+    }
+  }
+
   // ---- the POST path ----
 
-  async request(pr: number, opts: { explicit?: boolean; force?: boolean } = {}): Promise<RequestResult> {
+  async request(pr: number, opts: { explicit?: boolean; force?: boolean; replay?: boolean } = {}): Promise<RequestResult> {
     const explicit = opts.explicit ?? true;
     if (!isValidPr(pr)) return { ok: false, code: 'invalid-pr' };
     if (this.cfg.peerOnly) return { ok: false, code: 'peer-only' };
@@ -1159,6 +1272,7 @@ export class LocalVerifyService {
     if (!view) return { ok: false, code: 'pr-unreadable' };
     // A merged or closed PR has nothing to verify (an unknown answer queues it: the pre-start check asks again).
     if ((await this.seams.isPrOpen(pr).catch(() => null)) === false) {
+      for (const marker of this.preflightReplays?.list().filter((r) => r.pr === pr) ?? []) this.preflightReplays?.cancel(marker.key);
       this.audit({ event: 'refused', pr, reason: 'pr-closed' });
       // A queued entry for it is no better: drop it now (a run in flight carries on to its own record).
       const queued = this.queue.findIndex((e) => e.pr === pr && e.kind !== 'main');
@@ -1185,7 +1299,12 @@ export class LocalVerifyService {
     const headSha = view.headRefOid;
     const baseSha = currentBase;
     const baseRefName = view.baseRefName;
+    for (const marker of this.preflightReplays?.list().filter((r) => r.pr === pr
+      && (r.headSha !== headSha || r.baseRefName !== baseRefName || r.policyHash !== this.policyHash)) ?? []) this.preflightReplays?.cancel(marker.key);
     const key = recordKey(this.cfg.repo, pr, headSha, baseRefName);
+    const pendingReplay = this.preflightReplays?.get(replayKey({ repo: this.cfg.repo, pr, headSha, baseRefName, policyHash: this.policyHash }));
+    const replayPriority = opts.replay || pendingReplay?.state === 'pending' || pendingReplay?.state === 'retryable-error';
+    const requestedPriority = replayPriority ? QUEUE_PRIORITY.ordinary : prPriority(view);
     const prFiles = viewFiles(view);
     const prText = prMatchText(view.title, view.body);
 
@@ -1206,6 +1325,7 @@ export class LocalVerifyService {
     if (pendingIdx >= 0) {
       const e = this.queue[pendingIdx];
       if (e.headSha === headSha && e.baseRefName === baseRefName) {
+        if (!explicit) e.preflightRediscoverable = true;
         // A reserved entry keeps the base it was handed to its peer with (the marker decides import).
         if (e.baseSha !== baseSha && !e.remote) {
           const oldBase = e.baseSha;
@@ -1213,7 +1333,7 @@ export class LocalVerifyService {
           this.audit({ event: 'base-updated', pr, headSha, oldBase, newBase: baseSha, position: pendingIdx, firstQueuedAt: e.firstQueuedAt });
         }
         e.baseResolvedAt = this.now(); // the base was just read: no pre-start re-read needed for a while
-        e.priority = prPriority(view); // the merge-throughput label may have been added or removed
+        e.priority = requestedPriority; // replay never inherits a throughput label
         e.files = prFiles; // the title/body may have been edited to name the failing check: re-read it
         e.text = prText;
         this.persistQueue();
@@ -1244,7 +1364,7 @@ export class LocalVerifyService {
 
     // Execution dedupe: identical merge inputs already verified under this policy.
     const exec = this.execIndex.get(executionKey(headSha, baseSha));
-    if (exec && !(opts.force && exec.outcome === 'failure') && !(existing && existing.outcome === 'failure' && exec === existing)) {
+    if (exec && exec.preflight?.reason !== 'preflight-red' && !(opts.force && exec.outcome === 'failure') && !(existing && existing.outcome === 'failure' && exec === existing)) {
       const derived = this.complete({ ...exec, pr, baseRefName }, 'derived');
       if (derived) return { ok: true, status: 'recorded', record: derived };
     }
@@ -1259,7 +1379,7 @@ export class LocalVerifyService {
       const hold = this.holdDecision();
       const repair = hold.active && repairVerdict({ files: prFiles, text: prText }, hold.failingFiles).candidate;
       // A merge-throughput PR gets a bounded overflow (LOCAL_VERIFY_LIMITS.throughputOverflow).
-      const throughput = !repair && prPriority(view) === QUEUE_PRIORITY.mergeThroughput
+      const throughput = !replayPriority && !repair && requestedPriority === QUEUE_PRIORITY.mergeThroughput
         && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
       if (!repair && !throughput) {
         this.audit({ event: 'queue-full', pr, ...(hold.active ? { mainRedHold: true } : {}) });
@@ -1270,8 +1390,9 @@ export class LocalVerifyService {
     }
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha, baseSha, baseRefName,
+      ...(!explicit ? { preflightRediscoverable: true } : {}),
       firstQueuedAt: keptPlace?.firstQueuedAt ?? this.now(), attempts: 0, errorRetries: 0,
-      starvedRaised: keptPlace?.starvedRaised ?? false, priority: prPriority(view), baseResolvedAt: this.now(),
+      starvedRaised: keptPlace?.starvedRaised ?? false, priority: requestedPriority, baseResolvedAt: this.now(),
       files: prFiles, text: prText,
       ...(keptPlace?.pausedMs ? { pausedMs: keptPlace.pausedMs } : {}),
       ...(keptPlace?.resumeFirst ? { resumeFirst: true as const } : {}),
@@ -1406,6 +1527,7 @@ export class LocalVerifyService {
       id: crypto.randomBytes(6).toString('hex'), pr: req.pr, headSha: req.headSha, baseSha: req.baseSha, baseRefName: req.baseRefName,
       firstQueuedAt: this.now(), attempts: 0, errorRetries: 0, starvedRaised: false, priority: QUEUE_PRIORITY.ordinary,
       peerAttempt: { id: req.attemptId, coordinatorMachineId: req.coordinatorMachineId, leaseEpoch: req.leaseEpoch },
+      ...(req.preflightRediscoverable === true ? { preflightRediscoverable: true } : {}),
       ...(req.isolation ? { peerIsolation: req.isolation } : {}),
     };
     this.peerState.current = { attemptId: req.attemptId, pr: req.pr, headSha: req.headSha, state: 'running', acceptedAt: this.now() };
@@ -1519,6 +1641,12 @@ export class LocalVerifyService {
   }
 
   private dispatchable(e: QueueEntry, heldPrs: Set<number>): boolean {
+    // The replay marker is coordinator-owned and changes state at local child
+    // start. Keep these entries local until peer handoff carries that authority.
+    if (this.preflightReplays?.get(replayKey({ repo: this.cfg.repo, ...e, policyHash: this.policyHash }))) return false;
+    // A contained preflight error must reach a fresh full-only local attempt;
+    // the peer request protocol has no preflight-bypass field.
+    if (e.preflightBypassRetry) return false;
     return e.kind !== 'main' && !e.remote && !e.peerAttempt && e !== this.dispatching && e !== this.starting && this.inFlight?.entry !== e
       && !heldPrs.has(e.pr) && (e.remoteAttempts ?? 0) < PEER_LIMITS.maxAttemptsPerEntry && !(e.notBefore && e.notBefore > this.now());
   }
@@ -1613,6 +1741,7 @@ export class LocalVerifyService {
         const ans = await client.run(peer, {
           attemptId: marker.attemptId, ...marker.dispatched, coordinatorMachineId: this.cfg.machineId, leaseEpoch: marker.leaseEpoch,
           isolation: { allowed: iso.allowed, notCleanOnGreenMain: [...iso.notCleanOnGreenMain] },
+          ...(entry.preflightRediscoverable === true ? { preflightRediscoverable: true } : {}),
         }).catch(() => null);
         if (entry.remote !== marker) continue; // abandoned meanwhile
         if (ans === null) {
@@ -1717,6 +1846,7 @@ export class LocalVerifyService {
         }
         if (res.record.outcome === 'error') {
           this.audit({ event: 'peer-record-error', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, errorStep: res.record.errorStep });
+          if (this.preflightErrorNeedsBypass(res.record.errorStep)) entry.preflightBypassRetry = true;
           this.abandonRemote(entry, 'peer-error', { failure: true, cancel: false });
           continue;
         }
@@ -1757,8 +1887,36 @@ export class LocalVerifyService {
     this.checkStarved();
     this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
     if (!this.cfg.peerOnly) await this.pollPeers().catch((e) => this.audit({ event: 'peer-poll-error', detail: e instanceof Error ? e.message : String(e) }));
+    if (!this.cfg.peerOnly) await this.sweepReplayCapacity();
     this.checkPeerAttempt();
     this.pump();
+  }
+
+  /** Bounded reclamation when terminal keys fill the store; unknown PR state retains proof. */
+  private async sweepReplayCapacity(): Promise<void> {
+    const store = this.preflightReplays;
+    const now = this.now();
+    if (!store || store.hasCapacityForNew() || !this.leaseState().holds
+      || now - this.replayCapacitySweepAt < 5 * 60_000) return;
+    this.replayCapacitySweepAt = now;
+    const completed = store.list().filter((r) => r.state === 'completed');
+    if (!completed.length) return;
+    const count = Math.min(5, completed.length);
+    const start = this.replayCapacitySweepCursor % completed.length;
+    this.replayCapacitySweepCursor = (start + count) % completed.length;
+    for (let n = 0; n < count; n++) {
+      if (this.stopped || !this.leaseState().holds) return;
+      const marker = completed[(start + n) % completed.length];
+      const [view, open] = await Promise.all([
+        this.seams.prView(marker.pr).catch(() => null),
+        this.seams.isPrOpen(marker.pr).catch(() => null),
+      ]);
+      if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
+        try { store.cancel(marker.key); }
+        catch (e) { this.audit({ event: 'preflight-replay-capacity-sweep-error', pr: marker.pr, detail: String(e) }); continue; }
+        this.audit({ event: 'preflight-replay-capacity-reclaimed', pr: marker.pr, reason: open === false ? 'closed' : 'head-or-target-moved' });
+      }
+    }
   }
 
   private prQueueLength(): number {
@@ -1883,8 +2041,79 @@ export class LocalVerifyService {
     }
   }
 
+  private wakeReplayAt(at: number): void {
+    if (this.stopped || this.replayWakeAt && this.replayWakeAt <= at) return;
+    this.replayWakeAt = at;
+    const run = () => {
+      if (this.replayWakeAt !== at) return;
+      this.replayWakeAt = 0;
+      this.scheduleReplayAdmission();
+    };
+    const delay = Math.max(1, at - this.now());
+    if (this.seams.setTimer) this.seams.setTimer(run, delay);
+    else { const timer = setTimeout(run, delay); timer.unref?.(); }
+  }
+
+  /** Persisted, ordinary-priority replay admission; every read is of the current PR. */
+  private scheduleReplayAdmission(): void {
+    if (this.replayAdmissionRunning || this.stopped || this.cfg.peerOnly || !this.preflightReplays || !this.leaseState().holds) return;
+    const due = this.preflightReplays.list().some((r) => r.state === 'pending' || r.state === 'retryable-error');
+    if (!due) return;
+    this.replayAdmissionRunning = true;
+    const run = () => { void this.admitReplays()
+      .catch((e) => this.audit({ event: 'preflight-replay-admission-error', detail: String(e) }))
+      .finally(() => { this.replayAdmissionRunning = false; }); };
+    if (this.seams.setTimer) this.seams.setTimer(run, 0); else setImmediate(run);
+  }
+
+  private async admitReplays(): Promise<void> {
+    const store = this.preflightReplays;
+    if (!store) return;
+    for (const marker of store.list()) {
+      if (this.stopped || !this.leaseState().holds) return;
+      if (marker.state !== 'pending' && marker.state !== 'retryable-error') continue;
+      const current = store.blockIfExpired(marker.key, this.now());
+      if (current?.state === 'blocked') {
+        this.audit({ event: 'preflight-replay-blocked', pr: marker.pr, reason: current.blockedReason });
+        continue;
+      }
+      const indexed = this.index.get(recordKey(marker.repo, marker.pr, marker.headSha, marker.baseRefName));
+      if (indexed && indexed.outcome !== 'error' && indexed.preflight?.reason !== 'preflight-red') {
+        store.completeFromJournal(marker.key, this.now());
+        continue;
+      }
+      const same = (e: QueueEntry) => e.pr === marker.pr && e.headSha === marker.headSha && e.baseRefName === marker.baseRefName;
+      if (this.queue.some(same) || this.inFlight && same(this.inFlight.entry)) continue;
+      if (this.now() < marker.nextAdmissionAt) { this.wakeReplayAt(marker.nextAdmissionAt); continue; }
+      const [view, open] = await Promise.all([this.seams.prView(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
+      if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
+        store.cancel(marker.key);
+        this.audit({ event: 'preflight-replay-cancelled', pr: marker.pr, reason: open === false ? 'closed' : 'head-or-target-moved' });
+        continue;
+      }
+      if (!view || open === null) {
+        const next = store.admissionFailed(marker.key, this.now(), 'pr-unreadable');
+        if (next.state !== 'blocked') this.wakeReplayAt(next.nextAdmissionAt);
+        continue;
+      }
+      const result = await this.request(marker.pr, { explicit: true, force: true, replay: true });
+      if (result.ok && (result.status === 'queued' || result.status === 'already-queued' || result.status === 'in-flight')) {
+        this.audit({ event: 'preflight-replay-admitted', pr: marker.pr, headSha: marker.headSha, status: result.status });
+        continue;
+      }
+      if (result.ok && result.status === 'recorded' && result.record.preflight?.reason !== 'preflight-red') {
+        store.completeFromJournal(marker.key, this.now());
+        continue;
+      }
+      const next = store.admissionFailed(marker.key, this.now(), result.ok ? result.status : result.code);
+      this.audit({ event: 'preflight-replay-admission-wait', pr: marker.pr, reason: result.ok ? result.status : result.code, attempt: next.admissionAttempts, state: next.state });
+      if (next.state !== 'blocked') this.wakeReplayAt(next.nextAdmissionAt);
+    }
+  }
+
   private pump(): void {
     this.persistQueue();
+    this.scheduleReplayAdmission();
     if (this.inFlight && !this.inFlight.suiteSlotAcquired &&
         this.seams.foreignSuiteHolders().some((h) => h.pid === this.inFlight!.pgid)) {
       // The child's own holder is an acknowledgement that it has the suite
@@ -2081,6 +2310,17 @@ export class LocalVerifyService {
   }
 
   private start(entry: QueueEntry): void {
+    const replay = entry.kind === 'main' ? null : this.preflightReplays?.get(replayKey({ repo: this.cfg.repo, ...entry, policyHash: this.policyHash }));
+    if (replay && (replay.state === 'pending' || replay.state === 'retryable-error')) {
+      try {
+        this.preflightReplays?.admitted(replay.key, this.now());
+        entry.preflightReplay = true;
+      } catch (e) {
+        this.queue.unshift(entry);
+        this.audit({ event: 'preflight-replay-start-persist-failed', pr: entry.pr, detail: String(e) });
+        return;
+      }
+    }
     const token = crypto.randomBytes(16).toString('hex');
     fs.mkdirSync(this.runsDir, { recursive: true });
     const inputPath = path.join(this.runsDir, `${token}.input.json`);
@@ -2095,6 +2335,8 @@ export class LocalVerifyService {
       ...(entry.kind === 'main' ? {} : { isolation: entry.peerIsolation ?? this.isolationInput() }),
       // PR verifies: stop the other lanes once one lane has a failure its re-run did not clear.
       ...(entry.kind !== 'main' && this.failFastOn() ? { failFast: true } : {}),
+      ...(entry.kind !== 'main' ? { preflightMode: replay || entry.preflightBypassRetry ? 'off' as const : this.preflightMode() } : {}),
+      ...(entry.kind !== 'main' ? { preflightRediscoverable: entry.preflightRediscoverable === true } : {}),
       ...(() => { const ls = this.laneShards(); return ls ? { laneShards: ls } : {}; })(),
       ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
       // A peer run answers one coordinator attempt: the record carries it (spec local-verify-capacity.md Part D).
@@ -2122,6 +2364,10 @@ export class LocalVerifyService {
       });
     } catch (e) {
       this.clearInFlight();
+      if (entry.preflightReplay && replay) {
+        try { this.preflightReplays?.finished(replay.key, this.now(), 'error'); }
+        catch (persistError) { this.audit({ event: 'preflight-replay-finish-persist-failed', pr: entry.pr, detail: String(persistError) }); }
+      }
       if (entry.peerAttempt) {
         // A peer attempt never touches this machine's own index or queue: the coordinator gets an error record.
         this.audit({ event: 'spawn-failed', pr: entry.pr, detail: e instanceof Error ? e.message : String(e), peerAttempt: entry.peerAttempt.id });
@@ -2130,14 +2376,15 @@ export class LocalVerifyService {
       }
       this.complete(this.syntheticError(entry, 'spawn'), 'run');
       this.audit({ event: 'spawn-failed', pr: entry.pr, detail: e instanceof Error ? e.message : String(e) });
-      this.handleErrorRetry(entry);
+      if (!entry.preflightReplay) this.handleErrorRetry(entry);
       this.pump();
       return;
     }
     // Phase 2: patch pid/pgid (detached: the child's pid IS its pgid).
     intent.pid = handle.pid;
     intent.pgid = handle.pid;
-    this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt };
+    this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt,
+      preflightAllowanceMs: input.preflightMode && input.preflightMode !== 'off' ? PREFLIGHT_LIMITS.totalMs : 0 };
     this.publishSuitePriority(true);
     const mine = this.inFlight;
     handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
@@ -2203,10 +2450,14 @@ export class LocalVerifyService {
       const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
       this.audit({ event: 'run-error', pr: f.entry.pr, step, exit, detail: result && 'detail' in result ? result.detail : undefined });
       this.complete(this.syntheticError(f.entry, step), 'run');
-      this.handleErrorRetry(f.entry);
+      if (!f.entry.preflightReplay) this.handleErrorRetry(f.entry);
     } else if (result.kind === 'requeue') {
       // A capacity wait is never an attempt.
       f.entry.attempts = decideVerifyRetry(f.entry, 'requeue').attempts;
+      if (f.entry.preflightReplay) {
+        try { this.preflightReplays?.releasedForCapacity(replayKey({ repo: this.cfg.repo, ...f.entry, policyHash: this.policyHash }), this.now()); }
+        catch (e) { this.audit({ event: 'preflight-replay-capacity-release-failed', pr: f.entry.pr, detail: String(e) }); }
+      }
       this.audit({ event: 'requeued', pr: f.entry.pr, reason: result.reason, overlaps: result.overlaps.length });
       this.retry(f.entry);
     } else {
@@ -2217,7 +2468,7 @@ export class LocalVerifyService {
         this.audit({ event: 'run-detail', ...runDetail(rec, result) });
       }
       if (rec) this.noteFlaky(rec);
-      if (rec && rec.outcome === 'error') this.handleErrorRetry(f.entry);
+      if (rec && rec.outcome === 'error' && !f.entry.preflightReplay) this.handleErrorRetry(f.entry, rec.errorStep);
     }
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
@@ -2226,12 +2477,17 @@ export class LocalVerifyService {
   }
 
   /* @self-action-controller: local-verify-error-rerun */
-  private handleErrorRetry(entry: QueueEntry): void {
+  private handleErrorRetry(entry: QueueEntry, errorStep?: string): void {
     const d = decideVerifyRetry(entry, 'error');
     if (d.action !== 're-run') return;
     entry.errorRetries = d.errorRetries;
+    if (this.preflightErrorNeedsBypass(errorStep)) entry.preflightBypassRetry = true;
     this.audit({ event: 'error-auto-retry', pr: entry.pr, headSha: entry.headSha });
     this.retry(entry);
+  }
+
+  private preflightErrorNeedsBypass(errorStep?: string): boolean {
+    return errorStep?.startsWith('preflight-') === true || errorStep?.startsWith('deadline:preflight') === true;
   }
 
   /* @self-action-controller: local-verify-capacity-requeue */
@@ -2270,6 +2526,21 @@ export class LocalVerifyService {
     }
     if (record.outcome !== 'error') this.noteMainHeadVerified(head);
     if (record.outcome === 'success') this.saveGreenMain(record);
+    if (record.outcome === 'success' && this.preflightReplays) {
+      const work = (async () => {
+        for (const marker of this.preflightReplays!.list().filter((r) => r.state === 'blocked')) {
+          const [view, open] = await Promise.all([this.seams.prView(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
+          if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
+            this.preflightReplays!.cancel(marker.key);
+            continue;
+          }
+          if (open !== true || !view) continue;
+          if (this.preflightReplays!.rearmOnce(marker.key, this.now())) this.audit({ event: 'preflight-replay-rearmed', pr: marker.pr, trigger: 'healthy-main' });
+        }
+        this.scheduleReplayAdmission();
+      })().catch((e) => this.audit({ event: 'preflight-replay-rearm-failed', detail: String(e) }));
+      this.pendingMainWork.push(work);
+    }
     if (record.outcome !== 'success' || record.flakyRetried) this.audit({ event: 'run-detail', kind: 'main', ...detail });
     this.noteFlaky(record);
     if (record.outcome === 'error') {
@@ -2325,17 +2596,44 @@ export class LocalVerifyService {
       this.audit({ event: 'record-rejected', pr: record.pr, errors: v.ok ? ['repo'] : v.errors });
       return null;
     }
+    const enforcedRed = record.preflight?.mode === 'enforce' && record.preflight.outcome === 'red' && record.preflight.reason === 'preflight-red';
+    if (enforcedRed) {
+      try {
+        if (!this.preflightReplays) throw new Error('replay store unavailable');
+        this.preflightReplays.ensureRed(record, this.now()); // durable BEFORE the red journal record
+      } catch (e) {
+        this.audit({ event: 'preflight-replay-persist-failed', pr: record.pr, detail: e instanceof Error ? e.message : String(e) });
+        record = { ...record, outcome: 'error', errorStep: 'preflight-replay-persist', preflight: undefined };
+      }
+    }
     const line: JournalLine = { v: 1, writtenAt: new Date(this.now()).toISOString(), record };
     fs.mkdirSync(path.dirname(this.journalPath), { recursive: true });
     fs.appendFileSync(this.journalPath, JSON.stringify(line) + '\n'); /* state-registry: local-verify-journal */
     const key = recordKey(record.repo, record.pr, record.headSha, record.baseRefName);
     this.index.set(key, record);
+    if (!enforcedRed) {
+      const replay = this.preflightReplays?.get(replayKey(record));
+      if (replay?.state === 'running') {
+        try { this.preflightReplays?.finished(replay.key, this.now(), record.outcome); }
+        catch (e) { this.audit({ event: 'preflight-replay-finish-persist-failed', pr: record.pr, detail: String(e) }); }
+      } else if (replay && record.outcome !== 'error') {
+        try { this.preflightReplays?.completeFromJournal(replay.key, this.now()); }
+        catch (e) { this.audit({ event: 'preflight-replay-completion-persist-failed', pr: record.pr, detail: String(e) }); }
+      }
+      if (record.outcome === 'success' && (record.preflight?.outcome === 'red' || replay)) {
+        this.audit({ event: 'preflight-false-red', pr: record.pr, headSha: record.headSha, baseSha: record.baseSha,
+          mode: record.preflight?.outcome === 'red' ? 'observe' : 'enforce',
+          repeatedFailedFile: record.preflight?.repeatedFailedFile ?? null });
+      }
+    }
     this.audit({ event: 'record', source, pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, outcome: record.outcome, errorStep: record.errorStep });
     this.seams.onRecord?.(record);
     this.offerMerge(record);
+    if (enforcedRed || this.preflightReplays?.get(replayKey(record))?.state === 'retryable-error') this.scheduleReplayAdmission();
     if (record.outcome !== 'error') {
       const ek = executionKey(record.headSha, record.baseSha);
-      if (source === 'run') this.execIndex.set(ek, record);
+      if (source === 'run' && record.preflight?.reason !== 'preflight-red') this.execIndex.set(ek, record);
+      if (record.preflight?.reason === 'preflight-red') return record; // another PR cannot inherit this liveness-costly early red
       for (let i = this.queue.length - 1; i >= 0; i--) {
         const e = this.queue[i];
         if (!e.remote && e.headSha === record.headSha && e.baseSha === record.baseSha && !(e.pr === record.pr && e.baseRefName === record.baseRefName)) {
@@ -2378,6 +2676,7 @@ export class LocalVerifyService {
         ...(e.priority === QUEUE_PRIORITY.mergeThroughput ? { priority: e.priority } : {}),
         ...(e.remote ? { remote: e.remote } : {}),
         ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
+        ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
         // The running entry is marked: a clean shutdown re-queues it unmarked, so a marked
         // entry found at boot means the server died mid-run.
         ...(f && !f.cancelled && f.entry === e ? { inFlight: true as const } : {}),
@@ -2424,6 +2723,7 @@ export class LocalVerifyService {
       inFlight: x.inFlight === true ? true as const : undefined,
       remote: isRemoteMarker(x.remote) ? x.remote : undefined,
       remoteAttempts: Number.isSafeInteger(x.remoteAttempts) && (x.remoteAttempts as number) > 0 ? x.remoteAttempts : undefined,
+      preflightBypassRetry: x.preflightBypassRetry === true ? true as const : undefined,
       interruptions: Number.isInteger(x.interruptions) && (x.interruptions as number) > 0 ? x.interruptions : undefined,
       resumeFirst: x.resumeFirst === true ? true as const : undefined,
     }));

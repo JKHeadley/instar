@@ -1,0 +1,19 @@
+# Bounded focused checks before full PR verification
+
+<!-- bump: minor -->
+
+## What Changed
+
+Local Verify can run a small selection of changed tests after build and lint, before taking a full-suite slot. It records the exact head/base, selection, timing and outcome. The mode is `off|observe|enforce` and defaults to off. Observe always continues to the full suite. Enforce may return an early red only after the same selected file has a complete assertion failure twice with zero trusted unhandled errors; it then creates a durable, bounded full-suite replay without preflight. A green merge still requires the complete full-suite record.
+
+## What to Tell Your User
+
+A small changed test can be checked earlier, which may free a full-suite slot sooner when a PR is clearly red. The feature starts off while its added cost on green PRs and false-red rate are measured. A red from the focused check is followed by a full verification replay; only that full verification can clear it.
+
+## Summary of New Capabilities
+
+Optional, 90-second-capped focused PR preflight with exact-head diagnostic evidence, durable replay, and status visibility on `GET /local-verify`.
+
+## Evidence
+
+The preflight spec includes the baseline and rollout gates. Unit, API integration, production lifecycle and full-suite evidence accompany the PR; development-agent observe and enforce trials remain staged after landing.

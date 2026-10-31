@@ -147,3 +147,21 @@ describe('Local Verify balanced-shards awareness', () => {
     expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify balanced-shards awareness');
   });
 });
+
+describe('Local Verify focused-preflight awareness', () => {
+  it('ships the same default, replay and green-authority facts to new and existing agents', async () => {
+    const { LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    for (const text of [generateClaudeMd('fixture', 'Fixture', 4042, true), LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE]) {
+      for (const phrase of ['monitoring.localVerify.preflightMode', 'default off', 'full-suite replay', 'only the complete full-suite record', 'GET /local-verify']) expect(text).toContain(phrase);
+    }
+  });
+  it('appends one line on update and leaves operator content intact', async () => {
+    const { LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n\nMy operator note.\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify focused-preflight awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE);
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain('My operator note.');
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify focused-preflight awareness');
+  });
+});

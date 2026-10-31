@@ -59,7 +59,15 @@ function record(): LocalVerifyRecord {
 function setup(views: Record<number, PrView>, existingStateDir?: string) {
   const stateDir = existingStateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvroutes-')));
   if (!existingStateDir) dirs.push(stateDir);
-  const children: Array<{ resultPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
+  if (!existingStateDir) {
+    const healthDir = path.join(stateDir, 'state', 'local-verify');
+    fs.mkdirSync(healthDir, { recursive: true });
+    fs.writeFileSync(path.join(healthDir, 'main-health.json'), JSON.stringify({
+      v: 1, machineId: 'm1', state: 'healthy', redHead: null, lastGreenHead: null,
+      reason: 'green', updatedAt: '2026-10-21T00:00:00.000Z',
+    }));
+  }
+  const children: Array<{ resultPath: string; inputPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }> = [];
   const priorities: boolean[] = [];
   let holders: number[] = [];
   const svc = new LocalVerifyService({
@@ -73,7 +81,7 @@ function setup(views: Record<number, PrView>, existingStateDir?: string) {
     spawnRun: (a) => {
       let resolve!: (x: { status: number | null; signal: string | null }) => void;
       const exited = new Promise<{ status: number | null; signal: string | null }>((r) => { resolve = r; });
-      children.push({ resultPath: a.args[a.args.indexOf('--result') + 1], resolve });
+      children.push({ resultPath: a.args[a.args.indexOf('--result') + 1], inputPath: a.args[a.args.indexOf('--input') + 1], resolve });
       return { pid: 90_000 + children.length, exited };
     },
     isGroupAlive: () => false,
@@ -95,6 +103,48 @@ function app(ctx: RouteContext): express.Express {
 }
 
 describe('local-verify routes (integration)', () => {
+  it('reports focused preflight mode and keeps an observed red diagnostic subordinate to a full green record', async () => {
+    const s = setup({ 7: view() });
+    s.svc.setPreflightMode(() => 'observe');
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await request(a).get('/local-verify')).body.preflight).toMatchObject({ mode: 'observe', replayStoreReady: true, replays: [] });
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    const input = JSON.parse(fs.readFileSync(s.children[0].inputPath, 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('observe');
+    const diagnostic = { mode: 'observe', outcome: 'red', reason: 'observed-stable-red', elapsedMs: 1200,
+      changedFiles: 1, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 1,
+      repeatedFailedFile: 'tests/unit/example.test.ts', headSha: sha('a'), baseSha: sha('b') };
+    fs.writeFileSync(s.children[0].resultPath, JSON.stringify({ kind: 'record', record: { ...record(), preflight: diagnostic }, reasons: [], overlaps: [], keptWorktree: null }));
+    s.children[0].resolve({ status: 0, signal: null });
+    await s.svc.whenIdle();
+    const got = await request(a).get(`/local-verify/record?pr=7&head=${sha('a')}&base=main`);
+    expect(got.status).toBe(200);
+    expect(got.body.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'red', reason: 'observed-stable-red' } });
+    expect((await request(a).get('/local-verify')).body.preflight.replays).toEqual([]);
+    expect(fs.readFileSync(s.svc.auditPath, 'utf8')).toContain('"event":"preflight-false-red"');
+  });
+
+  it('exposes an enforced early red and its durable full-suite replay obligation over HTTP', async () => {
+    const s = setup({ 7: view() });
+    s.svc.setPreflightMode(() => 'enforce');
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await s.svc.request(7, { explicit: false })).ok).toBe(true);
+    const input = JSON.parse(fs.readFileSync(s.children[0].inputPath, 'utf8')) as { preflightMode: string; preflightRediscoverable: boolean };
+    expect(input).toMatchObject({ preflightMode: 'enforce', preflightRediscoverable: true });
+    const red = { ...record(), outcome: 'failure', lanes: [], preflight: {
+      mode: 'enforce', outcome: 'red', reason: 'preflight-red', elapsedMs: 1200,
+      changedFiles: 1, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 1,
+      repeatedFailedFile: 'tests/unit/example.test.ts', headSha: sha('a'), baseSha: sha('b'),
+    } };
+    fs.writeFileSync(s.children[0].resultPath, JSON.stringify({ kind: 'record', record: red, reasons: [], overlaps: [], keptWorktree: null }));
+    s.children[0].resolve({ status: 0, signal: null });
+    await s.svc.whenIdle();
+    const got = await request(a).get(`/local-verify/record?pr=7&head=${sha('a')}&base=main`);
+    expect(got.status).toBe(200);
+    expect(got.body.record).toMatchObject({ outcome: 'failure', lanes: [], preflight: { reason: 'preflight-red' } });
+    expect((await request(a).get('/local-verify')).body.preflight.replays).toMatchObject([{ pr: 7, state: 'pending' }]);
+  });
+
   it('keeps the next merge check reserved after the first check acquires the only suite slot', async () => {
     const s = setup({ 7: view(), 8: view({ headRefOid: sha('c') }) });
     const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));

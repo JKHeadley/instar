@@ -352,6 +352,7 @@ export const LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE = '- Local Verify fail-fast: i
  * Verify section (`migrateClaudeMd`, content-sniffed on the config key).
  */
 export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; 1..4 each; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
+export const LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE = '- Local Verify focused PR preflight: optional `monitoring.localVerify.preflightMode: off|observe|enforce` (default off) runs bounded changed tests after build/lint and before the full suite; `main` never uses it. Observe records a diagnostic and always continues. Enforce can stop an automatically rediscoverable PR on a repeated assertion failure, then schedules a full-suite replay without preflight; only the complete full-suite record can authorize a green merge. A skipped preflight is not a passed check. `GET /local-verify` → `preflight` shows mode and replay obligations. When a PR is red with `preflight-red` or appears to be waiting on a replay, read this status and its exact-head record before describing the result.';
 
 /**
  * Local Verify merge-throughput label — the awareness line appended to an existing CLAUDE.md's
@@ -9964,6 +9965,11 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify balanced-shards awareness');
+    }
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.preflightMode')) {
+      content += '\n' + LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify focused-preflight awareness');
     }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';

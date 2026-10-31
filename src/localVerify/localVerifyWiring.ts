@@ -1,4 +1,5 @@
 /**
+ * The focused preflight switch is resolved live for each child and defaults off.
  * Builds the LocalVerifyService for the agent server (spec
  * docs/specs/local-verify-merge-authority.md §2).
  *
@@ -498,11 +499,12 @@ export function wireLocalVerifyPeers(
  * `monitoring.localVerify.laneShards` (processes per slow lane; absent ⇒ the policy defaults).
  */
 export function wireLocalVerifySwitches(
-  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards'>,
+  svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode'>,
   liveConfig: { get<T>(key: string, fallback: T): T },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
   svc.setFailFastEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.failFast', true) !== false);
   // Processes per slow lane, e.g. { "integration": 1, "e2e": 2 } to return to the pre-2026-10-27 split.
   svc.setLaneShards(() => liveConfig.get<unknown>('monitoring.localVerify.laneShards', null));
+  svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
 }

@@ -1,4 +1,5 @@
 /**
+ * A peer's preflight evidence is imported for diagnosis, never as standalone green authority.
  * Peer verifiers (spec docs/specs/local-verify-capacity.md Part D): a second machine runs
  * single PR verifies the serving-lease holder (the coordinator) hands it, and the
  * coordinator imports the records. This module holds the pure decisions and the
@@ -39,6 +40,8 @@ export interface PeerRunRequest extends DispatchedInputs {
   leaseEpoch: number | null;
   /** The coordinator's isolation input (its last green `main`), so a peer run re-runs flakes exactly as a local run would. */
   isolation?: { allowed: boolean; notCleanOnGreenMain: string[] };
+  /** Coordinator attests that its watcher can rediscover this candidate after lease movement. */
+  preflightRediscoverable?: boolean;
 }
 
 export type PeerRefusal =
@@ -104,7 +107,8 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   const b = body as Record<string, unknown>;
   const keys = ['attemptId', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'coordinatorMachineId', 'leaseEpoch'];
   const extra = Object.keys(b).filter((k) => !keys.includes(k));
-  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation')) return null;
+  if (!keys.every((k) => k in b) || extra.some((k) => k !== 'isolation' && k !== 'preflightRediscoverable')) return null;
+  if (b.preflightRediscoverable !== undefined && typeof b.preflightRediscoverable !== 'boolean') return null;
   if (b.isolation !== undefined) {
     const iso = b.isolation as { allowed?: unknown; notCleanOnGreenMain?: unknown } | null;
     if (!iso || typeof iso !== 'object' || typeof iso.allowed !== 'boolean' || !Array.isArray(iso.notCleanOnGreenMain)

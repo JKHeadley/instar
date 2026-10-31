@@ -76,6 +76,14 @@ describe('importRefusal', () => {
   it('imports a record that answers exactly the dispatched attempt', () => {
     expect(importRefusal(withAttempt(), marker(), ctx)).toBeNull();
   });
+  it('preserves a peer early red only with valid, exact-head preflight evidence', () => {
+    const preflight = { mode: 'enforce', outcome: 'red', reason: 'preflight-red', elapsedMs: 1200,
+      changedFiles: 1, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 1,
+      repeatedFailedFile: 'tests/unit/example.test.ts', headSha: sha('a'), baseSha: sha('b') } as const;
+    const earlyRed = withAttempt({ outcome: 'failure', lanes: [], preflight: { ...preflight, selectedFiles: [...preflight.selectedFiles] } });
+    expect(importRefusal(earlyRed, marker(), ctx)).toBeNull();
+    expect(importRefusal({ ...earlyRed, preflight: { ...earlyRed.preflight!, headSha: sha('c') } }, marker(), ctx)).toMatch(/^invalid-record/);
+  });
   it('refuses every mismatch, each with its reason', () => {
     const cases: Array<[unknown, Partial<RemoteMarker> | null, Partial<typeof ctx> | null, string]> = [
       [record(), null, null, 'no-attempt'],
@@ -416,6 +424,24 @@ describe('coordinator — results', () => {
     await c.svc.tick();
     expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
     expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
+  });
+
+  it('keeps a peer preflight cleanup retry local and bypasses preflight', async () => {
+    const { c, req } = await dispatched();
+    c.svc.setPreflightMode(() => 'enforce');
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req, {
+      outcome: 'error', errorStep: 'preflight-dirty-tree', lanes: [],
+    }) }));
+    await c.svc.tick();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
+    const saved = c.queueFile() as { entries: Array<{ pr: number; preflightBypassRetry?: boolean }> };
+    expect(saved.entries.find((e) => e.pr === 2)?.preflightBypassRetry).toBe(true);
+    await c.runTimers();
+    expect(c.peer.runs()).toHaveLength(1);
+    await c.finish(0, ok(record({ machineId: 'coord' })));
+    expect(c.spawned).toHaveLength(2);
+    const input = JSON.parse(fs.readFileSync(c.spawned[1].inputPath, 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
   });
 
   it('`unknown` past the grace reclaims (and cancels) the attempt; within the grace it waits', async () => {
