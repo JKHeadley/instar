@@ -6939,6 +6939,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     try {
       decision = this.nativeReporterDecision();
     } catch (err) {
+      // @silent-fallback-ok — recorded in the migration result's errors; the reporter entries are left as they are.
       result.errors.push(`native hook events decision: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }

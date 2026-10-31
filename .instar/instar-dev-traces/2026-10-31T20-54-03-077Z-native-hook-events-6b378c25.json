@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "native-hook-events",
+  "sessionId": "8b47a2d8-ea43-49f8-ac6f-dcca2b81fb9c",
+  "timestamp": "2026-10-31T20:54:03.077Z",
+  "artifactPath": "upgrades/side-effects/native-hook-events.md",
+  "artifactSha256": "35be361a3e58e84527824974ce914440eb07b2b176518356eda5265474d6dfb3",
+  "specPath": "docs/specs/native-hook-events.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-10-31T20-53-34-833Z-native-hook-events.json",
+    ".instar/instar-dev-decisions/2026-10-31T20-53-52-430Z-native-hook-events.json",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/nativeHookEventsGate.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/native-hook-events.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on native-hook-events: ratchet bookkeeping found by Local Verify",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event handling, not a self-triggered loop: the drain worker only processes events Claude Code posted (queue capped at 1,000), and the settings reconcile is an idempotent write at boot, before a spawn and on update; nothing retries, respawns, kills, notifies or re-drives on its own"
+  }
+}

@@ -102,3 +102,7 @@ No agent-authored-artifact defect fix — not applicable for that part.
 - **`defectClass`:** `unbounded-self-action`
 - **`closure`:** `n/a`
 - **`reason`:** one-shot event handling, not a self-triggered loop: the drain worker only processes events Claude Code posted (queue capped at 1,000, newest dropped, 50 events or 10 ms per turn), and the settings reconcile is an idempotent write at boot, before a spawn and on update; nothing retries, respawns, kills, notifies or re-drives on its own.
+
+## Follow-up commit (Local Verify, round 1)
+
+Local Verify (peer machine, unit lane) failed two ratchets, both bookkeeping: `feature-delivery-completeness` needed the Claude-only `## Native Hook Events` CLAUDE.md section tracked (added to the legacy/Claude-specific list, with the Ultracode precedent: deliberately not mirrored to Codex/Gemini, whose hooks are unchanged), and `no-silent-fallbacks` counted this change's logged, safe-direction catches plus one pre-existing prune catch in `SessionManager.resolveLaunchBinary` that the inserted launch check moved out of its old exemption window. Each now carries a `@silent-fallback-ok` reason; the scanner is back at the 494 baseline. No behaviour change.

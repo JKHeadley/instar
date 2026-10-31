@@ -64,6 +64,7 @@ export function resolveSessionClaudeVersion(input: SessionClaudeVersionInput): S
     real = fs.realpathSync(configured);
     if (!fs.statSync(real).isFile()) return { readable: false, reason: 'not-a-file' };
   } catch {
+    // @silent-fallback-ok — "unreadable" is the safe answer (command entries kept); a flag that is on reports it once per boot as the NativeHookEvents.notInEffect degradation.
     return { readable: false, reason: 'claude-path-missing' };
   }
   if (!looksLikeClaudeInstall(real)) return { readable: false, reason: 'not-claude-binary' };
@@ -76,6 +77,7 @@ export function resolveSessionClaudeVersion(input: SessionClaudeVersionInput): S
     try {
       version = (input.versionProbe ? readClaudeVersion(real, input.versionProbe) : readClaudeVersion(real)).version;
     } catch {
+      // @silent-fallback-ok — an unreadable version keeps the command entries and, with the flag on, raises NativeHookEvents.notInEffect once per boot.
       version = null;
     }
   }
@@ -277,6 +279,7 @@ export function bootReconcileNativeReporter(deps: NativeReporterBootDeps): { lau
     try {
       return reconcileReporterSettingsFile(settingsPath, deps.decision);
     } catch (err) {
+      // @silent-fallback-ok — logged; a failed re-validation leaves the file as the boot reconcile wrote it and the session still launches (a reporter must never block a spawn).
       log(`[native-hook-events] launch-time reconcile failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }

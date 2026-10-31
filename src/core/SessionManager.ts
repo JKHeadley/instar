@@ -6237,6 +6237,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         this.nativeHookLaunchCheck();
       } catch (err) {
+        // @silent-fallback-ok — logged; the reporter-settings re-validation must never block a claude-code spawn.
         console.warn(`[SessionManager] native hook launch check failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
@@ -6247,6 +6248,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (now - this.lastClaudeBinaryPruneAt >= SessionManager.CLAUDE_BINARY_PRUNE_INTERVAL_MS) {
         this.lastClaudeBinaryPruneAt = now;
         void this.claudeBinaryRetainer.prune().catch((err) => {
+          // @silent-fallback-ok — logged; a failed prune keeps old retained copies until the next interval (pre-existing fail-safe; the native-hook launch check above moved it out of its old exemption window).
           console.warn(`[SessionManager] retained Claude binary prune failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
