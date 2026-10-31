@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveWindowsDesktopBridgeAddress, selectWindowsDesktopBridgeAddress, validateWindowsDesktopBridgeAddress } from '../../src/core/WindowsDesktopBridgeAddress.js';
+import { resolveWindowsDesktopBridgeAddress, resolveWindowsDesktopLocalAddress, selectWindowsDesktopBridgeAddress, validateWindowsDesktopBridgeAddress } from '../../src/core/WindowsDesktopBridgeAddress.js';
 
 describe('Windows desktop WSL bridge address', () => {
   it('uses the Windows-owned NAT gateway', () => {
@@ -34,5 +34,21 @@ describe('Windows desktop WSL bridge address', () => {
       .toBe('172.30.96.1');
     expect(() => resolveWindowsDesktopBridgeAddress('172.30.96.1', '172.30.96.1', ['127.0.0.1']))
       .toThrow('windows-desktop-bridge-address-invalid');
+  });
+
+  it('accepts loopback for the Windows-local transport on a NAT WSL host', () => {
+    expect(resolveWindowsDesktopLocalAddress('127.0.0.1', '172.30.96.1', ['172.30.96.1']))
+      .toBe('127.0.0.1');
+  });
+
+  it('accepts a legacy gateway only while Windows still owns it and rejects redirects', () => {
+    expect(resolveWindowsDesktopLocalAddress('172.30.96.1', '172.30.96.1', ['172.30.96.1']))
+      .toBe('172.30.96.1');
+    expect(() => resolveWindowsDesktopLocalAddress('172.30.96.1', '172.30.96.1', ['127.0.0.1']))
+      .toThrow('windows-desktop-bridge-address-invalid');
+    expect(() => resolveWindowsDesktopLocalAddress('192.168.1.2', '172.30.96.1', ['192.168.1.2']))
+      .toThrow('windows-desktop-bridge-address-invalid');
+    expect(() => resolveWindowsDesktopLocalAddress(undefined, '172.30.96.1', ['172.30.96.1']))
+      .toThrow('windows-desktop-bridge-address-unavailable');
   });
 });

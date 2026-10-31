@@ -31,8 +31,10 @@ still only use the dashboard PIN; there is no extra Windows setup step.
 An online Mac agent can still have an unavailable screen helper. That does
 not mean the whole Mac is locked or that Echo lost contact with it. Echo now
 reports the helper's display, permission, and console-session checks
-separately so we can fix the right problem. On Mama PC, Echo chooses the
-correct local link between WSL and Windows for the machine's network mode.
+separately so we can fix the right problem. On Mama PC, Echo sends desktop
+requests through Windows itself to a companion listening only on that
+machine's loopback address. Windows does not need to ask you to allow a
+network connection for the companion.
 
 Mac Studio is the single entry point for this first Echo mesh rollout. It
 relays a chosen machine's encrypted screen and controls without becoming that
