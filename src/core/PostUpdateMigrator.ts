@@ -53,7 +53,8 @@ import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-te
 // two additions land in different places and git merges them without help. It reduces the collision
 // sharply rather than abolishing it: two symbols that sort adjacently can still touch.
 import {
-  AGENT_CONNECT_OWNER_LINE, AGENT_CONNECT_HEADING,
+  AGENT_CONNECT_OWNER_LINE,
+  AGENT_CONNECT_HEADING,
   AGENT_CONNECT_HOWTO_BULLET,
   AGENT_CONNECT_HOWTO_MARKER,
   AGENT_CONNECT_LIVE_ENABLE_MARKER,

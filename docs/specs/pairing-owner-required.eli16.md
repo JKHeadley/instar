@@ -15,3 +15,5 @@ When two agents pair, a person reads a prompt and decides whether to trust the o
 **The cost.** Agents on older versions that send a blank owner cannot pair with an updated agent until they update too, and they see a plain reason instead of a prompt. An older acceptor does not recognise the new refusal reason, so its person sees "no answer" on their side while the inviter's person sees the real reason.
 
 **What to decide.** Nothing further: Justin asked for this directly. A revert restores the old behaviour, and no stored data changes.
+
+A later commit on this change only splits one import onto two lines, which a unit test requires; behaviour is unchanged.

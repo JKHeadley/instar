@@ -16,3 +16,5 @@
 8. **Rollback cost.** Code revert. No stored state or data migration; one added CLAUDE.md line on existing agents, harmless if left behind after a revert.
 
 **Second-pass result.** Concur with the review (after the fixes above).
+
+**Follow-up commit.** Splits one import onto two lines after Local Verify failed the import-shape test. Formatting only, no behaviour change.
