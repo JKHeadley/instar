@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "feedback-executor-review-failed-recovery",
+  "sessionId": "abbd2c0b-8fe5-4204-a8e2-47f3e8dceba1",
+  "timestamp": "2026-10-31T04:51:30.250Z",
+  "artifactPath": "upgrades/side-effects/feedback-executor-review-failed-recovery.md",
+  "artifactSha256": "f89c01548e993c34394c79f2fec59d2b80674c91cdc70ca937ce037ec9bc3592",
+  "specPath": "docs/specs/feedback-executor-review-failed-recovery.md",
+  "coveredFiles": [
+    "docs/specs/feedback-executor-review-failed-recovery.eli16.md",
+    "docs/specs/feedback-executor-review-failed-recovery.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "docs/specs/reports/feedback-executor-review-failed-recovery-convergence.md",
+    "src/feedback-factory/execute/FeedbackExecuteStore.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/changeSet.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "src/feedback-factory/execute/executorPorts.ts",
+    "src/feedback-factory/execute/executorSession.ts",
+    "src/feedback-factory/execute/independentReview.ts",
+    "src/feedback-factory/triage/FeedbackTriageStore.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/feedback-factory/execute-review-failed-recovery.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/next/feedback-executor-review-failed-recovery.md",
+    "upgrades/side-effects/feedback-executor-review-failed-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Executor gains authority to close its own GitHub PRs (reversible) — external side effect; converged spec + second pass.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

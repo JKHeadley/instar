@@ -145,6 +145,7 @@ Every hold reason has a defined trigger for coming back and an owner:
 | `needs-review` (never-ignore floor) | timer or new reports | agent; action list when serious or multi-report |
 | `execution-failed`, `not-reproducible`, `merge-unavailable` | new reports, or operator instruction in conversation | operator informed once via action list |
 | `needs-review-tooling` | operator instruction in conversation | operator; action list |
+| `review-failed-twice` (two fixes in one recovery episode failed independent review; `docs/specs/feedback-executor-review-failed-recovery.md`) | new reports, or operator instruction in conversation | operator informed once via action list |
 | `needs-review-secret-shape` | operator approval through the dashboard PIN plan/commit flow (Frontloaded #7) | operator; action list |
 | `ignore-rate-brake` | brake episode ends | agent; degradation report |
 
