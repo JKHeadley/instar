@@ -1,0 +1,26 @@
+{
+  "note": "Frozen 2026-10-26 BEFORE any scenario was written. Each job declares the inventory blocks a job author would list from the job's own description (its contextSections). The seed (every block with seedDisposition S in instruction-inventory.json v1.1.0) is always loaded in addition.",
+  "seed": "all blocks with seedDisposition == 'S' (52 blocks, 22,651 tokens)",
+  "jobs": {
+    "health-check": {
+      "file": ".instar/jobs/instar/health-check.md",
+      "contextSections": ["B029", "B185", "B206", "B179", "B160", "B271", "B259"],
+      "why": "server/disk health; raises attention items; guard posture; resource usage; vanished sessions; sentinel housekeeping; honest machine state; system topics"
+    },
+    "evolution-overdue-check": {
+      "file": ".instar/jobs/instar/evolution-overdue-check.md",
+      "contextSections": ["B029", "B061"],
+      "why": "overdue evolution actions (auto-expiry) and the attention row; commitments and close-the-loop are already in the seed"
+    },
+    "insight-harvest": {
+      "file": ".instar/jobs/instar/insight-harvest.md",
+      "contextSections": ["B061", "B043", "B131", "B198"],
+      "why": "learnings -> evolution proposals; playbook; learning velocity; learned preferences"
+    },
+    "relationship-maintenance": {
+      "file": ".instar/jobs/instar/relationship-maintenance.md",
+      "contextSections": ["B029", "B174"],
+      "why": "relationship store (replicated One Memory) and surfacing observations"
+    }
+  }
+}
