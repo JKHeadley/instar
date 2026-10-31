@@ -121,6 +121,7 @@ export function _resetSpawnPollersForTest(): void {
 }
 
 export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
+  get frameworkId(): string | undefined { return this.inner.frameworkId; }
   private readonly semaphore: HostSpawnSemaphore;
   private readonly acquireMs: number;
   private readonly waitersMax: number;
@@ -164,6 +165,7 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
   }
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
+    if (options?.signal?.aborted) throw new LlmCapacityUnavailableError('acquire-timeout', 0);
     const id = this.genId();
     const startedAt = this.now();
     const lane = this.resolveLane(options);
@@ -211,12 +213,14 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
       if (this.semaphore.acquire(id, lane)) {
         acquired = true;
       } else {
-        acquired = await this.pollAcquire(id, startedAt, lane);
+        acquired = await this.pollAcquire(id, startedAt, lane, options?.signal);
       }
 
       if (!acquired) {
         throw new LlmCapacityUnavailableError('acquire-timeout', this.now() - startedAt);
       }
+
+      if (options?.signal?.aborted) throw new LlmCapacityUnavailableError('acquire-timeout', this.now() - startedAt);
 
       // Slot held — run the actual spawn. The semaphore is released in finally.
       return await this.inner.evaluate(prompt, options);
@@ -237,7 +241,7 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
   }
 
   /** Poll the semaphore every `pollIntervalMs` until acquired or the budget elapses. */
-  private async pollAcquire(id: string, startedAt: number, lane: SpawnLane = 'background'): Promise<boolean> {
+  private async pollAcquire(id: string, startedAt: number, lane: SpawnLane = 'background', signal?: AbortSignal): Promise<boolean> {
     const deadline = startedAt + this.acquireMs;
     // Defense-in-depth iteration ceiling: the loop is wall-clock bound by
     // `deadline`, but a frozen/non-advancing clock (a test injection, never
@@ -245,10 +249,12 @@ export class SpawnCapIntelligenceProvider implements IntelligenceProvider {
     // count plus a margin so the loop ALWAYS terminates.
     const maxIters = Math.ceil(this.acquireMs / Math.max(1, this.pollIntervalMs)) + 8;
     for (let iter = 0; iter < maxIters; iter++) {
+      if (signal?.aborted) return false;
       // Sleep first (the immediate try already happened in evaluate()).
       const remaining = deadline - this.now();
       if (remaining <= 0) return false;
       await this.sleep(Math.min(this.pollIntervalMs, remaining));
+      if (signal?.aborted) return false;
       if (this.semaphore.acquire(id, lane)) return true;
       if (this.now() >= deadline) return false;
     }

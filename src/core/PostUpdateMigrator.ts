@@ -8669,6 +8669,12 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Feedback triage and execution section');
     }
+    if (content.includes('Feedback triage and execution (operated feedback factory)') &&
+      !content.includes('feedbackFactory.triage.accountSelectionMode')) {
+      content += '\n**Feedback triage account quota** — `feedbackFactory.triage.accountSelectionMode` is `off`, `observe` or `on` (default `off`). Every primary call requires fresh, verified subscription quota below 75% and the registered Codex Astra route. `observe` records a bounded spare-account choice after the serving call; `on` uses a verified eligible local Codex account. Read the triage summary quota pause when decisions stop; cached usage cannot admit a call.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added feedback triage account quota guidance');
+    }
     // Phase 2 (§4): the triage section's "not built yet" sentence becomes a pointer, and the
     // executor gets its own section. Content-sniffed, idempotent.
     const executorNotBuilt = 'The executor that turns work items into pull requests is not built yet.';
@@ -14562,6 +14568,22 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     }
 
     let patched = false;
+
+    // Account-specific feedback triage is dark until the staged live-evidence
+    // route is enabled. Add only a missing value; never rewrite operator choice.
+    {
+      const feedback = (config.feedbackFactory && typeof config.feedbackFactory === 'object')
+        ? config.feedbackFactory as Record<string, unknown> : {};
+      const triage = (feedback.triage && typeof feedback.triage === 'object')
+        ? feedback.triage as Record<string, unknown> : {};
+      if (triage.accountSelectionMode === undefined) {
+        triage.accountSelectionMode = 'off';
+        feedback.triage = triage;
+        config.feedbackFactory = feedback;
+        patched = true;
+        result.upgraded.push('config.json: added dark feedback triage account selection mode');
+      }
+    }
 
     // Presentation and outage-notice permission defaults are independent from writer enrollment.
     if (migrateTelegramOriginDisplay(config)) {

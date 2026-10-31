@@ -166,6 +166,61 @@ describe('CodexCliIntelligenceProvider — per-call timeout (IntelligenceOptions
   });
 });
 
+describe('CodexCliIntelligenceProvider — fenced triage launch', () => {
+  it('reaps a plain-mode child that ignores SIGTERM before releasing the call', async () => {
+    const pidFile = path.join(tmpDir, 'fenced-triage-stubborn-pid');
+    const binary = path.join(tmpDir, 'fenced-triage-stubborn-codex');
+    fs.writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nprocess.on('SIGTERM', () => {});\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: binary, workingDirectory: nonGitDir,
+      resolveExecJson: () => false });
+    const controller = new AbortController();
+    const call = provider.evaluate('triage', { model: 'gpt-6-astra', strictModelPin: true,
+      requiredRoute: { framework: 'codex-cli', modelId: 'gpt-6-astra' },
+      accountOverride: { accountId: 'pool-1', configHome: tmpDir }, signal: controller.signal });
+    for (let n = 0; n < 100 && !fs.existsSync(pidFile); n++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(fs.existsSync(pidFile)).toBe(true);
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    controller.abort();
+    await expect(call).rejects.toThrow('aborted');
+    expect(() => process.kill(pid, 0)).toThrow();
+  }, 5_000);
+
+  it('pins file-backed credentials for the same auth.json used by quota admission', async () => {
+    const argsFile = path.join(tmpDir, 'fenced-triage-args');
+    const binary = path.join(tmpDir, 'fenced-triage-args-codex');
+    fs.writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\necho DONE\n`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: binary, workingDirectory: nonGitDir,
+      resolveExecJson: () => false });
+    const requiredRoute = { framework: 'codex-cli' as const, modelId: 'gpt-6-astra' };
+    await expect(provider.evaluate('triage', { model: 'gpt-6-astra', strictModelPin: true, requiredRoute,
+      accountOverride: { accountId: 'pool-1', configHome: tmpDir } })).resolves.toBe('DONE');
+    expect(fs.readFileSync(argsFile, 'utf8')).toContain('cli_auth_credentials_store="file"');
+  });
+
+  it('requires an explicit subscription account and refuses before spawning when the launch fence fails', async () => {
+    const calls = path.join(tmpDir, 'fenced-triage-calls');
+    const binary = path.join(tmpDir, 'fenced-triage-codex');
+    fs.writeFileSync(binary, `#!/bin/sh\necho called >> "${calls}"\necho DONE\n`, { mode: 0o755 });
+    const provider = new CodexCliIntelligenceProvider({ codexPath: binary, workingDirectory: nonGitDir });
+    const requiredRoute = { framework: 'codex-cli' as const, modelId: 'gpt-6-astra' };
+    await expect(provider.evaluate('triage', { model: 'gpt-6-astra', strictModelPin: true, requiredRoute }))
+      .rejects.toThrow('required subscription account missing');
+    await expect(provider.evaluate('triage', { model: 'gpt-6-astra', strictModelPin: true, requiredRoute,
+      accountOverride: { accountId: 'pool-1', configHome: tmpDir }, launchGuard: () => false }))
+      .rejects.toThrow('launch guard refused');
+    const cancelled = new AbortController();
+    cancelled.abort();
+    let guardCalls = 0;
+    await expect(provider.evaluate('triage', { model: 'gpt-6-astra', strictModelPin: true, requiredRoute,
+      accountOverride: { accountId: 'pool-1', configHome: tmpDir }, signal: cancelled.signal,
+      launchGuard: () => { guardCalls++; return true; } })).rejects.toThrow('launch guard refused');
+    expect(guardCalls).toBe(0);
+    expect(fs.existsSync(calls)).toBe(false);
+  });
+});
+
 describe('CodexCliIntelligenceProvider — retired-model fallback', () => {
   function fallbackFixture(firstError: string, fallbackAlsoFails = false): { binary: string; calls: string } {
     const fixture = fs.mkdtempSync(path.join(tmpDir, 'retired-model-'));

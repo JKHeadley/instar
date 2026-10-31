@@ -8,7 +8,7 @@
  * new approval and is never retried as if transient).
  */
 import { createHash, randomUUID } from 'node:crypto';
-import type { IntelligenceProvider } from '../../core/types.js';
+import type { IntelligenceProvider, IntelligenceOptions } from '../../core/types.js';
 import type { AuthorityRecord } from '../drain/FeedbackDrainStore.js';
 import { buildTranscriptSliceIdentityContext } from '../../core/JudgmentProvenanceLog.js';
 import { DP_FEEDBACK_TRIAGE } from '../../data/provenanceCoverage.js';
@@ -72,12 +72,16 @@ export class FeedbackTriageArbiter {
 
   checkAuthority(authority: AuthorityRecord): void {
     if (authority.revoked || authority.promptVersion !== FEEDBACK_TRIAGE_PROMPT_ID ||
-      authority.schemaVersion !== FEEDBACK_TRIAGE_SCHEMA_ID || authority.decisionPointId !== FEEDBACK_TRIAGE_DECISION_POINT) {
+      authority.schemaVersion !== FEEDBACK_TRIAGE_SCHEMA_ID || authority.decisionPointId !== FEEDBACK_TRIAGE_DECISION_POINT ||
+      authority.provider !== 'codex-cli' || authority.modelFamily !== 'gpt-6-astra') {
       throw new TriageContractViolation('triage authority does not match the deployed prompt/schema/decision point', 'canary-mismatch');
     }
   }
 
-  async decideBatch(authority: AuthorityRecord, packets: TriagePacket[], opts: { timeoutMs?: number } = {}): Promise<TriageCallResult> {
+  async decideBatch(authority: AuthorityRecord, packets: TriagePacket[], opts: {
+    timeoutMs?: number; accountOverride?: IntelligenceOptions['accountOverride']; launchGuard?: () => boolean;
+    signal?: AbortSignal;
+  } = {}): Promise<TriageCallResult> {
     this.checkAuthority(authority);
     if (packets.length === 0 || packets.length > Math.min(50, authority.maxBatch)) {
       throw new TriageContractViolation('triage batch exceeds the registered authority envelope', 'batch-envelope');
@@ -90,7 +94,12 @@ export class FeedbackTriageArbiter {
     let resolvedFramework = '';
     let correlationId: string | null = null;
     const raw = await this.intelligence.evaluate(prompt, {
-      model: 'capable',
+      model: authority.modelFamily as 'capable',
+      strictModelPin: true,
+      requiredRoute: { framework: 'codex-cli', modelId: authority.modelFamily },
+      ...(opts.accountOverride ? { accountOverride: opts.accountOverride } : {}),
+      ...(opts.launchGuard ? { launchGuard: opts.launchGuard } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
       maxTokens: Math.min(16_000, Math.max(512, authority.maxTokens)),
       temperature: 0,
       timeoutMs: opts.timeoutMs ?? FEEDBACK_TRIAGE_MODEL_TIMEOUT_MS,
@@ -106,7 +115,7 @@ export class FeedbackTriageArbiter {
         onCorrelationId: (id) => { correlationId = id; },
       },
     });
-    if (!resolvedModel || !resolvedModel.toLowerCase().includes(authority.modelFamily.toLowerCase()) ||
+    if (resolvedModel.toLowerCase() !== authority.modelFamily.toLowerCase() ||
       !resolvedFramework || resolvedFramework.toLowerCase() !== authority.provider.toLowerCase()) {
       throw new TriageContractViolation('resolved model does not match the registered triage authority', 'resolved-model-mismatch');
     }
@@ -114,14 +123,14 @@ export class FeedbackTriageArbiter {
   }
 
   /** A fixed synthetic canary batch for the self-heal ladder (§6); mutates nothing. */
-  async canary(authority: AuthorityRecord): Promise<void> {
+  async canary(authority: AuthorityRecord, opts: { accountOverride?: IntelligenceOptions['accountOverride']; launchGuard?: () => boolean; signal?: AbortSignal } = {}): Promise<void> {
     const packet: TriagePacket = {
       clusterId: `triage-canary-${randomUUID().slice(0, 8)}`, title: 'Dashboard button label has a typo', type: 'bug', reportCount: 1,
       firstSeenAt: new Date(0).toISOString(), lastSeenAt: new Date(0).toISOString(), recurrenceCount: 0,
       reports: [{ n: 1, receivedAt: null, description: 'The Save button on the settings page reads "Svae".' }],
       truncation: null, neighbours: [], mergedPrs: [],
     };
-    await this.decideBatch(authority, [packet]);
+    await this.decideBatch(authority, [packet], opts);
   }
 }
 

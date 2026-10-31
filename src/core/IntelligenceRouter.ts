@@ -1356,6 +1356,20 @@ export class IntelligenceRouter implements IntelligenceProvider {
     options: IntelligenceOptions | undefined,
     decision: DecisionCallContext,
   ): Promise<string> {
+    // A spend-fenced caller must never enter category/nature routing or a failure tail.
+    // Resolve the named door before the first attempt; absence fails without model spend.
+    if (options?.requiredRoute) {
+      const { framework, modelId } = options.requiredRoute;
+      if (framework !== 'codex-cli' || !modelId || !options.strictModelPin) {
+        throw new Error('IntelligenceRouter: invalid required route');
+      }
+      const provider = this.resolveProvider(framework);
+      if (!provider) throw new Error(`IntelligenceRouter: required framework '${framework}' unavailable`);
+      if (provider.frameworkId !== framework) throw new Error('IntelligenceRouter: required provider identity unverified');
+      return this.runAttempt(provider, prompt, decision, {
+        extra: { model: modelId as IntelligenceOptions['model'], strictModelPin: true },
+      });
+    }
     const component = options?.attribution?.component;
     const explicitCategory = (options?.attribution as { category?: unknown } | undefined)?.category;
     const category: ComponentCategory = isComponentCategory(explicitCategory)

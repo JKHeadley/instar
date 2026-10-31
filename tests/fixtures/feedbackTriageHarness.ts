@@ -69,10 +69,13 @@ export interface Harness {
   cleanup(): void;
 }
 
-export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; approve?: boolean; maxWallClockMs?: number; paceTicks?: FeedbackTriageServiceOptions['paceTicks'] } = {}): Promise<Harness> {
+export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; approve?: boolean; maxWallClockMs?: number;
+  primaryAccountAdmission?: FeedbackTriageServiceOptions['primaryAccountAdmission'];
+  paceTicks?: FeedbackTriageServiceOptions['paceTicks']; } = {}): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-triage-'));
   const now = { value: T0 };
   const drain = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: KEY, clock: () => now.value });
+  drain.startRun({ ownerHost: 'm1', ownerEpoch: 1, leaseMs: 60_000 });
   const store = new FeedbackTriageStore(drain, { hmacKey: KEY, clock: () => now.value });
   const audit = new FeedbackTriageAuditLog(path.join(dir, 'logs'), path.join(dir, 'store', 'triage-packets'), () => now.value);
   const tracker = new InitiativeTracker(dir);
@@ -90,6 +93,7 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
   } as Harness;
   const intelligence: IntelligenceProvider = {
     evaluate: async (prompt: string, options?: IntelligenceOptions) => {
+      if (options?.launchGuard && !options.launchGuard()) throw new Error('launch guard refused');
       h.calls.push(prompt);
       now.value += h.callAdvanceMs.value;
       options?.onModel?.({ model: h.model.model, framework: h.model.framework });
@@ -116,6 +120,7 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
     ownerHost: 'm1', ownerEpoch: () => 1, isCanonicalOwner: () => true,
     config: () => h.config,
     quotaUsedPercent: async () => h.quota.value,
+    ...(opts.primaryAccountAdmission ? { primaryAccountAdmission: opts.primaryAccountAdmission } : {}),
     listMergedPrs: async () => [],
     executorStatus: () => ({ available: false, reason: 'not-built' }),
     raiseAttention: async (item) => { h.attention.push(item); },

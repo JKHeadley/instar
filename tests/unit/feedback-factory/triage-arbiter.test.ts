@@ -49,6 +49,8 @@ describe('FeedbackTriageArbiter contract', () => {
     expect(result.correlationId).toBe('d-corr-1');
     expect(p.seen.options?.provenance?.decisionPoint).toBe('feedback-triage');
     expect(p.seen.options?.attribution).toMatchObject({ component: 'FeedbackTriageArbiter', category: 'gate', gating: true, injectionExposed: true });
+    expect(p.seen.options).toMatchObject({ model: 'gpt-6-astra', strictModelPin: true,
+      requiredRoute: { framework: 'codex-cli', modelId: 'gpt-6-astra' } });
   });
   it('wraps evidence as untrusted and carries the severity rubric', () => {
     const prompt = triagePrompt([packet('c1')]);
@@ -60,12 +62,14 @@ describe('FeedbackTriageArbiter contract', () => {
     const answer = (prompt: string) => JSON.stringify({ decisions: packetsFrom(prompt).map((x) => decisionRow(x.clusterId)) });
     await expect(new FeedbackTriageArbiter(provider(answer, 'claude-opus-4-8', 'codex-cli')).decideBatch(authority, [packet('c1')])).rejects.toBeInstanceOf(TriageContractViolation);
     await expect(new FeedbackTriageArbiter(provider(answer, 'gpt-6-astra', 'claude-code')).decideBatch(authority, [packet('c1')])).rejects.toBeInstanceOf(TriageContractViolation);
+    await expect(new FeedbackTriageArbiter(provider(answer, 'gpt-6-astra-preview', 'codex-cli')).decideBatch(authority, [packet('c1')])).rejects.toBeInstanceOf(TriageContractViolation);
   });
   it('a prompt/schema/decision-point mismatch is refused before any call', async () => {
     let called = false;
     const p = provider(() => { called = true; return ''; });
     await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, promptVersion: 'feedback-triage-v0' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
     expect(called).toBe(false);
+    await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, modelFamily: 'gpt-6-sol' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
   });
   it('a batch outside the registered envelope is refused', async () => {
     const p = provider(() => '');
@@ -74,6 +78,102 @@ describe('FeedbackTriageArbiter contract', () => {
   it('an answer that fails the closed schema is rejected (never defaulted)', async () => {
     const p = provider(() => JSON.stringify({ decisions: [{ clusterId: 'c1', disposition: 'archive' }] }));
     await expect(new FeedbackTriageArbiter(p).decideBatch(authority, [packet('c1')])).rejects.toBeInstanceOf(TriageOutputRejected);
+  });
+});
+
+describe('transactional triage call reservations', () => {
+  let drain: FeedbackDrainStore;
+  afterEach(() => drain?.close());
+  const setup = () => {
+    let now = Date.UTC(2026, 9, 31, 23, 59, 59);
+    drain = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: KEY, clock: () => now });
+    const firstRun = drain.startRun({ ownerHost: 'm1', ownerEpoch: 1, leaseMs: 10_000 });
+    const { generation, revoked, ...binding } = authority;
+    const approved = drain.mutateAuthority({ ...binding, action: 'create', operatorDecisionRef: 'owner-pin-test' });
+    return { approved, firstRun, accountEvidence: { accountId: 'pool-account-1', limitFamily: 'codex' as const,
+      usedPercent: 10, acquiredAt: now }, advance: (ms: number) => { now += ms; }, now: () => now };
+  };
+
+  it('refunds only an unlaunched token, including its original-day retriage debit, exactly once', () => {
+    const { approved, accountEvidence, advance, now } = setup();
+    const token = drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 1, ...accountEvidence,
+      maxCallsPerDay: 1, subcap: { kind: 'retriage', maxCallsPerDay: 1 } });
+    expect(token).toBeTruthy();
+    expect(drain.authorityCallsToday(approved, now())).toBe(1);
+    advance(2_000); // Cross the UTC accounting-day boundary before release.
+    expect(drain.releaseTriageCall(token!)).toBe(true);
+    expect(drain.releaseTriageCall(token!)).toBe(false);
+    expect(drain.authorityCallsToday(approved, now() - 2_000)).toBe(0);
+    expect(drain.sharedDatabase().prepare("SELECT calls FROM triage_daily_usage WHERE utc_day='2026-10-31' AND kind='retriage'").get()).toEqual({ calls: 0 });
+  });
+
+  it('a launched call cannot be refunded and a release wins only while reserved', () => {
+    const { approved, accountEvidence } = setup();
+    const token = drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 1, ...accountEvidence, maxCallsPerDay: 1 });
+    expect(token).toBeTruthy();
+    expect(drain.launchTriageCall(token!, approved, 'm1', 1)).toBe(true);
+    expect(drain.releaseTriageCall(token!)).toBe(false);
+    expect(drain.launchTriageCall(token!, approved, 'm1', 1)).toBe(false);
+    expect(drain.completeTriageCall(token!, 'succeeded')).toBe(true);
+    expect(drain.authorityCallsToday(approved)).toBe(1);
+    const events = drain.sharedDatabase().prepare("SELECT to_state,reason FROM drain_audit WHERE kind='triage-call' ORDER BY sequence")
+      .all() as Array<{ to_state: string; reason: string }>;
+    expect(events.map((event) => event.to_state)).toEqual(['reserved', 'launched', 'completed']);
+    const provenance = JSON.parse(events[0].reason) as Record<string, unknown>;
+    expect(provenance).toMatchObject({ accountId: 'pool-account-1', limitFamily: 'codex', usedPercent: 10,
+      generation: approved.generation, source: 'codex-app-server', ownerHost: 'm1', ownerEpoch: 1,
+      reservationId: token, attemptId: expect.any(String) });
+    expect(events[0].reason).not.toMatch(/auth\.json|configHome|credential|email|loginAccountId/);
+    expect(JSON.parse(events[2].reason)).toMatchObject({ outcome: 'succeeded' });
+  });
+
+  it('reconstructs a launched call completed after owner handoff from lifecycle events alone', () => {
+    const { approved, accountEvidence } = setup();
+    const token = drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 1,
+      ...accountEvidence, maxCallsPerDay: 1 });
+    expect(token).toBeTruthy();
+    expect(drain.launchTriageCall(token!, approved, 'm1', 1)).toBe(true);
+    expect(drain.completeTriageCall(token!, 'succeeded', Date.now(), { host: 'm2', epoch: 2 })).toBe(true);
+    const events = drain.sharedDatabase().prepare("SELECT to_state,reason FROM drain_audit WHERE kind='triage-call' ORDER BY sequence")
+      .all() as Array<{ to_state: string; reason: string }>;
+    const projections = events.map((event) => JSON.parse(event.reason) as Record<string, unknown>);
+    expect(events.map((event) => event.to_state)).toEqual(['reserved', 'launched', 'completed']);
+    expect(new Set(projections.map((event) => event.attemptId)).size).toBe(1);
+    expect(projections[2]).toMatchObject({ ownerHost: 'm1', ownerEpoch: 1,
+      observerHost: 'm2', observerEpoch: 2, handoffObserved: true, reservationId: token });
+  });
+
+  it('an owner handoff blocks launch but permits the new owner to refund the old unstarted token', () => {
+    const { approved, firstRun, accountEvidence } = setup();
+    const token = drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 1, ...accountEvidence, maxCallsPerDay: 1 });
+    expect(token).toBeTruthy();
+    drain.transitionRun(firstRun.runId, 'accepted', 'running');
+    drain.transitionRun(firstRun.runId, 'running', 'succeeded');
+    drain.startRun({ ownerHost: 'm2', ownerEpoch: 2, leaseMs: 10_000 });
+    expect(drain.launchTriageCall(token!, approved, 'm1', 1)).toBe(false);
+    expect(drain.releaseTriageCall(token!)).toBe(true);
+    expect(drain.authorityCallsToday(approved)).toBe(0);
+  });
+
+  it('a stale owner cannot reserve after the recorded epoch advances', () => {
+    const { approved, firstRun, accountEvidence } = setup();
+    drain.transitionRun(firstRun.runId, 'accepted', 'running');
+    drain.transitionRun(firstRun.runId, 'running', 'succeeded');
+    drain.startRun({ ownerHost: 'm2', ownerEpoch: 2, leaseMs: 10_000 });
+    const token = drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 1, ...accountEvidence,
+      maxCallsPerDay: 1 });
+    expect(token).toBeNull();
+    expect(drain.authorityCallsToday(approved)).toBe(0);
+  });
+
+  it('refuses a stale or exhausted account reading before it debits a call', () => {
+    const { approved, accountEvidence } = setup();
+    for (const unsafe of [{ ...accountEvidence, usedPercent: 75 },
+      { ...accountEvidence, acquiredAt: accountEvidence.acquiredAt - 60_001 }]) {
+      expect(drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 1,
+        ...unsafe, maxCallsPerDay: 1 })).toBeNull();
+    }
+    expect(drain.authorityCallsToday(approved)).toBe(0);
   });
 });
 

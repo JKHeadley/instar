@@ -136,6 +136,7 @@ export function _resetUnlabeledEmissionForTest(): void {
 }
 
 export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider {
+  get frameworkId(): string | undefined { return this.inner.frameworkId; }
   constructor(
     private readonly inner: IntelligenceProvider,
     private readonly breaker: LlmCircuitBreaker = getLlmCircuitBreaker(),

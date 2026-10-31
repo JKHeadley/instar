@@ -2290,6 +2290,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // dark on the fleet). ignoreLive is deliberately absent: ignore goes live only through the
     // PIN-bound plan/commit record; an explicit false is the kill switch.
     triage: {
+      accountSelectionMode: 'off',
       maxBatchChars: 24000,
       reportsPerItem: 4,
       charsPerReport: 1200,

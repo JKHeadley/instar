@@ -120,6 +120,50 @@ describe('IntelligenceRouter — dispatch', () => {
   });
 });
 
+describe('IntelligenceRouter — exact required route', () => {
+  const route: IntelligenceOptions = {
+    model: 'gpt-6-astra', strictModelPin: true,
+    requiredRoute: { framework: 'codex-cli', modelId: 'gpt-6-astra' },
+    attribution: { component: 'FeedbackTriageArbiter', category: 'gate', gating: true },
+  };
+
+  it('uses Codex and the exact model even without a routing config', async () => {
+    const observed: IntelligenceOptions[] = [];
+    const codex: IntelligenceProvider = { frameworkId: 'codex-cli', evaluate: async (_prompt, options) => {
+      observed.push(options!); return 'codex';
+    } };
+    const { router, defaultProvider } = makeRouter({ built: { 'codex-cli': codex } });
+    expect(await router.evaluate('p', route)).toBe('codex');
+    expect(observed).toMatchObject([{ model: 'gpt-6-astra', strictModelPin: true }]);
+    expect(defaultProvider.calls).toEqual([]);
+  });
+
+  it('fails before spend if the required provider is unavailable or the pin is invalid', async () => {
+    const { router, defaultProvider } = makeRouter({});
+    await expect(router.evaluate('p', route)).rejects.toThrow('required framework');
+    await expect(router.evaluate('p', { ...route, strictModelPin: false })).rejects.toThrow('invalid required route');
+    expect(defaultProvider.calls).toEqual([]);
+  });
+
+  it('refuses a provider whose concrete implementation identity is not verified', async () => {
+    const unmarked = fakeProvider('unverified');
+    const { router, defaultProvider } = makeRouter({ built: { 'codex-cli': unmarked } });
+    await expect(router.evaluate('p', route)).rejects.toThrow('provider identity unverified');
+    expect(unmarked.calls).toEqual([]);
+    expect(defaultProvider.calls).toEqual([]);
+  });
+
+  it('does not enter a configured failure swap after a Codex error', async () => {
+    const codex: IntelligenceProvider = { frameworkId: 'codex-cli', evaluate: async () => { throw new Error('quota'); } };
+    const { router, defaultProvider } = makeRouter({
+      config: { categories: { gate: 'claude-code' }, failureSwap: ['claude-code'] },
+      built: { 'codex-cli': codex },
+    });
+    await expect(router.evaluate('p', route)).rejects.toThrow('quota');
+    expect(defaultProvider.calls).toEqual([]);
+  });
+});
+
 describe('IntelligenceRouter — fallback (D4)', () => {
   it('binary missing + fallback default: degrades to default provider and reports', async () => {
     const onDegrade = vi.fn();

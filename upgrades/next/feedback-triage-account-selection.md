@@ -1,0 +1,15 @@
+<!-- bump: minor -->
+
+## What Changed
+
+Feedback triage can select an eligible local Codex subscription for each primary sorting call. Admission checks a fresh live usage reading for that account and pauses when no verified account is below the existing 75% threshold. The sorting model and provider stay pinned to the approved authority, with an owner-fenced daily call reservation recorded before launch. The feature starts in `off` mode; operators can use `observe` to inspect proposed selections and `on` to enable pool selection.
+
+## What to Tell Your User
+
+Feedback sorting can continue through a healthy enrolled Codex subscription when the current login reaches its usage pause point. The sorter still pauses if no account can be verified safely. Existing installations remain on the current account until the operator enables account selection.
+
+## Summary of New Capabilities
+
+- Per-attempt live subscription admission with a bounded account probe and a strict model route.
+- Audited account selection, launch and call outcome without exposing credential details.
+- `feedbackFactory.triage.accountSelectionMode` with `off`, `observe` and `on` rollout choices.
