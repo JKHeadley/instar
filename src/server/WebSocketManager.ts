@@ -652,7 +652,7 @@ export class WebSocketManager {
 
       // Enrich with hook event telemetry when available
       if (this.hookEventReceiver) {
-        const summary = this.hookEventReceiver.getSessionSummary(s.tmuxSession);
+        const summary = this.hookEventReceiver.getSessionSummaryForTmux(s.tmuxSession);
         if (summary) {
           base.telemetry = {
             eventCount: summary.eventCount,

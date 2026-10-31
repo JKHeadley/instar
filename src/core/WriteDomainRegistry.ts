@@ -347,6 +347,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
+  // POST /hooks/native-events (docs/specs/native-hook-events.md): a Claude Code
+  // process reports to the server on the SAME host over loopback
+  // (machine-local-justification: hardware-bound-resource). The stored events
+  // are per-session telemetry, rebuildable and git-ignored; nothing replicates.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/hooks/native-events',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-session hook telemetry under .instar/hook-events/ + subagent-tracking/, git-ignored by the native-hook-events migration; loopback-only route',
+    },
+  });
+
   // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
   // THIS machine's own identity file, rebuilds THIS process's relay client, appends one row
   // to this machine's key-free audit log. Local effect only; carries no key; installs

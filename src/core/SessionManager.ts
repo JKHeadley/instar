@@ -6229,6 +6229,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   resolveLaunchBinary(framework: IntelligenceFramework, binaryPath: string): string {
     if (framework !== 'claude-code') return binaryPath;
+    // Native hook events (D4 / Multi-machine posture): re-validate the
+    // reporter entries in .claude/settings.json against this machine's
+    // decision immediately before the spawn — a git sync can overwrite the
+    // file between boot and launch. Idempotent; instar-owned entries only.
+    if (this.nativeHookLaunchCheck) {
+      try {
+        this.nativeHookLaunchCheck();
+      } catch (err) {
+        console.warn(`[SessionManager] native hook launch check failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const resolution = this.claudeBinaryRetainer.resolve(binaryPath);
     this.claudeLaunchVersions.set(resolution.path, resolution.version);
     if (resolution.source === 'retained') {
@@ -6241,6 +6252,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     }
     return resolution.path;
+  }
+
+  private nativeHookLaunchCheck: (() => unknown) | null = null;
+
+  /** Wire the native-hook-events launch-time settings re-validation (server.ts). */
+  setNativeHookLaunchCheck(fn: (() => unknown) | null): void {
+    this.nativeHookLaunchCheck = fn;
   }
 
   /** Registry-First read for `GET /sessions/claude-binary`. */

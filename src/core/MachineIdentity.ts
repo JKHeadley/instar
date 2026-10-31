@@ -925,6 +925,9 @@ const GITIGNORE_ENTRIES = [
   'state/judgment-provenance/',
   '# Subscription pool login locations (machine-local — never commit)',
   '.instar/subscription-pool.json',
+  '# Hook telemetry (per-session, machine-local — never commit)',
+  '.instar/hook-events/',
+  '.instar/subagent-tracking/',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────
