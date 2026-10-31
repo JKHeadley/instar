@@ -191,7 +191,8 @@ import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
-import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { dashboardUnlockRefused, isLoopbackPeer } from '../core/desktopTransport.js';
+import { mountDashboardPreview } from './dashboardPreview.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
@@ -1384,6 +1385,9 @@ export class AgentServer {
       res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(dashboardDir, 'desktop.css'), { cacheControl: false });
     });
+    // The preview console (work in progress, published without a merge) mounts
+    // before the packaged dashboard so its fixed address is never shadowed.
+    mountDashboardPreview(this.app, options.config.stateDir);
     this.app.use('/dashboard', express.static(dashboardDir, DASHBOARD_STATIC_OPTIONS));
 
     // PIN-based dashboard unlock — exchanges a short PIN for the auth token.
@@ -1400,8 +1404,24 @@ export class AgentServer {
     let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
+    // One rule for whether this connection may unlock, shared by the unlock route
+    // and the check the console makes BEFORE it shows a PIN box (a box the server
+    // will refuse is never shown; the console offers the secure address instead).
+    const unlockRefusedHere = (req: Request): boolean =>
+      dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress);
+    this.app.get('/dashboard/unlock-check', (req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!unlockRefusedHere(req)) { res.json({ accepted: true }); return; }
+      // The tunnel address only gives a way back to this same PIN-gated page.
+      res.json({
+        accepted: false,
+        reason: 'Your PIN can only be typed over a secure connection, and this address is not one.',
+        secureUrl: options.tunnel?.url ?? null,
+      });
+    });
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
-      if (this.directDesktopAccess && !req.secure && !isLoopbackPeer(req.socket.remoteAddress)) {
+      if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
         return;
       }

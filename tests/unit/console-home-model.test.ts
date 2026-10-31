@@ -274,7 +274,7 @@ describe('headline()', () => {
     expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), reach: card('ok') }).text).toBe('3 things need you.');
   });
   it('never says all quiet while a card cannot tell', () => {
-    const h = headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') });
+    const h = headline({ needs: card('ok'), promised: card('ok'), doing: card('unknown') });
     expect(h.text).toBe('Nothing urgent that I can see.');
     expect(h.tone).toBe('muted');
     expect(h.sub).toMatch(/can't fully see/i);
@@ -292,8 +292,24 @@ describe('headline()', () => {
     const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
     expect(n.state).toBe('partial');
     const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
-    expect(h.text).toBe('One thing needs you.');
+    expect(h.text).toBe('T'); // the headline is the one thing itself
+    expect(h.target).toEqual({ key: n.rows[0].key });
     expect(h.sub).toMatch(/can't fully see/i);
+  });
+  it('held replies never shape the headline: they are the agent\'s to retry', () => {
+    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('attn', '3 held') }).text).toBe('All quiet.');
+    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('bad', '2 lost') }).text).toBe('All quiet.');
+    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') }).text).toBe('All quiet.');
+  });
+  it('several things: the headline names the first and says how many more are below', () => {
+    const n = buildNeeds(ok({ items: [
+      { id: 'a', title: 'Approve the deploy', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) },
+      { id: 'b', title: 'Review the plan', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: minsAgo(2) },
+      { id: 'c', title: 'Rotate the key', status: 'OPEN', priority: 'HIGH', category: 'security', createdAt: minsAgo(3) },
+    ], pool: { failed: [] } }), NOW);
+    const h = headline({ needs: n, promised: card('ok', '', 0) });
+    expect(h.text).toBe('Approve the deploy');
+    expect(h.sub).toBe('2 more things need you, listed below.');
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');

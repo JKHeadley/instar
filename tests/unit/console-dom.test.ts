@@ -50,10 +50,16 @@ describe('console shell (jsdom)', () => {
     expect(doc.querySelector('#card-needs')).toBeNull();
   });
 
-  it('with a token it renders the headline and six cards', async () => {
+  it('with a token it renders the headline as a link to the first thing, and five cards (no delivery card)', async () => {
     const doc = await boot('t');
-    expect(doc.querySelectorAll('.card')).toHaveLength(6);
-    expect(doc.querySelector('#heroTitle')!.textContent).toBe('5 things need you.');
+    expect(doc.querySelectorAll('.card')).toHaveLength(5);
+    expect(doc.querySelector('#card-reach')).toBeNull();
+    const link = doc.querySelector('#heroTitle .hero-link') as HTMLButtonElement;
+    expect(link.textContent).toBe('Item 1 ›');
+    expect(doc.querySelector('#heroSub')!.textContent).toMatch(/^4 more things need you, listed below\./);
+    link.click();
+    const first = doc.querySelector('#card-needs button.row') as HTMLButtonElement;
+    expect(first.getAttribute('aria-expanded')).toBe('true');
   });
 
   it('a failing source says "Can\'t tell" on its own card; the others render', async () => {

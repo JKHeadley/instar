@@ -6,7 +6,7 @@
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
+  failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
@@ -27,7 +27,7 @@ import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { paceCard } from './pace.js';
-import { sheetIsOpen, closeSheet } from './ui.js';
+import { sheetIsOpen, closeSheet, unlockCheck } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -116,8 +116,21 @@ function signOut() {
   renderUnlock();
 }
 
-function renderUnlock(message) {
+async function renderUnlock(message) {
   document.body.replaceChildren();
+  // Never show a PIN box this connection will refuse; point to the secure address.
+  const check = await unlockCheck();
+  if (!check.accepted) {
+    document.body.append(el('main', { class: 'unlock' }, el('div', { class: 'unlock-card' },
+      el('img', { src: '/dashboard/logo.png', alt: '' }),
+      el('h1', { text: 'Instar console' }),
+      el('p', { text: check.reason }),
+      check.secureUrl
+        ? el('a', { class: 'btn-primary', href: check.secureUrl, text: 'Open the secure address' })
+        : el('p', { text: 'Open this dashboard from your usual dashboard link, or on the machine itself.' }),
+    )));
+    return;
+  }
   const input = el('input', { class: 'pin-input', type: 'password', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '12', 'aria-label': 'Dashboard PIN', placeholder: '••••••' });
   const err = el('div', { class: 'unlock-error', role: 'alert', text: message || '' });
   const btn = el('button', { class: 'btn-primary', type: 'submit', text: 'Unlock' });
@@ -179,7 +192,7 @@ function renderShell(active) {
   );
   const top = el('header', { class: 'topbar' }, brand, el('div', { class: 'spacer' }), legacyChip);
   const main = el('main', { class: 'main', id: 'main' });
-  const app = el('div', { class: 'app' }, top, navItems(active), main);
+  const app = el('div', { class: 'app' }, previewBanner(), top, navItems(active), main);
   document.body.replaceChildren(app);
   applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
   fillAgentName();
@@ -199,7 +212,6 @@ const CARDS = [
   { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
   { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
   { id: 'doing', title: 'What I’m doing', href: '#/work/sessions', col: 'main' },
-  { id: 'reach', title: 'Can I reach you', href: '#/people/messages', col: 'side' },
   { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
   { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
@@ -337,7 +349,13 @@ function paintHeadline(models) {
   if (!h1) return;
   h1.closest('.hero').setAttribute('data-tone', h.tone);
   h1.replaceChildren();
-  if (h.tone === 'attn') {
+  if (h.target) {
+    // The headline is the first thing to do: one tap opens it in the list below.
+    const go = el('button', { class: 'hero-link', type: 'button', text: h.text });
+    go.append(el('span', { class: 'hero-arrow', 'aria-hidden': 'true', text: ' ›' }));
+    go.addEventListener('click', () => openNeed(h.target.key));
+    h1.append(go);
+  } else if (h.tone === 'attn') {
     const m = /^(\d+|One)(.*)$/.exec(h.text);
     if (m) h1.append(el('span', { class: 'attn', text: m[1] }), document.createTextNode(m[2]));
     else h1.textContent = h.text;
@@ -348,6 +366,19 @@ function paintHeadline(models) {
   // The count itself is explained by the "What needs you" card underneath; the sub-line only qualifies it.
   sub.textContent = h.sub || '';
   $('#heroTime').textContent = `Updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+/** Open one row of "What needs you" and bring it into view. */
+function openNeed(key) {
+  const fk = `needs:${key}`;
+  const esc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(fk) : fk.replace(/["\\]/g, '\\$&');
+  const row = document.querySelector(`#card-needs [data-focus-key="${esc}"]`);
+  const card = $('#card-needs');
+  if (row) {
+    if (row.getAttribute('aria-expanded') !== 'true') row.click();
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+  } else if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function pooled(id, path, build, set, namesP) {
@@ -379,7 +410,6 @@ async function loadHome() {
   const poolP = get('/pool');
   const namesP = poolP.then(machineNames);
   pooled('needs', '/attention?scope=pool', buildNeeds, set, namesP);
-  get('/health').then((r) => set('reach', buildReach(r)));
   Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
     const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
     set('promised', buildPromised(r, Date.now(), peers));
@@ -494,8 +524,34 @@ async function start() {
   route();
 }
 
+// ── Preview banner ────────────────────────────────────────────────────────
+// The preview address serves work in progress; every screen says which work it
+// is and when it was published, so it is never mistaken for the live dashboard.
+const IS_PREVIEW = /\/dashboard\/preview\//.test(location.pathname);
+let previewInfo = null;
+
+async function loadPreviewInfo() {
+  if (!IS_PREVIEW) return;
+  try {
+    const r = await fetch('preview.json', { cache: 'no-store' });
+    previewInfo = r.ok ? await r.json() : {};
+  } catch { previewInfo = {}; }
+}
+
+function previewBanner() {
+  if (!IS_PREVIEW) return null;
+  const p = previewInfo || {};
+  const at = p.publishedAt ? ago(Date.parse(p.publishedAt)) : null;
+  const what = [p.branch ? `work on ${p.branch}` : 'work in progress', at ? `updated ${at}` : null].filter(Boolean).join(' · ');
+  return el('div', { class: 'preview-banner', role: 'note' },
+    el('strong', { text: 'Preview' }),
+    el('span', { text: ` ${what}. Not merged yet.` }),
+    el('a', { href: '/dashboard/console/', text: 'Live dashboard' }));
+}
+
 (async function boot() {
   applyTheme(readTheme());
+  await loadPreviewInfo();
   try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch { token = ''; }
   if (await validToken(token)) start(); else renderUnlock();
 })();

@@ -404,7 +404,9 @@ export function combineNeeds(needs, promised) {
     .map((r) => ({ ...r, sub: ['a promise', r.sub].filter(Boolean).join(' · ') }));
   const promisesKnown = Number.isFinite(promised.count);
   const count = needs.count + pCount;
-  const all = [...waiting, ...(needs.all || needs.rows || [])];
+  const queue = needs.all || needs.rows || [];
+  // Urgent queue items lead (the headline names the first row), then promises, then the rest.
+  const all = [...queue.filter((r) => r.tone === 'bad'), ...waiting, ...queue.filter((r) => r.tone !== 'bad')];
   const notes = [
     pCount ? `Includes ${plural(pCount, 'promise')} waiting on you.` : null,
     promisesKnown ? null : "Couldn't check for promises waiting on you.",
@@ -425,7 +427,10 @@ const AREA_NAME = { reach: 'message delivery', needs: 'what needs you', doing: '
 
 // ── The headline ──────────────────────────────────────────────────────────
 /** One sentence over all six cards. Never says "all quiet" while a card can't tell. */
-export function headline(cards) {
+export function headline(allCards) {
+  // Held replies are the agent's to retry, never something the operator is
+  // asked to look at, so delivery status never shapes the headline.
+  const cards = Object.fromEntries(Object.entries(allCards || {}).filter(([k]) => k !== 'reach'));
   const list = Object.values(cards).filter(Boolean);
   const known = (c) => (c && Number.isFinite(c.count) ? c.count : 0);
   const bad = list.filter((c) => c.state === 'bad').length;
@@ -442,7 +447,16 @@ export function headline(cards) {
   if (otherAttn) quals.push(`${plural(otherAttn, 'other area')} to look at`);
   if (blind) quals.push(`can't fully see ${blindIds.map((k) => AREA_NAME[k] || k).join(' and ')}`);
   const qual = quals.length ? quals.join(', ').replace(/^./, (c) => c.toUpperCase()) + '.' : null;
-  if (count > 0) return { text: count === 1 ? 'One thing needs you.' : `${count} things need you.`, tone: 'attn', sub: qual };
+  if (count > 0) {
+    // The headline IS the first thing to do, as a link to it: never a bare count.
+    const top = cards.needs && Array.isArray(cards.needs.rows) ? cards.needs.rows[0] : null;
+    if (top && top.main) {
+      const rest = count - 1;
+      const sub = [rest > 0 ? `${rest === 1 ? 'One more thing needs' : `${rest} more things need`} you, listed below.` : null, qual].filter(Boolean).join(' ');
+      return { text: String(top.main), tone: 'attn', sub: sub || null, target: { key: top.key || top.main }, count };
+    }
+    return { text: count === 1 ? 'One thing needs you.' : `${count} things need you.`, tone: 'attn', sub: qual, count };
+  }
   if (bad) return { text: bad === 1 ? 'Something is failing.' : `${bad} areas are failing.`, tone: 'bad', sub: qual };
   if (otherAttn) return { text: otherAttn === 1 ? 'One area needs a look.' : `${otherAttn} areas need a look.`, tone: 'attn', sub: qual };
   // "Quiet" is only claimed, and only painted teal, when every card is observed and settled.
