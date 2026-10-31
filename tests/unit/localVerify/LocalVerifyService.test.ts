@@ -19,7 +19,7 @@ import {
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
 import type { VerifyRunResult } from '../../../src/localVerify/orchestrator.js';
-import { PreflightReplayStore, replayKey } from '../../../src/localVerify/preflightReplay.js';
+import { PreflightReplayStore, replayKey, REPLAY_ADMISSION_MAX } from '../../../src/localVerify/preflightReplay.js';
 
 const REPO = 'JKHeadley/instar';
 const sha = (c: string) => c.repeat(40);
@@ -183,6 +183,21 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     await restarted.svc.boot();
     expect(new PreflightReplayStore(path.join(h.stateDir, 'state')).get(replayKey(preflightRed()))).toBeNull();
     restarted.svc.shutdown();
+  });
+  it('gives a blocked same-head replay one chance after a verifier upgrade', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(preflightRed()));
+    const store = new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    const key = replayKey(preflightRed());
+    for (let n = 0; n < REPLAY_ADMISSION_MAX; n++) store.admissionFailed(key, Date.parse('2026-10-21T12:00:00Z') + n, 'queue-full');
+    expect(store.get(key)?.state).toBe('blocked');
+    h.svc.shutdown();
+    const upgraded = setup({ stateDir: h.stateDir, views: { 1: view() }, verifierVersion: '2.0.0' });
+    await upgraded.svc.boot();
+    const rearmed = new PreflightReplayStore(path.join(h.stateDir, 'state')).get(key);
+    expect(rearmed).toMatchObject({ state: 'pending', rearmed: true, admissionAttempts: 0, verifierVersion: '1.0.0' });
+    upgraded.svc.shutdown();
   });
 });
 

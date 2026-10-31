@@ -11,6 +11,7 @@ export interface PreflightReplay {
   headSha: string;
   baseRefName: string;
   policyHash: string;
+  verifierVersion: string;
   redBaseSha: string;
   createdAt: number;
   updatedAt: number;
@@ -40,6 +41,7 @@ function valid(x: unknown): x is PreflightReplay {
     && typeof r.repo === 'string' && Number.isSafeInteger(r.pr) && r.pr > 0
     && /^[a-f0-9]{40}$/i.test(r.headSha) && /^[a-f0-9]{40}$/i.test(r.redBaseSha)
     && typeof r.baseRefName === 'string' && typeof r.policyHash === 'string'
+    && typeof r.verifierVersion === 'string' && r.verifierVersion.length > 0
     && ['pending', 'running', 'retryable-error', 'completed', 'blocked'].includes(r.state)
     && [r.createdAt, r.updatedAt, r.nextAdmissionAt, r.admissionAttempts, r.executionAttempts].every((n) => Number.isSafeInteger(n) && n >= 0)
     && r.admissionAttempts <= REPLAY_ADMISSION_MAX && r.executionAttempts <= REPLAY_EXECUTION_MAX
@@ -88,7 +90,7 @@ export class PreflightReplayStore {
     if (existing) return existing;
     return this.put({
       key, repo: record.repo, pr: record.pr, headSha: record.headSha, baseRefName: record.baseRefName,
-      policyHash: record.policyHash, redBaseSha: record.baseSha, createdAt: now, updatedAt: now,
+      policyHash: record.policyHash, verifierVersion: record.verifierVersion, redBaseSha: record.baseSha, createdAt: now, updatedAt: now,
       state: 'pending', nextAdmissionAt: now, admissionAttempts: 0, executionAttempts: 0, rearmed: false,
     });
   }

@@ -1214,6 +1214,9 @@ export class LocalVerifyService {
         continue;
       }
       if (marker.state === 'running') store.recoverInterrupted(marker.key, this.now());
+      if (marker.state === 'blocked' && marker.verifierVersion !== this.cfg.verifierVersion && open === true && view) {
+        if (store.rearmOnce(marker.key, this.now())) this.audit({ event: 'preflight-replay-rearmed', pr: marker.pr, trigger: 'verifier-upgrade' });
+      }
     }
     for (const [key, red] of reds) {
       if (store.get(key)) continue;
