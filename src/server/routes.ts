@@ -11264,7 +11264,7 @@ export function createRoutes(ctx: RouteContext): Router {
         const entry = byConversation.get(key)
           ?? { platform, platformId: platformId as string | number, machineIds: new Set<string>(), sessions: [] };
         entry.machineIds.add(mid);
-        entry.sessions.push(String(s.name ?? s.tmuxSession ?? s.id ?? ''));
+        entry.sessions.push(String(s.tmuxSession ?? s.id ?? ''));
         byConversation.set(key, entry);
       }
       const duplicateTopics: Array<{

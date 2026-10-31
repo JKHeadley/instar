@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "verified-display-names",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T04:06:09.983Z",
+  "artifactPath": "upgrades/side-effects/verified-display-names.md",
+  "artifactSha256": "8a71557b8123c6c4c3d675ba01eada42cc2f7249eaaeda9a8966fc940c66cfa2",
+  "coveredFiles": [
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Followup repairs duplicate-session diagnostics and badge identity after display names are sanitized; read-only output and client checks are reversible by code revert.",
+  "eli16Path": "upgrades/verified-display-names.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verified-display-names.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

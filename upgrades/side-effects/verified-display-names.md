@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 1, 29 files and 769 changed lines including this artifact. The change adds a shared channel identity validator, keeps verified Telegram and Slack names attached to IDs, merges topic names across reachable machines, and prevents stale or generated names from replacing real titles. It also sanitizes local, pooled, status, and WebSocket session display fields while retaining unique internal routing keys. It adds migration awareness, unit/integration/lifecycle coverage, and a narrow correction to memory diagnostic sampling found by the full suite. The implementation had two review rounds and this is the second commit/gate attempt. The risk signal may suggest Tier 2 because a migration and route are touched. I declare Tier 1 because the migration only appends an awareness sentence to generated guidance, the route is additive, persisted title writes are non-destructive, and a code rollback restores the old behavior without repairing state.
+Tier 1, about 36 files and 800 changed lines including this artifact. The change adds a shared channel identity validator, keeps verified Telegram and Slack names attached to IDs, merges topic names across reachable machines, and prevents stale or generated names from replacing real titles. It also sanitizes local, pooled, status, and WebSocket session display fields while retaining unique internal routing keys. It adds migration awareness, unit/integration/lifecycle coverage, and a narrow correction to memory diagnostic sampling found by the full suite. The implementation had two review rounds and two CI-driven followup corrections. The risk signal may suggest Tier 2 because a migration and route are touched. I declare Tier 1 because the migration only appends an awareness sentence to generated guidance, the route is additive, persisted title writes are non-destructive, and a code rollback restores the old behavior without repairing state.
 
 ## Decision-point inventory
 
@@ -51,7 +51,7 @@ Telegram startup backfill, standby registration, session platform labels, cross-
 
 ## 6b. Operator-surface quality
 
-The core branch does not stage dashboard files. The separate console preview branch renders unavailable names plainly and keeps raw IDs in diagnostic details. Phone and desktop mock screenshots were inspected. The live console remains a review surface until the core route is released.
+The core branch updates the legacy dashboard and console session views so the cross-machine duplicate warning matches the platform and conversation ID after public display names are sanitized. The conversation ID stays internal; the warning and session title show readable text. A reviewer found that matching a session routing key could falsely warn for different conversations that share a key across machines; this was corrected and a negative client test added. The separate console preview branch renders unavailable names plainly and keeps raw IDs in diagnostic details. Phone and desktop mock screenshots were inspected. The live console remains a review surface until the core route is released.
 
 ## 7. Multi-machine posture
 
@@ -70,9 +70,11 @@ The change addresses the observed identity substitution at source and consumer b
 **Reviewer:** independent `identity_review` agent
 **Independent read of the artifact:** Concur. The review first identified a Secret Drop spawn path, stale standby title precedence, local/status/WebSocket and older-peer pooled session leaks, and a collision if unknown topics shared a generic spawn key. Those were fixed and re-read. The final review found no remaining concern.
 
+**Followup review:** Concur. After CI found that duplicate-session diagnostics still depended on sanitized display names, the reviewer found a possible false warning from matching internal session keys. Both clients now match the server's platform and conversation ID pair. A negative client test covers two topics with the same session key.
+
 ## Evidence pointers
 
-`tests/unit/channelIdentity.test.ts`, `tests/unit/telegram-adapter.test.ts`, `tests/unit/slack-thread-session-routing.test.ts`, `tests/integration/telegram-issue-topics-route.test.ts`, and `tests/e2e/verified-topic-names-lifecycle.test.ts`. Full suite is running; its result will be added to the PR.
+`tests/unit/channelIdentity.test.ts`, `tests/unit/telegram-adapter.test.ts`, `tests/unit/slack-thread-session-routing.test.ts`, `tests/unit/dashboard-duplicateBadge.test.ts`, `tests/integration/telegram-issue-topics-route.test.ts`, `tests/integration/sessions-listing-hygiene.test.ts`, and `tests/e2e/verified-topic-names-lifecycle.test.ts`. Full suite is running; its result will be added to the PR.
 
 ## Class-Closure Declaration
 

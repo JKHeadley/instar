@@ -108,10 +108,13 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {})
   const machines = Array.isArray(pool.machines) ? pool.machines : [];
   const multi = pool.enabled === true && machines.length >= 2;
   const { local, remote } = mergeSessions(data, ws);
-  const dupNames = new Set((Array.isArray(pool.duplicateTopics) ? pool.duplicateTopics : []).flatMap((d) => (Array.isArray(d.sessions) ? d.sessions : [])));
+  const duplicateConversations = new Set((Array.isArray(pool.duplicateTopics) ? pool.duplicateTopics : [])
+    .filter((d) => typeof d.platform === 'string' && d.platformId != null)
+    .map((d) => `${d.platform}:${String(d.platformId)}`));
   const rows = [...local.map((s) => ({ ...s, machineNickname: s.machineNickname || selfName })), ...remote].map((s) => {
     const a = activity(s, now);
-    const duplicate = s.duplicateTopic === true || dupNames.has(s.name);
+    const duplicate = s.duplicateTopic === true || (typeof s.platform === 'string' && s.platformId != null
+      && duplicateConversations.has(`${s.platform}:${String(s.platformId)}`));
     const machine = s.machineNickname || (s.remote ? nicknameOf(pool, s.machineId) : 'This machine');
     const started = Date.parse(s.startedAt);
     const running = Number.isFinite(started) ? spanWords(now - started) : null;
