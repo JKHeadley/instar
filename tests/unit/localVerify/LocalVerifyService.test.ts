@@ -160,6 +160,30 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     expect(store().get(key)?.state).toBe('completed');
     expect(h.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
   });
+  it('reconstructs one obligation from a published red when the marker was lost before restart', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(preflightRed()));
+    const file = path.join(h.stateDir, 'state', 'local-verify', 'preflight-replays.json');
+    SafeFsExecutor.safeUnlinkSync(file, { operation: 'LocalVerifyService.test.ts:simulate-lost-replay-marker' });
+    h.svc.shutdown();
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    const marker = new PreflightReplayStore(path.join(h.stateDir, 'state')).get(replayKey(preflightRed()));
+    expect(marker?.state).toBe('pending');
+    expect(restarted.svc.getRecord(1, sha('a'), 'main')?.preflight?.reason).toBe('preflight-red');
+    restarted.svc.shutdown();
+  });
+  it('cancels a phantom marker when publication of its red record was interrupted', async () => {
+    const h = setup({ views: { 1: view() } });
+    const store = new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    store.ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z'));
+    h.svc.shutdown();
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    expect(new PreflightReplayStore(path.join(h.stateDir, 'state')).get(replayKey(preflightRed()))).toBeNull();
+    restarted.svc.shutdown();
+  });
 });
 
 describe('checkEligibility', () => {
