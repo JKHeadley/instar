@@ -22,3 +22,5 @@ A second independent pass (2026-10-31) checked each fix against the code and con
 ## Follow-up: idempotent migration
 
 The first verify run failed 105 unit tests. The CLAUDE.md awareness step anchored on the "Why a sign-in repair did not start" line, which a later step of the same migration pass inserts, so the first run skipped and the second run inserted. Every test that runs the migration twice and expects no change failed. The step now runs after the one that adds its anchor; one run adds the line and a second changes nothing. The section is also tracked in the CLAUDE.md parity test.
+
+The new `PATCH /playwright-profiles/:id` route is classified as a machine-local write in the write-domain registry. The same prefix covers the existing `PATCH /playwright-profiles/:id/accounts`, which writes the same machine-local profile registry, so that route leaves the unclassified baseline (the ratchet only shrinks).

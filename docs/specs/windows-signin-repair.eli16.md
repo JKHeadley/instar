@@ -20,3 +20,5 @@ The Mama PC is a Windows machine, and Instar runs there inside WSL (Linux inside
 **Rollback.** Turn the setting off on that machine, or revert the change. Nothing else depends on it.
 
 Existing agents learn about this through one line added to their CLAUDE.md during an update. That line is added on the first update and never again, so repeated updates leave the file unchanged.
+
+The new setting is stored only on the machine it describes, because a Windows Chrome folder exists on one machine. Other machines never copy it.

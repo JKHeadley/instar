@@ -36,7 +36,6 @@
     "PATCH /jobs/:slug",
     "PATCH /messages/spawn/config",
     "PATCH /monitoring/memory/thresholds",
-    "PATCH /playwright-profiles/:id/accounts",
     "PATCH /pool/machines/:id",
     "PATCH /subscription-pool/:id",
     "PATCH /threadline/telegram-bridge/config",

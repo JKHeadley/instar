@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "windows-signin-repair",
+  "sessionId": "6f523f5b-cfd7-40e0-9e58-d7472146ebc2",
+  "timestamp": "2026-10-31T10:32:08.989Z",
+  "artifactPath": "upgrades/side-effects/windows-signin-repair.md",
+  "artifactSha256": "b22c3fd32e27acc37119eba5aae455127128a09beef7532e7bcd34b209405e6c",
+  "coveredFiles": [
+    "docs/specs/windows-signin-repair.eli16.md",
+    "src/core/WriteDomainRegistry.ts",
+    "tests/fixtures/write-surface-inventory.json",
+    "upgrades/side-effects/windows-signin-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Classifies the new PATCH route as a machine-local write (and the sibling accounts PATCH it shares a prefix with); registry metadata only, no runtime behavior change.",
+  "eli16Path": "docs/specs/windows-signin-repair.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-signin-repair.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
