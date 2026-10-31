@@ -87,6 +87,8 @@ The design keeps input authority on the physical target and adds only bounded, s
 
 **Commit-gate correction pass:** Astra reviewed the bounded `withSyncOp` wrappers and `SafeFsExecutor` test cleanup and concurred. Both lints pass, and the focused Windows host and replay-store tests pass 7/7.
 
+**Flagged-path review for PR #2471, head `398b222f4a4595268129cd2c63a1adf11428ec7e`:** Astra independently read the CI workflow and all 14 desktop unit, integration, and production-boot test files flagged by the local verifier. Astra concurred with no P1/P2 finding. The Windows CI job compiles the companion, runs its timed-session self-test, and checks package contents without removing existing gates. The tests retain substantive assertions for authority refusal, replay, Stop races, production wiring, and the machine picker. The Darwin-only boot test is conditionally skipped on other platforms; Windows mocks and native self-tests remain distinct from live Windows screen, input, and Stop evidence. This source review does not establish host readiness.
+
 ## Evidence pointers
 
 - `docs/specs/blocker-handoff-across-machines-and-surfaces.md` — approved converged source spec.
