@@ -50,6 +50,12 @@ This classification is advisory. A peer base pass is one file-level observation,
 
 The lease holder owns the diagnostic queue and journal beside Local Verify's existing machine-local state. A peer owns only its one in-flight attempt and a bounded tombstone/result ledger. `GET /local-verify` shows a small diagnostic summary; `GET /local-verify/diagnosis?pr=...&head=...&base=...` returns exact-key observations or 404. Peer routes are `/local-verify/peer-diagnose` and `/local-verify/peer-diagnosis-result`, Bearer authenticated and lease checked. The new `monitoring.localVerify.failedFileDiagnosis` mode is `off|observe|auto`, default `off` on every machine. `observe` computes eligible candidates and cost without dispatch; `auto` dispatches under the bounds above. Turning it off stops new requests and allows an existing bounded child to finish; stale markers are invalidated at boot.
 
+## Multi-machine posture
+
+The coordinator's diagnostic queue and journal live beside the existing lease-holder-local Local Verify queue and journal. A lease move invalidates old attempt ids and exact-key observations; the new holder can re-diagnose a still-red current head, but it never imports the former holder's local state as authority. Peer result and tombstone files are local to the peer that performed the work. The user-facing read on the holder includes peer machine identity and exact-key observations; a standby returns the holder identity rather than an empty local answer. No diagnostic message is sent to Telegram, so there is no independent multi-machine notification path.
+
+machine-local-justification: operator-ratified-exception — the parent Local Verify capacity spec's lease-holder-local queue and peer state were approved and shipped at commit `93254cd753e9d7b1aff97c7b2f6ae5bea6642af1`; this feature extends that exact state ownership and gives diagnostics no merge authority.
+
 Ship dark. First rehearse on an isolated test agent with no production queue. Next, on Echo as the development agent with direct user interaction, observe one peer for 24 hours, then run auto for one 24-hour window only if it adds no merge-slot wait and stays within the machine-time budget. Finally, expand to fleet agents per host only after measured diagnostic value exceeds added machine minutes. Existing agents get config/awareness through the update migration path. The CLAUDE.md template tells agents to read exact-key diagnosis after a red record, and to treat its label as advisory.
 
 ## Tests and acceptance
