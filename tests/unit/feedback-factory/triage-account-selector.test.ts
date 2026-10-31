@@ -73,6 +73,22 @@ describe('feedback triage account quota selection', () => {
     expect(result).toMatchObject({ state: 'eligible', account: { accountId: 'd', usedPercent: 3, limitFamily: 'codex' } });
   });
 
+  it('reaches a healthy fourth account after three timed-out or unreadable probes', async () => {
+    const accounts = ['a', 'b', 'c', 'd'].map((id) => account(id));
+    const probed: string[] = [];
+    const selector = new FeedbackTriageAccountSelector(pool(accounts), async ({ codexHome, timeoutMs }) => {
+      const id = accounts.find((entry) => entry.configHome === codexHome)!.id;
+      probed.push(id);
+      if (id === 'd') return snapshot(7);
+      // The live reader has its own child-timeout tests. Here a timeout result must
+      // release the selector's two-account wave so a later account can be tried.
+      await new Promise((resolve) => setTimeout(resolve, Math.min(timeoutMs, 10)));
+      return null;
+    }, () => NOW);
+    expect(await selector.select(NOW + 30_000)).toMatchObject({ state: 'eligible', account: { accountId: 'd' } });
+    expect(probed).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('accepts a completed eligible read without waiting for a silent sibling', async () => {
     const accounts = [account('fast'), account('silent')];
     let cancelled = false;
