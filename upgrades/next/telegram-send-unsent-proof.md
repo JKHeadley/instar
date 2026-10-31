@@ -1,0 +1,19 @@
+# A Telegram send that never connected is retried, not lost
+
+<!-- bump: patch -->
+
+## What Changed
+
+When a managed Telegram send fails, the origin service used to record every network failure after the request started as "outcome unknown". An outcome-unknown send is never sent again, because it might already have arrived. Some failures happen before any connection exists, though: a name-lookup failure, a refused or unreachable connection, or undici's connect timeout. Those prove that nothing reached Telegram. They are now recorded as known failures with the reason `telegram-connect-failed`, and the normal bounded retry delivers them. A reset or timeout after the connection opened still counts as outcome unknown. Every outcome-unknown send now writes one log line naming the network error code (`[telegram-origin] send outcome unknown for <operation>: …`), with any bot token redacted, so the cause is never invisible again.
+
+## What to Tell Your User
+
+Some of my replies were getting lost when a brief network hiccup happened at the exact moment of sending. When I can tell for certain that a reply never left, I now send it again instead of dropping it.
+
+## Summary of New Capabilities
+
+Connect-phase send failures are retried automatically. Outcome-unknown sends log their network error.
+
+## Evidence
+
+On 2026-10-31 the Studio held 196 outcome-unknown attempts from the past week, 118 of them failing within two seconds of dispatch. Four replies in the operator's dashboard conversation were lost that way between 10:19 and 10:29. Unit tests cover connect-phase proof (refused, DNS, connect timeout, multi-address) against post-connect failures (reset, socket closed, read timeout) through the real origin runtime.

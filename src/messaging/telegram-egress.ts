@@ -45,7 +45,7 @@
  * discover the gap.
  */
 import { dispatchOriginBotEgress } from './telegram-origin/OriginBotEgress.js';
-import { OriginTransportCancelledBeforeNetwork } from './telegram-origin/OriginTransportCancellation.js';
+import { OriginTransportCancelledBeforeNetwork, OriginTransportUnsent, provedUnsentCode } from './telegram-origin/OriginTransportCancellation.js';
 import { OriginCapacityUnavailable } from './telegram-origin/OriginEgressCapacity.js';
 import type { OriginPreparedBotOperation } from './telegram-origin/TelegramOriginService.js';
 import {
@@ -527,6 +527,10 @@ export async function telegramFetch(
       if (error instanceof OriginTransportCancelledBeforeNetwork || error instanceof OriginCapacityUnavailable) {
         throw new Error('telegram-network-invocation-failed', { cause: error });
       }
+      // A connect-phase failure (no connection ever existed) proves nothing
+      // reached Telegram, so a managed send may be retried instead of lost.
+      const unsent = originManaged ? provedUnsentCode(error) : null;
+      if (unsent) throw new OriginTransportUnsent(unsent);
       throw error;
     }
   };
