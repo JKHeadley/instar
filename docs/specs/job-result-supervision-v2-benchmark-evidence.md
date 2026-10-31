@@ -111,3 +111,25 @@ The v2 corpus has 35 cases. Seventeen synthetic cases are an encouraging
 initial sample, not replacement qualification. The four format-ambiguous
 cases, remaining corpus, a real outage
 trial, and development shadow evidence remain open. No production gate changed.
+
+## October 30, 5 PM PDT Haiku retry
+
+The first UTC-day allowance after the schema change was used for ten distinct
+cases spanning routine, actionable, and uncertain results. Run
+`2026-10-31T00-00-10-532Z-haiku-692a4e6b` used the concrete
+`claude-haiku-4-5-20251001` pin and reserved the full 250,000-input-token
+daily benchmark ceiling before egress. All ten Claude CLI calls exited with an
+error. The production worker recorded ten failed replacement call rows and ten
+`unchecked:provider-error` results. **There are no settled labels and no valid
+accuracy score from this run.** The fail-safe result was zero false routine
+closures because nothing was closed as routine.
+
+Local Claude CLI transcripts for the ten calls report the pinned model and a
+combined 226,592 input tokens, including cache creation and reads. They show
+fenced JSON text rather than a schema-constrained response. The benchmark
+summary has no usage values because the CLI reported an error before the
+provider's usage callback; the transcript sum is diagnostic evidence, not a
+settled call record. The exact CLI exit cause is still unconfirmed. The
+conservative benchmark ledger charges 25,000 tokens for each failed call with
+unknown usage, so it refuses another Haiku trial on this UTC day. Haiku remains
+**unqualified**; no replacement or production rollout gate changed.

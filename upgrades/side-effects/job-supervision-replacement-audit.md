@@ -3,7 +3,7 @@
 **Version / slug:** `job-supervision-replacement-audit`  
 **Date:** 2026-10-30  
 **Author:** Echo  
-**Review tier:** Tier 2, pending independent second pass
+**Review tier:** Tier 2, independent second pass concurred
 
 ## Summary
 
@@ -58,7 +58,7 @@ Reverting the code restores previous benchmark behavior without migrating data. 
 
 ## Conclusion
 
-The safe state is unchanged: Jev decisions and outage replacement are off. The new benchmark path can gather better evidence once the daily cap resets. The remaining 35-case coverage, served-model assurance for Codex, live outage trial, and development shadow are release gates.
+The safe state is unchanged: Jev decisions and outage replacement are off. The October 30 5 PM PDT Haiku retry failed all ten calls and left every result unchecked; the CLI exit cause needs diagnosis before another capped trial. The remaining 35-case coverage, served-model assurance for Codex, live outage trial, and development shadow are release gates.
 
 ## Evidence pointers
 
