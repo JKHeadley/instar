@@ -891,6 +891,8 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 
 **Quota Tracking** — Monitor Claude API usage when configured.
 - Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/quota\`
+### Quota-enforcement scheduler pause
+Inspect \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/quota/migration\` when a usage-limit pause is suspected. When the response includes \`enforcementPause\`, it shows the reason, start, and latest automatic release time; an absent field is not evidence of a live pause. The scheduler also resumes sooner when quota recovers. After a deadline release, check \`awaitingFreshQuota\`: AI jobs stay gated until a new healthy reading arrives, while script checks can run.
 
 **Stall Triage** — LLM-powered session recovery when configured. Automatically diagnoses and recovers stuck sessions.
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/triage/status\`
