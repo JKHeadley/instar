@@ -65,7 +65,7 @@ export const GROUPS = [
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
-      { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Replies held back from you, and the who-wrote-this footer.' },
+      { id: 'origins', label: 'Message settings', icon: 'chat', desc: 'Choose whether messages show who wrote them.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
       { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],

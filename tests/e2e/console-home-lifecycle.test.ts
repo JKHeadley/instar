@@ -19,7 +19,7 @@ import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
-  buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, combineNeeds,
+  buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, combineNeeds,
 } from '../../dashboard/console/home-model.js';
 import { buildPromisesPage, actionsFor } from '../../dashboard/console/promises-model.js';
 import { buildMachinesPage, healthOf } from '../../dashboard/console/machines-model.js';
@@ -108,6 +108,13 @@ describe('Console Home E2E (feature is alive)', () => {
     expect(page.headers['x-frame-options']).toBe('DENY');
     const js = await request(server.getApp()).get('/dashboard/console/home-model.js');
     expect(js.status).toBe(200);
+    const shell = await request(server.getApp()).get('/dashboard/console/console.js');
+    const messages = await request(server.getApp()).get('/dashboard/console/messages.js');
+    expect(shell.status).toBe(200);
+    expect(messages.status).toBe(200);
+    expect(shell.text).not.toContain('Can I reach you');
+    expect(messages.text).not.toContain('Held replies');
+    expect(messages.text).not.toContain('/telegram/origins/status');
   });
 
   it('the token check the console uses is a protected route, not /health', async () => {
@@ -124,7 +131,6 @@ describe('Console Home E2E (feature is alive)', () => {
       return r.status === 200 ? { ok: true, data: r.body } : { ok: false, reason: `the server answered ${r.status}` };
     };
     const cards = {
-      reach: buildReach(await read('/health')),
       needs: buildNeeds(await read('/attention?scope=pool')),
       doing: buildDoing(await read('/sessions?scope=pool')),
       promised: buildPromised(await read('/commitments?scope=mesh')),

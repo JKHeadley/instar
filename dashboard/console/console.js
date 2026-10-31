@@ -6,7 +6,7 @@
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
+  failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
 import { renderPromises } from './promises.js';
@@ -199,7 +199,6 @@ const CARDS = [
   { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
   { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
   { id: 'doing', title: 'What I’m doing', href: '#/work/sessions', col: 'main' },
-  { id: 'reach', title: 'Can I reach you', href: '#/people/messages', col: 'side' },
   { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
   { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
@@ -379,7 +378,6 @@ async function loadHome() {
   const poolP = get('/pool');
   const namesP = poolP.then(machineNames);
   pooled('needs', '/attention?scope=pool', buildNeeds, set, namesP);
-  get('/health').then((r) => set('reach', buildReach(r)));
   Promise.all([get('/commitments?scope=mesh'), poolP]).then(([r, pool]) => {
     const peers = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
     set('promised', buildPromised(r, Date.now(), peers));

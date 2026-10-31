@@ -72,11 +72,11 @@ describe('phone origin panel', () => {
     open(h, 'messages'); expect(h.root.textContent).toContain('No records returned'); expect(h.root.textContent).toContain('Coverage incomplete');
   });
 
-  it('renders incomplete coverage, unknown held/notice state and inert untrusted labels', async () => {
+  it('renders incomplete coverage, recording status and inert untrusted labels', async () => {
     const h = harness(); await h.controller.refresh();
     open(h, 'messages'); expect(h.root.textContent).toContain('Coverage incomplete');
     expect(h.root.querySelector('[aria-label="Message audit"] details summary').textContent).toContain('<img');
-    open(h, 'recording'); expect(h.root.textContent).toContain('held work is unknown');
+    open(h, 'recording'); expect(h.root.textContent).toContain('Recording counts unavailable.');
     expect(h.root.textContent).toContain('Outage notification unavailable'); expect(h.root.querySelector('img')).toBeNull();
     open(h, 'display');
     expect(h.root.querySelectorAll('input[type=checkbox]')).toHaveLength(5);
@@ -96,12 +96,15 @@ describe('phone origin panel', () => {
   });
   it('offers PIN unlock when the operator proof is absent or expired', async () => {
     const h = harness({ request: async () => new Response('{}', { status: 403 }) }); await h.controller.refresh();
-    expect(h.root.textContent).toContain('Unlock with your PIN'); h.root.querySelector('button').click(); expect(h.unlock).toHaveBeenCalledOnce();
-    for (const key of ['display', 'recording', 'messages']) {
+    expect(h.root.textContent).toContain('Unlock with PIN');
+    expect(h.root.querySelector('[data-glance-tile="display"]')).toBeNull();
+    expect(h.root.querySelector('select, input')).toBeNull();
+    h.root.querySelector('button').click(); expect(h.unlock).toHaveBeenCalledOnce();
+    for (const key of ['recording', 'messages']) {
       open(h, key); expect(h.root.querySelector('[data-glance-drill-body]').textContent.length).toBeGreaterThan(30);
     }
     expect(h.root.textContent).toContain('Records are unavailable until access is verified');
-    open(h, 'display'); expect([...h.root.querySelectorAll('button')].find(x => x.textContent === 'Save display settings').disabled).toBe(true);
+    expect([...h.root.querySelectorAll('button')].find(x => x.textContent === 'Save display settings')).toBeUndefined();
   });
   it('ignores a delayed audit response after the conversation changes', async () => {
     let releaseOld; const old = new Promise(resolve => { releaseOld = resolve; });

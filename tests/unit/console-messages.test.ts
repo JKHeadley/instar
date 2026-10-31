@@ -1,92 +1,74 @@
-/**
- * Console "Messages to you" (docs/specs/console-features/people-settings.md): held
- * replies lead, a failed status never reads as zero held, the PIN unlock uses the
- * operator-session adapter (kept in page memory, PIN itself not kept), and the
- * footer settings save with their revision.
- */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+// @ts-nocheck — shipped browser modules exercised against a real DOM.
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildMessagesPage, displayModel, holdWords } from '../../dashboard/console/messages-model.js';
+import { displayModel } from '../../dashboard/console/messages-model.js';
 
-const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
-const status = (over: Record<string, unknown> = {}) => ({ held: [], heldForward: { count: 0, expiredUnreported: 0 }, expiredHolds: { totalSinceBoot: 0 }, activation: { complete: true, observations: [] }, metrics: { counts: {} }, ...over });
 
-describe('messages page model', () => {
-  it('a failed status is not "nothing held"; the quick held count from /health is kept', () => {
-    const p = buildMessagesPage({ ok: false, reason: 'needs your PIN' }, ok({ telegramOrigin: { heldForward: { count: 2 } } }), NOW);
-    expect(p.ok).toBe(false);
-    expect(p.needsUnlock).toBe(true);
-    expect(p.heldForward.count).toBe(2);
-    expect(buildMessagesPage(ok({}), null, NOW).ok).toBe(false);
-  });
-  it('held replies lead, newest first, with the reason in words', () => {
-    const p = buildMessagesPage(ok(status({ held: [
-      { operationId: 'a', topicId: 9210, hold_reason: 'lease-not-held', heldSince: new Date(NOW - 3600_000).toISOString() },
-      { operationId: 'b', topicId: 127504, hold_reason: 'destination-not-authorized', heldSince: new Date(NOW - 60_000).toISOString() },
-    ] })), null, NOW, { 127504: 'Instar dashboard makeover' });
-    expect(p.headline).toBe('2 replies to you are held.');
-    expect(p.rows[0].main).toBe('Instar dashboard makeover');
-    expect(p.rows[1].sub).toContain('routed through');
-    expect(p.sub).toContain('The oldest has waited 1 h');
-  });
-  it('expired-undelivered counts, and unconfirmed sends are named', () => {
-    const p = buildMessagesPage(ok(status({ heldForward: { count: 0, expiredUnreported: 1 }, metrics: { counts: { 'attempt:accepted': 100, 'attempt:outcome-unknown': 7 } } })), null, NOW);
-    expect(p.headline).toBe('1 reply expired before reaching you.');
-    expect(p.sub).toContain('7 more ended without a confirmation');
-  });
-  it('recording that is not fully set up says so', () => {
-    const p = buildMessagesPage(ok(status({ activation: { complete: false, observations: [{ obligation: 'tool-guards', subject: 'x', state: 'unknown' }] } })), null, NOW);
-    expect(p.recording).toBe('not fully set up');
-    expect(p.notReady[0].main).toBe('tool guards');
-  });
-  it('hold reasons and display settings', () => {
-    expect(holdWords(undefined)).toBe('held for an unstated reason');
-    expect(displayModel(ok({ defaults: { enabled: true }, revision: 'r1', topics: [{ id: '1', name: 'A' }] })).ok).toBe(true);
+describe('message settings model', () => {
+  it('requires a complete settings response and preserves the unlock state', () => {
+    expect(displayModel({ ok: false, reason: 'needs your PIN', needsUnlock: true })).toMatchObject({ ok: false, needsUnlock: true });
     expect(displayModel(ok({ defaults: { enabled: true } })).ok).toBe(false);
+    expect(displayModel(ok({ defaults: { enabled: true }, revision: 'r1', topics: [{ id: '1', name: 'Project' }] })).ok).toBe(true);
   });
 });
 
-describe('messages page in a DOM', () => {
+describe('message settings page', () => {
   let dom: JSDOM;
-  afterEach(() => dom?.window.close());
-  it('asks for the PIN once, unlocks with the operator session, then shows and saves settings', async () => {
-    let session = '';
-    const posts: Array<{ url: string; body: string; headers: Record<string, string> }> = [];
-    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/people/messages' });
-    const g = globalThis as Record<string, unknown>;
-    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+  afterEach(() => { dom?.window.close(); vi.unstubAllGlobals(); });
+
+  async function setup(reply: (url: string, opts?: Record<string, unknown>) => Promise<unknown>) {
+    dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'http://localhost:4040/dashboard/console/#/people/messages' });
+    vi.stubGlobal('window', dom.window);
+    vi.stubGlobal('document', dom.window.document);
+    vi.stubGlobal('localStorage', dom.window.localStorage);
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => setTimeout(callback, 0));
+    vi.stubGlobal('fetch', reply);
     dom.window.localStorage.setItem('instar_token', 't');
-    g.fetch = async (url: string, opts: { method?: string; body?: string; headers?: Record<string, string> } = {}) => {
-      const h = opts.headers || {};
-      const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body });
-      if (url === '/dashboard/unlock') { session = 'S1'; return json(200, { token: 't', operatorSessionToken: 'S1', operatorSessionExpiresAt: new Date(Date.now() + 600_000).toISOString() }); }
-      if (url === '/sessions') return json(200, { sessions: [] });
-      if (url === '/health') return json(200, { project: { name: 'echo' }, telegramOrigin: { heldForward: { count: 0 } } });
-      const authed = h['X-Instar-Operator-Session'] === session && session;
-      if (url === '/telegram/origins/status') return authed ? json(200, status()) : json(403, { error: 'operator session required' });
-      if (url === '/telegram/origin-display' && opts.method === 'POST') { posts.push({ url, body: opts.body || '', headers: h }); return json(200, { ok: true }); }
-      if (url === '/telegram/origin-display') return authed ? json(200, { defaults: { enabled: true, machine: true, harness: true, model: true }, revision: 'r1', topics: [] }) : json(403, {});
-      return json(404, {});
-    };
     vi.resetModules();
-    await import('../../dashboard/console/console.js');
-    const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
-    await tick(15);
-    const doc = dom.window.document;
-    expect(doc.querySelector('.need-title')!.textContent).toBe('Message records need your PIN');
-    (doc.querySelector('.need-card button') as HTMLButtonElement).click();
-    await tick(3);
-    (doc.querySelector('.pin-input') as HTMLInputElement).value = '123456';
-    (doc.querySelector('.pin-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
-    await tick(15);
-    expect(doc.querySelector('.page-title')!.textContent).toBe('No replies are held.');
-    ([...doc.querySelectorAll('.acct-row')].find((b) => b.textContent!.includes('footer')) as HTMLButtonElement).click();
-    await tick(2);
-    (doc.querySelector('#od-model') as HTMLInputElement).checked = false;
-    ([...doc.querySelectorAll('.sheet button')].find((b) => b.textContent === 'Save') as HTMLButtonElement).click();
-    await tick(5);
-    expect(posts).toHaveLength(1);
+    const { renderMessages } = await import('../../dashboard/console/messages.js');
+    const main = dom.window.document.querySelector('main');
+    const render = () => renderMessages(main, {});
+    await render();
+    return { main, render };
+  }
+
+  const response = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body });
+
+  it('shows no held-reply status or editable control when settings fail', async () => {
+    const calls: string[] = [];
+    const { main } = await setup(async (url) => { calls.push(url); return response(500, { error: 'internal-held-queue-failed' }); });
+    expect(calls).toEqual(['/telegram/origin-display']);
+    expect(main.textContent).toContain('Settings are unavailable right now.');
+    expect(main.textContent).not.toMatch(/held|expired|internal-held-queue-failed/i);
+    expect(main.querySelector('.acct-row, input, select')).toBeNull();
+    expect(main.querySelector('button').textContent).toBe('Retry');
+  });
+
+  it('unlocks once, then shows and saves only the message footer setting', async () => {
+    let session = '';
+    const posts: Array<{ body: string; headers: Record<string, string> }> = [];
+    const { main } = await setup(async (url, opts = {}) => {
+      if (url === '/dashboard/unlock') { session = 'S1'; return response(200, { operatorSessionToken: session, operatorSessionExpiresAt: new Date(Date.now() + 600_000).toISOString() }); }
+      if (url === '/telegram/origin-display' && opts.method === 'POST') { posts.push({ body: opts.body, headers: opts.headers }); return response(200, { ok: true }); }
+      if (url === '/telegram/origin-display') return opts.headers?.['X-Instar-Operator-Session'] === session && session
+        ? response(200, { defaults: { enabled: true, machine: true, harness: true, model: true }, revision: 'r1', topics: [] })
+        : response(403, { error: 'operator session required' });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    expect(main.textContent).toContain('Unlock message settings');
+    expect(main.querySelector('.acct-row')).toBeNull();
+    main.querySelector('.need-card button').click();
+    const pin = dom.window.document.querySelector('.pin-input');
+    expect(dom.window.document.querySelector('.unlock-error').textContent).toBe('');
+    pin.value = '123456';
+    dom.window.document.querySelector('.pin-form').dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+    await vi.waitFor(() => expect(main.querySelector('.acct-row')).not.toBeNull());
+    expect(main.textContent).not.toMatch(/held|expired/i);
+    main.querySelector('.acct-row').click();
+    dom.window.document.querySelector('#od-model').checked = false;
+    [...dom.window.document.querySelectorAll('.sheet button')].find((b) => b.textContent === 'Save').click();
+    await vi.waitFor(() => expect(posts).toHaveLength(1));
     expect(JSON.parse(posts[0].body)).toEqual({ display: { enabled: true, machine: true, harness: true, model: false }, revision: 'r1' });
     expect(posts[0].headers['X-Instar-Operator-Session']).toBe('S1');
   });

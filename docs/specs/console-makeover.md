@@ -87,10 +87,10 @@ instar.sh main site themes/colors". Visual quality is a pass/fail MVP criterion.
 Home leads with **one sentence** that summarizes the whole agent ("3 things need
 you." / "Nothing urgent that I can see." / "All quiet."), a line under it that
 breaks the count down and names any area that is failing, needs a look, or
-cannot be seen fully, then six compact cards. Each card has a title, one value,
+cannot be seen fully, then five compact cards. Each card has a title, one value,
 at most three rows, and either an inline "See all" (the records it already
 fetched, each row expandable to its full text) or a link to the legacy tab that
-holds the detail. Page-wide budget before interaction: one headline, six cards,
+holds the detail. Page-wide budget before interaction: one headline, five cards,
 at most 18 rows. Each card fetches and renders on its own (a skeleton until it
 resolves; 5 s deadline, 8 s for the two pool reads, which wait up to 5 s on peers
 server-side and show "Still checking the other machines…" meanwhile), refreshes
@@ -99,7 +99,6 @@ fails, and keeps any opened row or list open across refreshes.
 
 | Card | Route (existing) | Fields used | Scope | Can't tell when | Detail |
 |---|---|---|---|---|---|
-| Can I reach you | `/health` | `telegramOrigin.heldForward.{count,oldestSince,observedAt,expiredUnreported}` | this machine | block absent, `observedAt` null, count missing; stale past 5 min | legacy Message origins |
 | What needs you | `/attention?scope=pool`, plus the promises *waiting on you* from What I've promised; `/pool` for machine names | `items[]` with `status=OPEN`; `pool.failed`; `machines[].{machineId,nickname}` | pool | request fails or no list; promises unread marks it partial | inline See all |
 | What I'm doing | `/sessions?scope=pool` | `sessions[].{name,status,machineNickname,startedAt,telemetry.lastActivity}`; `pool.failed` | pool | request fails or no list | legacy Sessions |
 | What I've promised | `/commitments?scope=mesh` (all statuses; the tracker's active rule applied client-side to own and replica rows alike) | `enabled`, `scope`, `commitments[].{owner,blockedOn,status,expiresAt,createdAt,viewSource,originMachineId,stalenessMs}` | mesh | request fails or `enabled:false` | inline See all + legacy Commitments |
@@ -286,5 +285,5 @@ Round 3, visual (both: "close").
 | Mixed load/age column (Astra 7, Argon 2) | Accepted: age always shown, load beside the state. |
 | Duplicate Legacy link on desktop, tile affordance, hero depth (Argon 3, 7, 8) | Accepted: chip hidden on desktop, trailing arrow on tiles, soft radial glow behind the headline. |
 | Allowed card red/amber mismatch (Argon 6) | Accepted: rows are amber; meter segments separated. |
-| "Reaching you" overstated the evidence (Astra) | Accepted: "No replies held". |
+| Delivery holds shown as dashboard work (operator, 2026-10-31) | Superseded: remove the Home card and held list. Recovery remains internal; the message page shows settings only. |
 | Browser interaction acceptance (Astra) | Kept for the phone acceptance pass with Justin; screenshots cover appearance only. |

@@ -41,7 +41,7 @@ far**.
 | Capacity | **Accounts** | Subscriptions |
 | Capacity | **What thinking costs** ("Recorded AI cost on this machine", one time control) | Spend, Tokens, LLM activity, Routing map |
 | People | **Other agents** | Threadline |
-| People | **Messages to you** (the detail of Home's "Can I reach you") | Message origins |
+| People | **Message settings** | Message origins |
 | People | **Permission slips** | Mandates |
 | People | **Passwords & keys** | Secrets |
 | Settings | **What I'm allowed to do** (autonomy profile, then the one home of the safety-check list) | Features |
@@ -122,7 +122,7 @@ review, and the first needs the operator's yes):
    before the patterns are reused.
 2. **Machines**, with a visible **This machine** view (health and resource use) that
    works with no pool, and the **Health** shortcut on the Capacity page.
-3. **Accounts** (sign-in repair) and **Messages to you** — the operator interventions
+3. **Accounts** (sign-in repair) and **Message settings** — the operator interventions
    from a phone.
 4. **What I'm allowed to do** (driven by the server's actual state and
    `validTransitions`; no fake trust-accept button) and, for maintainers,
@@ -145,7 +145,7 @@ legacy controllers are reused where practical.
 
 On branch `feat/console-native-1`, six pages are built natively in `dashboard/console/`:
 **Promises** (`promises.js`), **Machines** (`machines.js`), **Accounts**
-(`accounts.js`), **Messages to you** (`messages.js`), **What I'm allowed to do**
+(`accounts.js`), **Message settings** (`messages.js`), **What I'm allowed to do**
 (`allowed.js`) and **Plans** (`plans.js`), each with a pure model file beside it. Their
 tiles inside the console open the native page (`dashboard/console/nav-model.js:101`–`:110`;
 the Projects, Initiatives and Blockers tiles all open Plans, and the Features tile opens
@@ -218,12 +218,7 @@ Where the build was the more honest choice, the plan was changed to match it:
 - **Accounts:** Needs you is one card per machine with a row per account
   (`dashboard/console/accounts.js:32`–`:41`), not one card per sign-in. `capacity.md`
   now says so.
-- **Messages to you:** shows held replies (the `held[]` list from
-  `/telegram/origins/status`), recording status and the footer settings. The message log
-  stays in the legacy tab, linked from the page, because `GET /telegram/origins` has no
-  newest-first option (`src/server/telegramOriginRoutes.ts:141`–`:149`; filed as feedback
-  fb-bd38d155-5ea). `people-settings.md` now says so, and that the held list is this
-  machine's.
+- **Message settings:** shows the footer control only after settings load successfully. A PIN prompt or Retry replaces unavailable controls. Delivery holds stay in internal recovery diagnostics and never appear as an operator task or dashboard status. `people-settings.md` records the operator correction.
 
 Where the build differs and the plan stands (to fix in the build):
 
@@ -324,7 +319,7 @@ acceptable temporary fallback while a page is being built; it does not tick a ro
 | Threadline | Thread filter: all / with Telegram topic / without Telegram topic | More filters sheet with the same three values, on the Agents list and each agent's conversations | people-settings.md |
 | Message origins | Display settings (picker, agent defaults, four checkboxes, Save) | Footer on messages sheet | people-settings.md |
 | Message origins | Recording status | Facts + Recording details disclosure | people-settings.md |
-| Message origins | Recent messages, Load more, Refresh | Held replies list natively; the message log stays a legacy link until `/telegram/origins` can return newest first (fb-bd38d155-5ea) | people-settings.md |
+| Message origins | Recent messages, Load more, Refresh | Recent messages remain in the legacy page until `/telegram/origins` can return newest first (fb-bd38d155-5ea). Delivery holds are internal diagnostics. | people-settings.md |
 | Mandates | Approve / Decline requests | Waiting for you cards (PIN each time) | people-settings.md |
 | Mandates | Issued mandates, grants | Active slips, slip detail | people-settings.md |
 | Mandates | Grant a person an action | "Let a person act" in slip detail | people-settings.md |

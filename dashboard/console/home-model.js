@@ -66,29 +66,7 @@ export function machineNames(poolRes) {
   return out;
 }
 
-// ── 1. Can I reach you ────────────────────────────────────────────────────
-export function buildReach(res, now = Date.now()) {
-  if (!res.ok) return unknownCard(`Couldn't read delivery status: ${res.reason}.`);
-  const hf = res.data && res.data.telegramOrigin && res.data.telegramOrigin.heldForward;
-  if (!hf || typeof hf !== 'object') return unknownCard('This agent does not report held replies.');
-  const observedAt = typeof hf.observedAt === 'number' ? hf.observedAt : Date.parse(hf.observedAt);
-  if (!Number.isFinite(observedAt)) return unknownCard('Held replies have not been checked since the server started.');
-  const count = Number(hf.count);
-  const expired = Number(hf.expiredUnreported) || 0;
-  if (!Number.isFinite(count)) return unknownCard('The held-reply count is missing.');
-  const age = ago(observedAt, now);
-  const rows = [];
-  if (count > 0) rows.push({ main: `${plural(count, 'reply', 'replies')} waiting to reach you`, end: hf.oldestSince ? `oldest ${ago(hf.oldestSince, now)}` : '' });
-  if (expired > 0) rows.push({ main: `${plural(expired, 'reply', 'replies')} expired before reaching you`, end: 'not yet reported' });
-  if (now - observedAt > FRESH_MS) {
-    return { state: 'stale', value: count === 0 && expired === 0 ? 'Nothing held' : plural(count + expired, 'reply', 'replies'), line: `Last checked ${age}; this may be out of date.`, rows, age };
-  }
-  if (expired > 0) return { state: 'bad', value: `${expired} lost`, line: 'Some replies expired before they reached you.', rows, age };
-  if (count > 0) return { state: 'attn', value: `${count} held`, line: 'Replies are written but not delivered yet.', rows, age };
-  return { state: 'ok', value: 'No replies held', line: 'Nothing is waiting to reach you on this machine.', rows, age };
-}
-
-// ── 2. What needs you ─────────────────────────────────────────────────────
+// ── What needs you ─────────────────────────────────────────────────────────
 const PRIORITY = { URGENT: 0, HIGH: 1, MEDIUM: 2, NORMAL: 3, LOW: 4 };
 
 /** Items the operator must act on, per the attention hub filter's own rule. */
@@ -421,10 +399,10 @@ export function combineNeeds(needs, promised) {
   };
 }
 
-const AREA_NAME = { reach: 'message delivery', needs: 'what needs you', doing: 'sessions', promised: 'promises', running: 'machines', allowed: 'permissions' };
+const AREA_NAME = { needs: 'what needs you', doing: 'sessions', promised: 'promises', running: 'machines', allowed: 'permissions' };
 
 // ── The headline ──────────────────────────────────────────────────────────
-/** One sentence over all six cards. Never says "all quiet" while a card can't tell. */
+/** One sentence over the Home cards. Never says "all quiet" while a card can't tell. */
 export function headline(cards) {
   const list = Object.values(cards).filter(Boolean);
   const known = (c) => (c && Number.isFinite(c.count) ? c.count : 0);

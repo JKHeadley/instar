@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  failure, ago, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
+  failure, ago, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
   machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
   combineNeeds, machineNames, machineLabel,
 } from '../../dashboard/console/home-model.js';
@@ -24,37 +24,6 @@ describe('ago()', () => {
     expect(ago(minsAgo(180), NOW)).toBe('3 h ago');
     expect(ago(minsAgo(60 * 24 * 5), NOW)).toBe('5 d ago');
     expect(ago('not a date', NOW)).toBeNull();
-  });
-});
-
-describe('Can I reach you', () => {
-  const hf = (over: Record<string, unknown>) => ok({ telegramOrigin: { heldForward: { count: 0, oldestSince: null, observedAt: NOW - 1000, expiredUnreported: 0, ...over } } });
-
-  it('says it cannot tell on a failed request', () => {
-    const m = buildReach(failure('no answer within 5 seconds'), NOW);
-    expect(m.state).toBe('unknown');
-    expect(m.value).toBe("Can't tell");
-    expect(m.line).toContain('no answer within 5 seconds');
-  });
-  it('a zero with a null observedAt is not "all delivered"', () => {
-    expect(buildReach(hf({ observedAt: null }), NOW).state).toBe('unknown');
-  });
-  it('a missing block is not "all delivered"', () => {
-    expect(buildReach(ok({ status: 'ok' }), NOW).state).toBe('unknown');
-  });
-  it('an old observation is stale, not fine', () => {
-    const m = buildReach(hf({ observedAt: NOW - 10 * 60_000 }), NOW);
-    expect(m.state).toBe('stale');
-    expect(m.line).toContain('10 min ago');
-  });
-  it('held replies need you; expired ones are failing', () => {
-    expect(buildReach(hf({ count: 2, oldestSince: minsAgo(30) }), NOW).state).toBe('attn');
-    expect(buildReach(hf({ expiredUnreported: 1 }), NOW).state).toBe('bad');
-  });
-  it('a fresh zero is the healthy case', () => {
-    const m = buildReach(hf({}), NOW);
-    expect(m.state).toBe('ok');
-    expect(m.value).toBe('No replies held');
   });
 });
 
@@ -268,13 +237,13 @@ describe('headline()', () => {
   const card = (state: string, value = '', count?: number) => ({ state, value, count });
 
   it('waits for both counting cards before announcing anything', () => {
-    expect(headline({ needs: card('loading'), promised: card('attn', '3 need you', 3), reach: card('ok') }).text).toBe('Checking in…');
+    expect(headline({ needs: card('loading'), promised: card('attn', '3 need you', 3), doing: card('ok') }).text).toBe('Checking in…');
   });
   it('sums what needs the operator', () => {
-    expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), reach: card('ok') }).text).toBe('3 things need you.');
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), doing: card('ok') }).text).toBe('3 things need you.');
   });
   it('never says all quiet while a card cannot tell', () => {
-    const h = headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') });
+    const h = headline({ needs: card('ok'), promised: card('ok'), doing: card('unknown') });
     expect(h.text).toBe('Nothing urgent that I can see.');
     expect(h.tone).toBe('muted');
     expect(h.sub).toMatch(/can't fully see/i);
@@ -291,11 +260,11 @@ describe('headline()', () => {
   it('a partial queue keeps its known urgency in the headline (round-4 blocker)', () => {
     const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
     expect(n.state).toBe('partial');
-    const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
+    const h = headline({ needs: n, promised: card('ok', '', 0), doing: card('ok') });
     expect(h.text).toBe('One thing needs you.');
     expect(h.sub).toMatch(/can't fully see/i);
   });
   it('all quiet only when everything is known and fine', () => {
-    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');
+    expect(headline({ needs: card('ok'), promised: card('ok'), doing: card('ok') }).text).toBe('All quiet.');
   });
 });

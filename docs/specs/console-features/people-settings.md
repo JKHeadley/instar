@@ -163,44 +163,18 @@ with the operator session (`X-Instar-Operator-Session`), **Unlock with PIN** on 
 
 **What is wrong with it today.**
 - The headline is an instruction, not a state: "Choose message details or inspect saved origins." (`origin.js:8`).
-- Held replies — the thing that matters (Home found 26 expired undelivered) — appear only as an unlabeled "Held: N" inside "Recorded logical operations" (`origin.js:107`).
+- Delivery failures were wrongly presented as a held-reply feature instead of being repaired internally.
 - Insider words as primary text: harness, logical operations, enrollment, attestation, evidence status.
 - Settings are a drill-down tile, so the most common change takes three taps.
 
-**The new design.**
-- *Arrival:* headline from `/health` `telegramOrigin.heldForward` plus status — "3 replies to you are held; the oldest since 09:40." / "No replies held." / "Can't tell whether replies are held." Facts: held now · expired undelivered (from `expiredUnreported`) · recording (on / partly). Whether the footer is shown is the first line of Settings, not a fact.
-- *Layout:* (1) **Held replies** list when any — conversation name, how long held, why in plain words (`hold_reason` mapped: "waiting to be routed through the machine that holds the conversation", "addressed outside the chats this agent may write to"; `dashboard/console/messages-model.js:7`), tap for detail. The list is the `held[]` array `/telegram/origins/status` already returns (`src/messaging/telegram-origin/TelegramOriginRuntime.ts:266`). (2) **Settings** — the **Footer on messages** row → settings sheet. (3) **Recording details**, collapsed, only when some part of recording is not ready. (4) **The message log** (who wrote each message) stays in the legacy tab for now, as a link at the foot of the page; see *Recent messages, later* below.
-- *Primary action:* reading. The settings sheet: "Show who wrote each message" master switch, then machine / app / model switches, a "For one conversation" picker with "Same as everywhere" — one Save, conflict shown as "Changed elsewhere — reload to see it".
-- *Secondary:* a "Recording details" disclosure holds the parts of recording that are not ready, verbatim for support.
-- *Recent messages, later:* a native list (conversation, time, "Mac Studio · Claude Code · Opus 5.5", delivered/held/failed dot, tap for the full record in plain labels, Load more) is built only when the server can return the newest messages first. `GET /telegram/origins` takes a `limit`, a `cursor` and exact-match filters and nothing else (`src/server/telegramOriginRoutes.ts:141`–`:149`), so a native page could not promise "recent". Asked for as feedback fb-bd38d155-5ea; until it lands, the legacy tab keeps the log.
-- *Honest states:* operator session missing → one unlock card ("Message records need your PIN") using the shared PIN sheet with adapter (b): `POST /dashboard/unlock`, the session token held in page memory only until its server expiry (15 minutes by default, `src/server/DashboardOperatorSessionStore.ts:18`), then asked again; the raw PIN is not kept; status unavailable → can't tell, held count never shown as zero; pool audit failing → local list with "Only this machine's messages — the others didn't answer"; `topicsMayBeIncomplete` → "Some conversations aren't listed".
-- *Multi-machine:* held replies are this machine's (the status route is local); the page says "on this machine" when the pool has more than one. When the native message log arrives it uses `scope=pool` with a coverage line ("All 3 machines" / "This machine only").
-- *Rough sketch:*
-```
-┌ Messages to you ────────────────┐
-│ 3 replies to you are held.      │
-│ Oldest since 09:40.             │
-│ held 3 · expired 0 · recording on│
-├ Held replies ───────────────────┤
-│ ▌Instar 2.0             42 min  │
-│ ▌waiting to be routed through │
-│ ▌the machine that holds it    › │
-├ Settings ───────────────────────┤
-│ Footer on messages: shown     › │
-│ ▸ Recording details             │
-│ The full message log is in the  │
-│ legacy Message origins tab ↗    │
-└─────────────────────────────────┘
-```
+**Current design (operator correction, 2026-10-31).**
+- Delivery holds and expired replies are delivery failures for Instar to retry, investigate, and repair. They are not operator tasks or dashboard status. The console must not show held counts, expired counts, or a held-reply list on Home or the message page. Keep the underlying recovery records and diagnostics for agents.
+- The page is **Message settings**. It reads only `/telegram/origin-display` and shows the **Show who wrote each message** control after the settings response is complete. The settings sheet has the master switch, machine/app/model switches, a verified-name conversation picker, and one Save action.
+- If an operator session is needed, show an **Unlock message settings** prompt. The PIN field opens empty and shows an error only after a failed submission. If the settings request fails, show a Retry action and no editable control. Never invite a tap that opens an error sheet.
+- The older dashboard's display tile is withheld until its settings request succeeds. Its recording diagnostics remain available without making delivery holds a user-facing status.
+- Message records remain available through internal origin diagnostics. A future user message log needs a separate design that starts with delivered conversation history, not recovery queue states.
 
-**Merge / split / cut.** Becomes the detail page of Home's "Can I reach you" card (which
-today links to this legacy tab). Display settings also linked from the Settings page.
-Nothing cut; the support fields move under "Recording details".
-
-**Data.** Existing: `/health` (`telegramOrigin.heldForward`), `/telegram/origins/status`
-(its `held[]` list, confirmed at build), `/telegram/origin-display`, `/dashboard/unlock`.
-Later, with the native message log: `/telegram/origins?scope=pool` and
-`/telegram/origins/:id`, once a newest-first option exists (fb-bd38d155-5ea).
+**Data.** `/telegram/origin-display` and `/dashboard/unlock` for the console setting. `/telegram/origins/status` and `/health.telegramOrigin` remain internal delivery diagnostics.
 
 **Effort and order.** M. README step 3; introduces the adapter-(b) operator session in the console.
 

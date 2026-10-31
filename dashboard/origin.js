@@ -3,10 +3,10 @@ import { renderGlance } from './glance.js';
 import { sanitizeForDisplay } from './subscriptions.js';
 
 /** Only fixed prose reaches the glance; a page is never a total or proof of fleet health. */
-export function originGlanceSpec({ status, auditAvailable = false } = {}, activate = {}) {
+export function originGlanceSpec({ status, auditAvailable = false, settingsReady = false } = {}, activate = {}) {
   const current = !!status?.metrics?.counts && status.metrics.stale === false && status.metrics.coverage === 'complete';
-  return { headline: 'Choose message details or inspect saved origins.', tiles: [
-    { key: 'display', label: 'Display settings', value: 'Edit', onActivate: activate.display },
+  return { headline: 'Message settings and records.', tiles: [
+    ...(settingsReady ? [{ key: 'display', label: 'Display settings', value: 'Edit', onActivate: activate.display }] : []),
     { key: 'recording', label: 'Recording status', value: current ? 'Current' : 'Unknown', onActivate: activate.recording },
     { key: 'messages', label: 'Recent messages', value: auditAvailable ? 'View' : 'Unknown', onActivate: activate.messages },
   ] };
@@ -40,14 +40,14 @@ export function mountOriginPanel(root, { request, unlock }) {
   const more = make('button', 'Load more messages', audit); more.type = 'button'; more.hidden = true;
   // Detail nodes retain form state when moved into the shared drill container.
   settings.remove(); status.remove(); audit.remove();
-  let statusSnapshot, auditAvailable = false;
-  const renderSummary = () => renderGlance(doc, glance, originGlanceSpec({ status: statusSnapshot, auditAvailable }, {
+  let statusSnapshot, auditAvailable = false, preferences;
+  const renderSummary = () => renderGlance(doc, glance, originGlanceSpec({ status: statusSnapshot, auditAvailable, settingsReady: Boolean(preferences) }, {
     display: ({ drilldown }) => drilldown.append(settings),
     recording: ({ drilldown }) => drilldown.append(status),
     messages: ({ drilldown }) => drilldown.append(audit),
   }));
   renderSummary();
-  let preferences, cursor, timer, auditScope = 'pool', busy = false, stopped = false, statusBusy = false, auditGeneration = 0;
+  let cursor, timer, auditScope = 'pool', busy = false, stopped = false, statusBusy = false, auditGeneration = 0;
   const pending = new Set();
   const api = async (url, options) => {
     const controller = new AbortController(); pending.add(controller); let timeout;
@@ -55,7 +55,7 @@ export function mountOriginPanel(root, { request, unlock }) {
       return await Promise.race([
         (async () => {
           const response = await request(url, { ...options, signal: controller.signal });
-          if (response.status === 403) { unlockButton.hidden = false; throw new Error('Unlock with your PIN to view or change message origins.'); }
+          if (response.status === 403) { unlockButton.hidden = false; const error = new Error('Unlock with your PIN to view or change message origins.'); error.needsUnlock = true; throw error; }
           if (!response.ok) throw new Error(response.status === 409 ? 'Settings changed elsewhere. Refresh before saving again.' : 'This information is unavailable. No complete result can be confirmed.');
           unlockButton.hidden = true; return response.json();
         })(),
@@ -79,6 +79,7 @@ export function mountOriginPanel(root, { request, unlock }) {
     select.value = [...select.options].some(option => option.value === previous) ? previous : '';
     showSettings();
     if (preferences.topicsMayBeIncomplete) notice.textContent = 'Some conversations are not listed. These settings remain available for the listed conversations.';
+    renderSummary();
   };
   save.onclick = async () => {
     save.disabled = true;
@@ -103,10 +104,10 @@ export function mountOriginPanel(root, { request, unlock }) {
       const notices = data.notices, outcomes = Array.isArray(notices) ? notices.map(item => human(item.notificationOutcome)) : [];
       summary.textContent = sanitizeForDisplay(`${known ? 'Recording available' : 'Recording status unknown'} · ${outcomes.length ? 'Outage notice: ' + outcomes.join(', ') : 'Outage notice unavailable'}`, 'summary');
       make('p', data.activation?.complete === true ? 'Enrollment complete.' : 'Enrollment incomplete. Some writers or required evidence remain unverified.', detail);
-      make('p', counts ? `Recorded logical operations — Prepared: ${counts['operation:prepared'] ?? 'unknown'} · Held: ${counts['operation:held'] ?? 'unknown'} · Accepted: ${counts['operation:accepted'] ?? 'unknown'}` : 'Recording counts unavailable; held work is unknown.', detail);
+      make('p', counts ? `Recorded logical operations — Prepared: ${counts['operation:prepared'] ?? 'unknown'} · Accepted: ${counts['operation:accepted'] ?? 'unknown'}` : 'Recording counts unavailable.', detail);
       make('p', `Measurement freshness: ${data.metrics?.stale ? 'stale' : data.metrics?.sampledAt ? new Date(data.metrics.sampledAt).toLocaleString() : 'unknown'}.`, detail);
       make('p', outcomes.length ? `Outage notification: ${outcomes.join(', ')}.` : 'Outage notification unavailable: no current alert destination or verified state.', detail);
-    } catch (error) { statusSnapshot = undefined; make('p', 'Recording and notification status unavailable; held work is unknown.', detail); notice.textContent = sanitizeForDisplay(error.message, 'summary'); }
+    } catch (error) { statusSnapshot = undefined; make('p', 'Recording and notification status unavailable.', detail); notice.textContent = sanitizeForDisplay(error.message, 'summary'); }
     finally { statusBusy = false; renderSummary(); }
   };
   const renderRow = row => {
@@ -146,7 +147,7 @@ export function mountOriginPanel(root, { request, unlock }) {
   const refreshAll = async () => {
     if (busy || stopped) return; busy = true; refresh.disabled = true;
     try { await loadPreferences(); await Promise.all([loadStatus(), loadAudit()]); }
-    catch (error) { statusSnapshot = undefined; auditAvailable = false; renderSummary(); notice.textContent = sanitizeForDisplay(error.message, 'summary'); }
+    catch (error) { statusSnapshot = undefined; auditAvailable = false; renderSummary(); notice.textContent = error.needsUnlock ? '' : 'Message settings are unavailable. Refresh to try again.'; }
     finally { busy = false; refresh.disabled = false; }
   };
   refresh.onclick = refreshAll; more.onclick = () => loadAudit(true);

@@ -7483,6 +7483,13 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the new console (beside the dashboard) awareness');
     }
+    // Existing console guidance must not keep advertising delivery holds as
+    // operator work after the Home card was removed.
+    if (content.includes(CONSOLE_MARKER) && content.includes('held replies, open promises')) {
+      content = content.split('\n').map((line) => line.includes(CONSOLE_MARKER) && line.includes('held replies, open promises') ? CONSOLE_BULLET : line).join('\n');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: removed held replies from console guidance');
+    }
 
     if (!content.includes(REMOTE_DESKTOP_MARKER)) {
       // Preserve the console bullet directly below Features on existing agents.

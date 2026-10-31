@@ -1,10 +1,8 @@
-// Messages to you (docs/specs/console-features/people-settings.md, "Messages to you").
-// Message records need an operator session (PIN adapter b); the held count on Home
-// comes from /health and needs none.
+// Message footer settings (docs/specs/console-features/people-settings.md).
+// Delivery holds belong to the recovery pipeline, not the dashboard.
 
-import { buildMessagesPage, displayModel } from './messages-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, operatorSession, forgetOperatorSession } from './ui.js';
-import { legacyHref } from './nav-model.js';
+import { displayModel } from './messages-model.js';
+import { el, setKids, pageHead, sheet, closeSheet, note, askPin, operatorSession, forgetOperatorSession } from './ui.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
@@ -22,52 +20,41 @@ async function opFetch(path, opts = {}) {
 }
 
 export async function renderMessages(main, ctx) {
-  const { get } = ctx;
   const first = !main.querySelector('.msg-page');
-  if (first) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Messages to you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  // A locked page is not re-polled against the PIN-gated routes every 30 s: only the
-  // first render (and a render after an unlock) asks for the records.
+  if (first) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Message settings' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  // A locked page is not re-polled against the PIN-gated route every 30 s.
   const locked = !first && !operatorSession() && main.querySelector('.need-card');
   const denied = { ok: false, status: 403, reason: 'needs your PIN', needsUnlock: true };
-  const [status, health, display] = await Promise.all([locked ? denied : opFetch('/telegram/origins/status'), get('/health'), locked ? denied : opFetch('/telegram/origin-display')]);
+  const display = locked ? denied : await opFetch('/telegram/origin-display');
   const dm = displayModel(display);
-  const names = dm.ok ? Object.fromEntries(dm.topics.map((t) => [String(t.id), t.name])) : {};
-  const page = buildMessagesPage(status, health, Date.now(), names);
   const refresh = () => renderMessages(main, ctx);
 
-  if (!page.ok) {
-    const hf = page.heldForward;
-    const unlock = status.needsUnlock ? el('div', { class: 'need-card' },
-      el('span', { class: 'need-title', text: 'Message records need your PIN' }),
-      el('span', { class: 'need-sub', text: 'Who wrote each message is private to you. One unlock lasts about 15 minutes in this page.' }),
-      el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Unlock', onclick: async () => { const a = await askPin({ title: 'Message records', explain: 'Unlock message records. Your PIN is not kept; the unlock lives in this page until it expires.', adapter: 'session' }); if (a) refresh(); } })) : null;
+  if (!dm.ok) {
+    const unlock = dm.needsUnlock ? el('div', { class: 'need-card' },
+      el('span', { class: 'need-title', text: 'Unlock message settings' }),
+      el('span', { class: 'need-sub', text: 'Use your dashboard PIN to change what appears under messages.' }),
+      el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Unlock', onclick: async () => { const a = await askPin({ title: 'Message settings', explain: 'Unlock message settings. Your PIN is not kept; the unlock lives in this page until it expires.', adapter: 'session' }); if (a) refresh(); } })) : null;
     setKids(main, el('div', { class: 'msg-page' },
-      pageHead({ eyebrow: 'People · Messages to you', headline: hf ? (hf.count ? `${hf.count} ${hf.count === 1 ? 'reply is' : 'replies are'} held on this machine.` : 'No replies held on this machine.') : 'Messages to you', sub: hf ? 'From the quick check; the full records need your PIN.' : '', tone: hf && hf.count ? 'attn' : 'muted' }),
-      unlock || cantTell(page.reason), legacyLink()));
+      pageHead({ eyebrow: 'People · Message settings', headline: 'Choose what appears under messages.', tone: 'muted' }),
+      unlock || el('div', { class: 'need-card' },
+        el('span', { class: 'need-title', text: 'Settings are unavailable right now.' }),
+        el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Retry', onclick: refresh }))));
     return;
   }
 
   const settingsRow = el('button', { class: 'acct-row', type: 'button', onclick: () => openSettings(dm, refresh) },
-    el('span', { class: 'acct-name', text: 'Who-wrote-this footer on messages' }),
-    el('span', { class: 'acct-pct', text: dm.ok ? (dm.defaults.enabled ? 'shown' : 'hidden') : 'can’t tell' }),
-    el('span', { class: 'acct-line', text: dm.ok ? [dm.defaults.machine && 'machine', dm.defaults.harness && 'app', dm.defaults.model && 'model'].filter(Boolean).join(' · ') || 'nothing' : `Couldn't read the settings: ${dm.reason}.` }));
+    el('span', { class: 'acct-name', text: 'Show who wrote each message' }),
+    el('span', { class: 'acct-pct', text: dm.defaults.enabled ? 'shown' : 'hidden' }),
+    el('span', { class: 'acct-line', text: [dm.defaults.machine && 'machine', dm.defaults.harness && 'app', dm.defaults.model && 'model'].filter(Boolean).join(' · ') || 'nothing' }));
 
   setKids(main, el('div', { class: 'msg-page' },
-    pageHead({ eyebrow: 'People · Messages to you', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
+    pageHead({ eyebrow: 'People · Message settings', headline: 'Choose what appears under messages.', tone: 'muted' }),
     el('div', { class: 'page-sections' },
-      page.rows.length ? section({ id: 'held', title: 'Held replies', rows: page.rows, onRow: (r) => sheet({ title: r.main }, story([{ label: 'Why it is held', text: r.sub }, { label: 'Held since', text: r.end }]), details(r.record, Object.keys(r.record || {}))) }) : null,
-      el('section', { class: 'list-section' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Settings' })), el('div', { class: 'list-rows' }, settingsRow)),
-      page.notReady.length ? section({ id: 'recording', title: 'Recording details', rows: page.notReady, collapsed: true, empty: 'Every part of message recording is ready.' }) : null,
-    ),
-    el('p', { class: 'foot-note' }, el('a', { href: legacyHref('origins'), text: 'The full message log (who wrote each message) is in the legacy Message origins tab' }))));
-}
-
-function legacyLink() {
-  return el('p', { class: 'foot-note' }, el('a', { href: legacyHref('origins'), text: 'Open message origins in the legacy dashboard' }));
+      el('section', { class: 'list-section' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Settings' })), el('div', { class: 'list-rows' }, settingsRow)))));
 }
 
 function openSettings(dm, refresh) {
-  if (!dm.ok) { sheet({ title: 'Message footer' }, note(`Can’t tell: ${dm.reason}.`)); return; }
+  if (!dm.ok) return;
   const scope = el('select', { class: 'reason-input', 'aria-label': 'Which conversations' },
     el('option', { value: '', text: 'Every conversation (the default)' }),
     uniqueNamedChoices(dm.topics, (t) => t.id, (t) => t.name).map((t) => el('option', { value: String(t.id), text: verifiedDisplayName(t.name, t.id) })));

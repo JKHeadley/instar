@@ -15,7 +15,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  failure, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
+  failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
   headline, combineNeeds, machineNames, machineLabel, unreachedLine,
 } from '../../dashboard/console/home-model.js';
 
@@ -114,8 +114,6 @@ const pool = ok({ selfMachineId: 'm1', machines: [
 ] });
 
 const CASES: Array<[string, () => unknown]> = [
-  ['reach failure', () => buildReach(failure('no answer within 5 seconds'), NOW)],
-  ['reach held', () => buildReach(ok({ telegramOrigin: { heldForward: { count: 3, oldestSince: minsAgo(40), observedAt: NOW - 1000, expiredUnreported: 2 } } }), NOW)],
   ['needs dark peer', () => buildNeeds(ok({ items: [item(), item({ priority: 'LOW' })], pool: darkPeer }), NOW, machineNames(pool))],
   ['needs empty dark peer', () => buildNeeds(ok({ items: [], pool: darkPeer }), NOW, {})],
   ['needs stale', () => buildNeeds(ok({ items: [item({ createdAt: minsAgo(60 * 24 * 30) })], pool: healthyPeer }), NOW)],
