@@ -202,8 +202,12 @@ struct InstarDesktopHost {
             let screen = CGPreflightScreenCaptureAccess()
             let input = AXIsProcessTrusted()
             let displays = CGGetActiveDisplayListCount()
-            let session = activeSession()
-            print("{\"screenPermission\":\(screen),\"inputPermission\":\(input),\"displayCount\":\(displays),\"sessionActive\":\(session)}")
+            let state = CGSessionCopyCurrentDictionary() as? [String: Any]
+            let onConsole = state?[kCGSessionOnConsoleKey as String] as? Bool ?? false
+            let loginDone = state?[kCGSessionLoginDoneKey as String] as? Bool ?? false
+            let screenLocked = state?["CGSSessionScreenIsLocked"] as? Bool ?? false
+            let session = state != nil && onConsole && loginDone && !screenLocked
+            print("{\"screenPermission\":\(screen),\"inputPermission\":\(input),\"displayCount\":\(displays),\"sessionActive\":\(session),\"consoleSessionPresent\":\(state != nil),\"onConsole\":\(onConsole),\"loginDone\":\(loginDone),\"screenLocked\":\(screenLocked)}")
         case "indicator":
             guard activeSession() else { exit(69) }
             // The indicator owns the physical host's controller lock for its

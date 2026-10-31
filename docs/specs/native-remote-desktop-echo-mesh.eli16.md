@@ -1,11 +1,12 @@
 # Echo mesh remote desktop, explained simply
 
-Open Echo's dashboard on your phone or laptop and enter your usual dashboard
+Open [Echo's Desktop page](https://echo-studio.dawn-tunnel.dev/dashboard/desktop.html)
+on your phone or laptop and enter your usual dashboard
 PIN. You see your five machines by name. Choose one that says it is ready, and
 its desktop appears in the same viewer you use for Mac Studio. You can point,
-click, drag, scroll, type, zoom, and press **Stop**. A machine that is asleep,
-locked, offline, or missing screen-control permission stays in the list with a
-reason you can understand. The page never silently opens a different machine.
+click, drag, scroll, type, zoom, and press **Stop**. A machine with an
+unavailable screen helper stays in the list with a reason you can understand.
+The page never silently opens a different machine.
 
 Your PIN unlocks the dashboard; it does not unlock a computer's operating
 system. Echo asks the chosen machine for a short, one-time permission that is
@@ -20,6 +21,12 @@ session because Echo itself runs inside WSL, which cannot see the Windows
 desktop. The companion has no public remote-desktop port. Echo installs and
 updates it as part of turning on this feature, then checks that it can really
 capture and control Windows before marking Mama PC ready.
+
+An online Mac agent can still have an unavailable screen helper. That does
+not mean the whole Mac is locked or that Echo lost contact with it. Echo now
+reports the helper's display, permission, and console-session checks
+separately so we can fix the right problem. On Mama PC, Echo chooses the
+correct local link between WSL and Windows for the machine's network mode.
 
 Mac Studio is the single entry point for this first Echo mesh rollout. It
 relays a chosen machine's encrypted screen and controls without becoming that

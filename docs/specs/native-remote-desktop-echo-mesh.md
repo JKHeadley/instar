@@ -85,6 +85,30 @@ local and authenticated; it exposes no VNC/RDP service or public port. A
 missing companion, inactive Windows session, or failed input/capture probe is
 a truthful unavailable state.
 
+The WSL bridge address depends on its network mode. Under NAT, the Windows
+host owns WSL's private default gateway; under mirrored networking, that
+gateway can be the LAN router and Windows is reached through `127.0.0.1`.
+Installation chooses the gateway only when Windows reports owning it,
+otherwise it binds the companion to loopback. Discovery requires the saved
+address to match that current, Windows-owned choice; a missing or stale file
+leaves desktop access dark. A persisted address cannot redirect authenticated
+companion traffic to another host. The Bearer-only
+`GET /desktop/diagnostics` route reports this host's probe booleans or a
+sanitized probe error without exposing screen content, input, or keys.
+
+The Mac helper's console-session check is a property of the helper process.
+A local diagnostic reports whether the helper received a session dictionary,
+whether that session is on console, whether login completed, and whether that
+session reports a locked screen. These booleans are authenticated maintenance
+data, never a new admission route.
+A false result alone does not prove that the whole Mac is locked. Diagnosis
+must distinguish an absent GUI session, a helper launched outside the GUI
+session, missing permissions, and a missing display before describing the
+machine state to the operator. The signed target availability response uses
+these exact session fields to explain the machine picker, so Studio can
+distinguish the failure without another remote maintenance credential.
+Instar's agent remains reachable while its screen helper is unavailable.
+
 On WSL boot after explicit desktop opt-in, the agent stages and compiles the
 companion before asking an existing process to release control. An update
 token authorizes that exact process to exit; Task Scheduler must confirm it

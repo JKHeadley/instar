@@ -17,6 +17,7 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
 
 import { Router } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
@@ -1659,6 +1660,7 @@ export interface RouteContext {
    *  blocks a message; the true-blocker settle routes through the B17 authority. */
   blockerLedger?: import('../monitoring/BlockerLedger.js').BlockerLedger | null;
   directDesktopAccess?: import('../core/DirectDesktopAccess.js').DirectDesktopAccess | null;
+  desktopLocalDiagnostics?: () => Promise<Record<string, unknown>>;
   desktopMeshBroker?: import('./DesktopMeshBroker.js').DesktopMeshBroker | null;
   desktopTargetSigningKey?: (machineId: string) => string | null;
   desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
@@ -13003,9 +13005,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       const probe = await ctx.directDesktopAccess!.probe();
       if (probe.ready) return { ready: true };
-      if (!probe.sessionActive && probe.screenPermission && probe.inputPermission && probe.displayCount > 0) {
-        return { ready: false, unavailableReason: 'This Mac’s desktop is locked or inactive. This version cannot unlock macOS. Unlock it, then choose Check again.' };
-      }
+      return { ready: false, unavailableReason: desktopProbeUnavailableReason(probe) };
     } catch {
       // @silent-fallback-ok — probe uncertainty denies desktop access and returns an explicit unavailable reason.
     }
@@ -13016,6 +13016,16 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     const target = ctx.directDesktopAccess.targetInfo();
     res.json({ ...target, ...await desktopReadiness() });
+  });
+  // Bearer-only maintenance view of this host's own probe. Target machines do
+  // not serve the browser admission route, so a 503 there cannot diagnose a
+  // headless Mac or a Windows companion failure. No frame or input is read.
+  router.get('/desktop/diagnostics', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.desktopLocalDiagnostics) {
+      res.status(503).json({ error: 'Desktop diagnostics unavailable' }); return;
+    }
+    res.json(await ctx.desktopLocalDiagnostics());
   });
   // Config activation is an agent maintenance action. The normal Bearer
   // middleware protects this route; the dashboard PIN never exposes it.

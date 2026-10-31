@@ -238,6 +238,9 @@ export class MacDesktopHost implements DesktopHost {
     catch { throw new Error('mac-desktop-host-probe-invalid'); }
     if (typeof value.screenPermission !== 'boolean' || typeof value.inputPermission !== 'boolean'
       || typeof value.sessionActive !== 'boolean'
+      || ['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked']
+        .some(key => value[key as keyof MacDesktopProbe] !== undefined
+          && typeof value[key as keyof MacDesktopProbe] !== 'boolean')
       || !Number.isSafeInteger(value.displayCount) || value.displayCount! < 0 || value.displayCount! > 16) {
       throw new Error('mac-desktop-host-probe-invalid');
     }
