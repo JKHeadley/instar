@@ -52,6 +52,30 @@ describe('AutoUpdater restart holds', () => {
     (u as unknown as { gatedRestart(v: string, w?: boolean, h?: boolean): Promise<void> })
       .gatedRestart('0.9.9', bypassWindow, bypassHolds);
 
+  it('releases the admission fence when the first restart decision throws', async () => {
+    const u = updater(() => []);
+    u.setSessionDeps({ listRunningSessions: () => { throw new Error('session probe failed'); } });
+    await expect(gated(u)).rejects.toThrow('session probe failed');
+    expect(u.getStatus().updateActivationPendingSince).toBeNull();
+    expect(fs.existsSync(restartFile())).toBe(false);
+    u.stop();
+  });
+
+  it('releases the admission fence when a deferred restart retry throws', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60_000, reason: 'verify running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    expect(u.getStatus().restartDeferral?.active).toBe(true);
+    holds = [];
+    u.setSessionDeps({ listRunningSessions: () => { throw new Error('retry probe failed'); } });
+    const internal = u as unknown as { retryDeferredRestart(v: string, generation: number): Promise<void>; deferralLifecycleGeneration: number };
+    await internal.retryDeferredRestart('0.9.9', internal.deferralLifecycleGeneration);
+    expect(u.getStatus().updateActivationPendingSince).toBeNull();
+    expect(u.getStatus().restartDeferral?.active).toBe(true);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    u.stop();
+  });
+
   it('holds while an invite waits, logs why, and records it on the existing durable deferral', async () => {
     const until = Date.now() + 40 * 60_000;
     const u = updater(() => [{ name: 'pairing-invite:abcd1234', until, reason: 'a pairing invite from "Scout" is waiting for the operator\'s approval' }]);
@@ -60,6 +84,7 @@ describe('AutoUpdater restart holds', () => {
     expect(fs.existsSync(restartFile())).toBe(false);
     const d = u.getStatus().restartDeferral!;
     expect(d).toMatchObject({ active: true, targetVersion: '0.9.9', currentBlockers: ['pairing-invite:abcd1234'] });
+    expect(u.getStatus().updateActivationPendingSince).toBeNull(); // durable deferral governs the wait
     expect(d.reason).toContain('held for in-flight work: a pairing invite from "Scout"');
     expect(d.reason).toContain(new Date(until).toISOString());
     // Re-checked at the normal 5-minute cadence, not only at the invite's expiry.
@@ -254,6 +279,7 @@ describe('AutoUpdater restart holds', () => {
     await gated(u);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(fs.existsSync(restartFile())).toBe(true);
+    expect(u.getStatus().updateActivationPendingSince).toBeTypeOf('string'); // old process stays fenced until exit
     u.stop();
   });
 

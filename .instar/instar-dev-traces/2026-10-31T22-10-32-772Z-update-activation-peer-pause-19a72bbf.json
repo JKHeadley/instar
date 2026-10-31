@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "update-activation-peer-pause",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-31T22:10:32.772Z",
+  "artifactPath": "upgrades/side-effects/update-activation-peer-pause.md",
+  "artifactSha256": "7d6fb9deb337eab87c1f2e2daad75c32caf61e6234a6bcbb814961fce75854e8",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/core/AutoUpdater.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/server/routes.ts",
+    "tests/e2e/update-apply-verification-hold-lifecycle.test.ts",
+    "tests/integration/foreign-process-survives-test-instance.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/unit/AutoUpdater-restart-holds.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/update-activation-peer-pause.md",
+    "upgrades/side-effects/update-activation-peer-pause.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible update admission and M5 tmux test compatibility fixes; no durable schema, config migration, or new merge authority. Full suite and exact-head verification remain required.",
+  "eli16Path": "docs/specs/local-verify-merge-authority.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/update-activation-peer-pause.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [2502],
+    "notes": "The updater cleared pendingUpdate before it wrote the restart request, allowing M5 to accept PR #2381 just before its update restart. Separately, a test assumed a dead tmux pane retains pane_pid; tmux 3.7c on M5 clears it, causing unrelated repeated red checks."
+  }
+}
