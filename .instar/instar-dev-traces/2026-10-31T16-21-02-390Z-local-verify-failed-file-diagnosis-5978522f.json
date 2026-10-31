@@ -1,0 +1,80 @@
+{
+  "version": 3,
+  "slug": "local-verify-failed-file-diagnosis",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-31T16:21:02.390Z",
+  "artifactPath": "upgrades/side-effects/local-verify-failed-file-diagnosis.md",
+  "artifactSha256": "91a489ec93da33cca11c3935f06da8880f95bf73534efa76e5fdff68452490ec",
+  "specPath": "docs/specs/local-verify-cross-machine-failed-file-diagnosis.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-cross-machine-failed-file-diagnosis.eli16.md",
+    "docs/specs/local-verify-cross-machine-failed-file-diagnosis.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/FailedFileDiagnosisCoordinator.ts",
+    "src/localVerify/FailedFileDiagnosisPeerService.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/diagnosisSeams.ts",
+    "src/localVerify/failedFileDiagnosis.ts",
+    "src/localVerify/failedFileDiagnosisClient.ts",
+    "src/localVerify/failedFileDiagnosisPeer.ts",
+    "src/localVerify/failedFileDiagnosisStore.ts",
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/record.ts",
+    "src/localVerify/runFailedFileDiagnosis.ts",
+    "src/localVerify/runFailedFileDiagnosisMain.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/integration/localVerify/diagnosisProcessGroup.test.ts",
+    "tests/integration/localVerify/diagnosisWorktrees.test.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/FailedFileDiagnosisCoordinator.test.ts",
+    "tests/unit/localVerify/FailedFileDiagnosisPeerService.test.ts",
+    "tests/unit/localVerify/diagnosisSeams.test.ts",
+    "tests/unit/localVerify/failedFileDiagnosis.test.ts",
+    "tests/unit/localVerify/failedFileDiagnosisPeer.test.ts",
+    "tests/unit/localVerify/failedFileDiagnosisStore.test.ts",
+    "tests/unit/localVerify/laneReport.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/record.test.ts",
+    "tests/unit/localVerify/runFailedFileDiagnosis.test.ts",
+    "upgrades/next/local-verify-failed-file-diagnosis.md",
+    "upgrades/side-effects/local-verify-failed-file-diagnosis.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A durable cross-machine diagnostic coordinator adds routes, peer execution, restart recovery, migration, and a merge-authority boundary.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "gpt-6-astra",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The exact-key durable terminal marker caps a stale-busy peer at one dispatch across restart; 24-hour candidate age prevents a second dispatch after 14-day retention."
+    }
+  }
+}

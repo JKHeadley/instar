@@ -19,6 +19,10 @@ export interface FileCounts {
   failed: number;
   skipped: number;
   todo: number;
+  /** Proven failed assertions; collection/import errors do not count. */
+  assertionFailures?: number;
+  /** A pending/unknown assertion or file-level failure makes comparison unsafe. */
+  nonAssertionFailure?: boolean;
   /** Vitest's file-level message (an import/collect error); '' when none. */
   message?: string;
   /** Wall time of the file in ms (vitest's start/end), when the report carried both. */
@@ -68,7 +72,7 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
       throw new LaneReportParseError('testResults entry lacks name or assertionResults');
     }
     const path = relativize(r.name, rootDir);
-    const c: FileCounts = files.get(path) ?? { passed: 0, failed: 0, skipped: 0, todo: 0, message: '' };
+    const c: FileCounts = files.get(path) ?? { passed: 0, failed: 0, skipped: 0, todo: 0, message: '', assertionFailures: 0, nonAssertionFailure: false };
     let assertionFailures = 0;
     for (const a of r.assertionResults) {
       const s = a && typeof a === 'object' ? (a as { status?: unknown }).status : undefined;
@@ -78,6 +82,8 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
       else {
         c.failed++;
         assertionFailures++;
+        if (s === 'failed') c.assertionFailures = (c.assertionFailures ?? 0) + 1;
+        else c.nonAssertionFailure = true;
         // Keep the first failing test's title and message (bounded) so a red record says why.
         if (!c.message) {
           const t = (a as { title?: unknown }).title;
@@ -89,6 +95,7 @@ export function parseVitestJson(text: string, rootDir: string): ParsedLaneReport
     }
     if (r.status !== 'passed' && assertionFailures === 0) {
       c.failed++;
+      c.nonAssertionFailure = true;
     }
     if (typeof r.message === 'string' && r.message && !c.message) c.message = r.message.slice(0, FAILURE_MESSAGE_MAX);
     if (typeof r.startTime === 'number' && typeof r.endTime === 'number' && r.endTime >= r.startTime) {

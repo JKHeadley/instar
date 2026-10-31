@@ -16392,6 +16392,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? {
           holdsLease: () => ctx.coordinator!.holdsLease(),
           holderMachineId: () => ctx.coordinator!.getSyncStatus().leaseHolder ?? null,
+          leaseEpoch: () => ctx.coordinator!.getSyncStatus().leaseEpoch ?? null,
         }
       : undefined,
   });
