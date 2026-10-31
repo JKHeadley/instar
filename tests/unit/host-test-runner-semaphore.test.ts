@@ -516,7 +516,7 @@ describe('alternating suite turns — validated history and bounded offers', () 
     const witness = (sem as unknown as { writeWitness(): string | null }).writeWitness();
     expect(witness).not.toBeNull();
     expect(sem.status().suiteTurn).toMatchObject({ validity: 'unknown', last: null });
-    fs.unlinkSync(witness!);
+    SafeFsExecutor.safeUnlinkSync(witness!, { operation: 'host-test-runner-test:remove-witness' });
     expect(sem.status().suiteTurn.validity).toBe('unknown');
     const repaired = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
     expect(repaired.kind).toBe('acquired');
@@ -594,12 +594,12 @@ describe('alternating suite turns — validated history and bounded offers', () 
       since: t - 1, expiresAt: t + 60_000,
     }));
     expect(sem.status().suiteTurn.nextSuiteClass).toBe('merge-gate');
-    fs.unlinkSync(advisoryTicket);
+    SafeFsExecutor.safeUnlinkSync(advisoryTicket, { operation: 'host-test-runner-test:remove-ticket' });
     const merge = await sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 });
     expect(merge.kind).toBe('acquired');
     expect(sem.status().suiteTurn.last).toBe('merge-gate');
     if (merge.kind !== 'acquired') return;
-    fs.unlinkSync(ordinaryTicket);
+    SafeFsExecutor.safeUnlinkSync(ordinaryTicket, { operation: 'host-test-runner-test:remove-ticket' });
 
     const mergeTicket = path.join(dir, `${'bb'.padEnd(24, '0')}.json`);
     const ordinary = makeSem(paths, {
@@ -674,7 +674,7 @@ describe('alternating suite turns — validated history and bounded offers', () 
       .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
     const consumed = JSON.parse(fs.readFileSync(paths.holders, 'utf-8')).suiteFreeEpisode;
     expect(consumed).toMatchObject({ id: offered.id, startedAt: offered.startedAt, handoffState: 'consumed' });
-    fs.unlinkSync(path.join(dir, `${'bb'.padEnd(24, '0')}.json`));
+    SafeFsExecutor.safeUnlinkSync(path.join(dir, `${'bb'.padEnd(24, '0')}.json`), { operation: 'host-test-runner-test:remove-ticket' });
     ticket('cc', 'merge-gate', now() - 500);
     await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
       .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
