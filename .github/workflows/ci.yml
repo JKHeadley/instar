@@ -104,9 +104,12 @@ jobs:
             }
             $env:INSTAR_DESKTOP_UPDATE_TOKEN = $prepared.updateToken
             $committed = (& powershell.exe @common -Operation 'commit-update' | Select-Object -Last 1) | ConvertFrom-Json
-            if (-not $committed.ok) { throw 'Windows-local signed commit failed' }
+            # The companion can exit as it writes the final reply. A lost reply
+            # is acceptable only when the exact prepared process has exited.
             $companion.WaitForExit(5000) | Out-Null
             if (-not $companion.HasExited) { throw 'Companion did not exit after signed commit' }
+            if ($companion.ExitCode -ne 0) { throw 'Companion exited unsuccessfully after signed commit' }
+            if ($committed -and -not $committed.ok) { throw 'Windows-local signed commit was refused' }
           } finally {
             Remove-Item Env:INSTAR_DESKTOP_UPDATE_TOKEN -ErrorAction SilentlyContinue
             if (-not $companion.HasExited) { Stop-Process -Id $companion.Id -Force }
