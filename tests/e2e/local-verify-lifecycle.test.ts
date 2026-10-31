@@ -99,6 +99,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     const r = await request(serve(ctx(stateDir, built.service))).get('/local-verify');
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0 });
+    expect(r.body.preflight).toMatchObject({ mode: 'off', replayStoreReady: true, replays: [] });
     built.service!.shutdown();
   });
 
@@ -290,7 +291,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(built).toEqual({ service: null, reason: 'no-source-checkout' });
   });
 
-  it('the live switches are wired through the production function: absent ⇒ on, false ⇒ off, read at each call', () => {
+  it('the live switches are wired through the production function: absent ⇒ on, false ⇒ off, read at each call', async () => {
     const { home, stateDir } = sourceCheckout();
     const built = buildLocalVerifyService({
       config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
@@ -309,6 +310,14 @@ describe('local-verify lifecycle (production wiring)', () => {
     values['monitoring.localVerify.mainRedHold'] = false;
     expect(on.failFastOn()).toBe(false);
     expect(on.mainRedHoldOn()).toBe(false);
+    const a = serve(ctx(stateDir, svc));
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('off');
+    values['monitoring.localVerify.preflightMode'] = 'observe';
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('observe');
+    values['monitoring.localVerify.preflightMode'] = 'enforce';
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('enforce');
+    values['monitoring.localVerify.preflightMode'] = 'unknown';
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('off');
     svc.shutdown();
   });
 
