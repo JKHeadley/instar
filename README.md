@@ -155,6 +155,12 @@ We didn't just claim it works. We ran controlled experiments — same model, sam
 | **Cross-framework portability** | First-class Codex CLI support via `instar setup --framework codex-cli`. Codex-only init produces zero `.claude/` files. Framework-aware telegram-reply path. FrameworkSessionStore (per-runtime transcripts). FrameworkParitySentinel | [→](https://instar.sh/features/portability/) |
 | **Default Jobs** | Fourteen built-in jobs covering health, reflection, evolution, relationship maintenance, identity review, and five `overseer-*` jobs across development, learning, infrastructure, maintenance, and guardian responsibilities | [→](https://instar.sh/reference/default-jobs/) |
 
+**Queue pace** reports whether each work queue is catching up or falling behind, using arrivals,
+completions, and remaining work rather than a snapshot count alone. `QueuePace` defines the
+measurements, `QueuePaceAdapters` reads the source queues, `QueuePaceLedger` keeps hourly evidence,
+and the opt-in `QueuePaceTuner` can add bounded feedback-sorting runs when that worker is the limit.
+See the [queue pace guide](site/src/content/docs/features/queue-pace.md).
+
 > **Reference:** [CLI Commands](https://instar.sh/reference/cli/) · [API Endpoints](https://instar.sh/reference/api/) · [Configuration](https://instar.sh/reference/configuration/) · [File Structure](https://instar.sh/reference/file-structure/)
 
 Server lifecycle commands use `SessionServerGuard` so an active agent session
