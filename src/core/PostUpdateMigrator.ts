@@ -53,7 +53,7 @@ import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-te
 // two additions land in different places and git merges them without help. It reduces the collision
 // sharply rather than abolishing it: two symbols that sort adjacently can still touch.
 import {
-  AGENT_CONNECT_HEADING,
+  AGENT_CONNECT_OWNER_LINE, AGENT_CONNECT_HEADING,
   AGENT_CONNECT_HOWTO_BULLET,
   AGENT_CONNECT_HOWTO_MARKER,
   AGENT_CONNECT_LIVE_ENABLE_MARKER,
@@ -9700,6 +9700,15 @@ Before I send another agent a credential, that peer must be **mutually verified*
       result.upgraded.push('CLAUDE.md: added "Connecting to another agent" (pairing by invite)');
     } else {
       result.skipped.push('CLAUDE.md: "Connecting to another agent" already present');
+    }
+
+    // Owner info is required to pair (Justin, topic 9210, 2026-10-30). Installs that already
+    // carry the section get the one line, in the same place the scaffold puts it.
+    const ownerLineAt = content.indexOf('\n3. **Give it to my person with one plain sentence.**');
+    if (ownerLineAt >= 0 && !content.includes(AGENT_CONNECT_OWNER_LINE)) {
+      content = content.slice(0, ownerLineAt + 1) + AGENT_CONNECT_OWNER_LINE + '\n' + content.slice(ownerLineAt + 1);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: pairing invites require owner info');
     }
 
     // Step 1 of that section as first shipped asked the person to send /lifeline restart after

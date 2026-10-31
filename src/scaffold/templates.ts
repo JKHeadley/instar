@@ -2611,6 +2611,9 @@ export const AGENT_CONNECT_STEP1_RESTART_ASK_MARKER = "Send /lifeline restart he
  * "Threadline fingerprint" and offered to "package a bundle" instead of
  * offering an invite (Justin, topic 61599, 2026-10-20).
  */
+/** Pairing requires owner info. Also the content-sniff for the PostUpdateMigrator patch of this line. */
+export const AGENT_CONNECT_OWNER_LINE = `   An invite always names its owner. If this is refused because I don't know my owner's name, I set \`threadline.ownerName\` myself from my verified operator (\`GET /topic-operator\`) and make the invite again; I ask my person only if no operator is verified yet. An incoming invite that names no owner is refused too: I tell my person the other agent needs updating.`;
+
 export function agentConnectSection(port: number): string {
   return `${AGENT_CONNECT_HEADING}
 
@@ -2618,6 +2621,7 @@ When my person says "connect with Echo", "talk to Scout", "pair with Carl's agen
 
 ${agentConnectStep1(port)}
 2. **Make the invite.** \`threadline_pair\` with \`action: "invite"\` (or \`POST /threadline/pairing/invites\` with my Bearer token). If I already know the agent, I pass its fingerprint so the invite works only for that agent. If this answers 503 saying this machine does not run (or hold) the Threadline relay while \`relayEnabled\` is already true, another of my machines holds the connection and the invite has to be made there. \`GET /pool/placement?topic=<this topic>\` names that machine (\`leaseHolderNickname\`; the lease holder runs the relay), and I move this conversation to it myself with \`POST /pool/transfer\` and \`{"topic": <this topic>, "to": "<that nickname>"}\`, then make the invite from there. If that answers 409 \`needsConfirmation\`, I tell my person its prompt in one sentence and resend with \`"confirm": true\` and the returned \`confirmationChallenge\` only on their yes. If I can't find that machine or move the conversation (the pool answers 503 or the move is refused), I tell my person which machine holds the relay, by name whenever I have it, and to ask me to connect from there.
+${AGENT_CONNECT_OWNER_LINE}
 3. **Give it to my person with one plain sentence.** I hand over the returned message exactly as it is (it carries a \`tlinv1:\` code) and say: "Send this privately to Echo's person, in any app you already use. If Echo is yours too, just forward it to Echo's Telegram chat. It works once and expires at <time>." The time comes from the invite response, never from memory: \`exp\` is when it stops working (a UTC timestamp; one hour from now unless I asked for a different \`ttlMinutes\`), and I say it in my person's local time, for example "expires at 3:40pm". A person carries the invite, outside the agent network. I never send it over Threadline, never post it anywhere public, and never turn it into a link.
 4. **Their person approves.** They forward it to their agent's Telegram chat (or paste it into the Threadline tab of their agent's dashboard, with the PIN). Their agent asks "Pair with the agent that calls itself <my name>?" and they tap **Approve**. No agent can approve for a person, including me.
 5. **My person finishes.** My person then gets "The agent that calls itself Echo accepted your invite" in Telegram (or at the top of my dashboard's Threadline tab) and taps **Finish pairing**, or **Not them** if it isn't who they meant. I tell them to expect it; I can't tap it for them.

@@ -30,6 +30,7 @@ import { InboundMessageGate } from './InboundMessageGate.js';
 import { attachRelayObservability, type RelayConnectionEvent } from './relayConnectionObserver.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { EventEmitter } from 'node:events';
+import { cleanLabel, decodeInvite } from './PairingInvite.js';
 import { PairingInviteStore } from './PairingInviteStore.js';
 import { PairingInviteFlow, type InviteEvent } from './PairingInviteFlow.js';
 import { PairingHandshake, ALL_PAIRING_OPS, type HandshakeTimings, type PairingNotice } from './pairingHandshake.js';
@@ -81,8 +82,8 @@ export interface ThreadlineBootstrapConfig {
   port: number;
   /** Enable cloud relay connection (opt-in, default: false) */
   relayEnabled?: boolean;
-  /** The operator's display name, shown (as CLAIMED) in pairing invites. */
-  ownerName?: string;
+  /** The operator's display name, shown (as CLAIMED) in pairing invites. Read at each use: a blank refuses pairing. */
+  ownerName?: string | (() => string);
   /**
    * This machine is a quiet standby of a multi-machine agent (the operator set
    * `multiMachine.telegramPolling: false`, the same per-machine flag that keeps
@@ -584,7 +585,13 @@ export async function bootstrapThreadline(
       // accept until answered, answers accepts with signed receipts or refusals, runs the hello, and
       // turns every outcome into an operator notice. The relay's verdict on every invite control
       // message is logged (§11.8).
+      const pairingOwnerName = () => (typeof config.ownerName === 'function' ? config.ownerName() : config.ownerName ?? '');
       const handshake = new PairingHandshake({
+        ownerPolicy: {
+          ownName: pairingOwnerName,
+          inviteOwner: (text) => { const d = decodeInvite(text); return d.ok ? d.invite.owner : null; },
+          clean: cleanLabel,
+        },
         store: invStore,
         trust: trustManager!,
         identity: () => {
@@ -630,7 +637,7 @@ export async function bootstrapThreadline(
         sendPlaintext: handshake.flowSendPlaintext,
         sendToKey: handshake.flowSendToKey,
         notify: (e: InviteEvent) => handshake.flowNotify(e as unknown as { kind: string; iid?: string }),
-        ownName: () => ({ owner: config.ownerName ?? '', agent: config.agentName }),
+        ownName: () => ({ owner: pairingOwnerName(), agent: config.agentName }),
       }, markers);
       handshake.attach(flow);
       pairingInvites = { flow, handshake, store: invStore, events: invEvents, markers };
