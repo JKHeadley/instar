@@ -120,6 +120,13 @@ companion before asking an existing process to release control. An update
 token authorizes that exact process to exit; Task Scheduler must confirm it
 stopped before the binary is replaced. A process-owned installer lock and
 bounded preparation timeout prevent concurrent or stranded updates. Each
+When the WSL-to-Windows signed prepare request times out, the installer may
+invoke a Windows-local signed request to the prior companion on a Windows-owned
+address. It uses the existing shared secret, one-use update token, and Task
+Scheduler stopped-state check. It never treats a timeout as permission to
+replace an active executable. This fallback is bounded and emits fixed
+diagnostic codes without returning paths, addresses, or secret material.
+Each
 machine's opt-in takes effect after a supervised server restart, which briefly
 interrupts its existing connections; the dashboard front waits 25 seconds
 before admitting new remote grants after restart.

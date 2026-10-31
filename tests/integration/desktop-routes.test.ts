@@ -113,13 +113,13 @@ describe('remote desktop HTTP routes', () => {
 
   it('reports a fixed Windows bootstrap failure through the authenticated diagnostic only', async () => {
     const getter = vi.fn(async () => ({ configured: false, targetConstructed: false,
-      status: 'off', bootstrapFailure: { phase: 'stage', code: 'stage-unconfirmed' } }));
+      status: 'off', bootstrapFailure: { phase: 'update', code: 'prepare-local-timeout' } }));
     const { server } = app(null, { desktopLocalDiagnostics: getter });
     expect((await request(server).get('/desktop/diagnostics')).status).toBe(401);
     const diagnostic = await request(server).get('/desktop/diagnostics')
       .set('Authorization', `Bearer ${AUTH}`);
     expect(diagnostic.status).toBe(200);
-    expect(diagnostic.body.bootstrapFailure).toEqual({ phase: 'stage', code: 'stage-unconfirmed' });
+    expect(diagnostic.body.bootstrapFailure).toEqual({ phase: 'update', code: 'prepare-local-timeout' });
     expect((await request(server).get('/desktop/availability')
       .set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
   });

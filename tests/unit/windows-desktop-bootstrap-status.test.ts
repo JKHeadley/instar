@@ -22,7 +22,8 @@ describe('Windows desktop bootstrap status', () => {
 
   it('distinguishes update transport failures using only fixed codes', () => {
     for (const code of ['prepare-http-forbidden', 'prepare-http-not-found', 'prepare-http-other',
-      'prepare-connect-refused', 'prepare-connect-unavailable', 'prepare-timeout', 'prepare-reply-invalid']) {
+      'prepare-connect-refused', 'prepare-connect-unavailable', 'prepare-timeout', 'prepare-reply-invalid',
+      'prepare-local-timeout', 'prepare-local-forbidden', 'prepare-local-unavailable', 'prepare-local-reply-invalid']) {
       const error = { stderr: `instar-desktop-installer-phase:update\nC:\\Users\\private\\companion.secret\nRunning Windows companion did not prepare for update: ${code}` };
       expect(classifyWindowsDesktopBootstrapError(error)).toEqual({ state: 'install-failed', phase: 'update', code });
     }

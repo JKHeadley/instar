@@ -21,6 +21,12 @@ session because Echo itself runs inside WSL, which cannot see the Windows
 desktop. The companion has no public remote-desktop port. Echo installs and
 updates it as part of turning on this feature, then checks that it can really
 capture and control Windows before marking Mama PC ready.
+If WSL cannot contact an already running companion during an update, Echo
+tries the same signed update request from Windows itself. The running
+companion must still issue a one-use permission to exit, and Windows must
+confirm it stopped before Echo replaces it. If either check fails, Mama PC
+stays unavailable in the picker and Echo reports a short failure code. You
+still only use the dashboard PIN; there is no extra Windows setup step.
 
 An online Mac agent can still have an unavailable screen helper. That does
 not mean the whole Mac is locked or that Echo lost contact with it. Echo now

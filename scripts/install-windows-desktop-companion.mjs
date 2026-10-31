@@ -80,11 +80,22 @@ const toWindows = localPath => execFileSync('wslpath', ['-w', localPath], {
   encoding: 'utf8', timeout: 3_000, maxBuffer: 4_096,
 }).trim();
 const existingSecret = path.join(dest, 'companion.secret');
-const runPhase = phase => {
-  const receipt = execFileSync('powershell.exe', [
+const runPhase = (phase, operation, updateToken) => {
+  const args = [
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', toWindows(destScript),
     '-Source', toWindows(destSource), '-BindAddress', bindAddress, '-Port', '44818', '-Phase', phase,
-  ], { encoding: 'utf8', timeout: 55_000, maxBuffer: 16_384 }).trim();
+  ];
+  if (operation) args.push('-RequestAddress', oldAddress, '-Operation', operation);
+  const receipt = execFileSync('powershell.exe', args, {
+    encoding: 'utf8', timeout: 55_000, maxBuffer: 16_384,
+    // WSL interop only forwards selected Linux variables to Windows processes.
+    // Preserve the caller's list and forward this one-use token for commit/cancel.
+    env: updateToken ? {
+      ...process.env,
+      INSTAR_DESKTOP_UPDATE_TOKEN: updateToken,
+      WSLENV: [process.env.WSLENV, 'INSTAR_DESKTOP_UPDATE_TOKEN/w'].filter(Boolean).join(':'),
+    } : process.env,
+  }).trim();
   return JSON.parse(receipt.split(/\r?\n/).at(-1));
 };
 installPhase = 'stage';
@@ -140,10 +151,33 @@ if (staged.taskRunning) {
     }
     if (!updateToken) await new Promise(resolve => setTimeout(resolve, 1_000));
   }
+  // A WSL-to-Windows bridge can time out while the same signed companion is
+  // reachable from Windows itself. The local request still needs the shared
+  // secret and the companion's one-use update token; Task Scheduler confirms
+  // the old process stopped before any executable is replaced.
+  let requestViaWindows = false;
+  if (!updateToken && lastPrepareFailure === 'prepare-timeout') {
+    try {
+      const prepared = runPhase('RequestUpdate', 'prepare-update');
+      if (prepared?.ok === true && /^[A-Za-z0-9_-]{32}$/.test(prepared.updateToken)) {
+        updateToken = prepared.updateToken;
+        requestViaWindows = true;
+      } else lastPrepareFailure = 'prepare-local-reply-invalid';
+    } catch (error) {
+      const detail = `${error?.stderr || ''}\n${error?.message || ''}`;
+      lastPrepareFailure = /windows-local-request-timeout/.test(detail) ? 'prepare-local-timeout'
+        : /windows-local-request-forbidden/.test(detail) ? 'prepare-local-forbidden'
+          : /windows-local-request-unavailable/.test(detail) ? 'prepare-local-unavailable'
+            : 'prepare-local-reply-invalid';
+    }
+  }
   if (!updateToken) throw new Error(`Running Windows companion did not prepare for update: ${lastPrepareFailure}`);
-  cancelUpdate = () => request('cancel-update', { updateToken });
+  const updateRequest = (operation) => requestViaWindows
+    ? Promise.resolve(runPhase('RequestUpdate', operation, updateToken))
+    : request(operation, { updateToken });
+  cancelUpdate = () => updateRequest('cancel-update');
   try {
-    const committed = await request('commit-update', { updateToken });
+    const committed = await updateRequest('commit-update');
     if (committed?.ok !== true) throw new Error('Windows companion did not commit update');
   } catch {
     // A self-exit can race its final TCP reply. The next phase only replaces
