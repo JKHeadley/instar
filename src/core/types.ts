@@ -149,6 +149,13 @@ export interface Session {
    * soak's success criterion (zero 'headless' under force) is machine-checkable. */
   launchLane?: 'headless' | 'rerouted-interactive';
   /**
+   * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D4):
+   * the transport this session's Threadline tools were given at spawn. Persisted
+   * so `/health`'s transport counts survive a restart; absent on a record that
+   * predates the feature (counted as unknown) and on a stripped spawn.
+   */
+  threadlineMcpTransport?: 'http' | 'stdio';
+  /**
    * Credential provenance (live-credential-repointing-rebalancer §2.10). Records,
    * at spawn, WHERE this session's Anthropic credential comes from:
    * - 'store' — the per-`CLAUDE_CONFIG_DIR` credential store (steerable by the
@@ -5810,6 +5817,15 @@ export interface ThreadlineConfig {
    * and creates new fingerprint profiles at `untrusted`.
    */
   relayUnknownSenderTrust?: { enabled?: boolean; dryRun?: boolean };
+  /**
+   * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D6).
+   * `enabled` (default false; an explicit operator flag, read live per spawn)
+   * selects the transport NEW sessions get: the in-server `POST /mcp/threadline`
+   * route instead of one stdio helper process per session. The route itself is
+   * mounted whenever Threadline runs, so turning this off never cuts off a
+   * session already wired to it.
+   */
+  mcpHttp?: { enabled?: boolean };
   /**
    * Encrypt-to-pinned (docs/specs/threadline-standalone-pairing.md D9, rollout step 5).
    * Read live per send. `enabled` omitted ⇒ the developmentAgent gate (live on a dev

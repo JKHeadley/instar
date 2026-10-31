@@ -470,6 +470,7 @@ export class AgentServer {
   private deliveryStore: PendingRelayStore | null = null;
   private subscriptionLoginLedger: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
+  private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private undatedActionResurfacer: UndatedActionResurfacer | null = null;
@@ -1163,6 +1164,9 @@ export class AgentServer {
      *  Absent ⇒ relay-send behaves exactly as before. */
     a2aRelayForward?: NonNullable<import('./routes.js').RouteContext['a2aRelayForward']>;
     threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+    /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
+     *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
+    threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
@@ -1327,6 +1331,9 @@ export class AgentServer {
     // Claim observation has a much smaller privacy/cost boundary than the
     // general API. Parse it under 96 KiB before the broad server parser.
     this.app.use('/completion-claim/observe', express.json({ limit: '96kb' }));
+    // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
+    // small parser, before the broad 12 MB one.
+    this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
     this.app.use(express.json({ limit: '12mb' }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -1670,7 +1677,17 @@ export class AgentServer {
     // spec) takes effect on the running server — rotating authToken
     // immediately invalidates old bearer tokens AND old HMAC-signed view
     // URLs without a restart.
-    this.app.use(authMiddleware(() => this.config.authToken, options.config.projectName));
+    this.threadlineMcpHttp = options.threadlineMcpHttp ?? null;
+    this.app.use(authMiddleware(
+      () => this.config.authToken,
+      options.config.projectName,
+      // /mcp/threadline: the local secret, by one exact-path rule placed first.
+      (req, res) => {
+        if (this.threadlineMcpHttp) return this.threadlineMcpHttp.admit(req, res);
+        res.status(401).json({ error: 'threadline-mcp-local-secret-required' });
+        return false;
+      },
+    ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
     // matching logic are the single source of truth in middleware.ts so a
@@ -5038,6 +5055,7 @@ export class AgentServer {
       liveTestRunnerCtx: options.liveTestRunnerCtx ?? null,
       unifiedTrust: options.unifiedTrust ?? null,
       threadlineReplyWaiters: options.threadlineReplyWaiters ?? new Map(),
+      threadlineMcpHttp: options.threadlineMcpHttp ?? null,
       proxyCoordinator: options.proxyCoordinator ?? null,
       sharedStateLedger: options.sharedStateLedger ?? null,
       ledgerSessionRegistry: options.ledgerSessionRegistry ?? null,
@@ -7130,6 +7148,15 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
+        // that the listener is up, against the URL built from the ACTUAL address.
+        try {
+          const addr = this.server?.address();
+          const port = addr && typeof addr === 'object' ? addr.port : this.config.port;
+          this.threadlineMcpHttp?.onListening(host, port);
+        } catch (err) {
+          console.warn('[instar] threadline MCP readiness probe failed to start:', err);
+        }
         console.log(`[instar] Dashboard: http://${host}:${this.config.port}/dashboard`);
 
         // Initialize WebSocket manager after server is listening
@@ -7593,6 +7620,7 @@ export class AgentServer {
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
+    try { this.threadlineMcpHttp?.stop(); } catch { /* best-effort teardown */ }
     if (this.windowLifecycleTimer) {
       clearInterval(this.windowLifecycleTimer);
       this.windowLifecycleTimer = null;
