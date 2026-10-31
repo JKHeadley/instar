@@ -4,7 +4,7 @@
   "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
   "timestamp": "2026-10-31T11:29:08.997Z",
   "artifactPath": "upgrades/side-effects/local-verify-focused-preflight.md",
-  "artifactSha256": "8ad13c9252f7af3ec7b4dd93bf27e4f91dc204094cbabdd7e9028488d0e66e14",
+  "artifactSha256": "2d223500981545b0c7ecfb168ede27855c88dc3dd272c7acf81deb2bceb7136d",
   "specPath": "docs/specs/local-verify-fast-focused-preflight.md",
   "coveredFiles": [
     "docs/specs/local-verify-fast-focused-preflight.eli16.md",

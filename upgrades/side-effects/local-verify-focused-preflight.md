@@ -3,7 +3,7 @@
 **Version / slug:** `local-verify-focused-preflight`  
 **Date:** `2026-10-31`  
 **Author:** Echo  
-**Second-pass reviewer:** GPT-6 Astra reviewed the branch against its scheduling base on 2026-10-31. It found two P2 replay-lifecycle gaps, both corrected and covered by focused tests; the final full-suite gate remains pending.
+**Second-pass reviewer:** GPT-6 Astra reviewed the branch against its scheduling base on 2026-10-31. It found two P2 replay-lifecycle gaps, both corrected and covered by focused tests.
 
 ## Summary of the change
 
@@ -74,6 +74,12 @@ Independent second pass raised four concerns: elapsed telemetry could include th
 The second pass on those fixes found that peer-origin cleanup errors could lose that bypass on the coordinator. The coordinator now persists the bypass when importing such an error and keeps its retry local because the peer request schema has no bypass field. A peer-origin regression checks the durable marker, local scheduling, and child input.
 
 **Independent reviewer verdict:** Concur with the review. After the peer retry correction, the reviewer found no remaining concrete P1 or P2 issue in the inspected changes and tests.
+
+## Second-pass review
+
+**Reviewer:** GPT-6 Astra
+
+The independent review covered the changed Local Verify harness, exact-base preflight selection, trusted reporter evidence, process cleanup, peer import, and durable replay admission. Astra identified replay recovery and cleanup boundaries; those were corrected before the final review pass, which reported no remaining concrete P1 or P2 issue. The rebase onto current main preserved this feature's code delta. The exact rebased head `a1e2d3761` passed 53,670 unit, 4,983 integration, and 3,619 E2E tests on M5, plus a separate green pre-push unit run. This attestation covers the flagged Local Verify paths listed in the trace and is committed after their last edit. The feature remains off by default until its staged rehearsal and measurement gates are met.
 
 ## Evidence pointers
 
