@@ -468,6 +468,43 @@ describe('suite waiter tickets — fair aging between merge-gate and ordinary su
 });
 
 describe('alternating suite turns — validated history and bounded offers', () => {
+  it('applies an off flip to a queued ordinary request before its 12-second offer expires', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    let t = 10_000_000_000;
+    const now = () => t;
+    const seed = makeSem(paths, { now });
+    const first = await seed.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind === 'acquired') seed.release(first.id);
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const mergeTicket = path.join(dir, `${'ad'.padEnd(24, '0')}.json`);
+    const refreshMerge = () => {
+      seed.setMergeGatePriority('paused-child', true);
+      fs.writeFileSync(mergeTicket, JSON.stringify({
+        v: 1, id: 'waiter:paused', pid: process.pid, hostname: HOST,
+        priority: 'merge-gate', since: 10_000_000_000, expiresAt: t + 60_000,
+      }));
+    };
+    refreshMerge();
+    let flipped = false;
+    const ordinary = makeSem(paths, { now, sleep: async () => {
+      if (t < 10_000_000_000 + SUITE_WAITER_AGING_MS) t += 30_000;
+      else if (!flipped) {
+        enforcing(paths, { alternatingSuiteTurns: 'off' });
+        flipped = true;
+        t += 1000;
+      } else t += 1000;
+      refreshMerge();
+    } });
+    const result = await ordinary.acquire({ lane: 'suite', runClass: 'background', budgetMs: 20 * 60_000 });
+    expect(result.kind).toBe('acquired');
+    expect(flipped).toBe(true);
+    expect(t).toBeLessThan(10_000_000_000 + SUITE_WAITER_AGING_MS + 12_000);
+    expect(ordinary.status().alternatingSuiteTurns).toBe('off');
+  });
+
   it('marks history unknown while a live fail-open witness is visible', async () => {
     const paths = mkPaths();
     enforcing(paths, { alternatingSuiteTurns: 'enforce' });
@@ -528,6 +565,8 @@ describe('alternating suite turns — validated history and bounded offers', () 
     expect(result.kind).toBe('acquired');
     expect(t).toBeGreaterThanOrEqual(10_000_000_000 + SUITE_WAITER_AGING_MS + 12_000);
     expect(ordinary.status().suiteTurn.last).toBe('ordinary');
+    const offerOutcomes = readLedgerTail(paths, 50).filter((event) => event.kind === 'suite-turn-offer-outcome');
+    expect(offerOutcomes.map((event) => event.outcome)).toEqual(['expired']);
   });
 
   it('admits merge after ordinary, then an aged ordinary waiter ahead of another merge', async () => {

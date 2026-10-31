@@ -1987,7 +1987,7 @@ export class HostTestRunnerSemaphore {
   }
 
   private async acquireLoop(req: AcquireRequest, waiter: SuiteWaiter): Promise<AcquireOutcome> {
-    const ctx = this.resolveContext();
+    let ctx = this.resolveContext();
     const budgetMs = req.budgetMs ?? resolveAcquireBudgetMs(req.lane, req.runClass, this.env, ctx.tuning.file);
     const startMs = waiter.since;
     const deadline = startMs + budgetMs;
@@ -2013,6 +2013,8 @@ export class HostTestRunnerSemaphore {
     const selfPgid = this.gatherEvidence([process.pid]).pgid.get(process.pid) ?? null;
 
     for (;;) {
+      // A tuning flip must affect queued requests on their very next admission attempt.
+      ctx = this.resolveContext();
       // Evidence gathered OUTSIDE the lock (§2.4): snapshot pids, run ps on
       // the live ones; decisions re-validated under the lock.
       const preRead = this.readHolders();
@@ -2077,6 +2079,7 @@ export class HostTestRunnerSemaphore {
             if (waiters.some((w) => w.id === waiter.id)) {
               const decision = this.alternatingDecision(currentWaiter, read.turn, read.episode, waiters, claimPids);
               if (decision.reason !== 'no-two-class-contention') {
+                episodeForWrite = decision.episode;
                 priorityWait = !decision.eligible;
                 waitersAhead = decision.eligible ? 0 : 1;
                 if (!decision.eligible && decision.episode !== read.episode) {
@@ -2097,12 +2100,17 @@ export class HostTestRunnerSemaphore {
                     }
                   }
                   catch (err) {
+                    // @silent-fallback-ok: the warning ledger records why this admission uses the old ordering.
                     this.ledger('warn', { warnType: 'suite-turn-episode-write-failed', detail: err instanceof Error ? err.message : String(err) });
                     // A failed offer write cannot reserve the slot; use the old policy.
+                    episodeForWrite = read.episode;
                     priorityWait = currentWaiter.priority !== 'merge-gate' && !aged && claimPids.size > 0;
                     waitersAhead = waiters.filter((w) => w.id !== currentWaiter.id && compareSuiteWaiters(w, currentWaiter, this.now()) < 0).length;
                   }
                 }
+              } else if (read.episode?.handoffState === 'offered' &&
+                !waiters.some((w) => w.id === read.episode!.offeredTicketId && w.priority === 'merge-gate' && claimPids.has(w.pid))) {
+                episodeForWrite = { ...read.episode, handoffState: 'consumed' };
               }
             }
           }
@@ -2150,16 +2158,18 @@ export class HostTestRunnerSemaphore {
                 actualWinner: turnObservation.actualWinner, selectedClass: turnObservation.selectedClass,
               });
             }
-            if (req.lane === 'suite' && turnMode === 'enforce' && read.episode) {
+            if (req.lane === 'suite' && turnMode === 'enforce' && read.episode && episodeForWrite) {
               if (read.episode.handoffState === 'offered') this.ledger('suite-turn-offer-outcome', {
                 episodeId: read.episode.id,
-                outcome: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'admitted' : 'bypassed',
+                outcome: episodeForWrite.handoffState === 'consumed'
+                  ? this.now() - read.episode.startedAt >= SUITE_MERGE_HANDOFF_MS ? 'expired' : 'claim-lost'
+                  : req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'admitted' : 'bypassed',
               });
               this.ledger('suite-turn-episode-outcome', {
                 episodeId: read.episode.id,
                 priorClass: read.turn?.last ?? 'unknown',
                 actualWinner: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary',
-                handoffState: read.episode.handoffState,
+                handoffState: episodeForWrite.handoffState,
               });
             }
             this.ledger('acquire', this.acquireFields(req, row, false));
