@@ -12,6 +12,9 @@ single-run-completable: true
 frontloaded-decisions: 0
 cheap-to-change-tags: 0
 contested-then-cleared: 3
+approved: true
+approved-by: "Justin — Telegram topic 18330, approval of PR #2478 review handoff"
+approved-at: "2026-10-31T05:27:12Z"
 ---
 
 # Feedback triage account-aware quota admission
