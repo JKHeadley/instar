@@ -117,6 +117,9 @@ jobs:
             if (-not $companion.HasExited) { throw 'Companion did not exit after signed commit' }
             if ($companion.ExitCode -ne 0) { throw 'Companion exited unsuccessfully after signed commit' }
             if ($committed -and -not $committed.ok) { throw 'Windows-local signed commit was refused' }
+            # powershell.exe may return 1 for the lost final reply. Clear that
+            # native status only after the exact process passed every check.
+            $global:LASTEXITCODE = 0
           } finally {
             Remove-Item Env:INSTAR_DESKTOP_UPDATE_TOKEN -ErrorAction SilentlyContinue
             if (-not $companion.HasExited) { Stop-Process -Id $companion.Id -Force }

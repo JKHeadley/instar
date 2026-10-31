@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-handoff-ci-close",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T12:18:25.712Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-handoff-ci-close.md",
+  "artifactSha256": "bce007242a6d46b881c2494b551471821618763d846f7faabbe95115e257e960",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "upgrades/side-effects/windows-desktop-handoff-ci-close.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Windows CI accepts the companion final-reply race only after a signed prepare token, the exact process exit code zero, and no explicit refusal; native exit status clears only then.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
