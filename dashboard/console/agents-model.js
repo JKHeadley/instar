@@ -11,6 +11,7 @@
 // A value that could not be read says so; it never renders as fine.
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 export const PEER_FRESH_MS = 15 * 60 * 1000;
 export const LEAK_ALARM_MS = 24 * 60 * 60 * 1000;
@@ -134,13 +135,13 @@ export function relayHolder(poolRes) {
   const id = d && d.router && typeof d.router.holder === 'string' ? d.router.holder : null;
   if (!id) return null;
   const m = Array.isArray(d.machines) ? d.machines.find((x) => x && x.machineId === id) : null;
-  return { machineId: id, name: (m && m.nickname) || id };
+  return { machineId: id, name: verifiedDisplayName(m && m.nickname, id) || 'another machine' };
 }
 
 export function machineNames(poolRes) {
   const d = poolRes && poolRes.ok && poolRes.data;
   const names = {};
-  if (d && Array.isArray(d.machines)) for (const m of d.machines) if (m && m.machineId) names[m.machineId] = m.nickname || m.machineId;
+  if (d && Array.isArray(d.machines)) for (const m of d.machines) if (m && m.machineId) names[m.machineId] = verifiedDisplayName(m.nickname, m.machineId) || 'another machine';
   return { names, selfMachineId: d && typeof d.selfMachineId === 'string' ? d.selfMachineId : null };
 }
 
@@ -235,15 +236,15 @@ export function conversationRows(convRes, threadsRes, { selfMachineId = null, na
   const rows = list.map((c) => {
     const t = threads[c.conversationId] || null;
     const heldElsewhere = c.kind === 'replica' || (self ? c.holderMachineId !== self : false);
-    const holderName = names[c.holderMachineId] || c.holderMachineId;
-    const topic = t && t.bridge && t.bridge.topicName ? t.bridge.topicName : c.boundTopicId ? `Telegram topic ${c.boundTopicId}` : null;
+    const holderName = names[c.holderMachineId] || 'another machine';
+    const topic = verifiedDisplayName(t && t.bridge && t.bridge.topicName, c.boundTopicId);
     const last = t && t.lastSeen ? ago(t.lastSeen, now) : null;
     const subParts = [c.status === 'closed' ? 'closed' : 'open', t ? plural(t.messageCount, 'message') : null, topic || 'no Telegram topic'];
     if (heldElsewhere) subParts.push(`lives on ${holderName}${c.stalenessMs > 0 ? ` (record ${ago(now - c.stalenessMs, now).replace(' ago', '')} old)` : ''}`);
     if (c.streamStatus && c.streamStatus !== 'current') subParts.push(`record ${c.streamStatus}`);
     return {
       key: `${c.holderMachineId}:${c.conversationId}`, id: c.conversationId, peerFp: lower(c.peerFingerprint),
-      main: topic ? `Conversation in ${topic}` : `Conversation ${c.conversationId.slice(0, 8)}`,
+      main: topic ? `Conversation in ${topic}` : 'Conversation name unavailable',
       sub: subParts.filter(Boolean).join(' · '), end: last || '',
       tone: c.status === 'closed' ? 'unknown' : null,
       heldElsewhere, holderId: c.holderMachineId, holderName, stalenessMs: Number(c.stalenessMs) || 0, status: c.status, boundTopicId: c.boundTopicId || null, hasTopic: Boolean(c.boundTopicId || (t && t.bridge)),
@@ -282,7 +283,7 @@ export function buildAgents({ pairing, peersRes, conversations, threadsRes }, no
     }
   }
   const agents = [...byFp.values()].map((a) => {
-    const name = a.names[0] || `Agent ${shortFp(a.fp)}`;
+    const name = a.names.map((candidate) => verifiedDisplayName(candidate, a.fp)).find(Boolean) || 'Unnamed agent';
     const pw = a.pairing ? pairingWord(a.pairing.state) : null;
     const health = a.health ? peerWords(a.health, now) : null;
     const historyOnly = !a.pairing && a.conversations.length > 0;
@@ -381,7 +382,7 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
   if (conversations.state !== 'ok') notes.push(conversations.reason);
   else if (conversations.partial) notes.push('Some older conversation records may be missing: the cross-machine read hit its bound.');
   if (pairing.invitesReason) notes.push(pairing.invitesReason);
-  if (peersState === 'ok' && peersRes.data && peersRes.data.pool && Array.isArray(peersRes.data.pool.failed) && peersRes.data.pool.failed.length) notes.push(`No delivery records from ${peersRes.data.pool.failed.map((f) => names[f.machineId] || f.machineId).join(', ')}.`);
+  if (peersState === 'ok' && peersRes.data && peersRes.data.pool && Array.isArray(peersRes.data.pool.failed) && peersRes.data.pool.failed.length) notes.push(`No delivery records from ${peersRes.data.pool.failed.map((f) => names[f.machineId] || 'another machine').join(', ')}.`);
   return { mode: 'ok', certain: true, headline, sub: subParts.join(' '), tone, facts, relay, pairing, agents, waiting, conversations, notes };
 }
 
@@ -441,7 +442,7 @@ export function bindRequest(action, threadId, target) {
   return body;
 }
 export function bindResultWords(status, data) {
-  if (status === 200) return { ok: true, text: `Done: this conversation now lives in ${data && data.topicName ? `“${data.topicName}”` : 'its topic'}; its future replies go there.` };
+  if (status === 200) return { ok: true, text: `Done: this conversation now lives in ${verifiedDisplayName(data && data.topicName, data && data.topicId) ? `“${verifiedDisplayName(data.topicName, data.topicId)}”` : 'its topic'}; its future replies go there.` };
   if (status === 503) return { ok: false, text: 'The Telegram hub is not available on this agent, so conversations can’t be tied to a topic from here.' };
   return { ok: false, text: `${(data && data.error) || `The server answered ${status}`}. Nothing has changed.` };
 }

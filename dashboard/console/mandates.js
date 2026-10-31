@@ -11,6 +11,7 @@ import {
 } from './mandates-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 
 const AUDIT_LIMIT = 200;
 const SLIP_KEYS = ['id', 'scope', 'agents', 'author', 'createdAt', 'expiresAt', 'revoked', 'authorshipValid'];
@@ -152,21 +153,28 @@ function openSlip(c, deps) {
 }
 
 function grantForm(c, deps) {
-  const people = deps.users.filter((u) => u && u.slackUserId);
+  const people = uniqueNamedChoices(deps.users.filter((u) => u && u.slackUserId), (u) => u.slackUserId, (u) => u.name);
   const who = people.length
-    ? el('select', { class: 'reason-input', 'aria-label': 'Who' }, people.map((u) => el('option', { value: u.slackUserId, text: u.orgRole ? `${u.name} — ${u.orgRole}` : u.name })))
+    ? el('select', { class: 'reason-input', 'aria-label': 'Who' }, [...people.map((u) => el('option', { value: u.slackUserId, text: u.orgRole ? `${u.name} — ${u.orgRole}` : u.name })), el('option', { value: '', text: 'Enter a Slack user ID…' })])
     : el('input', { class: 'reason-input', type: 'text', placeholder: 'Slack user id (U…)', 'aria-label': 'Who (Slack user id)' });
+  const manualWho = people.length ? el('input', { class: 'reason-input', type: 'text', placeholder: 'Slack user ID (U…)', 'aria-label': 'Exact Slack user ID', hidden: true }) : null;
+  if (manualWho) who.addEventListener('change', () => { manualWho.hidden = who.value !== ''; if (!manualWho.hidden) manualWho.focus(); });
+  const targetId = () => (manualWho && who.value === '' ? manualWho.value : who.value).trim();
   const what = el('select', { class: 'reason-input', 'aria-label': 'What they may do' }, FLOOR_ACTIONS.map((a) => el('option', { value: a, text: humanAction(a), selected: a === 'prod-deploy' || null })));
   const how = el('select', { class: 'reason-input', 'aria-label': 'For how long' }, GRANT_DURATIONS.map((d) => el('option', { value: String(d.minutes), text: d.label, selected: d.minutes === 60 || null })));
   const status = el('p', { class: 'action-status', role: 'status' });
   const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Grant with PIN', 'data-grant': c.id });
   go.addEventListener('click', async () => {
-    const dry = grantRequest(c.record, { grantedTo: who.value, floorAction: what.value, minutes: how.value }, 'x');
+    const target = targetId();
+    const floorAction = what.value;
+    const minutes = how.value;
+    const duration = how.selectedOptions[0].textContent;
+    const dry = grantRequest(c.record, { grantedTo: target, floorAction, minutes }, 'x');
     if (!dry.ok) { status.textContent = dry.problems.join(' '); return; }
-    const name = personName(who.value.trim(), deps.users);
-    const pin = await askPin({ title: 'Let a person act', explain: `${name} may ${humanAction(what.value)} for ${how.selectedOptions[0].textContent}${dry.clamped ? ' (shortened to this slip’s own end)' : ''}. Your PIN goes in this one request and is not kept.`, adapter: 'body' });
+    const name = personName(target, deps.users);
+    const pin = await askPin({ title: 'Let a person act', explain: `${name} (Slack user ID: ${target}) may ${humanAction(floorAction)} for ${duration}${dry.clamped ? ' (shortened to this slip’s own end)' : ''}. Your PIN goes in this one request and is not kept.`, adapter: 'body' });
     if (!pin) return;
-    const req = grantRequest(c.record, { grantedTo: who.value, floorAction: what.value, minutes: how.value }, pin.pin); pin.pin = '';
+    const req = grantRequest(c.record, { grantedTo: target, floorAction, minutes }, pin.pin); pin.pin = '';
     const panel = sheet({ title: 'Granting…' }, el('p', { class: 'action-status', role: 'status', text: 'Working…' }));
     const x = await send(`/mandate/${encodeURIComponent(c.id)}/grants`, req.body);
     req.body.pin = '';
@@ -178,7 +186,7 @@ function grantForm(c, deps) {
     el('h3', { class: 'eyebrow sub-label', text: 'Let a person act' }),
     deps.usersKnown && !people.length ? note('No registered people to pick from; a Slack user id works.') : null,
     !deps.usersKnown ? note('Couldn’t read the registered people, so a Slack user id is needed.') : null,
-    el('div', { class: 'grant-fields' }, el('label', { class: 'limit-field' }, el('span', { text: 'Who' }), who), el('label', { class: 'limit-field' }, el('span', { text: 'May' }), what), el('label', { class: 'limit-field' }, el('span', { text: 'For' }), how)),
+    el('div', { class: 'grant-fields' }, el('label', { class: 'limit-field' }, el('span', { text: 'Who' }), who, manualWho), el('label', { class: 'limit-field' }, el('span', { text: 'May' }), what), el('label', { class: 'limit-field' }, el('span', { text: 'For' }), how)),
     note('The person you pick may take that one action for that window. A grant can never outlive the slip; revoking the slip ends it.'),
     go, status);
 }
@@ -228,6 +236,7 @@ function openDecision(r, deps) {
 }
 
 // ── Advanced: write a slip by hand ────────────────────────────────────────
+/* operator-surface-power-user: the pre-existing hand-written slip form is under Advanced; the default path approves a server-authored request. */
 function authorFold(slips, deps) {
   const d = el('details', { class: 'raw author-fold', id: 'sec-author', open: slips.ok && slips.counts.active === 0 && slips.counts.ended === 0 ? '' : null },
     el('summary', { text: 'Advanced: write a slip by hand' }),
@@ -239,8 +248,8 @@ function authorFold(slips, deps) {
 function issueSheet(deps) {
   const scope = el('input', { class: 'reason-input', type: 'text', value: 'feedback-migration', 'aria-label': 'What is this slip for?' });
   const agentA = el('input', { class: 'reason-input mono', type: 'text', value: deps.selfFp || '', placeholder: deps.selfFp ? null : 'this agent’s fingerprint (could not read it)', 'aria-label': 'This agent' });
-  const peers = deps.peers.filter((p) => p && p.fp);
-  const pick = el('select', { class: 'reason-input', 'aria-label': 'The other agent' }, [...peers.map((p) => el('option', { value: p.fp, text: p.name ? `${p.name} (${p.fp.slice(0, 8)}…)` : p.fp })), el('option', { value: '', text: 'Paste a fingerprint…' })]);
+  const peers = uniqueNamedChoices(deps.peers.filter((p) => p && p.fp));
+  const pick = el('select', { class: 'reason-input', 'aria-label': 'The other agent' }, [...peers.map((p) => el('option', { value: p.fp, text: verifiedDisplayName(p.name, p.fp) || 'Agent name unavailable' })), el('option', { value: '', text: 'Paste a fingerprint…' })]);
   const paste = el('input', { class: 'reason-input mono', type: 'text', placeholder: 'the other agent’s routing fingerprint', 'aria-label': 'The other agent’s fingerprint', hidden: peers.length > 0 });
   pick.addEventListener('change', () => { paste.hidden = pick.value !== ''; if (!paste.hidden) paste.focus(); });
   const authorities = el('textarea', { class: 'reason-input mono', rows: '8', spellcheck: 'false', 'aria-label': 'What exactly may they do? (JSON)' });

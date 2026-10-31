@@ -4,6 +4,7 @@
 import { buildPromisesPage, storyOf, actionsFor } from './promises-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 const RAW_KEYS = ['id', 'status', 'owner', 'blockedOn', 'actionClass', 'topicId', 'createdAt', 'nextUpdateDueAt', 'hardDeadlineAt', 'checkInAt', 'lastHeartbeatAt', 'heartbeatCount', 'cadenceMs', 'beaconEnabled', 'beaconPaused', 'beaconPausedReason', 'resolvedAt', 'resolution', 'originMachineId', 'viewSource', 'stalenessMs'];
 
@@ -19,7 +20,7 @@ export async function renderPromises(main, ctx) {
   setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Promises' }), el('h1', { class: 'page-title skeleton', text: 'Loading promises' })));
   const [res, pool] = await Promise.all([get('/commitments?scope=mesh', 8000), get('/pool')]);
   const machines = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines : [];
-  const names = Object.fromEntries(machines.map((m) => [m.machineId, m.nickname || m.machineId]));
+  const names = Object.fromEntries(machines.map((m) => [m.machineId, verifiedDisplayName(m.nickname, m.machineId) || 'another machine']));
   const selfId = pool.ok && pool.data ? pool.data.selfMachineId : null;
   const self = machines.find((m) => m.isSelf || (selfId && m.machineId === selfId)) || {};
   const chatId = self.servesChannels && self.servesChannels.telegram && (self.servesChannels.telegram.chatIds || [])[0];

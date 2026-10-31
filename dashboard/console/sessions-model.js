@@ -6,6 +6,8 @@
 // answers in words, and the WebSocket frames the terminal sends. Nothing here touches
 // the DOM.
 
+import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
+
 export const WORKING_MS = 2 * 60_000;   // activity under 2 min reads "working"
 export const QUIET_MS = 10 * 60_000;    // 10+ min without activity reads "quiet" (never "stuck")
 export const HISTORY_FIRST = 2000;      // lines the server sends on subscribe
@@ -92,7 +94,7 @@ export function mergeSessions(poolData, wsSessions) {
 /** One machine's name, from the pool roster, never a raw id when a name exists. */
 function nicknameOf(pool, machineId) {
   const m = (pool && Array.isArray(pool.machines) ? pool.machines : []).find((x) => x.machineId === machineId);
-  return (m && m.nickname) || machineId || 'another machine';
+  return verifiedDisplayName(m && m.nickname, machineId) || 'another machine';
 }
 
 /**
@@ -115,7 +117,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {})
     const a = activity(s, now);
     const duplicate = s.duplicateTopic === true || (typeof s.platform === 'string' && s.platformId != null
       && duplicateConversations.has(`${s.platform}:${String(s.platformId)}`));
-    const machine = s.machineNickname || (s.remote ? nicknameOf(pool, s.machineId) : 'This machine');
+    const machine = verifiedDisplayName(s.machineNickname, s.machineId) || (s.remote ? nicknameOf(pool, s.machineId) : 'This machine');
     const started = Date.parse(s.startedAt);
     const running = Number.isFinite(started) ? spanWords(now - started) : null;
     const sub = [machine, running && running !== 'now' ? running : running ? 'just started' : null, duplicate ? 'running on two machines at once' : a.state === 'no-reading' ? null : a.words].filter(Boolean).join(' · ');
@@ -139,7 +141,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {})
     return { machineId: id, name: nicknameOf(pool, id), words: last && last !== 'now' ? `not answering (last seen ${last} ago)` : 'not answering' };
   });
   const idleMachines = multi ? machines.filter((m) => m.sessionCount === 0 && !failedIds.has(m.machineId)).map((m) => ({
-    machineId: m.machineId, name: m.nickname || m.machineId || 'unnamed machine',
+    machineId: m.machineId, name: verifiedDisplayName(m.nickname, m.machineId) || 'another machine',
     words: m.emptyState && m.emptyState.text ? (m.emptyState.kind === 'online' ? 'answering, nothing running' : m.emptyState.text) : 'state unknown',
     ok: Boolean(m.emptyState && m.emptyState.kind === 'online'),
   })) : [];
@@ -268,17 +270,18 @@ export function machineChoices(poolRes) {
   const machines = data && Array.isArray(data.machines) ? data.machines : [];
   if (machines.length < 2) return null;
   const self = data.selfMachineId || null;
+  const uniqueMachines = new Set(uniqueNamedChoices(machines, (m) => m.machineId, (m) => m.nickname).map((m) => m.machineId));
   const out = [{ value: '', label: 'Automatic', disabled: false }];
   for (const m of machines) {
     if (!m || typeof m.machineId !== 'string') continue;
-    let label = (typeof m.nickname === 'string' && m.nickname) || m.machineId;
+    let label = verifiedDisplayName(m.nickname, m.machineId) || 'Machine name unavailable';
     if (m.machineId === self) label += ' (this machine)';
     const offline = m.online !== true;
     const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
     if (offline) { const ls = m.liveness && m.liveness.state; label += ls === 'unreachable' ? ' (not answering)' : ls === 'stale' ? ' (not checked recently)' : ' (no recent contact)'; }
     else if (clockOff) label += ' (clock out of step)';
     else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
-    out.push({ value: m.machineId, label, disabled: offline || clockOff, self: m.machineId === self });
+    out.push({ value: m.machineId, label, disabled: offline || clockOff || !uniqueMachines.has(m.machineId), self: m.machineId === self });
   }
   return { choices: out, selfMachineId: self };
 }

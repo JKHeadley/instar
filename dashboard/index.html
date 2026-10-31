@@ -4450,6 +4450,17 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script>
+    function verifiedDashboardName(value, id) {
+      const name = typeof value === 'string' ? value.trim() : '';
+      if (!name || name === String(id ?? '')) return null;
+      if (/^\d+$/.test(name)) return null;
+      if (/^(?:\[deleted\]\s*)?(?:telegram\s+)?topic[-\s#]*\d+$/i.test(name)) return null;
+      if (/^[a-f0-9]{8,}(?:…|\.\.\.)?$/i.test(name) || /^m_[a-z0-9]{12,}$/i.test(name)) return null;
+      if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(name)) return null;
+      if (/^a2aproof-\d+$/i.test(name) || /^[CGD][A-Z0-9]{8,}$/.test(name)) return null;
+      if (/^(?:conversation|channel|agent|machine|account|session|topic) name unavailable$/i.test(name) || /^(?:an? )?unnamed (?:agent|machine|account|session|feature|person|part)$/i.test(name)) return null;
+      return name;
+    }
     // ── State ────────────────────────────────────────────────
     let ws = null;
     let token = '';
@@ -4784,7 +4795,7 @@
           // Pool Dashboard Streaming (§2.2): remote sessions are now clickable —
           // selecting one streams it from its owning machine via the relay.
           el.title = session.remote
-            ? `Running on ${session.machineNickname || session.machineId || 'another machine'} — click to stream it here.`
+            ? `Running on ${verifiedDashboardName(session.machineNickname, session.machineId) || 'another machine'} — click to stream it here.`
             : '';
           el.onclick = () => selectSession(session.tmuxSession, session);
           list.appendChild(el);
@@ -4836,7 +4847,7 @@
             <span class="type-badge ${sType}" title="${sType === 'job' ? 'Job: a scheduled job run' : 'Interactive: a conversation session'}">${sType}</span>
             <span class="model-badge ${modelFamilyClass(model)}" title="${escapeHtml(modelBadgeTitle(model))}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(friendlyModelName(model))}</span>
             <span class="platform-badge ${platform}" title="${escapeHtml(platformBadgeTitle(platform))}">${platformIcon}</span>
-            ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
+            ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(verifiedDashboardName(session.machineNickname, session.machineId) || 'Machine name unavailable')}</span>` : ''}
             ${(session.duplicateTopic === true || (session.platform && session.platformId != null && poolDuplicateConversations.has(`${session.platform}:${String(session.platformId)}`))) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
             <span title="Running for ${elapsed}">${elapsed}</span>
           </div>
@@ -4877,7 +4888,7 @@
       for (const m of poolMachinesView) {
         // A machine WITH sessions already names itself via its tiles' badges.
         if (m.sessionCount > 0) continue;
-        const label = m.nickname || m.machineId || 'unnamed machine';
+        const label = verifiedDashboardName(m.nickname, m.machineId) || 'another machine';
         const info = machineStatusInfo(m);
         const row = document.createElement('div');
         row.className = `machine-status-row ${info.cls}`;
@@ -4943,7 +4954,7 @@
       // Clear and subscribe (remote → carry machineId so the server relays).
       term.clear();
       if (activeMachineId) {
-        term.write(`\x1b[2m[streaming from ${session.machineNickname || activeMachineId}…]\x1b[0m\r\n`);
+        term.write(`\x1b[2m[streaming from ${verifiedDashboardName(session.machineNickname, activeMachineId) || 'another machine'}…]\x1b[0m\r\n`);
       }
       wsSend({ type: 'subscribe', session: tmuxSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
 
@@ -5269,12 +5280,17 @@
       if (reqId !== newSessionMachinesReq || document.getElementById('newSessionModal').style.display === 'none') return;
       const machines = (data && Array.isArray(data.machines)) ? data.machines : [];
       if (machines.length < 2) return;
+      const nameCounts = new Map();
+      for (const m of machines) {
+        const name = m && verifiedDashboardName(m.nickname, m.machineId);
+        if (name) nameCounts.set(name.toLocaleLowerCase(), (nameCounts.get(name.toLocaleLowerCase()) || 0) + 1);
+      }
       newSessionSelfMachineId = data.selfMachineId || null;
       for (const m of machines) {
         if (!m || typeof m.machineId !== 'string') continue;
         const opt = document.createElement('option');
         opt.value = m.machineId;
-        let label = (typeof m.nickname === 'string' && m.nickname) ? m.nickname : m.machineId;
+        let label = verifiedDashboardName(m.nickname, m.machineId) || 'Machine name unavailable';
         const offline = m.online !== true;
         // Only the status placement itself removes; a once-seen divergence is still placeable.
         const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
@@ -5288,7 +5304,8 @@
         else if (clockOff) label += ' (clock out of step)';
         else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
         opt.text = label;
-        opt.disabled = offline || !!clockOff;
+        const verified = verifiedDashboardName(m.nickname, m.machineId);
+        opt.disabled = offline || !!clockOff || !verified || nameCounts.get(verified.toLocaleLowerCase()) !== 1;
         sel.appendChild(opt);
       }
       onNewSessionPlatformChange();
@@ -5824,7 +5841,7 @@
 
     async function closeSession(tmuxSession, sessionName, opts) {
       opts = opts || {}; // backward-compatible: local callers may pass (tmux, name) only
-      const nickname = opts.machineNickname || opts.machineId || 'another machine';
+      const nickname = verifiedDashboardName(opts.machineNickname, opts.machineId) || 'another machine';
 
       let prompt;
       if (opts.protected === true) {

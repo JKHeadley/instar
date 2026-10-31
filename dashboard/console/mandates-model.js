@@ -9,6 +9,7 @@
 // that one body and is cleared the moment the request settles).
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 // ── Words ─────────────────────────────────────────────────────────────────
 // Mirrors dashboard/mandates.js ACTION_PHRASES: the coordination authorities and the
@@ -43,6 +44,7 @@ export const GRANT_DURATIONS = [
 ];
 
 // The first-mandate shape, prefilled so the operator edits rather than authors (legacy template).
+/* operator-surface-power-user: the pre-existing advanced hand-written slip form is never the default grant path; ordinary grants start from a server-authored request. */
 export const AUTHORITIES_TEMPLATE = JSON.stringify([
   { action: 'exchange-read-credential', bounds: { credentialScope: 'read-only', onMachine: true } },
   { action: 'sign-code-review', bounds: { artifact: 'migration-port', mutual: true } },
@@ -82,17 +84,18 @@ export function whenWords(iso, now = Date.now()) {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}${Math.abs(days) > 300 ? ` ${d.getFullYear()}` : ''}, ${time}`;
 }
 
-/** An agent's name from the fingerprint → name map, else a short fingerprint. */
+/** An agent's verified name from the fingerprint → name map. */
 export function agentName(fp, names = {}) {
   const key = String(fp || '').toLowerCase();
-  if (names[key]) return names[key];
-  return fp ? `agent ${shortFp(fp)}` : 'an agent';
+  const name = verifiedDisplayName(names[key], key);
+  if (name) return name;
+  return fp ? 'an unnamed agent' : 'an agent';
 }
 
-/** A person's name from the registered-user list, else the raw id. */
+/** A person's name from the registered-user list, else an honest unavailable label. */
 export function personName(id, users = []) {
   const u = (users || []).find((x) => x && x.slackUserId === id);
-  return u && u.name ? u.name : String(id || 'someone');
+  return verifiedDisplayName(u && u.name, id) || 'an unnamed person';
 }
 
 /** The fingerprint → name map the page builds from /health (self), /threadline/health (own fp) and knownPeers. */

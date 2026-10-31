@@ -25,6 +25,7 @@
 // reusing the shipped hasOpenInteraction primitive.
 
 import { sanitizeForDisplay, hasOpenInteraction } from './subscriptions.js';
+import { verifiedDisplayName } from './console/display-identity.js';
 
 export const GLANCE_MAX_TILES = 5;
 export const GLANCE_WORD_BUDGET = 150; // words on the front page before interaction
@@ -964,7 +965,7 @@ function guardNeedsLook(g) {
 }
 
 export function machineRowText(m) {
-  const nick = sanitizeForDisplay(m.nickname || m.machineId || 'A machine', 'label');
+  const nick = sanitizeForDisplay(verifiedDisplayName(m.nickname, m.machineId) || 'A machine', 'label');
   return `${nick} — ${machineStatusWord(m)}`;
 }
 
@@ -976,7 +977,7 @@ export function machineRecordNode(doc, m, opts = {}) {
     ? `${m.activeSessionCount}${m.maxSessions ? ' / ' + m.maxSessions : ''} conversation${m.activeSessionCount === 1 ? '' : 's'}`
     : '—';
   const rows = [
-    ['Name', m.nickname || m.machineId || '—'],
+    ['Name', verifiedDisplayName(m.nickname, m.machineId) || 'name unavailable'],
     ['Status', machineStatusWord(m)],
     ['Specs', machineSpecLine(m.hardware)],
     ['Conversations', online ? sessions : '—'],
@@ -1025,7 +1026,7 @@ export function machineRecordNode(doc, m, opts = {}) {
     const input = doc.createElement('input');
     input.type = 'text';
     input.className = 'glance-record-input machine-nick';
-    input.value = m.nickname || m.machineId;
+    input.value = verifiedDisplayName(m.nickname, m.machineId) || '';
     input.setAttribute('data-mid', m.machineId);
     input.setAttribute('aria-label', 'Machine nickname — press Enter or click away to save');
     let last = input.value;

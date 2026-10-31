@@ -193,6 +193,12 @@ describe('doors, models, machines, create', () => {
     expect(mc.choices.map((c) => [c.label, c.disabled])).toEqual([
       ['Automatic', false], ['Mac Studio (this machine)', false], ['Mac Mini (not answering)', true], ['Laptop (clock out of step)', true], ['PC (no recent contact)', true],
     ]);
+    const duplicates = machineChoices(ok({ selfMachineId: 'a', machines: [
+      { machineId: 'a', nickname: 'Scout', online: true },
+      { machineId: 'b', nickname: 'scout', online: true },
+      { machineId: 'c', nickname: 'Echo', online: true },
+    ] }))!;
+    expect(duplicates.choices.map((c) => c.disabled)).toEqual([false, true, true, false]);
   });
   it('create: a name is required; an unchanged pick sends nothing; door and machine only for Telegram', () => {
     expect(createBody({ name: '  ' }, options)).toEqual({ ok: false, problems: ['Give it a name.'] });

@@ -13,6 +13,7 @@
 // every machine keeps its own outcome, next run and action target inside the row.
 
 import { ago, failure } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 export { failure, ago };
 
@@ -219,8 +220,8 @@ export function sortRows(rows, sort = 'status') {
 // ── the page ───────────────────────────────────────────────────────────────
 function machineNameFor(j, names, selfMachineId) {
   const id = j.machineId || (j.remote ? null : selfMachineId);
-  if (id && names[id]) return names[id];
-  if (j.machineNickname) return j.machineNickname;
+  if (id && verifiedDisplayName(names[id], id)) return verifiedDisplayName(names[id], id);
+  if (verifiedDisplayName(j.machineNickname, id)) return verifiedDisplayName(j.machineNickname, id);
   return j.remote ? 'another machine' : 'This machine';
 }
 
@@ -266,7 +267,7 @@ export function buildSchedulePage(res, now = Date.now(), opts = {}) {
     const mine = (localJobs || []).map((j) => { const t = tags.get(j.slug); return { ...j, machineId: j.machineId || (t && t.machineId) || selfId || undefined, machineNickname: j.machineNickname || (t && t.machineNickname) || undefined }; });
     jobs = [...mine, ...pool.data.jobs.filter((j) => j && j.remote)];
     multi = (Number(p.peersQueried) || 0) > 0;
-    for (const f of (Array.isArray(p.failed) ? p.failed : [])) notes.push(`${names[f.machineId] || f.machineId || 'A machine'} did not answer; its jobs are not shown.`);
+    for (const f of (Array.isArray(p.failed) ? p.failed : [])) notes.push(`${verifiedDisplayName(names[f.machineId], f.machineId) || 'A machine'} did not answer; its jobs are not shown.`);
     if (p.stale) notes.push('Other machines’ jobs are from the last reading; the server is shedding load.');
   } else if (pool && !pool.ok) notes.push(`Couldn't read other machines’ jobs: ${pool.reason}. Showing this machine only.`);
   if (!localJobs && !jobs.length) return { ok: false, reason: schedulerAbsent ? 'The scheduler is not running on this machine.' : 'The job list answered without jobs.' };

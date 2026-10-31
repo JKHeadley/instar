@@ -431,7 +431,7 @@ export function linkChips(rec, topicHref) {
 export function stepList(rec, now = Date.now()) {
   const phases = Array.isArray(rec && rec.phases) ? rec.phases : [];
   return phases.map((ph, i) => ({
-    name: ph.name || ph.id || `Step ${i + 1}`, done: ph.status === 'done', current: i === Number(rec.currentPhaseIndex), blocked: ph.status === 'blocked',
+    name: ph.name || `Step ${i + 1}`, done: ph.status === 'done', current: i === Number(rec.currentPhaseIndex), blocked: ph.status === 'blocked',
     when: ph.completedAt ? `done ${ago(ph.completedAt, now)}` : ph.startedAt ? `started ${ago(ph.startedAt, now)}` : ph.status === 'blocked' ? 'blocked' : ph.status === 'in-progress' ? 'in progress' : '',
   }));
 }

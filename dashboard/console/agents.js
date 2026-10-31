@@ -16,6 +16,7 @@ import {
 } from './agents-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 
 const EYEBROW = 'People · Other agents';
 const TIMEOUT_MS = 5000;
@@ -175,8 +176,8 @@ function waitingCard(w, deps) {
 
 // ── Connect another agent (make an invite / I was sent one) ──────────────────
 function openConnect(deps) {
-  const known = deps.page.pairing.knownPeers;
-  const who = el('select', { class: 'reason-input select-input', 'aria-label': 'Who is it for?' }, el('option', { value: '', text: 'Someone new' }), known.map((p) => el('option', { value: p.fp, text: `${p.name || 'Unknown agent'} (${String(p.fp).slice(0, 6)}…)` })));
+  const known = uniqueNamedChoices(deps.page.pairing.knownPeers);
+  const who = el('select', { class: 'reason-input select-input', 'aria-label': 'Who is it for?' }, el('option', { value: '', text: 'Someone new' }), known.map((p) => el('option', { value: p.fp, text: verifiedDisplayName(p.name, p.fp) || 'Agent name unavailable' })));
   let ttl = 60;
   const chips = el('div', { class: 'filter-chips', role: 'group', 'aria-label': 'Valid for' }, [[60, '1 hour'], [1440, '24 hours']].map(([m, label]) => el('button', { class: 'fchip', type: 'button', 'aria-pressed': m === ttl ? 'true' : 'false', onclick: (ev) => { ttl = m; for (const c of chips.children) c.setAttribute('aria-pressed', c === ev.currentTarget ? 'true' : 'false'); } }, el('span', { text: label }))));
   const status = el('p', { class: 'action-status', role: 'status' });
@@ -286,7 +287,7 @@ async function openConversation(c, a, deps) {
 
 /** The hub binding: open as its own Telegram topic, or tie to an existing one (bearer; POST /threadline/hub/bind). */
 function bindBlock(c, deps) {
-  if (c.boundTopicId) return block('Telegram', el('p', { class: 'card-line', text: `Tied to Telegram topic ${c.boundTopicId}: its replies go there.` }));
+  if (c.boundTopicId) return block('Telegram', el('p', { class: 'card-line', text: 'Tied to a Telegram conversation; its replies go there.' }));
   const status = el('p', { class: 'action-status', role: 'status' });
   const target = el('input', { class: 'reason-input', placeholder: 'Topic id or name', 'aria-label': 'Telegram topic id or name' });
   const run = async (button, action) => {

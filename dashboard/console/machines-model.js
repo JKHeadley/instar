@@ -5,6 +5,7 @@
 // word "offline" is never used: only positive evidence earns a hard state.
 
 import { machineState, ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 const STATE_ORDER = { bad: 0, attn: 1, stale: 2, unknown: 3, ok: 4 };
 
@@ -47,7 +48,7 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
     const verdict = loadVerdict(st.perCore);
     const sessions = extras.sessionsByMachine ? extras.sessionsByMachine[m.machineId] : undefined;
     return {
-      id: m.machineId, name: m.nickname || m.machineId, isSelf, ...st, verdict,
+      id: m.machineId, name: verifiedDisplayName(m.nickname, m.machineId) || 'a machine with no name yet', isSelf, ...st, verdict,
       leading: Boolean(routerId && routerId === m.machineId),
       sessions,
       hardware: m.hardware || null,

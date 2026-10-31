@@ -3,6 +3,7 @@
 // when the status could not be read.
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 const HOLD_WORDS = {
   'lease-not-held': 'waiting to be routed through the machine that holds the conversation',
@@ -32,7 +33,7 @@ export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicN
     const since = h.heldSince || h.createdAt || h.updatedAt;
     return {
       key: h.operationId || h.originId || `${topic}:${since}`,
-      main: topicNames[String(topic)] || (topic ? `Conversation ${topic}` : 'A conversation'),
+      main: verifiedDisplayName(topicNames[String(topic)], topic) || 'Conversation name unavailable',
       sub: holdWords(h.hold_reason || h.holdReason || h.reason),
       end: ago(since, now) || '',
       tone: 'attn', record: h, sinceTs: Date.parse(since) || 0,
