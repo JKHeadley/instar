@@ -4,7 +4,7 @@
   "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
   "timestamp": "2026-10-31T11:45:24.913Z",
   "artifactPath": "upgrades/side-effects/release-concurrent-fragment-retry.md",
-  "artifactSha256": "90cf1fa3e8e7a60f7ee1fbf10ac50704ac05c31f07ea35ce79f9271395df5b33",
+  "artifactSha256": "887ecf4424a7aa1f72abffce2654548dcd293008fd4dada764a1bf8398584cff",
   "specPath": "docs/specs/local-release.md",
   "coveredFiles": [
     ".github/workflows/publish.yml",

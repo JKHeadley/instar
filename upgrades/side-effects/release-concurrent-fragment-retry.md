@@ -60,6 +60,8 @@ The narrow retry change preserves published source identity and future release n
 
 ## Second-pass review (if required)
 
+**Reviewer:** independent GPT-6 Astra (`/root/release_recovery_review`)
+
 Independent GPT-6 Astra review found no concrete blocker. It identified a nonblocking reachable-tag advisory limitation and recommended a workflow execution fixture beyond the real-Git helper test. The parity test now asserts the workflow command order.
 
 ## Evidence pointers
