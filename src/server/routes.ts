@@ -1443,6 +1443,9 @@ export interface RouteContext {
    *  can collide when multiple agents share a name). Value: resolve callback
    *  with reply text. */
   threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+  /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md):
+   *  the service behind `POST /mcp/threadline`. Absent ⇒ the route answers 503. */
+  threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null;
   /** UnjustifiedStopGate authority (PR3 — context-death spec). Null
    *  when no intelligence provider is configured; the evaluate route
    *  fail-opens in that case. */
@@ -5382,6 +5385,16 @@ export function createRoutes(ctx: RouteContext): Router {
           return { ...mode, mode: refuseDowngradeModeName(mode), ...refuseDowngradeCounters, refusals: downgradeRefusals.snapshot() };
         })(),
       };
+      // Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D4):
+      // per-machine transport counts + fallbacks. AUTHED only; `null` = unmeasurable.
+      try {
+        base.threadline = {
+          ...(base.threadline as object ?? {}),
+          mcpHttp: ctx.threadlineMcpHttp
+            ? ctx.threadlineMcpHttp.health()
+            : { enabled: ctx.liveConfig?.get<boolean>('threadline.mcpHttp.enabled', false) === true, sessionsOnHttp: null, sessionsOnStdio: null, sessionsOnHttpNeverCalled: null, fallbacks: {}, stuckOperations: null, routeMounted: false },
+        };
+      } catch { /* @silent-fallback-ok — observability only */ }
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
       // memory, surfaced on the AUTHED /health beside the relay verdicts.
       {
@@ -14738,6 +14751,21 @@ export function createRoutes(ctx: RouteContext): Router {
     const svc = ctx.dynamicMcpService;
     return !!svc && svc.enabled();
   };
+
+  // ── Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md) ──
+  // Mounted whenever Threadline runs, regardless of threadline.mcpHttp.enabled:
+  // the flag only selects the transport of NEW spawns, so switching it off never
+  // cuts off a session already wired here (D6). Admission (the local secret,
+  // loopback, no Origin / forwarding headers) runs in authMiddleware AND again in
+  // the handler: Express routing is case-insensitive and ignores a trailing slash.
+  router.all('/mcp/threadline', (req, res) => {
+    const svc = ctx.threadlineMcpHttp;
+    if (!svc) {
+      res.status(503).json({ error: 'threadline-mcp-unavailable', reason: 'Threadline is not running in this server' });
+      return;
+    }
+    void svc.handle(req, res);
+  });
 
   router.get('/mcp/session/:topicId', (req, res) => {
     if (!dynMcpEnabled()) { res.status(503).json({ error: 'dynamic-mcp disabled' }); return; }
@@ -38902,6 +38930,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/threadline/relay-send', async (req, res) => {
     const relayClient = ctx.threadlineRelayClient;
+    // Cancellation reaches the work (threadline-mcp-local-http "Bounds"): a
+    // PREMATURE close of this request (the caller went away before the answer was
+    // written) cancels the reply wait on whichever branch registered it. A normal
+    // completion also fires 'close', hence `!res.writableFinished`. A waiter that
+    // registers after the client is already gone is cancelled at registration.
+    // A message already sent stays sent.
+    let relaySendClosedEarly = false;
+    const relaySendCloseCancels = new Set<() => void>();
+    res.on('close', () => {
+      if (res.writableFinished) return;
+      relaySendClosedEarly = true;
+      for (const cancel of relaySendCloseCancels) {
+        try { cancel(); } catch { /* @silent-fallback-ok — cancelling a waiter is best-effort */ }
+      }
+      relaySendCloseCancels.clear();
+    });
+    const cancelReplyWaitOnClose = (cancel: () => void): void => {
+      if (relaySendClosedEarly) { cancel(); return; }
+      relaySendCloseCancels.add(cancel);
+    };
     const {
       targetAgent,
       message,
@@ -39702,7 +39750,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                   }
                   if (waitForReply) {
-                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
+                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose);
                     res.json({
                       success: true,
                       accepted,
@@ -39981,7 +40029,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // budget, and a fast reply can never land in a gap with no listener).
       let cancelReplyWait: (() => void) | undefined;
       const replyPromise = waitForReply
-        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; })
+        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); })
         : null;
 
       // Honest delivery (docs/specs/a2a-honest-delivery-outcomes.md §4). Order:
