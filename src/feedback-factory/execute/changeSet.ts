@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
-import { CHANGESET_MAX_BYTES, CHANGESET_MAX_FILES, EVIDENCE_FILE, RESULT_FILE, isToolingPath } from './executePolicy.js';
+import { CHANGESET_MAX_BYTES, CHANGESET_MAX_FILES, EVIDENCE_FILE, PREVIOUS_REVIEW_FILE, RESULT_FILE, isToolingPath } from './executePolicy.js';
 
 export interface ChangeEntry {
   path: string;
@@ -33,7 +33,7 @@ export class ChangeSetError extends Error {
 }
 
 /** Root entries never part of a change set. `.claude/` is removed before spawn and write-denied. */
-const ROOT_SKIP = new Set(['.git', 'node_modules', EVIDENCE_FILE, RESULT_FILE]);
+const ROOT_SKIP = new Set(['.git', 'node_modules', EVIDENCE_FILE, PREVIOUS_REVIEW_FILE, RESULT_FILE]);
 /** Build and cache output the session's own runs may leave behind (never published). */
 const OUTPUT_SKIP = [/^dist\//, /^coverage\//, /(^|\/)\.vitest\//, /(^|\/)\.DS_Store$/, /\.tsbuildinfo$/, /(^|\/)\.eslintcache$/, /\.log$/];
 

@@ -38,12 +38,17 @@ export interface ExecHarness extends Harness {
   /** When set, the next confined spawns throw this (e.g. a RerouteRefusedError from a full reroute lane). */
   spawnError: { value: Error | null };
   pushes: PushRecord[];
-  prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; labels: string[]; title: string; body: string }>;
+  /** `createHead` is the `--head` createPr was given (`owner:branch` for a fork PR); `headRefName` is the branch, as GitHub reports it. */
+  prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; createHead: string; labels: string[]; title: string; body: string }>;
   reviews: Map<number, PrReview[]>;
   /** The diff `prDiff` answers (null = gh error) and every comment left on a PR. */
   prDiff: { value: string | null };
   prFiles: { value: string[] | null };
   comments: Array<{ pr: number; body: string }>;
+  /** PRs closed through `closePr`, and whether the next closes fail (a gh error). */
+  closed: number[];
+  closeFails: { value: number };
+  commentFails: { value: number };
   /** The independent reviewers' outcomes (default: none installed → the owner-approval route alone, as before) and each prompt they were asked. */
   review: { outcomes: ReviewerOutcome[] | null; calls: string[] };
   disarmed: number[];
@@ -96,7 +101,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   fs.writeFileSync(path.join(h.sourceRepo, 'package.json'), '{"name":"fixture"}\n');
   fs.writeFileSync(path.join(h.sourceRepo, 'src', 'thing.ts'), 'export const thing = 1;\n');
   fs.writeFileSync(path.join(h.sourceRepo, '.claude', 'settings.json'), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"evil"}]}]}}');
-  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', ...(opts.config ?? {}) };
+  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', reviewFailedGraceHours: 24, ...(opts.config ?? {}) };
   h.enabled = { value: true };
   h.epoch = { value: 1 };
   h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
@@ -109,6 +114,9 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.prDiff = { value: 'diff --git a/src/thing.ts b/src/thing.ts\n+++ b/src/thing.ts\n+x\n' };
   h.prFiles = { value: ['src/thing.ts', 'tests/fix.test.ts'] };
   h.comments = [];
+  h.closed = [];
+  h.closeFails = { value: 0 };
+  h.commentFails = { value: 0 };
   h.review = { outcomes: [], calls: [] };
   h.disarmed = [];
   h.merges = [];
@@ -153,17 +161,25 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     authAccounts: async () => h.repo.accounts,
     createPr: async (input) => {
       const number = nextPr++;
-      h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head, labels: [input.label], title: input.title, body: input.body });
+      h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head.replace(/^[^:]+:/, ''), createHead: input.head, labels: [input.label], title: input.title, body: input.body });
       return { number };
     },
-    prState: async (_slug, pr) => { const p = h.prs.get(pr); return p ? { ...p } : null; },
+    prState: async (_slug, pr) => { const p = h.prs.get(pr); if (!p) return null; const { createHead: _head, ...view } = p; return view; },
     reviews: async (_slug, pr) => h.reviews.get(pr) ?? [],
     removeLabel: async (_slug, pr, label) => { const p = h.prs.get(pr); if (p) p.labels = p.labels.filter((l) => l !== label); return true; },
     disableAuto: async (_slug, pr) => { h.disarmed.push(pr); return true; },
     safeMerge: async (_slug, pr, sha) => { h.merges.push({ pr, sha }); return { exitCode: h.safeMergeExit.code, stdout: h.safeMergeExit.stdout }; },
     prDiff: async () => h.prDiff.value,
     prFiles: async () => h.prFiles.value,
-    comment: async (_slug, pr, body) => { h.comments.push({ pr, body }); return true; },
+    comment: async (_slug, pr, body) => { if (h.commentFails.value > 0) { h.commentFails.value--; return false; } h.comments.push({ pr, body }); return true; },
+    closePr: async (_slug, pr) => {
+      if (h.closeFails.value > 0) { h.closeFails.value--; return 'failed'; }
+      const p = h.prs.get(pr);
+      if (p && p.state === 'MERGED') return 'merged';
+      if (p && p.state === 'OPEN') p.state = 'CLOSED';
+      h.closed.push(pr);
+      return 'closed';
+    },
   };
   const runner: ConfinedRunner = {
     available: () => (h.runnerAvailable.value ? { ok: true, version: '0.0.77' } : { ok: false, reason: 'sandbox-runtime-not-installed' }),

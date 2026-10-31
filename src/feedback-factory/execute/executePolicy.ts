@@ -135,6 +135,13 @@ export const CANARY_VERSION = 'feedback-canary-v3';
 export const SANDBOX_RUNTIME_PACKAGE = '@anthropic-ai/sandbox-runtime';
 export const SANDBOX_RUNTIME_VERSION = '0.0.77';
 export const EVIDENCE_FILE = '.feedback-evidence.json';
+/**
+ * The previous attempt's independent-review findings, written by trusted code as a read-only data
+ * file beside the evidence file when an attempt reworks a fix that failed review
+ * (docs/specs/feedback-executor-review-failed-recovery.md §2). Special-cased everywhere the
+ * evidence file is: never part of a change set, write-denied to the session.
+ */
+export const PREVIOUS_REVIEW_FILE = '.feedback-previous-review.json';
 export const RESULT_FILE = '.feedback-result.json';
 export const HOLD_LABEL = 'hold';
 /** Native modules built from the base SHA (the pinned allow-list, §4 step 3). */
@@ -174,6 +181,12 @@ export interface ExecuteLiveConfig {
    * paths always wait for their owner. `operator`: the original rule, the owner's approval only.
    */
   reviewGate: 'independent' | 'operator';
+  /**
+   * Hours a PR whose current head failed the independent review keeps its open-PR slot before the
+   * executor closes it and reworks the item once from the findings
+   * (docs/specs/feedback-executor-review-failed-recovery.md). 0 = never close (the old behaviour).
+   */
+  reviewFailedGraceHours: number;
   actionTopicId?: number;
 }
 
@@ -184,6 +197,7 @@ export const EXECUTE_CONFIG_DEFAULTS = {
   lintCommand: 'npm run lint',
   baseSmokeTests: ['tests/unit/feedback-factory/triage-floors.test.ts'],
   maxDurationMinutes: 300,
+  reviewFailedGraceHours: 24,
 } as const;
 
 export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, agentHome: string, isSourceCheckout: (dir: string) => boolean): ExecuteLiveConfig {
@@ -207,6 +221,7 @@ export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, a
     maxDurationMinutes: int(raw?.maxDurationMinutes, EXECUTE_CONFIG_DEFAULTS.maxDurationMinutes, 10, EXECUTION_LEASE_MS / 60_000),
     publishRepo: publish,
     reviewGate: raw?.reviewGate === 'operator' ? 'operator' : 'independent',
+    reviewFailedGraceHours: int(raw?.reviewFailedGraceHours, EXECUTE_CONFIG_DEFAULTS.reviewFailedGraceHours, 0, 168),
     ...(Number.isSafeInteger(topic) && topic !== 0 ? { actionTopicId: topic } : {}),
   };
 }
@@ -291,7 +306,7 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
       denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace, p.tmpDir)])],
       allowRead: [p.workspace, p.depsCache, p.tmpDir],
       allowWrite: [p.workspace, p.tmpDir, ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile), ...(opts.extraWrite ?? [])],
-      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, '.claude'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
+      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, PREVIOUS_REVIEW_FILE), path.join(p.workspace, '.claude'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
     },
     enableWeakerNestedSandbox: false,
     enableWeakerNetworkIsolation: false,
@@ -404,7 +419,7 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
   for (const d of [path.join(p.workspace, '.git'), path.join(p.workspace, '.claude'), path.join(p.workspace, 'node_modules'), p.depsCache, path.dirname(p.depsCache)]) {
     deny.push(`Edit(${abs(d)}/**)`, `Edit(${abs(d)})`);
   }
-  deny.push(`Edit(${abs(path.join(p.workspace, EVIDENCE_FILE))})`);
+  deny.push(`Edit(${abs(path.join(p.workspace, EVIDENCE_FILE))})`, `Edit(${abs(path.join(p.workspace, PREVIOUS_REVIEW_FILE))})`);
   const runtime = buildSandboxRuntimeSettings(p);
   // Claude Code keeps its own shell bookkeeping in its temp directory; the confined spawn points
   // that at the attempt's temp directory (CLAUDE_CODE_TMPDIR), which also takes the shared system
