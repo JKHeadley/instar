@@ -338,6 +338,12 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
   } });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/activate-config', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'activation requests a supervised restart on this host; no grant or shared state is written',
+  } });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 

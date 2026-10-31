@@ -11,6 +11,8 @@ const url = process.argv[2];
 const landscape = process.argv.includes('--landscape');
 const mobile = process.argv.includes('--mobile') || landscape;
 const wheel = process.argv.includes('--wheel');
+const cursorCheck = process.argv.includes('--cursor');
+const anyGeometry = process.argv.includes('--any-geometry');
 if (!url || !url.startsWith('https://')) throw new Error('HTTPS desktop URL required');
 const pin = await new Promise(resolve => {
   let value = '';
@@ -72,17 +74,34 @@ try {
     return response.result?.result?.value;
   };
   await call('Runtime.enable');
+  await call('Page.enable');
+  await call('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    window.__desktopSmokeInjected = true;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      const path = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+      if (path === '/dashboard/unlock' || path === '/desktop/requests') {
+        try {
+          const value = await response.clone().json();
+          if (path === '/dashboard/unlock') window.__desktopSmokeAuth = value;
+          else if (args[1]?.method === 'POST') window.__desktopSmokeRequestId = value.requestId;
+        } catch { /* A failed response is handled by the viewer. */ }
+      }
+      return response;
+    };
+  })();` });
   if (mobile) {
     await call('Emulation.setDeviceMetricsOverride', {
       width: landscape ? 844 : 390, height: landscape ? 390 : 844,
       deviceScaleFactor: 3, mobile: true,
     });
     await call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
-    await call('Page.reload');
   }
+  await call('Page.reload', { ignoreCache: true });
   let ready = false;
   for (let i = 0; i < 100 && !ready; i++) {
-    try { ready = await evaluate("document.readyState === 'complete' && !!document.getElementById('unlockButton')"); }
+    try { ready = await evaluate("window.__desktopSmokeInjected === true && document.readyState === 'complete' && !!document.getElementById('unlockButton')"); }
     catch (error) {
       if (!/Execution context was destroyed/.test(error.message)) throw error;
     }
@@ -109,7 +128,8 @@ try {
         || (canvas && !canvas.hidden && canvas.width))) {
         return { width: canvas && !canvas.hidden ? canvas.width : image.naturalWidth,
           height: canvas && !canvas.hidden ? canvas.height : image.naturalHeight,
-          codec: canvas && !canvas.hidden ? 'h264' : 'jpeg', status };
+          codec: canvas && !canvas.hidden ? 'h264' : 'jpeg',
+          machine: document.getElementById('machineName')?.textContent || '', status };
       }
       if (/unavailable|refused|not accepted|error/i.test(status)) return { error: status };
       await sleep(100);
@@ -118,6 +138,45 @@ try {
   })()`);
   let mobileResult;
   let wheelResult;
+  let cursorResult;
+  if (cursorCheck && !opened?.error) {
+    const move = await evaluate(`(async () => {
+      const auth = window.__desktopSmokeAuth, id = window.__desktopSmokeRequestId;
+      if (!auth?.token || !auth?.operatorSessionToken || !id) throw new Error('browser session was not captured');
+      const response = await fetch('/desktop/requests/' + encodeURIComponent(id) + '/cursor', {
+        headers: { Authorization: 'Bearer ' + auth.token,
+          'X-Instar-Operator-Session': auth.operatorSessionToken } });
+      if (!response.ok) throw new Error('initial host cursor read failed');
+      const before = await response.json();
+      const target = { x: before.x < 0.5 ? 0.8 : 0.2, y: before.y < 0.5 ? 0.8 : 0.2 };
+      const source = document.getElementById('videoCanvas').hidden
+        ? document.getElementById('screen') : document.getElementById('videoCanvas');
+      const rect = source.getBoundingClientRect();
+      const width = source.naturalWidth || source.width, height = source.naturalHeight || source.height;
+      const scale = Math.min(rect.width / width, rect.height / height);
+      const imageWidth = width * scale, imageHeight = height * scale;
+      const left = rect.left + (rect.width - imageWidth) / 2;
+      const top = rect.top + (rect.height - imageHeight) / 2;
+      return { before, target, x: left + target.x * imageWidth, y: top + target.y * imageHeight,
+        restoreX: left + before.x * imageWidth, restoreY: top + before.y * imageHeight };
+    })()`);
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: move.x, y: move.y, pointerType: 'mouse' });
+    for (let i = 0; i < 40; i++) {
+      await sleep(50);
+      const point = await evaluate(`(async () => {
+        const auth = window.__desktopSmokeAuth, id = window.__desktopSmokeRequestId;
+        const response = await fetch('/desktop/requests/' + encodeURIComponent(id) + '/cursor', {
+          headers: { Authorization: 'Bearer ' + auth.token,
+            'X-Instar-Operator-Session': auth.operatorSessionToken } });
+        return response.ok ? response.json() : null;
+      })()`);
+      if (point && Math.abs(point.x - move.target.x) < 0.07
+        && Math.abs(point.y - move.target.y) < 0.07) { cursorResult = { moved: true }; break; }
+    }
+    if (!cursorResult) throw new Error('host cursor did not move to the browser input target');
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: move.restoreX,
+      y: move.restoreY, pointerType: 'mouse' });
+  }
   if (wheel && !opened?.error) {
     const desktopControls = await evaluate(`({ touchModeHidden: document.getElementById('modeButton').hidden,
       cursorOutline: document.querySelector('#localCursor path')?.getAttribute('stroke') })`);
@@ -191,13 +250,28 @@ try {
     }
     return { status: document.getElementById('status')?.textContent, blank: false };
   })()`);
+  const postStop = opened?.error ? null : await evaluate(`(async () => {
+    const auth = window.__desktopSmokeAuth, id = window.__desktopSmokeRequestId;
+    const response = await fetch('/desktop/requests/' + encodeURIComponent(id) + '/cursor', {
+      headers: { Authorization: 'Bearer ' + auth.token,
+        'X-Instar-Operator-Session': auth.operatorSessionToken } });
+    return { localInputOff: document.getElementById('control').hidden
+      && !document.body.classList.contains('desktop-live'),
+      serverRefused: response.status === 403 || response.status === 404 };
+  })()`);
   if (opened?.error) throw new Error(`desktop open failed: ${opened.error}`);
-  if (opened?.width !== 1920 || opened?.height !== 1080) {
+  if (!opened?.width || !opened?.height || opened.width < 640 || opened.height < 480
+    || (!anyGeometry && (opened.width !== 1920 || opened.height !== 1080))) {
     throw new Error(`desktop geometry wrong: ${opened?.width}x${opened?.height}`);
   }
   if (!stopped?.blank || !/stopped/i.test(stopped.status)) throw new Error('Stop did not blank and revoke');
-  console.log(JSON.stringify({ geometry: `${opened.width}x${opened.height}`,
-    codec: opened.codec, stopped: true, ...(wheelResult ? { wheel: true } : {}),
+  if (!postStop?.localInputOff || !postStop?.serverRefused) {
+    throw new Error(`post-Stop input was not refused: ${JSON.stringify(postStop)}`);
+  }
+  console.log(JSON.stringify({ machine: opened.machine, geometry: `${opened.width}x${opened.height}`,
+    codec: opened.codec, stopped: true, postStopRefused: true,
+    ...(cursorResult ? { cursor: cursorResult.moved } : {}),
+    ...(wheelResult ? { wheel: true } : {}),
     ...(mobileResult ? { mobile: mobileResult } : {}) }));
 } finally {
   if (evaluate && !stopAttempted) {

@@ -90,12 +90,13 @@ export class DirectDesktopAccess {
     private readonly lockouts: RemoteStepUpLockoutPort,
     private readonly targetIdentity: DesktopTargetIdentity,
     private readonly isVerifiedOperator: (topicId: number, uid: string) => boolean,
-    private readonly isDashboardOperatorSession: (token: string) => boolean,
+    private readonly isDashboardOperatorSession: (token: string, browserPublicKey: string) => boolean,
     private readonly sendChallenge: (topicId: number, text: string) => Promise<void>,
     private readonly closeGrant: (grantId: string) => void,
     private readonly now: () => number = Date.now,
     private readonly audit?: DesktopAccessAudit,
     private readonly approvalMode: 'telegram' | 'pin' = 'telegram',
+    private readonly isRelayIssuer?: (operatorSessionToken: string, machineId: string) => boolean,
   ) {
     this.host.setInputFailureHandler?.(() => {
       const row = [...this.requests.values()].find(item => item.grantId === this.activeGrantId);
@@ -109,12 +110,14 @@ export class DirectDesktopAccess {
     return { machineId: this.machineId, label: this.machineLabel };
   }
 
+  targetSigningPublicKey(): string { return this.targetIdentity.publicKey.toString('base64'); }
+
   private sessionHash(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
   private assertViewer(row: DirectRequest, token: string): void {
-    if (!this.isDashboardOperatorSession(token)
+    if (!this.isDashboardOperatorSession(token, row.browserPublicKey)
       || !crypto.timingSafeEqual(Buffer.from(this.sessionHash(token)), Buffer.from(row.operatorSessionHash))) {
       throw new Error('dashboard operator session unavailable');
     }
@@ -141,7 +144,7 @@ export class DirectDesktopAccess {
       && !!row.approvedAt && this.now() >= row.approvedAt && this.now() < row.approvedAt + GRANT_MS
       && !!row.lastActivity && this.now() - row.lastActivity < IDLE_MS
       && (this.approvalMode === 'pin'
-        ? !!row.operatorSessionToken && this.isDashboardOperatorSession(row.operatorSessionToken)
+        ? !!row.operatorSessionToken && this.isDashboardOperatorSession(row.operatorSessionToken, row.browserPublicKey)
         : this.isVerifiedOperator(row.topicId, row.operatorUid))
       && crypto.verify(null, this.signedPayload(row), this.keyPair.publicKey, row.grantSignature)
       && !!row.targetSignature
@@ -158,7 +161,7 @@ export class DirectDesktopAccess {
 
   async begin(input: DirectDesktopRequestInput): Promise<{ requestId: string }> {
     if (this.disabled || input.machineId !== this.machineId
-      || !this.isDashboardOperatorSession(input.operatorSessionToken)
+      || !this.isDashboardOperatorSession(input.operatorSessionToken, input.browserPublicKey)
       || (this.requiresTelegramStepUp() && (input.scopeConfirmed !== true
         || !Number.isSafeInteger(input.topicId) || input.topicId <= 0
         || !/^\d{1,30}$/.test(input.operatorUid)
@@ -315,7 +318,7 @@ export class DirectDesktopAccess {
       && !!row.lastActivity && this.now() - row.lastActivity < IDLE_MS
       && !!row.interruptedAt && this.now() - row.interruptedAt < 30_000
       && (row.resumeCount ?? 0) < 3 && !!row.operatorSessionToken
-      && this.isDashboardOperatorSession(row.operatorSessionToken);
+      && this.isDashboardOperatorSession(row.operatorSessionToken, row.browserPublicKey);
   }
 
   /** Same logical session and original deadlines; one idempotent replacement per attempt. */
@@ -435,7 +438,8 @@ export class DirectDesktopAccess {
     const tlsSocket = !!request.socket && 'encrypted' in request.socket
       && request.socket.encrypted === true;
     const loopback = isLoopbackPeer(request.socket?.remoteAddress);
-    if (!tlsSocket && !loopback) throw new Error('desktop transport must use the local tunnel');
+    const relayMachineId = (request as IncomingMessage & { desktopRelayMachineId?: string }).desktopRelayMachineId;
+    if (!tlsSocket && !loopback && !relayMachineId) throw new Error('desktop transport must use the local tunnel');
     const expectedScheme = tlsSocket || (loopback && forwarded === 'https') ? 'https' : 'http';
     if (!origin || !host || origin !== `${expectedScheme}://${host}`) {
       throw new Error('desktop origin invalid');
@@ -451,6 +455,10 @@ export class DirectDesktopAccess {
     const row = [...this.requests.values()].find(item => item.ticketHash === hash);
     if (!row || !row.ticketExpiresAt || this.now() >= row.ticketExpiresAt
       || row.ticketUsed || row.connected || !this.validGrant(row)) throw new Error('desktop ticket invalid');
+    if (relayMachineId && (!row.operatorSessionToken
+      || !this.isRelayIssuer?.(row.operatorSessionToken, relayMachineId))) {
+      throw new Error('desktop relay issuer invalid');
+    }
     row.ticketUsed = true;
     row.ticketPlaintext = undefined;
     row.ticketProofHash = undefined;

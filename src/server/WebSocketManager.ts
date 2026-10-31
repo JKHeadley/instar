@@ -38,6 +38,11 @@ import type { StreamTicketStore } from './StreamTicketStore.js';
 import { PeerStreamProxy, type UpstreamTransport, type UpstreamHandlers } from './PeerStreamProxy.js';
 import type { SessionPlatformInfo } from './sessionPlatform.js';
 import type { DesktopStreamManager } from './DesktopStreamManager.js';
+import type { DesktopMeshBroker } from './DesktopMeshBroker.js';
+import { DesktopMeshStreamRelay } from './DesktopMeshStreamRelay.js';
+import { machineAuthMiddleware, type MachineAuthDeps, type MachineAuthContext } from './machineAuth.js';
+import { isLoopbackPeer } from '../core/desktopTransport.js';
+import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 
 /** Pool Dashboard Streaming §2.1: only tmux-safe session names ever reach tmux. */
 const SAFE_SESSION_NAME = /^[A-Za-z0-9_.:@-]+$/;
@@ -66,6 +71,7 @@ interface ClientState {
 }
 
 export class WebSocketManager {
+  private readonly desktopMeshRelay?: DesktopMeshStreamRelay;
   private wss: WebSocketServer;
   private clients: Map<WebSocket, ClientState> = new Map();
   private sessionOutputCache: Map<string, string> = new Map();
@@ -100,6 +106,9 @@ export class WebSocketManager {
     hookEventReceiver?: HookEventReceiver;
     streamTicketStore?: StreamTicketStore;
     desktopStreamManager?: DesktopStreamManager;
+    desktopMeshBroker?: DesktopMeshBroker | null;
+    desktopMeshSigningKeyPem?: string;
+    desktopPeerAuth?: MachineAuthDeps;
     poolStreamAllowRemoteInput?: boolean;
     poolStreamConnector?: PoolStreamConnector;
     selfMachineId?: string;
@@ -117,6 +126,9 @@ export class WebSocketManager {
     this.poolStreamConnector = options.poolStreamConnector;
     this.selfMachineId = options.selfMachineId;
     this.resolveSessionPlatform = options.resolveSessionPlatform;
+    if (options.desktopMeshBroker && options.selfMachineId && options.desktopMeshSigningKeyPem) {
+      this.desktopMeshRelay = new DesktopMeshStreamRelay(options.selfMachineId, options.desktopMeshSigningKeyPem);
+    }
     if (options.instarDir) {
       this.registryPath = path.join(options.instarDir, 'topic-session-registry.json');
     }
@@ -130,6 +142,44 @@ export class WebSocketManager {
       const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
 
       if (url.pathname === '/desktop-stream') {
+        const offered = typeof request.headers['sec-websocket-protocol'] === 'string'
+          ? request.headers['sec-websocket-protocol'].split(',').map(part => part.trim()) : [];
+        const ticket = offered[0] === 'instar-desktop-v1' && offered[1]?.startsWith('ticket.')
+          ? offered[1].slice(7) : '';
+        if (!request.headers['x-machine-id'] && ticket && options.desktopMeshBroker) {
+          const tlsSocket = 'encrypted' in socket && socket.encrypted === true;
+          const loopback = isLoopbackPeer(request.socket?.remoteAddress);
+          const scheme = tlsSocket || (loopback && request.headers['x-forwarded-proto'] === 'https')
+            ? 'https' : 'http';
+          if ((!tlsSocket && !loopback) || request.headers.origin !== `${scheme}://${request.headers.host}`) {
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+            socket.destroy();
+            return;
+          }
+          const remote = options.desktopMeshBroker.consumeTicket(ticket);
+          if (remote && this.desktopMeshRelay) {
+            this.desktopMeshRelay.handleUpgrade(request, socket, head, remote.requestId, ticket, remote.url);
+            return;
+          }
+        }
+        if (request.headers['x-machine-id']) {
+          if (!options.desktopPeerAuth) {
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+          }
+          const machineRequest = request as IncomingMessage & { body: object; machineAuth?: MachineAuthContext; desktopRelayMachineId?: string };
+          machineRequest.body = {};
+          let accepted = false;
+          const refusal = { status: (_code: number) => refusal, json: (_body: unknown) => refusal };
+          machineAuthMiddleware(options.desktopPeerAuth)(
+            machineRequest as unknown as ExpressRequest,
+            refusal as unknown as ExpressResponse,
+            () => { accepted = true; },
+          );
+          if (!accepted || !machineRequest.machineAuth) {
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+          }
+          machineRequest.desktopRelayMachineId = machineRequest.machineAuth.machineId;
+        }
         if (!options.desktopStreamManager) {
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
           socket.destroy();
@@ -678,7 +728,10 @@ export class WebSocketManager {
   /**
    * Graceful shutdown — close all connections and stop intervals.
    */
+  closeDesktopMeshRequest(requestId: string): void { this.desktopMeshRelay?.closeRequest(requestId); }
+
   shutdown(): void {
+    this.desktopMeshRelay?.close();
     if (this.streamInterval) clearInterval(this.streamInterval);
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
     if (this.sessionBroadcastInterval) clearInterval(this.sessionBroadcastInterval);

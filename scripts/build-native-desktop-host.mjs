@@ -8,12 +8,16 @@ import { fileURLToPath } from 'node:url';
 
 const releaseUniversal = process.argv.includes('--release-universal');
 const universal = releaseUniversal || (process.env.INSTAR_RELEASE_BUILD === '1' && process.platform === 'darwin');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const windowsSource = path.join(root, 'src/native/remote-desktop/windows/InstarDesktopCompanion.cs');
+const windowsPackageDir = path.join(root, 'dist/native/windows');
+fs.mkdirSync(windowsPackageDir, { recursive: true });
+fs.copyFileSync(windowsSource, path.join(windowsPackageDir, 'InstarDesktopCompanion.cs'));
 if (releaseUniversal && process.platform !== 'darwin') {
   throw new Error('The universal macOS desktop host must be built on macOS');
 }
 
 if (process.platform === 'darwin') {
-  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const source = path.join(root, 'src/native/remote-desktop/macos/InstarDesktopHost.swift');
   const binary = path.join(root, 'dist/native/instar-desktop-host');
   fs.mkdirSync(path.dirname(binary), { recursive: true });

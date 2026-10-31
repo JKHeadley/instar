@@ -11,6 +11,8 @@ let sendChain = Promise.resolve();
 let receiveChain = Promise.resolve();
 let requestId = '';
 let machineId = '';
+const trustedTargetKeys = new Map();
+let trustedTargetSigningPublicKey = '';
 let connectionNonce = '';
 let socket;
 let frameUrl = '';
@@ -221,6 +223,10 @@ async function verifyTarget(result) {
     throw new Error('Remote target identity or lease changed.');
   }
   const publicBytes = base64ToBytes(result.targetSigningPublicKey);
+  if (!trustedTargetSigningPublicKey
+    || bytesToBase64(publicBytes) !== trustedTargetSigningPublicKey) {
+    throw new Error('Remote target key does not match the registered machine.');
+  }
   const publicKey = await crypto.subtle.importKey('spki', publicBytes, 'Ed25519', false, ['verify']);
   const payload = encoder.encode(JSON.stringify(['desktop-target-key-v1', requestId, machineId,
     bytesToBase64(await crypto.subtle.exportKey('spki', keyPair.publicKey)),
@@ -230,10 +236,6 @@ async function verifyTarget(result) {
   const valid = await crypto.subtle.verify('Ed25519', publicKey,
     base64ToBytes(result.targetSignature), payload);
   if (!valid) throw new Error('Remote target signature did not verify.');
-  const pinName = `instar_desktop_target_${machineId}`;
-  const pinned = localStorage.getItem(pinName);
-  if (pinned && pinned !== bytesToBase64(publicBytes)) throw new Error('Remote target key changed. Access refused.');
-  if (!pinned) localStorage.setItem(pinName, bytesToBase64(publicBytes));
 }
 function sendCommand(command) {
   const epoch = streamEpoch;
@@ -592,30 +594,46 @@ function requirePinAgain() {
 
 async function loadTargetsAndMaybeOpen() {
   const targets = await api('/desktop/targets');
+  const machines = targets.machines || [];
   $('machine').replaceChildren();
-  for (const target of targets.machines || []) {
+  trustedTargetKeys.clear();
+  for (const target of machines) {
     const option = document.createElement('option');
     option.value = target.machineId;
-    option.textContent = target.label;
-    option.disabled = !target.ready;
+    const trustedKey = typeof target.targetSigningPublicKey === 'string'
+      ? target.targetSigningPublicKey : '';
+    option.disabled = !target.ready || !trustedKey;
+    option.textContent = option.disabled
+      ? `${target.label} — ${target.unavailableReason || 'Unavailable right now'}`
+      : target.label;
+    if (!option.disabled) trustedTargetKeys.set(target.machineId, trustedKey);
     $('machine').append(option);
   }
   const preferredMachine = new URLSearchParams(location.search).get('machineId');
-  const hasPreferredMachine = !!preferredMachine && [...$('machine').options]
-    .some(option => option.value === preferredMachine && !option.disabled);
+  const preferredTarget = preferredMachine
+    ? machines.find(target => target.machineId === preferredMachine) : null;
+  const hasPreferredMachine = !!preferredTarget?.ready && trustedTargetKeys.has(preferredMachine);
   if (hasPreferredMachine) $('machine').value = preferredMachine;
   $('unlock').hidden = true;
   const ready = [...$('machine').options].filter(option => !option.disabled);
-  if (ready.length === 0) {
-    $('request').hidden = true;
+  $('requestButton').disabled = ready.length === 0;
+  if (!preferredMachine && ready.length > 0) $('machine').value = ready[0].value;
+  if (preferredMachine && !hasPreferredMachine) {
+    $('request').hidden = machines.length === 0;
     $('retryButton').hidden = false;
-    const reason = (targets.machines || []).find(target => target.unavailableReason)?.unavailableReason;
+    status(preferredTarget?.unavailableReason || 'The requested machine is not available right now.');
+    return;
+  }
+  if (ready.length === 0) {
+    $('request').hidden = machines.length === 0;
+    $('retryButton').hidden = false;
+    const reason = machines.find(target => target.unavailableReason)?.unavailableReason;
     status(reason || 'This machine’s desktop is not available right now.');
     return;
   }
   $('retryButton').hidden = true;
-  if (ready.length === 1 || hasPreferredMachine) {
-    if (ready.length === 1) $('machine').value = ready[0].value;
+  if (hasPreferredMachine || (machines.length === 1 && ready.length === 1)) {
+    if (!hasPreferredMachine) $('machine').value = ready[0].value;
     status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
     await requestDesktop();
   } else {
@@ -679,6 +697,8 @@ async function requestDesktop() {
     const publicKey = await crypto.subtle.exportKey('spki', keyPair.publicKey);
     const ecdhPublicKey = await crypto.subtle.exportKey('raw', ecdhKeyPair.publicKey);
     machineId = $('machine').value;
+    trustedTargetSigningPublicKey = trustedTargetKeys.get(machineId) || '';
+    if (!trustedTargetSigningPublicKey) throw new Error('Target identity is not verified.');
     videoCodec = 'jpeg';
     if (window.VideoDecoder?.isConfigSupported) {
       try {
