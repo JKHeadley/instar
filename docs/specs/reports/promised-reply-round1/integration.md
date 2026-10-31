@@ -1,0 +1,37 @@
+# Round 1 — Integration review: THREADLINE-PROMISED-REPLY-SPEC (DRAFT v2)
+
+Verdict: SERIOUS ISSUES. 9 DESIGN, 4 PRECISION. All claims below were checked against /Users/dawn/Projects/instar-wt-ledger/src.
+
+## DESIGN
+
+D1. Closing on `inReplyTo` collides with reply validation (spec §2, Test 9). `/threadline/relay-send` (src/server/routes.ts ~38430) answers 400 "inReplyTo must name an authenticated inbound on this thread" unless `isAuthenticatedThreadlineInbound` finds the id in the listener inbox or ThreadLog (src/threadline/ThreadlineReplyValidation.ts). The spec itself says relay inbounds are largely absent from canonical logs. So for those threads a reply carrying the recorded `inboundMessageId` is rejected, never sent, and never closes anything. Test 9 ("closes on inReplyTo with its own recorded id") cannot happen end to end. Also `tryClaimReply(inReplyTo)` makes a second reply to the same inbound 409. Resolve: say how an obligation closes when the reply is refused or absent from the log; make the close hook sit on the send path after validation, or make the fallback the primary route.
+
+D2. The session fallback depends on data the outbound path does not reliably have (§2, §4). `originSessionName` is optional in the relay-send body. Forwarded sends from a standby drop `inReplyTo` and `originSessionName` by design (src/threadline/relayForward.ts ~341). Outbound hooks must therefore live where both exist, and a forwarded reply from another machine can never match "same sessionName". Specify the hook point and the forwarded-reply case.
+
+D3. `sessionName` cannot be filled at ack time on all paths (§1). `relayAck.settle(...)` in src/commands/server.ts (~19383-19559) receives only an outcome label. `listener-delivered` goes to the shared warm-listener inbox with no session name; `pipe-spawned` and `router-delivered` have one. Also `settle` returns a label, not the sent ack's message id. Specify per-outcome sessionName (nullable) and what `still-working`/`session-ended` mean when it is null.
+
+D4. Echo input 1 (trust gates) is listed, not decided. `classifyRelayPlaintextOperation` returns the raw wire type; `resolveRelayUnknownSenderTrust` allows only `ack` unconditionally and otherwise checks `getAllowedOperationsByFingerprint` (untrusted: always false). `shouldRefuseDowngradedPlaintext` exempts only `'ack'`. `sendPlaintextTyped` sends any non-chat type as raw plaintext, so a pinned peer would refuse it. The spec must decide: add `reply-notice` to the ack exemptions in both functions, or encrypt it to the pinned key. Also decide the trust level that may receive it, and the inbound gate treatment for known peers.
+
+D5. Echo input 3 (at-most-once across a crash) is contradicted by the body. §3 says the obligation moves to `noticed` only after the verdict returns; the `state` enum has no `sending`. A crash between send and verdict would re-send on restart. Add a durable `sending` mark before send; on startup `sending` without verdict becomes `noticed` with verdict `unknown`, never re-sent. The `unconfirmed` verdict also needs a defined meaning versus `unknown`.
+
+D6. Echo inputs 2 and 4 are only half in the body. The body sends a "fixed template" string; it never defines the wire payload (structured fields: reason, times, inboundMessageId), nor that the receiver renders and stores no peer free text. Older peers see content, so the text must still be carried; say what travels and who renders. Symmetry: the spec appends only on the receiving side. State that the sending side also records the outgoing notice through `recordThreadMessage`, and that the new receive case calls it itself, on both the unknown-sender plaintext path and the known-peer path (src/threadline/ThreadlineBootstrap.ts ~675-780; src/commands/server.ts relay handler).
+
+D7. Echo input 5 (agent awareness) and migration are absent from the body. `threadline_promise_close` does not exist in ThreadlineMCPServer.ts (tools listed lines 1-14, `threadline_send` at ~600). Awareness text lives in src/scaffold/templates.ts (~2080+), PostUpdateMigrator.ts and the warm-session prompt (ListenerSessionManager.ts ~706). Spec must name each, plus a PostUpdateMigrator step for the config key and the new store, and a decision whether the close tool is MCP-only or also an HTTP route (the MCP server calls the local server).
+
+D8. Missing `## Multi-machine posture` section (Standard A). The new JSONL obligation store has no declared posture; the default is `unified`. §4 declares it effectively machine-local ("adopts only if the store is shared or replicated") with no `machine-local-justification` key. A relay-holder standby/failover loses all open obligations and sends no notice, which is the exact gap being closed. Either make the store unified (replicate with the holder/CANONICAL-HISTORY model, as the parent ledger spec §6 does), or justify with a key from the closed taxonomy; "availability" and "per-machine cache" are denied. Also reconcile `ownerMachine` with the fact that only the relay-holding machine sends acks.
+
+D9. Notice raise lacks Standard B and P20 declarations. The notice is an automated source raised on first detection at T with no self-heal step and none of the P19 brakes (max-attempts, backoff, dedupe-key, breaker, latency ceiling, audit location). Reasonable answer: the notice goes to a peer and is not an operator notice, so say so and declare what is exempt; otherwise add a heal step (nudge/respawn the session) before notice. P20: the symbol "no matching outbound" is taken to prove "no reply is coming"; it can be present while a reply was sent (forwarded send drops inReplyTo, D2) and absent while the state holds. "Session alive" is read from tmux/SessionManager; the unmeasurable case (SessionManager unavailable, null sessionName) must yield an explicit unknown with a least-harmful action (suppress, do not notice), not a default `still-working`.
+
+(Also in this class, D10 below is a factual error.)
+
+D10. Wrong endpoint. §3 says the notice shows on `/threadline/peers`. The route is `/threadline/peers/health` (and `/threadline/peers/:fp/health`) in src/server/routes.ts ~19184, 19265, and it aggregates a pool. Also the spec does not say what field of the peer health body carries it; the health body type guard (`isPeerHealthBody`) may reject unknown fields.
+
+## PRECISION
+
+P1. Backup/restore (item 6): BackupManager includes only `threadline/conversations.json`; per-thread `*.log.jsonl` are excluded. "JSONL beside the thread log" is therefore not backed up. State whether open obligations are deliberately not restored (the 24h ceiling makes this acceptable) or add the file to includeFiles.
+P2. Rollback (item 7): say that disabling `threadline.promisedReply.enabled` leaves the store inert, that `reply-notice` rows already in peer logs stay, and that a receiver downgraded to a build without the case treats it as content.
+P3. Dashboard (item 8): only the receiver's view is specified. Add one line for the sender-side open/noticed counts in the same health surface or a log line.
+P4. Config knob: name the keys for T (30 min), age ceiling (24h), per-peer hourly cap and retention (7 days), and state they are read per message, not at boot. Test list lacks cases for Echo inputs 1, 3 and 5 (D4, D5, D7).
+
+## Echo's five inputs — status
+1 Trust gates: listed only (D4). 2 Untrusted text: partly (D6). 3 At-most-once: contradicted by body (D5). 4 Symmetry: receiver side only (D6). 5 Agent awareness: not addressed (D7).
