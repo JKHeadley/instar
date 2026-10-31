@@ -36,4 +36,24 @@ describe('bounded verifier preflight decisions', () => {
     expect(preflightAssertionFailures(report('passed', ['passed']), root, selected)).toEqual([]);
     expect(preflightAssertionFailures(report('failed', ['failed']), root, ['tests/unit/other.test.ts'])).toBeNull();
   });
+  it('rejects incomplete and contradictory run reports before they can establish an early red', () => {
+    const selected = ['tests/unit/example.test.ts'];
+    expect(preflightAssertionFailures(JSON.stringify({ testResults: [] }), root, selected)).toBeNull();
+    expect(preflightAssertionFailures(JSON.stringify({ testResults: [
+      { name: file, status: 'failed', assertionResults: [{ status: 'failed' }] },
+      { name: file, status: 'failed', assertionResults: [{ status: 'failed' }] },
+    ] }), root, selected)).toBeNull();
+    expect(preflightAssertionFailures(report('failed', ['passed']), root, selected)).toBeNull();
+    expect(preflightAssertionFailures(report('passed', ['failed']), root, selected)).toBeNull();
+    expect(preflightAssertionFailures(report('pending', ['failed']), root, selected)).toBeNull();
+    expect(preflightAssertionFailures(report('failed', ['pending']), root, selected)).toBeNull();
+    expect(preflightAssertionFailures('{bad', root, selected)).toBeNull();
+    expect(preflightAssertionFailures(' '.repeat(2 * 1024 * 1024 + 1), root, selected)).toBeNull();
+  });
+  it('rejects duplicate, missing-name, and escaped list identities', () => {
+    expect(parsePreflightList(JSON.stringify([{ file }, { file }]), root, true)).toBeNull();
+    expect(parsePreflightList(JSON.stringify([{ file }]), root, false)).toBeNull();
+    expect(parsePreflightList(JSON.stringify([{ file: `${root}/../elsewhere/a.test.ts` }]), root, true)).toBeNull();
+    expect(parsePreflightList(JSON.stringify([{ file: `${root}/src/a.ts` }]), root, true)).toBeNull();
+  });
 });

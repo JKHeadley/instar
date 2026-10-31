@@ -76,6 +76,14 @@ describe('importRefusal', () => {
   it('imports a record that answers exactly the dispatched attempt', () => {
     expect(importRefusal(withAttempt(), marker(), ctx)).toBeNull();
   });
+  it('preserves a peer early red only with valid, exact-head preflight evidence', () => {
+    const preflight = { mode: 'enforce', outcome: 'red', reason: 'preflight-red', elapsedMs: 1200,
+      changedFiles: 1, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 1,
+      repeatedFailedFile: 'tests/unit/example.test.ts', headSha: sha('a'), baseSha: sha('b') } as const;
+    const earlyRed = withAttempt({ outcome: 'failure', lanes: [], preflight: { ...preflight, selectedFiles: [...preflight.selectedFiles] } });
+    expect(importRefusal(earlyRed, marker(), ctx)).toBeNull();
+    expect(importRefusal({ ...earlyRed, preflight: { ...earlyRed.preflight!, headSha: sha('c') } }, marker(), ctx)).toMatch(/^invalid-record/);
+  });
   it('refuses every mismatch, each with its reason', () => {
     const cases: Array<[unknown, Partial<RemoteMarker> | null, Partial<typeof ctx> | null, string]> = [
       [record(), null, null, 'no-attempt'],

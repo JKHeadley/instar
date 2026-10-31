@@ -32,6 +32,7 @@ export function parsePreflightList(text: string | null, root: string, filesOnly:
     if (!filesOnly && (typeof x.name !== 'string' || !x.name.trim())) return null;
     const rel = path.relative(root, x.file).split(path.sep).join('/');
     if (!rel || rel.startsWith('../') || rel === '..' || path.isAbsolute(rel) || !rel.endsWith('.test.ts')) return null;
+    if (filesOnly && files.has(rel)) return null;
     files.add(rel);
   }
   return { files: [...files].sort(), cases: filesOnly ? 0 : doc.length };

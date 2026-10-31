@@ -10,7 +10,7 @@ const filesList = JSON.stringify([{ file }]);
 const report = (status: 'passed' | 'failed') => JSON.stringify({ testResults: [{ name: file, status, assertionResults: [{ status }] }] });
 const noErrors = JSON.stringify({ v: 1, unhandledErrors: 0, messages: [] });
 
-function harness(runs: Array<{ status: number; json: string; errors?: string | null; quiescent?: boolean }>) {
+function harness(runs: Array<{ status: number; json: string; errors?: string | null; quiescent?: boolean; deadlineKilled?: boolean }>) {
   const files = new Map<string, string>();
   const calls: string[][] = [];
   let now = 0;
@@ -25,7 +25,7 @@ function harness(runs: Array<{ status: number; json: string; errors?: string | n
       files.set(output, next.json);
       if (opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE && next.errors !== null) files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE, next.errors ?? noErrors);
       now += 1000;
-      return { status: next.status, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid: 12, quiescent: next.quiescent ?? true };
+      return { status: next.status, signal: null, stdout: '', stderr: '', deadlineKilled: next.deadlineKilled ?? false, pid: 12, quiescent: next.quiescent ?? true };
     },
     fs: {
       mkdtemp: (prefix: string) => `/tmp/${prefix}${Math.random()}`,
@@ -56,5 +56,21 @@ describe('focused verifier preflight', () => {
   it('treats a failed first run followed by green as diagnostic pass', async () => {
     const h = harness([{ status: 0, json: filesList }, { status: 0, json: goodList }, { status: 1, json: report('failed') }, { status: 0, json: report('passed') }]);
     expect(await h.run('enforce')).toMatchObject({ outcome: 'pass', reason: 'retry-green' });
+  });
+  it('skips on selected-file breadth before collecting cases or running tests', async () => {
+    const wide = JSON.stringify(Array.from({ length: 6 }, (_, n) => ({ file: `${root}/tests/unit/f${n}.test.ts` })));
+    const h = harness([{ status: 0, json: wide }]);
+    expect(await h.run('enforce')).toMatchObject({ outcome: 'skip', reason: 'selected-files-cap' });
+    expect(h.calls).toHaveLength(1);
+  });
+  it('treats an unhandled error, timed-out attempt, or unknown process cleanup as no early-red proof', async () => {
+    const unhandled = harness([{ status: 0, json: filesList }, { status: 0, json: goodList },
+      { status: 1, json: report('failed'), errors: JSON.stringify({ v: 1, unhandledErrors: 1, messages: [] }) }]);
+    expect(await unhandled.run('enforce')).toMatchObject({ outcome: 'error', reason: 'first-unhandled-unknown-or-nonzero' });
+    const timed = harness([{ status: 0, json: filesList }, { status: 0, json: goodList },
+      { status: 1, json: report('failed'), deadlineKilled: true }]);
+    expect(await timed.run('enforce')).toMatchObject({ outcome: 'timeout', reason: 'first-run-timeout' });
+    const uncontained = harness([{ status: 0, json: filesList, quiescent: false }]);
+    await expect(uncontained.run('enforce')).rejects.toThrow('process group did not exit');
   });
 });
