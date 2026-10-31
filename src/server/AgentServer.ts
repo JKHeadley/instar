@@ -1408,7 +1408,7 @@ export class AgentServer {
     // and the check the console makes BEFORE it shows a PIN box (a box the server
     // will refuse is never shown; the console offers the secure address instead).
     const unlockRefusedHere = (req: Request): boolean =>
-      dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress);
+      dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']);
     this.app.get('/dashboard/unlock-check', (req: Request, res: Response) => {
       res.setHeader('Cache-Control', 'no-store');
       if (!unlockRefusedHere(req)) { res.json({ accepted: true }); return; }
