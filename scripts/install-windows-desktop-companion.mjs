@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { readWindowsDesktopUnicastAddresses, selectWindowsDesktopBridgeAddress, validateWindowsDesktopBridgeAddress } from '../dist/core/WindowsDesktopBridgeAddress.js';
+import { readWindowsDesktopUnicastAddresses, validateWindowsDesktopBridgeAddress } from '../dist/core/WindowsDesktopBridgeAddress.js';
 import { classifyWindowsDesktopPrepareFailure } from '../dist/core/WindowsDesktopBootstrapStatus.js';
 
 let installPhase = 'preflight';
@@ -43,7 +43,10 @@ const dest = path.join(linuxAppData, 'InstarDesktop');
 fs.mkdirSync(dest, { recursive: true });
 installPhase = 'address';
 const windowsAddresses = readWindowsDesktopUnicastAddresses();
-const bindAddress = selectWindowsDesktopBridgeAddress(gateway, windowsAddresses);
+// The signed WSL transport runs inside Windows, so the companion needs only
+// loopback. Binding the WSL gateway triggers a Windows Firewall permission
+// dialog that the remote viewer cannot safely dismiss.
+const bindAddress = '127.0.0.1';
 const addressPath = path.join(dest, 'bridge.address');
 let oldAddress = bindAddress;
 if (fs.existsSync(addressPath)) {
@@ -141,15 +144,27 @@ if (staged.taskRunning) {
       }
       throw new Error(`companion-reply-http-${response.status}`);
   };
-  let lastPrepareFailure = 'prepare-reply-invalid';
-  for (let attempt = 0; attempt < 8 && !updateToken; attempt++) {
+  // WSL's 127.0.0.1 is not Windows loopback under NAT. Once the companion
+  // has migrated, use the signed Windows-local request from the first attempt.
+  let requestViaWindows = oldAddress === '127.0.0.1';
+  const localFailure = error => {
+    const detail = `${error?.stderr || ''}\n${error?.message || ''}`;
+    return /windows-local-request-timeout/.test(detail) ? 'prepare-local-timeout'
+      : /windows-local-request-forbidden/.test(detail) ? 'prepare-local-forbidden'
+        : /windows-local-request-unavailable/.test(detail) ? 'prepare-local-unavailable'
+          : 'prepare-local-reply-invalid';
+  };
+  let lastPrepareFailure = requestViaWindows ? 'prepare-local-reply-invalid' : 'prepare-reply-invalid';
+  for (let attempt = 0; attempt < (requestViaWindows ? 3 : 8) && !updateToken; attempt++) {
     try {
-      const prepared = await request('prepare-update', {});
+      const prepared = requestViaWindows
+        ? runPhase('RequestUpdate', 'prepare-update')
+        : await request('prepare-update', {});
       if (prepared?.ok === true && /^[A-Za-z0-9_-]{32}$/.test(prepared.updateToken)) {
         updateToken = prepared.updateToken;
-      } else lastPrepareFailure = 'prepare-reply-invalid';
+      } else lastPrepareFailure = requestViaWindows ? 'prepare-local-reply-invalid' : 'prepare-reply-invalid';
     } catch (error) {
-      lastPrepareFailure = classifyWindowsDesktopPrepareFailure(error);
+      lastPrepareFailure = requestViaWindows ? localFailure(error) : classifyWindowsDesktopPrepareFailure(error);
     }
     if (!updateToken) await new Promise(resolve => setTimeout(resolve, 1_000));
   }
@@ -157,7 +172,6 @@ if (staged.taskRunning) {
   // reachable from Windows itself. The local request still needs the shared
   // secret and the companion's one-use update token; Task Scheduler confirms
   // the old process stopped before any executable is replaced.
-  let requestViaWindows = false;
   if (!updateToken && lastPrepareFailure === 'prepare-timeout') {
     try {
       const prepared = runPhase('RequestUpdate', 'prepare-update');
@@ -166,11 +180,7 @@ if (staged.taskRunning) {
         requestViaWindows = true;
       } else lastPrepareFailure = 'prepare-local-reply-invalid';
     } catch (error) {
-      const detail = `${error?.stderr || ''}\n${error?.message || ''}`;
-      lastPrepareFailure = /windows-local-request-timeout/.test(detail) ? 'prepare-local-timeout'
-        : /windows-local-request-forbidden/.test(detail) ? 'prepare-local-forbidden'
-          : /windows-local-request-unavailable/.test(detail) ? 'prepare-local-unavailable'
-            : 'prepare-local-reply-invalid';
+      lastPrepareFailure = localFailure(error);
     }
   }
   if (!updateToken) throw new Error(`Running Windows companion did not prepare for update: ${lastPrepareFailure}`);

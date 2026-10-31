@@ -31,6 +31,16 @@ export function resolveWindowsDesktopBridgeAddress(
   return validateWindowsDesktopBridgeAddress(persistedAddress, gateway, windowsAddresses);
 }
 
+/** The Windows-local transport can reach a loopback-only companion even when
+ * WSL itself cannot. Keep accepting the previous Windows-owned gateway until
+ * the next installer pass moves that companion to loopback. */
+export function resolveWindowsDesktopLocalAddress(
+  persistedAddress: string | undefined, gateway: string, windowsAddresses: readonly string[],
+): string {
+  if (persistedAddress === '127.0.0.1') return persistedAddress;
+  return resolveWindowsDesktopBridgeAddress(persistedAddress, gateway, windowsAddresses);
+}
+
 /** Ask Windows which addresses it owns before using a WSL route as a host
  * endpoint. The route itself is not proof: in mirrored mode it is a router. */
 export function readWindowsDesktopUnicastAddresses(): string[] {

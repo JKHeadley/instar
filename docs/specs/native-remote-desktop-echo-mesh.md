@@ -85,14 +85,15 @@ local and authenticated; it exposes no VNC/RDP service or public port. A
 missing companion, inactive Windows session, or failed input/capture probe is
 a truthful unavailable state.
 
-The WSL bridge address depends on its network mode. Under NAT, the Windows
-host owns WSL's private default gateway; under mirrored networking, that
-gateway can be the LAN router and Windows is reached through `127.0.0.1`.
-Installation chooses the gateway only when Windows reports owning it,
-otherwise it binds the companion to loopback. Discovery requires the saved
-address to match that current, Windows-owned choice; a missing or stale file
-leaves desktop access dark. A persisted address cannot redirect authenticated
-companion traffic to another host. The Bearer-only
+The companion binds Windows loopback only. Instar sends signed requests from
+WSL through a bounded Windows-local process, so it does not need a listener on
+the WSL gateway. This also avoids a Windows Firewall permission dialog that
+would interrupt the remote viewer. During an update from an older companion,
+the installer may contact its previous Windows-owned private gateway to obtain
+the one-use update token. Discovery accepts that legacy address only while
+Windows still owns it; a missing or stale file leaves desktop access dark.
+A persisted address cannot redirect authenticated companion traffic to another
+host. The Bearer-only
 `GET /desktop/diagnostics` route reports this host's probe booleans or a
 sanitized probe error without exposing screen content, input, or keys.
 If Windows companion installation fails during WSL boot, it reports a fixed
