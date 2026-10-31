@@ -288,7 +288,6 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let mergeCommit = '';
   let worktreeCreated = false;
   let flags: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
-  let classifiedBeforeLanes = false;
   let enteredPreflight = false;
   let preflight: PreflightEvidence | undefined;
 
@@ -424,22 +423,29 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     const mode = effectivePreflightMode(input.preflightMode, input.kind === 'main' ? 'main' : 'pr', input.preflightRediscoverable === true);
     const preflightStartedAt = mode === 'off' ? null : seams.now();
     if (preflightStartedAt !== null) enteredPreflight = true;
+    const preflightGitBudget = () => preflightStartedAt === null ? d.gitStepMs
+      : Math.max(1, Math.min(d.gitStepMs, PREFLIGHT_LIMITS.totalMs - (seams.now() - preflightStartedAt) - PREFLIGHT_LIMITS.teardownReserveMs));
     // Changed files (merge-base→head) for the isolation re-run's PR rule; null = unreadable.
     if (input.kind !== 'main') {
       try {
-        const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base')).trim();
-        changedForIsolation = new Set(parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', mb, input.headSha], 'diff')).map((r) => r.path));
+        const mb = (await gitOk(['merge-base', input.baseSha, input.headSha], 'merge-base', undefined, preflightGitBudget())).trim();
+        changedForIsolation = new Set(parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', mb, input.headSha], 'diff', undefined, preflightGitBudget())).map((r) => r.path));
       } catch { changedForIsolation = null; }
     }
 
     // The installed verifier, not the PR's test code, decides whether this
     // synthetic merge may spend the bounded diagnostic preflight budget.
     if (mode !== 'off') {
-      flags = await classify();
-      classifiedBeforeLanes = true;
-      if (flags.harnessChanging || changedForIsolation === null) {
+      // Full classification reads every changed test and remains on the ordinary
+      // record path below. The early check needs only a conservative harness
+      // veto; package changes without both revisions are deliberately skipped.
+      const harnessChanging = changedForIsolation !== null && classifyHarness({
+        changedPaths: [...changedForIsolation], packageJson: { base: null, head: pkgText },
+        extraGlobs: input.extraHarnessGlobs,
+      }).harnessChanging;
+      if (harnessChanging || changedForIsolation === null) {
         preflight = {
-          mode, outcome: 'skip', reason: flags.harnessChanging ? 'harness-changing' : 'changed-files-unreadable',
+          mode, outcome: 'skip', reason: harnessChanging ? 'harness-changing' : 'changed-files-unreadable',
           elapsedMs: Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt!)), changedFiles: Math.min(changedForIsolation?.size ?? 0, 10_000), selectedFiles: [], selectedCases: 0,
           headSha: input.headSha, baseSha: input.baseSha,
         };
@@ -640,7 +646,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       outcome = 'failure';
       failureReason = evaluationReasons[0];
     }
-    if (!classifiedBeforeLanes) flags = await classify();
+    flags = await classify();
   } catch (e) {
     if (e instanceof Requeue) {
       await cleanup(false);
@@ -650,7 +656,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       outcome = 'failure';
       failureReason = e.reason;
       evaluationReasons = [e.reason];
-      if (!classifiedBeforeLanes) flags = await classify().catch(() => ({ ...flags, harnessChanging: true }));
+      flags = await classify().catch(() => ({ ...flags, harnessChanging: true }));
     } else {
       outcome = 'error';
       errorStep = e instanceof RunError ? e.step : e instanceof PreflightCleanupError ? 'preflight-cleanup' : 'crash';

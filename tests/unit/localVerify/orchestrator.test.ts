@@ -105,7 +105,7 @@ function fake(o: FakeOpts = {}) {
   const files = new Map<string, string>();
   const dirs = new Set<string>();
   const removed: string[] = [];
-  const gitCalls: Array<{ args: string[]; cwd: string; gitDir: string; workTree?: string }> = [];
+  const gitCalls: Array<{ args: string[]; cwd: string; gitDir: string; workTree?: string; timeoutMs: number }> = [];
   const execCalls: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; deadlineMs: number }> = [];
   const logs: Array<Record<string, unknown>> = [];
   let holderCall = 0;
@@ -158,7 +158,7 @@ function fake(o: FakeOpts = {}) {
 
   const seams: OrchestratorSeams = {
     async git(args, opts) {
-      gitCalls.push({ args, cwd: opts.cwd, gitDir: opts.gitDir, workTree: opts.workTree });
+      gitCalls.push({ args, cwd: opts.cwd, gitDir: opts.gitDir, workTree: opts.workTree, timeoutMs: opts.timeoutMs });
       return gitImpl(args);
     },
     async exec(command, args, opts) {
@@ -444,6 +444,14 @@ describe('runVerify — focused PR preflight', () => {
     const r = await runVerify(focused('enforce'), f.seams);
     expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'preflight-cleanup', lanes: [] });
     expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('skips focused work for a changed harness file while the full lanes still decide green', async () => {
+    const f = fake({ diff: 'M\ttests/vitest-setup.ts\n' });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'skip', reason: 'harness-changing' } });
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.push.config.ts'))).toHaveLength(0);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+    expect(f.gitCalls.find((c) => c.args[0] === 'merge-base')?.timeoutMs).toBeLessThanOrEqual(80_000);
   });
 });
 
