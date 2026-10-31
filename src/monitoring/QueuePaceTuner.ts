@@ -33,7 +33,7 @@ export const STEP_UP_EVALUATIONS = 2;
 /** A reserved tick whose result row never appears is closed as unknown (still counted spent). */
 export const PENDING_OUTCOME_MS = 10 * 60_000;
 
-const STEP_DOWN_STOPS = new Set(['quota-pause', 'quota-unreadable-pause', 'call-cap-reached']);
+const STEP_DOWN_STOPS = new Set(['quota-pause', 'quota-unreadable-pause', 'quota-margin-lost', 'call-cap-reached']);
 
 /* @self-action-controller: queue-pace-extra-run */
 const extraRunGovernor = governor.for('queue-pace-extra-run');
@@ -84,7 +84,7 @@ export function nearScheduledTick(t: number, minutes: readonly number[] = TRIAGE
 }
 
 export interface TriagePort {
-  acceptTick(): { status: number; body: Record<string, unknown> };
+  acceptTick(maxQuotaUsedPercent?: number): { status: number; body: Record<string, unknown> };
   quotaStatus(): Promise<{ usedPercent: number | null; pauseThreshold: number }>;
   callsUsedToday(): number | null;
   maxCallsPerDay(): number;
@@ -320,7 +320,7 @@ export class QueuePaceTuner {
       projectedCalls: projection.projected, maxCallsPerDay: projection.maxCallsPerDay, evidence: { considered: evidence.considered, exhausted: evidence.exhausted } });
     if (cfg.dryRun) { this.audit({ kind: 'would-tick' }); return 'would-tick'; }
 
-    const answer = triage.acceptTick();
+    const answer = triage.acceptTick(quota.pauseThreshold - QUOTA_MARGIN_POINTS);
     const error = typeof answer.body.error === 'string' ? answer.body.error : null;
     if (answer.status === 202 && typeof answer.body.runId === 'string') {
       s.pending = { runId: answer.body.runId, at: now };

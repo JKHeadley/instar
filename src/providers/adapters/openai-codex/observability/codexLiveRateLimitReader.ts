@@ -33,10 +33,15 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { CodexRateWindow, CodexUsageSnapshot } from './codexRateLimitReader.js';
+import { buildCodexChildEnv } from '../transport/codexSpawn.js';
 
 export interface ReadLiveCodexRateLimitsOptions {
   /** Override $CODEX_HOME (defaults to the process env / ~/.codex). */
   codexHome?: string;
+  /** Require the same subscription-only authentication environment as a fenced triage model child. */
+  subscriptionOnly?: boolean;
+  /** Cancels an account probe and terminates its app-server child. */
+  signal?: AbortSignal;
   /** Hard deadline for the whole exchange (spawn → answer). Default 10s. */
   timeoutMs?: number;
   /** Clock for deriving `resetsInSeconds` + `capturedAt` (defaults to Date.now()). */
@@ -51,6 +56,7 @@ export interface ReadLiveCodexRateLimitsOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const UNAVAILABLE = { kind: 'unavailable' } as const;
+const strictChildren = new Set<ChildProcessWithoutNullStreams>();
 
 /** The subset of the app-server v2 `RateLimitSnapshot` this reader consumes. */
 interface LiveRateLimitSnapshot {
@@ -106,16 +112,28 @@ export async function readLiveCodexRateLimitsDetailed(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnImpl = opts.spawnImpl ?? ((cmd, args, o) => spawn(cmd, args, { ...o, stdio: 'pipe' }));
 
+  if (opts.signal?.aborted || (opts.subscriptionOnly && strictChildren.size >= 2)) return UNAVAILABLE;
+
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawnImpl('codex', ['app-server'], {
-      env: {
-        ...process.env,
-        ...(opts.codexHome ? { CODEX_HOME: opts.codexHome } : {}),
-      },
+    // A quota read used for account admission must consult the same auth.json
+    // that the selector fingerprints. `auto` may silently prefer keyring.
+    child = spawnImpl('codex', opts.subscriptionOnly
+      ? ['app-server', '-c', 'cli_auth_credentials_store="file"']
+      : ['app-server'], {
+      env: opts.subscriptionOnly
+        ? buildCodexChildEnv({ codexHome: opts.codexHome, subscriptionOnly: true })
+        : { ...process.env, ...(opts.codexHome ? { CODEX_HOME: opts.codexHome } : {}) },
     });
   } catch {
     return UNAVAILABLE;
+  }
+
+  if (opts.subscriptionOnly) {
+    strictChildren.add(child);
+    const reaped = () => strictChildren.delete(child);
+    child.once('exit', reaped);
+    child.once('close', reaped);
   }
 
   return new Promise<CodexLiveRead>((resolve) => {
@@ -126,19 +144,46 @@ export async function readLiveCodexRateLimitsDetailed(
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      opts.signal?.removeEventListener('abort', onAbort);
       try {
-        child.kill();
+        child.kill('SIGTERM');
       } catch {
         // @silent-fallback-ok: child already gone — nothing to clean up
       }
+      if (opts.subscriptionOnly && strictChildren.has(child)) {
+        let force: ReturnType<typeof setTimeout>;
+        const onExit = () => {
+          clearTimeout(force);
+          clearTimeout(reapDeadline);
+          resolve(value);
+        };
+        child.once('exit', onExit);
+        force = setTimeout(() => {
+          if (strictChildren.has(child)) {
+            try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok: already reaped */ }
+          }
+        }, 200);
+        force.unref?.();
+        const reapDeadline = setTimeout(() => {
+          child.removeListener('exit', onExit);
+          resolve(UNAVAILABLE);
+        }, 700);
+        reapDeadline.unref?.();
+        return;
+      }
       resolve(value);
     };
+
+    const onAbort = () => finish(UNAVAILABLE);
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     const deadline = setTimeout(() => finish(UNAVAILABLE), timeoutMs);
     // The exchange must never outlive its caller because the timer forgot to
     // fire (e.g. a fake timer environment): unref so a leaked child cannot pin
     // the event loop either way.
     deadline.unref?.();
+    // Cancellation can arrive between the pre-spawn check and registration.
+    if (opts.signal?.aborted) { onAbort(); return; }
 
     const send = (payload: Record<string, unknown>): void => {
       try {
@@ -213,9 +258,10 @@ export async function readLiveCodexRateLimitsDetailed(
  */
 export function buildCodexLiveUsageReader(
   subscriptionPool?: { codexLiveQuota?: boolean },
-): ((opts?: { codexHome?: string; nowMs?: number }) => Promise<CodexUsageSnapshot | null>) | null {
+): ((opts?: { codexHome?: string; nowMs?: number; timeoutMs?: number; subscriptionOnly?: boolean; signal?: AbortSignal }) => Promise<CodexUsageSnapshot | null>) | null {
   if (subscriptionPool?.codexLiveQuota === false) return null;
-  return (opts) => readLiveCodexRateLimits({ codexHome: opts?.codexHome, nowMs: opts?.nowMs });
+  return (opts) => readLiveCodexRateLimits({ codexHome: opts?.codexHome, nowMs: opts?.nowMs,
+    timeoutMs: opts?.timeoutMs, subscriptionOnly: opts?.subscriptionOnly, signal: opts?.signal });
 }
 
 /**
@@ -225,9 +271,10 @@ export function buildCodexLiveUsageReader(
  */
 export function buildCodexLiveUsageReaderDetailed(
   subscriptionPool?: { codexLiveQuota?: boolean },
-): ((opts?: { codexHome?: string; nowMs?: number }) => Promise<CodexLiveRead>) | null {
+): ((opts?: { codexHome?: string; nowMs?: number; timeoutMs?: number; subscriptionOnly?: boolean; signal?: AbortSignal }) => Promise<CodexLiveRead>) | null {
   if (subscriptionPool?.codexLiveQuota === false) return null;
-  return (opts) => readLiveCodexRateLimitsDetailed({ codexHome: opts?.codexHome, nowMs: opts?.nowMs });
+  return (opts) => readLiveCodexRateLimitsDetailed({ codexHome: opts?.codexHome, nowMs: opts?.nowMs,
+    timeoutMs: opts?.timeoutMs, subscriptionOnly: opts?.subscriptionOnly, signal: opts?.signal });
 }
 
 /**
@@ -258,6 +305,9 @@ export function mapLiveResponse(
 
   const primary = mapWindow(bucket.primary, nowMs);
   const secondary = mapWindow(bucket.secondary, nowMs);
+  // A reported but malformed window cannot be silently dropped when the other
+  // window is favorable; it may hide an exhausted weekly or five-hour budget.
+  if ((bucket.primary != null && !primary) || (bucket.secondary != null && !secondary)) return null;
   const snapshot: CodexUsageSnapshot = {
     source: 'codex-app-server',
     rolloutPath: '',
@@ -279,8 +329,11 @@ function mapWindow(raw: LiveRateWindow | null | undefined, nowMs: number): Codex
   const usedPercent = typeof raw.usedPercent === 'number' ? raw.usedPercent : null;
   const windowMinutes = typeof raw.windowDurationMins === 'number' ? raw.windowDurationMins : null;
   const resetsAt = typeof raw.resetsAt === 'number' ? raw.resetsAt : null;
-  if (usedPercent === null || windowMinutes === null || resetsAt === null) return null;
-  const validReset = Number.isFinite(resetsAt) && resetsAt > 0;
+  if (usedPercent === null || windowMinutes === null || resetsAt === null ||
+    !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100 ||
+    !Number.isFinite(windowMinutes) || windowMinutes <= 0 ||
+    !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
+  const validReset = true;
   return {
     usedPercent,
     remainingPercent: Math.min(100, Math.max(0, 100 - usedPercent)),

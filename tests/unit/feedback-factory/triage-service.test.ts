@@ -23,6 +23,124 @@ describe('triage authority gate', () => {
   });
 });
 
+describe('verified primary account admission', () => {
+  const selected = { accountId: 'pool-a', configHome: '/verified/a', credentialVersion: 'v1',
+    loginAccountId: 'login-a', limitFamily: 'codex' as const, usedPercent: 10, acquiredAt: T0 };
+
+  it('gives the pace tuner the selected account quota, not the ambient login quota', async () => {
+    let chosen = 1;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async (mode) => {
+        expect(mode).toBe('on');
+        return { state: 'eligible', account: { ...selected, usedPercent: chosen } };
+      }, revalidate: () => true } });
+    h.quota.value = 93;
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 1, pauseThreshold: 75 });
+    h.quota.value = 10;
+    chosen = 70;
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 70, pauseThreshold: 75 });
+  });
+
+  it('refuses pace margin when the selected account is stale or unreadable', async () => {
+    let valid = false;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => valid } });
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: null, pauseThreshold: 75 });
+    valid = true;
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 10, pauseThreshold: 75 });
+  });
+
+  it('rechecks the pace margin inside the accepted tick before spending a model call', async () => {
+    let chosen = 20;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: { ...selected, usedPercent: chosen } }),
+        revalidate: () => true } });
+    await h.addItem('pace-margin');
+    expect(await h.service.quotaStatus()).toEqual({ usedPercent: 20, pauseThreshold: 75 });
+    chosen = 70;
+    expect(await h.service.tick(65)).toMatchObject({ reason: 'quota-margin-lost', calls: 0, decided: 0 });
+    expect(h.calls).toHaveLength(0);
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(0);
+  });
+
+  it('selects and launches a charged call through the transactional token', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }), revalidate: () => true } });
+    await h.addItem('a');
+    const result = await h.service.tick();
+    expect(result).toMatchObject({ result: 'succeeded', decided: 1, calls: 1 });
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(1);
+    expect(h.drain.sharedDatabase().prepare('SELECT state FROM triage_call_reservations').get()).toEqual({ state: 'completed' });
+  });
+
+  it('marks a credential changed after launch as execution identity unverified without refunding spend', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => true, verifyExecutionIdentity: () => false } });
+    await h.addItem('changed-after-launch');
+    expect(await h.service.tick()).toMatchObject({ result: 'succeeded', calls: 1 });
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(1);
+    const audit = h.drain.sharedDatabase().prepare("SELECT reason FROM drain_audit WHERE kind='triage-call' AND to_state='completed'")
+      .get() as { reason: string };
+    expect(JSON.parse(audit.reason)).toMatchObject({ outcome: 'execution-identity-unverified',
+      ownerHost: 'm1', ownerEpoch: 1, attemptId: expect.any(String), reservationId: expect.any(String) });
+  });
+
+  it('keeps off-mode primary calls behind live admission and pauses when that read is unavailable', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'off' },
+      primaryAccountAdmission: { select: async (mode) => {
+        expect(mode).toBe('off');
+        return { state: 'unreadable' };
+      }, revalidate: () => true } });
+    await h.addItem('a');
+    expect(await h.service.tick()).toMatchObject({ reason: 'quota-unreadable-pause', calls: 0, decided: 0 });
+    expect(h.calls).toHaveLength(0);
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(0);
+  });
+
+  it('observe mode uses its serving account and records a separate shadow choice', async () => {
+    const modes: string[] = [];
+    h = await createHarness({ config: { accountSelectionMode: 'observe' },
+      primaryAccountAdmission: { select: async (mode) => { modes.push(mode); return { state: 'eligible', account: selected }; },
+        revalidate: () => true,
+        observe: async () => ({ state: 'eligible', account: { ...selected, accountId: 'shadow-b' } }) } });
+    await h.addItem('a');
+    expect(await h.service.tick()).toMatchObject({ result: 'succeeded', calls: 1, decided: 1 });
+    expect(modes).toEqual(['observe']);
+    expect(h.drain.sharedDatabase().prepare('SELECT account_id FROM triage_call_reservations').get())
+      .toEqual({ account_id: 'pool-a' });
+    expect(fs.readFileSync(h.audit.path(), 'utf8')).toContain('shadow-b');
+  });
+
+  it('a saturated retry pauses without marking the first failed answer unusable', async () => {
+    let selections = 0;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ++selections === 1
+        ? { state: 'eligible', account: selected } : { state: 'saturated' }, revalidate: () => true } });
+    await h.addItem('a');
+    h.decide.fn = () => { throw new Error('first model failure'); };
+    const result = await h.service.tick();
+    expect(result).toMatchObject({ reason: 'quota-pause', decided: 0, calls: 1 });
+    expect(h.calls).toHaveLength(1);
+    expect(h.store.meta('consecutive_unusable')).toBe('0');
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(1);
+  });
+
+  it('a credential change at the launch barrier refunds the unstarted reservation', async () => {
+    let validations = 0;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => ++validations <= 2 } });
+    await h.addItem('a');
+    const result = await h.service.tick();
+    expect(result).toMatchObject({ reason: 'triage-launch-refused', calls: 0, decided: 0 });
+    expect(h.calls).toHaveLength(0);
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(0);
+    expect(h.drain.sharedDatabase().prepare('SELECT state FROM triage_call_reservations').get()).toEqual({ state: 'released' });
+  });
+});
+
 describe('disposition → Initiative mapping', () => {
   it('work: Initiative stays active and class-review is done; it enters the ranked queue', async () => {
     h = await createHarness();

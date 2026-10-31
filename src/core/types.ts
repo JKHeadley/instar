@@ -1104,6 +1104,8 @@ export interface ComponentHealth {
  * Born from the "heuristics are pre-filters, not decision-makers" lesson.
  */
 export interface IntelligenceProvider {
+  /** Optional concrete implementation identity for callers that require an exact route. */
+  frameworkId?: string;
   /**
    * Ask the LLM to evaluate a judgment call.
    * Returns a structured response that the caller parses.
@@ -1134,6 +1136,10 @@ export interface IntelligenceOptions {
   reviewerHardening?: { model: string; jsonSchema?: string };
   /** Audited decisions require one CLI model attempt per durable call row. */
   strictModelPin?: boolean;
+  /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
+  requiredRoute?: { framework: 'codex-cli'; modelId: string };
+  /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
+  launchGuard?: () => boolean;
   /** Maximum tokens for the response */
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
@@ -3797,6 +3803,8 @@ export interface InstarConfig {
      */
     triage?: {
       enabled?: boolean;
+      /** Staged account-specific quota selection. Missing or invalid values resolve to off. */
+      accountSelectionMode?: 'off' | 'observe' | 'on';
       /** Explicit kill switch over a PIN-approved live ignore; true alone never turns ignore live. */
       ignoreLive?: boolean;
       maxBatchChars?: number;

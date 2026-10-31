@@ -21,6 +21,7 @@ import { FeedbackTriageArbiter } from './FeedbackTriageArbiter.js';
 import { FeedbackTriageStore } from './FeedbackTriageStore.js';
 import { FeedbackTriageAuditLog } from './FeedbackTriageAuditLog.js';
 import { FeedbackTriageService, resolveTriageConfig, type AttentionInput, type FeedbackTriageServiceOptions } from './FeedbackTriageService.js';
+import { FeedbackTriageAccountSelector, revalidateTriageAccount, verifyTriageExecutionIdentity } from './FeedbackTriageAccountSelector.js';
 import type { MergedPr } from './triagePacket.js';
 
 const execFileAsync = promisify(execFile);
@@ -70,7 +71,7 @@ export function buildFeedbackTriage(input: {
   ownerEpoch: () => number;
   isCanonicalOwner: () => boolean;
   resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
-  codexLiveUsageReader: ((opts?: { codexHome?: string }) => Promise<CodexUsageSnapshot | null>) | null;
+  codexLiveUsageReader: ((opts?: { codexHome?: string; subscriptionOnly?: boolean; timeoutMs?: number; signal?: AbortSignal }) => Promise<CodexUsageSnapshot | null>) | null;
   subscriptionPool: SubscriptionPool | null;
   telegram: { sendToTopic: (topicId: number, text: string, opts?: { provenance?: 'automation' }) => Promise<unknown> } | null;
   raiseAttention: (item: AttentionInput) => Promise<void>;
@@ -119,6 +120,18 @@ export function buildFeedbackTriage(input: {
     return null;
   });
 
+  const selector = input.subscriptionPool && input.codexLiveUsageReader
+    ? new FeedbackTriageAccountSelector(input.subscriptionPool, (opts) => input.codexLiveUsageReader!(opts), clock)
+    : null;
+  const primaryAccountAdmission: NonNullable<FeedbackTriageServiceOptions['primaryAccountAdmission']> = {
+    select: (mode, deadlineAt) => selector
+      ? mode === 'on' ? selector.select(deadlineAt) : selector.selectAmbient(deadlineAt)
+      : Promise.resolve({ state: 'unreadable' }),
+    revalidate: (account) => Boolean(input.subscriptionPool && revalidateTriageAccount(input.subscriptionPool, account, clock())),
+    verifyExecutionIdentity: (account) => Boolean(input.subscriptionPool && verifyTriageExecutionIdentity(input.subscriptionPool, account)),
+    observe: (deadlineAt) => selector ? selector.select(deadlineAt) : Promise.resolve({ state: 'unreadable' }),
+  };
+
   const listMergedPrs = input.overrides?.listMergedPrs ?? (async (): Promise<MergedPr[] | null> => {
     try {
       const since = new Date(clock() - 30 * 24 * 60 * 60_000).toISOString().slice(0, 10);
@@ -153,6 +166,7 @@ export function buildFeedbackTriage(input: {
     isCanonicalOwner: input.isCanonicalOwner,
     config: () => resolveTriageConfig(config.feedbackFactory?.triage as Record<string, unknown> | undefined, config.feedbackFactory?.execute as Record<string, unknown> | undefined),
     quotaUsedPercent,
+    primaryAccountAdmission: input.overrides?.quotaUsedPercent ? undefined : primaryAccountAdmission,
     listMergedPrs,
     executorStatus: () => ({ available: false, reason: 'not-built' }),
     raiseAttention: input.overrides?.raiseAttention ?? input.raiseAttention,

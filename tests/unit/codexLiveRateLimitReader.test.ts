@@ -92,14 +92,20 @@ describe('mapLiveResponse', () => {
     expect(snap!.secondary).toBeNull();
   });
 
-  it('treats a malformed window (missing fields) as absent rather than guessing', () => {
+  it('rejects a malformed reported window rather than treating it as absent', () => {
     const r = liveResult();
     (r.rateLimitsByLimitId as Record<string, Record<string, unknown>>).codex.primary = {
       usedPercent: 'lots',
     };
-    const snap = mapLiveResponse(r, NOW_MS);
-    expect(snap!.primary).toBeNull();
-    expect(snap!.windowsUnavailable).toBe(true);
+    expect(mapLiveResponse(r, NOW_MS)).toBeNull();
+  });
+
+  it('rejects a favorable primary when the reported exhausted secondary is malformed', () => {
+    const r = liveResult();
+    const bucket = (r.rateLimitsByLimitId as Record<string, Record<string, unknown>>).codex;
+    bucket.primary = { usedPercent: 10, windowDurationMins: 300, resetsAt: 1790000000 };
+    bucket.secondary = { usedPercent: 100, windowDurationMins: 10080 };
+    expect(mapLiveResponse(r, NOW_MS)).toBeNull();
   });
 });
 
@@ -121,6 +127,7 @@ class FakeChild extends EventEmitter {
   killed = false;
   kill(): boolean {
     this.killed = true;
+    this.emit('exit', 0);
     return true;
   }
 }
@@ -176,6 +183,32 @@ describe('readLiveCodexRateLimits', () => {
     expect(methods).toEqual(['initialize', 'initialized', 'account/rateLimits/read']);
   });
 
+  it('uses a subscription-only child environment for a fenced admission read', async () => {
+    const originalKey = process.env.OPENAI_API_KEY;
+    const originalEscape = process.env.INSTAR_DISABLE_RULE1_OPENAI;
+    process.env.OPENAI_API_KEY = 'sk-not-for-triage';
+    process.env.INSTAR_DISABLE_RULE1_OPENAI = '1';
+    try {
+      let spawnedEnv: NodeJS.ProcessEnv | undefined;
+      let spawnedArgs: string[] | undefined;
+      const { spawnImpl } = scriptedChild({});
+      const snapshot = await readLiveCodexRateLimits({
+        codexHome: '/tmp/verified-subscription', subscriptionOnly: true, nowMs: NOW_MS,
+        spawnImpl: (cmd, args, opts) => { spawnedEnv = opts.env; spawnedArgs = args; return spawnImpl(); },
+      });
+      expect(snapshot).not.toBeNull();
+      expect(spawnedEnv?.CODEX_HOME).toBe('/tmp/verified-subscription');
+      expect(spawnedEnv?.OPENAI_API_KEY).toBeUndefined();
+      expect(spawnedEnv?.INSTAR_DISABLE_RULE1_OPENAI).toBeUndefined();
+      expect(spawnedArgs).toEqual(['app-server', '-c', 'cli_auth_credentials_store="file"']);
+    } finally {
+      if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalKey;
+      if (originalEscape === undefined) delete process.env.INSTAR_DISABLE_RULE1_OPENAI;
+      else process.env.INSTAR_DISABLE_RULE1_OPENAI = originalEscape;
+    }
+  });
+
   it('returns null when initialize is refused', async () => {
     const { spawnImpl } = scriptedChild({ initError: true });
     expect(await readLiveCodexRateLimits({ nowMs: NOW_MS, spawnImpl })).toBeNull();
@@ -190,6 +223,23 @@ describe('readLiveCodexRateLimits', () => {
     const { child, spawnImpl } = scriptedChild({ silent: true });
     const snap = await readLiveCodexRateLimits({ nowMs: NOW_MS, spawnImpl, timeoutMs: 50 });
     expect(snap).toBeNull();
+    expect(child.killed).toBe(true);
+  });
+
+  it('does not spawn for a cancelled probe and reaps an in-flight cancelled probe', async () => {
+    const alreadyCancelled = new AbortController();
+    alreadyCancelled.abort();
+    let spawns = 0;
+    expect(await readLiveCodexRateLimits({ subscriptionOnly: true, signal: alreadyCancelled.signal,
+      spawnImpl: () => { spawns++; return scriptedChild({ silent: true }).spawnImpl(); } })).toBeNull();
+    expect(spawns).toBe(0);
+
+    const running = new AbortController();
+    const { child, spawnImpl } = scriptedChild({ silent: true });
+    const read = readLiveCodexRateLimits({ subscriptionOnly: true, signal: running.signal,
+      timeoutMs: 5_000, spawnImpl });
+    running.abort();
+    expect(await read).toBeNull();
     expect(child.killed).toBe(true);
   });
 

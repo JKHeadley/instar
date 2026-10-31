@@ -359,6 +359,7 @@ export interface CodexCallAccount {
 }
 
 export class CodexCliIntelligenceProvider implements IntelligenceProvider {
+  readonly frameworkId = 'codex-cli';
   private readonly codexPath: string;
   /** @see CodexCliIntelligenceProviderOptions.resolveAccount */
   private readonly resolveAccount: (() => CodexCallAccount | null) | undefined;
@@ -381,6 +382,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     // it to retry ONE call on the sibling account — a decision that belongs to that
     // attempt, not to the provider, and that a provider-level closure cannot express.
     const override = options?.accountOverride;
+    if (options?.requiredRoute && !override) {
+      throw new Error('CodexCliIntelligenceProvider: required subscription account missing');
+    }
+    if (options?.requiredRoute && override &&
+      (typeof override.accountId !== 'string' || override.accountId.length === 0 ||
+        typeof override.configHome !== 'string' || override.configHome.length === 0)) {
+      throw new Error('CodexCliIntelligenceProvider: invalid required account override');
+    }
     if (override && typeof override.configHome === 'string' && override.configHome.length > 0) {
       return { accountId: override.accountId, configHome: override.configHome };
     }
@@ -569,6 +578,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     return new Promise((resolve, reject) => {
       const args = [
         'exec',
+        ...(account && options?.requiredRoute ? ['-c', 'cli_auth_credentials_store="file"'] : []),
         ...this.hygieneArgs(model, scratchDir),
         // Pass the prompt as a positional arg. Codex CLI reads stdin
         // for very long prompts but the positional path is fine for the
@@ -589,9 +599,17 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       // are dropped automatically — the prior explicit deletes are now
       // redundant but the hygiene intent is preserved by the allowlist.
       const childEnv = buildCodexChildEnv(
-        account ? { codexHome: account.configHome } : undefined,
+        account ? { codexHome: account.configHome, subscriptionOnly: options?.requiredRoute !== undefined }
+          : { subscriptionOnly: options?.requiredRoute !== undefined },
       );
 
+      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+        reject(new Error('CodexCliIntelligenceProvider: launch guard refused'));
+        return;
+      }
+
+      let aborted = false;
+      let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
       const child = execFile(
         this.codexPath,
         args,
@@ -603,6 +621,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           env: childEnv,
         },
         (error, stdout, stderr) => {
+          options?.signal?.removeEventListener('abort', onAbort);
+          if (forceKillTimer) clearTimeout(forceKillTimer);
+          // execFile invokes its callback after the child has closed. Retain
+          // the caller's capacity slot until then, even if SIGTERM was ignored.
+          if (aborted) {
+            reject(new Error('Codex CLI call aborted'));
+            return;
+          }
           if (error) {
             // Generous stderr slice so the circuit breaker's rate-limit
             // classifier can see usage/limit language past the first 200 chars.
@@ -617,6 +643,15 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           resolve(stdout.trim());
         },
       );
+      const onAbort = (): void => {
+        if (aborted) return;
+        aborted = true;
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+        forceKillTimer.unref();
+      };
+      options?.signal?.addEventListener('abort', onAbort, { once: true });
+      if (options?.signal?.aborted) onAbort();
 
       // Stdin must be explicitly closed or Codex hangs waiting for EOF
       // even when the prompt was passed as a positional. Same bug class
@@ -661,6 +696,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     try {
       const args = [
         'exec',
+        ...(account && options?.requiredRoute ? ['-c', 'cli_auth_credentials_store="file"'] : []),
         '--json',
         '--output-last-message',
         outFile,
@@ -671,10 +707,15 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         '-',
       ];
 
+      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+        throw new Error('CodexCliIntelligenceProvider: launch guard refused');
+      }
       const result = await spawnCodexExecJson(this.codexPath, args, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        signal: options?.signal,
         env: buildCodexChildEnv(
-          account ? { codexHome: account.configHome } : undefined,
+          account ? { codexHome: account.configHome, subscriptionOnly: options?.requiredRoute !== undefined }
+            : { subscriptionOnly: options?.requiredRoute !== undefined },
         ), // Spec 12 Rule 1a — both modes
         prompt,
         onLine: (line) => {

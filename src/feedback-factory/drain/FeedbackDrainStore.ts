@@ -220,6 +220,18 @@ CREATE TABLE IF NOT EXISTS authority_daily_usage (
   committed_usd REAL NOT NULL DEFAULT 0 CHECK(committed_usd >= 0), decisions INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL, PRIMARY KEY(authority_id,generation,utc_day)
 );
+CREATE TABLE IF NOT EXISTS triage_daily_usage (
+  utc_day TEXT NOT NULL, kind TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(utc_day,kind)
+);
+CREATE TABLE IF NOT EXISTS triage_call_reservations (
+  token TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  limit_family TEXT NOT NULL, used_percent REAL NOT NULL, acquired_at INTEGER NOT NULL,
+  authority_id TEXT NOT NULL, generation INTEGER NOT NULL,
+  owner_host TEXT NOT NULL, owner_epoch INTEGER NOT NULL, utc_day TEXT NOT NULL,
+  subcap_kind TEXT, state TEXT NOT NULL CHECK(state IN ('reserved','launched','released','completed')),
+  created_at INTEGER NOT NULL, launched_at INTEGER, finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_triage_call_reservations_state ON triage_call_reservations(state,created_at);
 CREATE TABLE IF NOT EXISTS authority_posture (
   authority_id TEXT NOT NULL, generation INTEGER NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('active','proposal-only')),
   reason TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(authority_id,generation)
@@ -916,6 +928,7 @@ export class FeedbackDrainStore {
     return this.db.transaction(() => {
       const active = this.db.prepare(`SELECT run_id,state FROM drain_runs WHERE state IN ('accepted','running') LIMIT 1`).get() as { run_id: string; state: RunState } | undefined;
       if (active) return { runId: active.run_id, state: active.state, acquired: false };
+      this.advanceOwnerAuthorityEpoch(input.ownerEpoch);
       const now = this.now(); const runId = `run:${randomUUID()}`;
       this.db.prepare(`INSERT INTO drain_runs(run_id,state,owner_host,owner_epoch,lease_expires_at,reason,created_at,updated_at) VALUES (?,'accepted',?,?,?,?,?,?)`).run(runId, clamp(input.ownerHost, 200), input.ownerEpoch, now + input.leaseMs, '', now, now);
       this.noteDrainOwner(clamp(input.ownerHost, 200), input.ownerEpoch);
@@ -1265,6 +1278,124 @@ export class FeedbackDrainStore {
         .run(authority.authorityId, authority.generation, day, calls, now);
       return true;
     }).immediate();
+  }
+
+  /** One owner-fenced primary triage call, with its daily and retriage debits in one transaction. */
+  reserveTriageCall(input: {
+    authority: AuthorityRecord; ownerHost: string; ownerEpoch: number;
+    accountId: string; limitFamily: 'codex'; usedPercent: number; acquiredAt: number;
+    maxCallsPerDay: number; subcap?: { kind: 'retriage'; maxCallsPerDay: number };
+    now?: number;
+  }): string | null {
+    const { authority, ownerHost, ownerEpoch, maxCallsPerDay, subcap } = input;
+    const now = input.now ?? this.now();
+    if (!Number.isSafeInteger(maxCallsPerDay) || maxCallsPerDay < 1 ||
+      !Number.isSafeInteger(ownerEpoch) || ownerEpoch < 1 ||
+      !input.accountId || input.accountId.length > 200 || input.limitFamily !== 'codex' ||
+      !Number.isFinite(input.usedPercent) || input.usedPercent < 0 || input.usedPercent >= 75 ||
+      !Number.isFinite(input.acquiredAt) || now - input.acquiredAt > 60_000 || input.acquiredAt - now > 60_000 ||
+      (subcap && (!Number.isSafeInteger(subcap.maxCallsPerDay) || subcap.maxCallsPerDay < 1))) return null;
+    const day = new Date(now).toISOString().slice(0, 10);
+    return this.db.transaction(() => {
+      const current = this.getAuthority(authority.authorityId, authority.generation);
+      const tenure = this.drainOwnerContinuity();
+      if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation ||
+        current.provider !== authority.provider || current.modelFamily !== authority.modelFamily ||
+        !tenure || tenure.host !== ownerHost || ownerEpoch < tenure.sinceEpoch ||
+        this.ownerAuthorityEpoch() !== ownerEpoch ||
+        !this.authorityOwnerCurrent(current, ownerHost, ownerEpoch)) return null;
+      const used = this.authorityCallsToday(authority, now);
+      if (used >= maxCallsPerDay) return null;
+      if (subcap) {
+        const row = this.db.prepare('SELECT calls FROM triage_daily_usage WHERE utc_day=? AND kind=?')
+          .get(day, subcap.kind) as { calls: number } | undefined;
+        if (Number(row?.calls ?? 0) >= subcap.maxCallsPerDay) return null;
+      }
+      const token = randomUUID();
+      const attemptId = randomUUID();
+      this.db.prepare(`INSERT INTO authority_daily_usage(authority_id,generation,utc_day,committed_usd,decisions,updated_at)
+        VALUES (?,?,?,0,1,?) ON CONFLICT(authority_id,generation,utc_day) DO UPDATE SET
+        decisions=authority_daily_usage.decisions+1,updated_at=excluded.updated_at`)
+        .run(authority.authorityId, authority.generation, day, now);
+      if (subcap) this.db.prepare(`INSERT INTO triage_daily_usage(utc_day,kind,calls) VALUES (?,?,1)
+        ON CONFLICT(utc_day,kind) DO UPDATE SET calls=calls+1`).run(day, subcap.kind);
+      this.db.prepare(`INSERT INTO triage_call_reservations(token,attempt_id,account_id,limit_family,used_percent,acquired_at,
+        authority_id,generation,owner_host,owner_epoch,utc_day,subcap_kind,state,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'reserved',?)`).run(token, attemptId, input.accountId, input.limitFamily,
+        input.usedPercent, input.acquiredAt, authority.authorityId, authority.generation, ownerHost, ownerEpoch,
+        day, subcap?.kind ?? null, now);
+      this.auditTriageCall(token, null, 'reserved');
+      return token;
+    }).immediate();
+  }
+
+  /** A launch and a competing release have one transactional winner. */
+  launchTriageCall(token: string, authority: AuthorityRecord, ownerHost: string, ownerEpoch: number, now = this.now()): boolean {
+    return this.db.transaction(() => {
+      const current = this.getAuthority(authority.authorityId, authority.generation);
+      const tenure = this.drainOwnerContinuity();
+      if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation ||
+        !tenure || tenure.host !== ownerHost || ownerEpoch < tenure.sinceEpoch ||
+        this.ownerAuthorityEpoch() !== ownerEpoch ||
+        !this.authorityOwnerCurrent(current, ownerHost, ownerEpoch)) return false;
+      const changed = this.db.prepare(`UPDATE triage_call_reservations SET state='launched',launched_at=?
+        WHERE token=? AND state='reserved' AND authority_id=? AND generation=? AND owner_host=? AND owner_epoch=?`)
+        .run(now, token, authority.authorityId, authority.generation, ownerHost, ownerEpoch);
+      if (changed.changes === 1) this.auditTriageCall(token, 'reserved', 'launched');
+      return changed.changes === 1;
+    }).immediate();
+  }
+
+  /** Refund only the original UTC-day debits of this exact unlaunched token, once. */
+  releaseTriageCall(token: string, now = this.now()): boolean {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT authority_id,generation,utc_day,subcap_kind FROM triage_call_reservations
+        WHERE token=? AND state='reserved'`).get(token) as { authority_id: string; generation: number; utc_day: string; subcap_kind: string | null } | undefined;
+      if (!row) return false;
+      const changed = this.db.prepare(`UPDATE triage_call_reservations SET state='released',finished_at=? WHERE token=? AND state='reserved'`)
+        .run(now, token);
+      if (changed.changes !== 1) return false;
+      const daily = this.db.prepare(`UPDATE authority_daily_usage SET decisions=decisions-1,updated_at=?
+        WHERE authority_id=? AND generation=? AND utc_day=? AND decisions>=1`)
+        .run(now, row.authority_id, row.generation, row.utc_day);
+      if (daily.changes !== 1) throw new Error('triage call daily debit missing');
+      if (row.subcap_kind) {
+        const subcap = this.db.prepare(`UPDATE triage_daily_usage SET calls=calls-1 WHERE utc_day=? AND kind=? AND calls>=1`)
+          .run(row.utc_day, row.subcap_kind);
+        if (subcap.changes !== 1) throw new Error('triage call subcap debit missing');
+      }
+      this.auditTriageCall(token, 'reserved', 'released');
+      return true;
+    }).immediate();
+  }
+
+  completeTriageCall(token: string, outcome: 'succeeded' | 'failed' | 'execution-identity-unverified',
+    now = this.now(), observer?: { host: string; epoch: number }): boolean {
+    return this.db.transaction(() => {
+      const completed = this.db.prepare(`UPDATE triage_call_reservations SET state='completed',finished_at=? WHERE token=? AND state='launched'`)
+        .run(now, token).changes === 1;
+      if (completed) this.auditTriageCall(token, 'launched', 'completed', outcome, observer);
+      return completed;
+    }).immediate();
+  }
+
+  /** Replicated projection: opaque IDs and bounded quota evidence only. */
+  private auditTriageCall(token: string, from: string | null, to: string,
+    outcome?: 'succeeded' | 'failed' | 'execution-identity-unverified',
+    observer?: { host: string; epoch: number }): void {
+    const row = this.db.prepare(`SELECT attempt_id,account_id,limit_family,used_percent,acquired_at,generation,owner_host,owner_epoch
+      FROM triage_call_reservations WHERE token=?`).get(token) as Record<string, unknown>;
+    this.audit('triage-call', token, from, to, JSON.stringify({
+      accountId: row.account_id,
+      attemptId: row.attempt_id, reservationId: token,
+      ownerHost: row.owner_host, ownerEpoch: row.owner_epoch,
+      limitFamily: row.limit_family, source: 'codex-app-server', usedPercent: row.used_percent,
+      acquiredAt: row.acquired_at, ageMs: Math.max(0, this.now() - Number(row.acquired_at)),
+      generation: row.generation,
+      ...(outcome ? { outcome } : {}),
+      ...(observer ? { observerHost: observer.host, observerEpoch: observer.epoch,
+        handoffObserved: observer.host !== row.owner_host || observer.epoch !== row.owner_epoch } : {}),
+    }), 1200);
   }
 
   /** Model calls reserved today (UTC) for this authority generation. */

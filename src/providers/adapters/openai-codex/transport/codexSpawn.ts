@@ -98,6 +98,8 @@ const CODEX_ENV_ALLOWLIST = [
 const BOOT_OPENAI_BASE_URL: string | undefined = process.env.OPENAI_BASE_URL;
 
 export interface BuildCodexChildEnvOptions {
+  /** Quota-fenced triage must use subscription credentials only, regardless of global escape hatches. */
+  subscriptionOnly?: boolean;
   /**
    * Explicit OPENAI_API_KEY to pass through to the child process.
    *
@@ -140,7 +142,7 @@ export function buildCodexChildEnv(options?: BuildCodexChildEnvOptions): NodeJS.
     }
   }
 
-  if (BOOT_OPENAI_BASE_URL !== undefined) {
+  if (!options?.subscriptionOnly && BOOT_OPENAI_BASE_URL !== undefined) {
     env.OPENAI_BASE_URL = BOOT_OPENAI_BASE_URL;
   }
 
@@ -152,6 +154,7 @@ export function buildCodexChildEnv(options?: BuildCodexChildEnvOptions): NodeJS.
 
   // Kill-switch handling. Spec 12 § "Escape-hatch interaction with Rule 1a".
   if (
+    !options?.subscriptionOnly &&
     process.env.INSTAR_DISABLE_RULE1_OPENAI === '1' &&
     typeof process.env.OPENAI_API_KEY === 'string' &&
     process.env.OPENAI_API_KEY.length > 0
@@ -160,12 +163,22 @@ export function buildCodexChildEnv(options?: BuildCodexChildEnvOptions): NodeJS.
   }
 
   // Explicit caller-provided key (Phase A deprecated path).
-  if (options?.apiKey) {
+  if (options?.apiKey && !options.subscriptionOnly) {
     env.OPENAI_API_KEY = options.apiKey;
   }
 
   if (options?.codexHome) {
     env.CODEX_HOME = options.codexHome;
+  }
+
+  if (options?.subscriptionOnly) {
+    delete env.INSTAR_DISABLE_RULE1_OPENAI;
+    delete env.CODEX_DEFAULT_PROFILE;
+    delete env.CODEX_DEFAULT_MODEL;
+    delete env.XDG_CONFIG_HOME;
+    delete env.XDG_DATA_HOME;
+    delete env.XDG_CACHE_HOME;
+    delete env.XDG_STATE_HOME;
   }
 
   return env;
@@ -333,6 +346,7 @@ export const EXEC_JSON_CARRY_CAP_BYTES = 2 * 1024 * 1024;
 export interface SpawnCodexExecJsonOptions {
   timeoutMs: number;
   env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   /**
    * Prompt text written to the child's stdin (then stdin is ended). The
    * prompt moves OFF argv in --json mode: process argv is world-readable
@@ -422,6 +436,7 @@ export async function spawnCodexExecJson(
   args: string[],
   options: SpawnCodexExecJsonOptions,
 ): Promise<ExecJsonResult> {
+  if (options.signal?.aborted) throw new Error('Codex exec-json aborted before spawn');
   const spawnFn = options.spawnImpl ?? spawn;
   const postExitGraceMs = options.postExitGraceMs ?? 5000;
   const sigkillGraceMs = options.sigkillGraceMs ?? 2000;
@@ -435,6 +450,7 @@ export async function spawnCodexExecJson(
 
     let settled = false;
     let timedOut = false;
+    let aborted = false;
     let spawnError: Error | null = null;
     let exitCode: number | null | undefined;
     let stderrTail = '';
@@ -520,6 +536,7 @@ export async function spawnCodexExecJson(
       if (graceTimer) clearTimeout(graceTimer);
       if (killEscalation) clearTimeout(killEscalation);
       if (terminalGraceTimer) clearTimeout(terminalGraceTimer);
+      options.signal?.removeEventListener('abort', onAbort);
       // Final accounting BEFORE settlement — the post-SIGTERM token_count
       // flush must reach the consumer before any reject is observable.
       flushCarry();
@@ -532,6 +549,7 @@ export async function spawnCodexExecJson(
         /* @silent-fallback-ok */
       }
       if (spawnError) return reject(spawnError);
+      if (aborted) return reject(new Error('Codex exec-json aborted'));
       if (timedOut) return reject(new CodexExecJsonTimeoutError(options.timeoutMs, stderrTail));
       resolve({ exitCode: exitCode ?? null, stderrTail, terminalCompletion: opts?.terminal === true });
     };
@@ -588,6 +606,19 @@ export async function spawnCodexExecJson(
       killEscalation.unref();
     }, options.timeoutMs);
     killTimer.unref();
+
+    const onAbort = () => {
+      if (settled || aborted) return;
+      aborted = true;
+      try { child.kill('SIGTERM'); } catch { /* @silent-fallback-ok: already gone */ }
+      killEscalation = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok: already gone */ }
+      }, sigkillGraceMs);
+      killEscalation.unref();
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    // The signal may flip between the pre-spawn check and listener registration.
+    if (options.signal?.aborted) onAbort();
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => processChunk(chunk));
