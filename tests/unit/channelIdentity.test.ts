@@ -14,6 +14,10 @@ describe('verified channel identity', () => {
     expect(verifiedChannelIdentity('slack', 'C123', '#C123')).toBeNull();
     expect(verifiedEntityName('m_123456789012', 'm_123456789012')).toBeNull();
     expect(verifiedEntityName('peer', '8c7928aa9f04fbda947172a2f9b2d81a')).toBeNull();
+    expect(verifiedEntityName('peer', '8c7928aa')).toBeNull();
+    expect(verifiedEntityName('peer', '8c7928aa…')).toBeNull();
+    expect(verifiedEntityName('peer', '8c7928aa...')).toBeNull();
+    expect(verifiedEntityName('peer', '8c7928aa-9f04-fbda-9471-72a2f9b2d81a')).toBeNull();
     expect(verifiedEntityName('peer', 'a2aproof-130200')).toBeNull();
     expect(verifiedEntityName('peer', 'PP')).toBe('PP');
   });

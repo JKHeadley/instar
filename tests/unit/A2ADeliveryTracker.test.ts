@@ -145,6 +145,13 @@ describe('A2ADeliveryTracker — peer health (is the channel alive?)', () => {
     db.prepare('UPDATE a2a_peer_inbound SET peer_name = ? WHERE peer_fp = ?').run(FP, FP);
     expect(t.get('m1')!.peerName).toBeNull();
     expect(t.peerHealth(FP).peerName).toBeNull();
+    const short = FP.slice(0, 8);
+    t.recordSent({ messageId: 'm2', peerFp: FP, peerName: short });
+    expect(t.get('m2')!.peerName).toBeNull();
+    db.prepare('UPDATE a2a_delivery SET peer_name = ? WHERE message_id = ?').run(short, 'm1');
+    db.prepare('UPDATE a2a_peer_inbound SET peer_name = ? WHERE peer_fp = ?').run(short, FP);
+    expect(t.get('m1')!.peerName).toBeNull();
+    expect(t.peerHealth(FP).peerName).toBeNull();
   });
   it('composes last-sent / last-acked / last-inbound / pending', () => {
     t = A2ADeliveryTracker.openMemory();
