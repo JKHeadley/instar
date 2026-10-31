@@ -72,8 +72,12 @@ async function main() {
   }
 
   const prefix = mkdtempSync(path.join(tmpdir(), 'instar-smoke-'));
-  console.log(`[smoke] clean-installing instar@${version} into ${prefix}`);
-  execFileSync('npm', ['install', '--prefix', prefix, `instar@${version}`], { encoding: 'utf-8', stdio: 'inherit' });
+  // Match UpdateChecker.applyUpdate(): optional dependency postinstall downloads
+  // (notably cloudflared) are unrelated to the package/dist check and can hang.
+  console.log(`[smoke] clean-installing instar@${version} into ${prefix} without dependency scripts`);
+  execFileSync('npm', ['install', '--ignore-scripts', '--prefix', prefix, `instar@${version}`], {
+    encoding: 'utf-8', stdio: 'inherit', timeout: 15 * 60_000,
+  });
 
   const cli = path.join(prefix, 'node_modules', 'instar', 'dist', 'cli.js');
   if (!existsSync(cli)) {

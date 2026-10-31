@@ -4,7 +4,7 @@
 
 ## What Changed
 
-The post-publish smoke check now retries for up to 45 minutes while a newly published package becomes visible in npm, with a progress line about once a minute. It still clean-installs the exact published version and checks the CLI version before passing.
+The post-publish smoke check now retries for up to 45 minutes while a newly published package becomes visible in npm, with a progress line about once a minute. It clean-installs the exact published version with dependency scripts disabled, matching the production updater, and checks the CLI version before passing.
 
 ## What to Tell Your User
 
