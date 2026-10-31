@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
+import { GENERATED_STANDARDS_REGISTRY_OUTPUTS } from '../../core/standardsRegistryPath.js';
 import { CHANGESET_MAX_BYTES, CHANGESET_MAX_FILES, EVIDENCE_FILE, PREVIOUS_REVIEW_FILE, RESULT_FILE, isToolingPath } from './executePolicy.js';
 
 export interface ChangeEntry {
@@ -36,6 +37,14 @@ export class ChangeSetError extends Error {
 const ROOT_SKIP = new Set(['.git', 'node_modules', EVIDENCE_FILE, PREVIOUS_REVIEW_FILE, RESULT_FILE]);
 /** Build and cache output the session's own runs may leave behind (never published). */
 const OUTPUT_SKIP = [/^dist\//, /^coverage\//, /(^|\/)\.vitest\//, /(^|\/)\.DS_Store$/, /\.tsbuildinfo$/, /(^|\/)\.eslintcache$/, /\.log$/];
+/** Exact untracked files written by the repository's build, lint and safe-operation checks. */
+const GENERATED_OUTPUT_SKIP = new Set([
+  '.instar/audit/destructive-ops.jsonl',
+  '.instar/standards-coverage.json',
+  'src/data/standards-guard-index.json',
+  'src/data/standards-guard-index.meta.json',
+  ...GENERATED_STANDARDS_REGISTRY_OUTPUTS,
+]);
 
 /**
  * A name git would treat as `.git` on a case-insensitive or Unicode-normalising filesystem
@@ -136,7 +145,7 @@ export function buildChangeSet(workspace: string, publishClone: string): ChangeS
   const base = walk(publishClone, { skipClaude: true });
   const entries: ChangeEntry[] = [];
   let totalBytes = 0;
-  const skipOutput = (rel: string) => OUTPUT_SKIP.some((re) => re.test(rel));
+  const skipOutput = (rel: string) => GENERATED_OUTPUT_SKIP.has(rel) || OUTPUT_SKIP.some((re) => re.test(rel));
   for (const [rel, w] of ws) {
     const b = base.get(rel);
     if (w.kind === 'link') {

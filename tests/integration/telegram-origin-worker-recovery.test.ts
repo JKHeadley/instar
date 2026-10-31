@@ -21,7 +21,7 @@ const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkc
 beforeAll(async () => { worker = await compileStallableOriginWorker(); });
 afterEach(async () => { for (const runtime of runtimes.splice(0)) await runtime.close(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-async function harness() {
+async function harness(storageTimeouts: { requestTimeoutMs?: number; stallTimeoutMs?: number } = {}) {
   const stateDir = temporaryState(), botToken = `123:${randomUUID()}`;
   let lifecycle: OriginSessionLifecycle | undefined;
   const network = vi.fn(async (_url: string, init: RequestInit) => {
@@ -30,7 +30,9 @@ async function harness() {
   });
   vi.stubGlobal('fetch', network);
   const runtime = await TelegramOriginRuntime.open({
-    storage: { stateDir, agentId: 'echo', requestTimeoutMs: 200, stallTimeoutMs: 800, restart: { baseDelayMs: 50, maxDelayMs: 200, maxAttempts: 3, healthyWindowMs: 1 } },
+    storage: { stateDir, agentId: 'echo', requestTimeoutMs: storageTimeouts.requestTimeoutMs ?? 200,
+      stallTimeoutMs: storageTimeouts.stallTimeoutMs ?? 800,
+      restart: { baseDelayMs: 50, maxDelayMs: 200, maxAttempts: 3, healthyWindowMs: 1 } },
     workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token: botToken, accountId: 'bot-1', chatId: '-100123' },
@@ -93,7 +95,9 @@ describe('Telegram reply path across an origin worker stall', () => {
 
   it('the recovery tick replaces only a store that has given up, never one mid-restart', async () => {
     vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined);
-    const h = await harness();
+    // This case tests replacement policy, not deadline behavior. Give its real
+    // worker enough time under CI contention so scheduling delay is not a failure.
+    const h = await harness({ requestTimeoutMs: 2000, stallTimeoutMs: 5000 });
     const store = h.runtime.store;
     vi.spyOn(store, 'health').mockReturnValue({ ...store.health(), state: 'restarting' });
     vi.spyOn(store, 'needsReplacement').mockReturnValue(false);

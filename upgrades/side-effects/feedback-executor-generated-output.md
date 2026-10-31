@@ -1,0 +1,16 @@
+# Feedback executor generated output: side effects
+
+- Tier: 1. Narrow reversible change, four source/docs files plus focused tests; one independent review round and one rejected commit gate attempt before producing the required trace.
+- Decision point: `buildChangeSet` lists publishable changes. It skips only six exact generated outputs absent from the trusted clone; the existing shape, size, secret, review, and merge authorities remain in place.
+- Over-block: a legitimate draft can still fail if a different check creates another untracked file. That file must remain visible until its provenance is established; this change adds no new rejection.
+- Under-block: a builder could alter an untracked file with one of the six names and have that artifact omitted. These are declared generated outputs and cannot enter the publish clone or PR; a tracked copy stays visible. File type checks still reject symlinks, hard links, devices, and nested Git paths first.
+- Layer and signal vs authority: the exact-name exclusion is an enumerable file-provenance invariant in the trusted comparison, not a semantic judgment over user or agent intent. The existing review authority still decides whether the remaining change is acceptable. See `docs/signal-vs-authority.md`.
+- Interactions: the exclusion follows workspace walking and precedes change-size and spec-shape checks. It removes generated noise from both counts. The registry names are imported from their sole path owner; no additional file read or write occurs at import time.
+- External surfaces: a formerly rejected valid design draft may reach review. No direct message, stored feedback result, or cross-machine state is changed by deployment. Each executor compares its local workspace with its local trusted clone; PR publication remains the durable cross-machine handoff.
+- Rollback: revert the change and publish a patch. No state migration or repair is required; the prior behavior rejects affected drafts again.
+- Independent review: `/root/review_executor_selection` found no blocker after the path-owner repair; it confirmed exact names, the trusted-clone condition, and no import side effect or cycle.
+
+- Scope: only `buildChangeSet` skips six exact paths when absent from the trusted publish clone. It does not alter sandbox permissions, the 200-file/4-MB cap, source checkout, test execution, secret scan of publishable changes, review authority, or auto-merge policy.
+- Security boundary: the walk still rejects symlinks, hard links, devices, and nested `.git` paths before skipping output. A file already in the publish clone is compared and published or rejected normally. Other `.instar/` and `src/data/` files remain visible. The two registry output names come from the existing standards-registry path owner. Skipped bytes never enter the publish clone or PR.
+- Recovery: revert this change if one of the six paths becomes intentional publishable source; the older behavior will reject affected spec drafts rather than publish extra files.
+- Evidence: the live rejected change-set path list is in `.instar/logs/feedback-triage.jsonl` at 2026-10-28 12:46:24 UTC. The initial complete unit run found the release-note and path-owner violations; both were fixed. Focused regression and boundary checks pass 304/304; a second complete unit run remains pending.

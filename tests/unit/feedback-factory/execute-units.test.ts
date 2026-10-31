@@ -153,6 +153,30 @@ describe('change set', () => {
     expect(sourcePaths(cs)).toEqual(['src/a.ts', 'src/new.ts']);
   });
 
+  it('keeps a spec draft when build and lint create their known untracked output', () => {
+    const { ws, pub } = trees();
+    const expected = 'docs/specs/feedback-item.md';
+    write(ws, expected, '---\ntitle: Draft\n---\nProposal');
+    for (const generated of [
+      '.instar/audit/destructive-ops.jsonl',
+      '.instar/standards-coverage.json',
+      'src/data/standards-guard-index.json',
+      'src/data/standards-guard-index.meta.json',
+      'src/data/standards-registry.md',
+      'src/data/standards-registry.meta.json',
+    ]) write(ws, generated, 'generated');
+    expect(checkSpecDraft(buildChangeSet(ws, pub), expected)).toEqual({ ok: true });
+
+    // Tracked files and unrelated source files remain real changes.
+    write(pub, 'src/data/standards-registry.md', 'old');
+    write(ws, 'src/data/unrelated.json', 'changed');
+    expect(buildChangeSet(ws, pub).entries.map((entry) => entry.path)).toEqual([
+      expected,
+      'src/data/standards-registry.md',
+      'src/data/unrelated.json',
+    ]);
+  });
+
   it('a symlink, a nested .git or a reappeared .claude/ fails; an identical symlink in both trees is fine', () => {
     const { ws, pub } = trees();
     fs.symlinkSync('a.ts', path.join(ws, 'src', 'same'));
