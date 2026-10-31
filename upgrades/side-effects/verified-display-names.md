@@ -76,6 +76,8 @@ The change addresses the observed identity substitution at source and consumer b
 
 **Migration followup independent review:** Concur. The exact-text guard and edited-section preservation remain intact; only the order changes, so the shipped legacy section can be recognized before new guidance is appended. The second run remains idempotent.
 
+**Mac verification followup:** The Mac Mini passed 53,393 unit tests (10 skipped) on the migration fix but reported one failed test file each in `review-exchange-routes.test.ts` and `tmux-resilience-slow-stub.test.ts`; its retained log names the files but omits their failed assertions. Both files passed together in a focused local integration run (21/21 tests), then each passed again inside the full local integration suite. The latter suite was still running when this evidence was recorded. Since the verifier will only rerun a failed record after the head moves, this documentation-only revision requests a fresh Mac run without changing implementation or weakening test assertions.
+
 ## Evidence pointers
 
 `tests/unit/channelIdentity.test.ts`, `tests/unit/telegram-adapter.test.ts`, `tests/unit/slack-thread-session-routing.test.ts`, `tests/unit/dashboard-duplicateBadge.test.ts`, `tests/integration/telegram-issue-topics-route.test.ts`, `tests/integration/sessions-listing-hygiene.test.ts`, and `tests/e2e/verified-topic-names-lifecycle.test.ts`. Full suite is running; its result will be added to the PR.
