@@ -616,6 +616,20 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'the PIN-scoped operation materializes browser cookies/user-data and the profile registry under this agent home; both are physical machine-local identity state excluded from project git sync, and peers may observe but never replay the provisioning write',
     },
   });
+  // PATCH /playwright-profiles/:id (spec windows-signin-repair: one profile's Windows Chrome folder)
+  // and PATCH /playwright-profiles/:id/accounts both rewrite this machine's profile registry.
+  reg.add({
+    kind: 'route',
+    method: 'PATCH',
+    pathPrefix: '/playwright-profiles/',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'edits one row of this machine\'s profile registry (a Windows folder, or an account entry) (state/playwright-profiles.json, excluded from project git sync); a Windows Chrome folder exists on one machine only, so peers never replay the write',
+    },
+  });
 
   // Agent-held Google passkeys (spec agent-held-google-passkey §3.4): the revert
   // lever rewrites ONE account row in this machine's Playwright profile registry

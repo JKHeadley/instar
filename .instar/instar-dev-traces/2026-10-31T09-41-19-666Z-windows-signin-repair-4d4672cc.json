@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "windows-signin-repair",
+  "sessionId": "6f523f5b-cfd7-40e0-9e58-d7472146ebc2",
+  "timestamp": "2026-10-31T09:41:19.666Z",
+  "artifactPath": "upgrades/side-effects/windows-signin-repair.md",
+  "artifactSha256": "d530e3e7a35b7fe74cac8acc76c1895723a1a66f9b6fc85eed39d26d635c3cc5",
+  "coveredFiles": [
+    "docs/specs/windows-signin-repair.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/windows-signin-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up to the same change: makes the CLAUDE.md awareness migration idempotent (it ran before the block it anchors to was inserted) and tracks the new section in the parity test.",
+  "eli16Path": "docs/specs/windows-signin-repair.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-signin-repair.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1991,6 +1991,7 @@ export class PostUpdateMigrator {
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
     this.migrateSubscriptionSigninAgentRun(result);
+    this.migrateSubscriptionSigninWindows(result);
     this.migrateSubscriptionSigninCrossMachine(result);
     this.migrateSubscriptionSigninDropProfileFormPointer(result);
     this.migrateSubscriptionSigninApprovalBoundary(result);
@@ -5060,6 +5061,37 @@ export class PostUpdateMigrator {
    * Skill" + "Phase 5: COMPLETE"). A heavily-customized /build skill that no
    * longer matches the stock fingerprint is left untouched.
    */
+  /**
+   * Add the "On Windows (WSL)" subsection to an installed /subscription-signin skill (spec
+   * windows-signin-repair): a repair helper on WSL is sent there by its prompt. Runs after the
+   * agent-run migration and is inserted before that subsection. Local edits are kept.
+   * Idempotent on the subsection heading.
+   */
+  private migrateSubscriptionSigninWindows(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const marker = '### On Windows (WSL): the same steps through ndrive.sh';
+    const agentRunHeading = '### Agent-run repair (when Instar starts you as the sign-in helper)';
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const current = fs.readFileSync(skillFile, 'utf8');
+      if (current.includes(marker)) return;
+      if (!current.includes('name: subscription-signin')) return;
+      const start = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(marker);
+      const end = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.indexOf(agentRunHeading);
+      if (!current.includes(agentRunHeading) || start < 0 || end <= start) {
+        result.skipped.push('skills/subscription-signin/SKILL.md: customized — left untouched (no Windows subsection)');
+        return;
+      }
+      const section = SUBSCRIPTION_SIGNIN_SKILL_CONTENT.slice(start, end);
+      const next = current.replace(agentRunHeading, () => section + agentRunHeading)
+        .replace('On macOS the built-in repair can hand', 'On macOS and on Windows (WSL) the built-in repair can hand');
+      fs.writeFileSync(skillFile, next);
+      result.upgraded.push('skills/subscription-signin/SKILL.md (added the Windows subsection; local edits kept)');
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md Windows migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /**
    * Bring an installed /subscription-signin skill up to the version carrying the
    * "Signing in by hand" section (operator directive 2026-09-25: the agent signs in like a
@@ -9021,6 +9053,17 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(lastResortEnd, lastResortEnd + '\n' + "- **Why a sign-in repair did not start** \u2014 `GET /subscription-relogin` now carries `blockers`: one row per account on this machine that needs sign-in but has no repair, with the reason. `no-open-incident` means nothing has confirmed the sign-in failure on this machine (often its saved login cannot be read), and a repair needs that confirmation; `profile-unresolved` means this machine has no browser profile signed in to that account (create one with `POST /playwright-profiles` and sign it in with /subscription-signin); any other reason is the repair's admission refusal. `?scope=pool` merges every machine's rows, and the dashboard shows the reason in plain words under the cell's Sign in button (a machine where repair is not running at all says so). Read-only: it never starts a repair. **When to use** (PROACTIVE): the user asks \"why is this still Needs sign-in?\" / \"why didn't auto-login fix it?\" \u2192 read `blockers` before guessing.");
         patched = true;
         result.upgraded.push('CLAUDE.md: added sign-in repair blockers awareness');
+      }
+    }
+
+    // Windows sign-in repair awareness (spec windows-signin-repair) for existing agents.
+    if (!content.includes('Windows sign-in repair (WSL, opt-in)')) {
+      const blockerHeading = '- **Why a sign-in repair did not start** — ';
+      const windowsRepairBullet = "- **Windows sign-in repair (WSL, opt-in)** — set `subscriptionPool.assistedRelogin.navigation: agent-session` on an agent in WSL and the repair's helper session signs in through Windows Chrome with `ndrive.sh`. Each profile needs its Windows folder: `PATCH /playwright-profiles/<id>` with `{\"windowsUserDataDir\":\"C:\\\\...\"}`. Until then `blockers` says `profile-directory-missing`.";
+      if (content.includes(blockerHeading)) {
+        content = content.replace(blockerHeading, () => windowsRepairBullet + '\n' + blockerHeading);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Windows sign-in repair awareness');
       }
     }
 
