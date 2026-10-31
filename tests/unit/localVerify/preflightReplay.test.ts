@@ -63,4 +63,13 @@ describe('durable preflight replay obligation', () => {
     fs.writeFileSync(file, '{bad');
     expect(() => new PreflightReplayStore(dir)).toThrow();
   });
+
+  it('reports exhausted durable capacity before another enforced red can be published', () => {
+    const store = new PreflightReplayStore(dir);
+    const sample = store.ensureRed(record(), 0);
+    const entries = Array.from({ length: 500 }, (_, n) => ({ ...sample, pr: n + 1,
+      key: replayKey({ ...record(), pr: n + 1 }), state: 'completed' as const }));
+    fs.writeFileSync(path.join(dir, 'local-verify', 'preflight-replays.json'), JSON.stringify({ v: 1, entries }));
+    expect(new PreflightReplayStore(dir).hasCapacityForNew()).toBe(false);
+  });
 });

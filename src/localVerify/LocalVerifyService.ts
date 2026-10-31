@@ -690,6 +690,8 @@ export class LocalVerifyService {
   private readonly preflightReplays: PreflightReplayStore | null;
   private replayAdmissionRunning = false;
   private replayWakeAt = 0;
+  private replayCapacitySweepAt = 0;
+  private replayCapacitySweepCursor = 0;
   /** Processes per slow lane (`monitoring.localVerify.laneShards`; absent ⇒ the policy defaults). */
   private laneShardsSetting: (() => unknown) | null = null;
   /** pr → the red head it was audited as held for (one `main-red-held` line per PR per episode). */
@@ -774,7 +776,8 @@ export class LocalVerifyService {
   private preflightMode(): 'off' | 'observe' | 'enforce' {
     try {
       const mode = this.preflightModeSetting?.();
-      return mode === 'enforce' && (!this.preflightReplays || this.preflightReplays.list().some((r) => r.state === 'blocked'))
+      return mode === 'enforce' && (!this.preflightReplays || !this.preflightReplays.hasCapacityForNew()
+        || this.preflightReplays.list().some((r) => r.state === 'blocked'))
         ? 'observe' : mode === 'observe' || mode === 'enforce' ? mode : 'off';
     } catch { return 'off'; } // @silent-fallback-ok: unreadable tuning keeps the optional check dark
   }
@@ -1203,6 +1206,10 @@ export class LocalVerifyService {
         store.cancel(marker.key);
         continue;
       }
+      // The terminal marker is the durable evidence that this exact head already
+      // received its one full-suite replay. Its red journal line may have been
+      // compacted, and an upgrade may exclude the old full record from the index.
+      if (marker.state === 'completed') continue;
       const latest = this.index.get(recordKey(marker.repo, marker.pr, marker.headSha, marker.baseRefName));
       if (latest && latest.outcome !== 'error' && latest.preflight?.reason !== 'preflight-red') {
         store.completeFromJournal(marker.key, this.now());
@@ -1855,8 +1862,36 @@ export class LocalVerifyService {
     this.checkStarved();
     this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
     if (!this.cfg.peerOnly) await this.pollPeers().catch((e) => this.audit({ event: 'peer-poll-error', detail: e instanceof Error ? e.message : String(e) }));
+    if (!this.cfg.peerOnly) await this.sweepReplayCapacity();
     this.checkPeerAttempt();
     this.pump();
+  }
+
+  /** Bounded reclamation when terminal keys fill the store; unknown PR state retains proof. */
+  private async sweepReplayCapacity(): Promise<void> {
+    const store = this.preflightReplays;
+    const now = this.now();
+    if (!store || store.hasCapacityForNew() || !this.leaseState().holds
+      || now - this.replayCapacitySweepAt < 5 * 60_000) return;
+    this.replayCapacitySweepAt = now;
+    const completed = store.list().filter((r) => r.state === 'completed');
+    if (!completed.length) return;
+    const count = Math.min(5, completed.length);
+    const start = this.replayCapacitySweepCursor % completed.length;
+    this.replayCapacitySweepCursor = (start + count) % completed.length;
+    for (let n = 0; n < count; n++) {
+      if (this.stopped || !this.leaseState().holds) return;
+      const marker = completed[(start + n) % completed.length];
+      const [view, open] = await Promise.all([
+        this.seams.prView(marker.pr).catch(() => null),
+        this.seams.isPrOpen(marker.pr).catch(() => null),
+      ]);
+      if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
+        try { store.cancel(marker.key); }
+        catch (e) { this.audit({ event: 'preflight-replay-capacity-sweep-error', pr: marker.pr, detail: String(e) }); continue; }
+        this.audit({ event: 'preflight-replay-capacity-reclaimed', pr: marker.pr, reason: open === false ? 'closed' : 'head-or-target-moved' });
+      }
+    }
   }
 
   private prQueueLength(): number {

@@ -200,6 +200,40 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     expect(rearmed).toMatchObject({ state: 'pending', rearmed: true, admissionAttempts: 0, verifierVersion: '1.0.0' });
     upgraded.svc.shutdown();
   });
+  it('preserves a completed replay after its red journal proof was compacted and the verifier upgraded', async () => {
+    const h = setup({ views: { 1: view() } });
+    const store = new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    const key = store.ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z')).key;
+    store.completeFromJournal(key, Date.parse('2026-10-21T12:01:00Z'));
+    // Compaction retained only the full green record; the old verifier version
+    // makes even that record ineligible for the upgraded server's live index.
+    fs.writeFileSync(h.svc.journalPath, JSON.stringify({ v: 1, writtenAt: '2026-10-21T12:02:00Z', record: record() }) + '\n');
+    h.svc.shutdown();
+    const upgraded = setup({ stateDir: h.stateDir, views: { 1: view() }, verifierVersion: '2.0.0' });
+    await upgraded.svc.boot();
+    expect(new PreflightReplayStore(path.join(h.stateDir, 'state')).get(key)?.state).toBe('completed');
+    upgraded.svc.setPreflightMode(() => 'enforce');
+    expect((await upgraded.svc.request(1, { explicit: false })).ok).toBe(true);
+    const args = upgraded.spawned[0].args;
+    const input = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
+    upgraded.svc.shutdown();
+  });
+  it('runs in observe mode at capacity, then reclaims a closed terminal key in a bounded tick', async () => {
+    const h = setup({ views: { 1: view() } });
+    const state = path.join(h.stateDir, 'state');
+    const sample = new PreflightReplayStore(state).ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z'));
+    const entries = Array.from({ length: 500 }, (_, n) => ({ ...sample, pr: n + 1,
+      key: replayKey({ ...preflightRed(), pr: n + 1 }), state: 'completed' as const }));
+    fs.writeFileSync(path.join(state, 'local-verify', 'preflight-replays.json'), JSON.stringify({ v: 1, entries }));
+    h.svc.shutdown();
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() }, open: { 1: false } });
+    restarted.svc.setPreflightMode(() => 'enforce');
+    expect(restarted.svc.snapshot().preflight.mode).toBe('observe');
+    await restarted.svc.tick();
+    expect(restarted.svc.snapshot().preflight.mode).toBe('enforce');
+    restarted.svc.shutdown();
+  });
 });
 
 describe('checkEligibility', () => {

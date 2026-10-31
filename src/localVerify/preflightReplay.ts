@@ -68,6 +68,8 @@ export class PreflightReplayStore {
   }
   get(key: string): PreflightReplay | null { return this.entries.get(key) ?? null; }
   list(): PreflightReplay[] { return [...this.entries.values()]; }
+  /** A new enforced red needs a durable slot before it may stop the full suite. */
+  hasCapacityForNew(): boolean { return this.entries.size < MAX_ENTRIES; }
   private write(): void {
     if (this.entries.size > MAX_ENTRIES) throw new Error('preflight replay store full');
     fs.mkdirSync(path.dirname(this.file), { recursive: true });

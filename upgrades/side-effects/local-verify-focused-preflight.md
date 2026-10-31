@@ -3,7 +3,7 @@
 **Version / slug:** `local-verify-focused-preflight`  
 **Date:** `2026-10-31`  
 **Author:** Echo  
-**Second-pass reviewer:** Pending independent implementation review before PR publication.
+**Second-pass reviewer:** GPT-6 Astra reviewed the branch against its scheduling base on 2026-10-31. It found two P2 replay-lifecycle gaps, both corrected and covered by focused tests; the final full-suite gate remains pending.
 
 ## Summary of the change
 
@@ -19,7 +19,7 @@ An optional targeted Vitest check runs after the existing build/lint and before 
 
 ## 1. Over-block
 
-The focused attempt can add at most 90 seconds to a PR's active work and may produce a false early red in enforce mode. Enforce is available only for automatically rediscoverable merge candidates; its red creates a bounded full-suite replay before any green status. The replay does not jump queue priority and runs without preflight, preventing a self-sustaining early-red loop. A missing replay store or exceeded retry budget turns enforcement into observe and leaves the record non-green.
+The focused attempt can add at most 90 seconds to a PR's active work and may produce a false early red in enforce mode. Enforce is available only for automatically rediscoverable merge candidates; its red creates a bounded full-suite replay before any green status. The replay does not jump queue priority and runs without preflight, preventing a self-sustaining early-red loop. A missing or full replay store, or an exhausted retry budget, turns enforcement into observe and leaves the record non-green. A bounded sweep reclaims closed terminal keys; completed replay proofs survive journal compaction and verifier upgrades.
 
 ## 2. Under-block
 
