@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "telegram-send-unsent-proof",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-10-31T19:53:05.174Z",
+  "artifactPath": "upgrades/side-effects/telegram-send-unsent-proof.md",
+  "artifactSha256": "0ea1a1d39b913f5a41fd65b32ca4d90172232f877a3abc3dde1c54501069b4b8",
+  "coveredFiles": [
+    "src/messaging/telegram-egress.ts",
+    "src/messaging/telegram-origin/OriginTransportCancellation.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/telegram-origin/proved-unsent.test.ts",
+    "tests/unit/telegram-origin/transport-deadlines.test.ts",
+    "upgrades/next/telegram-send-unsent-proof.md",
+    "upgrades/side-effects/telegram-send-unsent-proof.eli16.md",
+    "upgrades/side-effects/telegram-send-unsent-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reclassification of connect-phase fetch failures (no connection existed) from outcome-unknown to known-failed with the existing bounded retry; reversible by revert, no state migration.",
+  "eli16Path": "upgrades/side-effects/telegram-send-unsent-proof.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-send-unsent-proof.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

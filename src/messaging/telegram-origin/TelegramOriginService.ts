@@ -16,7 +16,7 @@ import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import type { OriginAutomationAuthor } from './OriginAutomationAuthor.js';
 import { bindBotCompanion } from './OriginBotCompanion.js';
 import { nextOriginKnownFailure, nextOriginLocalRefusal } from './OriginRetry.js';
-import { OriginTransportCancelledBeforeNetwork } from './OriginTransportCancellation.js';
+import { OriginTransportCancelledBeforeNetwork, OriginTransportUnsent, fetchFailureCode } from './OriginTransportCancellation.js';
 import { correlateBotReceipt, correlatePartialBotReceipt, replayBotReceipt } from './OriginBotReceipt.js';
 import type { OriginBotReceipt } from './OriginBotReceipt.js';
 import type { DerivedMaterializationInput, StoredChild } from './StoreTypes.js';
@@ -611,8 +611,9 @@ export class TelegramOriginService {
         try { response = prepared ? await prepared.send() : await network(Object.freeze(request)); }
         catch (error) {
           const localRefusal = consumeOriginLocalRefusal(error, request);
-          if (localRefusal || error instanceof OriginTransportCancelledBeforeNetwork) {
-            const reason = localRefusal ? 'credential-capacity-unavailable' : 'telegram-request-cancelled-before-network';
+          if (localRefusal || error instanceof OriginTransportCancelledBeforeNetwork || error instanceof OriginTransportUnsent) {
+            const reason = localRefusal ? 'credential-capacity-unavailable'
+              : error instanceof OriginTransportUnsent ? 'telegram-connect-failed' : 'telegram-request-cancelled-before-network';
             // Only a request-bound proof from the egress closure returns budget.
             // A crash without that proof remains uncertain on recovery.
             const nextAttemptAt = localRefusal
@@ -624,6 +625,9 @@ export class TelegramOriginService {
               ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
             return this.#hold(operation, reason);
           }
+          // The reason stays the stable class name; the network error itself is
+          // written to the log so the cause of an unknown outcome is never invisible.
+          console.warn(`[telegram-origin] send outcome unknown for ${operation.record.operationId}: ${describeTransportFailure(error)}`);
           await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
           throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');
         }
@@ -733,4 +737,13 @@ export class TelegramOriginService {
     catch { return { sampledAt: this.#lastMetrics?.sampledAt ?? null, stale: true, coverage: 'unknown',
       counts: this.#lastMetrics?.counts ?? null, liveHeld: this.#held.size }; }
   }
+}
+
+/** One line naming a failed network call: its message and error code, never a credential. */
+function describeTransportFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = fetchFailureCode(error);
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : null;
+  return [message, code ? `code=${code}` : null, cause && cause !== message ? `cause=${cause}` : null]
+    .filter(Boolean).join(' ').replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<redacted>').slice(0, 300);
 }
