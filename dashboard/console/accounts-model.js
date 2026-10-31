@@ -5,6 +5,7 @@
 // chips, and every account×machine cell that needs a sign-in as one "Needs you" item.
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 export const READING_STALE_MS = 60 * 60 * 1000;
 const NEEDS_SIGN_IN = new Set(['needs-reauth', 'signed-out', 'expired', 'broken']);
@@ -111,11 +112,11 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
     needs.length ? { n: needs.length, label: 'need you', tone: 'attn', href: '#/capacity/accounts?s=needs' } : null,
     busiest ? { n: `${Math.round(busiest.tight.pct)}%`, label: `most used · ${busiest.name}` , tone: busiest.tone } : null,
     { n: `${usable}/${accounts.length}`, label: 'accounts usable' },
-    inUse && inUse.activeAccountId ? { n: (byId.get(inUse.activeAccountId) || {}).name || inUse.activeAccountId, label: 'in use here' } : null,
+    inUse && inUse.activeAccountId ? { n: (byId.get(inUse.activeAccountId) || {}).name || 'Account name unavailable', label: 'in use here' } : null,
   ].filter(Boolean);
   const machineNames = {};
-  for (const r of rows) if (r && r.machineId && r.machineNickname) machineNames[r.machineId] = r.machineNickname;
-  for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = v;
-  const partial = failed.length ? `No answer from ${failed.map((f) => f.nickname || f.machineNickname || machineNames[f.machineId] || 'a machine with no name yet').join(', ')}; its accounts may be out of date.` : null;
+  for (const r of rows) if (r && r.machineId && r.machineNickname) machineNames[r.machineId] = verifiedDisplayName(r.machineNickname, r.machineId);
+  for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = verifiedDisplayName(v, k);
+  const partial = failed.length ? `No answer from ${failed.map((f) => verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || 'a machine with no name yet').join(', ')}; its accounts may be out of date.` : null;
   return { ok: true, needs, accounts, headline, sub: near.length ? `${near.map((a) => a.name).join(', ')} ${near.length === 1 ? 'is' : 'are'} at 90% or more of a limit.` : '', facts, partial, tone: needs.length ? 'attn' : 'ok' };
 }

@@ -13035,6 +13035,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         }
       }
 
+      // Mirror the verified-name rule to Codex/Gemini even when their Telegram
+      // capability block was installed before this line existed.
+      const verifiedNameLine = claudeMd.split('\n').find(line => line.startsWith('- Find verified topic names across my machines:'));
+      if (verifiedNameLine && !appended.includes('Find verified topic names across my machines:')) {
+        appended = appended.trimEnd() + '\n\n' + verifiedNameLine + '\n';
+        mirrored++;
+      }
+
       const refreshedInboxShadow = refreshFeedbackInboxTokenAwareness(appended);
       if (refreshedInboxShadow !== appended) {
         appended = refreshedInboxShadow;

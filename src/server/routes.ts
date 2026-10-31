@@ -22,6 +22,7 @@ import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
+import { isVerifiedChannelName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
@@ -17968,12 +17969,69 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Telegram ────────────────────────────────────────────────────
 
-  router.get('/telegram/topics', (_req, res) => {
-    if (!ctx.telegram) {
-      res.json({ topics: [] });
+  router.get('/telegram/topics', async (req, res) => {
+    if (req.query.scope !== undefined && req.query.scope !== 'pool') {
+      res.status(400).json({ error: 'invalid-topic-scope' });
       return;
     }
-    res.json({ topics: ctx.telegram.getAllTopicMappings() });
+    const local = ctx.telegram?.getAllTopicMappings() ?? [];
+    if (req.query.scope !== 'pool') {
+      res.json({ topics: local, serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
+      return;
+    }
+    // A session can run on a standby whose local registry still says
+    // "topic-127504" while the Telegram-serving machine has the real title.
+    // Read every reachable registry and prefer actual titles over placeholders.
+    const named = new Map<number, { topicId: number; sessionName: string | null; topicName: string }>();
+    const knownIds = new Set<number>();
+    const realName = (id: number, value: unknown): value is string => isVerifiedChannelName('telegram', id, value);
+    const absorb = (rows: unknown) => {
+      if (!Array.isArray(rows)) return;
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const t = row as { topicId?: unknown; topicName?: unknown; sessionName?: unknown };
+        const id = Number(t.topicId);
+        if (!Number.isSafeInteger(id) || id <= 0) continue;
+        knownIds.add(id);
+        if (!realName(id, t.topicName) || named.has(id)) continue;
+        named.set(id, { topicId: id, topicName: t.topicName.trim(), sessionName: typeof t.sessionName === 'string' ? t.sessionName : null });
+      }
+    };
+    absorb(local);
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const servingCandidates: unknown[][] = [];
+    const peers = ctx.resolvePeerUrls?.() ?? [];
+    await Promise.all(peers.map(async p => {
+      try {
+        const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        const verdict = isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist);
+        if (!verdict.ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/telegram/topics', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+        });
+        if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
+        const body = await r.json() as { topics?: unknown; serving?: boolean };
+        if (body.serving === true && Array.isArray(body.topics)) servingCandidates.push(body.topics);
+        else absorb(body.topics);
+      } catch (error) {
+        failed.push({ machineId: p.machineId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }));
+    // A rename is observed by the Telegram lease holder first. Its verified
+    // title wins over a stale standby copy, regardless of response order.
+    for (const rows of servingCandidates) {
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const candidate = row as { topicId?: unknown; topicName?: unknown; sessionName?: unknown };
+        const id = Number(candidate.topicId);
+        if (!Number.isSafeInteger(id) || id <= 0 || !realName(id, candidate.topicName)) continue;
+        named.set(id, { topicId: id, topicName: candidate.topicName.trim(), sessionName: typeof candidate.sessionName === 'string' ? candidate.sessionName : null });
+      }
+    }
+    res.json({
+      topics: [...named.values()].sort((a, b) => a.topicId - b.topicId),
+      pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
+    });
   });
 
   router.post('/telegram/topics', async (req, res) => {
@@ -26061,6 +26119,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // handler below). Avoids per-request log spam while preserving the signal.
   let _versionMissingLogged = false;
 
+  // The serving machine may know the title while this standby only has the ID.
+  // Keep the ID/name pair intact at the inbound handoff, including auto-spawn.
+  const verifiedTopicName = (id: number, value: unknown): value is string => isVerifiedChannelName('telegram', id, value);
+  const resolveTopicNameAcrossPool = async (topicId: number): Promise<string | null> => {
+    const live = ctx.telegram?.getTopicName(topicId);
+    if (verifiedTopicName(topicId, live)) return live.trim();
+    try {
+      const registryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
+      const reg = JSON.parse(fs.readFileSync(registryPath, 'utf-8')) as { topicToName?: Record<string, unknown> };
+      const stored = reg.topicToName?.[String(topicId)];
+      if (verifiedTopicName(topicId, stored)) return stored.trim();
+    } catch { /* @silent-fallback-ok: registry is optional on a standby; peers remain authoritative */ }
+    const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    for (const peer of ctx.resolvePeerUrls?.() ?? []) {
+      if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allowlist).ok) continue;
+      try {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/telegram/topics', {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(1500), redirect: 'manual',
+        });
+        if (!response.ok) continue;
+        const body = await response.json() as { topics?: Array<{ topicId?: unknown; topicName?: unknown }> };
+        const found = body.topics?.find(row => Number(row.topicId) === topicId && verifiedTopicName(topicId, row.topicName));
+        if (found && verifiedTopicName(topicId, found.topicName)) return found.topicName.trim();
+      } catch { /* @silent-fallback-ok: try another peer; unresolved is explicit in the resulting name */ }
+    }
+    return null;
+  };
+
   router.post('/internal/telegram-forward', async (req, res) => {
     const { topicId, text, messageId, lifelineVersion } = req.body;
     // The sender-identity fields are `let`: a request accepted WITHOUT proof of
@@ -26563,6 +26649,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             injectedTopicName = reg.topicToName?.[String(topicId)] ?? undefined;
           }
         } catch { /* fall through without name */ }
+        if (!verifiedTopicName(topicId, injectedTopicName)) injectedTopicName = await resolveTopicNameAcrossPool(topicId) ?? undefined;
         console.log(`[telegram-forward] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
         const injected = ctx.sessionManager.injectTelegramMessage(targetSession, topicId, text, injectedTopicName, fromFirstName, fromUserId, typeof messageId === 'number' ? messageId : undefined);
 
@@ -26627,6 +26714,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             if (resolved) topicName = resolved;
           } catch { /* fall through to default */ }
         }
+        if (!verifiedTopicName(topicId, topicName)) topicName = await resolveTopicNameAcrossPool(topicId) ?? 'Conversation name unavailable';
         console.log(`[telegram-forward] No live session for topic ${topicId}, spawning "${topicName}"...`);
 
         // Fetch thread history so auto-spawned sessions have full conversational context
@@ -26720,6 +26808,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           try {
             const reg = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf-8')) : { topicToSession: {}, topicToName: {} };
             reg.topicToSession[String(topicId)] = newSessionName;
+            if (verifiedTopicName(topicId, topicName)) {
+              reg.topicToName ??= {};
+              reg.topicToName[String(topicId)] = topicName;
+            }
             fs.writeFileSync(registryPath, JSON.stringify(reg, null, 2));
           } catch { /* @silent-fallback-ok — registry write non-critical */ }
           // Proactive UUID save — always run, even after --resume (new session = new UUID)
@@ -33299,6 +33391,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
       return;
     }
+    if (!CommitmentTracker.supportsVerificationMethod(verificationMethod)) {
+      res.status(400).json({ error: 'verificationMethod must be manual, config-value, file-exists, or threadline-reply' });
+      return;
+    }
     const correctionDerived = origin === 'correction' || typeof correctionId === 'string' || typeof classReviewRef === 'string';
     const classReviewAdmission = evaluateCorrectionInstanceFix({
       originCorrection: correctionDerived,
@@ -33461,7 +33557,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
       const msg = err instanceof Error ? err.message : 'Failed to record';
-      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass/.test(msg);
+      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass|config-change requires configPath/.test(msg);
       const isBinderRefusal = /conversation-recording-disabled|conversation-registration-capacity|conversation-bind-unresolvable|multi-workspace-unsupported/.test(msg);
       res.status(isWellFormedness ? 400 : isBinderRefusal ? 409 : 500).json({ error: msg });
     }

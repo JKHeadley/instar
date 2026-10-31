@@ -1,5 +1,6 @@
 // Messages to you — pure view-model (docs/specs/console-features/people-settings.md).
-// Leads with replies held back from the operator; never shows a held count of zero
+// Leads with held messages, separating replies from automatic output when known;
+// never shows a held count of zero
 // when the status could not be read.
 
 import { ago } from './home-model.js';
@@ -16,6 +17,20 @@ export function holdWords(reason) {
   return HOLD_WORDS[reason] || String(reason).replace(/[-_]/g, ' ');
 }
 
+export function heldHeadline(count, replies, automatic, other) {
+  if (!Number.isInteger(count) || count < 0) return "Can't tell how many messages are held.";
+  if (!count) return 'No messages are held.';
+  if ([replies, automatic, other].every(Number.isInteger) && replies + automatic + other === count && (replies || automatic)) {
+    const parts = [
+      replies ? `${replies} ${replies === 1 ? 'reply' : 'replies'}` : null,
+      automatic ? `${automatic} automatic ${automatic === 1 ? 'message' : 'messages'}` : null,
+      other ? `${other} other ${other === 1 ? 'message' : 'messages'}` : null,
+    ].filter(Boolean);
+    return `${parts.join(' and ')} ${count === 1 ? 'is' : 'are'} held on this machine.`;
+  }
+  return `${count} ${count === 1 ? 'message is' : 'messages are'} held on this machine.`;
+}
+
 export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicNames = {}) {
   if (!statusRes.ok) {
     // The held count still comes from /health when the detailed status is out of reach.
@@ -27,40 +42,59 @@ export function buildMessagesPage(statusRes, healthRes, now = Date.now(), topicN
   if (!held) return { ok: false, reason: 'The message status answered without its held list.' };
   const hf = s.heldForward || {};
   const expired = (Number(hf.expiredUnreported) || 0) + (Number(s.expiredHolds && s.expiredHolds.totalSinceBoot) || 0);
-  const rows = held.map((h) => {
+  const individual = held.map((h) => {
     const topic = h.topicId || (h.destination && h.destination.topicId);
     const since = h.heldSince || h.createdAt || h.updatedAt;
     return {
       key: h.operationId || h.originId || `${topic}:${since}`,
-      main: topicNames[String(topic)] || (topic ? `Conversation ${topic}` : 'A conversation'),
+      main: topicNames[String(topic)] || 'Conversation name unavailable',
       sub: holdWords(h.hold_reason || h.holdReason || h.reason),
       end: ago(since, now) || '',
-      tone: 'attn', record: h, sinceTs: Date.parse(since) || 0,
+      tone: 'attn', record: h, topicId: topic || null, sinceTs: Date.parse(since) || 0,
     };
   }).sort((a, b) => b.sinceTs - a.sinceTs);
+  // The status route often has no topic title. Repeating "A conversation" for
+  // every held send makes 24 copies of one delivery fault look like 24 tasks.
+  // Keep named conversations distinct; summarize anonymous sends by cause.
+  const groups = new Map();
+  for (const item of individual) {
+    const key = item.topicId ? `topic:${item.topicId}` : `cause:${item.sub}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  const rows = [...groups.entries()].map(([key, items]) => {
+    const first = items[0];
+    const oldest = items.reduce((min, item) => item.sinceTs && (!min || item.sinceTs < min) ? item.sinceTs : min, 0);
+    const count = items.length;
+    const main = first.topicId ? first.main : count === 1 ? '1 delayed message' : `${count} delayed messages`;
+    return { key, main, sub: first.sub, end: oldest ? `oldest ${ago(oldest, now)}` : '', tone: 'attn',
+      records: items.map((item) => item.record), topicId: first.topicId, count, sinceTs: oldest };
+  }).sort((a, b) => b.count - a.count || b.sinceTs - a.sinceTs);
   const counts = (s.metrics && s.metrics.counts) || {};
   const unknown = Number(counts['attempt:outcome-unknown']) || 0;
   const accepted = Number(counts['attempt:accepted']) || 0;
   const act = s.activation || {};
   const notReady = Array.isArray(act.observations) ? act.observations.filter((o) => o.state !== 'ready' && o.state !== 'not-applicable') : [];
   let headline;
-  if (rows.length) headline = rows.length === 1 ? '1 reply to you is held.' : `${rows.length} replies to you are held.`;
-  else if (expired) headline = `${expired} ${expired === 1 ? 'reply' : 'replies'} expired before reaching you.`;
-  else headline = 'No replies are held.';
+  if (held.length) {
+    const replies = held.filter(h => h.producerKind === 'session').length;
+    const automatic = held.filter(h => h.producerKind === 'server-automation').length;
+    headline = heldHeadline(held.length, replies, automatic, held.length - replies - automatic);
+  } else if (expired) headline = `${expired} ${expired === 1 ? 'message' : 'messages'} expired before delivery.`;
+  else headline = 'No messages are held.';
   const sub = [
-    rows.length && rows[rows.length - 1].sinceTs ? `The oldest has waited ${ago(rows[rows.length - 1].sinceTs, now).replace(' ago', '')}.` : null,
+    held.length ? 'Echo needs to restore delivery. This is not a task for you.' : null,
+    individual.length && individual[individual.length - 1].sinceTs ? `The oldest has waited ${ago(individual[individual.length - 1].sinceTs, now).replace(' ago', '')}.` : null,
     unknown && accepted ? `Of ${accepted.toLocaleString()} sends Telegram confirmed, ${unknown.toLocaleString()} more ended without a confirmation either way.` : null,
   ].filter(Boolean).join(' ');
   return {
     ok: true, rows, expired, headline, sub,
-    tone: rows.length ? 'attn' : expired ? 'bad' : 'ok',
+    tone: held.length ? 'attn' : expired ? 'bad' : 'ok',
     recording: act.complete ? 'on' : 'not fully set up',
     notReady: notReady.map((o) => ({ main: String(o.obligation || '').replace(/-/g, ' '), sub: `${String(o.subject || '').replace(/-/g, ' ')} · ${o.state}${o.reason ? ' · ' + String(o.reason).replace(/-/g, ' ') : ''}`, tone: o.state === 'held' ? 'attn' : 'unknown' })),
     storage: s.storage && s.storage.store ? s.storage.store.state : null,
     facts: [
-      { n: rows.length, label: 'held now', tone: rows.length ? 'attn' : null },
-      { n: expired, label: 'expired undelivered', tone: expired ? 'bad' : null },
-      { n: act.complete ? 'on' : 'partly', label: 'recording', tone: act.complete ? null : 'attn' },
+      ...(expired ? [{ n: expired, label: 'lost before delivery', tone: 'bad' }] : []),
     ],
   };
 }

@@ -233,7 +233,7 @@ describe('Telegram origin forward-to-holder over the signed mesh pipeline (ACT-0
     (h.standby as unknown as { '#observedLeaseHolds'?: Set<string> })['#observedLeaseHolds']?.clear();
     await h.standby.refreshHeldForward({ force: true });
     expect(observed).toHaveBeenCalledTimes(1);
-    expect((await h.status()).heldForward).toMatchObject({ count: 1, topics: ['42'] });
+    expect((await h.status()).heldForward).toMatchObject({ count: 1, sessionReplies: 0, automaticMessages: 1, otherMessages: 0, topics: ['42'] });
     // Not the holder yet: the replay waits (no send, no re-admit).
     expect(await h.standby.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
     expect(h.botNetwork).not.toHaveBeenCalled();

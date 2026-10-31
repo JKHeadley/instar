@@ -47,7 +47,7 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
     const verdict = loadVerdict(st.perCore);
     const sessions = extras.sessionsByMachine ? extras.sessionsByMachine[m.machineId] : undefined;
     return {
-      id: m.machineId, name: m.nickname || m.machineId, isSelf, ...st, verdict,
+      id: m.machineId, name: m.nickname && m.nickname !== m.machineId ? m.nickname : 'another machine', isSelf, ...st, verdict,
       leading: Boolean(routerId && routerId === m.machineId),
       sessions,
       hardware: m.hardware || null,

@@ -34,19 +34,30 @@ describe('one answer to "what needs you"', () => {
     expect(needs.value).toBe('Nothing needs you'); // the old card alone
     const card = combineNeeds(needs, promised);
     const h = headline({ needs: card, promised, reach: { state: 'ok' } });
-    expect(h.text).toBe('One thing needs you.');
+    expect(h.text).toBe('Merge each PR as soon as you approve it');
     expect(card.value).toBe('1 thing');
     expect(card.count).toBe(1);
     expect(card.rows[0].main).toContain('Merge each PR');
     expect(card.rows[0].sub).toMatch(/^a promise · waiting on your authorization/);
-    expect(card.line).toContain('Includes 1 promise waiting on you');
+    expect(card.line).toBe('');
+    expect(h.action).toMatchObject({ kind: 'promise' });
   });
   it('queue items and waiting promises are counted once, never twice', () => {
     const needs = buildNeeds(ok({ items: [item(), item({ title: 'Rotate the key', category: 'security', source: 'agent' })], pool: { failed: [] } }), NOW);
     const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ blockedOn: 'user-input', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 })] }), NOW, 1);
     const card = combineNeeds(needs, promised);
     expect(card.count).toBe(3);
-    expect(headline({ needs: card, promised }).text).toBe('3 things need you.');
+    expect(headline({ needs: card, promised }).text).toBe('Merge each PR as soon as you approve it');
+  });
+  it('the live reported case names the approval and does not treat a refused request as work for the operator', () => {
+    const needs = buildNeeds(ok({ items: [{ id: 'guard-refusal', title: 'Something other than the lifeline called my Telegram intake', category: 'security', priority: 'HIGH', status: 'OPEN', summary: 'The request was refused.', createdAt: minsAgo(2) }], pool: { failed: [] } }), NOW);
+    const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ id: 'CMT-1043', owner: 'user', blockedOn: 'user-authorization', userRequest: 'Approve rulebook changes (2.0 PR 182, 1.x PR 2380)', agentResponse: 'Merge each PR as soon as Justin approves it on GitHub.', originMachineId: 'm2', viewSource: 'replica', stalenessMs: 1000 })] }), NOW, 1);
+    const card = combineNeeds(needs, promised);
+    expect(card.count).toBe(1);
+    expect(card.rows[0].main).toBe('Approve rulebook changes (2.0 PR 182, 1.x PR 2380)');
+    expect(headline({ needs: card, promised }).text).toBe('Approve rulebook changes');
+    expect(headline({ needs: card, promised }).sub).toContain('2.0 PR 182 · 1.x PR 2380');
+    expect(card.rows[0].action).toMatchObject({ kind: 'promise', id: 'CMT-1043' });
   });
   it('nothing anywhere: both say so', () => {
     const needs = buildNeeds(ok({ items: [], pool: { failed: [] } }), NOW);
@@ -102,7 +113,7 @@ function strings(v: unknown, out: string[] = [], key = ''): string[] {
   // Collect only what the page renders: text fields, not ids or row keys.
   if (typeof v === 'string') { if (!['key', 'state', 'tone', 'valueTone', 'href', 'coverage'].includes(key)) out.push(v); }
   else if (Array.isArray(v)) v.forEach((x) => strings(x, out, key));
-  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (k !== 'machines' && k !== 'detail') strings(x, out, k);
+  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (k !== 'machines' && k !== 'detail' && k !== 'action') strings(x, out, k);
   return out;
 }
 
@@ -164,11 +175,11 @@ describe('a calm front page', () => {
   });
   it('a miss untouched for 14+ days is history, not a red row', () => {
     const p = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [
-      promise({ status: 'violated', createdAt: minsAgo(60 * 24 * 70) }),
-      promise({ status: 'violated', createdAt: minsAgo(60) }),
+      promise({ status: 'violated', createdAt: minsAgo(60 * 24 * 70), hardDeadlineAt: minsAgo(60 * 24 * 69) }),
+      promise({ status: 'violated', createdAt: minsAgo(60), hardDeadlineAt: minsAgo(30) }),
     ] }), NOW, 0);
-    expect(p.line).toBe('1 recently missed its deadline.');
-    expect(p.rows.filter((r: { tone: string }) => r.tone === 'bad')).toHaveLength(1);
+    expect(p.line).toBe('Echo is handling the open work.');
+    expect(p.rows.filter((r: { tone: string }) => r.tone === 'bad')).toHaveLength(0);
   });
   it('a promise waiting on the operator is listed once, in What needs you', () => {
     const p = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ blockedOn: 'user-input' }), promise({ status: 'violated', createdAt: minsAgo(60) })] }), NOW, 0);

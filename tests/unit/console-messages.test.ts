@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildMessagesPage, displayModel, holdWords } from '../../dashboard/console/messages-model.js';
+import { buildMessagesPage, displayModel, holdWords, heldHeadline } from '../../dashboard/console/messages-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
@@ -25,14 +25,23 @@ describe('messages page model', () => {
       { operationId: 'a', topicId: 9210, hold_reason: 'lease-not-held', heldSince: new Date(NOW - 3600_000).toISOString() },
       { operationId: 'b', topicId: 127504, hold_reason: 'destination-not-authorized', heldSince: new Date(NOW - 60_000).toISOString() },
     ] })), null, NOW, { 127504: 'Instar dashboard makeover' });
-    expect(p.headline).toBe('2 replies to you are held.');
+    expect(p.headline).toBe('2 messages are held on this machine.');
     expect(p.rows[0].main).toBe('Instar dashboard makeover');
     expect(p.rows[1].sub).toContain('routed through');
     expect(p.sub).toContain('The oldest has waited 1 h');
   });
+  it('groups anonymous replies with the same cause into one readable issue', () => {
+    const held = Array.from({ length: 24 }, (_, n) => ({ operationId: `op-${n}`, hold_reason: 'lease-not-held', heldSince: new Date(NOW - (n + 1) * 60_000).toISOString() }));
+    const p = buildMessagesPage(ok(status({ held })), null, NOW);
+    expect(p.headline).toBe('24 messages are held on this machine.');
+    expect(p.rows).toHaveLength(1);
+    expect(p.rows[0]).toMatchObject({ main: '24 delayed messages', count: 24 });
+    expect(p.sub).toContain('Echo needs to restore delivery');
+    expect(JSON.stringify(p.rows[0])).not.toContain('Unnamed conversation');
+  });
   it('expired-undelivered counts, and unconfirmed sends are named', () => {
     const p = buildMessagesPage(ok(status({ heldForward: { count: 0, expiredUnreported: 1 }, metrics: { counts: { 'attempt:accepted': 100, 'attempt:outcome-unknown': 7 } } })), null, NOW);
-    expect(p.headline).toBe('1 reply expired before reaching you.');
+    expect(p.headline).toBe('1 message expired before delivery.');
     expect(p.sub).toContain('7 more ended without a confirmation');
   });
   it('recording that is not fully set up says so', () => {
@@ -41,6 +50,9 @@ describe('messages page model', () => {
     expect(p.notReady[0].main).toBe('tool guards');
   });
   it('hold reasons and display settings', () => {
+    expect(heldHeadline(24, 1, 23, 0)).toBe('1 reply and 23 automatic messages are held on this machine.');
+    expect(heldHeadline(24, undefined, undefined, undefined)).toBe('24 messages are held on this machine.');
+    expect(heldHeadline(undefined, undefined, undefined, undefined)).toBe("Can't tell how many messages are held.");
     expect(holdWords(undefined)).toBe('held for an unstated reason');
     expect(displayModel(ok({ defaults: { enabled: true }, revision: 'r1', topics: [{ id: '1', name: 'A' }] })).ok).toBe(true);
     expect(displayModel(ok({ defaults: { enabled: true } })).ok).toBe(false);
@@ -80,7 +92,7 @@ describe('messages page in a DOM', () => {
     (doc.querySelector('.pin-input') as HTMLInputElement).value = '123456';
     (doc.querySelector('.pin-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
     await tick(15);
-    expect(doc.querySelector('.page-title')!.textContent).toBe('No replies are held.');
+    expect(doc.querySelector('.page-title')!.textContent).toBe('No messages are held.');
     ([...doc.querySelectorAll('.acct-row')].find((b) => b.textContent!.includes('footer')) as HTMLButtonElement).click();
     await tick(2);
     (doc.querySelector('#od-model') as HTMLInputElement).checked = false;

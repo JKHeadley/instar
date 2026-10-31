@@ -39,7 +39,7 @@ export async function renderSchedule(main, ctx) {
     get('/jobs'), get('/jobs?scope=pool', 8000), get('/pool'), get('/jobs/history?limit=500'), get('/jobs/migration-status'), get('/jobs/reconcile'),
   ]);
   const ms = machines.ok && Array.isArray(machines.data && machines.data.machines) ? machines.data.machines : [];
-  const names = Object.fromEntries(ms.map((m) => [m.machineId, m.nickname || m.machineId]));
+  const names = Object.fromEntries(ms.map((m) => [m.machineId, m.nickname && m.nickname !== m.machineId ? m.nickname : 'another machine']));
   const selfMachineId = machines.ok && machines.data ? machines.data.selfMachineId : null;
   last = { res: { local, pool, history, migration, reconcile }, names, selfMachineId, main, ctx };
   connectLive();

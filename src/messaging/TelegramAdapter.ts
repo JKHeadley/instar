@@ -12,6 +12,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
+import { verifiedChannelIdentity } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
 import path from 'node:path';
@@ -2701,8 +2702,11 @@ export class TelegramAdapter implements MessagingAdapter {
   registerTopicSession(topicId: number, sessionName: string, topicName?: string): void {
     this.topicToSession.set(topicId, sessionName);
     this.sessionToTopic.set(sessionName, topicId);
-    if (topicName) {
-      this.topicToName.set(topicId, topicName);
+    // A generated topic-N string is a lookup failure, never a topic title.
+    // Keep an earlier verified title when a standby rebinds the session.
+    const identity = verifiedChannelIdentity('telegram', topicId, topicName);
+    if (identity) {
+      this.topicToName.set(topicId, identity.name);
     }
     this.saveRegistry();
     console.log(`[telegram] Registered topic ${topicId} <-> session "${sessionName}"${topicName ? ` (name: "${topicName}")` : ''}`);
@@ -2775,7 +2779,8 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   getTopicName(topicId: number): string | null {
-    return this.topicToName.get(topicId) ?? null;
+    const name = this.topicToName.get(topicId);
+    return verifiedChannelIdentity('telegram', topicId, name)?.name ?? null;
   }
 
   /**
@@ -2847,10 +2852,8 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   async resolveUnknownTopicNames(): Promise<void> {
     const unknowns: number[] = [];
-    for (const [topicId, name] of this.topicToName) {
-      if (/^topic-\d+$/.test(name)) {
-        unknowns.push(topicId);
-      }
+    for (const topicId of this.topicToSession.keys()) {
+      if (!this.getTopicName(topicId)) unknowns.push(topicId);
     }
     if (unknowns.length === 0) return;
     console.log(`[telegram] Resolving ${unknowns.length} unknown topic names...`);
@@ -2941,13 +2944,15 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Get all topic-session mappings (for admin/debug UIs).
    */
-  getAllTopicMappings(): Array<{ topicId: number; sessionName: string; topicName: string | null }> {
-    const result: Array<{ topicId: number; sessionName: string; topicName: string | null }> = [];
-    for (const [topicId, sessionName] of this.topicToSession) {
+  getAllTopicMappings(): Array<{ topicId: number; sessionName: string | null; topicName: string | null }> {
+    const result: Array<{ topicId: number; sessionName: string | null; topicName: string | null }> = [];
+    // A conversation keeps its identity when its session closes. Listing only
+    // active sessions made known topic names disappear from cross-machine reads.
+    for (const topicId of new Set([...this.topicToSession.keys(), ...this.topicToName.keys()])) {
       result.push({
         topicId,
-        sessionName,
-        topicName: this.topicToName.get(topicId) ?? null,
+        sessionName: this.topicToSession.get(topicId) ?? null,
+        topicName: this.getTopicName(topicId),
       });
     }
     return result;
@@ -5332,7 +5337,8 @@ export class TelegramAdapter implements MessagingAdapter {
       }
       if (data.topicToName) {
         for (const [k, v] of Object.entries(data.topicToName)) {
-          this.topicToName.set(Number(k), v as string);
+          const identity = verifiedChannelIdentity('telegram', k, v);
+          if (identity) this.topicToName.set(Number(k), identity.name);
         }
       }
       if (data.topicToPurpose) {

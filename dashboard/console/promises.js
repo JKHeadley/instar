@@ -1,11 +1,11 @@
 // Promises page (docs/specs/console-features/work.md, "Commitments → Promises").
 // Read with Home's rules; actions use the bearer token only (no PIN on these routes).
 
-import { buildPromisesPage, storyOf, actionsFor } from './promises-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, actionButton, note, cantTell } from './ui.js';
+import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor } from './promises-model.js';
+import { isInternalFollowUp } from './home-model.js';
+import { promiseActionLinks } from './promise-actions.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, actionButton, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
-
-const RAW_KEYS = ['id', 'status', 'owner', 'blockedOn', 'actionClass', 'topicId', 'createdAt', 'nextUpdateDueAt', 'hardDeadlineAt', 'checkInAt', 'lastHeartbeatAt', 'heartbeatCount', 'cadenceMs', 'beaconEnabled', 'beaconPaused', 'beaconPausedReason', 'resolvedAt', 'resolution', 'originMachineId', 'viewSource', 'stalenessMs'];
 
 /** Telegram link to a topic in the agent's main group, when we know the group. */
 export function topicLink(chatId, topicId) {
@@ -15,37 +15,47 @@ export function topicLink(chatId, topicId) {
 }
 
 export async function renderPromises(main, ctx) {
+  if (main.dataset.promisesLoading === '1') return;
+  main.dataset.promisesLoading = '1';
   const { get, post } = ctx;
   setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Promises' }), el('h1', { class: 'page-title skeleton', text: 'Loading promises' })));
-  const [res, pool] = await Promise.all([get('/commitments?scope=mesh', 8000), get('/pool')]);
+  const slow = setTimeout(() => {
+    const title = main.querySelector('.page-title.skeleton');
+    if (title) title.textContent = 'Still checking promises…';
+  }, 3000);
+  let res, pool;
+  try {
+    [res, pool] = await Promise.all([ctx.getCommitments ? ctx.getCommitments() : get('/commitments?scope=mesh', 25000), get('/pool')]);
+  } finally {
+    clearTimeout(slow);
+    main.dataset.promisesLoading = '0';
+  }
   const machines = pool.ok && Array.isArray(pool.data && pool.data.machines) ? pool.data.machines : [];
-  const names = Object.fromEntries(machines.map((m) => [m.machineId, m.nickname || m.machineId]));
+  const names = Object.fromEntries(machines.map((m) => [m.machineId, m.nickname && m.nickname !== m.machineId ? m.nickname : 'another machine']));
   const selfId = pool.ok && pool.data ? pool.data.selfMachineId : null;
   const self = machines.find((m) => m.isSelf || (selfId && m.machineId === selfId)) || {};
   const chatId = self.servesChannels && self.servesChannels.telegram && (self.servesChannels.telegram.chatIds || [])[0];
   const peers = pool.ok ? machines.filter((m) => !(m.isSelf || (selfId && m.machineId === selfId))).length : null;
   const page = buildPromisesPage(res, Date.now(), { expectedPeers: peers, names });
 
-  if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Work · Promises', headline: 'Promises', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
+  if (!page.ok) {
+    const retrying = !res.ok && !['not signed in', 'switched off on this agent'].includes(res.reason);
+    setKids(main, pageHead({ eyebrow: 'Work · Promises', headline: retrying ? 'Still checking promises' : 'Promises',
+      sub: retrying ? 'Trying again automatically while this page is open.' : '', tone: 'muted' }), cantTell(page.reason), legacyLink());
+    return;
+  }
   const { sections: s, counts: n } = page;
 
   const open = (r) => openPromise(r, { post, chatId, names, refresh: () => renderPromises(main, ctx) });
   setKids(main, 
     pageHead({
       eyebrow: 'Work · Promises', headline: page.headline, sub: page.sub, tone: page.tone,
-      facts: [
-        { n: n.waiting, label: 'waiting on you', tone: n.waiting ? 'attn' : null, href: '#/work/promises?s=waiting' },
-        { n: n.missed, label: 'missed', tone: n.missed ? 'bad' : null, href: '#/work/promises?s=missed' },
-        { n: n.dueSoon, label: 'due within a day', href: '#/work/promises?s=dueSoon' },
-        { n: n.carrying + n.dueSoon, label: 'I’m carrying', href: '#/work/promises?s=carrying' },
-      ],
+      facts: n.waiting ? [{ n: n.waiting, label: 'waiting on you', tone: 'attn', href: '#/work/promises?s=waiting' }] : [],
     }),
     page.coverage ? note(page.coverage) : null,
     el('div', { class: 'page-sections' },
       section({ id: 'waiting', title: 'Waiting on you', rows: s.waiting.map((r) => ({ ...r, tone: 'attn' })), empty: 'Nothing is waiting on you.', onRow: open }),
-      n.missed ? section({ id: 'missed', title: 'Missed', rows: s.missed.map((r) => ({ ...r, tone: 'bad' })), onRow: open }) : null,
-      section({ id: 'dueSoon', title: 'Due within a day', rows: s.dueSoon, empty: 'Nothing is due in the next day.', onRow: open }),
-      section({ id: 'carrying', title: 'I’m carrying', rows: s.carrying, collapsed: true, onRow: open }),
+      section({ id: 'carrying', title: 'Echo is handling', rows: s.carrying, collapsed: true, onRow: open }),
       section({ id: 'handled', title: 'Older, still open', rows: s.handled.map((r) => ({ ...r, tone: 'unknown' })), collapsed: true, onRow: open }),
       section({ id: 'closed', title: 'Closed this week', rows: s.closed, collapsed: true, onRow: open }),
     ),
@@ -59,6 +69,29 @@ export async function renderPromises(main, ctx) {
     if (head) head.click();
     if (sec) sec.scrollIntoView({ block: 'start' });
   }
+  // Home links to a specific request. Open its action sheet on arrival, so a
+  // tap never strands the operator at the top of a long promise list.
+  const params = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const id = params.get('id');
+  const origin = params.get('origin');
+  if (id) {
+    // Home deep links are action handoffs. A completed request can still appear
+    // in Closed this week, but must never reopen as another request for help.
+    const request = s.waiting.find((r) => r.id === id && (!origin || r.origin === origin));
+    if (request) open(request);
+    else clearPromiseDeepLink(id, origin);
+  }
+}
+
+function clearPromiseDeepLink(id, origin) {
+  const [route, query = ''] = location.hash.split('?');
+  if (route !== '#/work/promises') return;
+  const params = new URLSearchParams(query);
+  if (params.get('id') !== id || (params.has('origin') && params.get('origin') !== origin)) return;
+  params.delete('id');
+  params.delete('origin');
+  const rest = params.toString();
+  history.replaceState(history.state, '', `${location.pathname}${location.search}${route}${rest ? `?${rest}` : ''}`);
 }
 
 function legacyLink() {
@@ -67,11 +100,47 @@ function legacyLink() {
 
 function openPromise(r, { post, chatId, names, refresh }) {
   const c = r.record;
-  const acts = actionsFor(c);
+  const internal = isInternalFollowUp(c);
+  const waitsOnYou = c.owner === 'user' || c.blockedOn === 'user-input' || c.blockedOn === 'user-authorization';
+  const acts = waitsOnYou ? actionsFor(c) : [];
   const link = topicLink(chatId, c.topicId);
-  const blocks = [story(storyOf(c, Date.now(), names))];
+  const now = Date.now();
+  const missed = Number.isFinite(Date.parse(c.hardDeadlineAt)) && Date.parse(c.hardDeadlineAt) < now;
+  const review = c.status === 'violated' && !missed;
+  const blocks = [story(storyOf(c, now, names)),
+    el('p', { class: 'sheet-next-step', text: nextStepOf(c, now) })];
+  const history = el('details', { class: 'promise-backstory' },
+    el('summary', { text: 'How this came about' }),
+    story(backstoryOf(c, now)),
+    el('p', { class: 'promise-backstory-note', text: link
+      ? 'This is the history saved with this promise. The conversation may have more context.'
+      : 'This is the history saved with this promise. No source conversation link was recorded.' }),
+    link ? el('a', { href: link, target: '_blank', rel: 'noopener', text: 'Read the full conversation' }) : null);
+  blocks.push(history);
   const row = el('div', { class: 'sheet-actions' });
-  if (link) row.append(el('a', { class: 'btn-primary btn-inline', href: link, target: '_blank', rel: 'noopener', text: 'Open the conversation' }));
+  const actionLinks = waitsOnYou ? promiseActionLinks(c) : [];
+  for (const action of actionLinks) row.append(el('a', {
+    class: `${action.primary ? 'btn-primary' : 'btn-quiet'} btn-inline`, href: action.href,
+    target: '_blank', rel: 'noopener', text: action.label,
+  }));
+  if (link) {
+    const question = !waitsOnYou && !internal ? updateQuestionOf(c, now) : null;
+    const fallback = question ? el('div', { class: 'promise-question-wrap', hidden: true },
+      el('p', { class: 'promise-backstory-note', text: 'Copy this question and paste it in the conversation:' }),
+      el('textarea', { class: 'promise-question', readonly: true }, question)) : null;
+    if (fallback) blocks.push(fallback);
+    row.append(el('a', { class: `${actionLinks.length || !waitsOnYou ? 'btn-quiet' : 'btn-primary'} btn-inline`, href: link,
+      target: '_blank', rel: 'noopener', text: waitsOnYou ? 'Reply in the conversation' : internal ? 'View source conversation' : 'Optional: copy a question and open chat',
+      onclick: question ? () => {
+        // Topic links open the right chat; Telegram does not document a draft
+        // parameter for private forum topics. Copy the text for one paste.
+        if (fallback) fallback.hidden = false;
+        if (window.navigator.clipboard?.writeText) void window.navigator.clipboard.writeText(question).catch(() => {
+          if (fallback) fallback.querySelector('p').textContent = 'Copying was blocked. Select this question and paste it in the conversation:';
+        });
+        else if (fallback) fallback.querySelector('p').textContent = 'Copying is unavailable here. Select this question and paste it in the conversation:';
+      } : undefined }));
+  }
   const q = r.replica && r.origin ? `?origin=${encodeURIComponent(r.origin)}` : '';
   const id = encodeURIComponent(c.id);
   const result = async (path, body) => {
@@ -79,7 +148,9 @@ function openPromise(r, { post, chatId, names, refresh }) {
     if (x.ok) return { ok: true, message: path === 'deliver' ? 'Marked as done.' : path === 'withdraw' ? 'Dropped.' : 'Reminders resumed.' };
     return { ok: false, message: x.reason };
   };
-  if (acts.includes('deliver')) row.append(actionButton({ label: 'Mark as done', kind: link ? 'quiet' : 'primary', confirm: 'Mark this promise as done?', run: () => result('deliver', {}), done: () => setTimeout(() => { closeSheet(); refresh(); }, 700) }));
+  if (acts.includes('deliver')) row.append(actionButton({ label: waitsOnYou ? 'I handled this' : 'Mark as done', kind: link ? 'quiet' : 'primary',
+    confirm: waitsOnYou ? 'Close this reminder? This does not send a reply or perform the requested approval.' : 'Mark this promise as done?',
+    run: () => result('deliver', {}), done: () => setTimeout(() => { closeSheet(); refresh(); }, 700) }));
   if (acts.includes('resume')) row.append(actionButton({ label: 'Resume reminders', kind: 'quiet', run: () => result('resume', {}), done: refresh }));
   blocks.push(row);
   if (acts.includes('withdraw')) {
@@ -88,8 +159,8 @@ function openPromise(r, { post, chatId, names, refresh }) {
       reason: 'Why it no longer matters', run: (why) => result('withdraw', { reason: why }), done: () => setTimeout(() => { closeSheet(); refresh(); }, 700),
     })));
   }
-  blocks.push(details(c, RAW_KEYS));
-  sheet({ title: r.main.length > 70 ? r.main.slice(0, 68) + '…' : r.main }, ...blocks);
+  sheet({ title: waitsOnYou ? 'Your response is needed' : 'Echo follow-up',
+    onClose: () => clearPromiseDeepLink(c.id, r.origin) }, ...blocks);
 }
 
 export { sheetIsOpen };

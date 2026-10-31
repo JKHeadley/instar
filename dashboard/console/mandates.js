@@ -11,6 +11,7 @@ import {
 } from './mandates-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 const AUDIT_LIMIT = 200;
 const SLIP_KEYS = ['id', 'scope', 'agents', 'author', 'createdAt', 'expiresAt', 'revoked', 'authorshipValid'];
@@ -240,7 +241,7 @@ function issueSheet(deps) {
   const scope = el('input', { class: 'reason-input', type: 'text', value: 'feedback-migration', 'aria-label': 'What is this slip for?' });
   const agentA = el('input', { class: 'reason-input mono', type: 'text', value: deps.selfFp || '', placeholder: deps.selfFp ? null : 'this agent’s fingerprint (could not read it)', 'aria-label': 'This agent' });
   const peers = deps.peers.filter((p) => p && p.fp);
-  const pick = el('select', { class: 'reason-input', 'aria-label': 'The other agent' }, [...peers.map((p) => el('option', { value: p.fp, text: p.name ? `${p.name} (${p.fp.slice(0, 8)}…)` : p.fp })), el('option', { value: '', text: 'Paste a fingerprint…' })]);
+  const pick = el('select', { class: 'reason-input', 'aria-label': 'The other agent' }, [...peers.map((p) => el('option', { value: p.fp, text: verifiedDisplayName(p.name, p.fp) || 'Agent name unavailable' })), el('option', { value: '', text: 'Enter an agent identifier…' })]);
   const paste = el('input', { class: 'reason-input mono', type: 'text', placeholder: 'the other agent’s routing fingerprint', 'aria-label': 'The other agent’s fingerprint', hidden: peers.length > 0 });
   pick.addEventListener('change', () => { paste.hidden = pick.value !== ''; if (!paste.hidden) paste.focus(); });
   const authorities = el('textarea', { class: 'reason-input mono', rows: '8', spellcheck: 'false', 'aria-label': 'What exactly may they do? (JSON)' });

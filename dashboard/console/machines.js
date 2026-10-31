@@ -3,7 +3,7 @@
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
 import { buildMachinesPage, ropesFor, healthOf, usageOf } from './machines-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'dot unknown', unknown: 'dot unknown' };
@@ -73,7 +73,7 @@ async function openMachine(m, { get, health, guards, names }) {
     body.push(block('Connections', ropes === null ? note('Can’t tell: this machine’s connection checks did not answer.') : ropes.length ? rowsList(ropes.map((r) => ({ main: r.kind, sub: r.label, tone: r.state === 'ok' ? null : r.state }))) : note('No connection checks recorded to this machine yet.')));
     body.push(note('Its parts and what is using it are read on that machine; open its own console to see them.'));
   }
-  const panel = sheet({ title: m.name }, ...body, details(m.record, ['machineId', 'nickname', 'online', 'routerReceivedAt', 'selfReportedLastSeen', 'loadAvg', 'ropeCondition', 'clockSkewStatus', 'pollingActive']));
+  const panel = sheet({ title: m.name }, ...body);
   if (m.isSelf) {
     const sb = panel.querySelector('.sheet-body');
     const [sys, res] = await Promise.all([get('/systems/status'), get('/resources/summary?sinceHours=1')]);

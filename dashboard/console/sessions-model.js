@@ -52,8 +52,10 @@ export function sessionKey(s) {
 }
 
 /** The name the operator knows: the Telegram topic name when there is one. */
-export function sessionTitle(s) {
-  const n = String((s && (s.platformName || s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
+import { sessionTopicName } from './topic-names.js';
+import { verifiedDisplayName } from './display-identity.js';
+export function sessionTitle(s, topicNames = {}) {
+  const n = String(sessionTopicName(s, topicNames) || (s && (s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
   return n.length > 80 ? n.slice(0, 77) + '…' : n || 'A session';
 }
 
@@ -92,14 +94,14 @@ export function mergeSessions(poolData, wsSessions) {
 /** One machine's name, from the pool roster, never a raw id when a name exists. */
 function nicknameOf(pool, machineId) {
   const m = (pool && Array.isArray(pool.machines) ? pool.machines : []).find((x) => x.machineId === machineId);
-  return (m && m.nickname) || machineId || 'another machine';
+  return verifiedDisplayName(m && m.nickname, machineId) || 'another machine';
 }
 
 /**
  * The whole list. sessionsRes is the GET /sessions?scope=pool read; ws is the live
  * socket's list for this machine (null when the socket has not sent one).
  */
-export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {}) {
+export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicNames = {} } = {}) {
   if (!sessionsRes || !sessionsRes.ok) return { ok: false, reason: `Couldn’t list sessions: ${(sessionsRes && sessionsRes.reason) || 'no answer'}.` };
   const data = sessionsRes.data || {};
   if (!Array.isArray(data.sessions)) return { ok: false, reason: 'The session list answered without sessions.' };
@@ -108,16 +110,19 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {})
   const machines = Array.isArray(pool.machines) ? pool.machines : [];
   const multi = pool.enabled === true && machines.length >= 2;
   const { local, remote } = mergeSessions(data, ws);
-  const dupNames = new Set((Array.isArray(pool.duplicateTopics) ? pool.duplicateTopics : []).flatMap((d) => (Array.isArray(d.sessions) ? d.sessions : [])));
+  const duplicateConversations = new Set((Array.isArray(pool.duplicateTopics) ? pool.duplicateTopics : [])
+    .filter((d) => typeof d.platform === 'string' && d.platformId != null)
+    .map((d) => `${d.platform}:${String(d.platformId)}`));
   const rows = [...local.map((s) => ({ ...s, machineNickname: s.machineNickname || selfName })), ...remote].map((s) => {
     const a = activity(s, now);
-    const duplicate = s.duplicateTopic === true || dupNames.has(s.name);
+    const duplicate = s.duplicateTopic === true || (typeof s.platform === 'string' && s.platformId != null
+      && duplicateConversations.has(`${s.platform}:${String(s.platformId)}`));
     const machine = s.machineNickname || (s.remote ? nicknameOf(pool, s.machineId) : 'This machine');
     const started = Date.parse(s.startedAt);
     const running = Number.isFinite(started) ? spanWords(now - started) : null;
     const sub = [machine, running && running !== 'now' ? running : running ? 'just started' : null, duplicate ? 'running on two machines at once' : a.state === 'no-reading' ? null : a.words].filter(Boolean).join(' · ');
     return {
-      key: sessionKey(s), title: sessionTitle(s), sub, end: a.end, activity: a.state, duplicate,
+      key: sessionKey(s), title: sessionTitle(s, topicNames), sub, end: a.end, activity: a.state, duplicate,
       tone: duplicate ? 'bad' : a.state === 'quiet' ? 'attn' : a.state === 'no-reading' ? 'unknown' : null,
       machine, remote: s.remote === true, model: modelWords(s.model),
       session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
@@ -136,7 +141,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {})
     return { machineId: id, name: nicknameOf(pool, id), words: last && last !== 'now' ? `not answering (last seen ${last} ago)` : 'not answering' };
   });
   const idleMachines = multi ? machines.filter((m) => m.sessionCount === 0 && !failedIds.has(m.machineId)).map((m) => ({
-    machineId: m.machineId, name: m.nickname || m.machineId || 'unnamed machine',
+    machineId: m.machineId, name: verifiedDisplayName(m.nickname, m.machineId) || 'another machine',
     words: m.emptyState && m.emptyState.text ? (m.emptyState.kind === 'online' ? 'answering, nothing running' : m.emptyState.text) : 'state unknown',
     ok: Boolean(m.emptyState && m.emptyState.kind === 'online'),
   })) : [];
@@ -268,7 +273,7 @@ export function machineChoices(poolRes) {
   const out = [{ value: '', label: 'Automatic', disabled: false }];
   for (const m of machines) {
     if (!m || typeof m.machineId !== 'string') continue;
-    let label = (typeof m.nickname === 'string' && m.nickname) || m.machineId;
+    let label = verifiedDisplayName(m.nickname, m.machineId) || 'Another machine';
     if (m.machineId === self) label += ' (this machine)';
     const offline = m.online !== true;
     const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
@@ -312,12 +317,13 @@ export function createBody({ name, platform = 'auto', framework = '', model = ''
 /** The create answer in words: started, starting elsewhere, unsettled, or refused. */
 export function createResultWords(status, data, name) {
   const d = data || {};
+  const machineName = verifiedDisplayName(d.machine?.nickname, d.machine?.machineId) || 'the chosen machine';
   if (!(status >= 200 && status < 300)) return { ok: false, text: d.error || d.message || (status ? `Not created: the server answered ${status}.` : 'Not created: the server could not be reached.') };
   const where = d.profile ? ` on ${d.profile.label}${d.profile.model ? ' · ' + modelOptionWords(d.profile.model) : ''}` : '';
   if (d.ownership === 'superseded' || d.ownership === 'not-confirmed') return { ok: true, warn: true, text: d.error || `“${name}” was created, but which machine owns it is not settled yet. Send it a message.` };
-  if (d.started === 'unknown') return { ok: true, warn: true, text: d.error || `“${name}” may still be starting on ${d.machine ? d.machine.nickname : 'the chosen machine'}.` };
-  if (d.started === 'requested' && d.machine) return { ok: true, text: `Starting “${name}” on ${d.machine.nickname}.` };
-  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : ' with no chat'}${d.machine ? ` on ${d.machine.nickname}` : ''}.` };
+  if (d.started === 'unknown') return { ok: true, warn: true, text: d.error || `“${name}” may still be starting on ${machineName}.` };
+  if (d.started === 'requested' && d.machine) return { ok: true, text: `Starting “${name}” on ${machineName}.` };
+  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : ' with no chat'}${d.machine ? ` on ${machineName}` : ''}.` };
 }
 
 /** The new-topic default in words, for the "Change the default" line. */

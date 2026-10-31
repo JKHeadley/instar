@@ -7,6 +7,7 @@
 // it re-reads the server's validTransitions before every step.
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 // ── Profile ───────────────────────────────────────────────────────────────
 export const PROFILES = ['cautious', 'supervised', 'collaborative', 'autonomous'];
@@ -166,7 +167,7 @@ export function buildGuards(res) {
   const selfName = d.nickname || (multi ? 'this machine' : null);
   const rows = d.guards.filter((g) => g && g.key).map((g) => guardRow(g, { id: d.machineId || 'self', name: multi ? selfName : null, here: d.nickname }, true));
   for (const m of peers) {
-    const name = m.nickname || m.machineId || 'another machine';
+    const name = verifiedDisplayName(m.nickname, m.machineId) || 'another machine';
     if (!Array.isArray(m.guards)) { failed.push({ machineId: m.machineId, nickname: name, reason: 'no list' }); continue; }
     for (const g of m.guards) if (g && g.key) rows.push(guardRow(g, { id: m.machineId, name }, false));
   }
@@ -175,7 +176,7 @@ export function buildGuards(res) {
   const accepted = rows.filter((r) => r.record.loadBearingAccepted);
   return {
     ok: true, look, others, multi, selfName,
-    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: f.nickname || f.machineId || 'A machine', sub: `Can’t tell: ${FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
+    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || 'another machine', sub: `Can’t tell: ${FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
     counts: { look: look.length, others: others.length, accepted: accepted.length, total: rows.length },
   };
 }

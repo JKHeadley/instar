@@ -156,13 +156,14 @@ describe('SessionManager.currentMemoryPressure — macos-memory-pressure-metric 
     // surface could report "97% used" beside tier 'low'. Both now read one source.
     const manager = makeManager(tmpDir);
     const diag = (manager as unknown as {
-      getSessionDiagnostics: () => { memoryPressure: string; usedPercent: number };
+      getSessionDiagnostics: () => { memoryPressure: string; memoryUsedPercent: number };
     }).getSessionDiagnostics();
+    expect(Number.isFinite(diag.memoryUsedPercent)).toBe(true);
 
     const tierForPercent =
-      diag.usedPercent >= 90 ? 'critical'
-      : diag.usedPercent >= 75 ? 'high'
-      : diag.usedPercent >= 60 ? 'moderate'
+      diag.memoryUsedPercent >= 90 ? 'critical'
+      : diag.memoryUsedPercent >= 75 ? 'high'
+      : diag.memoryUsedPercent >= 60 ? 'moderate'
       : 'low';
     expect(diag.memoryPressure).toBe(tierForPercent);
   });

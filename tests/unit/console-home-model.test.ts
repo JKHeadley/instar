@@ -12,10 +12,20 @@ import {
   machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
   combineNeeds, machineNames, machineLabel,
 } from '../../dashboard/console/home-model.js';
+import { topicNameMap } from '../../dashboard/console/topic-names.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
 const minsAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+
+describe('topic names across machines', () => {
+  it('uses a real pooled name in Home and never treats topic-N as a title', () => {
+    const names = topicNameMap(ok({ topics: [{ topicId: 127504, topicName: 'topic-127504' }, { topicId: 128732, topicName: 'Feature maturation' }, { topicId: 133072, topicName: '133072' }] }));
+    expect(names).toEqual({ '128732': 'Feature maturation' });
+    expect(sessionLabel({ platform: 'telegram', platformId: 128732, name: 'topic-128732' }, names)).toBe('Feature maturation');
+    expect(sessionLabel({ platform: 'telegram', platformId: 127504, name: 'topic-127504' }, names)).toBe('Conversation name unavailable');
+  });
+});
 
 describe('ago()', () => {
   it('formats minutes, hours and days, and refuses junk', () => {
@@ -47,14 +57,16 @@ describe('Can I reach you', () => {
     expect(m.state).toBe('stale');
     expect(m.line).toContain('10 min ago');
   });
-  it('held replies need you; expired ones are failing', () => {
+  it('held messages are a delivery problem; expired ones are failing', () => {
     expect(buildReach(hf({ count: 2, oldestSince: minsAgo(30) }), NOW).state).toBe('attn');
+    const split = buildReach(hf({ count: 24, sessionReplies: 1, automaticMessages: 23, otherMessages: 0 }), NOW);
+    expect(split.rows[0].main).toBe('1 reply and 23 automatic messages held on this machine');
     expect(buildReach(hf({ expiredUnreported: 1 }), NOW).state).toBe('bad');
   });
   it('a fresh zero is the healthy case', () => {
     const m = buildReach(hf({}), NOW);
     expect(m.state).toBe('ok');
-    expect(m.value).toBe('No replies held');
+    expect(m.value).toBe('No messages held');
   });
 });
 
@@ -147,15 +159,23 @@ describe('What I have promised', () => {
     expect(isActiveCommitment(c({ status: 'delivered' }), NOW)).toBe(false);
     expect(isActiveCommitment(c({ expiresAt: minsAgo(1) }), NOW)).toBe(false);
   });
-  it('a remote violated promise is not hidden', () => {
+  it('a remote violated Echo-owned promise is not an operator alert', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
-    expect(m.state).toBe('bad');
-    expect(m.rows[0].sub).toContain('another machine');
+    expect(m.state).not.toBe('bad');
+    expect(m.rows).toHaveLength(0);
   });
-  it('a promise waiting on the operator but untouched for 14+ days is not counted', () => {
+  it('an old due date does not become a fresh Home failure when a heartbeat updates it', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({
+      status: 'violated', hardDeadlineAt: minsAgo(60 * 24 * 70),
+      lastHeartbeatAt: minsAgo(1), viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000,
+    })] }), NOW, 1);
+    expect(m.missedCount).toBe(0);
+    expect(m.rows.some((r: { tone: string }) => r.tone === 'bad')).toBe(false);
+  });
+  it('a genuine operator dependency remains visible after 14 days', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30) })] }), NOW, 0);
-    expect(m.count).toBe(0);
-    expect(m.line).toBe('Nothing recent waiting on you.');
+    expect(m.count).toBe(1);
+    expect(m.line).toBe('1 promise waiting on you.');
   });
   it('promises waiting on the operator lead', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization' }), c({ owner: 'user', blockedOn: 'user-input' })] }), NOW);
@@ -271,29 +291,60 @@ describe('headline()', () => {
     expect(headline({ needs: card('loading'), promised: card('attn', '3 need you', 3), reach: card('ok') }).text).toBe('Checking in…');
   });
   it('sums what needs the operator', () => {
-    expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), reach: card('ok') }).text).toBe('3 things need you.');
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), reach: card('ok') }).text).toBe('Open what needs your attention');
   });
   it('never says all quiet while a card cannot tell', () => {
     const h = headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') });
-    expect(h.text).toBe('Nothing urgent that I can see.');
-    expect(h.tone).toBe('muted');
-    expect(h.sub).toMatch(/can't fully see/i);
+    expect(h).toMatchObject({ text: "Couldn't check message delivery.", tone: 'attn', href: '#/people/messages', linkLabel: 'Open message delivery' });
+  });
+  it('a failed promise check opens promises directly', () => {
+    expect(headline({ needs: card('partial', '', 0), promised: card('unknown') })).toMatchObject({
+      text: "Couldn't check promises.", href: '#/work/promises', linkLabel: 'Open promises',
+    });
+    expect(headline({ needs: card('partial', '', 0), promised: card('stale', '', 0) })).toMatchObject({
+      text: "Couldn't refresh promises.", href: '#/work/promises', sub: 'Showing the last successful result.',
+    });
   });
   it('a partial-coverage card blocks "all quiet" even when its state is ok', () => {
     expect(headline({ needs: card('ok'), promised: { state: 'ok', value: '', coverage: 'partial view' } }).text).not.toBe('All quiet.');
   });
   it('attention outside the two queues is still announced', () => {
-    expect(headline({ needs: card('ok'), promised: card('ok'), allowed: card('attn', '70 of 99 on') }).text).toBe('One area needs a look.');
+    expect(headline({ needs: card('ok'), promised: card('ok'), allowed: {
+      state: 'attn', rows: [{ main: '2 safety checks off that should be on', tone: 'attn' }],
+    } })).toMatchObject({ text: '2 safety checks off that should be on.', href: '#/settings/allowed', linkLabel: 'Inspect safety checks' });
   });
-  it('a known total keeps its coverage qualification', () => {
-    expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).toMatch(/can't fully see/i);
+  it('does not turn an Echo-owned missed date into an operator headline', () => {
+    const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [
+      { id: 'CMT-MISS', status: 'violated', owner: 'agent', blockedOn: 'none', createdAt: minsAgo(3), hardDeadlineAt: minsAgo(1),
+        agentResponse: 'Changing the schedule now', originMachineId: 'm1' },
+    ] }), NOW, 0);
+    const h = headline({ needs: card('ok', '', 0), promised, allowed: card('attn') });
+    expect(h.text).toBe('Safety checks need a look.');
+    expect(h.action).not.toEqual({ kind: 'promise', id: 'CMT-MISS', origin: 'm1' });
+    expect(h.sub).not.toContain('other area');
+    expect(headline({ needs: card('ok', '', 0), promised: card('ok'), reach: card('bad') })).toMatchObject({
+      text: 'Replies were lost before reaching you.', href: '#/people/messages', tone: 'bad',
+    });
+  });
+  it('keeps an Echo-owned login follow-up off the operator headline', () => {
+    const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [{
+      id: 'CMT-LOGIN', status: 'violated', owner: 'agent', blockedOn: 'none', createdAt: minsAgo(3), hardDeadlineAt: minsAgo(1),
+      agentResponse: 'Echo desk will check the held Adriana login after its reset, verify fresh quota and confirm the fallback.',
+    }] }), NOW, 0);
+    const h = headline({ needs: card('ok', '', 0), promised });
+    expect(h.text).toBe('Nothing urgent that I can see.');
+  });
+  it('a known request keeps unrelated coverage out of its explanation', () => {
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).not.toMatch(/can't fully check/i);
   });
   it('a partial queue keeps its known urgency in the headline (round-4 blocker)', () => {
     const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
     expect(n.state).toBe('partial');
     const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
-    expect(h.text).toBe('One thing needs you.');
-    expect(h.sub).toMatch(/can't fully see/i);
+    expect(h.text).toBe('T');
+    expect(h.sub).not.toMatch(/can't fully check/i);
+    expect(n.note).toBeNull();
+    expect(n.statusNote).toContain("Couldn't reach Laptop");
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');

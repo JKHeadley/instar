@@ -566,6 +566,18 @@ esac`;
     let lad: string;
     let stubDir: string;
     const envBase = () => ({ ND_POWERSHELL: '/nonexistent', STUB_LAD: lad, STUB_DIR: stubDir });
+    // The WSL development host has real wslpath and powershell.exe on PATH.
+    // These two refusal tests need a PATH containing only the stubs and the
+    // ordinary utilities the wrapper uses before it reaches the guard.
+    const isolatedPath = () => {
+      const tools = path.join(tmp, 'isolated-tools');
+      fs.mkdirSync(tools, { recursive: true });
+      for (const name of ['dirname', 'basename', 'tr', 'shasum', 'cut', 'cksum', 'mkdir', 'date']) {
+        const source = ['/usr/bin', '/bin'].map((dir) => path.join(dir, name)).find((file) => fs.existsSync(file));
+        if (source) fs.symlinkSync(source, path.join(tools, name));
+      }
+      return `${bin}:${tools}`;
+    };
     const logRows = () => fs.readFileSync(path.join(home, '.instar', 'logs', 'normal-chrome-browser.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
     const nd = (args: string[], env: Record<string, string> = {}, input = '') => run('ndrive.sh', args, { ...envBase(), ...env }, input);
     /** The wrapper's per-agent tag: the home's basename plus 8 hex of the full (physical) home path. */
@@ -586,7 +598,7 @@ esac`);
 
     it('refuses to run without wslpath (ERR wsl-only, exit 2): Git Bash is untested', () => {
       SafeFsExecutor.safeRmSync(path.join(bin, 'wslpath'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      const r = run('ndrive.sh', ['target'], { ...envBase(), PATH: `${bin}:/usr/bin:/bin` });
+      const r = run('ndrive.sh', ['target'], { ...envBase(), PATH: isolatedPath() });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('ERR wsl-only');
       expect(logRows().pop()).toMatchObject({ cmd: 'target', exit: 2, via: 'none' });
@@ -594,7 +606,7 @@ esac`);
 
     it('refuses to run where no powershell.exe is reachable (ERR windows-only, exit 2) and logs the refusal', () => {
       SafeFsExecutor.safeRmSync(path.join(bin, 'powershell.exe'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      const r = nd(['target']);
+      const r = nd(['target'], { PATH: isolatedPath() });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('ERR windows-only');
       expect(r.stderr).toContain('chrome-launch.sh');

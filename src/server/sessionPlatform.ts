@@ -9,6 +9,8 @@
  * correctly (2026-10-21, topic 112490). Both surfaces now call this.
  */
 
+import { verifiedChannelIdentity } from '../messaging/shared/channelIdentity.js';
+
 export interface SessionPlatformTelegram {
   getTopicForSession?: (tmuxSession: string) => number | null | undefined;
   getTopicName?: (topicId: number) => string | null | undefined;
@@ -35,7 +37,8 @@ export function resolveSessionPlatform(
     if (topicId) {
       const info: SessionPlatformInfo = { platform: 'telegram', platformId: topicId };
       const topicName = telegram.getTopicName?.(topicId);
-      if (topicName && !/^topic-\d+$/.test(topicName)) info.platformName = topicName;
+      const identity = verifiedChannelIdentity('telegram', topicId, topicName);
+      if (identity) info.platformName = identity.name;
       return info;
     }
   }
@@ -44,7 +47,8 @@ export function resolveSessionPlatform(
     if (channelId) {
       const info: SessionPlatformInfo = { platform: 'slack', platformId: channelId };
       const registry = slack.getChannelRegistry();
-      if (registry[channelId]?.channelName) info.platformName = registry[channelId]!.channelName;
+      const identity = verifiedChannelIdentity('slack', channelId.split(':')[0], registry[channelId]?.channelName);
+      if (identity) info.platformName = identity.name;
       return info;
     }
   }

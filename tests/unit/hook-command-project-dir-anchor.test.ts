@@ -52,7 +52,7 @@ function runFromSpacedHomeSubdir(cmds: string[]): string[] {
       fs.writeFileSync(script, script.endsWith('.sh') ? 'echo hook-ran\n' : "console.log('hook-ran');\n");
       try {
         const out = execFileSync('/bin/sh', ['-c', cmd], {
-          cwd: sub, env: { ...process.env, CLAUDE_PROJECT_DIR: home }, input: '{}', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
+          cwd: sub, env: { ...process.env, CLAUDE_PROJECT_DIR: home }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
         });
         if (!out.includes('hook-ran')) failures.push(`no output: ${cmd}`);
       } catch (err) {

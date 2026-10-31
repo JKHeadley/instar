@@ -26,6 +26,11 @@ describe('resolveSessionPlatform', () => {
       .toEqual({ platform: 'slack', platformId: 'C1', platformName: 'general' });
   });
 
+  it('does not advertise a Slack ID as a channel name', () => {
+    expect(resolveSessionPlatform('s', null, slack({ s: 'C123' }, { C123: 'C123' })))
+      .toEqual({ platform: 'slack', platformId: 'C123' });
+  });
+
   it('reports headless when no adapter binds the session', () => {
     expect(resolveSessionPlatform('train-109', telegram({}), slack({}))).toEqual({ platform: 'headless' });
     expect(resolveSessionPlatform('train-109', null, null)).toEqual({ platform: 'headless' });

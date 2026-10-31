@@ -76,11 +76,10 @@ list, a full-screen detail sheet on phone), built once with Promises and reused.
 - **"Needs you" is always first and always small.** Items waiting on the operator lead;
   routine items are a count you can open. Open items untouched 14+ days go to
   **"Older, still open"** (`00-patterns.md` §2): shown with their count, not counted in
-  the headline, never described as handled. Missed, overdue, failed and late items
-  keep a visible count in their own section whatever their age. A promise waiting on
-  the operator that he has not touched in 14 days also moves to "Older, still open"
-  (each row still says "waiting on your approval"), so the headline stays the short
-  list of what is current — the operator's own rule: an overloaded list gets ignored.
+  the headline, never described as handled. On Promises, Echo-owned missed dates
+  and failed checks remain in collapsed audit sections; other Work views keep
+  their own failure counts. A promise waiting on
+  the operator stays visible until that dependency is resolved, regardless of age.
 - **Working, slow, stuck and failed are four different looks.** No list is only
   successes.
 - **Writes use the bearer token only: adapter (a) for every route in this group**
@@ -446,42 +445,76 @@ dropped, and is any of it waiting on me?"
   cheerful half.
 
 **The new design.**
-- *Arrival (glance):* uses Home's rules exactly (one model, `home-model.js`, so both
-  screens always agree). Headline: "2 promises are waiting on you. 9 more I'm carrying."
-  Facts: **Waiting on you**, **Missed** (violated or past hard deadline), **Due soon**,
-  **I'm carrying** (agent-owned, on track).
-- *Layout:* phone: facts, then *Waiting on you* (each row: what was asked, in his words,
-  then "you said: 'send me the summary' · 2 d ago · on your yes"), *Missed*, *Due soon*,
-  *I'm carrying* (collapsed to a count), *Older, still open* (agent-owned and on-track
-  promises untouched 14+ days: collapsed, shown with its count, not counted in the
-  headline, never called handled), *Closed recently* (delivered, withdrawn, last 7
-  days). *Missed* is exempt from the age rule: a missed promise stays in Missed at any age. A
-  promise waiting on you but untouched 14+ days sits in *Older, still open*, where its
-  row still reads "waiting on your approval"; it is out of the headline count on purpose.
+- *Arrival (glance):* uses Home's rules exactly. Only a promise explicitly
+  waiting on the operator appears by default. A missed Echo-owned deadline or
+  failed check is Echo's follow-up, not an operator request. Headline:
+  "Nothing is waiting on you" or "2 promises are waiting on you."
+- *Layout:* *Waiting on you* is visible. *Echo is handling* and *Older, still
+  open* are collapsed audit sections; age never means handled or completed.
+  *Closed this week* is collapsed. No missed/due-soon agent-owned counts or red
+  rows appear on arrival. A fresh, explicit operator dependency stays visible;
+  an old one remains in the audit with its waiting-on-you wording.
 
 - *Actions (the detail sheet; all bearer, no PIN).* For a waiting-on-you row the first
   button is **Open the conversation** (deep link to the topic; the reply happens in
   Telegram, where the agent hears it; `dashboard/console/promises.js:74`). The three
-  writes follow the server's eligibility rules, which are the authority; the page shows
-  a button only when the server would accept it, so a tap never ends in a refusal the
-  page could have predicted:
+  writes follow the server's eligibility rules, which are the authority, and
+  appear only on operator-owned rows. Echo-owned rows have no completion or
+  drop action for the operator; a quiet source link and optional copied update
+  question remain available when he opens one deliberately.
 
   | Action | Shown when (and the server accepts when) | Confirm / reason | Machine target | Refusal |
   |---|---|---|---|---|
-  | **Mark as done** → `POST /commitments/:id/deliver` | The promise is open and its status is `pending`. The server refuses `verified`, `violated`, `expired`, `withdrawn` and `delivered` (`src/monitoring/CommitmentTracker.ts:910`), so none of those rows gets the button — not a missed promise, not a closed one, and not a `verified` one, which is an observation state the server will not deliver from. Shown on waiting-on-you, due-soon, carrying and older rows alike (secondary on a waiting-on-you row, where Open the conversation leads). | Inline confirm "Mark this promise as done?" (`promises.js:82`). | A row from another machine posts with `?origin=<machineId>` (`promises.js:75`); the server forwards the write to the owning machine (`src/server/routes.ts:33939`–`:33942`). | 404 "not found or already in terminal status" (`routes.ts:33947`) and any other error land as the server's words on the sheet (`promises.js:80`), never an `alert()`. 409 "ambiguous across machines" (`:33936`) is shown in words with a retry that names the origin. |
-  | **Drop this promise** → `POST /commitments/:id/withdraw` | The promise is open, including a `violated` one: the server refuses only `withdrawn` and `expired` (`CommitmentTracker.ts:850`). Styled quiet and red, at the bottom of the sheet (`promises.js:85`–`:89`). | Confirm text "Drop this promise? It closes without being done, and the reason is kept with it." plus a required one-line reason, "Why it no longer matters" — the route answers 400 without one (`routes.ts:34031`–`:34034`). | Same `?origin=` forwarding (`routes.ts:34043`–`:34045`). | 404 "not found or already resolved" (`routes.ts:34049`); 409 ambiguous as above. |
-  | **Resume reminders** → `POST /commitments/:id/resume` | `beaconPaused` is true (`promises-model.js:157`) and the status is not `expired`, `withdrawn` or `delivered` (`CommitmentTracker.ts:880`–`:886`). | One tap, no confirm (`promises.js:83`). | Same forwarding (`routes.ts:34075`–`:34077`). | 404 "not found, not paused, or in terminal status" (`routes.ts:34081`). |
+  | **Mark as done** → `POST /commitments/:id/deliver` | Waiting on the operator and `pending`. | Inline confirmation. | Replica writes include `?origin=<machineId>`. | The server's refusal appears on the sheet. |
+  | **Drop this promise** → `POST /commitments/:id/withdraw` | Waiting on the operator and still open. | Confirmation and a reason. | Same forwarding. | The server's refusal appears on the sheet. |
+  | **Resume reminders** → `POST /commitments/:id/resume` | Waiting on the operator, `pending`, and paused. | One tap. | Same forwarding. | The server's refusal appears on the sheet. |
 
-  The page's `actionsFor` (`promises-model.js:152`–`:158`) is the one place these rules
-  live; two build fixes make it match the table — it still offers Mark as done on a
-  `verified` promise, which the server refuses, and it withholds Drop from a `violated`
-  one, which the server accepts (listed under Built so far in `README.md`).
-- *Honest states:* loading; empty ("No open promises."); can't tell (request failed, or
+  The page's `actionsFor` is the one place the server eligibility rules live;
+  the sheet additionally withholds those controls on Echo-owned rows.
+- *Honest states:* loading; nothing waiting on the operator; can't tell (request failed, or
   `enabled:false`: "Promise tracking is off on this agent"); partial (no replica rows:
   "Only this machine's promises are visible"; a replica over 15 min old: "Mac Mini's
-  promises are from 22 min ago"); per promise *missed*, *due soon*, *paused reminders*,
+  promises are from 22 min ago"); per promise *due date passed*, *paused reminders*,
   *waiting on you*. A failed write shows the server's message on the sheet, never an
   `alert()`.
+  A slow read says "Still checking promises" while it runs. A transient read
+  failure says the page will try again automatically while open; the 30-second
+  refresh continues and overlapping reads are suppressed.
+- A failed verification without a recorded, passed hard deadline is **Needs
+  verification** in the record, never "Missed" or "overdue". The detail sheet shows the actual
+  due date when recorded, or says that no due date was recorded. It labels
+  update/check-in dates separately from the promise due date. The sheet gives
+  the operator one plain next step and a conversation button named for that
+  step. It does not expose raw field keys, machine IDs, or status codes in a
+  "Details" dump. An Echo-owned deadline stays in the collapsed audit.
+  A malformed historical `verificationMethod` can remain in a stored record;
+  the tracker now stops repeated violation ticks for that unsupported method
+  without claiming the promise was delivered. New writes with an unsupported
+  method receive HTTP 400 before the record is created. The old verdict stays
+  available for review rather than being silently rewritten.
+- Any Echo-owned record, including `pipeline-wake-*`, is Echo's follow-up,
+  even if its stored `userRequest` field reads like a request. It stays under
+  *Echo is handling* or *Older, still open*, not *Missed* or the Home alert. Its
+  sheet says **Internal follow-up**, **Due date passed**, and that no outcome
+  has been recorded; the old deadline does not prove the underlying problem
+  persists. The sheet names Echo as owner and offers only a quiet source link,
+  not an operator completion or "ask for an update" button (operator example:
+  pipeline wake for the Adriana fallback, 2026-10-30, topic 127504).
+- A sentinel `config-change` claim without `configPath` and an expected value
+  was not a real config check. CMT-806 accumulated 23,161 false violation
+  ticks this way. New records without those coordinates are rejected at the
+  tracker/API boundary; the sentinel records the claim as an unverified
+  one-time action instead. Historical malformed rows remain open, with no new
+  false verification ticks, for Echo to reconcile from evidence.
+- The promise sheet locks page scrolling and gives its own scroll area on phones.
+  **How this came about** expands the history actually saved on the record:
+  when it was recorded, what has happened since, any recorded dependency check,
+  verification and outcome. The original request and Echo's response stay in
+  the main sheet and are not duplicated in the expansion. It says when the saved record is
+  incomplete and links to the source conversation when a topic is known. An
+  update action copies a specific question and opens that topic. Telegram's
+  documented private forum topic link cannot prefill a draft, so the question
+  remains visible for manual copying if clipboard access is unavailable.
 - *Multi-machine:* `?scope=mesh`; rows from another machine say "from Mac Mini, 3 min
   old". Writes to a replica row go to the owner (the server forwards); a 409 "ambiguous
   across machines" is shown in words with a retry that names the origin.
@@ -489,17 +522,12 @@ dropped, and is any of it waiting on me?"
 ```
 ┌──────────────────────────────┐
 │ Promises                     │
-│ 2 waiting on you. 9 more     │
-│ I'm carrying.                │
-│ [2 you][1 missed][0 soon][9] │
+│ 2 promises waiting on you.   │
 │ WAITING ON YOU               │
 │ ▸ Approve the prod deploy  › │
 │   2 d ago · your yes         │
 │ ▸ Pick a name for the bot  › │
-│ MISSED                       │
-│ ✕ Morning summary         › │
-│   due yesterday 08:00        │
-│ I'm carrying (9)           › │
+│ Echo is handling (9)       › │
 │ Older, still open (14)     › │
 │ Closed this week (6)       › │
 └──────────────────────────────┘

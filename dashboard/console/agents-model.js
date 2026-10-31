@@ -11,6 +11,7 @@
 // A value that could not be read says so; it never renders as fine.
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 export const PEER_FRESH_MS = 15 * 60 * 1000;
 export const LEAK_ALARM_MS = 24 * 60 * 60 * 1000;
@@ -134,13 +135,13 @@ export function relayHolder(poolRes) {
   const id = d && d.router && typeof d.router.holder === 'string' ? d.router.holder : null;
   if (!id) return null;
   const m = Array.isArray(d.machines) ? d.machines.find((x) => x && x.machineId === id) : null;
-  return { machineId: id, name: (m && m.nickname) || id };
+  return { machineId: id, name: verifiedDisplayName(m && m.nickname, id) || 'another machine' };
 }
 
 export function machineNames(poolRes) {
   const d = poolRes && poolRes.ok && poolRes.data;
   const names = {};
-  if (d && Array.isArray(d.machines)) for (const m of d.machines) if (m && m.machineId) names[m.machineId] = m.nickname || m.machineId;
+  if (d && Array.isArray(d.machines)) for (const m of d.machines) if (m && m.machineId) names[m.machineId] = verifiedDisplayName(m.nickname, m.machineId) || 'another machine';
   return { names, selfMachineId: d && typeof d.selfMachineId === 'string' ? d.selfMachineId : null };
 }
 
@@ -222,7 +223,7 @@ export function symmetryWords(state) { return SYMMETRY_WORDS[state] || { word: `
  * Conversations grouped by peer. A conversation another machine holds is a summary row
  * ("lives on <machine>"); its messages are never shown from here.
  */
-export function conversationRows(convRes, threadsRes, { selfMachineId = null, names = {} } = {}, now = Date.now()) {
+export function conversationRows(convRes, threadsRes, { selfMachineId = null, names = {}, topicNames = {} } = {}, now = Date.now()) {
   const st = sourceState(convRes);
   if (st !== 'ok') return { state: st, reason: st === 'off' ? 'Conversation records are switched off on this agent.' : `Couldn’t read my conversations: ${convRes ? convRes.reason : 'not read'}.`, byPeer: {}, rows: [], partial: false };
   const d = convRes.data || {};
@@ -235,15 +236,15 @@ export function conversationRows(convRes, threadsRes, { selfMachineId = null, na
   const rows = list.map((c) => {
     const t = threads[c.conversationId] || null;
     const heldElsewhere = c.kind === 'replica' || (self ? c.holderMachineId !== self : false);
-    const holderName = names[c.holderMachineId] || c.holderMachineId;
-    const topic = t && t.bridge && t.bridge.topicName ? t.bridge.topicName : c.boundTopicId ? `Telegram topic ${c.boundTopicId}` : null;
+    const holderName = names[c.holderMachineId] || 'another machine';
+    const topic = c.boundTopicId && topicNames[String(c.boundTopicId)] || (t && t.bridge && t.bridge.topicName && !/^topic-\d+$/i.test(t.bridge.topicName) ? t.bridge.topicName : null) || (c.boundTopicId ? 'a conversation' : null);
     const last = t && t.lastSeen ? ago(t.lastSeen, now) : null;
     const subParts = [c.status === 'closed' ? 'closed' : 'open', t ? plural(t.messageCount, 'message') : null, topic || 'no Telegram topic'];
     if (heldElsewhere) subParts.push(`lives on ${holderName}${c.stalenessMs > 0 ? ` (record ${ago(now - c.stalenessMs, now).replace(' ago', '')} old)` : ''}`);
     if (c.streamStatus && c.streamStatus !== 'current') subParts.push(`record ${c.streamStatus}`);
     return {
       key: `${c.holderMachineId}:${c.conversationId}`, id: c.conversationId, peerFp: lower(c.peerFingerprint),
-      main: topic ? `Conversation in ${topic}` : `Conversation ${c.conversationId.slice(0, 8)}`,
+      main: topic && topic !== 'a conversation' ? `Conversation in ${topic}` : 'A conversation',
       sub: subParts.filter(Boolean).join(' · '), end: last || '',
       tone: c.status === 'closed' ? 'unknown' : null,
       heldElsewhere, holderId: c.holderMachineId, holderName, stalenessMs: Number(c.stalenessMs) || 0, status: c.status, boundTopicId: c.boundTopicId || null, hasTopic: Boolean(c.boundTopicId || (t && t.bridge)),
@@ -268,7 +269,8 @@ export function buildAgents({ pairing, peersRes, conversations, threadsRes }, no
     if (!fpOk(k)) return null;
     if (!byFp.has(k)) byFp.set(k, { fp: k, names: [], pairing: null, health: null, conversations: [] });
     const a = byFp.get(k);
-    if (typeof name === 'string' && name && !a.names.includes(name)) a.names.push(name);
+    const title = verifiedDisplayName(name, k);
+    if (title && !a.names.includes(title)) a.names.push(title);
     return a;
   };
   for (const p of pairing.pairings) { const a = touch(p.peerFp, p.peerName); if (a) a.pairing = p; }
@@ -282,17 +284,17 @@ export function buildAgents({ pairing, peersRes, conversations, threadsRes }, no
     }
   }
   const agents = [...byFp.values()].map((a) => {
-    const name = a.names[0] || `Agent ${shortFp(a.fp)}`;
+    const name = a.names[0] || 'Unnamed agent';
     const pw = a.pairing ? pairingWord(a.pairing.state) : null;
     const health = a.health ? peerWords(a.health, now) : null;
     const historyOnly = !a.pairing && a.conversations.length > 0;
     const stateWord = pw || (historyOnly ? 'History only' : 'Not paired');
     const reach = health ? health.word : peersState === 'ok' ? 'no delivery record yet' : 'can’t tell if it’s reachable';
-    const tone = health ? health.tone : peersState === 'ok' ? (isPaired(a.pairing && a.pairing.state) ? 'ok' : 'unknown') : 'unknown';
+    const tone = historyOnly ? 'unknown' : health ? health.tone : peersState === 'ok' ? (isPaired(a.pairing && a.pairing.state) ? 'ok' : 'unknown') : 'unknown';
     const waitingOnOther = a.pairing && a.pairing.state === 'invite-accepted';
     return {
       key: `agent:${a.fp}`, fp: a.fp, shortFp: shortFp(a.fp), name, main: name,
-      sub: `${stateWord} · ${reach}`, end: health && health.lastHeard ? health.lastHeard : '', tone: waitingOnOther && tone === 'ok' ? 'attn' : tone,
+      sub: `${stateWord} · ${a.names.length ? reach : 'Name not recorded'}`, end: health && health.lastHeard ? health.lastHeard : '', tone: waitingOnOther && tone === 'ok' ? 'attn' : tone,
       pairingState: a.pairing ? a.pairing.state : null, pairingWord: stateWord, paired: isPaired(a.pairing && a.pairing.state), historyOnly,
       health, healthRow: a.health, pairingRow: a.pairing, conversations: a.conversations, peersState,
     };
@@ -303,34 +305,41 @@ export function buildAgents({ pairing, peersRes, conversations, threadsRes }, no
 }
 
 // ── Waiting on you ───────────────────────────────────────────────────────────
-const claimed = (agent, owner) => `the agent that calls itself ${agent || 'unknown'}${owner ? `, which says it belongs to ${owner}` : ''}`;
+const claimed = (agent, owner) => {
+  const name = verifiedDisplayName(agent);
+  const ownerName = verifiedDisplayName(owner);
+  return `${name ? `the agent that calls itself ${name}` : 'an agent whose name is unavailable'}${ownerName ? `, which says it belongs to ${ownerName}` : ''}`;
+};
 export function waitingCards(pairing, now = Date.now()) {
   const cards = [];
   for (const n of pairing.restartNotices) cards.push({ kind: 'restart', id: n.id, title: 'An invite was cleared by a restart', body: `An invite from ${claimed(n.claimedAgent, n.claimedOwner)} was waiting for your approval when I restarted, and it was cleared (its secret lived only in memory). Paste it again, or forward it to my Telegram, before it expires at ${localTime(n.exp, now)}.`, actions: ['dismiss'] });
-  for (const a of pairing.alarms) cards.push({ kind: 'alarm', iid: a.iid, title: 'Warning: your invite got out', body: `Two agents used the same invite, so I paused the first one: it cannot receive anything secret. The second calls itself ${(a.secondAccept && a.secondAccept.agent) || 'unknown'}. Make a new invite and send it privately.`, actions: [] });
-  for (const p of pairing.pendingAccepts) cards.push({ kind: 'accept', iid: p.iid, name: p.claimedAgent || 'unknown', title: `Pair with ${claimed(p.claimedAgent, p.claimedOwner)}?`, body: `Only approve if you know who sent you this invite. Check code (optional, to read to them): ${p.checkCode || '—'}. It expires at ${localTime(p.exp, now)}.`, actions: ['approve', 'decline'] });
-  for (const i of pairing.finishPrompts) cards.push({ kind: 'finish', iid: i.iid, name: (i.acceptor && i.acceptor.agent) || 'unknown', title: `${(i.acceptor && i.acceptor.agent) || 'An agent'} accepted your invite.`, body: `${claimed(i.acceptor && i.acceptor.agent, i.acceptor && i.acceptor.owner).replace(/^the/, 'The')} accepted it. Finish only if that is who you sent it to.`, actions: ['finish', 'not-them'] });
+  for (const a of pairing.alarms) {
+    const secondName = verifiedDisplayName(a.secondAccept && a.secondAccept.agent);
+    cards.push({ kind: 'alarm', iid: a.iid, title: 'Warning: your invite got out', body: `Two agents used the same invite, so I paused the first one: it cannot receive anything secret. The second ${secondName ? `calls itself ${secondName}` : 'has no verified name'}. Make a new invite and send it privately.`, actions: [] });
+  }
+  for (const p of pairing.pendingAccepts) cards.push({ kind: 'accept', iid: p.iid, name: verifiedDisplayName(p.claimedAgent) || 'An unnamed agent', title: `Pair with ${claimed(p.claimedAgent, p.claimedOwner)}?`, body: `Only approve if you know who sent you this invite. Check code (optional, to read to them): ${p.checkCode || '—'}. It expires at ${localTime(p.exp, now)}.`, actions: ['approve', 'decline'] });
+  for (const i of pairing.finishPrompts) cards.push({ kind: 'finish', iid: i.iid, name: verifiedDisplayName(i.acceptor && i.acceptor.agent) || 'An unnamed agent', title: `${verifiedDisplayName(i.acceptor && i.acceptor.agent) || 'An unnamed agent'} accepted your invite.`, body: `${claimed(i.acceptor && i.acceptor.agent, i.acceptor && i.acceptor.owner).replace(/^the/, 'The')} accepted it. Finish only if that is who you sent it to.`, actions: ['finish', 'not-them'] });
   return cards;
 }
 
 // ── The page ─────────────────────────────────────────────────────────────────
-export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes }, now = Date.now()) {
+export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes, topicNames = {} }, now = Date.now()) {
   const relay = relayModel(health, now);
   const pairing = pairingModel(pairingRes, invitesRes, poolRes, now);
   const { names, selfMachineId } = machineNames(poolRes);
-  const conversations = conversationRows(convRes, threadsRes, { selfMachineId, names }, now);
+  const conversations = conversationRows(convRes, threadsRes, { selfMachineId, names, topicNames }, now);
   const { agents, peersState, peersReason } = buildAgents({ pairing, peersRes, conversations, threadsRes }, now);
   const waiting = waitingCards(pairing, now);
   const paired = agents.filter((a) => a.paired);
-  const dark = agents.filter((a) => a.health && a.health.kind === 'dark');
-  const waitingSends = agents.filter((a) => a.health && (a.health.kind === 'stale' || a.health.kind === 'queued'));
+  const dark = agents.filter((a) => a.paired && a.name !== 'Unnamed agent' && a.health && a.health.kind === 'dark');
+  const waitingSends = agents.filter((a) => a.paired && a.name !== 'Unnamed agent' && a.health && (a.health.kind === 'stale' || a.health.kind === 'queued'));
 
   // Nothing of the network answers and pairing is off: one headline, how to turn it on, no empty sections.
   const relayOff = relay.state === 'not-configured';
   const relayUnknown = relay.state === 'cant-tell';
   if (pairing.state === 'off' && (relayOff || relayUnknown) && agents.length === 0 && waiting.length === 0) {
     return {
-      mode: 'off', certain: relayOff, relay, pairing, agents, waiting, conversations, facts: [],
+      mode: 'off', certain: relayOff, relay, pairing, agents, waiting, conversations, facts: [], topicNames,
       headline: relayOff ? 'The agent network is off on this agent.' : 'The agent network looks off on this agent.',
       sub: `${relayOff ? '' : `${relay.word}. `}Pairing is turned off too. To turn it on, ask me to “connect to the agent network”, or tap Turn on pairing below; that restarts my server, and this page reconnects by itself.`,
       tone: 'muted', notes: [],
@@ -344,6 +353,9 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
       ? (first.kind === 'finish' ? `${first.name} is waiting for you to finish pairing.` : first.kind === 'accept' ? `${first.name} wants to pair with you.` : first.kind === 'alarm' ? 'An invite of yours got out.' : 'An invite was cleared by a restart.')
       : `${waiting.length} things are waiting on you.`;
     tone = 'attn';
+  } else if (pairing.state === 'off' && paired.length === 0) {
+    headline = 'The agent network is off on this machine.';
+    tone = 'muted';
   } else if (!relay.connected && relay.state !== 'cant-tell' && !relayOff) {
     headline = relay.state === 'displaced' ? 'I’m not connected to the agent network — another connection took my place.' : relay.state === 'not-provisioned' ? 'I have no agent-network identity on this machine yet.' : 'I’m not connected to the agent network — checking again.';
     tone = relay.tone === 'bad' ? 'bad' : 'attn';
@@ -366,7 +378,7 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
   const subParts = [];
   if (waiting.length && !relay.connected && relay.state !== 'cant-tell' && !relayOff) subParts.push(`${relay.word}.`);
   if (pairing.state === 'elsewhere') subParts.push(pairing.holder ? `Pairing runs on ${pairing.holder.name}; open the console there to make or approve invites.` : 'Pairing runs on another of my machines.');
-  if (pairing.state === 'off' && agents.length) subParts.push('Pairing is turned off on this agent; the agents below are known from delivery records or history.');
+  if (pairing.state === 'off' && agents.length) subParts.push(paired.length ? 'Existing agents are listed below.' : agents.some(a => a.historyOnly) ? 'Past conversations are saved below.' : 'No agents are paired here.');
   if (pairing.state === 'cant-tell') subParts.push(pairing.reason);
   if (!agents.length && pairing.state === 'ok' && !waiting.length) subParts.push('Connect another agent to start.');
   if (relay.identity && relay.identity.tone === 'bad') subParts.push(relay.identity.word + '.');
@@ -381,8 +393,10 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
   if (conversations.state !== 'ok') notes.push(conversations.reason);
   else if (conversations.partial) notes.push('Some older conversation records may be missing: the cross-machine read hit its bound.');
   if (pairing.invitesReason) notes.push(pairing.invitesReason);
-  if (peersState === 'ok' && peersRes.data && peersRes.data.pool && Array.isArray(peersRes.data.pool.failed) && peersRes.data.pool.failed.length) notes.push(`No delivery records from ${peersRes.data.pool.failed.map((f) => names[f.machineId] || f.machineId).join(', ')}.`);
-  return { mode: 'ok', certain: true, headline, sub: subParts.join(' '), tone, facts, relay, pairing, agents, waiting, conversations, notes };
+  if (peersState === 'ok' && peersRes.data && peersRes.data.pool && Array.isArray(peersRes.data.pool.failed) && peersRes.data.pool.failed.length) notes.push(`No delivery records from ${peersRes.data.pool.failed.map((f) => names[f.machineId] || 'another machine').join(', ')}.`);
+  return { mode: 'ok', certain: true, headline, sub: subParts.join(' '), tone,
+    facts: pairing.state === 'off' && paired.length === 0 && waiting.length === 0 ? [] : facts,
+    relay, pairing, agents, waiting, conversations, notes, topicNames };
 }
 
 // ── One conversation's history (GET /threadline/threads/:id + /health) ──────

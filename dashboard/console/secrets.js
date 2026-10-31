@@ -57,7 +57,7 @@ export async function renderSecrets(main, ctx) {
   const { get } = ctx;
   if (!main.querySelector('.secrets-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'People · Passwords & keys' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
   const [pendingRes, ctxRes, syncRes, topicsRes, poolRes] = await Promise.all([
-    get('/secrets/pending'), get('/self-knowledge/session-context?full=1'), get('/secrets/sync-status'), get('/telegram/topics'), get('/pool'),
+    get('/secrets/pending'), get('/self-knowledge/session-context?full=1'), get('/secrets/sync-status'), get('/telegram/topics?scope=pool'), get('/pool'),
   ]);
   const now = Date.now();
   const names = topicNameMap(topicsRes);

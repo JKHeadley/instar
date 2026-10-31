@@ -404,6 +404,10 @@ IMPORTANT: Only return genuine commitments where the user asked for something du
       return parsed.filter((c: any) =>
         c.type && c.userRequest && c.agentResponse &&
         ['config-change', 'behavioral', 'one-time-action'].includes(c.type)
+      ).map((c: DetectedCommitment) =>
+        c.type === 'config-change' && (!c.configPath || c.configExpectedValue === undefined)
+          ? { ...c, type: 'one-time-action' as const, configPath: undefined, configExpectedValue: undefined }
+          : c
       ) as DetectedCommitment[];
     } catch (err) {
       // @silent-fallback-ok — LLM detection is best-effort; infrastructure enforcement still works

@@ -386,6 +386,19 @@ describe('CommitmentSentinel', () => {
       expect(commitments[0].topicId).toBe(100);
     });
 
+    it('keeps a setting claim without check coordinates as an unverified action', async () => {
+      writeMessages(stateDir, [
+        { messageId: 1, topicId: 100, text: 'Remove the daily delay', fromUser: true },
+        { messageId: 2, topicId: 100, text: 'I will remove the delay', fromUser: false },
+      ]);
+      const intelligence = createMockIntelligence(JSON.stringify([{ type: 'config-change',
+        userRequest: 'Remove the daily delay', agentResponse: 'I will remove the delay' }]));
+      const { sentinel, tracker } = makeSentinel(stateDir, intelligence);
+      expect(await sentinel.scan()).toBe(1);
+      expect(tracker.getAll()[0].type).toBe('one-time-action');
+      expect(tracker.getAll()[0].status).toBe('pending');
+    });
+
     it('detects behavioral commitments', async () => {
       writeMessages(stateDir, [
         { messageId: 1, topicId: 100, text: 'Always check with me before deploying', fromUser: true },
