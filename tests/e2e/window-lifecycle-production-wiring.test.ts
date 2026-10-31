@@ -164,16 +164,20 @@ describe('Window lifecycle production wiring', () => {
 
   async function advanceCadenceTo(target: string): Promise<void> {
     while (Date.parse(clock) < Date.parse(target)) {
-      // Stall duties require every 30-minute boundary. The compiled ledger
-      // already contains the due report obligations, so one read can feed
-      // commitments and evidence before the two evaluation passes.
+      // Stall duties require every 30-minute boundary. Report duties are due
+      // every three hours and need two evaluation passes before evidence can
+      // bind to the newly assigned responsible role.
       clock = new Date(Math.min(Date.parse(clock) + 30 * 60_000, Date.parse(target))).toISOString();
       const ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
       syncCommitments(ledger.obligations);
-      const dueReports = ledger.obligations.filter((obligation: any) => /^cadence\.report\.3h@/.test(obligation.id) && Date.parse(obligation.deadline.dueAt) <= Date.parse(clock) && !obligation.evidence.some((evidence: any) => evidence.verifierPassed));
-      for (const report of dueReports) await addManualEvidence(report);
       await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
-      await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
+      if ((Date.parse(clock) - Date.parse(BASE)) % (3 * 60 * 60_000) === 0) {
+        await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
+        const ready = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
+        const dueReports = ready.obligations.filter((obligation: any) => /^cadence\.report\.3h@/.test(obligation.id) && Date.parse(obligation.deadline.dueAt) <= Date.parse(clock) && !obligation.evidence.some((evidence: any) => evidence.verifierPassed));
+        for (const report of dueReports) await addManualEvidence(report);
+        await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
+      }
     }
   }
 
