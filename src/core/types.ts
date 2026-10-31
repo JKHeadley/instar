@@ -52,6 +52,8 @@ export interface Session {
   jobSlug?: string;
   /** tmux session name */
   tmuxSession: string;
+  /** Telegram topic routing ID, retained with the session so display-name reads can verify its title. */
+  telegramTopicId?: number;
   /** When the session was created */
   startedAt: string;
   /** When the session ended (if completed) */

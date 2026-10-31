@@ -7384,6 +7384,19 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    // A verified display name must follow its routing ID onto existing agents.
+    const nameRule = `- Find verified topic names across my machines: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/topics?scope=pool"\`. A topic ID is routing data, never a name. If its name is unresolved, show that clearly and retry; never show \`topic-123\` in place of a title. Apply the same rule to channels, machines, and agents.`;
+    if (!content.includes('Find verified topic names across my machines:')) {
+      const anchor = '- List topics:';
+      const at = content.indexOf(anchor);
+      const eol = at >= 0 ? content.indexOf('\n', at) : -1;
+      content = eol >= 0
+        ? content.slice(0, eol + 1) + nameRule + '\n' + content.slice(eol + 1)
+        : content + '\n' + nameRule + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added verified topic, channel, machine, and agent name rule');
+    }
+
     if (!content.includes(CONSOLE_MARKER)) {
       // Console makeover (docs/specs/console-makeover.md): one bullet under the Dashboard entry.
       const anchor = '- Features: Real-time terminal streaming';
@@ -13519,6 +13532,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
           appended = appended.trimEnd() + '\n\n' + render();
           mirrored++;
         }
+      }
+
+      // The verified-name rule is a single line inside Telegram's existing
+      // capability block. Mirror that line to Codex/Gemini on update too.
+      const verifiedNameLine = claudeMd.split('\n').find(line => line.startsWith('- Find verified topic names across my machines:'));
+      if (verifiedNameLine && !appended.includes('Find verified topic names across my machines:')) {
+        appended = appended.trimEnd() + '\n\n' + verifiedNameLine + '\n';
+        mirrored++;
       }
 
       const refreshedInboxShadow = refreshFeedbackInboxTokenAwareness(appended);

@@ -3287,7 +3287,8 @@ export function wireTelegramRouting(
     const senderUserId = typeof sender?.userId === 'number' ? sender.userId : Number(sender?.userId ?? 0) || 0;
     const resolvedUser = senderUserId && userManager ? userManager.resolveFromTelegramUserId(senderUserId) : null;
     const targetSession = telegram.getSessionForTopic(topicId);
-    const topicName = telegram.getTopicName(topicId) || `topic-${topicId}`;
+    const verifiedTopicName = telegram.getTopicName(topicId);
+    const topicName = verifiedTopicName || `topic-${topicId}`; // unique internal spawn key
 
     if (targetSession && sessionManager.isSessionAlive(targetSession)) {
       // Direct inject: receipt FIRST (the §3.4 handover point), stop re-check,
@@ -3297,7 +3298,7 @@ export function wireTelegramRouting(
       if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
       try {
         const injected = sessionManager.injectTelegramMessage(
-          targetSession, topicId, dmsg.payload, topicName, senderFirstName, senderUserId,
+          targetSession, topicId, dmsg.payload, verifiedTopicName ?? 'Conversation name unavailable', senderFirstName, senderUserId,
           Number(dmsg.messageId.replace(/^\D*/, '')) || undefined,
         );
         if (injected === false) {

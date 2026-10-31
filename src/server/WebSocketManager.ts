@@ -37,6 +37,8 @@ import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
 import type { StreamTicketStore } from './StreamTicketStore.js';
 import { PeerStreamProxy, type UpstreamTransport, type UpstreamHandlers } from './PeerStreamProxy.js';
 import type { SessionPlatformInfo } from './sessionPlatform.js';
+import { sessionDisplayName } from './sessionPlatform.js';
+import { isVerifiedChannelName } from '../messaging/shared/channelIdentity.js';
 import type { DesktopStreamManager } from './DesktopStreamManager.js';
 import type { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { DesktopMeshStreamRelay } from './DesktopMeshStreamRelay.js';
@@ -596,8 +598,8 @@ export class WebSocketManager {
    * Resolve display names by cross-referencing the topic-session registry.
    * Maps tmux session names to their Telegram topic names.
    */
-  private getTopicDisplayNames(): Map<string, string> {
-    const map = new Map<string, string>();
+  private getTopicDisplayNames(): Map<string, { topicId: number; name: string }> {
+    const map = new Map<string, { topicId: number; name: string }>();
     if (!this.registryPath) return map;
     try {
       const data = JSON.parse(fs.readFileSync(this.registryPath, 'utf-8'));
@@ -606,8 +608,8 @@ export class WebSocketManager {
       // Build reverse map: tmux session name → topic display name
       for (const [topicId, tmuxSession] of Object.entries(topicToSession)) {
         const name = topicToName[topicId];
-        if (name) {
-          map.set(tmuxSession, name);
+        if (isVerifiedChannelName('telegram', topicId, name)) {
+          map.set(tmuxSession, { topicId: Number(topicId), name });
         }
       }
     } catch {
@@ -622,7 +624,7 @@ export class WebSocketManager {
     return running.map(s => {
       const base: Record<string, unknown> = {
         id: s.id,
-        name: displayNames.get(s.tmuxSession) || s.name,
+        name: s.name,
         tmuxSession: s.tmuxSession,
         status: s.status,
         startedAt: s.startedAt,
@@ -638,6 +640,15 @@ export class WebSocketManager {
           // Adapter lookup failed — leave platform unset (dashboard shows headless)
         }
       }
+      if ((!base.platform || base.platform === 'headless') && Number.isSafeInteger(s.telegramTopicId)) {
+        base.platform = 'telegram';
+        base.platformId = s.telegramTopicId;
+      }
+      const registeredTitle = displayNames.get(s.tmuxSession);
+      if (base.platform === 'telegram' && !base.platformName && registeredTitle?.topicId === Number(base.platformId)) {
+        base.platformName = registeredTitle.name;
+      }
+      base.name = sessionDisplayName(base.name, base as unknown as SessionPlatformInfo);
 
       // Enrich with hook event telemetry when available
       if (this.hookEventReceiver) {

@@ -38,6 +38,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { RelayVerdict, RelayReasonCode } from './relayVerdict.js';
 import { clampRelayTtlSec } from './relayVerdict.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 
 /**
  * Outbound delivery lifecycle.
@@ -225,7 +226,7 @@ function rowToEntry(r: any): A2ADeliveryEntry {
   return {
     messageId: r.message_id,
     peerFp: r.peer_fp,
-    peerName: r.peer_name ?? null,
+    peerName: verifiedEntityName(r.peer_fp, r.peer_name),
     threadId: r.thread_id ?? null,
     subject: r.subject ?? null,
     transport: r.transport ?? null,
@@ -316,7 +317,7 @@ export class A2ADeliveryTracker {
       .run(
         opts.messageId,
         opts.peerFp,
-        opts.peerName ?? null,
+        verifiedEntityName(opts.peerFp, opts.peerName),
         opts.threadId ?? null,
         opts.subject ?? null,
         opts.transport ?? null,
@@ -532,7 +533,7 @@ export class A2ADeliveryTracker {
            peer_name = COALESCE(excluded.peer_name, a2a_peer_inbound.peer_name),
            accept_count = a2a_peer_inbound.accept_count + 1`,
       )
-      .run(peerFp, peerName ?? null, now);
+      .run(peerFp, verifiedEntityName(peerFp, peerName), now);
   }
 
   /** Outbound messages still awaiting the peer's ack (optionally for one peer). */
@@ -687,7 +688,7 @@ export class A2ADeliveryTracker {
 
     return {
       peerFp,
-      peerName: lastSent?.peer_name ?? inbound?.peer_name ?? null,
+      peerName: verifiedEntityName(peerFp, lastSent?.peer_name) ?? verifiedEntityName(peerFp, inbound?.peer_name),
       lastSentAt: lastSent?.sent_at ?? null,
       lastAckedAt: lastAcked?.acked_at ?? null,
       lastInboundAt: inbound?.last_accepted_at ?? null,
