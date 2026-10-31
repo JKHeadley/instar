@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-bootstrap-diagnostics",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T10:00:58.095Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "artifactSha256": "b6e033fdfa89e05c481e44cfc39940d5d0029d0369b3e2bf293533d3f6ec237c",
+  "coveredFiles": [
+    "upgrades/next/windows-desktop-prepare-handshake-diagnostics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note structure fix for the same diagnostic patch.",
+  "eli16Path": "docs/specs/windows-desktop-bootstrap-diagnostics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { classifyWindowsDesktopBootstrapError, readWindowsDesktopBootstrapStatus,
+import { classifyWindowsDesktopBootstrapError, classifyWindowsDesktopPrepareFailure, readWindowsDesktopBootstrapStatus,
   writeWindowsDesktopBootstrapStatus } from '../../src/core/WindowsDesktopBootstrapStatus.js';
 
 describe('Windows desktop bootstrap status', () => {
@@ -18,6 +18,23 @@ describe('Windows desktop bootstrap status', () => {
       .toEqual({ state: 'install-failed', phase: 'install', code: 'installer-process-failed' });
     expect(classifyWindowsDesktopBootstrapError({ stderr: 'instar-desktop-installer-phase:stage\nAdd-Type: error CS1002' }))
       .toEqual({ state: 'install-failed', phase: 'stage', code: 'companion-compile-failed' });
+  });
+
+  it('distinguishes update transport failures using only fixed codes', () => {
+    for (const code of ['prepare-http-forbidden', 'prepare-http-not-found', 'prepare-http-other',
+      'prepare-connect-refused', 'prepare-connect-unavailable', 'prepare-timeout', 'prepare-reply-invalid']) {
+      const error = { stderr: `instar-desktop-installer-phase:update\nC:\\Users\\private\\companion.secret\nRunning Windows companion did not prepare for update: ${code}` };
+      expect(classifyWindowsDesktopBootstrapError(error)).toEqual({ state: 'install-failed', phase: 'update', code });
+    }
+  });
+
+  it('classifies the actual update request failures without exposing network details', () => {
+    expect(classifyWindowsDesktopPrepareFailure(new Error('companion-reply-http-403'))).toBe('prepare-http-forbidden');
+    expect(classifyWindowsDesktopPrepareFailure(new Error('companion-reply-http-404'))).toBe('prepare-http-not-found');
+    expect(classifyWindowsDesktopPrepareFailure(new Error('companion-reply-http-500'))).toBe('prepare-http-other');
+    expect(classifyWindowsDesktopPrepareFailure(new TypeError('fetch failed', { cause: Object.assign(new Error('private 10.0.0.1'), { code: 'ECONNREFUSED' }) }))).toBe('prepare-connect-refused');
+    expect(classifyWindowsDesktopPrepareFailure({ name: 'TimeoutError', message: 'private address' })).toBe('prepare-timeout');
+    expect(classifyWindowsDesktopPrepareFailure(new Error('private path'))).toBe('prepare-reply-invalid');
   });
 
   it('writes one bounded maintenance status and rejects malformed or forged data', () => {

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-bootstrap-diagnostics",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T09:58:58.085Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "artifactSha256": "b6e033fdfa89e05c481e44cfc39940d5d0029d0369b3e2bf293533d3f6ec237c",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-10-31T09-58-50-957Z-native-remote-desktop-bootstrap-diagnostics-0ef9fd69.json",
+    "docs/specs/windows-desktop-bootstrap-diagnostics.eli16.md",
+    "scripts/install-windows-desktop-companion.mjs",
+    "src/core/WindowsDesktopBootstrapStatus.ts",
+    "tests/unit/windows-desktop-bootstrap-status.test.ts",
+    "upgrades/next/windows-desktop-prepare-handshake-diagnostics.md",
+    "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible classification of an existing Windows update failure; no new authority, grant path, or task stop behavior.",
+  "eli16Path": "docs/specs/windows-desktop-bootstrap-diagnostics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
