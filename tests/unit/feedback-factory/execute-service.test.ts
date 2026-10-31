@@ -577,6 +577,21 @@ describe('verification and publication', () => {
     expect(h.exec.actionItems().some((i) => /touched build tooling/.test(i.line))).toBe(true);
   });
 
+  it('holds an automated fix that supplies its own decision record before the publish clone is committed', async () => {
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    h.fixWith({
+      'src/thing.ts': 'export const thing = 2;\n',
+      'tests/fix.test.ts': 'x',
+      '.instar/instar-dev-decisions/worker.json': '{"scope":{"files":["src/thing.ts"]}}',
+    });
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.execStore.latestFor(id)).toMatchObject({ state: 'held', reason: 'needs-review-tooling' });
+    expect(h.pushes).toHaveLength(0);
+  });
+
   it('secret-shaped content is held (names only), and published only through the PIN-bound path', async () => {
     h = await createExecHarness();
     const id = await h.workItem('c1');
