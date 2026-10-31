@@ -11,6 +11,23 @@ import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 
 export type VerifyOutcome = 'success' | 'failure' | 'error';
 
+/** Bounded early-test evidence. It never authorizes a green merge verdict. */
+export interface PreflightEvidence {
+  mode: 'observe' | 'enforce';
+  outcome: 'pass' | 'red' | 'skip' | 'timeout' | 'error';
+  reason: string;
+  elapsedMs: number;
+  changedFiles: number;
+  selectedFiles: string[];
+  selectedCases: number;
+  headSha: string;
+  baseSha: string;
+  /** Present only when two trusted attempts failed assertions in this selected file. */
+  repeatedFailedFile?: string;
+}
+
+export const PREFLIGHT_MAX_SELECTED_FILES = 5;
+
 export interface LocalVerifyRecord {
   repo: string;
   pr: number;
@@ -59,6 +76,8 @@ export interface LocalVerifyRecord {
    * a peer record only when all three match its own dispatch marker.
    */
   attempt?: PeerAttemptRef;
+  /** Diagnostic or early-red preflight evidence, validated before journal/peer import. */
+  preflight?: PreflightEvidence;
 }
 
 export interface PeerAttemptRef {
@@ -156,6 +175,26 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
     if (!ir || typeof ir !== 'object' || ir.concurred !== true || !isTracePath(ir.trace)) errors.push('independentReview');
   }
   if (x.attempt !== undefined && (!isValidAttemptRef(x.attempt) || x.kind === 'main')) errors.push('attempt');
+  if (x.preflight !== undefined) {
+    const p = x.preflight as Record<string, unknown> | null;
+    const isCount = (n: unknown, max: number) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n <= max;
+    const selected = p && Array.isArray(p.selectedFiles) && p.selectedFiles.length <= PREFLIGHT_MAX_SELECTED_FILES
+      && p.selectedFiles.every((f) => typeof f === 'string' && f.length > 0 && f.length <= 300 && !f.startsWith('/') && !f.includes('..') && !f.includes('\\'));
+    const valid = p && x.kind !== 'main'
+      && (p.mode === 'observe' || p.mode === 'enforce')
+      && ['pass', 'red', 'skip', 'timeout', 'error'].includes(String(p.outcome))
+      && typeof p.reason === 'string' && p.reason.length <= 200
+      && isCount(p.elapsedMs, 90_000)
+      && isCount(p.changedFiles, p.outcome === 'skip' ? 10_000 : 40)
+      && selected && isCount(p.selectedCases, p.outcome === 'skip' ? 10_000 : 200)
+      && p.headSha === x.headSha && p.baseSha === x.baseSha
+      && (p.repeatedFailedFile === undefined || (typeof p.repeatedFailedFile === 'string' && (p.selectedFiles as string[]).includes(p.repeatedFailedFile)))
+      && (p.outcome !== 'red' || (p.repeatedFailedFile !== undefined && (p.selectedCases as number) > 0))
+      && (p.mode !== 'enforce' || p.outcome !== 'red' || (p.reason === 'preflight-red' && x.outcome === 'failure' && (x.lanes as unknown[]).length === 0))
+      && (p.mode !== 'observe' || !(x.outcome === 'failure' && x.lanes && (x.lanes as unknown[]).length === 0 && p.outcome === 'red'))
+      && Object.keys(p).every((k) => ['mode', 'outcome', 'reason', 'elapsedMs', 'changedFiles', 'selectedFiles', 'selectedCases', 'headSha', 'baseSha', 'repeatedFailedFile'].includes(k));
+    if (!valid) errors.push('preflight');
+  }
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }
 

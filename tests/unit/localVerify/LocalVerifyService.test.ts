@@ -19,6 +19,7 @@ import {
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
 import type { VerifyRunResult } from '../../../src/localVerify/orchestrator.js';
+import { PreflightReplayStore, replayKey } from '../../../src/localVerify/preflightReplay.js';
 
 const REPO = 'JKHeadley/instar';
 const sha = (c: string) => c.repeat(40);
@@ -127,6 +128,39 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
 }
 
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
+
+const preflightRed = () => record({ outcome: 'failure', lanes: [], preflight: {
+  mode: 'enforce', outcome: 'red', reason: 'preflight-red', elapsedMs: 1000, changedFiles: 1,
+  selectedFiles: ['tests/unit/a.test.ts'], selectedCases: 1, repeatedFailedFile: 'tests/unit/a.test.ts',
+  headSha: sha('a'), baseSha: sha('b'),
+} });
+
+describe('automatic full-suite replay after enforced preflight red', () => {
+  it('persists before red publication, joins a same-head request, and supersedes red with full green', async () => {
+    const h = setup({ views: { 1: view() } });
+    h.svc.setPreflightMode(() => 'enforce');
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    await h.finish(0, ok(preflightRed()));
+    const key = replayKey(preflightRed());
+    const store = () => new PreflightReplayStore(path.join(h.stateDir, 'state'));
+    expect(store().get(key)?.state).toBe('pending');
+    expect(h.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('failure');
+    // The service's deterministic fake timer runs the pending admission poll.
+    h.timers.shift()?.();
+    await h.flush();
+    await h.flush();
+    expect(h.spawned).toHaveLength(2);
+    const args = h.spawned[1].args;
+    const input = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
+    expect(store().get(key)?.state).toBe('running');
+    expect((await h.svc.request(1)).ok).toBe(true);
+    await h.finish(1, ok(record()));
+    expect(store().get(key)?.state).toBe('completed');
+    expect(h.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+  });
+});
 
 describe('checkEligibility', () => {
   const logins = { expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley' };

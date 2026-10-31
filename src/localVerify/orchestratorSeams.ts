@@ -144,10 +144,12 @@ const CLOSE_AFTER_EXIT_MS = 5_000;
 export function realExec(
   command: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal },
+  opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean },
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
     if (opts.signal?.aborted) { resolve({ status: null, signal: null, stdout: '', stderr: '', deadlineKilled: false, aborted: true, pid: null }); return; }
+    // Keep preflight children in the verifier's own detached group. The service's
+    // cancellation and boot orphan sweep must reach them even if this process dies.
     const child = spawn(command, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'] });
     if (child.pid && opts.onPid) opts.onPid(child.pid);
     let stdout = '';
@@ -156,12 +158,31 @@ export function realExec(
     let aborted = false;
     let settled = false;
     let exited = false;
+    let quiescent = !opts.isolatedGroup;
     child.stdout?.on('data', (d) => { stdout = tail(stdout + d.toString()); });
     child.stderr?.on('data', (d) => { stderr = tail(stderr + d.toString()); });
     let hard: NodeJS.Timeout | undefined;
     let closeWait: NodeJS.Timeout | undefined;
     const signalTree = (pids: number[], sig: NodeJS.Signals) => {
       for (const p of pids) { try { process.kill(p, sig); } catch { /* @silent-fallback-ok: already gone */ } }
+    };
+    // runVerifyMain is the leader of its service-created process group. A failed
+    // `ps` or a non-leader caller is unknown, never permission to start full lanes.
+    const groupMembers = (): number[] | null => {
+      if (!opts.isolatedGroup) return [];
+      try {
+        const output = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,pgid=,comm='], { encoding: 'utf-8', timeout: 5_000 });
+        const rows = output.split('\n').map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)).filter((m): m is RegExpMatchArray => !!m);
+        if (!rows.some((m) => Number(m[1]) === process.pid && Number(m[3]) === process.pid)) return null;
+        return rows.filter((m) => Number(m[3]) === process.pid && Number(m[1]) !== process.pid
+          && !(Number(m[2]) === process.pid && path.basename(m[4]) === 'ps')).map((m) => Number(m[1]));
+      } catch { return null; }
+    };
+    const groupAlive = () => { const members = groupMembers(); return members === null || members.length > 0; };
+    const signalGroup = (sig: NodeJS.Signals) => {
+      const members = groupMembers();
+      if (members) signalTree(members, sig);
+      else if (child.pid) signalTree([child.pid], sig);
     };
     // Stop the child AND its descendants (vitest workers, test subprocesses): a descendant that
     // survives the parent would otherwise hold the pipes open and the wait would never end.
@@ -175,6 +196,12 @@ export function realExec(
     // same start second and command (not credible with sequential pid allocation).
     const stop = () => {
       if (exited || !child.pid) { armCloseWait(); return; }
+      if (opts.isolatedGroup) {
+        signalGroup('SIGTERM');
+        hard = setTimeout(() => signalGroup('SIGKILL'), KILL_GRACE_MS);
+        hard.unref?.();
+        return;
+      }
       const before = descendantPids(child.pid);
       signalTree([child.pid, ...before.map((d) => d.pid)], 'SIGTERM');
       hard = setTimeout(() => {
@@ -215,9 +242,25 @@ export function realExec(
       clearTimeout(timer);
       if (closeWait) clearTimeout(closeWait);
       opts.signal?.removeEventListener('abort', onAbort);
-      resolve({ status, signal, stdout, stderr, deadlineKilled, ...(aborted ? { aborted: true } : {}), pid: child.pid ?? null });
+      resolve({ status, signal, stdout, stderr, deadlineKilled, ...(aborted ? { aborted: true } : {}), pid: child.pid ?? null, ...(opts.isolatedGroup ? { quiescent } : {}) });
     };
-    child.on('close', (status, signal) => done(status ?? null, signal ?? null));
+    child.on('close', (status, signal) => {
+      if (!opts.isolatedGroup) { done(status ?? null, signal ?? null); return; }
+      // Closing the direct child's pipes does not prove its workers exited. The
+      // verifier's own group is the service's cancellation scope and must be empty
+      // (apart from this process) before admitting a full-suite lane.
+      void (async () => {
+        if (hard) clearTimeout(hard);
+        if (groupAlive()) signalGroup('SIGTERM');
+        const until = Date.now() + KILL_GRACE_MS;
+        while (groupAlive() && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+        if (groupAlive()) signalGroup('SIGKILL');
+        const killUntil = Date.now() + CLOSE_AFTER_EXIT_MS;
+        while (groupAlive() && Date.now() < killUntil) await new Promise((r) => setTimeout(r, 100));
+        quiescent = !groupAlive();
+        done(status ?? null, signal ?? null);
+      })();
+    });
     child.on('exit', (status, signal) => {
       exited = true;
       exitStatus = status ?? null;
