@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "peer-homebase-routing",
+  "sessionId": "bc2c60e9-701a-4ead-9298-ca496c62ebd0",
+  "timestamp": "2026-10-31T19:35:15.177Z",
+  "artifactPath": "upgrades/side-effects/peer-homebase-routing.md",
+  "artifactSha256": "c13fc1deca974421f39baffef54915e7e179f6154f09e11d432aa59f0777b3be",
+  "specPath": "docs/specs/peer-conversation-homebase-topic.md",
+  "coveredFiles": [
+    "docs/specs/peer-conversation-homebase-topic.eli16.md",
+    "docs/specs/peer-conversation-homebase-topic.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/peerHomebaseAwareness.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/threadline/ThreadlineEndpoints.ts",
+    "src/threadline/ThreadlineRouter.ts",
+    "src/threadline/TopicLinkageHandler.ts",
+    "src/threadline/peerHomebase.ts",
+    "src/threadline/peerHomebaseRelay.ts",
+    "tests/e2e/threadline/peer-homebase-user-routing-alive.test.ts",
+    "tests/integration/threadline/peer-homebase-user-routing.test.ts",
+    "tests/unit/PostUpdateMigrator-peerHomebaseRefresh.test.ts",
+    "tests/unit/ThreadlineRouter-peer-user-topic.test.ts",
+    "tests/unit/peer-homebase-user-routing.test.ts",
+    "upgrades/next/peer-homebase-routing.md",
+    "upgrades/side-effects/peer-homebase-routing.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes where peer messages are posted to the operator (message routing on every install); reversible by config but user-visible, so the full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot reaction to an inbound peer message: at most one Telegram post per message (per-thread 1/min, per-topic 3/min caps), plus a create-once homebase ensure on a pairing notice; no feedback path re-triggers it, so it is not a self-triggered loop"
+  }
+}

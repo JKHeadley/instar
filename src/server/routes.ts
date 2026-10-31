@@ -1312,6 +1312,8 @@ export interface RouteContext {
   warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
   /** CMT-509: surface parentless Threadline conversations to a dedicated topic. */
   collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer;
+  /** peer-conversation-homebase-topic §2.6: posts a peer's user-meant message into the peer's own topic. */
+  peerHomebaseRelay?: import('../threadline/peerHomebaseRelay.js').PeerHomebaseRelay;
   /** ThreadResumeMap — exposed on ctx so /threadline/relay-send can stamp
    *  originTopicId on outbound sends. Per THREAD-TOPIC-LINKAGE-SPEC.md. */
   threadResumeMap: import('../threadline/ThreadResumeMap.js').ThreadResumeMap | null;
@@ -37816,8 +37818,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               // the dedicated Threadline topic (the incident was a co-located peer
               // delivering here). Topic-bound conversations surface via
               // TopicLinkageHandler. Best-effort, non-blocking.
-              if (ctx.collaborationSurfacer) {
-                const hasParentTopic = ctx.conversationStore.get(gThreadId)?.boundTopicId != null;
+              const hasParentTopic = ctx.conversationStore.get(gThreadId)?.boundTopicId != null;
+              // §2.6: a peer with its own topic gets its user-meant messages posted there by the
+              // server (same rule as the relay inbound path in commands/server.ts).
+              // The sender is identified by a FINGERPRINT only: the one its signature proved,
+              // else the one the local registry holds for that name (the identity this route
+              // already trusts). When the relay does not post, the hub surface still runs.
+              const hbFp = provenSenderFp ?? resolvePeerFingerprintByName(ctx.config.stateDir, senderAgentName) ?? null;
+              const hubSurface = () => {
+                if (!ctx.collaborationSurfacer) return;
                 void ctx.collaborationSurfacer.surface({
                   threadId: gThreadId,
                   senderName: senderAgentName,
@@ -37825,6 +37834,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   hasParentTopic,
                   warrants: !decision.suppress,
                 });
+              };
+              if (ctx.peerHomebaseRelay && !hasParentTopic) {
+                void ctx.peerHomebaseRelay.relayInbound({
+                  threadId: gThreadId,
+                  peers: [hbFp],
+                  senderName: senderAgentName,
+                  text: gText,
+                }).then((r) => { if (!r.posted) hubSurface(); }, () => hubSurface());
+              } else {
+                hubSurface();
               }
             }
           } catch (gateErr) {
@@ -38480,6 +38499,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         localAgent: ctx.config.projectName,
         version: '1.0',
         stateDir: ctx.config.stateDir,
+        // peer-conversation-homebase-topic §2.6 — user-meant messages land in the peer's topic.
+        peerHomebaseRelay: ctx.peerHomebaseRelay,
+        conversationBound: (threadId: string) => ctx.conversationStore?.get(threadId)?.boundTopicId != null,
         // Signed envelope §8: advertise the live mode on /threadline/health.
         localEnvelopeSignatureMode: localRouteSignatureMode,
         // Secure A2A Verified Pairing (§3.6): surface mutualVerifiedCount on

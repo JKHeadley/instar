@@ -60,6 +60,15 @@ export interface ThreadlineError {
 export interface ThreadlineEndpointsConfig {
   /** Name of this agent */
   localAgent: string;
+  /**
+   * peer-conversation-homebase-topic §2.6: posts a verified peer's user-meant message on an
+   * unbound conversation into that peer's own topic. Optional; absent ⇒ no post (as before).
+   */
+  peerHomebaseRelay?: {
+    relayInbound(input: { threadId: string; peers: Array<string | undefined | null>; senderName: string; text: string }): Promise<{ posted: boolean }>;
+  };
+  /** Is this conversation already bound to a topic (then TopicLinkageHandler owns its posts)? */
+  conversationBound?: (threadId: string) => boolean;
   /** Threadline protocol version */
   version: string;
   /** Agent state directory — used to resolve the canonical routing identity for /threadline/health */
@@ -767,6 +776,25 @@ export function createThreadlineRoutes(
           void honorPeerThreadSync(canonicalDeps, body.message.threadId, verifiedFp, body.threadSync as ThreadSync).catch(() => { /* advisory only */ });
         }
       } catch { /* @silent-fallback-ok: recording-only — never block inbound routing */ }
+
+      // §2.6: a verified peer's user-meant message on an unbound conversation is posted by the
+      // server into the peer's own topic. Keyed on the DERIVED fingerprint, never the name.
+      // Fire-and-forget: it never delays or blocks routing to a session.
+      try {
+        const hbFp = (req as VerifiedRequest).threadlineVerifiedFingerprint;
+        const hbThread = body.message?.threadId;
+        if (config.peerHomebaseRelay && hbFp && hbThread && !config.conversationBound?.(hbThread)) {
+          const hbText = typeof body.message?.body === 'string'
+            ? body.message.body
+            : String((body.message?.body as Record<string, unknown> | undefined)?.content ?? (body.message?.body as Record<string, unknown> | undefined)?.text ?? '');
+          void config.peerHomebaseRelay.relayInbound({
+            threadId: hbThread,
+            peers: [hbFp],
+            senderName: typeof body.message?.from?.agent === 'string' ? body.message.from.agent : hbFp,
+            text: hbText,
+          }).catch(() => { /* @silent-fallback-ok — the relay logs; delivery to the session is unaffected */ });
+        }
+      } catch { /* @silent-fallback-ok: a homebase post never blocks inbound routing */ }
 
       const chainTicket = ticket;
       chainStarted = true;

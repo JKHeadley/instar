@@ -116,6 +116,14 @@ export interface TopicLinkageDeps {
   remoteReplyBudgetMs?: number;
   /** Observability hook for the asks (counters); never an input. */
   onRemoteReplyEvent?: (event: 'ask' | 'injected' | 'failure-visible') => void;
+  /**
+   * Where a reply MEANT FOR THE USER is posted (peer-conversation-homebase-topic §2.6, the
+   * operator's rule of 2026-10-31): the operator's own binding, else the peer's homebase topic,
+   * else null (= the originating topic, today's behaviour). The reply is still handed to the
+   * originating topic's SESSION — it is that session's work — but the user-facing post goes
+   * here. Absent ⇒ every post goes to the originating topic.
+   */
+  resolveUserTopic?: (q: { threadId: string; peers: string[]; originTopicId: number }) => number | null;
   /** Optional clock for deterministic tests. */
   now?: () => number;
 }
@@ -431,6 +439,7 @@ export class TopicLinkageHandler {
 
     const topicId = threadEntry.originTopicId;
     if (!topicId) return { kind: 'no-linkage' };
+    const userTopicId = this.userTopicFor(threadId, threadEntry, message, topicId);
 
     // Resolve the live session for the topic. The runtime mapping comes from
     // the session-for-topic resolver (typically backed by TelegramAdapter's
@@ -480,7 +489,7 @@ export class TopicLinkageHandler {
     // even the liveness probe runs: today's path, call for call.)
     const remotePlan = this.planRemoteAsk(topicId, threadEntry.machineOrigin);
     if (remotePlan && !(liveSessionName !== null && this.safeIsAlive(liveSessionName))) {
-      return this.routeViaTopicOwner({ plan: remotePlan, threadId, topicId, message, threadEntry, commitment });
+      return this.routeViaTopicOwner({ plan: remotePlan, threadId, topicId, userTopicId, message, threadEntry, commitment });
     }
 
     if (!topicActive) {
@@ -527,6 +536,7 @@ export class TopicLinkageHandler {
       verdictReason: verdictResult.reason,
       history,
       topicId,
+      userTopicId,
     });
 
     // Try live injection first. If the topic session is alive, deliver the
@@ -606,7 +616,7 @@ export class TopicLinkageHandler {
           console.log(
             `[TopicLinkageHandler] Topic ${topicId} reply on thread ${threadId} pending inject settled: ${settlement} → ${finalMode}`,
           );
-          const outcome = await this.finishRouted({ threadId, topicId, message, threadEntry, commitment, deliveryMode: finalMode, verdictResult });
+          const outcome = await this.finishRouted({ threadId, topicId, userTopicId, message, threadEntry, commitment, deliveryMode: finalMode, verdictResult });
           return { outcome, settlement };
         });
       return {
@@ -620,7 +630,7 @@ export class TopicLinkageHandler {
       };
     }
 
-    return this.finishRouted({ threadId, topicId, message, threadEntry, commitment, deliveryMode, verdictResult });
+    return this.finishRouted({ threadId, topicId, userTopicId, message, threadEntry, commitment, deliveryMode, verdictResult });
   }
 
   /**
@@ -630,13 +640,19 @@ export class TopicLinkageHandler {
   private async finishRouted(args: {
     threadId: string;
     topicId: number;
+    /** Where a user-facing post goes (§2.6). Equal to `topicId` unless redirected. */
+    userTopicId: number;
     message: MessageEnvelope['message'];
     threadEntry: RouteReplyInput['threadEntry'];
     commitment: Commitment | null;
     deliveryMode: TopicDeliveryMode;
     verdictResult: { verdict: SalienceVerdict; reason: string };
   }): Promise<TopicRouteOutcome> {
-    const { threadId, topicId, message, threadEntry, commitment, deliveryMode, verdictResult } = args;
+    const { threadId, topicId, userTopicId, message, threadEntry, commitment, deliveryMode, verdictResult } = args;
+    // §2.6: the reply is meant for the user and the user reads this peer in ANOTHER topic (its
+    // homebase). The session's own relay would land in the originating topic, so the server
+    // posts it to the homebase itself, whatever the delivery mode.
+    const redirected = userTopicId !== topicId;
     const { commitmentTracker } = this.deps;
     let telegramSent = false;
 
@@ -667,7 +683,7 @@ export class TopicLinkageHandler {
     // session, so it behaves like `live-inject`: no surface, commitment resolves.
     const shouldSurface =
       deliveryMode === 'failure-visible' ||
-      (deliveryMode === 'resume-pending' && verdictResult.verdict === 'user-visible');
+      (verdictResult.verdict === 'user-visible' && (deliveryMode === 'resume-pending' || redirected));
 
     // Rate-limit the surface: per-thread (no double-fire within the window) AND
     // per-topic (anti-flood/bypass guard against many threads against one topic).
@@ -676,24 +692,28 @@ export class TopicLinkageHandler {
     // for first replies (otherwise N rotating threads = N surfaces = the flood).
     // A carve-out would also misfire once the commitment is delivered, since
     // findByThreadId then returns null and isFirstReply flips true again.
-    const rateOk = this.passesRateLimit(threadId) && this.passesTopicRateLimit(topicId);
+    const rateOk = this.passesRateLimit(threadId) && this.passesTopicRateLimit(userTopicId);
     if (shouldSurface && rateOk) {
       try {
         const surfaceText = this.buildTelegramSurface({
           message,
           threadEntry,
           deliveryMode,
+          redirected,
         });
         if (this.deps.sendTelegramToTopic) {
-          await withThreadlineForwardedAuthor(this.deps.originService, 'inbound', topicId, surfaceText,
-            () => this.deps.sendTelegramToTopic!(topicId, surfaceText));
+          await withThreadlineForwardedAuthor(this.deps.originService, 'inbound', userTopicId, surfaceText,
+            () => this.deps.sendTelegramToTopic!(userTopicId, surfaceText));
           telegramSent = true;
           this.recordSurface(threadId);
-          this.recordTopicSurface(topicId);
+          this.recordTopicSurface(userTopicId);
+          if (redirected) {
+            console.log(`[TopicLinkageHandler] Reply on thread ${threadId} posted to topic ${userTopicId} (the peer's topic) instead of originating topic ${topicId}`);
+          }
         }
       } catch (err) {
         console.warn(
-          `[TopicLinkageHandler] Telegram surface failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`,
+          `[TopicLinkageHandler] Telegram surface failed for topic ${userTopicId}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -750,6 +770,23 @@ export class TopicLinkageHandler {
   }
 
   // ── Helpers ────────────────────────────────────────────────────
+
+  /** §2.6 destination for a user-facing post; the originating topic when no resolver says otherwise. Never throws. */
+  private userTopicFor(
+    threadId: string,
+    threadEntry: RouteReplyInput['threadEntry'],
+    message: MessageEnvelope['message'],
+    originTopicId: number,
+  ): number {
+    if (!this.deps.resolveUserTopic) return originTopicId;
+    try {
+      const peers = [threadEntry.remoteAgent, message.from.agent].filter((p): p is string => typeof p === 'string' && p.length > 0);
+      const t = this.deps.resolveUserTopic({ threadId, peers, originTopicId });
+      return typeof t === 'number' && t > 0 ? t : originTopicId;
+    } catch {
+      return originTopicId; // @silent-fallback-ok — an unreadable resolver keeps today's destination
+    }
+  }
 
   private safeIsAlive(sessionName: string): boolean {
     try { return this.deps.isSessionAlive(sessionName); } catch { return false; /* @silent-fallback-ok — an unreadable liveness check is "not alive" */ }
@@ -824,11 +861,12 @@ export class TopicLinkageHandler {
     plan: { first: string | null; viaOrigin: boolean; self: string };
     threadId: string;
     topicId: number;
+    userTopicId: number;
     message: MessageEnvelope['message'];
     threadEntry: RouteReplyInput['threadEntry'];
     commitment: Commitment | null;
   }): Promise<TopicRouteOutcome> {
-    const { plan, threadId, topicId, message, threadEntry, commitment } = args;
+    const { plan, threadId, topicId, userTopicId, message, threadEntry, commitment } = args;
     let verdictResult: { verdict: SalienceVerdict; reason: string } = {
       verdict: 'user-visible',
       reason: 'remote topic delivery failed before classification',
@@ -850,7 +888,7 @@ export class TopicLinkageHandler {
         const text = this.buildSessionPayload({
           threadId, message, threadEntry, commitment,
           verdict: verdictResult.verdict, verdictReason: verdictResult.reason,
-          history, topicId,
+          history, topicId, userTopicId,
           remoteHolderName: holderName || plan.self,
         });
         const payload = { topicId, text, messageId: message.id ?? '', threadId };
@@ -880,7 +918,7 @@ export class TopicLinkageHandler {
     try { this.deps.onRemoteReplyEvent?.(injected ? 'injected' : 'failure-visible'); } catch { /* @silent-fallback-ok — counters are observability only */ }
     try {
       return await this.finishRouted({
-        threadId, topicId, message, threadEntry, commitment,
+        threadId, topicId, userTopicId, message, threadEntry, commitment,
         deliveryMode: injected ? 'live-inject' : 'failure-visible',
         verdictResult,
       });
@@ -925,10 +963,13 @@ export class TopicLinkageHandler {
     verdictReason: string;
     history: Array<{ from: string; body: string; createdAt?: string }>;
     topicId: number;
+    /** Where user-facing posts about this peer go (§2.6); defaults to `topicId`. */
+    userTopicId?: number;
     /** Set for a remote inject: the machine that holds the full body. */
     remoteHolderName?: string;
   }): string {
     const { threadId, message, threadEntry, commitment, verdict, verdictReason, history, topicId, remoteHolderName } = args;
+    const userTopicId = args.userTopicId ?? topicId;
 
     const subject = threadEntry.subject ?? message.subject ?? 'threadline conversation';
     const purposeLine = commitment?.userRequest
@@ -939,9 +980,13 @@ export class TopicLinkageHandler {
       ? '(no prior thread history available)'
       : history.map(h => `  [${h.createdAt ?? ''}] ${h.from}: ${h.body.slice(0, 240)}`).join('\n');
 
-    const visibilityLine = verdict === 'user-visible'
-      ? `Salience: user-visible — a Telegram notification was sent to topic ${topicId}.`
-      : `Salience: agent-internal — the user has NOT been notified. Handle without surfacing unless needed.`;
+    const visibilityLine = userTopicId !== topicId
+      ? (verdict === 'user-visible'
+        ? `Salience: user-visible — the server posted this reply to topic ${userTopicId}, ${message.from.agent}'s own topic, where the user reads this agent. If you tell the user anything about it, post in topic ${userTopicId}, not here.`
+        : `Salience: agent-internal — the user has NOT been notified. If this later needs the user, post in topic ${userTopicId} (${message.from.agent}'s own topic), not here.`)
+      : verdict === 'user-visible'
+        ? `Salience: user-visible — a Telegram notification was sent to topic ${topicId}.`
+        : `Salience: agent-internal — the user has NOT been notified. Handle without surfacing unless needed.`;
 
     // SECURITY: remote reply body is untrusted data. Wrap it in a hard-to-spoof
     // delimiter (per-message random hash) and cap the inline length so a hostile
@@ -992,15 +1037,22 @@ export class TopicLinkageHandler {
     message: MessageEnvelope['message'];
     threadEntry: RouteReplyInput['threadEntry'];
     deliveryMode: TopicDeliveryMode;
+    /** Posted to the peer's topic rather than the topic the conversation started in. */
+    redirected?: boolean;
   }): string {
-    const { message, threadEntry, deliveryMode } = args;
+    const { message, threadEntry, deliveryMode, redirected } = args;
     const subject = threadEntry.subject ?? message.subject ?? 'threadline conversation';
     const body = message.body ?? '(empty)';
     const truncated = body.length > TELEGRAM_BODY_CAP;
     const preview = truncated ? body.slice(0, TELEGRAM_BODY_CAP) + '… [truncated]' : body;
 
-    const footer =
-      deliveryMode === 'live-inject' || deliveryMode === 'respawn-inject'
+    const footer = redirected
+      ? (deliveryMode === 'failure-visible'
+        ? `(This answers a conversation started in another topic. Automatic pickup failed there; tell me when to retry.)`
+        : deliveryMode === 'resume-pending'
+          ? `(This answers a conversation started in another topic; I'll pick it up there the next time it is active.)`
+          : `(This answers a conversation started in another topic; I'm picking it up there.)`)
+      : deliveryMode === 'live-inject' || deliveryMode === 'respawn-inject'
         ? `(You asked for this here — picking it back up now.)`
         : deliveryMode === 'resume-pending'
           ? `(You asked for this here — I'll pick it back up the next time we interact in this topic.)`

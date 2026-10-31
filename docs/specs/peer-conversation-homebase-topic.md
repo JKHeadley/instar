@@ -5,6 +5,7 @@ date: 2026-10-22
 author: echo
 status: approved
 approved: true
+amendment-2026-10-31: "§2.6 user-meant routing. Approval basis: the operator's directive (Justin, 2026-10-31, relayed by the coordinating session): 'the whole point of the agent specific topic is that all messages from an agent that are intended for the user show up in that topic'. One internal review round on the amendment."
 approved-by: "Justin (Telegram topic 127831, 2026-10-22 — scope cut approved \"Yes!\", with the build direction: \"Build the simplest version: when a pairing becomes mutual-verified, the lease holder creates ... a topic named after the peer and binds the peer conversation to it; peer requests that need Justin post there with a notification. Drop the crash-ordering intent-state machinery.\")"
 approval-note: |
   Operator-DIRECTED, and deliberately below the skill's own convergence bar. He stopped the
@@ -15,9 +16,9 @@ approval-note: |
 eli16-overview: peer-conversation-homebase-topic.eli16.md
 tracks: "topic 127831 · operator feature request 2026-10-21"
 parent-principle: "The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred"
-review-convergence: "2026-10-22T16:05:25.792Z"
-review-iterations: 3
-review-completed-at: "2026-10-22T16:05:25.792Z"
+review-convergence: "2026-10-31T19:34:06.000Z"
+review-iterations: 4
+review-completed-at: "2026-10-31T19:34:06.000Z"
 review-report: "docs/specs/reports/peer-conversation-homebase-topic-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
 single-run-completable: true
@@ -161,7 +162,9 @@ accidental. Never when it *might* have been chosen. (`pp`'s own conversation is 
 unknown-provenance class, so it is re-homed by the operator's explicit request — which he has
 already made — not automatically.)
 
-**One destination rule, for every peer message that is sent:**
+**One destination rule, for every peer message that is sent** (superseded for messages meant
+for the user by §2.6 — the operator's rule of 2026-10-31; this table now governs only the
+agent-internal / housekeeping traffic, and the binding record itself):
 
 | # | Condition (first match wins) | Destination |
 |---|---|---|
@@ -179,6 +182,12 @@ H3's completeness requirement applies: the conversation's **commitment `topicId`
 alongside `ConversationStore`, because `captureOriginOnSend`'s first-write-wins would otherwise
 keep the old destination and the bind would silently do nothing.
 
+*Completeness note, as built (2026-10-31):* creation binds no conversation (`ensurePeerHomebase`
+records the map entry only), so there is no bind whose commitment `topicId` could go stale. The
+destination of a user-meant message is decided at delivery time (§2.6) from the live map and the
+conversation's `boundTopicSource`, not from the commitment's `topicId`; the commitment keeps the
+originating topic, which is still where the originating session lives.
+
 ### 2.3 Stop inheriting an unrelated topic
 
 `ThreadResumeMap.ts:109`'s inheritance is removed for **peer** conversations. That is the actual
@@ -189,10 +198,86 @@ parentless, which the approved routing design already handles.
 
 The existing `SalienceGate` already decides `user-visible` vs `agent-internal`. A `user-visible`
 peer message — `pp` asking the agent to contact the operator — is delivered **with
-notification**, to the destination the 2.2 table selects. Salience decides whether it buzzes,
-never where it lands: an operator-bound conversation's escalation still arrives in the topic the
-operator chose. (An earlier draft sent every `user-visible` message to the homebase
-unconditionally, contradicting 2.2.) Housekeeping is unchanged by this spec.
+notification**, to the destination §2.6 selects (originally the 2.2 table; §2.6 supersedes it
+for user-meant messages). An operator-bound conversation's escalation still arrives in the topic
+the operator chose. Housekeeping is unchanged by this spec.
+
+### 2.6 Operator rule: messages meant for the user land in the homebase (2026-10-31)
+
+The operator, verbatim: *"the whole point of the agent specific topic is that all messages from
+an agent that are intended for the user show up in that topic"*. Live evidence that §2.2's
+"any binding wins" did not deliver this: on 2026-10-31 a peer (`scout`, the acceptor of an
+invite pairing) received its first message from `echo` at 11:39, its `🤝 echo` topic was created
+at 11:40, and the message was posted to an unrelated topic ("B2Lead Invoices"). Nothing read the
+homebase at delivery time: `getHomebaseTopic` had no reader outside creation.
+
+**Destination rule for a peer message meant for the user** (a `user-visible` SalienceGate
+verdict, or a notice from that peer intended for the operator), first match wins:
+
+| # | Condition | Destination |
+|---|---|---|
+| a | the conversation has `boundTopicSource: 'operator'` | that topic |
+| b | the peer is mutual-verified and has a homebase | the homebase |
+| c | otherwise | existing routing, unchanged |
+
+Agent-internal and housekeeping traffic keeps the existing routing (the §2.2 table). This rule
+decides where a message is POSTED and writes nothing: bindings, including unknown-provenance
+ones, are still preserved as records (§2.2, §9).
+
+**Delivery points it applies at:**
+
+1. **A reply on a conversation this agent started from a topic** (`TopicLinkageHandler`, the
+   `originTopicId` path, including the cross-machine ask): the reply is still handed to the
+   originating topic's session (it is that session's work), and the user-facing `💬 Reply from`
+   post goes to the §2.6 destination. When that destination differs from the originating topic,
+   the server posts a `user-visible` reply there for every delivery mode, because the session's
+   own inline relay would land in the originating topic. The session's payload tells it which
+   topic the user reads this peer in. The originating topic gets no pointer (kept minimal: the
+   session there already has the reply).
+2. **An inbound message on a conversation with no topic link** (the relay inbound funnel, the
+   local `/messages/relay-agent` route and the signed `/threadline/messages/receive` route): when
+   the peer has a homebase, the server itself posts a `user-visible` message into it, with
+   notification (`PeerHomebaseRelay`), instead of relying on whichever topic the receiving
+   session picks. A message the relay does not post (agent-internal, rate-limited, send failed)
+   falls back to the existing silent Threadline-hub surface, so none is left with no topic at
+   all. A peer with no homebase keeps the hub.
+3. **The session spawned for that conversation** is told the topic id to use if it writes to
+   the user about it, so its own messages do not pick an unrelated topic.
+
+**The peer is identified by fingerprint, never by display name.** A display name is whatever
+the sender says it is; a name lookup would let an unpaired agent that calls itself "scout" post
+into `🤝 scout`. The resolver accepts a profile only when the key equals that profile's own
+fingerprint: the relay-authenticated sender fingerprint, the signature-derived fingerprint on the
+signed HTTP route, and on the local route the signature-proven fingerprint or, failing that, the
+one the local registry holds for the name (the identity that route already trusts).
+
+**Both pairing sides create the homebase at mutual-verified.** The invite flow previously created
+none at pairing time: only the 12-word confirm route did, and the invite sides waited for the
+first message's contact hook, which ran concurrently with that message's delivery. The invite
+handshake's own notices now trigger creation: `finishing` on the inviter (its person tapped
+Finish), `finish-received` on the acceptor (the inviter's signed finish arrived), with `paired`
+as a backstop. Creation keeps its existing discipline (lease holder only, create-once,
+best-effort, never fails a pairing).
+
+**Brakes.** `PeerHomebaseRelay` posts at most once per thread per minute and three times per
+topic per minute, the same bounds the topic-linked surface uses; a post held by a brake falls
+back to the hub surface (above).
+
+**What is structural and what is not, stated plainly.** Whether a message is meant for the user
+is the existing SalienceGate's verdict. Production runs that gate without a classifier, and its
+fallback rule marks only the FIRST message on a thread as `user-visible`. So the server's own
+post is guaranteed for the first message of each conversation (and for every message the gate
+marks user-visible once a classifier is configured). A later message on the same conversation
+that needs the user reaches the homebase through the session handling it, which is told the
+topic id in its prompt (point 3, and the payload line for topic-linked replies). That second
+part is prompt-level, not enforced. Making it structural needs a user-visibility decision on
+every message, which is the SalienceGate classifier this spec deliberately does not add.
+
+**Off switch.** `threadline.peerHomebase.enabled: false` (read live) makes the resolver return
+the existing routing everywhere, which restores the previous behaviour exactly.
+
+**Signal vs authority.** This is delivery routing, not a gate: it never blocks, delays or drops a
+message, and every failure falls back to the existing destination.
 
 ### 2.5 Why automatic creation is permitted here
 
@@ -292,6 +377,7 @@ dev-agent gate kept creation off on every fleet build, including the operator's 
 |---|---|---|
 | `homebaseTopics[fingerprint]` | **unified** | Replicated with the peer record, the way system-topic ids already are. |
 | `boundTopicSource` | **unified** | A field on the conversation record, replicated under its existing class. |
+| Where a user-meant message is posted (§2.6) | **machine-local by design** | Decided on the machine that receives the message (the relay holder, or the topic owner for a cross-machine reply ask), from the replicated trust profile and conversation record; the post goes through that machine's Telegram adapter like every other post. |
 | Which machine creates | **machine-local** · `machine-local-justification: physical-credential-locality` | The Telegram bot token and the forum namespace its topic ids live in are bound to one credential on one disk; an id minted under another machine's token is meaningless. |
 
 Conversation **content** replication is unresolved in the surrounding subsystem (a third-party
