@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
+import { readWindowsDesktopUnicastAddresses, resolveWindowsDesktopBridgeAddress } from './WindowsDesktopBridgeAddress.js';
 
 export interface WindowsDesktopCompanionLocation {
   endpoint: string;
@@ -43,5 +44,10 @@ export function discoverWindowsDesktopCompanion(): WindowsDesktopCompanionLocati
   const secretPath = path.join(appDataPath, 'InstarDesktop', 'companion.secret');
   const secret = fs.readFileSync(secretPath);
   if (secret.length !== 32) throw new Error('windows-desktop-companion-secret-invalid');
-  return { endpoint: `http://${wslGateway()}:44818/`, secret, appDataPath };
+  const gateway = wslGateway();
+  const addressPath = path.join(appDataPath, 'InstarDesktop', 'bridge.address');
+  const persistedAddress = fs.existsSync(addressPath) ? fs.readFileSync(addressPath, 'utf8').trim() : undefined;
+  const windowsAddresses = readWindowsDesktopUnicastAddresses();
+  const address = resolveWindowsDesktopBridgeAddress(persistedAddress, gateway, windowsAddresses);
+  return { endpoint: `http://${address}:44818/`, secret, appDataPath };
 }

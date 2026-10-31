@@ -4,7 +4,7 @@
  * remains available only when explicitly selected by the caller. */
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import type { DesktopHost, DesktopInput } from './DesktopHost.js';
+import type { DesktopHost, DesktopInput, DesktopProbe } from './DesktopHost.js';
 import type { RemoteStepUpLockoutPort } from './RemoteStepUpLockouts.js';
 import type { DesktopStreamSession } from '../server/DesktopStreamManager.js';
 import { DesktopAead, deriveDesktopKey } from './DesktopAead.js';
@@ -153,7 +153,7 @@ export class DirectDesktopAccess {
       }), row.targetSignature);
   }
 
-  async probe(): Promise<{ ready: boolean; screenPermission: boolean; inputPermission: boolean; displayCount: number; sessionActive: boolean }> {
+  async probe(): Promise<DesktopProbe & { ready: boolean }> {
     if (this.disabled) return { ready: false, screenPermission: false, inputPermission: false, displayCount: 0, sessionActive: false };
     const state = await this.host.probe();
     return { ...state, ready: state.screenPermission && state.inputPermission && state.displayCount > 0 && state.sessionActive };

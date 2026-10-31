@@ -184,6 +184,7 @@ import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
+import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
@@ -1480,10 +1481,9 @@ export class AgentServer {
             return { ...target, ready: false,
               unavailableReason: 'Desktop capture is not available on this machine.' };
           }
+          const reason = desktopProbeUnavailableReason(probe);
           return { ...target, ready: probe.ready,
-            ...(!probe.ready ? { unavailableReason: probe.sessionActive
-              ? 'Screen recording or input permission is unavailable on this machine.'
-              : 'This machine’s desktop is locked or inactive.' } : {}) };
+            ...(!probe.ready ? { unavailableReason: reason } : {}) };
         },
         onDesktopOperatorBegin: async (untrustedBody, frontId) => {
           if (!this.directDesktopAccess || !this.meshSelfId) throw new Error('desktop-target-unavailable');
@@ -5090,6 +5090,33 @@ export class AgentServer {
       blockerLedger: this.blockerLedger,
       directDesktopAccess: options.config.remoteDesktop?.frontMachineId === this.meshSelfId
         ? this.directDesktopAccess : null,
+      desktopLocalDiagnostics: async () => {
+        const configured = options.config.remoteDesktop?.enabled === true;
+        if (!configured || !this.directDesktopAccess) {
+          return { configured, targetConstructed: !!this.directDesktopAccess,
+            status: configured ? 'target-unavailable' : 'off' };
+        }
+        try {
+          const probe = await this.directDesktopAccess.probe();
+          return { configured, targetConstructed: true, status: probe.ready ? 'ready' : 'not-ready',
+            screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
+            displayCount: probe.displayCount, sessionActive: probe.sessionActive,
+            ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
+              .reduce((details, key) => {
+                if (typeof probe[key] === 'boolean') details[key] = probe[key];
+                return details;
+              }, {} as Record<string, boolean>) };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '';
+          const safeCode = /^(?:mac|windows)-desktop-[a-z-]+$/.test(message) ? message : 'probe-failed';
+          const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : null;
+          const networkCode = typeof cause?.code === 'string'
+            && /^(?:ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)$/.test(cause.code)
+            ? cause.code : undefined;
+          return { configured, targetConstructed: true, status: 'probe-error', code: safeCode,
+            ...(networkCode ? { networkCode } : {}) };
+        }
+      },
       desktopMeshBroker: this.desktopMeshBroker,
       desktopTargetSigningKey: machineId => {
         if (this.directDesktopAccess?.targetInfo().machineId === machineId) {

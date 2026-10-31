@@ -93,6 +93,17 @@ describe('desktop mesh production boot', () => {
         .set('Authorization', 'Bearer desktop-mesh-target')
         .set('X-Instar-Operator-Session', targetUnlock.body.operatorSessionToken);
       expect(targetLocalList.status).toBe(503);
+      const targetDiagnostic = await request(targetServer.getApp()).get('/desktop/diagnostics')
+        .set('Authorization', 'Bearer desktop-mesh-target');
+      expect(targetDiagnostic.status).toBe(200);
+      expect(targetDiagnostic.body).toMatchObject({ configured: true, targetConstructed: true });
+      expect(targetDiagnostic.body.status).toMatch(/^(ready|not-ready|probe-error)$/);
+      if (targetDiagnostic.body.status !== 'probe-error') {
+        expect(targetDiagnostic.body).toMatchObject({
+          consoleSessionPresent: expect.any(Boolean), onConsole: expect.any(Boolean),
+          loginDone: expect.any(Boolean), screenLocked: expect.any(Boolean),
+        });
+      }
       const activation = await request(targetServer.getApp()).post('/desktop/activate-config')
         .set('Authorization', 'Bearer desktop-mesh-target')
         .set('X-Instar-Request', '1').send({});
