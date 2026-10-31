@@ -117,6 +117,12 @@ First pass raised a concern: (1) a capacity slot leaked when the client was alre
 
 ---
 
+## Local Verify round 1
+
+The first full verify (head e193eb6ec) failed one unit test: the silent-fallback ratchet (`tests/unit/no-silent-fallbacks.test.ts`) counted the new best-effort teardown catch in `AgentServer.stop()` (`this.threadlineMcpHttp?.stop()`) as an untracked swallow, 495 against a baseline of 494. It is a designed fail-safe (stopping readiness timers must never break shutdown), so it now carries the `@silent-fallback-ok` tag; the count is 492.
+
+---
+
 ## Evidence pointers
 
 - `docs/specs/reports/threadline-mcp-local-http-measurements.md` — numbers, method, live checks.

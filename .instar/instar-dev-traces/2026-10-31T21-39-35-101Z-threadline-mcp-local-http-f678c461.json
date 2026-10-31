@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "threadline-mcp-local-http",
+  "sessionId": "8b47a2d8-ea43-49f8-ac6f-dcca2b81fb9c",
+  "timestamp": "2026-10-31T21:39:35.101Z",
+  "artifactPath": "upgrades/side-effects/threadline-mcp-local-http.md",
+  "artifactSha256": "5fb23f1e533ca5f69e166ae23e53c93df59030ae93736b6b735553eef638f220",
+  "specPath": "docs/specs/threadline-mcp-local-http.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the same Tier-2 change: tags its own teardown catch for the silent-fallback ratchet.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

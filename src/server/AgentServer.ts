@@ -7620,7 +7620,7 @@ export class AgentServer {
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
-    try { this.threadlineMcpHttp?.stop(); } catch { /* best-effort teardown */ }
+    try { this.threadlineMcpHttp?.stop(); } catch { /* @silent-fallback-ok — best-effort teardown of the MCP readiness timers */ }
     if (this.windowLifecycleTimer) {
       clearInterval(this.windowLifecycleTimer);
       this.windowLifecycleTimer = null;
