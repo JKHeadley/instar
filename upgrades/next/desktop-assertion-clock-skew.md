@@ -1,0 +1,17 @@
+# Desktop request clock skew repair
+
+## What Changed
+
+A valid signed desktop request could be accepted by the target's two-second clock-skew check, then rejected by its replay ledger because that ledger allowed no clock difference at the upper expiry bound. The ledger now uses the same two-second allowance, while preserving its one-use, bounded lifetime and fail-closed storage behavior.
+
+## What to Tell Your User
+
+Repeated desktop connections from the Studio PIN viewer should no longer fail solely because the machines' clocks differ slightly. No new step or credential is required. Each request still has a short lifetime, and Stop still revokes control immediately.
+
+## Summary of New Capabilities
+
+No new capability. This repairs admission reliability for the existing PIN-only remote desktop.
+
+## Evidence
+
+A live laptop repeat connection returned `desktop-replay-invalid` after earlier sessions succeeded. A regression test first reproduced that exact mismatch, then passed after the bound was aligned. The surrounding assertion and replay tests pass; HTTP and production-boot tests are queued.

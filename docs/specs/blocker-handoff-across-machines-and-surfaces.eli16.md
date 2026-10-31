@@ -13,3 +13,7 @@ Justin's first phone test showed that the Mac viewer closed quickly, occupied on
 After a manual fix, I may point out an existing auto-login or repair option that would prevent the same interruption next time. I will ask once for that kind of task, remember a refusal, and respect a firm “don't ask again.” If you later express frustration about repeatedly doing that same work, I may offer the specific option once more. Saying yes starts the normal approval setup; it does not silently give me new access.
 
 This is a security-sensitive addition. The Mac Studio test is enabled after its local display, input, PIN session and revoke checks passed. The fleet stays dark while Windows, Linux, WSL and the remaining rollout checks are built and tested. Each machine needs a working adapter and its own permission checks before its desktop appears as ready.
+
+### Fix for an intermittent second connection
+
+The MacBook test exposed a case where the first desktop session worked but a later one was refused. Studio and the target Mac can disagree on the current time by a fraction of a second. Instar's signed request already allows a two-second difference, but a separate one-use replay ledger accidentally required the two clocks to line up exactly. A valid request could pass signature and time checks, then be refused by the ledger. The repair makes both checks use the same two-second allowance. The request is still short-lived, tied to one browser and one target, and consumed only once; Stop and input authority do not change. Justin still uses only the dashboard PIN.
