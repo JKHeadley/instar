@@ -9,6 +9,8 @@
 // are browser-native ESM with no DOM access so the unit tests exercise the
 // shipped code directly.
 
+import { verifiedDisplayName } from './display-identity.js';
+
 export const FRESH_MS = 5 * 60 * 1000;
 export const MAX_ROWS = 3;
 
@@ -45,7 +47,7 @@ function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + 's
  */
 export function machineLabel(f, names = {}) {
   if (!f) return 'a machine with no name on file';
-  return f.nickname || f.machineNickname || (f.machineId && names[f.machineId]) || 'a machine with no name on file';
+  return verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || verifiedDisplayName(names[f.machineId], f.machineId) || 'a machine with no name on file';
 }
 
 /** "Couldn't reach Mac Mini, so its items may be missing." Empty when every machine answered. */
@@ -60,7 +62,7 @@ export function unreachedLine(failed, names, what) {
 export function machineNames(poolRes) {
   const out = {};
   const ms = poolRes && poolRes.ok && poolRes.data && Array.isArray(poolRes.data.machines) ? poolRes.data.machines : [];
-  for (const m of ms) if (m && m.machineId && (m.nickname || m.name)) out[m.machineId] = m.nickname || m.name;
+  for (const m of ms) if (m && m.machineId && (m.nickname || m.name)) out[m.machineId] = verifiedDisplayName(m.nickname, m.machineId) || verifiedDisplayName(m.name, m.machineId);
   return out;
 }
 
@@ -244,7 +246,7 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     key: `${c.originMachineId || 'own'}:${c.id}`,
     detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
     expandable: true,
-    main: c.agentResponse || c.userRequest || c.id,
+    main: verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id) || 'Promise details unavailable',
     sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : (c.status === 'violated' ? 'missed' : ''),
       c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : ''].filter(Boolean).join(' · '),
     end: ago(c.createdAt, now) || '',
@@ -317,7 +319,7 @@ export function buildRunning(res, now = Date.now()) {
     if (res.data && res.data.enabled === false) return { state: 'ok', value: 'One machine', line: 'This agent runs on a single machine.', machines: [] };
     return unknownCard('The pool answered without a machine list.');
   }
-  const ms = machines.map((m) => ({ name: m.nickname || m.machineId, ...machineState(m, now) }));
+  const ms = machines.map((m) => ({ name: verifiedDisplayName(m.nickname, m.machineId) || 'another machine', ...machineState(m, now) }));
   const counts = { ok: 0, attn: 0, stale: 0, bad: 0, unknown: 0 };
   for (const m of ms) counts[m.state] = (counts[m.state] || 0) + 1;
   const worst = counts.bad ? 'bad' : counts.attn ? 'attn' : (counts.stale || counts.unknown) ? 'partial' : 'ok';

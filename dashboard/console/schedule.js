@@ -12,6 +12,7 @@ import {
 } from './schedule-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 const EYEBROW = 'Work · Schedule';
 const JOB_KEYS = ['slug', 'schedule', 'model', 'priority', 'supervision', 'tags', 'machines', 'origin', 'manifestVersion', 'lockTrust', 'expectedDurationMinutes', 'gate', 'topicId'];
@@ -39,7 +40,7 @@ export async function renderSchedule(main, ctx) {
     get('/jobs'), get('/jobs?scope=pool', 8000), get('/pool'), get('/jobs/history?limit=500'), get('/jobs/migration-status'), get('/jobs/reconcile'),
   ]);
   const ms = machines.ok && Array.isArray(machines.data && machines.data.machines) ? machines.data.machines : [];
-  const names = Object.fromEntries(ms.map((m) => [m.machineId, m.nickname || m.machineId]));
+  const names = Object.fromEntries(ms.map((m) => [m.machineId, verifiedDisplayName(m.nickname, m.machineId) || 'another machine']));
   const selfMachineId = machines.ok && machines.data ? machines.data.selfMachineId : null;
   last = { res: { local, pool, history, migration, reconcile }, names, selfMachineId, main, ctx };
   connectLive();

@@ -128,7 +128,7 @@ describe('chain, counters and bindings', () => {
       { sessionId: '11111111-1111-4111-8111-111111111111', label: 'topic 4120', registeredAt: hoursAgo(5), lastActiveAt: hoursAgo(1), absoluteExpiresAt: hoursAgo(-20), idleExpiresAt: hoursAgo(-2), hasWritten: true, revoked: false },
       { sessionId: '22222222-2222-4222-8222-222222222222', registeredAt: hoursAgo(5), lastActiveAt: hoursAgo(1), absoluteExpiresAt: hoursAgo(-20), idleExpiresAt: hoursAgo(-2), hasWritten: false, revoked: true },
     ] }), { now: NOW });
-    expect(b.ok && b.rows.map((r) => [r.main, r.status.key, r.canRevoke])).toEqual([['topic 4120', 'active', true], ['Session 22222222', 'revoked', false]]);
+    expect(b.ok && b.rows.map((r) => [r.main, r.status.key, r.canRevoke])).toEqual([['Session name unavailable', 'active', true], ['Session name unavailable', 'revoked', false]]);
     expect(buildBindings(off())).toEqual({ ok: false, hidden: true });
     expect(buildBindings(fail())).toMatchObject({ ok: false, hidden: false });
     expect(revokeRequest('a b')).toEqual({ method: 'POST', path: '/shared-state/sessions/a%20b/revoke', headers: { 'X-Instar-Request': '1' } });
@@ -295,7 +295,7 @@ describe('how I’m doing inside, in a DOM', () => {
       '/sessions': { body: { sessions: [] } },
       '/shared-state/recent?limit=40': { body: { entries: [ent({ t: rel(1), subject: 'Decided to retry on Codex' }), c, ent({ kind: 'thread-opened', subject: 'Thread with PP', t: rel(3) })] } },
       '/shared-state/stats': { body: { counts: { decision: 1, commitment: 1, 'thread-opened': 1 }, classifierFired: 0, rotationCount: 0, unclosedThreadsOverTtl: 0 } },
-      '/shared-state/sessions': { body: { sessions: [{ sessionId: sid, label: 'topic 4120', registeredAt: rel(5), lastActiveAt: rel(1), absoluteExpiresAt: rel(-20), idleExpiresAt: rel(-2), hasWritten: true, revoked: false }] } },
+      '/shared-state/sessions': { body: { sessions: [{ sessionId: sid, label: 'Design conversation', registeredAt: rel(5), lastActiveAt: rel(1), absoluteExpiresAt: rel(-20), idleExpiresAt: rel(-2), hasWritten: true, revoked: false }] } },
       '/pool': { body: { enabled: false, machines: [] } },
       '/failures/insights?limit=50': { body: { insights: [] } },
       '/failures/analysis?sinceDays=7': { body: { total: 10, attributed: 10, byCategory: { 'config-parse': 10 }, unknownToolchainByAuthor: {}, noFeatureLink: 0, rollout: { stage: 'capture-only' } } },
@@ -353,11 +353,11 @@ describe('how I’m doing inside, in a DOM', () => {
     // Revoke a binding: nothing is sent until the confirm, then bearer + intent header, no PIN.
     const tech = doc.querySelector('#sec-activity details.inside-tech') as HTMLDetailsElement;
     tech.open = true;
-    const bindingRow = [...tech.querySelectorAll('.row')].find((r) => r.textContent!.includes('topic 4120')) as HTMLButtonElement;
+    const bindingRow = [...tech.querySelectorAll('.row')].find((r) => r.textContent!.includes('Design conversation')) as HTMLButtonElement;
     bindingRow.click();
     (doc.querySelector('.sheet [data-revoke]') as HTMLButtonElement).click();
     expect(writes).toEqual([]);
-    expect(doc.querySelector('.sheet .confirm-text')!.textContent).toBe('Revoke topic 4120? Its future writes to this record will be refused.');
+    expect(doc.querySelector('.sheet .confirm-text')!.textContent).toBe('Revoke Design conversation? Its future writes to this record will be refused.');
     (doc.querySelector('.sheet [data-revoke-confirm]') as HTMLButtonElement).click();
     await settle();
     expect(writes).toHaveLength(1);
@@ -380,9 +380,9 @@ describe('agent names on activity rows', () => {
     const other = 'd5d07ce5f9b199abac3a90ea3c90d269';
     m.setPeerNames({ ok: true, data: { pairings: [{ peerFp: fp.toUpperCase(), peerName: 'Dawn' }, { peerFp: other, peerName: other }] } });
     expect(m.counterpartyWords({ type: 'agent', name: fp })).toBe('with Dawn');
-    expect(m.counterpartyWords({ type: 'agent', name: other })).toBe('with agent d5d07ce5…');
+    expect(m.counterpartyWords({ type: 'agent', name: other })).toBe('with an unnamed agent');
     expect(m.counterpartyWords({ type: 'agent', name: 'Scout' })).toBe('with Scout');
     m.setPeerNames({ ok: false, status: 503, data: {} });
-    expect(m.counterpartyWords({ type: 'agent', name: fp })).toBe('with agent 8c7928aa…');
+    expect(m.counterpartyWords({ type: 'agent', name: fp })).toBe('with an unnamed agent');
   });
 });

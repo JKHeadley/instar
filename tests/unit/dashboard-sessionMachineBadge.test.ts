@@ -33,7 +33,7 @@ describe('dashboard: sessions list — machine badges + pool-wide visibility', (
 
   it('renders a machine badge stating where the session runs (XSS-escaped)', () => {
     expect(HTML).toContain('class="machine-badge"');
-    expect(HTML).toContain('escapeHtml(session.machineNickname)');
+    expect(HTML).toContain('escapeHtml(verifiedDashboardName(session.machineNickname, session.machineId)');
     expect(HTML).toContain('.machine-badge {'); // the style exists
   });
 

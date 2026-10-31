@@ -160,7 +160,8 @@ describe('GET /maturation/board', () => {
     expect(res.status).toBe(200);
     expect(res.body.reviewDate).toBe(today());
     expect(res.body.reviewMachine).toBe('Self');
-    expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'may-be-superseded', ok: false }));
+    expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'may-be-superseded', machineIds: ['m_dead'], ok: false }));
+    expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'peer', machineId: 'm_liar', ok: true }));
     expect(res.body.sources.some((s: { name: string; machine: string }) => s.name === 'review-candidate' && s.machine === 'm_liar')).toBe(false);
   });
 });
@@ -183,8 +184,8 @@ describe('peer absence vs missing data', () => {
         { machineId: 'm_old', url: `http://127.0.0.1:${port(1)}`, kind: 'lan' },
       ] }))).get('/maturation/board?scope=pool');
       expect(res.status).toBe(200);
-      expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'peer', machine: 'm_off', reason: 'board-off' }));
-      expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'peer', machine: 'm_old', reason: 'unsupported' }));
+      expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'peer', machine: 'another machine', machineId: 'm_off', reason: 'board-off' }));
+      expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'peer', machine: 'another machine', machineId: 'm_old', reason: 'unsupported' }));
       expect(res.body.sources.some((s: { name: string }) => s.name === 'may-be-superseded')).toBe(false);
     } finally {
       for (const s of servers) s.close();

@@ -12,13 +12,14 @@ export function verifiedEntityName(id: string | number, candidate: unknown): str
   const key = String(id).trim();
   const name = typeof candidate === 'string' ? candidate.trim() : '';
   if (!key || !name || name === key) return null;
-  if (/^(?:\[deleted\]\s*)?topic-\d+$/i.test(name)) return null;
+  if (/^\d+$/.test(name)) return null;
+  if (/^(?:\[deleted\]\s*)?(?:telegram\s+)?topic[-\s#]*\d+$/i.test(name)) return null;
   // Peer inventories sometimes supply the first eight hex characters of a
   // fingerprint as a supposed name. A shortened identifier is still an ID.
   if (/^[a-f0-9]{8,}(?:…|\.\.\.)?$/i.test(name) || /^m_[a-z0-9]{12,}$/i.test(name) || /^[CGD][A-Z0-9]{8,}$/.test(name)) return null;
   if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(name)) return null;
   if (/^a2aproof-\d+$/i.test(name)) return null;
-  if (/^(?:conversation|channel) name unavailable$/i.test(name) || /^checking (?:conversation|channel) name/i.test(name)) return null;
+  if (/^(?:conversation|channel|agent|machine|account|session|topic|initiative|project|subsystem|work item) name unavailable$/i.test(name) || /^(?:an? )?unnamed (?:agent|machine|account|session|feature|person|part)$/i.test(name) || /^(?:another machine|a machine with no name yet|the account|promise details unavailable)$/i.test(name) || /^checking (?:conversation|channel) name/i.test(name)) return null;
   return name;
 }
 

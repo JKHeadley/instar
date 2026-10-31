@@ -25,6 +25,7 @@
 // reusing the shipped hasOpenInteraction primitive.
 
 import { sanitizeForDisplay, hasOpenInteraction } from './subscriptions.js';
+import { verifiedDisplayName } from './console/display-identity.js';
 
 export const GLANCE_MAX_TILES = 5;
 export const GLANCE_WORD_BUDGET = 150; // words on the front page before interaction
@@ -964,7 +965,7 @@ function guardNeedsLook(g) {
 }
 
 export function machineRowText(m) {
-  const nick = sanitizeForDisplay(m.nickname || m.machineId || 'A machine', 'label');
+  const nick = sanitizeForDisplay(verifiedDisplayName(m.nickname, m.machineId) || 'A machine', 'label');
   return `${nick} — ${machineStatusWord(m)}`;
 }
 
@@ -976,7 +977,7 @@ export function machineRecordNode(doc, m, opts = {}) {
     ? `${m.activeSessionCount}${m.maxSessions ? ' / ' + m.maxSessions : ''} conversation${m.activeSessionCount === 1 ? '' : 's'}`
     : '—';
   const rows = [
-    ['Name', m.nickname || m.machineId || '—'],
+    ['Name', verifiedDisplayName(m.nickname, m.machineId) || 'name unavailable'],
     ['Status', machineStatusWord(m)],
     ['Specs', machineSpecLine(m.hardware)],
     ['Conversations', online ? sessions : '—'],
@@ -1025,7 +1026,7 @@ export function machineRecordNode(doc, m, opts = {}) {
     const input = doc.createElement('input');
     input.type = 'text';
     input.className = 'glance-record-input machine-nick';
-    input.value = m.nickname || m.machineId;
+    input.value = verifiedDisplayName(m.nickname, m.machineId) || '';
     input.setAttribute('data-mid', m.machineId);
     input.setAttribute('aria-label', 'Machine nickname — press Enter or click away to save');
     let last = input.value;
@@ -1166,11 +1167,11 @@ const CAP_STAT_LABEL = {
 
 export function healthCapRowText(c) {
   const word = c.status === 'error' ? 'needs attention' : 'working';
-  return `${sanitizeForDisplay(c.label || c.id || 'A subsystem', 'label')} — ${word}`;
+  return `${sanitizeForDisplay(verifiedDisplayName(c.label, c.id) || 'Subsystem name unavailable', 'label')} — ${word}`;
 }
 export function healthCapRecordNode(doc, c) {
   const rows = [
-    ['Subsystem', c.label || c.id || '—'],
+    ['Subsystem', verifiedDisplayName(c.label, c.id) || 'Subsystem name unavailable'],
     ['Status', c.status === 'error' ? 'Needs attention' : 'Working'],
     ['What it does', c.description || '—'],
     ['Right now', c.metric || '—'],
@@ -1862,7 +1863,7 @@ export function buildInitiativesGlance(itemsRes, digestRes) {
 }
 
 export function initiativeRowText(i) {
-  const title = sanitizeForDisplay(i.title || i.id || 'An initiative', 'summary');
+  const title = sanitizeForDisplay(verifiedDisplayName(i.title, i.id) || 'Initiative name unavailable', 'summary');
   return `${title} — ${INITIATIVE_STATUS_WORD[i.status] || (i.status || 'unknown')}`;
 }
 export function initiativeRecordNode(doc, i, opts = {}) {
@@ -1870,7 +1871,7 @@ export function initiativeRecordNode(doc, i, opts = {}) {
   const phases = Array.isArray(i.phases) ? i.phases : [];
   const done = phases.filter((p) => p && p.status === 'done').length;
   const rows = [
-    ['Initiative', i.title || i.id || '—'],
+    ['Initiative', verifiedDisplayName(i.title, i.id) || 'Initiative name unavailable'],
     ['Status', INITIATIVE_STATUS_WORD[i.status] || (i.status || '—')],
     ['What it is', i.description || '—'],
   ];

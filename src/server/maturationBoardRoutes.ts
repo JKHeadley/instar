@@ -22,6 +22,7 @@ import path from 'path';
 import { Router, type Request, type Response } from 'express';
 
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { buildGuardInventory } from '../monitoring/guardPostureView.js';
@@ -145,7 +146,7 @@ export function reviewHash(review: ParsedReview): string {
 
 function nicknameOf(ctx: BoardCtx, machineId: string | null | undefined): string {
   if (!machineId) return 'this machine';
-  return ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machineId;
+  return verifiedEntityName(machineId, ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname) ?? 'another machine';
 }
 
 export function collectLocalOwners(ctx: BoardCtx, now: number): { owners: OwnerEntry[]; sources: SourceStatus[] } {
@@ -532,8 +533,8 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
           // A peer that answered "board off" (503) or "not supported" (404) is a confirmed absence,
           // not missing data; only a peer we could not hear from makes the board possibly out of date.
           const fail = (reason: string) => {
-            sources.push({ name: 'peer', machine, ok: false, reason });
-            if (reason !== 'board-off' && reason !== 'unsupported') missing.push(machine);
+            sources.push({ name: 'peer', machine, machineId: p.machineId, ok: false, reason });
+            if (reason !== 'board-off' && reason !== 'unsupported') missing.push(p.machineId);
           };
           if (Date.now() - started > FAN_OUT_DEADLINE_MS) return fail('deadline');
           if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) return fail('omitted-cap');
@@ -552,7 +553,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
             const peerOwners = sanitizePeerOwners(body.owners, machine);
             if (!peerOwners) return fail('invalid-body');
             owners.push(...peerOwners);
-            sources.push({ name: 'peer', machine, ok: true });
+            sources.push({ name: 'peer', machine, machineId: p.machineId, ok: true });
             const dg = body.reviewDigest as Record<string, unknown> | null;
             if (dg && typeof dg.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dg.date) && typeof dg.hash === 'string'
               && dg.date <= new Date(now + 86_400_000).toISOString().slice(0, 10)) {
@@ -566,7 +567,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
 
       // One selection rule: newest date; tie → lowest machine id.
       candidates.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? 1 : -1) : a.machineId < b.machineId ? -1 : 1));
-      for (const c of candidates) sources.push({ name: 'review-candidate', machine: c.machine, ok: true, at: c.date, reason: `hash ${c.hash.slice(0, 12)}` });
+      for (const c of candidates) sources.push({ name: 'review-candidate', machine: c.machine, machineId: c.machineId, ok: true, at: c.date, reason: `hash ${c.hash.slice(0, 12)}` });
       const chosen = candidates[0] ?? null;
 
       let reviews: ParsedReview[] = [];
@@ -576,7 +577,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
       let reviewUnavailable: { machine: string; since: string | null } | null = null;
       let linked = linkedInitiatives(ctx);
 
-      const lastWasMissing = lastRemoteReview && missing.includes(lastRemoteReview.machine)
+      const lastWasMissing = lastRemoteReview && missing.includes(lastRemoteReview.machineId)
         && (!chosen || chosen.date < (lastRemoteReview.reviews.length ? pickLatest(lastRemoteReview.reviews)!.date : ''));
       if (lastWasMissing && lastRemoteReview && now - lastRemoteReview.fetchedAt <= REVIEW_CACHE_MAX_AGE_MS) {
         reviews = lastRemoteReview.reviews;
@@ -598,9 +599,9 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
           });
           const text = r.ok ? await r.text() : '';
           if (!r.ok) {
-            sources.push({ name: 'review', machine: chosen.machine, ok: false, reason: r.status === 413 ? 'review-payload-too-large' : 'http-error' });
+            sources.push({ name: 'review', machine: chosen.machine, machineId: chosen.machineId, ok: false, reason: r.status === 413 ? 'review-payload-too-large' : 'http-error' });
           } else if (Buffer.byteLength(text) > MAX_REVIEW_PAYLOAD_BYTES) {
-            sources.push({ name: 'review', machine: chosen.machine, ok: false, reason: 'review-payload-too-large' });
+            sources.push({ name: 'review', machine: chosen.machine, machineId: chosen.machineId, ok: false, reason: 'review-payload-too-large' });
           } else {
             const payload = JSON.parse(text) as ReviewPayload;
             const shapeOk = payload && payload.schema === BOARD_SCHEMA && Array.isArray(payload.rows) && Array.isArray(payload.history);
@@ -608,9 +609,9 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
             const servedHash = shapeOk ? crypto.createHash('sha256').update(JSON.stringify({ date: payload.date, rows: payload.rows })).digest('hex') : '';
             const rebuilt = shapeOk ? revalidate(payload, now) : null;
             if (!rebuilt) {
-              sources.push({ name: 'review', machine: chosen.machine, ok: false, reason: 'invalid-body' });
+              sources.push({ name: 'review', machine: chosen.machine, machineId: chosen.machineId, ok: false, reason: 'invalid-body' });
             } else if (payload.date !== chosen.date || servedHash !== chosen.hash) {
-              sources.push({ name: 'review', machine: chosen.machine, ok: false, reason: 'digest-mismatch' });
+              sources.push({ name: 'review', machine: chosen.machine, machineId: chosen.machineId, ok: false, reason: 'digest-mismatch' });
             } else {
               reviews = rebuilt;
               reviewMachine = chosen.machine;
@@ -620,10 +621,10 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
             }
           }
         } catch {
-          sources.push({ name: 'review', machine: chosen.machine, ok: false, reason: 'unreachable' });
+          sources.push({ name: 'review', machine: chosen.machine, machineId: chosen.machineId, ok: false, reason: 'unreachable' });
         }
       }
-      if (missing.length) sources.push({ name: 'may-be-superseded', machine: missing.join(', '), ok: false, reason: 'did-not-answer' });
+      if (missing.length) sources.push({ name: 'may-be-superseded', machine: missing.length === 1 ? nicknameOf(ctx, missing[0]) : 'several machines', machineIds: missing, ok: false, reason: 'did-not-answer' });
 
       const body = buildMaturationBoard({
         now, scope: 'pool', reviews, reviewMachine, owners, commitments, linkedInitiatives: linked, sources,

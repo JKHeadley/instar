@@ -331,6 +331,15 @@ describe('renderAccounts', () => {
     renderAccounts(doc, t, [{ id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', status: 'active' }], NOW, null);
     expect(t.querySelector('.sub-account-inuse-badge')).toBeNull();
   });
+  it('withholds repair approval when two accounts have the same visible name', () => {
+    const t = el();
+    renderAccounts(doc, t, [
+      { id: 'a1', nickname: 'Personal', status: 'needs-reauth' },
+      { id: 'a2', nickname: 'Personal', status: 'needs-reauth' },
+    ], NOW, null, [{ id: 'repair-1', accountId: 'a1', state: 'suggested' }]);
+    expect(t.querySelector('.sub-account-repair-approve')).toBeNull();
+    expect(t.textContent).toContain('A unique account name is needed');
+  });
 });
 
 describe('relativeAge', () => {
@@ -370,7 +379,7 @@ describe('renderPendingLogins', () => {
   it('a url-code-paste login renders a code paste-back field + Submit (ws52-code-paste-back)', () => {
     const t = el();
     renderPendingLogins(doc, t, [{
-      id: 'adriana', label: 'adriana', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
+      id: 'adriana', label: 'Adriana subscription', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
       verificationUrl: 'https://claude.com/cai/oauth/authorize?code=true&client_id=x', ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0,
     }], NOW);
     expect(t.querySelector('.sub-pending-codehint')!.textContent).toContain('paste the code');
@@ -392,6 +401,16 @@ describe('renderPendingLogins', () => {
     }], NOW);
     expect(t.querySelector('.sub-pending-code-input')).toBeNull();
     expect(t.querySelector('[data-submit-code]')).toBeNull();
+  });
+
+  it('withholds sign-in actions when the account label is its ID or duplicates another visible login', () => {
+    const t = el();
+    const login = { id: 'acct-1', label: 'acct-1', kind: 'url-code-paste', machineNickname: 'Mini', verificationUrl: 'https://claude.com/oauth/authorize?code=x' };
+    renderPendingLogins(doc, t, [login], NOW);
+    expect(t.querySelector('.sub-pending-signin')).toBeNull();
+    expect(t.querySelector('.sub-pending-code-submit')).toBeNull();
+    renderPendingLogins(doc, t, [{ ...login, label: 'Adriana' }, { ...login, id: 'acct-2', label: 'Adriana' }], NOW);
+    expect(t.querySelectorAll('.sub-pending-signin')).toHaveLength(0);
   });
 
   it('a javascript: URL renders as inert text, not an anchor', () => {
@@ -443,7 +462,7 @@ describe('renderAccountMatrix', () => {
     scope: 'pool',
   };
   // A pending login for (a2, m1) → that cell is in-progress.
-  const pendingScope = { enabled: true, logins: [{ id: 'a2', machineId: 'm1' }] };
+  const pendingScope = { enabled: true, logins: [{ id: 'a2', machineId: 'm1', expectedEmail: 'a2@x.com' }] };
 
   it('renders ✓ active for an (account,machine) with an active pool row', () => {
     const t = el();
@@ -637,6 +656,20 @@ describe('renderAccountMatrix', () => {
     expect(a1OnMini!.textContent).toBe('Set up');
   });
 
+  it('does not offer account actions when visible machine names are ambiguous', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' },
+        { id: 'a2', email: 'a2@x.com', status: 'needs-reauth', machineId: 'm2', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, { enabled: true, logins: [] }, {});
+    expect(t.querySelectorAll('[data-matrix-setup]')).toHaveLength(0);
+    expect(t.textContent).toContain('A unique account and machine name are needed');
+  });
+
   it('renders an honest PIN-gated repair action for an email-less account record', () => {
     const t = el();
     renderAccountMatrix(doc, t, {
@@ -806,7 +839,7 @@ describe('renderAccountMatrix', () => {
     const t = el();
     const pending = {
       enabled: true,
-      logins: [{ id: 'a2', machineId: 'm1', kind: 'url-code-paste', paneAlive: false, verificationUrl: 'https://claude.com/oauth' }],
+      logins: [{ id: 'a2', machineId: 'm1', kind: 'url-code-paste', paneAlive: false, verificationUrl: 'https://claude.com/oauth', expectedEmail: 'a2@x.com' }],
     };
     renderAccountMatrix(doc, t, poolScope, pending, {});
     const cell = t.querySelector('.sub-matrix-broken')!;
@@ -983,7 +1016,7 @@ describe('renderPendingLogins — expected-account, liveness, wording floors, ou
       kind: 'validated', accountId: '<img src=x onerror=alert(1)>', machineId: 'm1', at: NOW,
     });
     expect(card.querySelector('img')).toBeNull();
-    expect(card.textContent).toContain('<img');
+    expect(card.textContent).toContain('the account');
   });
 });
 
@@ -1001,7 +1034,7 @@ function el(): HTMLElement {
  */
 describe('renderAccounts — provider grouping', () => {
   const acct = (id: string, provider: string) => ({
-    id, nickname: id, provider, framework: provider === 'openai' ? 'codex-cli' : 'claude-code',
+    id, nickname: `Account ${id}`, provider, framework: provider === 'openai' ? 'codex-cli' : 'claude-code',
     status: 'active', configHome: `/h/${id}`,
   });
 
@@ -1015,7 +1048,7 @@ describe('renderAccounts — provider grouping', () => {
     renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai'), acct('a2', 'anthropic')], NOW);
     expect(headings(t)).toEqual(['Claude', 'Codex']);
     // Every Claude account sits under Claude; the Codex one does not get stranded.
-    expect(order(t)).toEqual(['Claude', 'a1', 'a2', 'Codex', 'c1']);
+    expect(order(t)).toEqual(['Claude', 'Account a1', 'Account a2', 'Codex', 'Account c1']);
   });
 
   it('colors each provider at a glance: heading and every card carry the provider class', () => {
@@ -1042,7 +1075,7 @@ describe('renderAccounts — provider grouping', () => {
     const t = doc.createElement('div');
     renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('a2', 'anthropic')], NOW);
     expect(headings(t)).toEqual([]);
-    expect(order(t)).toEqual(['a1', 'a2']);
+    expect(order(t)).toEqual(['Account a1', 'Account a2']);
   });
 
   it('accounts keep their ORDER within a group — grouping re-associates, it does not re-rank', () => {
@@ -1050,7 +1083,7 @@ describe('renderAccounts — provider grouping', () => {
     // account is default). Sorting would silently discard it.
     const t = doc.createElement('div');
     renderAccounts(doc, t, [acct('zeta', 'anthropic'), acct('alpha', 'anthropic')], NOW);
-    expect(order(t)).toEqual(['zeta', 'alpha']);
+    expect(order(t)).toEqual(['Account zeta', 'Account alpha']);
   });
 
   it('groups appear in FIRST-APPEARANCE order, not alphabetical', () => {
@@ -1064,7 +1097,7 @@ describe('renderAccounts — provider grouping', () => {
     const accounts = [acct('a1', 'anthropic'), acct('c1', 'openai'), acct('g1', 'google'), acct('a2', 'anthropic')];
     renderAccounts(doc, t, accounts, NOW);
     const nicks = Array.from(t.querySelectorAll('.sub-account-nick')).map((n) => n.textContent);
-    expect(nicks.sort()).toEqual(['a1', 'a2', 'c1', 'g1']);
+    expect(nicks.sort()).toEqual(['Account a1', 'Account a2', 'Account c1', 'Account g1']);
     expect(t.querySelectorAll('.sub-account').length).toBe(4);
   });
 
@@ -1100,7 +1133,7 @@ describe('renderAccounts — provider grouping', () => {
     renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai')], NOW, 'c1');
     const inUse = t.querySelector('.sub-account-inuse');
     expect(inUse).not.toBeNull();
-    expect(inUse!.textContent).toContain('c1');
+    expect(inUse!.textContent).toContain('Account c1');
   });
 });
 

@@ -150,10 +150,10 @@ describe('conversations and the merged agent rows', () => {
     const c = conversationRows(conv([ownConv, replicaConv]), threads, { selfMachineId: 'studio', names: { studio: 'Mac Studio', mini: 'the mini' } }, NOW);
     expect(c.state).toBe('ok');
     const own = c.rows.find((r) => r.id === 'thread-pp-1')!;
-    expect(own).toMatchObject({ heldElsewhere: false, main: 'Conversation thread-p', end: '12 min ago', hasTopic: false });
+    expect(own).toMatchObject({ heldElsewhere: false, main: 'Conversation name unavailable', end: '12 min ago', hasTopic: false });
     expect(own.sub).toBe('open · 6 messages · no Telegram topic');
     const rep = c.rows.find((r) => r.id === 'thread-pp-2')!;
-    expect(rep).toMatchObject({ heldElsewhere: true, holderName: 'the mini', main: 'Conversation in Telegram topic 52075', hasTopic: true });
+    expect(rep).toMatchObject({ heldElsewhere: true, holderName: 'the mini', main: 'Conversation name unavailable', hasTopic: true });
     expect(rep.sub).toContain('lives on the mini (record 7 min old)');
     expect(rep.sub).toContain('record behind');
     expect(Object.keys(c.byPeer)).toEqual([FP]);
@@ -342,7 +342,7 @@ describe('the page in a DOM', () => {
     // The agent sheet lists both conversations; the one the mini holds is a summary, the own one opens the history.
     (doc.querySelector('#sec-agents button.row') as HTMLButtonElement).click();
     const convRows = [...doc.querySelectorAll('.sheet button.row')];
-    expect(convRows.map((r) => r.querySelector('.row-title')!.textContent)).toEqual(['Conversation thread-p', 'Conversation in Telegram topic 52075']);
+    expect(convRows.map((r) => r.querySelector('.row-title')!.textContent)).toEqual(['Conversation name unavailable', 'Conversation name unavailable']);
     expect(doc.querySelector('.sheet .mono')!.textContent).toBe(FP);
     (convRows[1] as HTMLButtonElement).click();
     expect(doc.querySelector('.sheet .confirm-text')!.textContent).toContain('lives on the mini');

@@ -18,6 +18,8 @@ export const ADVISORY_LINE = 'These are signals I picked up, not instructions yo
 // ── Preferences (GET /preferences/session-context) ────────────────────────
 // Each preference is one line of the block: "  - <learning> (confidence 0.80, seen 3×)"
 // (src/core/PreferencesManager.ts formatPreferencesForSessionStart).
+import { verifiedDisplayName } from './display-identity.js';
+
 const PREF_LINE = /^-\s+(.+?)\s+\(confidence\s+([0-9.]+),\s+seen\s+(\d+)×\)$/;
 
 export function confidenceWords(c) {
@@ -188,7 +190,7 @@ export function buildConflicts(res, { machines = {}, now = Date.now() } = {}) {
 export function machineNames(poolRes) {
   const map = {};
   const ms = poolRes && poolRes.ok && poolRes.data && Array.isArray(poolRes.data.machines) ? poolRes.data.machines : [];
-  for (const m of ms) if (m && m.machineId) map[m.machineId] = m.nickname || m.machineId;
+  for (const m of ms) if (m && m.machineId) map[m.machineId] = verifiedDisplayName(m.nickname, m.machineId) || 'another machine';
   return map;
 }
 

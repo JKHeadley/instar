@@ -16,6 +16,7 @@
  */
 
 import { Router } from 'express';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { sealIdentityForJoiner, readAgentIdentityForHandover } from '../core/AgentIdentityHandover.js';
 import crypto from 'node:crypto';
 import { sign, verify } from '../core/MachineIdentity.js';
@@ -971,7 +972,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     ctx.securityLog.append({
       event: 'handoff_requested',
       machineId: auth.machineId,
-      machineName: ctx.identityManager.loadRemoteIdentity(auth.machineId)?.name ?? auth.machineId,
+      machineName: verifiedEntityName(auth.machineId, ctx.identityManager.loadRemoteIdentity(auth.machineId)?.name) ?? 'another machine',
     });
 
     // 3. Prepare for handoff — stop services and sync state

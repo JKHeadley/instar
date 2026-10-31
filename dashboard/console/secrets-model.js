@@ -8,6 +8,8 @@
 // server's answer in words. Every route here is adapter (a): the bearer token is enough,
 // so no PIN is ever asked.
 
+import { verifiedDisplayName } from './display-identity.js';
+
 export const SOON_MS = 5 * 60_000;
 
 /** "Valid for" choices in the Ask sheet (the route accepts 1 min … 1 h). */
@@ -46,19 +48,25 @@ export function agoWords(ms, now = Date.now()) {
 export function topicNameMap(res) {
   const list = res && res.ok && res.data && Array.isArray(res.data.topics) ? res.data.topics : [];
   const map = {};
-  for (const t of list) if (t && Number.isFinite(Number(t.topicId)) && typeof t.topicName === 'string' && t.topicName.trim()) map[String(t.topicId)] = t.topicName.trim();
+  for (const t of list) if (t && Number.isFinite(Number(t.topicId))) {
+    const name = verifiedDisplayName(t.topicName, t.topicId);
+    if (name) map[String(t.topicId)] = name;
+  }
   return map;
 }
 
 /** The conversation picker's options, named ones first by name; "" = tell no conversation. */
 export function conversationChoices(names = {}) {
-  return Object.entries(names).map(([id, name]) => ({ value: id, label: name })).sort((a, b) => a.label.localeCompare(b.label));
+  const entries = Object.entries(names).map(([id, name]) => ({ value: id, label: verifiedDisplayName(name, id) })).filter((entry) => entry.label);
+  const counts = new Map();
+  for (const entry of entries) counts.set(entry.label.toLocaleLowerCase(), (counts.get(entry.label.toLocaleLowerCase()) || 0) + 1);
+  return entries.filter((entry) => counts.get(entry.label.toLocaleLowerCase()) === 1).sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /** A conversation in words: its name, else "conversation 123", else "" (none named). */
 export function conversationWords(topicId, names = {}) {
   if (topicId === undefined || topicId === null || topicId === '') return '';
-  return names[String(topicId)] || `conversation ${topicId}`;
+  return verifiedDisplayName(names[String(topicId)], topicId) || 'conversation name unavailable';
 }
 
 /**
@@ -141,11 +149,11 @@ export function buildSync(res, poolRes) {
   }
   const d = res.data || {};
   const targets = Array.isArray(d.syncTargets) ? d.syncTargets.filter((t) => t && t.machineId) : [];
-  const nameOf = (t) => t.nickname || t.machineId;
+  const nameOf = (t) => verifiedDisplayName(t.nickname, t.machineId) || 'another machine';
   const targetIds = new Set(targets.map((t) => t.machineId));
   const pool = poolRes && poolRes.ok && poolRes.data && Array.isArray(poolRes.data.machines) ? poolRes.data : null;
   const selfId = pool ? pool.selfMachineId : null;
-  const unreachable = pool ? pool.machines.filter((m) => m && m.machineId && m.machineId !== selfId && !m.isSelf && !targetIds.has(m.machineId)).map((m) => m.nickname || m.machineId) : [];
+  const unreachable = pool ? pool.machines.filter((m) => m && m.machineId && m.machineId !== selfId && !m.isSelf && !targetIds.has(m.machineId)).map((m) => verifiedDisplayName(m.nickname, m.machineId) || 'another machine') : [];
   const push = d.mode === 'full' || d.pushEnabled === true;
   const list = targets.map(nameOf);
   const joined = list.length <= 2 ? list.join(' and ') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;

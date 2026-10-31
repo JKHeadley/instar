@@ -81,6 +81,8 @@ interface RunOpts {
   stdin?: string;
   /** When true, do NOT write a config.json. */
   noConfig?: boolean;
+  /** Keep the fallback probe off a real agent server listening on 4040. */
+  stubCurl?: boolean;
 }
 
 interface RunResult {
@@ -102,6 +104,13 @@ async function runScript(opts: RunOpts): Promise<RunResult> {
     fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify(cfg));
   }
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH };
+  if (opts.stubCurl) {
+    const bin = path.join(tmpCwd, 'bin');
+    fs.mkdirSync(bin);
+    const curl = path.join(bin, 'curl');
+    fs.writeFileSync(curl, '#!/bin/sh\nprintf "%s\\n" "$@" >&2\nexit 7\n', { mode: 0o755 });
+    env.PATH = `${bin}:${env.PATH}`;
+  }
   if (opts.envPort !== undefined) env.INSTAR_PORT = opts.envPort;
   return await new Promise<RunResult>((resolve, reject) => {
     const proc = spawn('bash', [SCRIPT_PATH, ...(opts.args ?? ['42'])], {
@@ -183,8 +192,9 @@ describe('telegram-reply.sh — port resolution', () => {
     // we just want to assert the warning fires and the script tries 4040.
     // The connect will fail; the script will exit 1 with the warning still
     // on stderr.
-    const result = await runScript({ noConfig: true });
+    const result = await runScript({ noConfig: true, stubCurl: true });
     expect(result.stderr).toMatch(/falling back to 4040|no INSTAR_PORT/i);
+    expect(result.stderr).toContain('4040');
   });
 
   it('sends X-Instar-AgentId header sourced from config.projectName', async () => {

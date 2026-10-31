@@ -8,6 +8,7 @@
 // source proved it observed.
 
 import { ago, failure, STALE_DAYS } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 export { failure, ago };
 
@@ -258,7 +259,7 @@ export function planRow(rec, detail, now = Date.now()) {
   if (isProject) sub = detail && detail.failed ? `Couldn't load its rounds: ${detail.failed}` : projectLine(p, children, now);
   else sub = initiativeLine(rec, now);
   return {
-    key: `plan:${rec.id}`, id: rec.id, type: isProject ? 'project' : 'initiative', main: rec.title || rec.id, sub,
+    key: `plan:${rec.id}`, id: rec.id, type: isProject ? 'project' : 'initiative', main: verifiedDisplayName(rec.title, rec.id) || (isProject ? 'Project name unavailable' : 'Initiative name unavailable'), sub,
     end: need ? 'Open' : statusWord(rec.status), tone: need ? 'attn' : rec.status === 'halted' ? 'bad' : null,
     needs: need, status: rec.status, record: p, children, detailFailed: detail && detail.failed ? detail.failed : null, touched: touchedAt(p, children),
   };
@@ -377,7 +378,7 @@ export function roundsTrack(p, children = []) {
     const pieces = roundPieces(r, byId);
     const state = roundDone(r) ? 'done' : r.haltedAt || r.status === 'failed' ? 'halted' : i === cur ? 'current' : 'future';
     return { index: i, name: r.name || `Round ${i + 1}`, state, word: roundWord(r), pieces, round: r,
-      items: (Array.isArray(r.itemIds) ? r.itemIds : []).map((id) => { const c = byId.get(id); return { id, title: c ? c.title || id : id, stage: c ? stageWord(c.pipelineStage) : 'not loaded', pr: c && c.prNumber ? c.prNumber : null }; }) };
+      items: (Array.isArray(r.itemIds) ? r.itemIds : []).map((id) => { const c = byId.get(id); return { id, title: verifiedDisplayName(c && c.title, id) || 'Work item name unavailable', stage: c ? stageWord(c.pipelineStage) : 'not loaded', pr: c && c.prNumber ? c.prNumber : null }; }) };
   });
 }
 
@@ -431,7 +432,7 @@ export function linkChips(rec, topicHref) {
 export function stepList(rec, now = Date.now()) {
   const phases = Array.isArray(rec && rec.phases) ? rec.phases : [];
   return phases.map((ph, i) => ({
-    name: ph.name || ph.id || `Step ${i + 1}`, done: ph.status === 'done', current: i === Number(rec.currentPhaseIndex), blocked: ph.status === 'blocked',
+    name: ph.name || `Step ${i + 1}`, done: ph.status === 'done', current: i === Number(rec.currentPhaseIndex), blocked: ph.status === 'blocked',
     when: ph.completedAt ? `done ${ago(ph.completedAt, now)}` : ph.startedAt ? `started ${ago(ph.startedAt, now)}` : ph.status === 'blocked' ? 'blocked' : ph.status === 'in-progress' ? 'in progress' : '',
   }));
 }

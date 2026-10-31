@@ -8,6 +8,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import type { RouteContext } from './routes.js';
 import { QUEUE_IDS, QUEUE_LABELS, QUEUE_PACE_SCHEMA, REPO_RE, type QueueId, type Verdict } from '../monitoring/QueuePace.js';
@@ -31,7 +32,7 @@ type PaceCtx = Pick<RouteContext, 'config' | 'meshSelfId' | 'machinePoolRegistry
 
 function nicknameOf(ctx: PaceCtx, machineId: string | null | undefined): string {
   if (!machineId) return 'this machine';
-  return ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machineId;
+  return verifiedEntityName(machineId, ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname) ?? 'another machine';
 }
 
 const num = (v: unknown, max = 1e9): number | null => (typeof v === 'number' && Number.isFinite(v) ? Math.max(-max, Math.min(max, Math.round(v * 10) / 10)) : null);
@@ -103,7 +104,7 @@ export function createQueuePaceRoutes(ctx: PaceCtx, timings: { peerTimeoutMs?: n
     poolBuilds.push(now);
 
     const queues: Array<QueuePaceQueueView & { machine: string }> = local.queues.map((q) => withMachine(q, self.machine));
-    const sources: Array<{ machine: string; ok: boolean; reason?: string }> = [{ machine: self.machine, ok: true }];
+    const sources: Array<{ machine: string; machineId: string; ok: boolean; reason?: string }> = [{ machine: self.machine, machineId: self.machineId, ok: true }];
     let reportsPerDay = local.context.feedbackReportsPerDay;
     const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
     const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -111,7 +112,7 @@ export function createQueuePaceRoutes(ctx: PaceCtx, timings: { peerTimeoutMs?: n
     for (let i = 0; i < peers.length; i += 4) {
       await Promise.all(peers.slice(i, i + 4).map(async (p) => {
         const machine = nicknameOf(ctx, p.machineId);
-        const fail = (reason: string) => { sources.push({ machine, ok: false, reason }); };
+        const fail = (reason: string) => { sources.push({ machine, machineId: p.machineId, ok: false, reason }); };
         if (Date.now() - started > FAN_OUT_DEADLINE_MS) return fail('deadline');
         if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) return fail('omitted-cap');
         try {
@@ -130,7 +131,7 @@ export function createQueuePaceRoutes(ctx: PaceCtx, timings: { peerTimeoutMs?: n
           }
           const ctxBody = body.context as Record<string, unknown> | undefined;
           if (reportsPerDay === null && typeof ctxBody?.feedbackReportsPerDay === 'number') reportsPerDay = num(ctxBody.feedbackReportsPerDay);
-          sources.push({ machine, ok: true });
+          sources.push({ machine, machineId: p.machineId, ok: true });
         } catch (err) { // @silent-fallback-ok — the failure is a visible sources[] row naming the machine
           fail(err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable');
         }

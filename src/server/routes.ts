@@ -12241,7 +12241,8 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(404).json({ error: 'unknown machine', machineId });
       return;
     }
-    const nickname = ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machine.nickname;
+    const nickname = verifiedEntityName(machineId, ctx.machinePoolRegistry?.getCapacity(machineId)?.nickname)
+      ?? verifiedEntityName(machineId, machine.nickname) ?? undefined;
     const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)
       ?.peerUrlAllowlist;
     if (!isPeerUrlAllowedForCredentials({ url: machine.lastKnownUrl, kind: 'last-known-url' }, extraAllowlist).ok) {
@@ -12292,12 +12293,12 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       if (r.status === 401 || r.status === 403) {
         remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unauthorized', peerStatus: r.status });
-        res.status(502).json({ error: `unauthorized by ${nickname ?? machineId}` });
+        res.status(502).json({ error: `unauthorized by ${nickname ?? 'another machine'}` });
         return;
       }
       remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'peer-error', peerStatus: r.status });
       res.status(502).json({
-        error: typeof peerBody?.error === 'string' ? peerBody.error : `${r.status} from ${nickname ?? machineId}`,
+        error: typeof peerBody?.error === 'string' ? peerBody.error : `${r.status} from ${nickname ?? 'another machine'}`,
       });
     } catch (err) {
       const name = err instanceof Error ? err.name : '';
@@ -12309,7 +12310,7 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       remoteCloseAudit.record({ targetMachineId: machineId, targetNickname: nickname, sessionUuid, sessionName, outcome: 'unreachable' });
-      res.status(502).json({ error: `unreachable: ${nickname ?? machineId}` });
+      res.status(502).json({ error: `unreachable: ${nickname ?? 'another machine'}` });
     }
   });
 
@@ -14370,10 +14371,10 @@ export function createRoutes(ctx: RouteContext): Router {
           accountFollowMeRevocation = ctx.accountFollowMeRevocation.revoke(
             {
               accountId,
-              accountEmail: acct?.email ?? accountId,
+              accountEmail: verifiedEntityName(accountId, acct?.email) ?? 'the account',
               targetMachineId,
-              targetMachineNickname:
-                typeof bounds.targetMachineNickname === 'string' ? bounds.targetMachineNickname : targetMachineId,
+              targetMachineNickname: verifiedEntityName(targetMachineId, bounds.targetMachineNickname)
+                ?? verifiedEntityName(targetMachineId, ctx.machinePoolRegistry?.getCapacity(targetMachineId)?.nickname) ?? 'another machine',
               provider: acct?.provider ?? (typeof bounds.provider === 'string' ? bounds.provider : 'the provider'),
               mandateId: m.id,
               mechanism,
@@ -17101,10 +17102,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (declared > 0 && running === 0) {
         out.push({
           machineId: m.machineId,
-          machineNickname: m.nickname ?? undefined,
+          machineNickname: verifiedEntityName(m.machineId, m.nickname) ?? undefined,
           declared,
           running,
-          reason: `machine ${m.nickname ?? m.machineId}: declares ${declared} jobs, running 0 locally`,
+          reason: `${verifiedEntityName(m.machineId, m.nickname) ?? 'Another machine'} declares ${declared} jobs, running 0 locally`,
         });
       }
     }
@@ -22087,7 +22088,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the rope-health monitor knows a peer's transports are down within one
     // evaluation. Attach the live classification so reachability renders
     // honestly without touching placement semantics. Monitor dark → absent.
-    const nickOf = (id: string): string => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? id;
+    const nickOf = (id: string): string => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine';
     const machines = decorateWithRopeCondition(
       ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
       ctx.ropeHealthMonitor?.status().peers,
@@ -25413,7 +25414,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         await ctx.feedback.submit({
           type: 'improvement',
-          title: `Dispatch feedback: ${dispatch?.title ?? req.params.id}`,
+          title: `Dispatch feedback: ${verifiedEntityName(req.params.id, dispatch?.title) ?? 'dispatch name unavailable'}`,
           description: `Dispatch ${req.params.id} was ${helpful ? 'helpful' : 'not helpful'}.${comment ? ` Comment: ${comment}` : ''}`,
           agentName: ctx.config.projectName,
           instarVersion: ProcessIntegrity.getInstance()?.runningVersion || ctx.config.version || '0.0.0',
@@ -29749,7 +29750,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const passkeyPeers = (): PasskeyPoolPeer[] => {
     const self = passkeySelfMachineId();
     return (ctx.listPoolMachines?.() ?? []).filter((m) => m.machineId !== self).map((m) => ({
-      machineId: m.machineId, nickname: m.nickname ?? ctx.machinePoolRegistry?.getCapacity(m.machineId)?.nickname ?? null,
+      machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname)
+        ?? verifiedEntityName(m.machineId, ctx.machinePoolRegistry?.getCapacity(m.machineId)?.nickname) ?? null,
       url: m.lastKnownUrl ?? null, online: ctx.machinePoolRegistry?.getCapacity(m.machineId)?.online ?? null,
     }));
   };
@@ -29946,7 +29948,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       cells: holder ? cells : cells.filter((c) => c.machineId === auth.selfMachineId),
       pendingRevokes: holder ? [...ownPending, ...peerPending] : ownPending,
       chromeGateFailures: [], suspension: null,
-      unobservedPeers: holder ? memo.peers.filter((p) => p.condition !== 'observed').map((p) => `${p.nickname ?? p.machineId} (${p.condition})`) : [],
+      unobservedPeers: holder ? memo.peers.filter((p) => p.condition !== 'observed').map((p) => `${verifiedEntityName(p.machineId, p.nickname) ?? 'another machine'} (${p.condition})`) : [],
       poolDegraded: memo.degraded, nowIso: new Date().toISOString(),
     });
     const ledger = new PasskeyDigestLedger({ stateDir: ctx.config.stateDir });
@@ -39788,7 +39790,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           threadId: forwardThreadId,
           hadTopic: resolvedOriginTopicId !== undefined,
         });
-        const toMachine = outcome.kind === 'no-holder' ? '' : (outcome.machine.nickname || outcome.machine.machineId);
+        const toMachine = outcome.kind === 'no-holder' ? '' : (verifiedEntityName(outcome.machine.machineId, outcome.machine.nickname) ?? 'another machine');
         if (!answer) {
           fwdCtx.counters.notExecuted++;
           console.log(forwardLogLine(msgId, toMachine, `not-executed:${outcome.kind === 'not-executed' ? outcome.reason : 'no-holder'}`));

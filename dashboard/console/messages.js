@@ -5,6 +5,7 @@
 import { buildMessagesPage, displayModel } from './messages-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, operatorSession, forgetOperatorSession } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -69,7 +70,7 @@ function openSettings(dm, refresh) {
   if (!dm.ok) { sheet({ title: 'Message footer' }, note(`Can’t tell: ${dm.reason}.`)); return; }
   const scope = el('select', { class: 'reason-input', 'aria-label': 'Which conversations' },
     el('option', { value: '', text: 'Every conversation (the default)' }),
-    dm.topics.map((t) => el('option', { value: String(t.id), text: t.name || `Conversation ${t.id}` })));
+    uniqueNamedChoices(dm.topics, (t) => t.id, (t) => t.name).map((t) => el('option', { value: String(t.id), text: verifiedDisplayName(t.name, t.id) })));
   const box = (key, label) => {
     const i = el('input', { type: 'checkbox', id: `od-${key}` });
     i.checked = Boolean(dm.defaults[key]);

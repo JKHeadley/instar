@@ -16,6 +16,7 @@
 // The page calls exactly one write route: revoking a session binding (bearer + intent header).
 
 import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 import { sanitizeForDisplay } from '../process-health.js';
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || `${one}s`)}`;
@@ -78,16 +79,16 @@ export function setPeerNames(res) {
   const list = res && res.ok && res.data && Array.isArray(res.data.pairings) ? res.data.pairings : [];
   for (const p of list) {
     const fp = typeof p.peerFp === 'string' ? p.peerFp.toLowerCase() : '';
-    const name = clean(p.peerName, 'label');
-    if (fp && name && name.toLowerCase() !== fp) map[fp] = name;
+    const name = verifiedDisplayName(clean(p.peerName, 'label'), fp);
+    if (fp && name) map[fp] = name;
   }
   peerNames = map;
 }
 
-/** A bare 32-hex fingerprint becomes the paired name, else a short id; any other name is shown as recorded. */
+/** An agent's verified name; never use its fingerprint as a label. */
 export function agentLabel(name) {
-  if (!/^[0-9a-f]{32}$/i.test(name)) return name;
-  return peerNames[name.toLowerCase()] || `agent ${name.slice(0, 8)}…`;
+  const known = typeof name === 'string' ? peerNames[name.toLowerCase()] : null;
+  return verifiedDisplayName(known, name) || verifiedDisplayName(name) || 'an unnamed agent';
 }
 
 export function counterpartyWords(cp) {
@@ -304,7 +305,7 @@ export function buildBindings(res, { now = Date.now() } = {}) {
     const status = bindingStatus(s, now);
     const label = clean(s.label, 'label');
     return {
-      key: `bind:${s.sessionId}`, id: s.sessionId, main: label || `Session ${s.sessionId.slice(0, 8)}`,
+      key: `bind:${s.sessionId}`, id: s.sessionId, main: verifiedDisplayName(label, s.sessionId) || 'Session name unavailable',
       sub: `${status.words} · active ${ago(s.lastActiveAt, now) || 'at an unknown time'}`,
       end: '', tone: status.key === 'revoked' || status.key === 'expired' ? 'unknown' : null, status, canRevoke: status.key !== 'revoked', record: s,
     };

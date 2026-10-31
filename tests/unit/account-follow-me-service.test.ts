@@ -53,6 +53,62 @@ describe('AccountFollowMeService (WS5.2 §5.2)', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it('does not raise an unapprovable consent item for unnamed or indistinguishable machines', () => {
+    const emit = vi.fn();
+    const accounts = [{ accountId: 'acct-1', email: 'justin@example.com', heldByMachineIds: ['laptop'] }];
+    const scan = (machines: any[]) => new AccountFollowMeService(deps({
+      emitAggregatedConsent: emit,
+      readPoolDepth: () => ({ machines, accounts }),
+    })).scanAndOffer();
+    expect(scan([
+      { machineId: 'laptop', nickname: 'Laptop', usableAccountCount: 1 },
+      { machineId: 'mini', nickname: '', usableAccountCount: 0 },
+    ]).offered).toHaveLength(0);
+    expect(scan([
+      { machineId: 'laptop', nickname: 'Laptop', usableAccountCount: 1 },
+      { machineId: 'mini', nickname: 'Mac Mini', usableAccountCount: 0 },
+      { machineId: 'mini-2', nickname: 'Mac Mini', usableAccountCount: 0 },
+    ]).offered).toHaveLength(0);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('an unnamed candidate does not consume the last follow slot before a named machine', () => {
+    const emit = vi.fn();
+    const svc = new AccountFollowMeService(deps({
+      emitAggregatedConsent: emit,
+      maxFollowMachines: () => 2,
+      readPoolDepth: () => ({
+        machines: [
+          { machineId: 'laptop', nickname: 'Laptop', usableAccountCount: 1 },
+          { machineId: 'unnamed', nickname: '', usableAccountCount: 0 },
+          { machineId: 'mini', nickname: 'Mac Mini', usableAccountCount: 0 },
+        ],
+        accounts: [{ accountId: 'acct-1', email: 'justin@example.com', heldByMachineIds: ['laptop'] }],
+      }),
+    }));
+    expect(svc.scanAndOffer().offered.map((o) => o.targetMachineId)).toEqual(['mini']);
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('duplicate account emails cannot produce a hidden wrong-account approval', () => {
+    const emit = vi.fn();
+    const svc = new AccountFollowMeService(deps({
+      emitAggregatedConsent: emit,
+      readPoolDepth: () => ({
+        machines: [
+          { machineId: 'laptop', nickname: 'Laptop', usableAccountCount: 1 },
+          { machineId: 'mini', nickname: 'Mac Mini', usableAccountCount: 0 },
+        ],
+        accounts: [
+          { accountId: 'acct-1', email: 'same@example.com', heldByMachineIds: ['laptop'] },
+          { accountId: 'acct-2', email: 'same@example.com', heldByMachineIds: [] },
+        ],
+      }),
+    }));
+    expect(svc.scanAndOffer().offered).toHaveLength(0);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('onMandateDelivered: a verified mandate + allow → enroll-drive instruction', () => {
     const op = crypto.generateKeyPairSync('ed25519');
     const mandate: CoordinationMandate = {

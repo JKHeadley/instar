@@ -16,6 +16,8 @@
 // No verification URL is ever rendered as a live href (defense-in-depth): it is
 // shown as sanitized TEXT for the operator to copy.
 
+import { verifiedDisplayName } from './console/display-identity.js';
+
 const CAPS = { label: 64, code: 48, url: 320, summary: 240 };
 
 // Structural presentation-glyph class (NFKC-fold THEN strip), identical to the
@@ -344,6 +346,12 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     target.appendChild(el(doc, 'div', 'sub-empty', 'No subscription accounts enrolled yet.'));
     return;
   }
+  const visibleAccountKey = (a) => {
+    const nick = verifiedDisplayName(a && a.nickname, a && a.id);
+    const email = verifiedDisplayName(a && a.email, a && a.id);
+    return nick || email ? `${(nick || '').toLocaleLowerCase()}\u0000${(email || '').toLocaleLowerCase()}` : null;
+  };
+  const accountKeys = accounts.map(visibleAccountKey);
   for (const a of groupAccountsByProvider(accounts)) {
     // A group marker, not an account: render the provider heading and continue.
     // (The operator's complaint was a flat interleaved list — Claude and Codex
@@ -356,13 +364,13 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const inUse = !!(inUseAccountId && a && a.id === inUseAccountId);
     const card = el(doc, 'div', `${inUse ? 'sub-account sub-account-inuse' : 'sub-account'} ${providerClass(a && a.provider)}`);
     const head = el(doc, 'div', 'sub-account-head');
-    head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(a && a.nickname, 'label')));
+    head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(verifiedDisplayName(a && a.nickname, a && a.id) || verifiedDisplayName(a && a.email, a && a.id) || 'Account name unavailable', 'label')));
     if (inUse) head.appendChild(el(doc, 'span', 'sub-account-inuse-badge', '● In use now'));
     head.appendChild(el(doc, 'span', 'sub-account-status', friendlyStatus(effectiveAccountStatus(a))));
     card.appendChild(head);
     card.appendChild(el(doc, 'div', 'sub-account-meta',
       `${friendlyProvider(a && a.provider)} · ${sanitizeForDisplay(a && a.framework, 'label')}`));
-    if (a && a.email) {
+    if (verifiedDisplayName(a && a.email, a && a.id)) {
       card.appendChild(el(doc, 'div', 'sub-account-email', sanitizeForDisplay(a.email, 'label')));
     }
     const q = (a && a.lastQuota) || null;
@@ -407,6 +415,8 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const repair = repairAppliesToCurrentState(repairCandidate, effectiveAccountStatus(a))
       ? repairCandidate
       : null;
+    const accountKey = visibleAccountKey(a);
+    const uniqueAccount = accountKey !== null && accountKeys.indexOf(accountKey) === accountKeys.lastIndexOf(accountKey);
     if (repair) {
       const repairBox = el(doc, 'div', 'sub-account-repair');
       const terminal = ['succeeded', 'refused', 'cancelled', 'failed'].includes(repair.state);
@@ -426,19 +436,20 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
       const action = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
         : repair.state === 'failed' ? ['retry', 'Try repair again']
           : (!terminal ? ['cancel', 'Cancel repair'] : null);
-      if (action) {
+      if (action && uniqueAccount) {
         const button = el(doc, 'button', `sub-account-repair-${action[0]}`, action[1]);
         button.setAttribute('data-relogin-action', action[0]);
         button.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
         repairBox.appendChild(button);
       }
-      if (retryText) {
+      if (retryText && uniqueAccount) {
         // "Cancel" on a failed repair holds its automatic retries (the failure itself is kept).
         const hold = el(doc, 'button', 'sub-account-repair-hold', 'Don’t retry on its own');
         hold.setAttribute('data-relogin-action', 'cancel');
         hold.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
         repairBox.appendChild(hold);
       }
+      if (!uniqueAccount && (action || retryText)) repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', 'A unique account name is needed before you can act here.'));
       card.appendChild(repairBox);
     }
     target.appendChild(card);
@@ -456,15 +467,19 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
  * are sent server-side at POST time. By construction this card carries zero raw
  * technical text, so it PASSES the arm-1 operator-surface gate.
  */
-export function renderFollowMeApproveCard(doc, offer) {
+export function renderFollowMeApproveCard(doc, offer, ambiguous = false) {
   const card = el(doc, 'div', 'sub-followme-offer');
   // Non-sensitive identifiers, for the Approve handler to resolve the offer. NOT
   // operator-facing text; never a fingerprint/JSON.
   card.setAttribute('data-account-id', sanitizeForDisplay(offer && offer.accountId, 'label'));
   card.setAttribute('data-target-machine-id', sanitizeForDisplay(offer && offer.targetMachineId, 'label'));
 
-  const machine = sanitizeForDisplay(offer && offer.machineNickname, 'label');
-  const account = sanitizeForDisplay(offer && offer.accountLabel, 'label');
+  const machineName = verifiedDisplayName(offer && offer.machineNickname, offer && offer.targetMachineId);
+  const accountName = verifiedDisplayName(offer && offer.accountLabel, offer && offer.accountId);
+  const canApprove = Boolean(machineName && accountName && !ambiguous);
+  const machine = sanitizeForDisplay(machineName || 'Machine name unavailable', 'label');
+  const account = sanitizeForDisplay(accountName || 'account name unavailable', 'label');
+  card.setAttribute('data-target-verified', canApprove ? '1' : '0');
   card.appendChild(el(doc, 'div', 'sub-followme-headline',
     `Let ${machine} use your ${account} subscription`));
   card.appendChild(el(doc, 'div', 'sub-followme-sub',
@@ -475,11 +490,12 @@ export function renderFollowMeApproveCard(doc, offer) {
   pin.setAttribute('class', 'sub-followme-pin');
   pin.setAttribute('placeholder', 'Your PIN'); // a PIN box, not a technical value
   pin.setAttribute('autocomplete', 'off');
-  card.appendChild(pin);
+  if (canApprove) card.appendChild(pin);
 
   const approve = el(doc, 'button', 'sub-followme-approve', 'Approve');
   approve.setAttribute('data-followme-approve', '1');
-  card.appendChild(approve);
+  if (canApprove) card.appendChild(approve);
+  else card.appendChild(el(doc, 'div', 'sub-followme-status', 'A unique account and machine name are needed before approval.'));
   return card;
 }
 
@@ -489,7 +505,24 @@ export function renderFollowMeOffers(doc, target, offers) {
   target.replaceChildren();
   if (!Array.isArray(offers) || offers.length === 0) return; // silent when nothing to offer
   target.appendChild(el(doc, 'div', 'sub-followme-title', 'Let another machine use a subscription'));
-  for (const offer of offers) target.appendChild(renderFollowMeApproveCard(doc, offer));
+  const labels = offers.map((offer) => {
+    const machine = verifiedDisplayName(offer.machineNickname, offer.targetMachineId);
+    const account = verifiedDisplayName(offer.accountLabel, offer.accountId);
+    return machine && account ? `${machine.toLocaleLowerCase()}\u0000${account.toLocaleLowerCase()}` : null;
+  });
+  const machineIdsByName = new Map();
+  for (const offer of offers) {
+    const name = verifiedDisplayName(offer.machineNickname, offer.targetMachineId);
+    if (!name) continue;
+    const key = name.toLocaleLowerCase();
+    if (!machineIdsByName.has(key)) machineIdsByName.set(key, new Set());
+    machineIdsByName.get(key).add(offer.targetMachineId);
+  }
+  for (let i = 0; i < offers.length; i++) {
+    const machine = verifiedDisplayName(offers[i].machineNickname, offers[i].targetMachineId);
+    const ambiguousMachine = machine && machineIdsByName.get(machine.toLocaleLowerCase())?.size > 1;
+    target.appendChild(renderFollowMeApproveCard(doc, offers[i], Boolean(ambiguousMachine || (labels[i] !== null && labels.indexOf(labels[i]) !== labels.lastIndexOf(labels[i])))));
+  }
 }
 
 /**
@@ -505,6 +538,7 @@ export function buildFollowMeIssuePayload(card, offers, pinValue) {
   if (!card || typeof card.getAttribute !== 'function') return null;
   const accountId = card.getAttribute('data-account-id');
   const targetMachineId = card.getAttribute('data-target-machine-id');
+  if (card.getAttribute('data-target-verified') !== '1') return null;
   if (!accountId || !targetMachineId) return null;
   const offer = (Array.isArray(offers) ? offers : []).find(
     (o) => o && o.accountId === accountId && o.targetMachineId === targetMachineId,
@@ -542,8 +576,8 @@ function trustedLoginUrl(raw) {
 export function renderOutcomeCard(doc, o) {
   const isDone = o && o.kind === 'validated';
   const row = el(doc, 'div', isDone ? 'sub-pending sub-pending-done' : 'sub-pending sub-pending-failed');
-  const who = sanitizeForDisplay((o && (o.email || o.accountId)) || 'The account', 'label');
-  const machine = sanitizeForDisplay((o && (o.machineNickname || o.machineId)) || 'the machine', 'label');
+  const who = sanitizeForDisplay(verifiedDisplayName(o && o.email, o && o.accountId) || 'the account', 'label');
+  const machine = sanitizeForDisplay(verifiedDisplayName(o && o.machineNickname, o && o.machineId) || 'the machine', 'label');
   if (isDone) {
     row.appendChild(el(doc, 'div', 'sub-pending-done-head', '✓ Done'));
     row.appendChild(el(doc, 'div', 'sub-pending-outcome-body', `${who} is now set up on ${machine}.`));
@@ -569,7 +603,15 @@ export function renderPendingLogins(doc, target, logins, now = Date.now(), outco
     if (cards.length === 0) target.appendChild(el(doc, 'div', 'sub-empty', 'No logins waiting for approval.'));
     return;
   }
-  for (const l of logins) {
+  const pendingNames = logins.map((login) => {
+    const account = verifiedDisplayName(login && login.expectedEmail, login && login.id)
+      || verifiedDisplayName(login && login.email, login && login.id)
+      || verifiedDisplayName(login && login.label, login && login.id);
+    const machine = verifiedDisplayName(login && login.machineNickname, login && login.machineId);
+    return account ? `${account.toLocaleLowerCase()}\u0000${(machine || '').toLocaleLowerCase()}` : null;
+  });
+  for (let loginIndex = 0; loginIndex < logins.length; loginIndex++) {
+    const l = logins[loginIndex];
     const row = el(doc, 'div', 'sub-pending');
     // Non-sensitive identifiers for the code-submit handler (never a credential).
     row.setAttribute('data-login-id', sanitizeForDisplay(l && l.id, 'label'));
@@ -579,7 +621,10 @@ export function renderPendingLogins(doc, target, logins, now = Date.now(), outco
     // the ACCOUNT is shown by its email when known (the label can be an internal nickname
     // like "Justin"); the MACHINE by nickname, NEVER a raw m_<hex> machine id.
     const machine = friendlyMachine(l && l.machineNickname, l && l.machineId);
-    const who = sanitizeForDisplay(l && (l.expectedEmail || l.email || l.label), 'label');
+    const who = sanitizeForDisplay(
+      verifiedDisplayName(l && l.expectedEmail, l && l.id)
+        || verifiedDisplayName(l && l.email, l && l.id)
+        || verifiedDisplayName(l && l.label, l && l.id), 'label');
 
     // D5 record ⟂ pane liveness: a login whose sign-in window is GONE (paneAlive === false)
     // must not present as submittable — no link, no code input; an explicit needs-restart
@@ -598,11 +643,17 @@ export function renderPendingLogins(doc, target, logins, now = Date.now(), outco
       ? `Sign in to finish setting up ${who} on ${machine}`
       : `Sign in to finish setting up ${who}`;
     row.appendChild(el(doc, 'div', 'sub-pending-headline', headline));
+    const pendingKey = pendingNames[loginIndex];
+    if (!pendingKey || pendingNames.indexOf(pendingKey) !== pendingNames.lastIndexOf(pendingKey)) {
+      row.appendChild(el(doc, 'div', 'sub-pending-notice', 'A unique account name is needed before this sign-in can continue.'));
+      target.appendChild(row);
+      continue;
+    }
 
     // Wrong-account hazard (topic 29836 D3): state prominently, BEFORE the link, which
     // account the provider's OAuth page MUST show — the page opens in whatever login
     // state the browser already has, and nothing else warns.
-    if (l && l.expectedEmail) {
+    if (l && verifiedDisplayName(l.expectedEmail, l.id)) {
       row.appendChild(el(doc, 'div', 'sub-pending-expected',
         `The sign-in page must show ${sanitizeForDisplay(l.expectedEmail, 'label')} — if it shows a different account, tap “Switch account” first.`));
     }
@@ -691,21 +742,25 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   for (const a of accountRows) {
     const mid = a && a.machineId;
     if (!mid || offlineMachineIds.has(mid)) continue;
-    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: (a.machineNickname || mid), offline: false });
+    const name = verifiedDisplayName(a.machineNickname, mid);
+    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: name || 'Machine name unavailable', offline: false });
+    else if (name && machines.get(mid).nickname === 'Machine name unavailable') machines.get(mid).nickname = name;
   }
   for (const gap of gapRows) {
     const mid = gap && gap.machineId;
     if (!mid || offlineMachineIds.has(mid)) continue;
+    const name = verifiedDisplayName(gap.machineNickname, mid);
     if (!machines.has(mid)) machines.set(mid, {
       machineId: mid,
-      nickname: gap.machineNickname || mid,
+      nickname: name || 'Machine name unavailable',
       offline: false,
     });
+    else if (name && machines.get(mid).nickname === 'Machine name unavailable') machines.get(mid).nickname = name;
   }
   for (const f of failed) {
     const mid = f && f.machineId;
     if (!mid) continue;
-    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: mid, offline: true });
+    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: verifiedDisplayName(f.nickname, mid) || 'Machine name unavailable', offline: true });
     else machines.get(mid).offline = true;
   }
 
@@ -720,10 +775,11 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const id = a && a.id;
     if (!id) continue;
     const provider = typeof (a && a.provider) === 'string' ? a.provider : '';
-    if (!accounts.has(id)) accounts.set(id, { accountId: id, email: a.email || id, provider });
+    const name = verifiedDisplayName(a.email, id) || verifiedDisplayName(a.nickname, id);
+    if (!accounts.has(id)) accounts.set(id, { accountId: id, email: name || 'Account name unavailable', provider });
     else {
       const rec = accounts.get(id);
-      if (!rec.email && a.email) rec.email = a.email;
+      if (rec.email === 'Account name unavailable' && name) rec.email = name;
       // Pool scope carries one row per (account, machine); the same account on a second
       // machine must not blank a provider the first row already established.
       if (!rec.provider && provider) rec.provider = provider;
@@ -733,7 +789,7 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const id = gap && gap.accountId;
     if (id && !accounts.has(id)) accounts.set(id, {
       accountId: id,
-      email: gap.nickname || id,
+      email: verifiedDisplayName(gap.nickname, id) || 'Account name unavailable',
       provider: typeof (gap && gap.provider) === 'string' ? gap.provider : '',
     });
   }
@@ -742,7 +798,7 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const id = l && l.id;
     if (id && !accounts.has(id)) accounts.set(id, {
       accountId: id,
-      email: id,
+      email: verifiedDisplayName(l.expectedEmail, id) || verifiedDisplayName(l.email, id) || verifiedDisplayName(l.label, id) || 'Account name unavailable',
       provider: typeof (l && l.provider) === 'string' ? l.provider : '',
     });
   }
@@ -845,11 +901,7 @@ const MATRIX_CELL_WORD = {
 /** D5 wording floor: never show a raw internal machine id (m_<hex>) to the operator —
  *  a nickname, or nothing. Exported for the floor test. */
 export function friendlyMachine(nickname, machineId) {
-  const nick = sanitizeForDisplay(nickname, 'label');
-  if (nick) return nick;
-  const id = typeof machineId === 'string' ? machineId : '';
-  if (/^m_[0-9a-f]{8,}$/i.test(id)) return '';
-  return sanitizeForDisplay(id, 'label');
+  return sanitizeForDisplay(verifiedDisplayName(nickname, machineId), 'label');
 }
 
 /**
@@ -863,7 +915,7 @@ export function friendlyMachine(nickname, machineId) {
  */
 export function appendCellSignInFlow(doc, cell, flow, now = Date.now()) {
   cell.appendChild(el(doc, 'div', 'sub-matrix-flow-step', 'Open the sign-in link, then paste the code it gives you below.'));
-  if (flow && flow.expectedEmail) {
+  if (flow && verifiedDisplayName(flow.expectedEmail, flow.accountId)) {
     cell.appendChild(el(doc, 'div', 'sub-matrix-expected',
       `The sign-in page must show ${sanitizeForDisplay(flow.expectedEmail, 'label')} — if it shows a different account, tap “Switch account” first.`));
   }
@@ -961,6 +1013,16 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
   if (!target) return;
   target.replaceChildren();
   const model = buildMatrixModel(poolScope, pendingScope, transient);
+  const accountNames = new Map();
+  const machineNames = new Map();
+  for (const a of model.accounts) {
+    const name = verifiedDisplayName(a.email, a.accountId);
+    if (name) accountNames.set(name.toLocaleLowerCase(), (accountNames.get(name.toLocaleLowerCase()) || 0) + 1);
+  }
+  for (const m of model.machines) {
+    const name = verifiedDisplayName(m.nickname, m.machineId);
+    if (name) machineNames.set(name.toLocaleLowerCase(), (machineNames.get(name.toLocaleLowerCase()) || 0) + 1);
+  }
   if (model.accounts.length === 0 || model.machines.length === 0) {
     target.appendChild(el(doc, 'div', 'sub-empty', 'No accounts or machines to show yet.'));
     return;
@@ -1014,6 +1076,15 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
       const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}${justVerified && c.state !== 'just-verified' ? ' sub-matrix-just-verified' : ''}`);
       // Stable cell identity for the interaction-hold rule + targeted merge updates (F9).
       td.setAttribute('data-cell-key', sanitizeForDisplay(`${c.accountId}::${c.machineId}`, 'url'));
+      const machineRecord = model.machines.find((m) => m.machineId === c.machineId);
+      const accountName = verifiedDisplayName(row.account.email, c.accountId);
+      const machineName = verifiedDisplayName(machineRecord && machineRecord.nickname, c.machineId);
+      if (!accountName || !machineName || accountNames.get(accountName.toLocaleLowerCase()) !== 1 || machineNames.get(machineName.toLocaleLowerCase()) !== 1) {
+        td.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH[c.state] || ''} ${MATRIX_CELL_WORD[c.state] || 'Status unavailable'}`.trim()));
+        td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', 'A unique account and machine name are needed before you can act here.'));
+        tr.appendChild(td);
+        continue;
+      }
       if (repairUnavailable && ['needs-reauth', 'held', 'cant-resolve', 'expired', 'broken'].includes(c.state)) {
         td.appendChild(el(doc, 'div', 'sub-account-repair-status', 'Repair status is unavailable for this machine.'));
         td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', 'Wait for the machine connection to recover, then try again.'));
@@ -1820,7 +1891,7 @@ export function createController(opts) {
           // enrollment verifies; the transient keeps the ceremony on the next rebuilds.
           cell.removeAttribute('data-interaction-open');
           recordSubmitOutcome('validated', { accountId, machineId }, r.json);
-          renderCellDone(cell, r.json.email || null);
+          renderCellDone(cell, r.json.email || null, accountId);
         } else if (r.ok && r.json && r.json.outcome === 'submitted') {
           setCellStatus(cell, 'Code sent — finishing sign-in…');
           cell.removeAttribute('data-interaction-open');
@@ -1858,12 +1929,12 @@ export function createController(opts) {
   }
 
   // The in-cell terminal SUCCESS presentation (D4): unmistakable, named, highlighted.
-  function renderCellDone(cell, email) {
+  function renderCellDone(cell, email, accountId) {
     cell.replaceChildren();
     cell.setAttribute('class', 'sub-matrix-cell sub-matrix-just-verified sub-matrix-done');
     cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '✓ All set'));
     cell.appendChild(el(doc, 'div', 'sub-matrix-done-detail',
-      email ? `${sanitizeForDisplay(email, 'label')} is signed in on this machine.` : 'The account is signed in on this machine.'));
+      verifiedDisplayName(email, accountId) ? `${sanitizeForDisplay(email, 'label')} is signed in on this machine.` : 'The account is signed in on this machine.'));
   }
 
   // The in-cell terminal HELD presentation (D3): both accounts named + a working Retry.
