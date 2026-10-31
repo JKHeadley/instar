@@ -1,3 +1,4 @@
+// safe-git-allow: the real-git replay runs only inside its own mkdtemp dir, and rmSync removes only that dir.
 /**
  * publish.yml must never leave a version on npm with no release commit or tag.
  *
