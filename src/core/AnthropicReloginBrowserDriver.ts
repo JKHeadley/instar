@@ -21,6 +21,9 @@ export type ReloginBrowserAction =
   | 'read-paste-code'
   | 'wait';
 
+/** OpenAI sign-in origins whose `unknown` pages are judged for a device-limit lockout (§2 C). */
+const DEVICE_LIMIT_PAGE_ORIGINS = new Set(['https://auth.openai.com', 'https://chatgpt.com']);
+
 /** Redacted, closed page state. No DOM prose, input values, URL query, or email leaves the browser port. */
 export interface ReloginBrowserSnapshot {
   origin: string;
@@ -73,6 +76,12 @@ export interface ReloginBrowserPort {
    * plainly, and the clearance carried over). The browser must be closed before calling.
    */
   warmUpPlain?(url: string, ms: number): Promise<void>;
+  /**
+   * The page's visible main-content text, capped at 2 KiB (codex-device-limit-tripwire §2 C).
+   * Read only for an `unknown` page on an OpenAI sign-in origin and handed to the device-limit
+   * judge, which masks personal data before anything leaves the machine. Never logged.
+   */
+  mainText?(): Promise<string>;
   clickControl?(n: number, expectedText: string, expectedIdentities: string[]): Promise<void>;
   wait(ms: number): Promise<void>;
   close(): Promise<void>;
@@ -103,6 +112,12 @@ export interface AnthropicReloginBrowserRequest {
 export interface AnthropicReloginBrowserDriverDeps {
   browser: ReloginBrowserPort;
   resolveSecret: (name: string) => Promise<string | null>;
+  /**
+   * codex-device-limit-tripwire §2 C: judge an `unknown` OpenAI sign-in page's text. Resolves true
+   * only on a fresh `device_limit` verdict. The drive never waits for it; a true verdict stops the
+   * drive at its next step boundary if it is still on the same page. Absent ⇒ never asked.
+   */
+  judgeDeviceLimitPage?: (text: string) => Promise<boolean>;
   /**
    * Take ONE unused Google backup code from the named vault entry and remove it there before it
    * is typed (codes are single-use; a spent code must never be tried again). Absent ⇒ repairs
@@ -236,6 +251,9 @@ export class AnthropicReloginBrowserDriver {
       await bounded(this.deps.browser.open(request.verificationUrl));
       let interstitialWaitedMs = 0;
       let blankWaits = 0;
+      // codex-device-limit-tripwire §2 C: page generation (origin + class), the generation an async
+      // device-limit judgement was asked for, and the generation it came back true for.
+      let pageGen = 0; let lastPageKey = ''; let judgedGen = -1; let deviceLimitGen = -1;
       for (let step = 0; step < this.maxSteps; step++) {
         signal.throwIfAborted();
         const snapshot = await bounded(this.deps.browser.snapshot(request.expectedIdentity));
@@ -249,6 +267,10 @@ export class AnthropicReloginBrowserDriver {
         }
         if (!allowedOrigins(request.provider, request.intent).includes(snapshot.origin))
           return { outcome: 'refused', failureClass: 'unexpected-origin' };
+        const pageKey = `${snapshot.origin}|${snapshot.pageClass}`;
+        if (pageKey !== lastPageKey) { pageGen++; lastPageKey = pageKey; }
+        // A device-limit verdict for THIS page ends the drive; one for a page already left is stale.
+        if (deviceLimitGen === pageGen) return { outcome: 'refused', failureClass: 'device-limit', reason: 'browser-page-judged-device-limit' };
         // A bot-check interstitial ("Just a moment…") clears on its own in roughly 30–90 s.
         // Waiting it out is the only admissible action, so it needs no supervision, and it
         // has its own bounded budget instead of burning the step budget 750 ms at a time
@@ -304,6 +326,17 @@ export class AnthropicReloginBrowserDriver {
         if (snapshot.pageClass === 'paste-code') {
           const code = await bounded(this.deps.browser.readPasteCode());
           return code ? { outcome: 'approved', pasteCode: code } : { outcome: 'transient', failureClass: 'provider-transient' };
+        }
+        if (snapshot.pageClass === 'unknown' && request.provider === 'openai' && judgedGen !== pageGen
+          && DEVICE_LIMIT_PAGE_ORIGINS.has(snapshot.origin)
+          && this.deps.judgeDeviceLimitPage && typeof this.deps.browser.mainText === 'function') {
+          judgedGen = pageGen;
+          const askedGen = pageGen;
+          const judgePage = this.deps.judgeDeviceLimitPage;
+          void this.deps.browser.mainText()
+            .then((text) => (text ? judgePage(text) : false))
+            .then((hit) => { if (hit) deviceLimitGen = askedGen; })
+            .catch(() => { /* @silent-fallback-ok — an unjudged page is handled exactly as today */ });
         }
         if (agent) {
           const ended = await this.agentStep(snapshot, request, resolvedSecrets, recentSteps, bounded, consent);

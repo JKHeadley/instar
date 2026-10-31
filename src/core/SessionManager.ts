@@ -12,7 +12,7 @@ import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
-import { randomUUID, type KeyObject } from 'node:crypto';
+import { createHash, randomUUID, type KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,6 +74,7 @@ import { hostFreeMemPct, type MemReadDeps } from '../monitoring/hostMemoryPressu
 import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { classifyLoginExpired } from './LoginExpiredSignature.js';
+import { liveTail } from './paneTail.js';
 import type { InteractiveLoginExpiredSignal } from './InteractiveLoginExpiredRecovery.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
 import { resolveIdleSinceSeed } from './idleSincePersistence.js';
@@ -354,6 +355,15 @@ const INTERACTIVE_LOGIN_CHECK_INTERVAL_MS = 20_000;
 /** Interactive sessions: a session still at the screen after a recovery attempt is offered
  *  again only after this long (the recovery owns its own per-session cooldown too). */
 const INTERACTIVE_LOGIN_REPORT_RETRY_MS = 10 * 60_000;
+/** Codex sessions (codex-device-limit-tripwire §2 B): a sign-in-looking live tail held this long
+ *  asks the quota poller for ONE fresh read of the session's account. A trigger, never a verdict. */
+const CODEX_SIGNIN_TRIGGER_DWELL_MS = 60_000;
+/** At most one read request per Codex session per this window. */
+const CODEX_SIGNIN_TRIGGER_RETRY_MS = 10 * 60_000;
+/** After a request found the account working, the same tail text asks again only after this. */
+const CODEX_SIGNIN_TRIGGER_QUIET_MS = 60 * 60_000;
+/** Broad, recall-oriented: it only decides WHEN to look, never what is true. */
+const CODEX_SIGNIN_TRIGGER_RE = /device|limit|log ?in|sign ?in|signed out|logged out/i;
 /** Prepended to a topic bootstrap when its earlier conversation could not be reopened (spec §3.1, P24 in-band disclosure). */
 export const RESUME_REOPEN_FAILED_NOTE =
   'Note: your earlier conversation in this topic could not be reopened, so you only have the recent topic messages below.';
@@ -1177,6 +1187,12 @@ export class SessionManager extends EventEmitter {
    *  frame, and when the current episode was last handed to the recovery sink (CMT-1008). */
   private readonly interactiveLoginLastCheckAt = new Map<string, number>();
   private readonly interactiveLoginReportedAt = new Map<string, number>();
+  /** Codex sessions: sign-in-trigger state per tmux session (codex-device-limit-tripwire §2 B). */
+  private readonly codexSigninTrigger = new Map<string, { firstSeen: number; requestedAt?: number; matched?: string; quietUntil?: number }>();
+  /** Signal sink for "this Codex session's live tail looked like a sign-in problem past the dwell".
+   *  Wired by server.ts to the quota poller's requestCodexCheck, which alone reads and decides;
+   *  the returned promise resolves `true` when that read found the account working. */
+  private codexSigninTriggerSink: ((input: { accountId: string; session: string }) => Promise<boolean | void> | void) | null = null;
   /** Terminal child status sampled from a tmux pane retained by
    * `remain-on-exit failed`; consumed by the self-exit transition. */
   private readonly terminalExitCodes = new Map<string, number>();
@@ -2071,6 +2087,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.interactiveLoginExpiredSink = fn;
   }
 
+  setCodexSigninTriggerSink(fn: ((input: { accountId: string; session: string }) => Promise<boolean | void> | void) | null): void {
+    this.codexSigninTriggerSink = fn;
+  }
+
   /** The configured standing-session entries (tmux names and `topic:<id>`). */
   getStandingSessions(): string[] {
     return this.config.standingSessions ?? [];
@@ -2198,6 +2218,60 @@ rm()  { "${shimRunner}" rm  "$@"; }
       });
     }
     return killed.terminated;
+  }
+
+  /**
+   * Codex-device-limit trigger (spec codex-device-limit-tripwire §2 B). A Codex session's live tail
+   * that keeps looking like a sign-in problem for CODEX_SIGNIN_TRIGGER_DWELL_MS asks the quota
+   * poller for ONE fresh read of the session's account. The screen text is never judged and never
+   * benches anything (a session can print anything, including a conversation about device limits);
+   * the read's own provider answer is what the tripwire judges. Brakes: one request per session per
+   * CODEX_SIGNIN_TRIGGER_RETRY_MS; after a read found the account working, the same tail asks again
+   * only once it changes or CODEX_SIGNIN_TRIGGER_QUIET_MS passes. Relogin helper sessions and
+   * sessions with no pool account are skipped. Never throws into the tick.
+   */
+  private async checkCodexSigninTrigger(session: Session): Promise<void> {
+    if (!this.codexSigninTriggerSink || !session.subscriptionAccountId) return;
+    const key = session.tmuxSession;
+    if (key.startsWith('relogin-') || session.name.startsWith('relogin-')) return;
+    const now = Date.now();
+    const lastCheck = this.interactiveLoginLastCheckAt.get(key);
+    if (lastCheck !== undefined && now - lastCheck < INTERACTIVE_LOGIN_CHECK_INTERVAL_MS) return;
+    this.interactiveLoginLastCheckAt.set(key, now);
+    let pane = '';
+    try {
+      pane = (await this.captureOutputMaybeAsync(key, 40)) || '';
+    } catch { /* @silent-fallback-ok — an unreadable pane is re-checked next interval */
+      return;
+    }
+    const tail = liveTail(pane, 12).join('\n');
+    const match = tail.match(CODEX_SIGNIN_TRIGGER_RE);
+    const state = this.codexSigninTrigger.get(key);
+    if (!match) {
+      if (state && !state.quietUntil) this.codexSigninTrigger.delete(key);
+      return;
+    }
+    const matched = createHash('sha256').update(tail).digest('hex').slice(0, 16);
+    if (!state) { this.codexSigninTrigger.set(key, { firstSeen: now, matched }); return; }
+    if (state.quietUntil && state.matched === matched && now < state.quietUntil) return;
+    if (now - state.firstSeen < CODEX_SIGNIN_TRIGGER_DWELL_MS) return;
+    if (state.requestedAt !== undefined && now - state.requestedAt < CODEX_SIGNIN_TRIGGER_RETRY_MS) return;
+    state.requestedAt = now;
+    state.matched = matched;
+    state.quietUntil = undefined;
+    // Fire-and-forget (like the Claude login-expired sink): the read can take seconds or wait in the
+    // read gate, and must never hold up the monitor tick.
+    const warn = (err: unknown) => console.warn(`[SessionManager] codex sign-in check for "${session.name}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    try {
+      const r = this.codexSigninTriggerSink({ accountId: session.subscriptionAccountId, session: key });
+      if (r && typeof (r as Promise<unknown>).then === 'function') {
+        (r as Promise<boolean | void>).then((working) => {
+          if (working === true && this.codexSigninTrigger.get(key) === state) state.quietUntil = Date.now() + CODEX_SIGNIN_TRIGGER_QUIET_MS;
+        }, warn);
+      }
+    } catch (err) { /* @silent-fallback-ok — a failed request is retried after the retry window */
+      warn(err);
+    }
   }
 
   /**
@@ -2887,9 +2961,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (!live.has(key)) this.startupTails.delete(key);
         }
       }
-      if (this.loginExpiredFirstSeen.size > 0 || this.interactiveLoginLastCheckAt.size > 0 || this.interactiveLoginReportedAt.size > 0) {
+      if (this.loginExpiredFirstSeen.size > 0 || this.interactiveLoginLastCheckAt.size > 0 || this.interactiveLoginReportedAt.size > 0 || this.codexSigninTrigger.size > 0) {
         const live = new Set(running.map(s => s.tmuxSession));
-        for (const m of [this.loginExpiredFirstSeen, this.interactiveLoginLastCheckAt, this.interactiveLoginReportedAt]) {
+        for (const m of [this.loginExpiredFirstSeen, this.interactiveLoginLastCheckAt, this.interactiveLoginReportedAt, this.codexSigninTrigger]) {
           for (const key of m.keys()) {
             if (!live.has(key)) m.delete(key);
           }
@@ -3061,6 +3135,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
               !this.isStandingSession(session.tmuxSession)) {
             if (await this.endIfLoginExpired(session)) continue;
           }
+          if (session.framework === 'codex-cli') await this.checkCodexSigninTrigger(session);
           // Still running, no sentinel, under lifetime — leave it; re-check next
           // tick. Skip the rest of the loop body (the default exit/idle paths
           // below are tuned for the headless lane, not a held REPL).
@@ -3073,6 +3148,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // default lane below is unchanged.
         if ((session.framework ?? 'claude-code') === 'claude-code' && !session.jobSlug) {
           await this.reportInteractiveLoginExpired(session);
+        }
+        // Codex session whose screen looks like a sign-in problem (codex-device-limit-tripwire
+        // §2 B): asks for one fresh read of its account; the read, not the screen, decides.
+        if (session.framework === 'codex-cli') {
+          await this.checkCodexSigninTrigger(session);
         }
 
         // Gemini CLI can complete a Telegram turn by rendering the final

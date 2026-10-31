@@ -2907,6 +2907,42 @@ const interactiveLoginExpiredSwap: SelfActionController = {
 };
 
 /**
+ * device-limit-session-move — codex-device-limit-tripwire §4. A live interactive Codex session on
+ * an account benched for a (suspected) device limit is moved to another Codex account. Under the
+ * pinned fixture every move is refused, so the bench never clears its sessions. The REAL brake is
+ * the same `decideLoginExpiredSwap` the mover calls: one attempt per 10-min cooldown, at most 3 per
+ * session, then it stays put. Moves are also serialised one per 30 s per machine (not modelled:
+ * a stricter bound on the burst, not on the total).
+ */
+const deviceLimitSessionMove: SelfActionController = {
+  id: 'device-limit-session-move',
+  actionVerb: 'account-swap',
+  models: 'src/core/DeviceLimitSessionMover.ts (decideLoginExpiredSwap: 10-min cooldown + 3-attempt cap per session; 30-s serialisation)',
+  modelsPath: 'src/core/DeviceLimitSessionMover.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt budget is in memory; after a restart a benched account only moves sessions again on a new bench, still capped at 3 attempts per session, and nothing in this controller causes a restart.' },
+  boundK: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS,
+  perTargetBoundK: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS,
+  ticks: 60,
+  tickMs: 5 * 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'session-on-benched-account';
+    let attempts = 0;
+    let lastAt: number | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const d = decideLoginExpiredSwap({ attempts, lastAttemptAtMs: lastAt, nowMs: f.clock.nowMs(),
+          cooldownMs: INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, maxAttempts: INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS });
+        if (d !== 'attempt') return;
+        attempts += 1; lastAt = f.clock.nowMs();
+        sink.emit({ verb: 'account-swap', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; }
+      },
+    };
+  },
+};
+
+/**
  * overload-shed — trustworthy-machine-load Part D (D1–D4). The real
  * OverloadShedPlanner under the pinned worst case: this machine's admission is
  * closed and enforced on every sample, forever; a healthy peer always has room;
@@ -3380,5 +3416,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   a2aPeerDarkRaise,
   threadlineConnectEnableRestart,
   interactiveLoginExpiredSwap,
+  deviceLimitSessionMove,
   replicatedStoreReconcilerRetry,
 ];

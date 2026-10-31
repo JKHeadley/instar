@@ -1,5 +1,6 @@
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
+import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
@@ -35217,6 +35218,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...a,
         // The login signal behind the status (spec skill-driven-signin-repair): never silent.
         loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
+        // codex-device-limit-tripwire §8: always present on new code (null = no cause).
+        statusCause: a.statusCause ?? null,
         machineId: selfMachineId,
         machineNickname: selfMachineNickname ?? undefined,
         remote: false,
@@ -35263,6 +35266,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           for (const a of body.accounts ?? []) {
             remote.push({
               ...a,
+              // A peer on older code never reports a cause: unknown, never "clear".
+              statusCause: 'statusCause' in a ? a.statusCause : 'unknown',
               machineId: a.machineId ?? p.machineId,
               machineNickname: a.machineNickname ?? nickname ?? undefined,
               remote: true,
@@ -35321,6 +35326,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           peersOk: peers.length - failed.length,
           failed,
         },
+        // This machine's device-limit counters (machine-local; peers report their own).
+        deviceLimit: getCodexDeviceLimitWiring()?.status() ?? null,
         scope: 'pool',
       });
       return;
@@ -35338,6 +35345,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...a,
       // The login signal behind the status (spec skill-driven-signin-repair): never silent.
       loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
+      statusCause: a.statusCause ?? null,
     }));
     const emailGaps = subscriptionEmailGaps();
     res.json({
@@ -35346,6 +35354,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       accounts,
       emailGaps,
       emailReconciliation: subscriptionEmailReconciliation(),
+      // codex-device-limit-tripwire §8: this machine's judge/bench counters (null when not running).
+      deviceLimit: getCodexDeviceLimitWiring()?.status() ?? null,
     });
   });
 
