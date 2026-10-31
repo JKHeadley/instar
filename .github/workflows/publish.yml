@@ -239,10 +239,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Post-publish smoke test (clean install + --version)
-        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
-        run: node scripts/post-publish-smoke.mjs "${{ steps.bump.outputs.version }}"
-
       - name: Commit version bump & tag
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         env:
@@ -266,7 +262,15 @@ jobs:
             if git push origin HEAD:main; then pushed=true; break; fi
             echo "push rejected — main moved (likely a concurrent merge); rebasing and retrying (attempt ${attempt})"
             git fetch origin main
-            if ! git rebase origin/main; then
+            # merge.directoryRenames=false: the release commit deletes every
+            # upgrades/next/*.md fragment, so git's directory-rename detection
+            # reads upgrades/next/ as "renamed" and turns any fragment a PR
+            # added meanwhile into a CONFLICT (file location). That is not a
+            # real conflict — the new fragment belongs in upgrades/next/ for
+            # the NEXT release — and it orphaned 1.3.1386 and many since (on
+            # npm, no release commit, no tag). Without directory renames the
+            # new fragment simply stays where its PR put it.
+            if ! git -c merge.directoryRenames=false rebase origin/main; then
               echo "::error::release commit could not be rebased cleanly onto main (conflict) — aborting rather than force-pushing"
               git rebase --abort || true
               exit 1
@@ -280,3 +284,14 @@ jobs:
           # so the tag always points at the commit that actually landed on main.
           git tag "v${{ steps.bump.outputs.version }}"
           git push origin "v${{ steps.bump.outputs.version }}"
+
+      # The smoke test runs AFTER the release commit + tag are pushed, never
+      # before. Once `npm publish` has succeeded the version exists on npm, so
+      # main and the tag must record it no matter what the smoke test says. With
+      # the smoke test first, a slow npm propagation (instar@1.3.1493 took more
+      # than the 15m smoke window to appear) failed the run before the commit
+      # step, leaving a published version with no release commit and no tag.
+      # A smoke failure still fails this run loudly.
+      - name: Post-publish smoke test (clean install + --version)
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
+        run: node scripts/post-publish-smoke.mjs "${{ steps.bump.outputs.version }}"
