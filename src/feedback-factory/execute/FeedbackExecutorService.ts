@@ -143,6 +143,8 @@ export interface FeedbackExecutorServiceOptions {
   sessionWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
   clock?: () => number;
+  /** Queue pace (docs/specs/queue-pace.md §2): the admission verdict per start check, server-written; the sink writes only while queuePace resolves enabled. */
+  paceTicks?: { append(row: { source: 'executor'; kind: 'admission'; admission: string | null }): void } | null;
 }
 
 export type UnavailableReason =
@@ -228,6 +230,9 @@ export class FeedbackExecutorService {
     if (a.available && this.opts.config().dryRun) return { available: false, reason: 'dry-run' };
     return { available: a.available, reason: a.reason };
   }
+
+  /** The source repository slug from the last availability check (queue pace builds PR links from it); null before a check. */
+  repoSlug(): string | null { return this.availability?.slug ?? null; }
 
   /** Approver acceptance recorded through the dashboard PIN plan/commit flow. */
   approverAcceptance(): { approver: string; reasons: string[]; operatorDecisionRef: string; at: number } | null {
@@ -535,6 +540,7 @@ export class FeedbackExecutorService {
     const admission = this.admissionVerdict(cfg);
     // Counted once per tick, on the tick's first admission check.
     if (admission === 'reroute-capacity') this.noteRerouteSaturated(); else this.rerouteSaturatedTicks = 0;
+    try { this.opts.paceTicks?.append({ source: 'executor', kind: 'admission', admission: admission ?? null }); } catch { /* @silent-fallback-ok: a pace row is evidence only */ }
     if (admission) {
       this.setMeta(epoch, 'exec:admission', { at: this.now(), refused: admission, candidates: candidates.length });
       out.reason ??= `admission:${admission}`;

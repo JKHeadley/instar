@@ -6,6 +6,7 @@
 // plain groups (Broken, Stuck, …) with one plain line per feature · details on tap.
 
 import { el, cantTell } from './ui.js';
+import { maturationPaceNode } from './pace.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
   filterRows, orderInGroup, sortRows, SORTS, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, card, isNobody,
@@ -33,7 +34,9 @@ export async function renderMaturation(main, api, nav = consoleNav()) {
   } else {
     lastBoard = r.data;
   }
-  draw(main, lastBoard, nav);
+  // One pace line for maturation fixes (docs/specs/queue-pace.md); hidden when not measured.
+  const pace = api && typeof api.get === 'function' ? maturationPaceNode((path, ms) => api.get(path, ms)) : null;
+  draw(main, lastBoard, nav, pace);
 }
 
 export function consoleNav() {
@@ -43,13 +46,13 @@ export function consoleNav() {
   };
 }
 
-function draw(main, board, nav) {
+function draw(main, board, nav, pace = null) {
   const st = parseState(nav.read());
   const set = (patch) => {
     const next = { ...st, ...patch };
     for (const k of Object.keys(next)) if (!next[k]) delete next[k];
     nav.write(stateQuery(next));
-    draw(main, board, nav);
+    draw(main, board, nav, pace);
   };
   const features = board.features || [];
   const counts = groupCounts(features);
@@ -58,7 +61,8 @@ function draw(main, board, nav) {
   const hero = el('section', { class: 'mb-hero' },
     el('div', { class: 'eyebrow', text: 'Feature maturation' }),
     el('h1', { class: 'mb-answer', text: headline(board) }),
-    el('p', { class: 'mb-sub', text: subline(board) }));
+    el('p', { class: 'mb-sub', text: subline(board) }),
+    pace);
 
   // 2. The glance: one square per feature, coloured by group; a dot marks "no fix planned".
   const legend = el('div', { class: 'mb-legend' }, GROUPS.filter((g) => counts[g.id]).map((g) => el('button', {

@@ -86,7 +86,7 @@ export function defaultRun(cmd: ConfinedCommand): Partial<ConfinedResult> {
   return { exitCode: 0, stdout: 'ok' };
 }
 
-export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConfig> } = {}): Promise<ExecHarness> {
+export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConfig>; paceTicks?: { append(row: { source: 'executor'; kind: 'admission'; admission: string | null }): void } } = {}): Promise<ExecHarness> {
   const base = await createHarness();
   const h = base as ExecHarness;
   h.agentHome = path.join(base.dir, 'agent');
@@ -263,6 +263,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     reportDegradation: (event) => { h.degradations.push(event.feature); },
     dashboardLink: () => 'https://agent.example/dashboard?tab=feedback-drain',
     sleep: async () => {}, sessionWaitMs: 1_000,
+    ...(opts.paceTicks ? { paceTicks: opts.paceTicks } : {}),
     clock: () => h.now.value,
   });
   h.service.attachExecutor({ status: () => h.exec.status(), executionStateFor: (id) => h.exec.executionStateFor(id), actionItems: () => h.exec.actionItems(), holdsItem: (id) => h.exec.holdsItem(id) });

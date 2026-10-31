@@ -247,6 +247,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'queuePace',
+    prefixes: ['/queue-pace'],
+    description: 'Queue pace (docs/specs/queue-pace.md) — an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items) with a plain 7-day verdict (falling-behind / catching-up / holding / shrinking-by-exits / unknown / owner-not-serving) and, for a queue that is behind, the named reason (person / quota / cap / worker / unknown). GET /queue-pace (?scope=pool merges every machine) returns per-queue inflowPerDay, outflowPerDay, exitedPerDay, open, daysToClear, bottleneck, coverage and tuner state. Dev-gated measure-only (queuePace.enabled); 503 when dark. The triage pace tuner has its own flag queuePace.tuner.enabled (default false, dry-run). When asked "are we keeping up with feedback / promises / action items?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /queue-pace'],
+    }),
+  },
+  {
     key: 'overloadShed',
     prefixes: ['/overload-shed'],
     description: 'Overload shed (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part D) — moves EXISTING conversations off a machine that has stayed overloaded: once this machine has refused new work for 3 minutes it proposes moving one Telegram conversation at a time to a healthy machine (live evidence under 2 min, verdict ok, room after reservations), through the ownership reconciler; pinned topics and topics with a live autonomous run stay. Breaker 2 moves/hour, 2 tries per topic per episode. GET /overload-shed reports enabled/dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour and counters (proposed, wouldMove, claimed, expired, breakerHeld). Dev-gated + dry-run first (monitoring.overloadShed); 503 when dark. When asked "why did my conversation move machines / why is this overloaded machine still holding work?" → read this, don\'t guess.',
