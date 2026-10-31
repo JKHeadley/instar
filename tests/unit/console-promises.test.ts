@@ -260,3 +260,16 @@ describe('promises page in a DOM', () => {
     expect((review.querySelector('.promise-question') as HTMLTextAreaElement).value).toContain('What is the current status');
   });
 });
+
+describe('a machine that sent no promises is named, without claiming it failed', () => {
+  it('names the silent machine and says it may simply have none', async () => {
+    const { buildPromisesPage } = await import('../../dashboard/console/promises-model.js');
+    const now = Date.now();
+    const res = { ok: true, data: { enabled: true, scope: 'mesh', commitments: [
+      { id: 'r1', status: 'pending', owner: 'agent', blockedOn: 'none', createdAt: new Date(now - 60_000).toISOString(), agentResponse: 'x', viewSource: 'replica', originMachineId: 'm-mini', stalenessMs: 1000 },
+    ] } };
+    const page = buildPromisesPage(res as never, now, { expectedPeers: 2, peerIds: ['m-mini', 'm-mama'], names: { 'm-mini': 'Mac Mini', 'm-mama': 'Mama PC' } });
+    expect(JSON.stringify(page)).toContain('No promises came from Mama PC. It may have none, or may not have answered.');
+    expect(JSON.stringify(page)).not.toContain('not represented');
+  });
+});

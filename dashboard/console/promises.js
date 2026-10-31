@@ -37,7 +37,8 @@ export async function renderPromises(main, ctx) {
   const self = machines.find((m) => m.isSelf || (selfId && m.machineId === selfId)) || {};
   const chatId = self.servesChannels && self.servesChannels.telegram && (self.servesChannels.telegram.chatIds || [])[0];
   const peers = pool.ok ? machines.filter((m) => !(m.isSelf || (selfId && m.machineId === selfId))).length : null;
-  const page = buildPromisesPage(res, Date.now(), { expectedPeers: peers, names });
+  const peerIds = pool.ok ? machines.filter((m) => !(m.isSelf || (selfId && m.machineId === selfId))).map((m) => m.machineId) : null;
+  const page = buildPromisesPage(res, Date.now(), { expectedPeers: peers, peerIds, names });
 
   if (!page.ok) {
     const retrying = !res.ok && !['not signed in', 'switched off on this agent'].includes(res.reason);

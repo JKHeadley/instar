@@ -79,7 +79,7 @@ export function toRow(c, now = Date.now(), names = {}) {
  * Sort every promise into the page's sections.
  * Returns { ok, sections:{waiting,missed,dueSoon,carrying,handled,closed}, counts, coverage, headline }.
  */
-export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null, names = {} } = {}) {
+export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null, peerIds = null, names = {} } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read promises: ${res.reason}.` };
   if (res.data && res.data.enabled === false) return { ok: false, reason: 'Promise tracking is switched off on this agent.' };
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments : null;
@@ -115,7 +115,7 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   const coverage = res.data.scope !== 'mesh' || origins.size === 0 ? "Only this machine's promises are visible."
     : staleReplica ? `Includes ${origins.size} other ${origins.size === 1 ? 'machine' : 'machines'}; some of it is out of date.`
     : missingPeers === null ? `Includes ${origins.size} other ${origins.size === 1 ? 'machine' : 'machines'}; not every machine is confirmed.`
-    : missingPeers > 0 ? `${missingPeers} ${missingPeers === 1 ? 'machine is' : 'machines are'} not represented.`
+    : missingPeers > 0 ? missingPeersLine(peerIds, origins, names, missingPeers)
     : null;
 
   const n = counts;
@@ -194,4 +194,12 @@ export function actionsFor(c) {
   if (c.status === 'pending' || c.status === 'verified' || c.status === 'violated') a.push('withdraw');
   if (c.beaconPaused && c.status === 'pending') a.push('resume');
   return a;
+}
+
+/** Names the machines that sent no promises: they may have none, or may not have answered. */
+function missingPeersLine(peerIds, origins, names, count) {
+  const missing = Array.isArray(peerIds) ? peerIds.filter((id) => !origins.has(id)).map((id) => names[id] || 'another machine') : [];
+  if (!missing.length) return `No promises came from ${count === 1 ? 'one other machine' : `${count} other machines`}. ${count === 1 ? 'It' : 'They'} may have none, or may not have answered.`;
+  const list = missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}`;
+  return `No promises came from ${list}. ${missing.length === 1 ? 'It' : 'They'} may have none, or may not have answered.`;
 }
