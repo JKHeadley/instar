@@ -76,6 +76,8 @@ const destSource = path.join(dest, 'InstarDesktopCompanion.cs');
 const destScript = path.join(dest, 'install.ps1');
 fs.copyFileSync(source, destSource);
 fs.copyFileSync(path.join(root, 'scripts/install-windows-desktop-companion.ps1'), destScript);
+fs.copyFileSync(path.join(root, 'scripts/windows-desktop-local-transport.ps1'),
+  path.join(dest, 'local-transport.ps1'));
 const toWindows = localPath => execFileSync('wslpath', ['-w', localPath], {
   encoding: 'utf8', timeout: 3_000, maxBuffer: 4_096,
 }).trim();

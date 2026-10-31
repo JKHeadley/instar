@@ -10,6 +10,7 @@ export interface WindowsDesktopCompanionLocation {
   endpoint: string;
   secret: Buffer;
   appDataPath: string;
+  localTransportScript: string;
 }
 
 function wslGateway(): string {
@@ -49,5 +50,8 @@ export function discoverWindowsDesktopCompanion(): WindowsDesktopCompanionLocati
   const persistedAddress = fs.existsSync(addressPath) ? fs.readFileSync(addressPath, 'utf8').trim() : undefined;
   const windowsAddresses = readWindowsDesktopUnicastAddresses();
   const address = resolveWindowsDesktopBridgeAddress(persistedAddress, gateway, windowsAddresses);
-  return { endpoint: `http://${address}:44818/`, secret, appDataPath };
+  const localTransportPath = path.join(appDataPath, 'InstarDesktop', 'local-transport.ps1');
+  if (!fs.existsSync(localTransportPath)) throw new Error('windows-desktop-local-transport-unavailable');
+  return { endpoint: `http://${address}:44818/`, secret, appDataPath,
+    localTransportScript: path.win32.join(windowsAppData, 'InstarDesktop', 'local-transport.ps1') };
 }

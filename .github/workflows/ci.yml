@@ -94,6 +94,12 @@ jobs:
             -ArgumentList @('127.0.0.1', [string]$port, ('"' + $secret + '"')) -PassThru
           try {
             Start-Sleep -Seconds 1
+            # Exercise the packaged WSL-to-Windows local hop against a real
+            # companion process before the update handshake stops that process.
+            $env:INSTAR_DESKTOP_TEST_PORT = [string]$port
+            $env:INSTAR_DESKTOP_TEST_SECRET = $secret
+            node tests/e2e/windows-desktop-local-transport-smoke.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'Windows-local desktop transport probe failed' }
             $common = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
               'scripts/install-windows-desktop-companion.ps1', '-Source',
               'dist/native/windows/InstarDesktopCompanion.cs', '-BindAddress', '127.0.0.1',
@@ -121,6 +127,8 @@ jobs:
             # native status only after the exact process passed every check.
             $global:LASTEXITCODE = 0
           } finally {
+            Remove-Item Env:INSTAR_DESKTOP_TEST_PORT -ErrorAction SilentlyContinue
+            Remove-Item Env:INSTAR_DESKTOP_TEST_SECRET -ErrorAction SilentlyContinue
             Remove-Item Env:INSTAR_DESKTOP_UPDATE_TOKEN -ErrorAction SilentlyContinue
             if (-not $companion.HasExited) { Stop-Process -Id $companion.Id -Force }
           }
@@ -130,7 +138,7 @@ jobs:
           $pack = npm pack --dry-run --json --ignore-scripts | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw "npm package inventory failed: $LASTEXITCODE" }
           $package = @($pack)[0]
-          foreach ($file in @('dist/native/windows/InstarDesktopCompanion.cs', 'scripts/install-windows-desktop-companion.mjs', 'scripts/install-windows-desktop-companion.ps1')) {
+          foreach ($file in @('dist/native/windows/InstarDesktopCompanion.cs', 'scripts/install-windows-desktop-companion.mjs', 'scripts/install-windows-desktop-companion.ps1', 'scripts/windows-desktop-local-transport.ps1')) {
             if (-not ($package.files | Where-Object { $_.path -eq $file })) {
               throw "Missing $file"
             }

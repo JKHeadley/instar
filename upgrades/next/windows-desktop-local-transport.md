@@ -1,0 +1,17 @@
+# Windows desktop local transport
+
+## What Changed
+
+On an opted-in Windows machine with Instar running in WSL, desktop requests now cross into Windows through a bounded local PowerShell hop. This handles machines where Windows can reach its companion locally but WSL cannot open the companion's TCP address. No extra port is exposed.
+
+## What to Tell Your User
+
+Mama PC's desktop connection is being repaired inside Instar. You still open the same Studio dashboard and enter only the PIN. Mama PC stays unavailable until its live screen, controls, and Stop checks pass.
+
+## Summary of New Capabilities
+
+The WSL agent can send its existing signed companion requests through Windows-local interop, with bounded request and response sizes, fixed destination validation, and cancellation on loss of authority.
+
+## Evidence
+
+Unit tests cover the transport's bounded reply and process-error handling. Windows CI sends a signed probe through the shipped PowerShell script to a real companion process. A live WSL-to-Windows stream, input, Stop, post-Stop refusal, and practical frame rate must still be verified on Mama PC before its card is enabled.
