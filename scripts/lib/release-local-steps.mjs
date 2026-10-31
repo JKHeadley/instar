@@ -321,7 +321,7 @@ export function pushTagThenMain({ run, remote, version, maxAttempts = 5, log = (
       return { ok: false, attempts: attempt, reason: recovery(`push refused although it was a fast-forward (HEAD already contains ${remote}/main) — a hook or permission refused it`), output };
     }
     log(`main moved (${String(before).slice(0, 10)} → ${String(revParse(run, `refs/remotes/${remote}/main`)).slice(0, 10)}); rebasing the release commit (tag ${tag} stays on the published commit) (attempt ${attempt})`);
-    if (run('git', ['rebase', `${remote}/main`]).status !== 0) {
+    if (run('git', ['-c', 'merge.renames=false', 'rebase', `${remote}/main`]).status !== 0) {
       run('git', ['rebase', '--abort']);
       return { ok: false, attempts: attempt, reason: recovery('the release commit could not be rebased cleanly onto main (conflict) — aborted rather than force-pushing'), output };
     }

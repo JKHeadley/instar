@@ -184,6 +184,41 @@ describe('release-local push + ref refresh (real git)', () => {
     expect(g(bare, 'log', '-1', '--format=%s', 'main^')).toBe('concurrent merge');
   });
 
+  it('keeps a concurrent release fragment in upgrades/next while rebasing the published cut', () => {
+    g(clone, 'reset', '--hard', 'HEAD^');
+    const next = path.join(clone, 'upgrades', 'next');
+    fs.mkdirSync(next, { recursive: true });
+    fs.writeFileSync(path.join(next, 'consumed.md'), 'published fragment\n');
+    g(clone, 'add', '-A');
+    g(clone, 'commit', '-qm', 'add fragment for next release');
+    g(clone, 'push', '-q', 'origin', 'HEAD:main');
+    g(other, 'fetch', '-q', 'origin', 'main');
+    g(other, 'reset', '--hard', 'origin/main');
+
+    fs.unlinkSync(path.join(next, 'consumed.md'));
+    fs.writeFileSync(path.join(clone, 'upgrades', '1.0.1.md'), 'published fragment\n');
+    fs.writeFileSync(path.join(clone, 'version.txt'), '1.0.1\n');
+    g(clone, 'add', '-A');
+    g(clone, 'commit', '-qm', 'chore: release v1.0.1 [skip ci]');
+    g(clone, 'tag', 'v1.0.1');
+    const published = g(clone, 'rev-parse', 'HEAD');
+
+    const otherNext = path.join(other, 'upgrades', 'next');
+    fs.writeFileSync(path.join(otherNext, 'later.md'), 'unreleased fragment\n');
+    g(other, 'add', '-A');
+    g(other, 'commit', '-qm', 'concurrent fragment merge');
+    g(other, 'push', '-q', 'origin', 'HEAD:main');
+
+    const calls: string[][] = [];
+    const res = pushTagThenMain({ run: runner(clone, calls), remote: 'origin', version: '1.0.1' });
+    expect(res).toMatchObject({ ok: true, attempts: 2 });
+    expect(calls).toContainEqual(['git', '-c', 'merge.renames=false', 'rebase', 'origin/main']);
+    expect(g(bare, 'rev-parse', 'v1.0.1^{commit}')).toBe(published);
+    expect(g(bare, 'show', 'main:upgrades/next/later.md')).toBe('unreleased fragment');
+    expect(g(bare, 'show', 'main:upgrades/1.0.1.md')).toBe('published fragment');
+    expect(g(bare, 'ls-tree', '--name-only', 'main:upgrades/next')).toBe('later.md');
+  });
+
   it('--keep-tag-on-published: a hook refusal on the main push still stops at once', () => {
     g(clone, 'tag', 'v1.0.1');
     const hook = path.join(clone, '.git', 'hooks', 'pre-push');

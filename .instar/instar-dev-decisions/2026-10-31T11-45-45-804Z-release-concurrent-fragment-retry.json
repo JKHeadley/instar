@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-31T11:45:45.804Z",
+  "slug": "release-concurrent-fragment-retry",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/lib/release-local-steps.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/release-local-steps.mjs"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

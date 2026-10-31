@@ -1,0 +1,19 @@
+# Release retry keeps concurrent fragments and published tags accurate
+
+<!-- bump: patch -->
+
+## What Changed
+
+The npm publish workflow now tags the release cut that npm received before attempting to push it to main. If a pull request moves main during publication, the workflow rebases the release commit without Git's directory rename inference, preserving any new `upgrades/next/` fragment. The local recovery helper uses the same rebase setting.
+
+## What to Tell Your User
+
+A concurrent merge can no longer strand a published Instar version because it added a release note fragment during the final push. The version tag continues to identify the published release cut.
+
+## Summary of New Capabilities
+
+The release push retries clean concurrent merges while retaining later release notes for the next version. A true file conflict still stops for review.
+
+## Evidence
+
+Two publish workflows for versions 1.3.1534 and 1.3.1535 published and smoke-tested their npm packages, then failed on directory rename conflicts during the final rebase. A real Git regression test reproduces the fragment race and checks that the later fragment remains, the consumed fragment is removed, and the tag stays on the published commit.
