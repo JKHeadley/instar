@@ -1,0 +1,19 @@
+# The dashboard PIN works through a WSL machine's own secure link
+
+<!-- bump: patch -->
+
+## What Changed
+
+On an agent with remote desktop on, `POST /dashboard/unlock` (and `GET /dashboard/unlock-check`) accept the PIN only over a TLS socket or from loopback. On a Windows machine where Instar runs inside WSL in NAT mode, a TLS front on the Windows side (Tailscale serve) reaches the server through Windows port forwarding. The request therefore arrives from the Windows host's NAT address, marked `x-forwarded-proto: https`, and was refused. That was measured on the Mama PC on 2026-10-31. Under WSL only, a request from the Windows host address carrying `x-forwarded-proto: https` now counts as arriving over the machine's own secure front. Plain http through the same forwarding is still refused, and nothing changes on any non-WSL machine. The desktop stream checks are unchanged.
+
+## What to Tell Your User
+
+Typing your dashboard PIN through the Mama PC's secure link now works, instead of ending in an error.
+
+## Summary of New Capabilities
+
+None beyond the fix: the PIN is accepted through a WSL machine's own secure front.
+
+## Evidence
+
+A header probe behind the Mama PC's Tailscale serve front showed the request arriving from 172.22.96.1 with `x-forwarded-proto: https`, while a direct-loopback probe arrived from 127.0.0.1. Unit tests cover both sides: the forwarded mark from the Windows host under WSL, plain http, the mark from any other address, and the mark on a non-WSL machine.
