@@ -2,7 +2,7 @@
 
 ## What Changed
 
-The console, older dashboard views, and server notices now use verified names across people, machines, conversations, messages, subscriptions, and work pages. Routing IDs and fingerprint fragments no longer appear as substitute names; missing names are shown plainly, and ambiguous targets are omitted from action pickers. The shared topic-name rule also rejects “topic 123” and “Telegram topic 123” placeholders.
+The console, older dashboard views, and server notices now use verified names across people, machines, conversations, messages, subscriptions, plans, promises, and work pages. Routing IDs and fingerprint fragments no longer appear as substitute names; missing names are shown plainly, and ambiguous targets are omitted from action pickers. The shared topic-name rule also rejects “topic 123” and “Telegram topic 123” placeholders.
 
 ## What to Tell Your User
 

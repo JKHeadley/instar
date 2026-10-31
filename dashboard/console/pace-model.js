@@ -1,6 +1,7 @@
 // Queue pace — pure view model (docs/specs/queue-pace.md §Surfaces).
 // One plain line per queue, for a non-technical reader on a phone. No DOM here.
 // Wording is frozen by the spec ("Feedback sorting: 120 a day in, 90 done — falling behind; speeding up").
+import { verifiedDisplayName } from './display-identity.js';
 
 const VERDICT_WORDS = {
   'falling-behind': 'falling behind',
@@ -51,7 +52,7 @@ export function reasonWords(q) {
 
 /** The one plain line for a queue. `showMachine` adds "(on <machine>)" when several machines answer. */
 export function paceLine(q, showMachine = false) {
-  const label = q.label || q.id;
+  const label = verifiedDisplayName(q.label, q.id) || 'Work queue';
   const where = showMachine && q.machine ? ` (on ${q.machine})` : '';
   const person = q.bottleneck && q.bottleneck.kind === 'person';
   let verdict = VERDICT_WORDS[q.verdict] || VERDICT_WORDS.unknown;

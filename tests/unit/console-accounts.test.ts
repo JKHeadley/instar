@@ -34,6 +34,17 @@ describe('accounts page model', () => {
     const q = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW);
     expect(q.needs[0].action).toBe('start');
   });
+  it('withholds sign-in actions when account or machine names cannot identify one target', () => {
+    const unnamed = buildAccountsPage(ok({ accounts: [row({ id: 'acct1', nickname: 'acct1', email: null, status: 'needs-reauth' })] }), NOW);
+    expect(unnamed.needs).toHaveLength(0);
+    expect(unnamed.headline).not.toContain('needs you');
+    expect(unnamed.accounts[0].name).not.toContain('acct1');
+    const duplicateMachine = buildAccountsPage(ok({ accounts: [
+      row({ status: 'needs-reauth' }),
+      row({ id: 'other', nickname: 'Other', email: 'other@x.io', machineId: 'm2', machineNickname: 'Mac Studio', status: 'needs-reauth' }),
+    ] }), NOW);
+    expect(duplicateMachine.needs).toHaveLength(0);
+  });
   it('names a machine that did not answer, never by its id', () => {
     const p = buildAccountsPage(ok({ accounts: [row({})], pool: { failed: [{ machineId: 'm9' }] } }), NOW, { names: { m9: 'Laptop' } });
     expect(p.partial).toContain('Laptop');

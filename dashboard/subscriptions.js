@@ -510,7 +510,19 @@ export function renderFollowMeOffers(doc, target, offers) {
     const account = verifiedDisplayName(offer.accountLabel, offer.accountId);
     return machine && account ? `${machine.toLocaleLowerCase()}\u0000${account.toLocaleLowerCase()}` : null;
   });
-  for (let i = 0; i < offers.length; i++) target.appendChild(renderFollowMeApproveCard(doc, offers[i], labels[i] !== null && labels.indexOf(labels[i]) !== labels.lastIndexOf(labels[i])));
+  const machineIdsByName = new Map();
+  for (const offer of offers) {
+    const name = verifiedDisplayName(offer.machineNickname, offer.targetMachineId);
+    if (!name) continue;
+    const key = name.toLocaleLowerCase();
+    if (!machineIdsByName.has(key)) machineIdsByName.set(key, new Set());
+    machineIdsByName.get(key).add(offer.targetMachineId);
+  }
+  for (let i = 0; i < offers.length; i++) {
+    const machine = verifiedDisplayName(offers[i].machineNickname, offers[i].targetMachineId);
+    const ambiguousMachine = machine && machineIdsByName.get(machine.toLocaleLowerCase())?.size > 1;
+    target.appendChild(renderFollowMeApproveCard(doc, offers[i], Boolean(ambiguousMachine || (labels[i] !== null && labels.indexOf(labels[i]) !== labels.lastIndexOf(labels[i])))));
+  }
 }
 
 /**

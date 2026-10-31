@@ -14369,10 +14369,10 @@ export function createRoutes(ctx: RouteContext): Router {
           accountFollowMeRevocation = ctx.accountFollowMeRevocation.revoke(
             {
               accountId,
-              accountEmail: acct?.email ?? accountId,
+              accountEmail: verifiedEntityName(accountId, acct?.email) ?? 'the account',
               targetMachineId,
-              targetMachineNickname:
-                typeof bounds.targetMachineNickname === 'string' ? bounds.targetMachineNickname : targetMachineId,
+              targetMachineNickname: verifiedEntityName(targetMachineId, bounds.targetMachineNickname)
+                ?? verifiedEntityName(targetMachineId, ctx.machinePoolRegistry?.getCapacity(targetMachineId)?.nickname) ?? 'another machine',
               provider: acct?.provider ?? (typeof bounds.provider === 'string' ? bounds.provider : 'the provider'),
               mandateId: m.id,
               mechanism,
@@ -25412,7 +25412,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         await ctx.feedback.submit({
           type: 'improvement',
-          title: `Dispatch feedback: ${dispatch?.title ?? req.params.id}`,
+          title: `Dispatch feedback: ${verifiedEntityName(req.params.id, dispatch?.title) ?? 'dispatch name unavailable'}`,
           description: `Dispatch ${req.params.id} was ${helpful ? 'helpful' : 'not helpful'}.${comment ? ` Comment: ${comment}` : ''}`,
           agentName: ctx.config.projectName,
           instarVersion: ProcessIntegrity.getInstance()?.runningVersion || ctx.config.version || '0.0.0',
@@ -39766,7 +39766,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           threadId: forwardThreadId,
           hadTopic: resolvedOriginTopicId !== undefined,
         });
-        const toMachine = outcome.kind === 'no-holder' ? '' : (outcome.machine.nickname || outcome.machine.machineId);
+        const toMachine = outcome.kind === 'no-holder' ? '' : (verifiedEntityName(outcome.machine.machineId, outcome.machine.nickname) ?? 'another machine');
         if (!answer) {
           fwdCtx.counters.notExecuted++;
           console.log(forwardLogLine(msgId, toMachine, `not-executed:${outcome.kind === 'not-executed' ? outcome.reason : 'no-holder'}`));

@@ -24,6 +24,7 @@ describe('verified channel identity', () => {
     expect(verifiedEntityName('peer', 'a2aproof-130200')).toBeNull();
     expect(verifiedEntityName('peer', 'Agent name unavailable')).toBeNull();
     expect(verifiedEntityName('peer', 'Unnamed agent')).toBeNull();
+    expect(verifiedEntityName('peer', 'another machine')).toBeNull();
     expect(verifiedEntityName('peer', 'PP')).toBe('PP');
   });
 });

@@ -9,6 +9,7 @@
 import { buildAccountsPage, frameworkName } from './accounts-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 async function postJson(path, body, headers = {}) {
   const token = (() => { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } })();
@@ -31,15 +32,15 @@ export async function renderAccounts(main, ctx) {
 
   // One card per machine: "Mac Mini — 5 accounts need signing in", one row and button each.
   const byMachine = new Map();
-  for (const n of page.needs) { if (!byMachine.has(n.machine)) byMachine.set(n.machine, []); byMachine.get(n.machine).push(n); }
+  for (const n of page.needs) { if (!byMachine.has(n.machineId)) byMachine.set(n.machineId, []); byMachine.get(n.machineId).push(n); }
   const needs = page.needs.length ? el('section', { class: 'page-sections', id: 'sec-needs' },
     el('h2', { class: 'eyebrow', text: 'Needs you' }),
-    [...byMachine.entries()].map(([machine, items]) => el('div', { class: 'need-card' },
-      el('span', { class: 'need-title', text: items.length === 1 ? `${machine}: 1 account needs signing in` : `${machine}: ${items.length} accounts need signing in` }),
+    [...byMachine.entries()].map(([, items]) => el('div', { class: 'need-card' },
+      el('span', { class: 'need-title', text: items.length === 1 ? `${items[0].machine}: 1 account needs signing in` : `${items[0].machine}: ${items.length} accounts need signing in` }),
       el('div', { class: 'rows' }, items.map((n) => el('div', { class: 'row' },
         el('span', { class: 'dot attn' }),
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
-        el('span', { class: 'row-end' }, el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) })))))))) : null;
+        el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) }) : null))))))) : null;
 
   const groups = new Map();
   for (const a of page.accounts) { const k = frameworkName(a.framework); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); }
@@ -82,9 +83,9 @@ function openAccount(a, refresh) {
   const machines = el('div', { class: 'rows' }, a.cells.map((c) => {
     const r = el('div', { class: 'row' },
       el('span', { class: c.state === 'attn' ? 'dot attn' : c.state === 'ok' ? 'dot live' : 'dot unknown' }),
-      el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.label })),
+      el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.state === 'attn' && !c.actionable ? 'Needs sign-in; a unique account and machine name are needed first.' : c.label })),
       el('span', { class: 'row-end' }));
-    if (c.state === 'attn') r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
+    if (c.state === 'attn' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
     return r;
   }));
   sheet({ title: a.name }, story(lines), el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: 'On each machine' }), machines),
@@ -131,7 +132,7 @@ function signInSteps(n, d, refresh) {
   const expires = d.ttlExpiresAt ? new Date(d.ttlExpiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
   sheet({ title: n.title },
     el('div', { class: 'signin-steps' },
-      el('p', { class: 'confirm-text', text: `1. Open the sign-in page${d.expectedEmail ? ` and sign in as ${d.expectedEmail}` : ''}.` }),
+      el('p', { class: 'confirm-text', text: `1. Open the sign-in page${verifiedDisplayName(d.expectedEmail, n.accountId) ? ` and sign in as ${d.expectedEmail}` : ''}.` }),
       el('a', { class: 'btn-primary btn-inline signin-link', href: d.verificationUrl, target: '_blank', rel: 'noopener', text: 'Open the sign-in page' }),
       el('p', { class: 'confirm-text', text: '2. If the page gives you a code, paste it here.' }),
       code, submit,

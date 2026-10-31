@@ -64,10 +64,12 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
   const byId = new Map();
   for (const r of rows) {
     if (!r || !r.id) continue;
-    const g = byId.get(r.id) || { id: r.id, name: verifiedDisplayName(r.nickname, r.id) || 'Account name unavailable', email: r.email || null, framework: r.framework, cells: [], reading: null, readingAt: 0 };
-    if (g.name === 'Account name unavailable') g.name = verifiedDisplayName(r.nickname, r.id) || g.name;
+    const email = verifiedDisplayName(r.email, r.id);
+    const g = byId.get(r.id) || { id: r.id, name: verifiedDisplayName(r.nickname, r.id) || email || 'Account name unavailable', email, framework: r.framework, cells: [], reading: null, readingAt: 0 };
+    if (g.name === 'Account name unavailable') g.name = verifiedDisplayName(r.nickname, r.id) || email || g.name;
+    if (!g.email && email) g.email = email;
     const ep = epFor(r.id, r.machineId);
-    g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'a machine with no name yet', ...cellState(r, ep), episode: ep, row: r });
+    g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep), episode: ep, row: r });
     const at = Date.parse(r.lastQuota && r.lastQuota.measuredAt);
     if (r.lastQuota && Number.isFinite(at) && at > g.readingAt) { g.reading = r.lastQuota; g.readingAt = at; }
     byId.set(r.id, g);
@@ -86,16 +88,32 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], inUse 
     };
   }).sort((a, b) => (frameworkName(a.framework)).localeCompare(frameworkName(b.framework)) || (b.tight ? b.tight.pct : -1) - (a.tight ? a.tight.pct : -1));
 
+  const accountKeys = accounts.map((a) => verifiedDisplayName(a.name, a.id)
+    ? `${a.name.toLocaleLowerCase()}\u0000${(a.email || '').toLocaleLowerCase()}` : null);
+  const machineById = new Map();
+  for (const a of accounts) for (const c of a.cells) machineById.set(c.machineId, c.machine);
+  const machineCounts = new Map();
+  for (const [id, name] of machineById) if (verifiedDisplayName(name, id)) {
+    const key = name.toLocaleLowerCase();
+    machineCounts.set(key, (machineCounts.get(key) || 0) + 1);
+  }
+  for (let i = 0; i < accounts.length; i++) for (const c of accounts[i].cells) {
+    const accountKey = accountKeys[i];
+    c.actionable = Boolean(accountKey && accountKeys.indexOf(accountKey) === accountKeys.lastIndexOf(accountKey)
+      && verifiedDisplayName(c.machine, c.machineId) && machineCounts.get(c.machine.toLocaleLowerCase()) === 1);
+  }
+
   const needs = [];
   for (const a of accounts) for (const c of a.cells) {
-    if (c.state !== 'attn') continue;
+    if (c.state !== 'attn' || !c.actionable) continue;
     const ep = c.episode;
     const repairable = ep && (ep.state === 'suggested' || ep.state === 'failed');
     needs.push({
       key: `${a.id}::${c.machineId}`, accountId: a.id, machineId: c.machineId, machine: c.machine,
       title: `Sign in ${frameworkName(a.framework)} (${a.email || a.name}) on ${c.machine}`,
       label: `${frameworkName(a.framework)} · ${a.email || a.name}`,
-      sub: repairable ? (ep.state === 'failed' ? 'The last automatic repair stopped safely; you can try again.' : 'An automatic repair is ready to run.') : 'Its sign-in has expired.',
+      sub: !c.actionable ? 'A unique account and machine name are needed before you can act here.' : repairable ? (ep.state === 'failed' ? 'The last automatic repair stopped safely; you can try again.' : 'An automatic repair is ready to run.') : 'Its sign-in has expired.',
+      actionable: c.actionable,
       action: repairable ? (ep.state === 'failed' ? 'retry' : 'approve') : 'start',
       episodeId: ep ? ep.id : null,
       remote: Boolean(c.row.remote),

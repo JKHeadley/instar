@@ -1167,11 +1167,11 @@ const CAP_STAT_LABEL = {
 
 export function healthCapRowText(c) {
   const word = c.status === 'error' ? 'needs attention' : 'working';
-  return `${sanitizeForDisplay(c.label || c.id || 'A subsystem', 'label')} — ${word}`;
+  return `${sanitizeForDisplay(verifiedDisplayName(c.label, c.id) || 'Subsystem name unavailable', 'label')} — ${word}`;
 }
 export function healthCapRecordNode(doc, c) {
   const rows = [
-    ['Subsystem', c.label || c.id || '—'],
+    ['Subsystem', verifiedDisplayName(c.label, c.id) || 'Subsystem name unavailable'],
     ['Status', c.status === 'error' ? 'Needs attention' : 'Working'],
     ['What it does', c.description || '—'],
     ['Right now', c.metric || '—'],
@@ -1863,7 +1863,7 @@ export function buildInitiativesGlance(itemsRes, digestRes) {
 }
 
 export function initiativeRowText(i) {
-  const title = sanitizeForDisplay(i.title || i.id || 'An initiative', 'summary');
+  const title = sanitizeForDisplay(verifiedDisplayName(i.title, i.id) || 'Initiative name unavailable', 'summary');
   return `${title} — ${INITIATIVE_STATUS_WORD[i.status] || (i.status || 'unknown')}`;
 }
 export function initiativeRecordNode(doc, i, opts = {}) {
@@ -1871,7 +1871,7 @@ export function initiativeRecordNode(doc, i, opts = {}) {
   const phases = Array.isArray(i.phases) ? i.phases : [];
   const done = phases.filter((p) => p && p.status === 'done').length;
   const rows = [
-    ['Initiative', i.title || i.id || '—'],
+    ['Initiative', verifiedDisplayName(i.title, i.id) || 'Initiative name unavailable'],
     ['Status', INITIATIVE_STATUS_WORD[i.status] || (i.status || '—')],
     ['What it is', i.description || '—'],
   ];

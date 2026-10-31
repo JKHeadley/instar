@@ -246,7 +246,7 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     key: `${c.originMachineId || 'own'}:${c.id}`,
     detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
     expandable: true,
-    main: c.agentResponse || c.userRequest || c.id,
+    main: verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id) || 'Promise details unavailable',
     sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : (c.status === 'violated' ? 'missed' : ''),
       c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : ''].filter(Boolean).join(' · '),
     end: ago(c.createdAt, now) || '',

@@ -8,7 +8,7 @@ describe('console display identity', () => {
   });
 
   it('refuses routing identifiers and generated topic labels as names', () => {
-    for (const candidate of ['127504', '4821', 'topic-127504', 'topic 127504', 'Telegram topic 127504', '237407fc', '237407fc…', '237407fc58562c0f0a677f3da1d9c736', 'Agent name unavailable', 'Unnamed agent']) {
+    for (const candidate of ['127504', '4821', 'topic-127504', 'topic 127504', 'Telegram topic 127504', '237407fc', '237407fc…', '237407fc58562c0f0a677f3da1d9c736', 'Agent name unavailable', 'Unnamed agent', 'another machine', 'Work item name unavailable']) {
       expect(verifiedDisplayName(candidate, 127504)).toBeNull();
     }
   });

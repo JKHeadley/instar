@@ -4,6 +4,7 @@
 // home-model.js, so Home's card and this page can never disagree.
 
 import { isActiveCommitment, waitsOnOperator, isMissed, lastTouched, STALE_DAYS, REPLICA_FRESH_MS, ago, failure } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 export { failure };
 
@@ -63,7 +64,7 @@ export function toRow(c, now = Date.now(), names = {}) {
     id: c.id,
     origin: c.originMachineId || null,
     replica: c.viewSource === 'replica',
-    main: c.agentResponse || c.userRequest || c.id,
+    main: verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id) || 'Promise details unavailable',
     sub: bits.join(' · '),
     end: ago(c.createdAt, now) || '',
     record: c,

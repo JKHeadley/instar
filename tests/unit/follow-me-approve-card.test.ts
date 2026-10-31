@@ -75,5 +75,7 @@ describe('renderFollowMeOffers — list of offers', () => {
     expect(target.textContent).toContain('A unique account and machine name are needed');
     renderFollowMeOffers(doc, target, [{ ...OFFER, machineNickname: OFFER.targetMachineId }]);
     expect(target.querySelectorAll('button.sub-followme-approve')).toHaveLength(0);
+    renderFollowMeOffers(doc, target, [OFFER, { ...OFFER, targetMachineId: 'm_other', accountId: 'acct-other', accountLabel: 'other subscription' }]);
+    expect(target.querySelectorAll('button.sub-followme-approve')).toHaveLength(0);
   });
 });
