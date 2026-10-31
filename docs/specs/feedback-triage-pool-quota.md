@@ -1,6 +1,7 @@
 ---
 title: "Feedback triage account-aware quota admission"
 slug: "feedback-triage-pool-quota"
+parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
 author: "Echo"
 eli16-overview: "docs/specs/feedback-triage-pool-quota.eli16.md"
 review-convergence: "2026-10-31T03:50:30.003Z"
