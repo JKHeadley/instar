@@ -4,12 +4,17 @@
   "tier": 3,
   "tierReasoning": "Cross-OS remote input and revocation boundary; approved desktop spec and independent Astra review apply.",
   "coveredFiles": [
+    ".github/workflows/ci.yml",
     "scripts/install-windows-desktop-companion.mjs",
     "scripts/windows-desktop-local-transport.ps1",
     "src/core/WindowsDesktopCompanionDiscovery.ts",
     "src/core/WindowsDesktopHost.ts",
     "src/core/WindowsDesktopLocalTransport.ts",
-    "src/server/AgentServer.ts"
+    "src/server/AgentServer.ts",
+    "tests/e2e/windows-desktop-local-transport-smoke.mjs",
+    "tests/unit/windows-desktop-local-transport.test.ts",
+    "upgrades/next/windows-desktop-local-transport.md",
+    "upgrades/side-effects/windows-desktop-local-transport.md"
   ],
   "artifactPath": "upgrades/side-effects/windows-desktop-local-transport.md",
   "sideEffectsPath": "upgrades/side-effects/windows-desktop-local-transport.md",
