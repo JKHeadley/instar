@@ -8,6 +8,14 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readWindowsDesktopUnicastAddresses, selectWindowsDesktopBridgeAddress, validateWindowsDesktopBridgeAddress } from '../dist/core/WindowsDesktopBridgeAddress.js';
 
+let installPhase = 'preflight';
+process.on('uncaughtException', error => {
+  // The parent process classifies this fixed phase and known error strings;
+  // no installer stderr or Windows path is returned through the HTTP API.
+  process.stderr.write(`instar-desktop-installer-phase:${installPhase}\n${error.message}\n`);
+  process.exitCode = 1;
+});
+
 if (!process.argv.includes('--enable')) throw new Error('Pass --enable after operator opt-in');
 if (process.platform !== 'linux' || !/microsoft|wsl/i.test(os.release())) {
   throw new Error('Windows companion installer requires WSL');
@@ -32,6 +40,7 @@ if (!(octets[0] === 10 || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 
   || (octets[0] === 192 && octets[1] === 168))) throw new Error('WSL gateway is not private');
 const dest = path.join(linuxAppData, 'InstarDesktop');
 fs.mkdirSync(dest, { recursive: true });
+installPhase = 'address';
 const windowsAddresses = readWindowsDesktopUnicastAddresses();
 const bindAddress = selectWindowsDesktopBridgeAddress(gateway, windowsAddresses);
 const addressPath = path.join(dest, 'bridge.address');
@@ -47,10 +56,18 @@ const lockPath = path.join(dest, 'install.lock');
 if (!process.argv.includes('--locked')) {
   // flock owns the file descriptor for the entire child process and the kernel
   // releases it on crash or timeout. The lock file itself may safely persist.
-  const receipt = execFileSync('flock', ['-n', '-F', lockPath, process.execPath,
-    fileURLToPath(import.meta.url), '--enable', '--locked'], {
-    encoding: 'utf8', timeout: 130_000, maxBuffer: 16_384,
-  });
+  let receipt;
+  try {
+    receipt = execFileSync('flock', ['-n', '-F', lockPath, process.execPath,
+      fileURLToPath(import.meta.url), '--enable', '--locked'], {
+      encoding: 'utf8', timeout: 130_000, maxBuffer: 16_384,
+    });
+  } catch (error) {
+    // Preserve the locked child's fixed phase marker for the parent classifier.
+    if (Buffer.isBuffer(error?.stderr)) process.stderr.write(error.stderr);
+    else if (typeof error?.stderr === 'string') process.stderr.write(error.stderr);
+    throw error;
+  }
   process.stdout.write(receipt);
   process.exit(0);
 }
@@ -69,6 +86,7 @@ const runPhase = phase => {
   ], { encoding: 'utf8', timeout: 55_000, maxBuffer: 16_384 }).trim();
   return JSON.parse(receipt.split(/\r?\n/).at(-1));
 };
+installPhase = 'stage';
 const staged = runPhase('Stage');
 if (staged.staged !== true || typeof staged.taskRunning !== 'boolean') {
   throw new Error('Windows companion stage did not confirm its task state');
@@ -76,6 +94,7 @@ if (staged.staged !== true || typeof staged.taskRunning !== 'boolean') {
 let updateToken;
 let cancelUpdate;
 if (staged.taskRunning) {
+  installPhase = 'update';
   if (!fs.existsSync(existingSecret)) throw new Error('Running companion has no shared secret');
   const secret = fs.readFileSync(existingSecret);
   if (secret.length !== 32) throw new Error('Existing Windows companion secret is invalid');
@@ -130,6 +149,7 @@ if (staged.taskRunning) {
   }
 }
 let installed;
+installPhase = 'install';
 try { installed = runPhase('InstallPrepared'); }
 catch (error) {
   if (cancelUpdate) {
@@ -137,6 +157,7 @@ catch (error) {
   }
   throw error;
 }
+installPhase = 'confirm';
 if (installed.installed !== true || installed.bindAddress !== bindAddress || installed.port !== 44818) {
   throw new Error('Windows companion installer did not confirm its task');
 }

@@ -33,5 +33,10 @@ describe('desktop probe explanation', () => {
     expect(desktopProbeUnavailableReason({ ...permitted, sessionActive: false,
       consoleSessionPresent: true, onConsole: true, loginDone: true, screenLocked: true }))
       .toContain('reports a locked screen');
+    const lockedAndUnpermitted = desktopProbeUnavailableReason({ ...permitted,
+      sessionActive: false, consoleSessionPresent: true, onConsole: true,
+      loginDone: true, screenLocked: true, screenPermission: false, inputPermission: false });
+    expect(lockedAndUnpermitted).toContain('Screen Recording and Accessibility permission');
+    expect(lockedAndUnpermitted).toContain('agent is online');
   });
 });

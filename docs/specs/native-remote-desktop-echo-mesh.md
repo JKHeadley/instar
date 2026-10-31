@@ -95,6 +95,10 @@ leaves desktop access dark. A persisted address cannot redirect authenticated
 companion traffic to another host. The Bearer-only
 `GET /desktop/diagnostics` route reports this host's probe booleans or a
 sanitized probe error without exposing screen content, input, or keys.
+If Windows companion installation fails during WSL boot, it reports a fixed
+installer phase and failure code there as well. The raw PowerShell output,
+paths, addresses, and companion secret remain local. A failed installer keeps
+the target dark while the WSL agent itself continues serving normally.
 
 The Mac helper's console-session check is a property of the helper process.
 A local diagnostic reports whether the helper received a session dictionary,
@@ -107,6 +111,8 @@ session, missing permissions, and a missing display before describing the
 machine state to the operator. The signed target availability response uses
 these exact session fields to explain the machine picker, so Studio can
 distinguish the failure without another remote maintenance credential.
+When the helper reports a locked console and missing permissions together,
+the picker reports both signals; the agent's reachability remains separate.
 Instar's agent remains reachable while its screen helper is unavailable.
 
 On WSL boot after explicit desktop opt-in, the agent stages and compiles the

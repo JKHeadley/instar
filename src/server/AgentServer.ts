@@ -195,6 +195,7 @@ import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
+import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
 import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
 import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
@@ -5112,8 +5113,12 @@ export class AgentServer {
       desktopLocalDiagnostics: async () => {
         const configured = options.config.remoteDesktop?.enabled === true;
         if (!configured || !this.directDesktopAccess) {
+          const bootstrap = process.platform === 'linux'
+            ? readWindowsDesktopBootstrapStatus(options.config.stateDir) : null;
           return { configured, targetConstructed: !!this.directDesktopAccess,
-            status: configured ? 'target-unavailable' : 'off' };
+            status: configured ? 'target-unavailable' : 'off',
+            ...(bootstrap?.state === 'install-failed'
+              ? { bootstrapFailure: { phase: bootstrap.phase, code: bootstrap.code } } : {}) };
         }
         try {
           const probe = await this.directDesktopAccess.probe();

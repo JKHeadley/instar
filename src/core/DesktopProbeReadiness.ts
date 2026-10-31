@@ -21,7 +21,10 @@ export function desktopProbeUnavailableReason(probe: {
       return 'The Mac desktop helper does not report a completed console login. The Instar agent is online.';
     }
     if (probe.screenLocked === true) {
-      return 'The Mac console session reports a locked screen. The Instar agent is online.';
+      const missing = [!probe.screenPermission && 'Screen Recording',
+        !probe.inputPermission && 'Accessibility'].filter(Boolean).join(' and ');
+      return `The Mac console session reports a locked screen. ${missing
+        ? `The desktop helper also lacks ${missing} permission. ` : ''}The Instar agent is online.`;
     }
     return 'The desktop helper has no active console session. The agent is online; its screen may be locked or the helper may be outside the GUI session.';
   }
