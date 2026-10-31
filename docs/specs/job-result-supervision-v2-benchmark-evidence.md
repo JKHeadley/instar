@@ -129,7 +129,11 @@ combined 226,592 input tokens, including cache creation and reads. They show
 fenced JSON text rather than a schema-constrained response. The benchmark
 summary has no usage values because the CLI reported an error before the
 provider's usage callback; the transcript sum is diagnostic evidence, not a
-settled call record. The exact CLI exit cause is still unconfirmed. The
+settled call record. Matching each transcript's synthetic input to the corpus
+shows that six of the ten **rejected text replies** contain the expected label;
+two unproven results contain `routine` where the corpus expects `cannot-tell`.
+These are diagnostic observations, not accepted verdicts or an accuracy score.
+The exact CLI exit cause is still unconfirmed. The
 conservative benchmark ledger charges 25,000 tokens for each failed call with
 unknown usage, so it refuses another Haiku trial on this UTC day. Haiku remains
 **unqualified**; no replacement or production rollout gate changed.
