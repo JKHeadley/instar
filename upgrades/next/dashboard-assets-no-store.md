@@ -1,0 +1,19 @@
+## What Changed
+
+Dashboard script and style files are now sent with `Cache-Control: no-store` instead of
+`no-cache`, because Cloudflare rewrote `no-cache` on those files to a 4-hour browser cache.
+Pages keep `no-cache`.
+
+## What to Tell Your User
+
+Dashboard updates now show up the next time you open the page. Before, your phone could keep
+old styling for up to 4 hours after an update and make a new page look broken.
+
+## Summary of New Capabilities
+
+None — a caching fix for the existing dashboard.
+
+## Evidence
+
+Measured 2026-10-30 through the named tunnel: `console.css` served `no-cache` by the server
+arrived at the browser as `max-age=14400`; `desktop.css` served `no-store` arrived unchanged.

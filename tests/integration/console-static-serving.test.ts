@@ -118,7 +118,9 @@ describe('console served beside the legacy dashboard', () => {
       const res = await get(server.url, p);
       expect(res.status, p).toBe(200);
       expect(res.headers['content-type'], p).toContain(type);
-      expect(res.headers['cache-control'], p).toBe('no-cache');
+      // Scripts and stylesheets are never stored (Cloudflare rewrites no-cache on them);
+      // fonts and pages revalidate.
+      expect(res.headers['cache-control'], p).toBe(/\.(m?js|css)$/.test(p) ? 'no-store' : 'no-cache');
     }
   });
 
