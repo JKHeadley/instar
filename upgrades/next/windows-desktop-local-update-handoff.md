@@ -12,6 +12,6 @@ Mama PC can recover from a stale WSL bridge without asking the user to set up an
 
 The authenticated diagnostic distinguishes a Windows-local preparation timeout, refusal, unavailability, and invalid reply. The installer can retry a signed companion handoff from Windows when the WSL bridge times out.
 
-## Verification
+## Evidence
 
-Windows CI runs a real companion and proves signed prepare, token-bound commit, and process exit. Unit and HTTP integration tests cover the redacted diagnostic codes; live Mama PC verification remains the release acceptance check.
+Before this repair, Mama PC's existing Windows companion returned `prepare-timeout` after eight signed requests from WSL and the installer stopped without replacing it. Windows CI now launches a real companion on localhost, proves the fallback signed prepare returns the one-use token, commits with that token, and observes the old process exit. Unit and HTTP integration tests cover the redacted diagnostic codes. Live Mama PC screen, input, and Stop verification remain the release acceptance check.
