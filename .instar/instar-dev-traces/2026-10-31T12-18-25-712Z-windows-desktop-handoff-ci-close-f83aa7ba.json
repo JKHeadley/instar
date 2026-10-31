@@ -4,7 +4,7 @@
   "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
   "timestamp": "2026-10-31T12:18:25.712Z",
   "artifactPath": "upgrades/side-effects/windows-desktop-handoff-ci-close.md",
-  "artifactSha256": "bce007242a6d46b881c2494b551471821618763d846f7faabbe95115e257e960",
+  "artifactSha256": "09af349ed10014a527f2c16514f290276fcba2b100d7567f4022d1b26a5cb39a",
   "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
   "coveredFiles": [
     ".github/workflows/ci.yml",

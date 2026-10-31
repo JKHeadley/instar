@@ -34,6 +34,8 @@ Revert the CI assertion if it hides a genuine failure; no agent state migration 
 
 ## Second-pass review
 
+**Reviewer:** Astra
+
 Astra raised one P2: a caught `powershell.exe` failure leaves `$LASTEXITCODE`
 nonzero and can still fail the GitHub step. The test now clears it only after
 the exact prepared process exits successfully and no explicit refusal is
