@@ -95,3 +95,8 @@ per-host live desktop checks are release gates; none is inferred from this
 review artifact. The locally built Mac helper probe returned the new session
 fields on Studio with one display and existing permissions; this does not
 establish Mini or M5 readiness.
+
+The diagnostic handler catches a probe exception and returns a sanitized
+`probe-error` while keeping the target unavailable. The deliberate fallback
+is marked for the repository's silent-fallback audit. Migration parity checks
+the new diagnostic route in the generated agent instructions.

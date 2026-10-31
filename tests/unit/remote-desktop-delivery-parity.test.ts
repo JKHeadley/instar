@@ -29,7 +29,7 @@ describe('native desktop init and migration parity', () => {
   it('teaches fresh and updated agents the route and its limits exactly once', () => {
     const fresh = generateClaudeMd('test', 'Test', 4042, true);
     expect(fresh).toContain(REMOTE_DESKTOP_MARKER);
-    expect(fresh).toContain('localhost:4042/desktop/availability');
+    expect(fresh).toContain('localhost:4042/desktop/diagnostics');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-migration-'));
     try {
       fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });

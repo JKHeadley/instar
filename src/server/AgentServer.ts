@@ -5107,6 +5107,8 @@ export class AgentServer {
                 return details;
               }, {} as Record<string, boolean>) };
         } catch (error) {
+          // @silent-fallback-ok — the authenticated diagnostic reports a sanitized probe-error;
+          // the target stays unavailable and no grant or frame is emitted.
           const message = error instanceof Error ? error.message : '';
           const safeCode = /^(?:mac|windows)-desktop-[a-z-]+$/.test(message) ? message : 'probe-failed';
           const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : null;
