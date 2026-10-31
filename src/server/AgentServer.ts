@@ -493,6 +493,7 @@ export class AgentServer {
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
   private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
+  private checkInReminderTimer: ReturnType<typeof setInterval> | null = null;
   private scriptCanaryTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionWorkerTimer: ReturnType<typeof setInterval> | null = null;
@@ -5165,6 +5166,14 @@ export class AgentServer {
       }));
     }
     const routes = createRoutes(routeCtx);
+    // Runs the LLM-free check-in reminder pass with no session. The first tick
+    // waits one interval: Telegram may not be up yet at this point in boot.
+    const checkInReminderTicker = routeCtx.checkInReminderTicker;
+    if (checkInReminderTicker) {
+      this.checkInReminderTimer = setInterval(() => { void checkInReminderTicker.tick(); }, checkInReminderTicker.status().intervalMs);
+      this.checkInReminderTimer.unref?.();
+      checkInReminderTicker.setArmed(true);
+    }
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
     // routes. A missing ledger is reported in the response, not replaced with
@@ -7336,6 +7345,10 @@ export class AgentServer {
     if (this.jobAnomalyTimer) {
       clearInterval(this.jobAnomalyTimer);
       this.jobAnomalyTimer = null;
+    }
+    if (this.checkInReminderTimer) {
+      clearInterval(this.checkInReminderTimer);
+      this.checkInReminderTimer = null;
     }
     if (this.scriptCanaryTimer) {
       clearInterval(this.scriptCanaryTimer);

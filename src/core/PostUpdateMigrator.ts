@@ -11799,6 +11799,16 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.skipped.push('CLAUDE.md: dated check-in reminder already present');
     }
 
+    // The server tick now drives the pass, so "nothing yet guarantees the
+    // reconciler runs" went stale. Replace only that shipped line; a customized
+    // section is left alone. Idempotent: the sniff phrase leaves with the line.
+    const staleCheckInLine = content.match(/^ {2}- Ships dark \(`commitments\.checkInReminder`.*nothing yet guarantees the reconciler runs.*$/m);
+    if (staleCheckInLine) {
+      content = content.replace(staleCheckInLine[0], () => `  - Ships in dry-run (\`commitments.checkInReminder\`, dryRun defaulting TRUE). The server runs the pass itself every 5 minutes with no session and no LLM; the job \`commitment-checkin-reminder\` stays off and is not needed. The response carries \`tick\` (last run, last report, failures), and \`logs/check-in-reminder-tick.jsonl\` records what it would send. **Honest scope:** while dryRun is on a dated promise produces NO message, so "structurally impossible to have a dated promise without a reminder" is NOT true yet. The creation-time gate that closes it is step 2.`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: check-in reminder now names the server tick');
+    }
+
     // Commitments curl payload fix (2026-07-27) — the shipped template was
     // already corrected, but existing agents with the section present skipped
     // the additive section migration and kept a payload rejected by POST
