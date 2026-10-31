@@ -425,7 +425,7 @@ describe('verification and publication', () => {
     expect(push.branch).toMatch(/^feedback\/feedback-c1-[0-9a-f]{8}-a1$/);
     // Pushed to the configured FORK, never the canonical repository; the PR is cross-repository.
     expect(push.remoteUrl).toBe('https://github.com/agent-bot/repo.git');
-    expect(h.prs.get(100)!.headRefName).toBe(`agent-bot:${push.branch}`);
+    expect(h.prs.get(100)!.createHead).toBe(`agent-bot:${push.branch}`);
     expect(push.files['src/thing.ts']).toBe('export const thing = 2;\n');
     expect(push.files[RESULT_FILE]).toBeUndefined();
     expect(push.files[EVIDENCE_FILE]).toBeUndefined();
@@ -764,7 +764,8 @@ describe('review gate and merge', () => {
     expect(h.comments[0].body).toContain('deletes a test');
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'review-failed:serious:claude-code', reviewSha: HEAD_SHA, reviewVerdict: 'fail' });
     expect(h.store.get(initiativeId)!.state).toBe('work');
-    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/did not pass the independent review \(serious:claude-code\)/);
+    // Close-eligible: the line names the automatic close and the rework (docs/specs/feedback-executor-review-failed-recovery.md §6).
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/did not pass the independent review; it closes on its own at /);
     // Judged once per head: later ticks ask nothing and comment nothing.
     await h.exec.tick();
     expect(h.review.calls).toHaveLength(1);
@@ -1344,7 +1345,7 @@ describe('focused review round regressions', () => {
   it('A: an existing cross-repository PR still goes through the review gate and merges at the approved head', async () => {
     h = await createExecHarness();
     const { initiativeId, row } = await toPrOpen();
-    expect(h.prs.get(row.prNumber!)!.headRefName).toMatch(/^agent-bot:feedback\//);
+    expect(h.prs.get(row.prNumber!)!.createHead).toMatch(/^agent-bot:feedback\//);
     approveHead();
     await h.exec.tick();
     expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);

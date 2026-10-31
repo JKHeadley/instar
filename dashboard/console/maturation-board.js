@@ -6,9 +6,10 @@
 // plain groups (Broken, Stuck, …) with one plain line per feature · details on tap.
 
 import { el, cantTell } from './ui.js';
+import { maturationPaceNode } from './pace.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
-  filterRows, orderInGroup, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, card, isNobody,
+  filterRows, orderInGroup, sortRows, SORTS, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, card, isNobody,
 } from './maturation-board-model.js';
 
 const POOL_TIMEOUT_MS = 12_000;
@@ -33,7 +34,9 @@ export async function renderMaturation(main, api, nav = consoleNav()) {
   } else {
     lastBoard = r.data;
   }
-  draw(main, lastBoard, nav);
+  // One pace line for maturation fixes (docs/specs/queue-pace.md); hidden when not measured.
+  const pace = api && typeof api.get === 'function' ? maturationPaceNode((path, ms) => api.get(path, ms)) : null;
+  draw(main, lastBoard, nav, pace);
 }
 
 export function consoleNav() {
@@ -43,13 +46,13 @@ export function consoleNav() {
   };
 }
 
-function draw(main, board, nav) {
+function draw(main, board, nav, pace = null) {
   const st = parseState(nav.read());
   const set = (patch) => {
     const next = { ...st, ...patch };
     for (const k of Object.keys(next)) if (!next[k]) delete next[k];
     nav.write(stateQuery(next));
-    draw(main, board, nav);
+    draw(main, board, nav, pace);
   };
   const features = board.features || [];
   const counts = groupCounts(features);
@@ -58,7 +61,8 @@ function draw(main, board, nav) {
   const hero = el('section', { class: 'mb-hero' },
     el('div', { class: 'eyebrow', text: 'Feature maturation' }),
     el('h1', { class: 'mb-answer', text: headline(board) }),
-    el('p', { class: 'mb-sub', text: subline(board) }));
+    el('p', { class: 'mb-sub', text: subline(board) }),
+    pace);
 
   // 2. The glance: one square per feature, coloured by group; a dot marks "no fix planned".
   const legend = el('div', { class: 'mb-legend' }, GROUPS.filter((g) => counts[g.id]).map((g) => el('button', {
@@ -71,21 +75,24 @@ function draw(main, board, nav) {
       onclick: () => set({ f: s.id, open: s.group }),
     })));
   const glance = el('section', { class: 'mb-glance' }, map, legend,
-    el('p', { class: 'mb-hint', text: 'Each square is one feature. A white dot means no fix is planned. Tap a colour to show only that group.' }));
+    el('p', { class: 'mb-hint', text: 'Each square is one feature. The colour says how it is doing. A white dot means no fix is planned yet; no dot means a fix is planned or under way. Tap a colour to show only that group.' }));
 
-  // 3. Tools: one search box and one switch, nothing else.
+  // 3. Tools: one search box, one switch and a sort choice.
   const search = el('input', { type: 'search', class: 'mb-search', placeholder: 'Find a feature', value: st.q || '', 'aria-label': 'Find a feature' });
   let t = null;
   search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => set({ q: search.value.trim() }), 250); });
   const nobody = el('button', { type: 'button', class: `mb-toggle${st.nobody ? ' on' : ''}`, text: 'Only “no fix planned”', 'aria-pressed': st.nobody ? 'true' : 'false', onclick: () => set({ nobody: st.nobody ? '' : '1' }) });
-  const tools = el('div', { class: 'mb-tools' }, search, nobody,
-    (st.g || st.q || st.nobody) ? el('button', { type: 'button', class: 'mb-link', text: 'Show everything', onclick: () => { nav.write(''); draw(main, board, nav); } }) : null);
+  const sort = el('select', { class: 'mb-sort', 'aria-label': 'Sort features' },
+    SORTS.map((o) => el('option', { value: o.id, text: `Sort: ${o.label}`, selected: (st.sort || 'worst') === o.id ? 'selected' : null })));
+  sort.addEventListener('change', () => set({ sort: sort.value === 'worst' ? '' : sort.value }));
+  const tools = el('div', { class: 'mb-tools' }, search, nobody, sort,
+    (st.g || st.q || st.nobody || st.sort) ? el('button', { type: 'button', class: 'mb-link', text: 'Show everything', onclick: () => { nav.write(''); draw(main, board, nav); } }) : null);
 
   // 4. Plain groups.
   const rows = filterRows(features, st);
   const open = openGroups(st);
   const sections = GROUPS.map((g) => {
-    const inGroup = orderInGroup(rows.filter((f) => groupOf(f).id === g.id));
+    const inGroup = sortRows(rows.filter((f) => groupOf(f).id === g.id), st.sort);
     if (!inGroup.length) return null;
     const isOpen = open.has(g.id) || Boolean(st.q) || Boolean(st.nobody);
     const nobodyN = inGroup.filter(isNobody).length;

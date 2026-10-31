@@ -11,10 +11,10 @@ if ($Port -lt 1024 -or $Port -gt 65535) { throw 'Invalid companion port' }
 $address = [System.Net.IPAddress]::Parse($BindAddress)
 if ($address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { throw 'IPv4 bind address required' }
 $octets = $address.GetAddressBytes()
-$private = ($octets[0] -eq 10) -or
+$private = ($BindAddress -eq '127.0.0.1') -or ($octets[0] -eq 10) -or
   ($octets[0] -eq 172 -and $octets[1] -ge 16 -and $octets[1] -le 31) -or
   ($octets[0] -eq 192 -and $octets[1] -eq 168)
-if (-not $private) { throw 'Companion bind must be on the local WSL bridge' }
+if (-not $private) { throw 'Companion bind must be loopback or on the local WSL bridge' }
 $root = Join-Path $env:LOCALAPPDATA 'InstarDesktop'
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 $secret = Join-Path $root 'companion.secret'

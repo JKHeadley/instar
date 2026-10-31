@@ -153,12 +153,12 @@ export function subline(board) {
   }
   if (board.reviewDate) bits.push(`From the ${fmtDate(board.reviewDate)} review.`);
   const missing = (board.sources || []).find((s) => s.name === 'may-be-superseded');
-  if (missing) bits.push(`${missing.machine} didn’t answer, so this may be out of date.`);
+  if (missing) bits.push(`Couldn’t check ${missing.machine}, so this may be out of date.`);
   return bits.join(' ');
 }
 
 // ── URL state ──────────────────────────────────────────────────────────────
-const KEYS = ['g', 'q', 'nobody', 'open', 'f'];
+const KEYS = ['g', 'q', 'nobody', 'open', 'f', 'sort'];
 
 export function parseState(search) {
   const p = new URLSearchParams(search || '');
@@ -198,6 +198,24 @@ export function filterRows(features, st) {
 export function orderInGroup(rows) {
   const rank = (f) => (isNobody(f) ? 0 : f.followUp && f.followUp.state === 'none-linked' ? 1 : f.followUp && f.followUp.state === 'unknown' ? 2 : 3);
   return rows.slice().sort((a, b) => rank(a) - rank(b) || (b.unchangedReviews || 0) - (a.unchangedReviews || 0) || humanName(a).localeCompare(humanName(b)));
+}
+
+/** The sort choices offered to the operator. 'worst' is the default order. */
+export const SORTS = [
+  { id: 'worst', label: 'Worst first' },
+  { id: 'overdue', label: 'Most overdue' },
+  { id: 'stuck', label: 'Longest stuck' },
+  { id: 'name', label: 'A–Z' },
+];
+
+/** Order rows by the chosen sort; unknown or missing sort keeps the worst-first order. */
+export function sortRows(rows, sort) {
+  const overdue = (f) => Math.max(-1, ...(f.deadlines || []).filter((d) => d.open && d.overdueDays != null).map((d) => d.overdueDays));
+  const byName = (a, b) => humanName(a).localeCompare(humanName(b));
+  if (sort === 'overdue') return rows.slice().sort((a, b) => overdue(b) - overdue(a) || byName(a, b));
+  if (sort === 'stuck') return rows.slice().sort((a, b) => (b.unchangedReviews || 0) - (a.unchangedReviews || 0) || byName(a, b));
+  if (sort === 'name') return rows.slice().sort(byName);
+  return orderInGroup(rows);
 }
 
 /** Squares for the map: one per feature, grouped in display order. */

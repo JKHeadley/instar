@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { readWindowsDesktopUnicastAddresses, selectWindowsDesktopBridgeAddress, validateWindowsDesktopBridgeAddress } from '../dist/core/WindowsDesktopBridgeAddress.js';
 
 if (!process.argv.includes('--enable')) throw new Error('Pass --enable after operator opt-in');
 if (process.platform !== 'linux' || !/microsoft|wsl/i.test(os.release())) {
@@ -31,6 +32,17 @@ if (!(octets[0] === 10 || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 
   || (octets[0] === 192 && octets[1] === 168))) throw new Error('WSL gateway is not private');
 const dest = path.join(linuxAppData, 'InstarDesktop');
 fs.mkdirSync(dest, { recursive: true });
+const windowsAddresses = readWindowsDesktopUnicastAddresses();
+const bindAddress = selectWindowsDesktopBridgeAddress(gateway, windowsAddresses);
+const addressPath = path.join(dest, 'bridge.address');
+let oldAddress = bindAddress;
+if (fs.existsSync(addressPath)) {
+  try { oldAddress = validateWindowsDesktopBridgeAddress(fs.readFileSync(addressPath, 'utf8').trim(), gateway, windowsAddresses); }
+  catch {
+    // @silent-fallback-ok — an old NAT address after a WSL network change is
+    // never contacted. A still-running task will refuse replacement at Stage.
+  }
+}
 const lockPath = path.join(dest, 'install.lock');
 if (!process.argv.includes('--locked')) {
   // flock owns the file descriptor for the entire child process and the kernel
@@ -53,7 +65,7 @@ const existingSecret = path.join(dest, 'companion.secret');
 const runPhase = phase => {
   const receipt = execFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', toWindows(destScript),
-    '-Source', toWindows(destSource), '-BindAddress', gateway, '-Port', '44818', '-Phase', phase,
+    '-Source', toWindows(destSource), '-BindAddress', bindAddress, '-Port', '44818', '-Phase', phase,
   ], { encoding: 'utf8', timeout: 55_000, maxBuffer: 16_384 }).trim();
   return JSON.parse(receipt.split(/\r?\n/).at(-1));
 };
@@ -75,7 +87,7 @@ if (staged.taskRunning) {
     const mac = createHmac('sha256', secret)
       .update(`instar-windows-desktop-v1\n${op}\n${timestamp}\n${nonce}\n${digest}`)
       .digest('base64url');
-      const response = await fetch(`http://${gateway}:44818/${op}`, {
+      const response = await fetch(`http://${oldAddress}:44818/${op}`, {
         method: 'POST', body, redirect: 'manual', signal: AbortSignal.timeout(2_000),
         headers: { 'Content-Type': 'application/json', 'X-Instar-Desktop-Time': timestamp,
           'X-Instar-Desktop-Nonce': nonce, 'X-Instar-Desktop-Mac': mac },
@@ -125,7 +137,8 @@ catch (error) {
   }
   throw error;
 }
-if (installed.installed !== true || installed.bindAddress !== gateway || installed.port !== 44818) {
+if (installed.installed !== true || installed.bindAddress !== bindAddress || installed.port !== 44818) {
   throw new Error('Windows companion installer did not confirm its task');
 }
+fs.writeFileSync(addressPath, bindAddress + '\n', { mode: 0o600 });
 console.log('Installed interactive Windows desktop companion on the WSL bridge');

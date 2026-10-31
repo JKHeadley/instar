@@ -98,6 +98,11 @@ export interface FeedbackTriageServiceOptions {
   dashboardLink: () => string;
   maxWallClockMs?: number;
   clock?: () => number;
+  /**
+   * Queue pace (docs/specs/queue-pace.md §2): one server-written row per tick attempt. The sink
+   * itself writes only while queuePace resolves enabled; omitted → no rows.
+   */
+  paceTicks?: { append(row: { source: 'triage'; kind: 'tick' | 'refused'; runId?: string; decided?: number; calls?: number; stopReason?: string | null; queueDepthAfter?: number | null; reason?: string }): void } | null;
 }
 
 /** The executor's surface the triage service reads (docs/specs/feedback-triage-and-execution.md §3–§5). */
@@ -144,6 +149,8 @@ export class FeedbackTriageService {
   private tickDeadline = 0;
   /** The executor (§4), attached after construction; null → the options' executorStatus. */
   private executor: TriageExecutorHooks | null = null;
+  /** Candidates counted by the tick in flight (queue pace: queueDepthAfter). Null until counted. */
+  private tickCandidates: number | null = null;
 
   constructor(private readonly opts: FeedbackTriageServiceOptions) {
     this.now = opts.clock ?? Date.now;
@@ -184,9 +191,9 @@ export class FeedbackTriageService {
 
   /** Admit a tick and run it in the background (HTTP returns 202 with the run id). */
   acceptTick(): { status: 202 | 409 | 429; body: Record<string, unknown> } {
-    if (!this.opts.isCanonicalOwner()) return { status: 409, body: { error: 'not-canonical-owner' } };
-    if (this.running) return { status: 409, body: { error: 'tick-in-flight' } };
-    if (this.now() - this.lastStartedAt < TICK_MIN_INTERVAL_MS) return { status: 429, body: { error: 'rate-limited', retryAfterMs: TICK_MIN_INTERVAL_MS - (this.now() - this.lastStartedAt) } };
+    if (!this.opts.isCanonicalOwner()) { this.paceRefused('not-canonical-owner'); return { status: 409, body: { error: 'not-canonical-owner' } }; }
+    if (this.running) { this.paceRefused('tick-in-flight'); return { status: 409, body: { error: 'tick-in-flight' } }; }
+    if (this.now() - this.lastStartedAt < TICK_MIN_INTERVAL_MS) { this.paceRefused('rate-limited'); return { status: 429, body: { error: 'rate-limited', retryAfterMs: TICK_MIN_INTERVAL_MS - (this.now() - this.lastStartedAt) } }; }
     const runId = `triage-run:${randomUUID()}`;
     this.running = true;
     this.lastStartedAt = this.now();
@@ -196,8 +203,8 @@ export class FeedbackTriageService {
 
   /** Synchronous variant for tests and the job-less path; same admission rules. */
   async tick(): Promise<TriageTickResult> {
-    if (!this.opts.isCanonicalOwner()) return { runId: '', result: 'degraded', reason: 'not-canonical-owner', decided: 0, requeued: 0, calls: 0 };
-    if (this.running) return { runId: '', result: 'no-op', reason: 'tick-in-flight', decided: 0, requeued: 0, calls: 0 };
+    if (!this.opts.isCanonicalOwner()) { this.paceRefused('not-canonical-owner'); return { runId: '', result: 'degraded', reason: 'not-canonical-owner', decided: 0, requeued: 0, calls: 0 }; }
+    if (this.running) { this.paceRefused('tick-in-flight'); return { runId: '', result: 'no-op', reason: 'tick-in-flight', decided: 0, requeued: 0, calls: 0 }; }
     this.running = true;
     this.lastStartedAt = this.now();
     return this.runTick(`triage-run:${randomUUID()}`);
@@ -207,6 +214,7 @@ export class FeedbackTriageService {
     const out: TriageTickResult = { runId, result: 'no-op', decided: 0, requeued: 0, calls: 0 };
     const startedAt = this.now();
     const epoch = this.opts.ownerEpoch();
+    this.tickCandidates = null;
     try {
       await this.tickBody(runId, epoch, startedAt, out);
     } catch (error) {
@@ -218,9 +226,40 @@ export class FeedbackTriageService {
       try {
         this.opts.store.fenced(epoch, () => this.opts.store.setMeta('last_tick', JSON.stringify({ ...out, startedAt, finishedAt: this.now() })));
       } catch { /* @silent-fallback-ok: a stale-epoch writer must not record a tick; the owner's next tick does */ }
+      // Queue pace: the tick's own result, written in-process (never by an HTTP caller).
+      try {
+        this.opts.paceTicks?.append({
+          source: 'triage', kind: 'tick', runId, decided: out.decided, calls: out.calls, stopReason: out.reason ?? null,
+          queueDepthAfter: this.tickCandidates === null ? null : Math.max(0, this.tickCandidates - out.decided),
+        });
+      } catch { /* @silent-fallback-ok: a pace row is evidence only; missing evidence reads unknown and stops the pace tuner */ }
     }
     return out;
   }
+
+  private paceRefused(reason: 'rate-limited' | 'tick-in-flight' | 'not-canonical-owner'): void {
+    try { this.opts.paceTicks?.append({ source: 'triage', kind: 'refused', reason }); } catch { /* @silent-fallback-ok: evidence only */ }
+  }
+
+  /**
+   * Live quota reading for the queue-pace tuner (the same provider the quota pause uses).
+   * pauseThreshold is the constant QUOTA_PAUSE_PERCENT (75), so the tuner's 10-point margin
+   * means "below 65%". usedPercent is null when unreadable or no authority is registered.
+   */
+  async quotaStatus(): Promise<{ usedPercent: number | null; pauseThreshold: number }> {
+    const authority = this.authority();
+    if (!authority) return { usedPercent: null, pauseThreshold: QUOTA_PAUSE_PERCENT };
+    const used = await this.opts.quotaUsedPercent(authority.provider).catch(() => null);
+    return { usedPercent: used, pauseThreshold: QUOTA_PAUSE_PERCENT };
+  }
+
+  /** Calls reserved today against the triage authority (the summary's callsUsedToday source); null without an authority. */
+  callsUsedToday(): number | null {
+    const authority = this.authority();
+    return authority ? this.opts.drainStore.authorityCallsToday(authority, this.now()) : null;
+  }
+
+  maxCallsPerDay(): number { return this.opts.config().maxCallsPerDay; }
 
   private async tickBody(runId: string, epoch: number, startedAt: number, out: TriageTickResult): Promise<void> {
     const maxWallClockMs = Math.min(110_000, this.opts.maxWallClockMs ?? 110_000);
@@ -282,7 +321,9 @@ export class FeedbackTriageService {
       // unreadable pauses triage indefinitely, and nothing else would ever say so.
       const since = this.opts.store.metaJson<{ since?: number }>('quota_pause')?.since ?? this.now();
       this.opts.store.fenced(epoch, () => this.opts.store.setMeta('quota_pause', JSON.stringify({ at: this.now(), since, usedPercent: used })));
-      if (this.now() - since >= QUOTA_PAUSE_NOTICE_MS && this.selectCandidates(initiativeById, clusterById).length > 0) {
+      const waiting = this.selectCandidates(initiativeById, clusterById).length;
+      this.tickCandidates = waiting;
+      if (this.now() - since >= QUOTA_PAUSE_NOTICE_MS && waiting > 0) {
         await this.attention({
           id: `feedback-triage:quota-paused:${since}`,
           title: 'Feedback triage has been paused for hours',
@@ -308,6 +349,7 @@ export class FeedbackTriageService {
     }
 
     const candidates = this.selectCandidates(initiativeById, clusterById);
+    this.tickCandidates = candidates.length;
     if (candidates.length === 0) { this.gradeQuietDecisions(epoch, clusterById); await this.weeklySample(authority, epoch, out); return; }
 
     const mergedPrs = await this.opts.listMergedPrs().catch(() => null);

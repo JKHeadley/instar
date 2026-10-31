@@ -78,7 +78,7 @@ describe('the list', () => {
   it('quiet and duplicate sessions need a look; the rest are working; rows name their machine', () => {
     const quiet = sess({ tmuxSession: 'drain', name: 'drain', platformName: 'Feedback drain', platformId: 1, startedAt: iso(NOW - 3 * 3600_000), telemetry: { lastActivity: iso(NOW - 25 * 60_000) } });
     const dup = sess({ tmuxSession: 'dup', name: 'dup', platformName: 'Topic 9', platformId: 9, remote: true, machineId: 'm-mini', machineNickname: 'Mac Mini' });
-    const m = buildSessions(poolOf([sess(), quiet, dup, sess({ tmuxSession: 'old', status: 'completed' })], { duplicateTopics: [{ sessions: ['dup'] }] }), { now: NOW });
+    const m = buildSessions(poolOf([sess(), quiet, dup, sess({ tmuxSession: 'old', status: 'completed' })], { duplicateTopics: [{ platform: 'telegram', platformId: 9, sessions: ['dup'] }] }), { now: NOW });
     if (!m.ok) throw new Error('model failed');
     expect(m.rows.map((r) => r.title)).toEqual(['Bug: login loop', 'Topic 9', 'Feedback drain']);
     expect(m.needsLook.map((r) => r.title)).toEqual(['Topic 9', 'Feedback drain']);
@@ -90,6 +90,14 @@ describe('the list', () => {
     const noDup = buildSessions(poolOf([sess(), quiet]), { now: NOW });
     expect(sessionsHeadline(noDup)).toEqual({ text: '2 sessions running. One has been quiet for 25 minutes.', tone: 'attn' });
     expect(sessionsFacts(noDup)[1]).toEqual({ n: 1, label: 'quiet 10+ min', tone: 'attn' });
+  });
+  it('matches duplicate warnings by conversation even when session keys collide', () => {
+    const local = sess({ tmuxSession: 'shared-key', platformId: 10, platformName: 'Different conversation' });
+    const remote = sess({ tmuxSession: 'shared-key', platformId: 9, platformName: 'Repeated conversation', remote: true, machineId: 'm-mini' });
+    const m = buildSessions(poolOf([local, remote], { duplicateTopics: [{ platform: 'telegram', platformId: 9, sessions: ['shared-key'] }] }), { now: NOW });
+    if (!m.ok) throw new Error('model failed');
+    expect(m.rows.find((r) => r.title === 'Different conversation')?.duplicate).toBe(false);
+    expect(m.rows.find((r) => r.title === 'Repeated conversation')?.duplicate).toBe(true);
   });
   it('the live socket list wins for this machine but keeps the pool read’s protected flag', () => {
     const merged = mergeSessions({ sessions: [sess({ protected: true }), sess({ tmuxSession: 'r', remote: true })] }, [{ tmuxSession: 'echo-fix', name: 'live name', status: 'running', startedAt: iso(NOW) }, { tmuxSession: 'new', status: 'running' }]);

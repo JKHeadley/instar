@@ -17,6 +17,11 @@ export interface DesktopProbe {
   inputPermission: boolean;
   displayCount: number;
   sessionActive: boolean;
+  /** macOS helper diagnostics only; absent on other host adapters. */
+  consoleSessionPresent?: boolean;
+  onConsole?: boolean;
+  loginDone?: boolean;
+  screenLocked?: boolean;
 }
 
 export interface DesktopHost {

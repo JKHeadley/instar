@@ -857,6 +857,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Read-only maturation board: every maturing feature with its review verdict, live owner facts, follow-ups and recorded dates (GET /maturation/board, /dashboard/maturation/).',
     justification: 'Read-only and advisory (authority none): joins review files and existing owners at request time; stores nothing, writes nothing, no LLM spend, no outbound messages, no gating. Pool scope only proxies bounded per-machine projections.',
   },
+  {
+    name: 'queuePace',
+    configPath: 'queuePace.enabled',
+    description: 'Queue pace: an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items), with a plain verdict and the reason a queue is behind (GET /queue-pace, the console Pace card).',
+    justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
+  },
 ];
 
 /**

@@ -52,6 +52,8 @@ export interface Session {
   jobSlug?: string;
   /** tmux session name */
   tmuxSession: string;
+  /** Telegram topic routing ID, retained with the session so display-name reads can verify its title. */
+  telegramTopicId?: number;
   /** When the session was created */
   startedAt: string;
   /** When the session ended (if completed) */
@@ -3888,6 +3890,29 @@ export interface InstarConfig {
     enabled?: boolean;
     /** Review files directory, relative to the project dir. Default docs/research/feature-maturation/reviews. */
     reviewsDir?: string;
+  };
+  /**
+   * Queue pace (docs/specs/queue-pace.md): arrivals vs completions for every work queue, and a
+   * bounded pace tuner for feedback sorting. `enabled` is omitted by default so the
+   * developmentAgent gate decides (measure-only). The tuner has its OWN explicit flag, never
+   * dev-gated, because extra ticks spend real quota.
+   */
+  queuePace?: {
+    enabled?: boolean;
+    tuner?: {
+      /** Default false. */
+      enabled?: boolean;
+      /** Default true: log would-tick, tick nothing. */
+      dryRun?: boolean;
+      /** Minimum minutes between extra ticks (default 10, floor 10). */
+      minGapMinutes?: number;
+      /** Extra ticks per local day (default 12, ceiling 12). */
+      maxExtraRunsPerDay?: number;
+    };
+    notices?: {
+      /** Default true: log would-raise, raise nothing. */
+      dryRun?: boolean;
+    };
   };
   routingSpend?: {
     /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */

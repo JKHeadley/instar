@@ -157,10 +157,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'remoteDesktop',
     prefixes: ['/desktop'],
-    description: 'Native operator remote desktop on this installed machine. The first host is a development Mac with a live display and input permission; other machines stay unavailable until their own host adapter passes live tests. The operator opens /dashboard/desktop.html and enters the existing dashboard PIN to view and control the logged-in desktop. The page names the machine and explains that clicks and typing affect its open apps. Stop, expiry, disconnect, or loss of the local control indicator ends both display and input. This direct action does not require a blocker or Telegram setup. The PIN proves dashboard credential possession, not independent human identity. Registry First: GET /desktop/availability reports this machine only; 503 means the feature is off.',
+    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
     build: ({ ctx }) => ({
       configured: !!ctx.directDesktopAccess,
-      endpoints: ['GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
+      endpoints: ['GET /desktop/diagnostics', 'GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
         'GET /desktop/requests/:id', 'POST /desktop/requests/:id/ticket',
         'POST /desktop/requests/:id/revoke', 'WebSocket /desktop-stream'],
     }),
@@ -244,6 +244,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /doorways'],
+    }),
+  },
+  {
+    key: 'queuePace',
+    prefixes: ['/queue-pace'],
+    description: 'Queue pace (docs/specs/queue-pace.md) — an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items) with a plain 7-day verdict (falling-behind / catching-up / holding / shrinking-by-exits / unknown / owner-not-serving) and, for a queue that is behind, the named reason (person / quota / cap / worker / unknown). GET /queue-pace (?scope=pool merges every machine) returns per-queue inflowPerDay, outflowPerDay, exitedPerDay, open, daysToClear, bottleneck, coverage and tuner state. Dev-gated measure-only (queuePace.enabled); 503 when dark. The triage pace tuner has its own flag queuePace.tuner.enabled (default false, dry-run). When asked "are we keeping up with feedback / promises / action items?" → read this, don\'t guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /queue-pace'],
     }),
   },
   {

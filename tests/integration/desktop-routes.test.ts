@@ -95,6 +95,22 @@ describe('remote desktop HTTP routes', () => {
       .set('X-Instar-Request', '1').send({})).status).toBe(409);
   });
 
+  it('keeps target diagnostics bearer-only and reports probe signals without a desktop grant', async () => {
+    const probe = { configured: true, targetConstructed: true, status: 'not-ready',
+      screenPermission: true, inputPermission: true, displayCount: 1, sessionActive: false };
+    const getter = vi.fn(async () => probe);
+    const { server } = app(null, { desktopLocalDiagnostics: getter });
+    expect((await request(server).get('/desktop/diagnostics')).status).toBe(401);
+    const result = await request(server).get('/desktop/diagnostics')
+      .set('Authorization', `Bearer ${AUTH}`);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual(probe);
+    expect(result.headers['cache-control']).toBe('no-store');
+    expect(getter).toHaveBeenCalledOnce();
+    expect((await request(server).get('/desktop/availability')
+      .set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
+  });
+
   it('reports an unavailable restart without claiming activation', async () => {
     const { server } = app(null, { config: { projectName: 'desktop-test', projectDir: '/tmp',
       stateDir: '/tmp', port: 0, authToken: AUTH,
@@ -176,7 +192,7 @@ describe('remote desktop HTTP routes', () => {
     expect(resumeCodecs).toMatchObject({ previousVideoCodec: 'h264', videoCodec: 'jpeg' });
   });
 
-  it('explains a locked desktop after PIN verification', async () => {
+  it('does not misdiagnose a missing Mac console session as a locked computer', async () => {
     const access = fakeAccess();
     access.probe = async () => ({ ready: false, screenPermission: true,
       inputPermission: true, displayCount: 1, sessionActive: false });
@@ -186,7 +202,7 @@ describe('remote desktop HTTP routes', () => {
       .set('X-Instar-Operator-Session', 'operator-proof');
     expect(listed.status).toBe(200);
     expect(listed.body.machines[0]).toMatchObject({ ready: false,
-      unavailableReason: expect.stringContaining('locked or inactive') });
+      unavailableReason: expect.stringContaining('helper has no active console session') });
   });
 
   it('lists a probed peer and routes its control calls without returning the target session token', async () => {

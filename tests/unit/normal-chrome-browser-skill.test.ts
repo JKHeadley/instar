@@ -568,6 +568,19 @@ esac`;
     const envBase = () => ({ ND_POWERSHELL: '/nonexistent', STUB_LAD: lad, STUB_DIR: stubDir });
     const logRows = () => fs.readFileSync(path.join(home, '.instar', 'logs', 'normal-chrome-browser.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
     const nd = (args: string[], env: Record<string, string> = {}, input = '') => run('ndrive.sh', args, { ...envBase(), ...env }, input);
+    // These two refusal cases must hide the real WSL binaries on a WSL host.
+    // Keep only the shell utilities needed to reach and log the guard.
+    const guardedPath = () => {
+      const toolsDir = path.join(tmp, 'guarded-bin');
+      fs.mkdirSync(toolsDir, { recursive: true });
+      for (const name of ['basename', 'tr', 'shasum', 'cut', 'cksum', 'mkdir', 'dirname', 'date']) {
+        const target = path.join(toolsDir, name);
+        const source = [`/usr/bin/${name}`, `/bin/${name}`].find((candidate) => fs.existsSync(candidate));
+        if (!source) throw new Error(`Missing system utility for guarded PATH: ${name}`);
+        if (!fs.existsSync(target)) fs.symlinkSync(source, target);
+      }
+      return `${bin}:${toolsDir}`;
+    };
     /** The wrapper's per-agent tag: the home's basename plus 8 hex of the full (physical) home path. */
     const agentTag = () => `${path.basename(home)}-${createHash('sha256').update(home).digest('hex').slice(0, 8)}`;
 
@@ -586,7 +599,7 @@ esac`);
 
     it('refuses to run without wslpath (ERR wsl-only, exit 2): Git Bash is untested', () => {
       SafeFsExecutor.safeRmSync(path.join(bin, 'wslpath'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      const r = run('ndrive.sh', ['target'], { ...envBase(), PATH: `${bin}:/usr/bin:/bin` });
+      const r = run('ndrive.sh', ['target'], { ...envBase(), PATH: guardedPath() });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('ERR wsl-only');
       expect(logRows().pop()).toMatchObject({ cmd: 'target', exit: 2, via: 'none' });
@@ -594,7 +607,7 @@ esac`);
 
     it('refuses to run where no powershell.exe is reachable (ERR windows-only, exit 2) and logs the refusal', () => {
       SafeFsExecutor.safeRmSync(path.join(bin, 'powershell.exe'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      const r = nd(['target']);
+      const r = nd(['target'], { PATH: guardedPath() });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('ERR windows-only');
       expect(r.stderr).toContain('chrome-launch.sh');

@@ -19,7 +19,7 @@ const ISSUES = '-100999888';
 const dirs: string[] = [];
 const adapters: TelegramAdapter[] = [];
 
-function makeApp(issuesChatId?: string) {
+function makeApp(issuesChatId?: string, peers: Array<{ machineId: string; url: string }> = []) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-issue-route-'));
   dirs.push(dir);
   const telegram = new TelegramAdapter({ token: 'test-token-123', chatId: MAIN, ...(issuesChatId ? { issuesChatId } : {}) }, dir);
@@ -39,6 +39,7 @@ function makeApp(issuesChatId?: string) {
     config: { authToken: '', stateDir: dir, port: 0 },
     messagingToneGate: null, outboundDedupGate: null, topicIntentArcCheck: null, topicMemory: null,
     telegram,
+    resolvePeerUrls: () => peers,
   } as any));
   return { app, calls };
 }
@@ -47,6 +48,74 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   await Promise.all(adapters.splice(0).map(a => a.stop()));
   for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/telegram-issue-topics-route.test.ts' });
+});
+
+describe('GET /telegram/topics?scope=pool', () => {
+  it('can resolve a peer title even when this machine has no Telegram adapter', async () => {
+    // Exercise the route with the adapter absent, as on machines that only
+    // serve the console and read the pool.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-topics-no-adapter-'));
+    dirs.push(dir);
+    const plain = express();
+    plain.use(createRoutes({
+      config: { authToken: '', stateDir: dir, port: 0 },
+      messagingToneGate: null, outboundDedupGate: null, topicIntentArcCheck: null, topicMemory: null,
+      telegram: null,
+      resolvePeerUrls: () => [{ machineId: 'studio', url: 'http://127.0.0.1:4567' }],
+    } as any));
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ topics: [{ topicId: 127504, topicName: 'Instar dashboard makeover' }] }) })));
+    const res = await request(plain).get('/telegram/topics?scope=pool').expect(200);
+    expect(res.body.topics[0].topicName).toBe('Instar dashboard makeover');
+  });
+
+  it('joins the real name from another machine while keeping the ID bound to it', async () => {
+    const { app } = makeApp(undefined, [{ machineId: 'studio', url: 'http://127.0.0.1:4567' }]);
+    const localAdapter = adapters[adapters.length - 1];
+    localAdapter.registerTopicSession(127504, 'echo-topic', 'topic-127504');
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ topics: [{ topicId: 127504, sessionName: 'studio-topic', topicName: 'Instar dashboard makeover' }] }) })));
+    const res = await request(app).get('/telegram/topics?scope=pool').expect(200);
+    expect(res.body.topics).toEqual([{ topicId: 127504, sessionName: 'studio-topic', topicName: 'Instar dashboard makeover' }]);
+    expect(res.body.pool.unresolved).toEqual([]);
+  });
+
+  it('reports an unresolved binding instead of presenting topic-N as its name', async () => {
+    const { app } = makeApp();
+    adapters[adapters.length - 1].registerTopicSession(127504, 'echo-topic', 'topic-127504');
+    const res = await request(app).get('/telegram/topics?scope=pool').expect(200);
+    expect(res.body.topics).toEqual([]);
+    expect(res.body.pool.unresolved).toEqual([127504]);
+  });
+
+  it('uses the serving machine title when a standby has an older real title', async () => {
+    const { app } = makeApp(undefined, [{ machineId: 'studio', url: 'http://127.0.0.1:4567' }]);
+    adapters[adapters.length - 1].registerTopicSession(127504, 'echo-topic', 'Old title');
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ serving: true, topics: [{ topicId: 127504, sessionName: 'studio-topic', topicName: 'Renamed title' }] }) })));
+    const res = await request(app).get('/telegram/topics?scope=pool').expect(200);
+    expect(res.body.topics[0].topicName).toBe('Renamed title');
+  });
+});
+
+describe('GET /sessions?scope=pool display identity', () => {
+  it('normalizes old peer session names and machine IDs during a mixed-version rollout', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-session-names-pool-'));
+    dirs.push(dir);
+    const app = express();
+    app.use(createRoutes({
+      config: { authToken: '', stateDir: dir, port: 0, sessions: { maxSessions: 5 } },
+      state: { listSessions: () => [] },
+      telegram: null,
+      messagingToneGate: null, outboundDedupGate: null, topicIntentArcCheck: null, topicMemory: null,
+      resolvePeerUrls: () => [{ machineId: 'm_abcdefghijklmnop', url: 'http://127.0.0.1:4567' }],
+    } as any));
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200,
+      json: async () => [{ id: 'peer-session', name: 'echo-topic-127504', tmuxSession: 'echo-topic-127504',
+        status: 'running', platform: 'telegram', platformId: 127504, machineNickname: 'm_abcdefghijklmnop' }],
+    })));
+    const res = await request(app).get('/sessions?scope=pool').expect(200);
+    expect(res.body.sessions[0].name).toBe('Conversation name unavailable');
+    expect(res.body.sessions[0].machineNickname).toBeNull();
+  });
 });
 
 describe('POST /telegram/topics kind:"issue"', () => {

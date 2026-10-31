@@ -1032,6 +1032,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .mb-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: var(--s-4); }
 .mb-search { flex: 1 1 220px; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font-family: inherit; font-size: 16px; line-height: 1.2; }
 .mb-toggle { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; cursor: pointer; }
+.mb-sort { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; cursor: pointer; }
 .mb-toggle.on { border-color: #ef5b5b; color: #ef5b5b; }
 .mb-link { border: 0; background: none; color: var(--accent); font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; cursor: pointer; padding: 10px 4px; }
 .mb-groups { display: flex; flex-direction: column; gap: var(--s-3); }
@@ -1078,3 +1079,12 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   .mb-card { grid-template-columns: 1fr; gap: 2px; }
   .mb-card dd { margin-bottom: 8px; }
 }
+
+/* Queue pace card (docs/specs/queue-pace.md) */
+.pace-card { grid-column: 1 / -1; margin-top: var(--s-4, 16px); }
+.pace-lines { list-style: none; margin: var(--s-2, 8px) 0 0; padding: 0; display: grid; gap: 8px; }
+.pace-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--text); }
+.pace-line .dot { position: relative; top: -1px; }
+.pace-line[data-tone="muted"] .pace-text { color: var(--text-muted); }
+.pace-prs { display: inline-flex; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+.mb-pace { margin-top: 4px; }

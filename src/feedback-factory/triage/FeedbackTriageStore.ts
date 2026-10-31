@@ -312,6 +312,23 @@ export class FeedbackTriageStore {
   }
 
   /**
+   * A conditional executor hold (docs/specs/feedback-executor-review-failed-recovery.md §1): applied
+   * only while the item is still `work` AND its latest decision is still `expectedDecisionSequence`
+   * (null = the item has no decision). An item the operator has since moved (ignored, held,
+   * released into a new episode) is left exactly as set. Returns whether the hold was written.
+   */
+  executorHoldIf(ownerEpoch: number, initiativeId: string, reason: string, currentReportCount: number, expectedDecisionSequence: number | null): boolean {
+    return this.fenced(ownerEpoch, () => {
+      const row = this.get(initiativeId);
+      if (!row || row.state !== 'work') return false;
+      const latest = this.latestDecisionFor(initiativeId)?.sequence ?? null;
+      if (latest !== expectedDecisionSequence) return false;
+      this.executorHold(ownerEpoch, initiativeId, reason, currentReportCount);
+      return true;
+    });
+  }
+
+  /**
    * The operator published a held change set with the dashboard PIN: the item is `work` again
    * (its PR now waits for review), not re-triaged — a re-triage would orphan the approved PR.
    */

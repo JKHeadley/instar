@@ -175,7 +175,13 @@ import { createSpecReviewRoutes } from './specReviewRoutes.js';
 import { createUsherRoutes } from './usherRoutes.js';
 import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
-import { createMaturationBoardRoutes } from './maturationBoardRoutes.js';
+import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
+import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
+import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
+import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
+import { dateMs as maturationDateMs, historySeries as maturationHistorySeries } from '../monitoring/MaturationBoard.js';
+import type { QueueAdapter } from '../monitoring/QueuePaceLedger.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
@@ -184,6 +190,7 @@ import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
+import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
@@ -501,6 +508,14 @@ export class AgentServer {
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
   private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
+  /** Queue pace (docs/specs/queue-pace.md): tick-row sink, ledger, tuner and their timers. */
+  private queuePaceTicks: QueuePaceTickLog | null = null;
+  private queuePaceLedger: QueuePaceLedger | null = null;
+  private queuePaceTuner: QueuePaceTuner | null = null;
+  private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
+  private feedbackOwnerServing: (() => boolean) | null = null;
+  private feedbackDrainDb: (() => import('better-sqlite3').Database | null) | null = null;
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
@@ -1480,10 +1495,9 @@ export class AgentServer {
             return { ...target, ready: false,
               unavailableReason: 'Desktop capture is not available on this machine.' };
           }
+          const reason = desktopProbeUnavailableReason(probe);
           return { ...target, ready: probe.ready,
-            ...(!probe.ready ? { unavailableReason: probe.sessionActive
-              ? 'Screen recording or input permission is unavailable on this machine.'
-              : 'This machine’s desktop is locked or inactive.' } : {}) };
+            ...(!probe.ready ? { unavailableReason: reason } : {}) };
         },
         onDesktopOperatorBegin: async (untrustedBody, frontId) => {
           if (!this.directDesktopAccess || !this.meshSelfId) throw new Error('desktop-target-unavailable');
@@ -3023,6 +3037,9 @@ export class AgentServer {
         let restorePending = store.restorePending();
         const holdsCanonicalLease = () => ownerHost !== null && selfMachineId === ownerHost && (options.coordinator?.enabled ? options.coordinator.holdsLease() : true);
         const isCanonicalOwner = () => !restorePending && holdsCanonicalLease();
+        this.feedbackOwnerServing = isCanonicalOwner;
+        // Queue pace measures the feedback queues only on their configured operated host.
+        if (ownerHost !== null && selfMachineId === ownerHost) this.feedbackDrainDb = () => store.sharedDatabase();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
@@ -3132,6 +3149,7 @@ export class AgentServer {
                 await enqueue.call(this.telegramAdapter, item);
               },
               tunnelUrl: () => options.tunnel?.url ?? null,
+              paceTicks: this.queuePaceTickLog(options.config),
               overrides: options.feedbackTriageDeps,
             });
             console.log('[feedback-factory] triage live (awaiting operator approval until the triage authority is registered)');
@@ -3168,6 +3186,7 @@ export class AgentServer {
                   await enqueue.call(this.telegramAdapter, item);
                 },
                 tunnelUrl: () => options.tunnel?.url ?? null,
+                paceTicks: this.queuePaceTickLog(options.config),
                 overrides: options.feedbackExecuteDeps,
               });
               const executor = this.feedbackExecute.service;
@@ -5090,6 +5109,35 @@ export class AgentServer {
       blockerLedger: this.blockerLedger,
       directDesktopAccess: options.config.remoteDesktop?.frontMachineId === this.meshSelfId
         ? this.directDesktopAccess : null,
+      desktopLocalDiagnostics: async () => {
+        const configured = options.config.remoteDesktop?.enabled === true;
+        if (!configured || !this.directDesktopAccess) {
+          return { configured, targetConstructed: !!this.directDesktopAccess,
+            status: configured ? 'target-unavailable' : 'off' };
+        }
+        try {
+          const probe = await this.directDesktopAccess.probe();
+          return { configured, targetConstructed: true, status: probe.ready ? 'ready' : 'not-ready',
+            screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
+            displayCount: probe.displayCount, sessionActive: probe.sessionActive,
+            ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
+              .reduce((details, key) => {
+                if (typeof probe[key] === 'boolean') details[key] = probe[key];
+                return details;
+              }, {} as Record<string, boolean>) };
+        } catch (error) {
+          // @silent-fallback-ok — the authenticated diagnostic reports a sanitized probe-error;
+          // the target stays unavailable and no grant or frame is emitted.
+          const message = error instanceof Error ? error.message : '';
+          const safeCode = /^(?:mac|windows)-desktop-[a-z-]+$/.test(message) ? message : 'probe-failed';
+          const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : null;
+          const networkCode = typeof cause?.code === 'string'
+            && /^(?:ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)$/.test(cause.code)
+            ? cause.code : undefined;
+          return { configured, targetConstructed: true, status: 'probe-error', code: safeCode,
+            ...(networkCode ? { networkCode } : {}) };
+        }
+      },
       desktopMeshBroker: this.desktopMeshBroker,
       desktopTargetSigningKey: machineId => {
         if (this.directDesktopAccess?.targetInfo().machineId === machineId) {
@@ -5671,6 +5719,10 @@ export class AgentServer {
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry }));
+    // Queue pace (docs/specs/queue-pace.md): measure-only ledger + route (dev-gated, read each
+    // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
+    this.startQueuePace(options);
+    this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -7667,6 +7719,8 @@ export class AgentServer {
       clearInterval(this.feedbackExecuteDisarmTimer); // clearInterval cannot throw
       this.feedbackExecuteDisarmTimer = null;
     }
+    for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
+    this.queuePaceTimers = [];
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
@@ -7748,6 +7802,77 @@ export class AgentServer {
   /**
    * Expose the Express app for testing with supertest.
    */
+  /** The shared queue-pace tick-row sink; writes only while queuePace resolves enabled (read per row). */
+  private queuePaceTickLog(config: InstarConfig): QueuePaceTickLog {
+    if (!this.queuePaceTicks) {
+      this.queuePaceTicks = new QueuePaceTickLog(path.join(config.stateDir, 'logs', 'queue-pace-ticks.jsonl'), () => isQueuePaceEnabled(config));
+    }
+    return this.queuePaceTicks;
+  }
+
+  /** Build the queue-pace ledger + tuner over the owners this machine actually runs. */
+  private startQueuePace(options: { config: InstarConfig; commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker; evolution?: EvolutionManager }): void {
+    const config = options.config;
+    if (!config.stateDir) return;
+    try {
+      const machineId = this.meshSelfId ?? config.projectName;
+      const ticks = this.queuePaceTickLog(config);
+      const adapters: QueueAdapter[] = [];
+      const ownerServing = () => { try { return this.feedbackOwnerServing?.() ?? false; } catch { return false; } }; // @silent-fallback-ok: an unreadable predicate is "not serving"
+      if (this.feedbackDrainDb) {
+        const db = this.feedbackDrainDb;
+        adapters.push(feedbackTriageAdapter({ db, ownerServing }), feedbackFixAdapter({ db, ownerServing }));
+      }
+      const projectDir = path.dirname(config.stateDir);
+      adapters.push(maturationAdapter(async () => {
+        const { dir, error } = resolveReviewsDir(projectDir, maturationBoardConfig(config).reviewsDir);
+        if (!dir) return error === 'no-reviews-dir' ? null : { error: error ?? 'reviews-dir-unreadable' };
+        const rv = await readReviewDir(dir, Date.now(), machineId);
+        if (rv.dirError) return { error: rv.dirError };
+        return maturationHistorySeries(rv.reviews).map((r) => ({ date: r.date, at: maturationDateMs(r.date), rows: r.rows.map((x) => ({ id: x.id, verdict: x.verdict })) }));
+      }));
+      if (options.commitmentTracker) adapters.push(commitmentsAdapter(options.commitmentTracker, this.meshSelfId ?? null));
+      if (options.evolution) adapters.push(evolutionAdapter(options.evolution));
+      const triagePort = () => this.feedbackTriage?.service ?? null;
+      let tuner: QueuePaceTuner | null = null;
+      const ledger = new QueuePaceLedger({
+        stateDir: config.stateDir, machineId, config: () => config, adapters, ticks,
+        executorFacts: () => (this.feedbackDrainDb ? readExecutorFacts(this.feedbackDrainDb(), () => this.feedbackExecute?.service.status().reason === 'approver-not-independent', () => this.feedbackExecute?.service.repoSlug() ?? null) : null),
+        triageCalls: () => { const t = triagePort(); return t ? { callsUsedToday: t.callsUsedToday(), maxCallsPerDay: t.maxCallsPerDay() } : null; },
+        extraTicksAllowed: () => tuner?.extraTicksAllowed() ?? 0,
+        tunerView: () => tuner?.view() ?? null,
+        attention: {
+          raise: async (item) => {
+            if (!this.telegramAdapter) throw new Error('durable attention enqueue unavailable');
+            await this.telegramAdapter.createAttentionItem(item);
+          },
+          clear: (key, resolution) => { this.telegramAdapter?.clearAttentionCondition({ conditionKey: key }, resolution); },
+        },
+        feedbackReportsPerDay: () => {
+          if (!this.feedbackProcessing) return null;
+          const since = Date.now() - 24 * 3_600_000;
+          let n = 0;
+          for (const items of this.feedbackProcessing.feedbackByCluster().values()) for (const f of items) { const t = f.receivedAt ? Date.parse(f.receivedAt) : NaN; if (t >= since) n++; }
+          return n;
+        },
+      });
+      tuner = new QueuePaceTuner({ stateDir: config.stateDir, config: () => config, ledger, ticks, triage: triagePort, ownerServing });
+      this.queuePaceLedger = ledger;
+      this.queuePaceTuner = tuner;
+      const runLedger = () => { void ledger.tick().catch((e) => console.warn('[queue-pace] tick failed:', e instanceof Error ? e.message : e)); };
+      const first = setTimeout(runLedger, 60_000); first.unref?.();
+      this.queuePaceTimers.push(first as unknown as ReturnType<typeof setInterval>);
+      const every = setInterval(runLedger, 5 * 60_000); every.unref?.();
+      this.queuePaceTimers.push(every);
+      const pump = setInterval(() => { void tuner!.pump(); }, 60_000); pump.unref?.();
+      this.queuePaceTimers.push(pump);
+    } catch (error) { // @silent-fallback-ok: logged; the ledger stays null so GET /queue-pace answers 503 and nothing else is affected
+      console.warn('[queue-pace] init failed (non-fatal):', error instanceof Error ? error.message : error);
+      this.queuePaceLedger = null;
+      this.queuePaceTuner = null;
+    }
+  }
+
   getApp(): Express {
     return this.app;
   }

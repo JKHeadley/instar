@@ -870,6 +870,23 @@ One read-only page joining what already records feature maturation: the \`featur
 }
 
 /**
+ * CLAUDE.md awareness block for Queue pace (docs/specs/queue-pace.md).
+ * Unique content-sniff marker: `Queue Pace — is every work pile shrinking`.
+ * Measure-only ledger + route (dev-gated); the triage tuner has its own explicit flag.
+ */
+export function QUEUE_PACE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Queue Pace — is every work pile shrinking or growing? (\`GET /queue-pace\`)
+
+An hourly ledger that pairs ARRIVALS with COMPLETIONS for every work queue: feedback sorting (\`feedback.triage\`), feedback fixes (\`feedback.fix\`, done = fix PR merged), maturation fixes (\`maturation.fix\`, stepped per review), promises (\`commitments\`) and self-improvement items (\`evolution\`). Each queue gets a plain verdict — \`falling-behind\` / \`catching-up\` / \`holding\` / \`shrinking-by-exits\` (items left without being done — never progress) / \`unknown\` / \`owner-not-serving\` — over a 7-day window, and \`unknown\` whenever fewer than 80% of the window's hours were measured or the last 3 were not. A falling-behind queue names WHY: \`person\` (fixes waiting for the operator's review — information, never pressure), \`quota\`, \`cap\` (a fixed limit, e.g. "4 fix slots held by fixes that failed review" or "the daily sorting call limit would be reached"), \`worker\` (the sorting rounds keep running out of time with work waiting), or \`unknown\`.
+- Registry First — read it, never guess: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/queue-pace?scope=pool"\` → \`{ queues: [{ id, label, machine, verdict, inflowPerDay, outflowPerDay, exitedPerDay, open, daysToClear, bottleneck: { kind, matched, detail }, coverage, tuner, owner, lastIntervalTo }], context: { feedbackReportsPerDay } }\`. 503 = dark on this agent (\`queuePace.enabled\` omitted ⇒ live on a development agent, dark on the fleet).
+- The console's Work page carries a "Pace" card with one plain line per queue; the maturation board shows a pace line for maturation fixes. Send the operator there rather than pasting JSON.
+- **Pace tuner (feedback sorting only):** where — and only where — the worker itself is the measured limit, it asks the triage service for at most one extra round every 10 minutes, at most 12 a day, never near a scheduled round, only while account quota is 10 points under the pause threshold and the day's call cap would not be reached; it never raises a cap or a schedule. Its OWN flag \`queuePace.tuner.enabled\` (default false, never dev-gated) and \`queuePace.tuner.dryRun\` (default true: logs would-tick, ticks nothing). Audit: \`logs/queue-pace-tuner.jsonl\`.
+- An attention item appears only after the speed-up is exhausted or unavailable for 24 h (\`queuePace.notices.dryRun\` defaults true); it clears only on a measured recovery.
+- **When to use** (PROACTIVE — this is the trigger): the operator asks "are we keeping up with feedback / promises / action items?", "is the backlog growing?", or "why isn't X getting done faster?" → read \`GET /queue-pace?scope=pool\` and quote the verdict AND its named reason; never answer from a single count.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for the Routing Control Room spend VIEW (Increment A — the
  * read-only spend/caps surface). The unique heading substring `Routing Spend view` is the
  * content-sniff marker used by migrateClaudeMd (Migration Parity). Read-only; the money
@@ -7384,6 +7401,36 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    // Replace a shipped legacy section before any missing capability bullets
+    // are appended. An appended bullet at EOF would otherwise become part of
+    // that section and make its exact-text migration refuse the replacement.
+    {
+      const r = replaceOrAppendMarkdownSection(content, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(), NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
+      if (r.action !== 'present') {
+        content = r.content;
+        patched = true;
+        result.upgraded.push(
+          r.action === 'replaced' ? 'CLAUDE.md: replaced Normal-Chrome browser section (macOS + Windows)'
+            : r.action === 'appended-old-kept' ? 'CLAUDE.md: added Normal-Chrome browser section (macOS + Windows); the edited macOS-only section was kept'
+              : r.action === 'removed-stale' ? 'CLAUDE.md: removed the stale macOS-only Normal-Chrome browser section'
+                : 'CLAUDE.md: added Normal-Chrome browser section',
+        );
+      }
+    }
+
+    // A verified display name must follow its routing ID onto existing agents.
+    const nameRule = `- Find verified topic names across my machines: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/topics?scope=pool"\`. A topic ID is routing data, never a name. If its name is unresolved, show that clearly and retry; never show \`topic-123\` in place of a title. Apply the same rule to channels, machines, and agents.`;
+    if (!content.includes('Find verified topic names across my machines:')) {
+      const anchor = '- List topics:';
+      const at = content.indexOf(anchor);
+      const eol = at >= 0 ? content.indexOf('\n', at) : -1;
+      content = eol >= 0
+        ? content.slice(0, eol + 1) + nameRule + '\n' + content.slice(eol + 1)
+        : content + '\n' + nameRule + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added verified topic, channel, machine, and agent name rule');
+    }
+
     if (!content.includes(CONSOLE_MARKER)) {
       // Console makeover (docs/specs/console-makeover.md): one bullet under the Dashboard entry.
       const anchor = '- Features: Real-time terminal streaming';
@@ -8130,25 +8177,6 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Feature switches apply their setting section');
     }
 
-    // Normal-Chrome browser (spec normal-chrome-builtin-skill) — Agent Awareness +
-    // Migration Parity: existing agents learn when to reach for /normal-chrome-browser
-    // and its helper scripts. Same text as generateClaudeMd. Content-sniff on the heading.
-    // The heading changed when the Windows driver joined (spec normal-chrome-cross-platform): a
-    // section under the v1 (macOS-only) heading is replaced IN PLACE, never left beside the new one.
-    {
-      const r = replaceOrAppendMarkdownSection(content, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(), NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
-      if (r.action !== 'present') {
-        content = r.content;
-        patched = true;
-        result.upgraded.push(
-          r.action === 'replaced' ? 'CLAUDE.md: replaced Normal-Chrome browser section (macOS + Windows)'
-            : r.action === 'appended-old-kept' ? 'CLAUDE.md: added Normal-Chrome browser section (macOS + Windows); the edited macOS-only section was kept'
-              : r.action === 'removed-stale' ? 'CLAUDE.md: removed the stale macOS-only Normal-Chrome browser section'
-                : 'CLAUDE.md: added Normal-Chrome browser section',
-        );
-      }
-    }
-
     // Dark monitoring-route awareness: these two signal-only guards already
     // exist in the runtime and CapabilityIndex. Existing agents need the same
     // honest 503/dry-run posture and proactive read triggers as fresh installs.
@@ -8183,6 +8211,13 @@ setTimeout(() => process.exit(0), 2000);
       content += MATURATION_BOARD_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Maturation Board section');
+    }
+
+    // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Queue Pace — is every work pile shrinking')) {
+      content += QUEUE_PACE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Queue Pace section');
     }
 
     if (!content.includes('Routing Spend view')) {
@@ -13519,6 +13554,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
           appended = appended.trimEnd() + '\n\n' + render();
           mirrored++;
         }
+      }
+
+      // The verified-name rule is a single line inside Telegram's existing
+      // capability block. Mirror that line to Codex/Gemini on update too.
+      const verifiedNameLine = claudeMd.split('\n').find(line => line.startsWith('- Find verified topic names across my machines:'));
+      if (verifiedNameLine && !appended.includes('Find verified topic names across my machines:')) {
+        appended = appended.trimEnd() + '\n\n' + verifiedNameLine + '\n';
+        mirrored++;
       }
 
       const refreshedInboxShadow = refreshFeedbackInboxTokenAwareness(appended);

@@ -1,0 +1,53 @@
+{
+  "ts": "2026-10-31T06:32:11.988Z",
+  "slug": "queue-pace",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 18,
+  "loc": 2311,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/feedback-factory/triage/FeedbackTriageService.ts",
+      "src/feedback-factory/triage/buildFeedbackTriage.ts",
+      "src/monitoring/QueuePace.ts",
+      "src/monitoring/QueuePaceAdapters.ts",
+      "src/monitoring/QueuePaceLedger.ts",
+      "src/monitoring/QueuePaceTuner.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/queuePaceRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2303,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "queue-pace-extra-run controller registered in selfActionRegistry: at most maxExtraRunsPerDay (<=12) extra triage ticks per local day, >=10 min apart, durable reservation before each call, 6 h cooldown on any step-down; notices are one deduped conditionKey per machine+queue raised only after heal exhaustion"
+    }
+  },
+  "verdict": "pass"
+}

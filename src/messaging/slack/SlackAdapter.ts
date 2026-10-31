@@ -33,6 +33,7 @@ import { ChannelManager } from './ChannelManager.js';
 import { FileHandler } from './FileHandler.js';
 import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
+import { verifiedChannelIdentity } from '../shared/channelIdentity.js';
 import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId } from './sanitize.js';
 import { applySlackFormatter, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
@@ -146,6 +147,7 @@ export class SlackAdapter implements MessagingAdapter {
    */
   private ambientGate: AmbientContributionGate | null = null;
   private started = false;
+  private channelNameLookups = new Set<string>();
   private authorizedUsers: Set<string>;
   private channelHistory: Map<string, RingBuffer<SlackMessage>> = new Map();
   private pendingPrompts: Map<string, PendingPrompt> = new Map();
@@ -300,6 +302,7 @@ export class SlackAdapter implements MessagingAdapter {
 
     await Promise.race([connectPromise, timeoutPromise]);
     this.started = true;
+    for (const [key, entry] of this.channelToSession) if (!entry.channelName) this.resolveChannelTitle(key);
 
     // Fetch bot user ID (needed for @mention detection in shared mode) and the
     // VERIFIED connected team id (consumed by the test-cast principal source's
@@ -699,12 +702,33 @@ export class SlackAdapter implements MessagingAdapter {
     // through (only @mentions from authorized users).  Refusing to register
     // here caused infinite session spawning — every new message found the
     // old dead session, respawned, but never saved the mapping.
+    const previous = this.channelToSession.get(channelId)?.channelName
+      ?? this.channelToSession.get(channelId.split(':')[0])?.channelName;
+    const verified = verifiedChannelIdentity('slack', channelId.split(':')[0], channelName)
+      ?? verifiedChannelIdentity('slack', channelId.split(':')[0], previous);
     this.channelToSession.set(channelId, {
       sessionName,
-      channelName,
+      channelName: verified?.name,
       registeredAt: new Date().toISOString(),
     });
     this._saveChannelRegistry();
+    if (!verified && this.started) this.resolveChannelTitle(channelId);
+  }
+
+  /** Fetch the actual Slack title once when a registry entry has only an ID. */
+  private resolveChannelTitle(routingKey: string): void {
+    const channelId = routingKey.split(':')[0];
+    if (this.channelNameLookups.has(channelId)) return;
+    this.channelNameLookups.add(channelId);
+    void this.channelManager.getChannelInfo(channelId).then((info) => {
+      const identity = verifiedChannelIdentity('slack', channelId, info?.name);
+      if (!identity) return;
+      for (const [key, entry] of this.channelToSession) {
+        if (key.split(':')[0] === channelId) this.channelToSession.set(key, { ...entry, channelName: identity.name });
+      }
+      this._saveChannelRegistry();
+    }).catch(() => { /* a later registration or restart retries */ })
+      .finally(() => this.channelNameLookups.delete(channelId));
   }
 
   /** Look up which session is bound to a channel. */
@@ -1004,7 +1028,9 @@ export class SlackAdapter implements MessagingAdapter {
       if (fs.existsSync(this.channelRegistryPath)) {
         const data = JSON.parse(fs.readFileSync(this.channelRegistryPath, 'utf-8'));
         for (const [k, v] of Object.entries(data.channelToSession ?? {})) {
-          this.channelToSession.set(k, v as { sessionName: string; channelName?: string; registeredAt: string });
+          const entry = v as { sessionName: string; channelName?: string; registeredAt: string };
+          const verified = verifiedChannelIdentity('slack', k.split(':')[0], entry.channelName);
+          this.channelToSession.set(k, { ...entry, channelName: verified?.name });
         }
       }
     } catch { /* non-fatal */ }
