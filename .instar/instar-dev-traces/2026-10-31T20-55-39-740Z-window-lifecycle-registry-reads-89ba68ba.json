@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "window-lifecycle-registry-reads",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-31T20:55:39.740Z",
+  "artifactPath": "upgrades/side-effects/window-lifecycle-registry-reads.md",
+  "artifactSha256": "54267306ef6e9d3306b93e15d1e3a025e8f2e706d664cefc1ba1f9aff2e31d46",
+  "coveredFiles": [
+    "docs/specs/window-lifecycle-runtime-registry-cache.eli16.md",
+    "src/server/routes.ts",
+    "tests/integration/telegram-origin-detector-health.test.ts",
+    "upgrades/next/window-lifecycle-registry-reads.md",
+    "upgrades/side-effects/window-lifecycle-registry-reads.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reversible, per-evaluation lookup reuse and test timing adjustment, with no persistent schema or new authority decision.",
+  "eli16Path": "docs/specs/window-lifecycle-runtime-registry-cache.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/window-lifecycle-registry-reads.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
