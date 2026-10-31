@@ -165,3 +165,37 @@ describe('Local Verify focused-preflight awareness', () => {
     expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify focused-preflight awareness');
   });
 });
+
+describe('Local Verify failed-file diagnosis migration', () => {
+  it('teaches new and existing agents that a diagnosis is advisory', async () => {
+    const { LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    for (const text of [generateClaudeMd('fixture', 'Fixture', 4042, true), LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE]) {
+      for (const phrase of ['monitoring.localVerify.failedFileDiagnosis', 'default off', '/local-verify/diagnosis',
+        'no diagnosis changes the red record', 'full verify preempts']) expect(text.toLowerCase()).toContain(phrase.toLowerCase());
+    }
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n');
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'),
+      port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(migrator).upgraded).toContain('CLAUDE.md: added Local Verify failed-file diagnosis awareness');
+    expect(fs.readFileSync(claudeMd, 'utf8')).toContain(LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(migrator).upgraded).not.toContain('CLAUDE.md: added Local Verify failed-file diagnosis awareness');
+  });
+
+  it('adds an off default only when a verifier is configured and preserves a chosen mode', () => {
+    const { projectDir } = project('# CLAUDE.md\n');
+    const configPath = path.join(projectDir, '.instar', 'config.json');
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'),
+      port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    const migrate = () => {
+      const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+      (migrator as unknown as { migrateConfig(r: MigrationResult): void }).migrateConfig(result);
+      return result;
+    };
+    fs.writeFileSync(configPath, JSON.stringify({ monitoring: { localVerify: { enabled: true } } }));
+    expect(migrate().upgraded).toContain('config.json: added monitoring.localVerify.failedFileDiagnosis default (off)');
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).monitoring.localVerify.failedFileDiagnosis).toBe('off');
+    fs.writeFileSync(configPath, JSON.stringify({ monitoring: { localVerify: { enabled: true, failedFileDiagnosis: 'observe' } } }));
+    migrate();
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).monitoring.localVerify.failedFileDiagnosis).toBe('observe');
+  });
+});

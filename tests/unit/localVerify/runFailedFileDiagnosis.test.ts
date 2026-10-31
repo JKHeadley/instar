@@ -7,11 +7,11 @@ const req: DiagnosisPeerRequest = { repo: 'JKHeadley/instar', pr: 9, headSha: 'a
   baseRefName: 'main', verifierVersion: 'v1', policyHash: 'c'.repeat(64), failedFiles: ['tests/unit/a.test.ts'],
   attemptId: '1'.repeat(32), coordinatorMachineId: 'studio', leaseEpoch: 4 };
 const input = { request: req, agentHome: '/agents/m5', remoteUrl: 'https://github.com/JKHeadley/instar.git',
-  baseEnv: { PATH: '/usr/bin' }, peerMachineId: 'm5' };
+  baseEnv: { PATH: '/usr/bin' }, peerMachineId: 'm5', protectedList: ['.github/'] };
 const sha = (c: string) => c.repeat(40);
 const noErrors = JSON.stringify({ v: 1, unhandledErrors: 0, messages: [] });
 
-function fake(opts: { prQuiescent?: boolean; baseFails?: boolean; reporter?: boolean } = {}) {
+function fake(opts: { prQuiescent?: boolean; baseFails?: boolean; reporter?: boolean; inventoryMissing?: boolean } = {}) {
   const paths = failedFileRunPaths(input.agentHome, req.attemptId);
   const files = new Map<string, string>();
   const dirs = new Set<string>();
@@ -32,7 +32,8 @@ function fake(opts: { prQuiescent?: boolean; baseFails?: boolean; reporter?: boo
       expect(config.timeoutMs).toBeLessThanOrEqual(5 * 60_000);
       calls.push(`git:${args[0]}`);
       now += 100;
-      const stdout = args[0] === 'merge-tree' ? sha('d') : args[0] === 'commit-tree' ? sha('e') : '';
+      const stdout = args[0] === 'merge-tree' ? sha('d') : args[0] === 'commit-tree' ? sha('e')
+        : args[0] === 'ls-tree' ? (opts.inventoryMissing ? 'src/index.ts' : `src/index.ts\n${req.failedFiles[0]}`) : '';
       return { status: 0, stdout, stderr: '', timedOut: false };
     },
     exec: async (command: string, args: string[], config: { cwd: string; env: NodeJS.ProcessEnv; isolatedGroup: true }) => {
@@ -70,6 +71,14 @@ describe('bounded peer failed-file runner', () => {
   it('returns a base-or-shared observation when both trees fail the file', async () => {
     const r = await runFailedFileDiagnosis(input, fake({ baseFails: true }).seams);
     expect(r.kind === 'done' && r.answer.classification).toBe('base-or-shared');
+  });
+
+  it('refuses a failed file absent from the exact merge inventory before installing code', async () => {
+    const f = fake({ inventoryMissing: true });
+    const r = await runFailedFileDiagnosis(input, f.seams);
+    expect(r.kind === 'done' && r.answer.classification).toBe('inconclusive');
+    expect(r.kind === 'done' && r.answer.reason).toBe('file-not-in-merge-inventory');
+    expect(f.calls.filter((c) => c.startsWith('exec:'))).toHaveLength(0);
   });
 
   it('refuses to clear an unconfirmed worker group before another verify', async () => {

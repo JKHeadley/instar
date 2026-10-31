@@ -77,7 +77,7 @@ function setup(views: Record<number, PrView>, existingStateDir?: string) {
     protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' }, nice: false,
   }, {
     prView: async (pr) => views[pr] ?? null,
-    isPrOpen: async () => true,
+    isPrOpen: async () => true, baseHead: async () => sha('b'),
     spawnRun: (a) => {
       let resolve!: (x: { status: number | null; signal: string | null }) => void;
       const exited = new Promise<{ status: number | null; signal: string | null }>((r) => { resolve = r; });
@@ -103,6 +103,42 @@ function app(ctx: RouteContext): express.Express {
 }
 
 describe('local-verify routes (integration)', () => {
+  it('projects an advisory peer diagnosis onto a red record without changing merge authority', async () => {
+    const s = setup({ 7: view() });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await s.svc.request(7)).ok).toBe(true);
+    const file = 'tests/unit/localVerify/record.test.ts';
+    const red = { ...record(), outcome: 'failure', failedFiles: [file], lanes: [
+      { name: 'unit', gating: true, files: 1, tests: 3, passed: 2, failed: 1, skipped: 0, todo: 0, seconds: 1 },
+    ] };
+    fs.writeFileSync(s.children[0].resultPath, JSON.stringify({ kind: 'record', record: red,
+      reasons: ['file-failed:' + file + ':1'], overlaps: [], keptWorktree: null }));
+    s.children[0].resolve({ status: 0, signal: null });
+    await s.svc.whenIdle();
+    s.svc.setPeerWiring({ peers: () => [{ machineId: 'm5', url: 'http://m5:4042' }],
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm1' } });
+    await s.svc.wireFailedFileDiagnosis(() => 'auto', {
+      status: async () => ({ enabled: true, busy: false, verifierVersion: '1.0.0', policyHash: computePolicyHash() }),
+      diagnose: async () => ({ accepted: true }),
+      result: async (_peer, id) => ({ state: 'done', answer: { attemptId: id,
+        identity: { repo: REPO, pr: 7, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main',
+          verifierVersion: '1.0.0', policyHash: computePolicyHash(), failedFiles: [file] },
+        peerMachineId: 'm5', coordinatorMachineId: 'm1', leaseEpoch: 7,
+        classification: 'machine-or-flake', files: [{ file, originalPr: 'assertion-fail', peerPr: 'pass', peerBase: 'pass' }],
+        machineMinutes: 1 } }),
+    });
+    await s.svc.tick();
+    await s.svc.tick();
+    const query = `?pr=7&head=${sha('a')}&base=main`;
+    const projected = await request(a).get('/local-verify/record' + query);
+    expect(projected.status).toBe(200);
+    expect(projected.body.record).toMatchObject({ outcome: 'failure', failedFiles: [file] });
+    expect(projected.body.record).not.toHaveProperty('diagnosis');
+    expect(projected.body.diagnosis.result.classification).toBe('machine-or-flake');
+    expect((await request(a).get('/local-verify/diagnosis' + query)).body.diagnosis.result.classification).toBe('machine-or-flake');
+    expect(s.svc.getRecord(7, sha('a'), 'main')?.outcome).toBe('failure');
+    s.svc.shutdown();
+  });
   it('reports focused preflight mode and keeps an observed red diagnostic subordinate to a full green record', async () => {
     const s = setup({ 7: view() });
     s.svc.setPreflightMode(() => 'observe');

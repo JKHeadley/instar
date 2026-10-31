@@ -63,7 +63,10 @@ export class FailedFileDiagnosisStore {
   /** Persist BEFORE contacting a peer. An existing key never dispatches again. */
   reserve(identity: DiagnosisIdentity, attemptId: string, peerMachineId: string, leaseEpoch: number | null, now: number): DiagnosisMarker | null {
     const key = diagnosisKey(identity);
+    this.pruneExpired(now);
     if (this.markers.has(key)) return null;
+    // Retain every recent terminal key: evicting one would allow a second attempt.
+    if ([...this.markers.values()].filter((m) => m.state === 'done').length >= DIAGNOSIS_LIMITS.maxTerminal) return null;
     const marker: DiagnosisMarker = { key, identity, attemptId, peerMachineId, leaseEpoch,
       state: 'reserved', createdAt: now, updatedAt: now };
     if (!validMarker(marker)) throw new Error('invalid failed-file diagnosis reservation');
@@ -77,6 +80,15 @@ export class FailedFileDiagnosisStore {
     if (!m || m.attemptId !== attemptId || m.state !== 'reserved') return false;
     const next = { ...m, state: 'running' as const, updatedAt: now };
     this.markers.set(key, next);
+    try { this.persist(now); } catch (e) { this.markers.set(key, m); throw e; }
+    return true;
+  }
+
+  /** A peer's explicit busy refusal proves no attempt started; leave the key eligible. */
+  releaseBusy(key: string, attemptId: string, now: number): boolean {
+    const m = this.markers.get(key);
+    if (!m || m.attemptId !== attemptId || m.state !== 'reserved') return false;
+    this.markers.delete(key);
     try { this.persist(now); } catch (e) { this.markers.set(key, m); throw e; }
     return true;
   }
@@ -109,14 +121,16 @@ export class FailedFileDiagnosisStore {
   }
 
   private persist(now: number): void {
-    const terminal = [...this.markers.values()].filter((m) => m.state === 'done')
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-    const keep = new Set(terminal.filter((m) => now - m.updatedAt <= DIAGNOSIS_LIMITS.maxAgeMs)
-      .slice(0, DIAGNOSIS_LIMITS.maxTerminal).map((m) => m.key));
-    for (const m of terminal) if (!keep.has(m.key)) this.markers.delete(m.key);
+    this.pruneExpired(now);
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify({ v: 1, markers: [...this.markers.values()] }), { mode: 0o600 }); /* state-registry: local-verify-failed-file-diagnoses */
     fs.renameSync(tmp, this.file);
+  }
+
+  private pruneExpired(now: number): void {
+    for (const m of this.markers.values()) {
+      if (m.state === 'done' && now - m.updatedAt > DIAGNOSIS_LIMITS.maxAgeMs) this.markers.delete(m.key);
+    }
   }
 }

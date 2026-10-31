@@ -21,6 +21,13 @@ export interface DiagnosisPeerAnswer {
   reason?: string;
 }
 
+/** Separate advisory transport; full peer verification never consumes this result. */
+export interface DiagnosisPeerClient {
+  status(peer: { url: string }): Promise<{ enabled: boolean; busy: boolean; verifierVersion: string; policyHash: string } | null>;
+  diagnose(peer: { url: string }, request: DiagnosisPeerRequest): Promise<{ accepted: boolean; reason?: string } | null>;
+  result(peer: { url: string }, attemptId: string): Promise<{ state: 'unknown' } | { state: 'running' } | { state: 'done'; answer: DiagnosisPeerAnswer } | null>;
+}
+
 const IDENTITY_FIELDS = ['repo', 'pr', 'headSha', 'baseSha', 'baseRefName', 'verifierVersion', 'policyHash', 'failedFiles'] as const;
 const REQUEST_FIELDS = [...IDENTITY_FIELDS, 'attemptId', 'coordinatorMachineId', 'leaseEpoch'];
 
@@ -51,7 +58,8 @@ export function diagnosisImportRefusal(value: unknown, marker: DiagnosisMarker, 
   if (!Array.isArray(a.files) || a.files.length > marker.identity.failedFiles.length
     || a.files.some((r) => !r || !marker.identity.failedFiles.includes(r.file) || r.originalPr !== 'assertion-fail'
       || !['pass', 'assertion-fail', 'unknown'].includes(r.peerPr)
-      || !['pass', 'assertion-fail', 'unknown'].includes(r.peerBase))) return 'invalid-files';
+      || !['pass', 'assertion-fail', 'unknown'].includes(r.peerBase)
+      || r.sameAssertion !== undefined || r.latestMainOnOrigin !== undefined)) return 'invalid-files';
   if (!['pr-reproducible', 'machine-or-flake', 'base-or-shared', 'inconclusive'].includes(a.classification)
     || a.classification !== 'inconclusive' && classifyComparisonSet(a.files, marker.identity.failedFiles) !== a.classification) return 'invalid-classification';
   if (typeof a.machineMinutes !== 'number' || !Number.isFinite(a.machineMinutes) || a.machineMinutes < 0 || a.machineMinutes > 15) return 'invalid-time';

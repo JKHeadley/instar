@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { classifyComparisonSet, type DiagnosisFileComparison, type DiagnosisIdentity, type FileObservation } from './failedFileDiagnosis.js';
 import type { DiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
-import { vitestConfigForTestPath } from './inventory.js';
+import { computeInventory, vitestConfigForTestPath } from './inventory.js';
 import { parseVitestJson } from './laneReport.js';
 import { bareConfigTemplate, type ExecResult, type OrchestratorSeams } from './orchestrator.js';
 import { readUnhandledErrors } from './unhandledErrorsReporter.js';
@@ -15,6 +15,7 @@ export interface FailedFileRunInput {
   remoteUrl: string;
   baseEnv: NodeJS.ProcessEnv;
   peerMachineId: string;
+  protectedList: readonly string[];
 }
 
 /** The peer adapter must prove its detached child group is empty after each command. */
@@ -36,7 +37,9 @@ class Inconclusive extends Error {}
 export function failedFileRunPaths(agentHome: string, attemptId: string) {
   const verifyRoot = path.join(agentHome, '.worktrees', '.verify');
   const root = path.join(verifyRoot, 'diagnosis', attemptId);
-  return { verifyRoot, root, bare: path.join(root, 'repo.git'), pr: path.join(root, 'pr'), base: path.join(root, 'base'), reports: path.join(root, 'reports') };
+  // tmux socket paths have a small OS limit; keep this private root short.
+  const shortTemps = path.join('/tmp', `lvd-${attemptId}`);
+  return { verifyRoot, root, shortTemps, bare: path.join(root, 'repo.git'), pr: path.join(root, 'pr'), base: path.join(root, 'base'), reports: path.join(root, 'reports') };
 }
 
 export async function runFailedFileDiagnosis(input: FailedFileRunInput, seams: FailedFileDiagnosisSeams): Promise<FailedFileRunResult> {
@@ -93,7 +96,8 @@ export async function runFailedFileDiagnosis(input: FailedFileRunInput, seams: F
       const result = parsed.files.get(file);
       if (!result || parsed.files.size !== 1) return 'unknown';
       if (r.status === 0 && result.failed === 0 && result.passed > 0) return 'pass';
-      if (typeof r.status === 'number' && r.status > 0 && result.failed > 0) return 'assertion-fail';
+      if (typeof r.status === 'number' && r.status > 0 && (result.assertionFailures ?? 0) > 0
+        && !result.nonAssertionFailure) return 'assertion-fail';
     } catch { /* malformed or incomplete report is unknown */ }
     return 'unknown';
   };
@@ -109,6 +113,10 @@ export async function runFailedFileDiagnosis(input: FailedFileRunInput, seams: F
     if (!/^[0-9a-f]{40}$/.test(tree)) throw new Inconclusive('merge-tree-invalid');
     const merge = await git(['commit-tree', tree, '-p', req.baseSha, '-p', req.headSha, '-m', 'diagnosis merge'], 'commit-tree');
     if (!/^[0-9a-f]{40}$/.test(merge)) throw new Inconclusive('merge-commit-invalid');
+    const inventoryTree = await git(['ls-tree', '-r', '--name-only', merge], 'inventory');
+    const inventory = computeInventory(inventoryTree.split('\n').filter(Boolean));
+    const installedFiles = new Set(inventory.files.map((entry) => entry.path));
+    if (req.failedFiles.some((file) => !installedFiles.has(file))) throw new Inconclusive('file-not-in-merge-inventory');
     await git(['worktree', 'add', '--detach', p.pr, merge], 'worktree-pr');
     prAdded = true;
     await git(['worktree', 'add', '--detach', p.base, req.baseSha], 'worktree-base');
@@ -135,9 +143,10 @@ export async function runFailedFileDiagnosis(input: FailedFileRunInput, seams: F
   if (uncertainWorkers) return { kind: 'unsafe-cleanup', reason: (reason ?? 'workers-unconfirmed').slice(0, 160) };
   const cleanupErrors: string[] = [];
   const cleanupGit = async (args: string[], step: string) => {
+    if (remaining() <= 0) { cleanupErrors.push(`${step}-deadline`); return; }
     try {
       const r = await seams.git(args, { cwd: p.root, gitDir: p.bare, operation: `local-verify:diagnosis:${step}`,
-        timeoutMs: Math.max(1_000, Math.min(10_000, remaining())) });
+        timeoutMs: Math.max(1, Math.min(5_000, remaining())) });
       if (r.status !== 0 || r.timedOut) cleanupErrors.push(step);
     } catch { cleanupErrors.push(step); }
   };

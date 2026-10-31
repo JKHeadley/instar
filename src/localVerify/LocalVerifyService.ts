@@ -50,6 +50,10 @@ import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
+import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
+import { FailedFileDiagnosisPeerService } from './FailedFileDiagnosisPeerService.js';
+import type { DiagnosisMode } from './failedFileDiagnosis.js';
+import type { DiagnosisPeerClient, DiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
 import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
@@ -697,6 +701,8 @@ export class LocalVerifyService {
   private preflightModeSetting: (() => unknown) | null = null;
   /** Null means the durable replay store could not be read; fail to observe mode. */
   private readonly preflightReplays: PreflightReplayStore | null;
+  private failedFileDiagnosis: FailedFileDiagnosisCoordinator | null = null;
+  private failedFileDiagnosisPeer: FailedFileDiagnosisPeerService | null = null;
   private replayAdmissionRunning = false;
   private replayWakeAt = 0;
   private replayCapacitySweepAt = 0;
@@ -730,6 +736,59 @@ export class LocalVerifyService {
       audit: (e) => this.audit(e),
     });
     this.health.load(); // the watermark decides from the start (boot() re-reads it)
+  }
+
+  async wireFailedFileDiagnosis(modeSetting: () => unknown, client: DiagnosisPeerClient): Promise<void> {
+    const mode = (): DiagnosisMode => {
+      let value: unknown;
+      try { value = modeSetting(); } catch { return 'off'; }
+      return value === 'observe' || value === 'auto' ? value : 'off';
+    };
+    try {
+      const peer = new FailedFileDiagnosisPeerService({
+        stateDir: this.cfg.stateDir, agentHome: this.cfg.agentHome, repo: this.cfg.repo,
+        remoteUrl: this.cfg.remoteUrl, machineId: this.cfg.machineId,
+        verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash,
+        nodePath: this.cfg.nodePath, childEntry: path.join(path.dirname(this.cfg.mainEntry), 'runFailedFileDiagnosisMain.js'),
+        protectedList: this.cfg.protectedList, baseEnv: this.cfg.baseEnv,
+      }, {
+        now: this.now, mode: () => this.peerRoleOn() ? mode() : 'off',
+        fullVerifyBusy: () => this.isDiagnosisCapacityBusy(), updatePending: () => this.notePause(),
+        prView: (pr) => this.seams.prView(pr), baseHead: (ref) => this.seams.baseHead?.(ref) ?? Promise.resolve(null),
+        isPrOpen: (pr) => this.seams.isPrOpen(pr), spawnRun: (arg) => this.seams.spawnRun(arg),
+        currentLease: () => { const live = this.leaseState(); return { holdsLease: live.holds, holderMachineId: live.holder, leaseEpoch: live.epoch }; },
+        isGroupAlive: (pid) => this.seams.isGroupAlive(pid), killGroup: (pid, signal) => this.seams.killGroup(pid, signal),
+        readProcessArgs: (pid) => this.seams.readProcessArgs(pid), audit: (event) => this.audit(event),
+      });
+      await peer.boot();
+      this.failedFileDiagnosisPeer = peer;
+    } catch (error) {
+      this.audit({ event: 'failed-file-diagnosis-peer-unavailable', detail: String(error).slice(0, 160) });
+      this.failedFileDiagnosisPeer = null;
+    }
+    if (this.cfg.peerOnly) return;
+    this.failedFileDiagnosis = new FailedFileDiagnosisCoordinator({
+      stateDir: this.cfg.stateDir, repo: this.cfg.repo, machineId: this.cfg.machineId,
+      verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash,
+    }, {
+      now: this.now, mode, holdsLease: () => this.leaseState().holds,
+      leaseEpoch: () => this.leaseState().epoch,
+      peers: () => this.peersSetting?.() ?? [], fullVerifyWaiting: () => this.isDiagnosisCapacityBusy(),
+      prView: (pr) => this.seams.prView(pr), baseHead: (ref) => this.seams.baseHead?.(ref) ?? Promise.resolve(null),
+      isPrOpen: (pr) => this.seams.isPrOpen(pr), client, audit: (event) => this.audit(event),
+    });
+  }
+
+  diagnosisSummary() { return this.failedFileDiagnosis?.summary() ?? { mode: 'off' as const, storeReady: false, pending: 0, completed: 0, machineMinutes: 0 }; }
+  diagnosisForRecord(record: LocalVerifyRecord) { return this.failedFileDiagnosis?.forRecord(record) ?? null; }
+  diagnosisPeerStatus() { return this.failedFileDiagnosisPeer?.status() ?? { enabled: false, busy: false, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash }; }
+  diagnosisPeerResult(attemptId: string) { return this.failedFileDiagnosisPeer?.result(attemptId) ?? { state: 'unknown' as const }; }
+  async diagnosisPeerAccept(request: DiagnosisPeerRequest, ctx: { holdsLease: boolean; holderMachineId: string | null; leaseEpoch: number | null }) {
+    return this.failedFileDiagnosisPeer?.accept(request, ctx) ?? { accepted: false, reason: 'disabled' };
+  }
+
+  isDiagnosisCapacityBusy(): boolean {
+    return !!this.inFlight || !!this.starting || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
   }
 
   // ---- paths ----
@@ -1502,6 +1561,7 @@ export class LocalVerifyService {
     if (this.peerState.current?.attemptId === req.attemptId || this.peerState.results.some((r) => r.attemptId === req.attemptId)) {
       return { ok: true, attemptId: req.attemptId };
     }
+    if (this.failedFileDiagnosisPeer?.busy() && !await this.failedFileDiagnosisPeer.preempt('peer-full-verify')) return refuse('peer-busy');
     const busy = () => !!this.inFlight || !!this.starting || this.peerState.current?.state === 'running' || this.seams.foreignSuiteHolders().length > 0 || !!this.blockedBy;
     if (busy()) return refuse('peer-busy');
     // A pending update waiting on this verifier must not gain a new restart hold.
@@ -1517,9 +1577,18 @@ export class LocalVerifyService {
     if (!this.peerRoleOn() || this.stopped) return refuse('peer-disabled');
     const live = this.leaseState();
     if (this.leaseView && live.holds) return refuse('is-lease-holder');
-    if (this.leaseView && live.holder !== req.coordinatorMachineId) return refuse('not-coordinator');
+    if (this.leaseView && (live.holder !== req.coordinatorMachineId || live.epoch !== req.leaseEpoch)) return refuse('not-coordinator');
     if (this.peerState.tombstones[req.attemptId] !== undefined) return refuse('attempt-cancelled');
     if (this.peerState.current?.attemptId === req.attemptId) return { ok: true, attemptId: req.attemptId };
+    // A diagnostic may have been admitted while the PR read was in flight.
+    // Reclaim it before this full verify records intent or starts its child.
+    if (this.failedFileDiagnosisPeer?.busy() && !await this.failedFileDiagnosisPeer.preempt('peer-full-verify')) return refuse('peer-busy');
+    if (!this.peerRoleOn() || this.stopped) return refuse('peer-disabled');
+    const leaseAfterPreempt = this.leaseState();
+    if (this.leaseView && leaseAfterPreempt.holds) return refuse('is-lease-holder');
+    if (this.leaseView && (leaseAfterPreempt.holder !== req.coordinatorMachineId || leaseAfterPreempt.epoch !== req.leaseEpoch)) return refuse('not-coordinator');
+    if (this.peerState.tombstones[req.attemptId] !== undefined) return refuse('attempt-cancelled');
+    if (this.failedFileDiagnosisPeer?.busy()) return refuse('peer-busy');
     if (busy()) return refuse('peer-busy');
     if (this.notePause()) return refuse('peer-busy');
     if (this.verifierChangedOnDisk()) return refuse('verifier-mismatch');
@@ -1889,7 +1958,9 @@ export class LocalVerifyService {
     if (!this.cfg.peerOnly) await this.pollPeers().catch((e) => this.audit({ event: 'peer-poll-error', detail: e instanceof Error ? e.message : String(e) }));
     if (!this.cfg.peerOnly) await this.sweepReplayCapacity();
     this.checkPeerAttempt();
+    await this.failedFileDiagnosisPeer?.tick();
     this.pump();
+    if (!this.cfg.peerOnly) await this.failedFileDiagnosis?.tick([...this.index.values()]);
   }
 
   /** Bounded reclamation when terminal keys fill the store; unknown PR state retains proof. */
@@ -1932,6 +2003,7 @@ export class LocalVerifyService {
   shutdown(): void {
     if (this.stopped) return;
     this.stopped = true;
+    void this.failedFileDiagnosisPeer?.preempt('shutdown');
     this.publishSuitePriority(false);
     const f = this.inFlight;
     if (f && !f.cancelled) {
@@ -2139,6 +2211,10 @@ export class LocalVerifyService {
     // This claim is written BEFORE checking an occupied slot. Once that slot
     // releases, ordinary suites yield and the next pump can start this verify.
     this.publishSuitePriority(true);
+    if (this.failedFileDiagnosisPeer?.busy()) {
+      void this.failedFileDiagnosisPeer.preempt('queued-full-verify').then((cleared) => { if (cleared) this.pump(); });
+      return;
+    }
     const holders = this.seams.foreignSuiteHolders();
     if (holders.length > 0) {
       this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });

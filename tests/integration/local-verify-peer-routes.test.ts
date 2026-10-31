@@ -19,6 +19,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type PrView } from '../../src/localVerify/LocalVerifyService.js';
 import { computePolicyHash } from '../../src/localVerify/policy.js';
 import { makePeerClient } from '../../src/localVerify/localVerifyWiring.js';
+import { makeDiagnosisPeerClient } from '../../src/localVerify/failedFileDiagnosisClient.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 
@@ -48,7 +49,7 @@ function ctx(stateDir: string, svc: LocalVerifyService, holdsLease: boolean): Ro
   } as never;
 }
 
-function peerService() {
+function peerService(prRead?: (pr: number) => Promise<PrView | null>) {
   const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeerroutes-')));
   dirs.push(stateDir);
   const views: Record<number, PrView> = { 3: { author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: sha('a'), baseRefName: 'main', baseRefOid: sha('b') } };
@@ -59,12 +60,13 @@ function peerService() {
     remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'peer1', nodeVersion: 'v24',
     protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' }, nice: false, peerOnly: true,
   }, {
-    prView: async (pr) => views[pr] ?? null,
-    isPrOpen: async () => true,
+    prView: (pr) => prRead ? prRead(pr) : Promise.resolve(views[pr] ?? null),
+    isPrOpen: async () => true, baseHead: async () => sha('b'),
     spawnRun: (a) => { children.push(a.args[a.args.indexOf('--input') + 1]); return { pid: 91_000 + children.length, exited: new Promise(() => {}) }; },
     isGroupAlive: () => false, killGroup: () => {}, readProcessArgs: async () => null, foreignSuiteHolders: () => [], setTimer: () => {},
   });
-  svc.setPeerWiring({ peerRoleEnabled: () => true });
+  svc.setPeerWiring({ peerRoleEnabled: () => true,
+    lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'coord' } });
   return { stateDir, svc, children };
 }
 
@@ -89,6 +91,51 @@ const runBody = () => ({
 });
 
 describe('peer verifier routes (integration, real HTTP)', () => {
+  it('authenticates diagnosis routes and accepts only an exact, current peer request', async () => {
+    const p = peerService();
+    await p.svc.wireFailedFileDiagnosis(() => 'auto', makeDiagnosisPeerClient(AUTH, 'echo'));
+    const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
+    const client = makeDiagnosisPeerClient(AUTH, 'echo');
+    const target = { machineId: 'peer1', url };
+    const body = { repo: REPO, pr: 3, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main',
+      verifierVersion: '1.0.0', policyHash: computePolicyHash(), failedFiles: ['tests/unit/localVerify/record.test.ts'],
+      attemptId: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 };
+    expect((await request(url).get('/local-verify/peer-diagnosis-status')).status).toBe(401);
+    expect(await client.status(target)).toMatchObject({ enabled: true, busy: false });
+    expect((await request(url).post('/local-verify/peer-diagnose').set('Authorization', `Bearer ${AUTH}`)
+      .send({ ...body, leaseEpoch: 8 })).status).toBe(409);
+    expect(await client.diagnose(target, body)).toEqual({ accepted: true });
+    expect(p.children).toHaveLength(1);
+    expect(await client.result(target, ATT)).toEqual({ state: 'running' });
+    p.svc.shutdown();
+  });
+
+  it('preempts a diagnosis admitted while full-verify PR validation was waiting', async () => {
+    let release!: (view: PrView | null) => void;
+    let reads = 0;
+    const currentView: PrView = { author: { login: 'EchoOfDawn' }, isCrossRepository: false,
+      headRefName: 'echo/x', headRefOid: sha('a'), baseRefName: 'main', baseRefOid: sha('b') };
+    const p = peerService(async () => ++reads === 1
+      ? new Promise((resolve) => { release = resolve; }) : currentView);
+    await p.svc.wireFailedFileDiagnosis(() => 'auto', makeDiagnosisPeerClient(AUTH, 'echo'));
+    const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
+    const full = request(url).post('/local-verify/peer-run').set('Authorization', `Bearer ${AUTH}`).send(runBody());
+    const fullPromise = full.then((r) => r);
+    for (let i = 0; i < 100 && !release; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(release).toBeTypeOf('function');
+    const diagnosis = { repo: REPO, pr: 3, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main',
+      verifierVersion: '1.0.0', policyHash: computePolicyHash(), failedFiles: ['tests/unit/localVerify/record.test.ts'],
+      attemptId: 'd'.repeat(32), coordinatorMachineId: 'coord', leaseEpoch: 7 };
+    expect((await request(url).post('/local-verify/peer-diagnose').set('Authorization', `Bearer ${AUTH}`)
+      .send(diagnosis)).status).toBe(202);
+    expect(p.children).toHaveLength(1);
+    release(currentView);
+    expect((await fullPromise).status).toBe(202);
+    expect(p.children).toHaveLength(2);
+    expect(p.svc.diagnosisPeerStatus().busy).toBe(true); // full verify owns capacity now
+    expect(p.svc.diagnosisPeerResult(diagnosis.attemptId)).toEqual({ state: 'unknown' }); // tombstoned
+    p.svc.shutdown();
+  });
   it('dispatches over real HTTP while an unrelated suite occupies the coordinator slot', async () => {
     const p = peerService();
     const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));

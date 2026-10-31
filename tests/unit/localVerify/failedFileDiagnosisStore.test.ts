@@ -47,4 +47,18 @@ describe('durable failed-file diagnosis attempt', () => {
     fs.writeFileSync(s.file, '{bad');
     expect(() => new FailedFileDiagnosisStore(root)).toThrow('unreadable');
   });
+
+  it('refuses new work at the retention cap without evicting a recent exact key', () => {
+    const s = store();
+    for (let pr = 1; pr <= DIAGNOSIS_LIMITS.maxTerminal; pr++) {
+      const item = { ...identity, pr };
+      const key = diagnosisKey(item);
+      expect(s.reserve(item, A, 'm5', 3, 1000)).not.toBeNull();
+      expect(s.inconclusive(key, A, 'test', 1001)).toBe(true);
+    }
+    expect(s.reserve({ ...identity, pr: 201 }, A, 'm5', 3, 1002)).toBeNull();
+    expect(new FailedFileDiagnosisStore(root).get(diagnosisKey({ ...identity, pr: 1 }))).not.toBeNull();
+    expect(s.reserve({ ...identity, pr: 1 }, '2'.repeat(32), 'm5', 3, 1002)).toBeNull();
+    expect(s.reserve({ ...identity, pr: 201 }, A, 'm5', 3, 1001 + DIAGNOSIS_LIMITS.maxAgeMs + 1)).not.toBeNull();
+  });
 });

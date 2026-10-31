@@ -23,6 +23,7 @@ import type { LocalVerifyServiceSeams } from '../../src/localVerify/LocalVerifyS
 import { scrubbedEnv } from '../../src/localVerify/serviceSeams.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
+import { makeDiagnosisPeerClient } from '../../src/localVerify/failedFileDiagnosisClient.js';
 import { PROTECTED_PATH_PREFIXES } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 
@@ -96,10 +97,15 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(seams.installedVerifierVersion!()).toBe(computeVerifierVersion(path.dirname(DIST_ENTRY), undefined, { protectedList: PROTECTED_PATH_PREFIXES }));
     expect(seams.installedVerifierVersion!()).toMatch(/^vh\d+:[0-9a-f]{32}$/);
     await built.service!.boot();
+    // The production server calls this same wiring after peer wiring. The default
+    // remains dark, but the read surface and installed child entry must be alive.
+    await built.service!.wireFailedFileDiagnosis(() => 'off', makeDiagnosisPeerClient('test-token', 'echo'));
+    expect(fs.existsSync(path.join(path.dirname(DIST_ENTRY), 'runFailedFileDiagnosisMain.js'))).toBe(true);
     const r = await request(serve(ctx(stateDir, built.service))).get('/local-verify');
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0 });
     expect(r.body.preflight).toMatchObject({ mode: 'off', replayStoreReady: true, replays: [] });
+    expect(r.body.diagnosis).toMatchObject({ mode: 'off', storeReady: true, pending: 0, completed: 0 });
     built.service!.shutdown();
   });
 

@@ -48,14 +48,17 @@ describe('parseVitestJson', () => {
   it('failed and pending (unfinished or .only) assertions count as failures', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['failed', 'pending', 'passed'])]), ROOT);
     expect(r.files.get('tests/unit/a.test.ts')!.failed).toBe(2);
+    expect(r.files.get('tests/unit/a.test.ts')).toMatchObject({ assertionFailures: 1, nonAssertionFailure: true });
   });
   it('a file-level failure with no failed assertion (import error) counts one failure', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', [], 'failed', 'Cannot find module')]), ROOT);
     expect(r.files.get('tests/unit/a.test.ts')).toMatchObject({ failed: 1, message: 'Cannot find module' });
+    expect(r.files.get('tests/unit/a.test.ts')).toMatchObject({ assertionFailures: 0, nonAssertionFailure: true });
   });
   it('a file-level failure with failed assertions is not double counted', () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['failed'])]), ROOT);
     expect(r.files.get('tests/unit/a.test.ts')!.failed).toBe(1);
+    expect(r.files.get('tests/unit/a.test.ts')).toMatchObject({ assertionFailures: 1, nonAssertionFailure: false });
   });
   it("keeps the first failing test's title and message, bounded", () => {
     const r = parseVitestJson(report([file('tests/unit/a.test.ts', ['passed', 'failed', 'failed'])]), ROOT);
