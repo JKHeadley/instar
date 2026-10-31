@@ -1,0 +1,13 @@
+# Let feedback sorting use a spare Codex account safely
+
+Feedback reports are arriving, but the model that sorts them has stopped making decisions. It checks one Codex subscription. That subscription has used 78% of its weekly allowance, and Instar's safety rule pauses sorting at 75%. Four other Codex subscriptions have much more room. The sorter does not currently choose among them.
+
+The proposed repair would check accounts that can actually run on the machine doing the sorting. It would use a recent quota reading for the chosen account **and** for the allowance used by its approved GPT-6 Astra model. It would pass that exact account to the model call. If an account is disabled, its login changes, its reading is too old, or its usage is at least 75%, it cannot be chosen. A quota check does not guarantee usage stays below 75% during a call, because other work can use that subscription at the same time; it governs whether the call may start.
+
+The quota check and model call must actually use the same subscription, even when spare-account selection is turned off. A background API key can otherwise override the chosen login, so the repair would remove conflicting credentials from both processes and pause if it cannot prove which subscription they use. An old saved quota reading cannot authorize a new call. Checks have a time limit so two stuck accounts cannot hide a healthy third account.
+
+Today the model router can also try another account or provider after a failure without checking the sorter's allowance rule. The repair would prevent those hidden switches, including an early default-provider route. The sorter could still make its own second attempt after checking the new account again. If a check fails during a retry or a self-heal probe, sorting pauses without blaming the model or using another daily call slot. A machine that loses ownership while checking accounts cannot start a new call.
+
+The approved model, 75% rule, daily call cap and existing rules for sorting reports would remain. The change would first run on supervised test agents, then development agents, then the fleet, with each step tied to actual logged calls and pauses. An observation mode can show which spare account it would choose while the old account still handles calls. Turning account selection off restores the old account choice while retaining the checks that prevent stale quota evidence, wrong credentials and hidden provider switches.
+
+This can restore sorting capacity, but the queue also needs reviewed fixes to merge. We will measure that separately; a working sorter alone does not prove the highest-priority reports are being fixed fast enough.
