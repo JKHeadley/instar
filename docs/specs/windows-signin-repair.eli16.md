@@ -18,3 +18,5 @@ The Mama PC is a Windows machine, and Instar runs there inside WSL (Linux inside
 **What a reader should know.** Google can still ask for a phone tap on a profile it has not seen recently. The repair then asks the operator once and waits. This change cannot remove that, because it is a real human check.
 
 **Rollback.** Turn the setting off on that machine, or revert the change. Nothing else depends on it.
+
+Existing agents learn about this through one line added to their CLAUDE.md during an update. That line is added on the first update and never again, so repeated updates leave the file unchanged.

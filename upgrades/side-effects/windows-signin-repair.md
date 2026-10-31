@@ -18,3 +18,7 @@
 An independent review raised six concerns, all fixed in this change: the new-agent example path was invalid JSON; the folder rule accepted `~`, which `ndrive.sh` refuses; the prompt's "fill by index" rule contradicted the link step; the link step had no focus proof, so `url` is now read before Enter; the helper now sets `ND_EXPECT_HOST` on every click or keystroke, matching the macOS focus check in strength; and the link now travels through a private file, with page dumps in the binding folder and not a shared one. The startup log also no longer reports a last-resort model on WSL. Concur after these fixes.
 
 A second independent pass (2026-10-31) checked each fix against the code and concurred, with no macOS regression. From its notes, this change also tells the helper where to find its binding folder, and keeps signed-in profiles out of shared Windows folders in the skill's example.
+
+## Follow-up: idempotent migration
+
+The first verify run failed 105 unit tests. The CLAUDE.md awareness step anchored on the "Why a sign-in repair did not start" line, which a later step of the same migration pass inserts, so the first run skipped and the second run inserted. Every test that runs the migration twice and expects no change failed. The step now runs after the one that adds its anchor; one run adds the line and a second changes nothing. The section is also tracked in the CLAUDE.md parity test.

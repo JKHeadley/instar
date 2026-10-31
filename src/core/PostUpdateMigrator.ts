@@ -8975,17 +8975,6 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
-    // Windows sign-in repair awareness (spec windows-signin-repair) for existing agents.
-    if (!content.includes('Windows sign-in repair (WSL, opt-in)')) {
-      const blockerHeading = '- **Why a sign-in repair did not start** — ';
-      const windowsRepairBullet = "- **Windows sign-in repair (WSL, opt-in)** — set `subscriptionPool.assistedRelogin.navigation: agent-session` on an agent in WSL and the repair's helper session signs in through Windows Chrome with `ndrive.sh`. Each profile needs its Windows folder: `PATCH /playwright-profiles/<id>` with `{\"windowsUserDataDir\":\"C:\\\\...\"}`. Until then `blockers` says `profile-directory-missing`.";
-      if (content.includes(blockerHeading)) {
-        content = content.replace(blockerHeading, () => windowsRepairBullet + '\n' + blockerHeading);
-        patched = true;
-        result.upgraded.push('CLAUDE.md: added Windows sign-in repair awareness');
-      }
-    }
-
     // Agent-navigated sign-in awareness (spec agent-driven-relogin) for existing agents.
     if (
       content.includes('Automatic subscription sign-in repair (Claude Code + Codex)') &&
@@ -9056,6 +9045,17 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(lastResortEnd, lastResortEnd + '\n' + "- **Why a sign-in repair did not start** \u2014 `GET /subscription-relogin` now carries `blockers`: one row per account on this machine that needs sign-in but has no repair, with the reason. `no-open-incident` means nothing has confirmed the sign-in failure on this machine (often its saved login cannot be read), and a repair needs that confirmation; `profile-unresolved` means this machine has no browser profile signed in to that account (create one with `POST /playwright-profiles` and sign it in with /subscription-signin); any other reason is the repair's admission refusal. `?scope=pool` merges every machine's rows, and the dashboard shows the reason in plain words under the cell's Sign in button (a machine where repair is not running at all says so). Read-only: it never starts a repair. **When to use** (PROACTIVE): the user asks \"why is this still Needs sign-in?\" / \"why didn't auto-login fix it?\" \u2192 read `blockers` before guessing.");
         patched = true;
         result.upgraded.push('CLAUDE.md: added sign-in repair blockers awareness');
+      }
+    }
+
+    // Windows sign-in repair awareness (spec windows-signin-repair) for existing agents.
+    if (!content.includes('Windows sign-in repair (WSL, opt-in)')) {
+      const blockerHeading = '- **Why a sign-in repair did not start** — ';
+      const windowsRepairBullet = "- **Windows sign-in repair (WSL, opt-in)** — set `subscriptionPool.assistedRelogin.navigation: agent-session` on an agent in WSL and the repair's helper session signs in through Windows Chrome with `ndrive.sh`. Each profile needs its Windows folder: `PATCH /playwright-profiles/<id>` with `{\"windowsUserDataDir\":\"C:\\\\...\"}`. Until then `blockers` says `profile-directory-missing`.";
+      if (content.includes(blockerHeading)) {
+        content = content.replace(blockerHeading, () => windowsRepairBullet + '\n' + blockerHeading);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Windows sign-in repair awareness');
       }
     }
 
