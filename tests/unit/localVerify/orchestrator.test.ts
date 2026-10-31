@@ -524,13 +524,30 @@ describe('runVerify — failures', () => {
     expect(r.kind).toBe('record');
     if (r.kind !== 'record') return;
     expect(r.record.outcome).toBe('failure');
+    expect(r.record.failedFiles).toEqual(['tests/integration/b.test.ts']);
     expect(r.reasons).toContain('file-failed:tests/integration/b.test.ts:1');
     expect(r.keptWorktree).toBe(P.runDir);
+  });
+  it('does not diagnose a failed assertion when another lane also has an infrastructure exit', async () => {
+    const f = fake({ laneStatuses: { integration: ['passed', 'failed'] },
+      rerun: { 'tests/integration/b.test.ts': ['passed', 'failed'] } });
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const result = await exec(command, args, opts);
+      return isE2e(args) ? { ...result, status: 1 } : result;
+    };
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind).toBe('record');
+    if (r.kind !== 'record') return;
+    expect(r.reasons).toContain('file-failed:tests/integration/b.test.ts:1');
+    expect(r.reasons.some((reason) => reason.startsWith('lane-exit-nonzero:e2e:'))).toBe(true);
+    expect(r.record.failedFiles).toBeUndefined();
   });
   it('a dirty tree after the lanes fails the run', async () => {
     const r = await runVerify(input(), fake({ porcelain: '?? tests/unit/leftover.txt\n' }).seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(r.kind === 'record' && r.reasons).toContain('dirty-tree');
+    if (r.kind === 'record') expect(r.record.failedFiles).toBeUndefined();
   });
   it('a lint step failure is a failure that stops before the lanes', async () => {
     const f = fake({ lintStatus: 1 });
@@ -908,6 +925,7 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], ...four } } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    if (r.kind === 'record') expect(r.record.failedFiles).toBeUndefined();
     expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'too-many-failures')).toBe(true);
   });

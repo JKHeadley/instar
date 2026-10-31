@@ -2333,6 +2333,38 @@ const systemTopicAdoption: SelfActionController = {
 const LV_HEAD = 'a'.repeat(40);
 
 /**
+ * A stale peer-idle reading must not turn one red PR into an endless stream of
+ * diagnostic dispatches. A busy refusal is durably terminal for that exact
+ * key; after the 14-day marker retention ends, the 24-hour candidate window
+ * has already closed. This model crosses both boundaries under persistent
+ * peer refusal and survives reconstruction of the coordinator.
+ */
+const localVerifyFailedFileDiagnosis: SelfActionController = {
+  id: 'local-verify-failed-file-diagnosis',
+  actionVerb: 'spawn-diagnosis-peer',
+  models: 'src/localVerify/FailedFileDiagnosisCoordinator.ts (tickOnce → reserve before diagnose; peer-busy terminal; fresh-record window)',
+  modelsPath: 'src/localVerify/FailedFileDiagnosisCoordinator.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) {
+    return localVerifyFailedFileDiagnosis.makeUnderPressure(f, sink);
+  } },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 30,
+  tickMs: 24 * 60 * 60_000,
+  makeUnderPressure(f, sink) {
+    const key = 'red-pr:exact-head-base';
+    return { tick() {
+      sink.considered += 1;
+      const age = f.clock.nowMs();
+      if (age >= 14 * 24 * 60 * 60_000) f.durableState.delete(key); // terminal retention expires
+      if (age > 24 * 60 * 60_000 || f.durableState.has(key)) return;
+      f.durableState.set(key, f.targetAlwaysRejects() ? 'done:peer-busy' : 'reserved');
+      sink.emit({ verb: 'spawn-diagnosis-peer', target: key });
+    } };
+  },
+};
+
+/**
  * local-verify-error-rerun — an `error` verify outcome re-runs automatically at
  * most once per queue entry (per (pr, head)), then stops: the record stays
  * `error` until the head moves or someone asks. Pinned worst case: EVERY verify
@@ -3283,6 +3315,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobSupervisionCensusRepair,
   throwawayExpiryTeardown,
   localVerifyInterruptedResume,
+  localVerifyFailedFileDiagnosis,
   attentionLifecyclePass,
   localVerifyFlakeRerun,
   localVerifyMergeHandoff,

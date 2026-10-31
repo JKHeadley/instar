@@ -1703,6 +1703,40 @@
       }
     },
     {
+      "category": "local-verify-failed-file-diagnoses",
+      "description": "Lease-holder-local advisory diagnosis markers for exact PR/head/base/file keys. They never authorize a merge; a new lease holder rechecks from its own journal.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/local-verify/failed-file-diagnoses.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 200,
+        "maxAgeMs": 1209600000,
+        "note": "At most 200 terminal keys are retained for 14 days; active markers stay until terminal or explicit invalidation. One atomic snapshot is rewritten in place."
+      }
+    },
+    {
+      "category": "local-verify-failed-file-diagnosis-peer",
+      "description": "Peer-local one-child advisory diagnosis intent, bounded results/tombstones and scratch files under the guarded verify root. Full verification preempts this child; an unknown cleanup keeps the peer held.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/local-verify/failed-file-diagnosis-peer.json", "state/local-verify/diagnosis-runs/"],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 200,
+        "maxAgeMs": 1209600000,
+        "note": "One in-flight attempt, at most 200 results and 200 tombstones for 14 days. Scratch input/result/log files belong to the bounded attempt and are removed after safe process cleanup."
+      }
+    },
+    {
       "category": "local-verify-peer-attempts",
       "description": "Machine-local peer verifier hand-off state: one current attempt, the last 20 results, and cancelled attempt ids retained for seven days. It lets a restarted peer reject delayed hand-offs and lets the coordinator retrieve a completed result.",
       "scope": "machine-local",

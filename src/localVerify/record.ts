@@ -8,6 +8,7 @@
  */
 
 import type { LaneTotals } from './laneReport.js';
+import { isBoundedFailedFileSet } from './failedFileDiagnosis.js';
 import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 
 export type VerifyOutcome = 'success' | 'failure' | 'error';
@@ -70,6 +71,8 @@ export interface LocalVerifyRecord {
    * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
    */
   flakyRetried?: FlakyRetry[];
+  /** Complete failed test-file set when a full PR run failed in 1–3 inventoried files. */
+  failedFiles?: string[];
   /**
    * Present only on a record a PEER verifier produced for a coordinator's hand-off
    * (spec local-verify-capacity.md Part D): the attempt it answers, the coordinator that
@@ -170,6 +173,9 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
         && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000;
     });
     if (!ok) errors.push('flakyRetried');
+  }
+  if (x.failedFiles !== undefined) {
+    if (!isBoundedFailedFileSet(x.failedFiles) || x.outcome !== 'failure' || x.kind === 'main') errors.push('failedFiles');
   }
   if (x.independentReview !== undefined) {
     const ir = x.independentReview as Record<string, unknown> | null;
