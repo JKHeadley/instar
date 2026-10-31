@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { SessionMigrator } from '../../src/monitoring/SessionMigrator.js';
+import { SessionMigrator, MAX_ENFORCEMENT_PAUSE_MS } from '../../src/monitoring/SessionMigrator.js';
 import type {
   SessionMigratorDeps,
   AccountSnapshot,
@@ -84,6 +84,8 @@ describe('Quota Enforcement Tiers', () => {
   });
 
   afterEach(() => {
+    migrator.dispose();
+    vi.useRealTimers();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/quota-enforcement.test.ts:87' });
   });
 
@@ -545,7 +547,7 @@ describe('Quota Enforcement Tiers', () => {
       expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 63, fiveHourPercent: 20 })).toBe(true);
       expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
       expect(migrator.isEnforcementPaused()).toBe(false);
-      expect(resumed).toEqual([{ fiveHourPercent: 20, weeklyPercent: 63 }]);
+      expect(resumed).toEqual([{ fiveHourPercent: 20, weeklyPercent: 63, trigger: 'quota-recovered' }]);
     });
 
     it('releases an enforced_pause (90%) the same way', async () => {
@@ -641,6 +643,55 @@ describe('Quota Enforcement Tiers', () => {
       // Should still succeed — sendKey is best-effort
       expect(pauseEvents).toHaveLength(1);
       expect(deps.pauseScheduler).toHaveBeenCalled();
+    });
+  });
+  describe('bounded enforcement pause', () => {
+    beforeEach(() => vi.useFakeTimers());
+
+    it('reports the reason and releases at five hours without a new reading', async () => {
+      const deps = createMockDeps();
+      migrator.setDeps(deps);
+      await migrator.checkAndMigrate({ percentUsed: 40, fiveHourPercent: 96, activeAccountEmail: null });
+      const pause = migrator.getEnforcementPause();
+      expect(pause).toMatchObject({ result: 'enforced_kill', fiveHourPercent: 96 });
+      expect(pause?.reason).toMatch(/5-hour rate limit at 96%/);
+      expect(migrator.getMigrationStatus().enforcementPause).toEqual(pause);
+      vi.advanceTimersByTime(MAX_ENFORCEMENT_PAUSE_MS - 1);
+      expect(deps.resumeScheduler).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(2);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+      expect(migrator.getEnforcementPause()).toBeNull();
+    });
+
+    it('bounds a 90% pause and marks the deadline release', async () => {
+      const deps = createMockDeps();
+      migrator.setDeps(deps);
+      const resumed = vi.fn();
+      migrator.on('enforced_resume', resumed);
+      await migrator.checkAndMigrate({ percentUsed: 40, fiveHourPercent: 91, activeAccountEmail: null });
+      vi.advanceTimersByTime(MAX_ENFORCEMENT_PAUSE_MS + 1);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+      expect(resumed).toHaveBeenCalledWith(expect.objectContaining({ trigger: 'max-duration' }));
+    });
+
+    it('cancels the deadline when a reading releases the pause early', async () => {
+      const deps = createMockDeps();
+      migrator.setDeps(deps);
+      await migrator.checkAndMigrate({ percentUsed: 40, fiveHourPercent: 96, activeAccountEmail: null });
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 40, fiveHourPercent: 50 })).toBe(true);
+      vi.advanceTimersByTime(MAX_ENFORCEMENT_PAUSE_MS + 1);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the first deadline when enforcement escalates', async () => {
+      const deps = createMockDeps();
+      migrator.setDeps(deps);
+      await migrator.checkAndMigrate({ percentUsed: 40, fiveHourPercent: 91, activeAccountEmail: null });
+      const firstExpiry = migrator.getEnforcementPause()!.expiresAt;
+      vi.advanceTimersByTime(60 * 60 * 1000);
+      (migrator as any).thresholds.cooldownMs = 0;
+      await migrator.checkAndMigrate({ percentUsed: 40, fiveHourPercent: 97, activeAccountEmail: null });
+      expect(migrator.getEnforcementPause()).toMatchObject({ result: 'enforced_kill', expiresAt: firstExpiry });
     });
   });
 });

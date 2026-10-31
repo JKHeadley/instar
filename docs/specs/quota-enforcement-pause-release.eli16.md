@@ -16,10 +16,17 @@ The brake had no release. Once it was on, it stayed on until someone restarted m
 
 On every usage reading, if this brake is the thing holding the tasks, and usage has come back comfortably under the limit (five points below the line where it acts, so it doesn't flap on and off), the brake releases and sends one note saying so. It only ever releases a pause it took itself, never one someone else set on purpose.
 
+The brake also has a five-hour maximum. If usage readings stop arriving, a timer releases the scheduler-wide brake and sends a note explaining why. Script checks can run again. AI jobs remain gated until a new, healthy usage reading arrives; the status page says when they are waiting. The migration status page shows the brake's reason, start, and deadline while it is active. Repeated high readings do not move that deadline later.
+
+The deadline notice says a healthy reading was missing, which also covers the case where readings keep arriving but still report high usage.
+The same status guidance reaches new and existing agents, including Codex and Gemini sessions.
+The same section heading is checked for both new and updated agents, so the agent-guidance consistency test stays active.
+
 ## Safeguards
 
 - Every task still passes its own usage check before running, so releasing the brake early can't cause overspending.
 - If usage climbs again, the brake goes back on exactly as before.
+- After the five-hour maximum, AI jobs require a fresh healthy reading. This keeps an unknown or exhausted account from starting AI work while allowing script checks to run.
 - If a reading is unavailable but the weekly budget is healthy, the brake releases. That's deliberate: a frozen scheduler generates no fresh readings, so waiting for one could freeze it forever.
 - Undoing this change restores the old behaviour. No data or settings are involved.
 

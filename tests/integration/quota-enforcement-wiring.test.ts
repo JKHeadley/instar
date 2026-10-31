@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SessionMigrator } from '../../src/monitoring/SessionMigrator.js';
+import { MAX_ENFORCEMENT_PAUSE_MS } from '../../src/monitoring/SessionMigrator.js';
 import { QuotaManager } from '../../src/monitoring/QuotaManager.js';
 import type {
   SessionMigratorDeps,
@@ -130,7 +131,12 @@ describe('QuotaManager → SessionMigrator notification wiring', () => {
     expect(msg).toBeDefined();
     expect(msg).toContain('92%');
     expect(msg).toContain('1 session');
-    expect(msg).toContain('Scheduler paused');
+    expect(msg).toContain('Scheduler pauses until quota recovers or five hours pass');
+    expect(msg).toContain('five hours');
+    const pause = quotaManager.getMigrationStatus().enforcementPause;
+    expect(pause?.result).toBe('enforced_pause');
+    expect(pause?.reason).toBeTruthy();
+    expect(new Date(pause!.expiresAt).getTime() - new Date(pause!.since).getTime()).toBe(5 * 60 * 60 * 1000);
   });
 
   // ── 2. enforced_kill notification ──
@@ -163,7 +169,7 @@ describe('QuotaManager → SessionMigrator notification wiring', () => {
     expect(msg).toContain('Killed 2 session(s)');
     expect(msg).toContain('alpha');
     expect(msg).toContain('beta');
-    expect(msg).toContain('resumes on its own once quota recovers');
+    expect(msg).toContain('after five hours');
   });
 
   // ── 2b. the pause lifts through the REAL QuotaManager collection path ──
@@ -183,10 +189,43 @@ describe('QuotaManager → SessionMigrator notification wiring', () => {
     await (quotaManager as any).postCollectionChecks({ usagePercent: 63, fiveHourPercent: 20 }, 'jsonl-fallback', 'estimated');
     expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
     expect(migrator.isEnforcementPaused()).toBe(false);
+    expect(quotaManager.getMigrationStatus().enforcementPause).toBeNull();
 
     await vi.waitFor(() => {
       expect(notificationsSent.some(m => m.includes('Scheduler resumed'))).toBe(true);
     });
+  });
+
+  it('deadline release keeps AI jobs gated until a fresh healthy reading arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      migrator.setDeps(createMockDeps());
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 96, activeAccountEmail: 'a@test.io' });
+      vi.advanceTimersByTime(MAX_ENFORCEMENT_PAUSE_MS + 1);
+      expect(migrator.isEnforcementPaused()).toBe(false);
+      expect(quotaManager.getMigrationStatus().awaitingFreshQuota).toBe(true);
+      expect(quotaManager.canSpawnSession('high').allowed).toBe(false);
+
+      vi.advanceTimersByTime(1);
+      (quotaManager.tracker.getState as any).mockReturnValue({
+        usagePercent: 30, fiveHourPercent: 20, lastUpdated: new Date().toISOString(), source: 'anthropic-oauth',
+      });
+      expect(quotaManager.canSpawnSession('high').allowed).toBe(true);
+      expect(quotaManager.getMigrationStatus().awaitingFreshQuota).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('quota-manager stop installs the AI guard before disposing its scheduler hold', async () => {
+    const resumeScheduler = vi.fn(() => {
+      expect(quotaManager.canSpawnSession('high').allowed).toBe(false);
+    });
+    migrator.setDeps(createMockDeps({ resumeScheduler }));
+    await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 96, activeAccountEmail: 'a@test.io' });
+    quotaManager.stop();
+    expect(resumeScheduler).toHaveBeenCalledTimes(1);
+    expect(quotaManager.getMigrationStatus().awaitingFreshQuota).toBe(true);
   });
 
   // ── 3. migration_no_target notification ──

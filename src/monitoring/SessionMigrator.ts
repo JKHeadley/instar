@@ -155,6 +155,16 @@ export interface SessionMigratorDeps {
   quotaUsagePercent?: () => number;
 }
 
+/** Why and since when the scheduler is held by a quota-enforcement pause. */
+export interface EnforcementPauseInfo {
+  result: 'enforced_pause' | 'enforced_kill';
+  reason: string;
+  fiveHourPercent: number;
+  since: string;
+  /** Hard deadline: the pause self-releases here even with no fresh quota reading. */
+  expiresAt: string;
+}
+
 export interface SessionMigratorConfig {
   /** Directory for state persistence (migration state, lock file, history) */
   stateDir: string;
@@ -179,6 +189,8 @@ export interface SessionMigratorEvents {
   enforced_pause: [event: { reason: string; fiveHourPercent: number; sessionsSignaled: number }];
   /** Quota enforcement: all sessions killed (95%+) */
   enforced_kill: [event: { reason: string; fiveHourPercent: number; sessionsKilled: string[] }];
+  /** Releasing without a fresh quota reading; install spawn guards before queue drain. */
+  enforcement_unverified_releasing: [event: { releasedAt: number; trigger: 'max-duration' | 'shutdown' }];
   /** Migration was rolled back */
   migration_rollback: [event: MigrationEvent];
   /** State changed (for external monitoring) */
@@ -198,6 +210,15 @@ const DEFAULT_THRESHOLDS: MigrationThresholds = {
 const LOCK_STALE_MS = 10 * 60 * 1000; // 10 minutes
 /** Points below the 5-hour migration threshold before an enforcement pause lifts. */
 export const RESUME_HYSTERESIS_POINTS = 5;
+/**
+ * Upper bound on a quota-enforcement pause. The release check normally runs on
+ * every quota collection, but if collections stop arriving (collector errors,
+ * stale tracker) nothing would ever re-check — the 2026-08-03 ~11.6h outage.
+ * Five hours is the full rolling window of the 5-hour limit that triggered the
+ * pause, so by then it has necessarily rolled over. Releasing is safe: every
+ * job trigger still passes the per-job quota gate (QuotaManager.canSpawnSession).
+ */
+export const MAX_ENFORCEMENT_PAUSE_MS = 5 * 60 * 60 * 1000;
 const MAX_HISTORY = 50;
 const ACCOUNT_SETTLE_MS = 2000; // Brief pause after account switch
 
@@ -217,8 +238,12 @@ export class SessionMigrator extends EventEmitter {
    * every scheduled job until the next server restart (2026-09-23/24: ~12h of
    * silence after quota had long recovered). In-memory on purpose: a restart
    * already starts the scheduler unpaused, so there is nothing to carry over.
+   * Bounded by MAX_ENFORCEMENT_PAUSE_MS and surfaced via getEnforcementPause().
    */
   private enforcementPaused = false;
+  /** Reason/deadline for the outstanding enforcement pause (null when none). */
+  private enforcementPause: EnforcementPauseInfo | null = null;
+  private enforcementPauseTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: SessionMigratorConfig) {
     super();
@@ -302,6 +327,108 @@ export class SessionMigrator extends EventEmitter {
     return this.enforcementPaused;
   }
 
+  /** Reason, start and hard deadline of the outstanding enforcement pause. */
+  getEnforcementPause(): EnforcementPauseInfo | null {
+    return this.enforcementPaused && this.enforcementPause ? { ...this.enforcementPause } : null;
+  }
+
+  /** Release this migrator's scheduler hold before shutting down the quota manager. */
+  dispose(): void {
+    if (this.enforcementPaused && this.deps) {
+      try {
+        this.emit('enforcement_unverified_releasing', { releasedAt: Date.now(), trigger: 'shutdown' });
+        this.deps.resumeScheduler();
+      } catch (err) {
+        // Keep the deadline armed so a failed shutdown release cannot turn into
+        // another indefinite scheduler pause while the process remains alive.
+        DegradationReporter.getInstance().report({
+          feature: 'SessionMigrator.dispose',
+          primary: 'Release quota-enforcement scheduler hold during shutdown',
+          fallback: 'Deadline timer remains armed for another release attempt',
+          reason: `resumeScheduler threw: ${err instanceof Error ? err.message : String(err)}`,
+          impact: 'Scheduled jobs remain paused until the deadline release succeeds',
+        });
+        return;
+      }
+    }
+    this.clearEnforcementPause();
+  }
+
+  /**
+   * Pause the scheduler for quota enforcement and arm the self-expiring
+   * release. Re-enforcing while already paused updates the reason but keeps
+   * the original deadline, so repeated enforcement cannot extend a pause
+   * indefinitely.
+   */
+  private enterEnforcementPause(
+    result: EnforcementPauseInfo['result'],
+    reason: string,
+    fiveHourPercent: number,
+  ): void {
+    this.deps!.pauseScheduler();
+    const now = Date.now();
+    const existing = this.enforcementPaused ? this.enforcementPause : null;
+    this.enforcementPaused = true;
+    this.enforcementPause = {
+      result,
+      reason,
+      fiveHourPercent,
+      since: existing?.since ?? new Date(now).toISOString(),
+      expiresAt: existing?.expiresAt ?? new Date(now + MAX_ENFORCEMENT_PAUSE_MS).toISOString(),
+    };
+    if (!this.enforcementPauseTimer) {
+      const delay = Math.max(0, new Date(this.enforcementPause.expiresAt).getTime() - now);
+      this.enforcementPauseTimer = setTimeout(() => this.expireEnforcementPause(), delay);
+      this.enforcementPauseTimer.unref?.();
+    }
+  }
+
+  /** Clear the enforcement-pause bookkeeping after any scheduler resume. */
+  private clearEnforcementPause(): void {
+    this.enforcementPaused = false;
+    this.enforcementPause = null;
+    this.clearEnforcementPauseTimer();
+  }
+
+  private clearEnforcementPauseTimer(): void {
+    if (this.enforcementPauseTimer) {
+      clearTimeout(this.enforcementPauseTimer);
+      this.enforcementPauseTimer = null;
+    }
+  }
+
+  /** Deadline fired with no quota-recovered release: resume anyway. */
+  private expireEnforcementPause(): void {
+    this.enforcementPauseTimer = null;
+    if (!this.enforcementPaused || !this.deps) return;
+    const pause = this.enforcementPause;
+    try {
+      // JobScheduler.resume() drains its queue synchronously. Install the
+      // post-release quota guard first, or queued AI jobs can fail open on a
+      // stale tracker snapshot before the resumed event is emitted.
+      this.emit('enforcement_unverified_releasing', { releasedAt: Date.now(), trigger: 'max-duration' });
+      this.deps.resumeScheduler();
+    } catch (err) {
+      DegradationReporter.getInstance().report({
+        feature: 'SessionMigrator.expireEnforcementPause',
+        primary: 'Resume the scheduler when a quota-enforcement pause reaches its maximum duration',
+        fallback: 'Scheduler stays paused; the deadline release is retried in one minute',
+        reason: `resumeScheduler threw: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Scheduled jobs remain paused until a later release succeeds',
+      });
+      this.enforcementPauseTimer = setTimeout(() => this.expireEnforcementPause(), 60_000);
+      this.enforcementPauseTimer.unref?.();
+      return;
+    }
+    this.clearEnforcementPause();
+    this.emit('enforced_resume', {
+      fiveHourPercent: null,
+      weeklyPercent: null,
+      trigger: 'max-duration',
+      pausedReason: pause?.reason ?? null,
+    });
+  }
+
   /**
    * Release a quota-enforcement scheduler pause once quota has recovered.
    *
@@ -340,10 +467,11 @@ export class SessionMigrator extends EventEmitter {
       });
       return false;
     }
-    this.enforcementPaused = false;
+    this.clearEnforcementPause();
     this.emit('enforced_resume', {
       fiveHourPercent: fiveHour ?? null,
       weeklyPercent: quotaState.percentUsed,
+      trigger: 'quota-recovered',
     });
     return true;
   }
@@ -409,8 +537,7 @@ export class SessionMigrator extends EventEmitter {
           event.completedAt = new Date().toISOString();
           event.durationMs = Date.now() - startTime;
 
-          this.deps!.pauseScheduler();
-          this.enforcementPaused = true;
+          this.enterEnforcementPause('enforced_kill', reason, fiveHourPercent);
           const killed = await this.haltRunningSessions();
           event.sessionsHalted = killed.map(s => s.jobSlug || s.name);
 
@@ -437,8 +564,7 @@ export class SessionMigrator extends EventEmitter {
             } catch { /* @silent-fallback-ok — best-effort signal, session will be killed at 95% if still running */ }
           }
 
-          this.deps!.pauseScheduler();
-          this.enforcementPaused = true;
+          this.enterEnforcementPause('enforced_pause', reason, fiveHourPercent);
 
           this.emit('enforced_pause', {
             reason,
@@ -515,7 +641,7 @@ export class SessionMigrator extends EventEmitter {
 
         this.deps!.resumeScheduler();
 
-        this.enforcementPaused = false;
+        this.clearEnforcementPause();
 
         event.result = 'rolled_back';
         event.error = switchResult.message;
@@ -554,7 +680,7 @@ export class SessionMigrator extends EventEmitter {
 
       // Step 8: Resume scheduler
       this.deps!.resumeScheduler();
-      this.enforcementPaused = false;
+      this.clearEnforcementPause();
 
       // Step 9: Determine result
       if (restartedSlugs.length === haltedSessions.length) {
@@ -604,7 +730,7 @@ export class SessionMigrator extends EventEmitter {
       }
 
       // Ensure scheduler is resumed even on error
-      try { this.deps!.resumeScheduler(); this.enforcementPaused = false; } catch { // @silent-fallback-ok — best-effort scheduler resume after migration failure
+      try { this.deps!.resumeScheduler(); this.clearEnforcementPause(); } catch { // @silent-fallback-ok — best-effort scheduler resume after migration failure
       }
 
       this.emit('migration_failed', event);
@@ -906,7 +1032,7 @@ export class SessionMigrator extends EventEmitter {
     this.saveMigrationState();
 
     // Resume scheduler if it was left paused
-    try { this.deps.resumeScheduler(); this.enforcementPaused = false; } catch { // @silent-fallback-ok — best-effort scheduler resume during crash recovery
+    try { this.deps.resumeScheduler(); this.clearEnforcementPause(); } catch { // @silent-fallback-ok — best-effort scheduler resume during crash recovery
     }
   }
 
@@ -973,6 +1099,7 @@ export class SessionMigrator extends EventEmitter {
     lastMigration: MigrationEvent | null;
     history: MigrationEvent[];
     config: MigrationThresholds;
+    enforcementPause: EnforcementPauseInfo | null;
   } {
     const history = this.loadHistory();
     return {
@@ -984,6 +1111,7 @@ export class SessionMigrator extends EventEmitter {
       lastMigration: history.lastMigration,
       history: history.migrations,
       config: { ...this.thresholds },
+      enforcementPause: this.getEnforcementPause(),
     };
   }
 

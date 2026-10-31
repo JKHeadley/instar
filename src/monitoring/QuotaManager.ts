@@ -149,6 +149,8 @@ export class QuotaManager extends EventEmitter {
   private pendingNotifications: PendingNotification[] = [];
   private notificationRetryTimer: ReturnType<typeof setInterval> | null = null;
   private sendNotification: ((message: string) => Promise<void>) | null = null;
+  /** After an unverified release, AI jobs wait for a new healthy quota reading. */
+  private enforcementUnverifiedReleasedAt: number | null = null;
 
   // References set via setSessionManager / setScheduler
   private sessionManager: SessionManager | null = null;
@@ -258,7 +260,7 @@ export class QuotaManager extends EventEmitter {
         this.enqueueNotification(
           `⚠️ [QUOTA ENFORCEMENT] PAUSE WARNING\n` +
           `5-hour rate: ${ev.fiveHourPercent}% — no alternative accounts.\n` +
-          `Sent graceful shutdown to ${ev.sessionsSignaled} session(s). Scheduler paused until quota recovers.\n` +
+          `Sent graceful shutdown to ${ev.sessionsSignaled} session(s). Scheduler pauses until quota recovers or five hours pass.\n` +
           `If quota reaches 95%, all sessions will be killed.`
         );
       });
@@ -268,11 +270,23 @@ export class QuotaManager extends EventEmitter {
           `🚨 [QUOTA ENFORCEMENT] EMERGENCY STOP\n` +
           `5-hour rate: ${ev.fiveHourPercent}% — no alternative accounts.\n` +
           `Killed ${ev.sessionsKilled.length} session(s): ${ev.sessionsKilled.join(', ') || 'none'}.\n` +
-          `Scheduler paused — it resumes on its own once quota recovers.`
+          `Scheduler paused — it resumes when quota recovers or after five hours.`
         );
       });
 
+      this.migrator.on('enforcement_unverified_releasing', (ev) => {
+        this.enforcementUnverifiedReleasedAt = ev.releasedAt;
+      });
+
       this.migrator.on('enforced_resume', (ev) => {
+        if (ev.trigger === 'max-duration') {
+          this.enqueueNotification(
+            `⏱️ [QUOTA ENFORCEMENT] Scheduler resumed — pause reached its maximum duration ` +
+            `without a healthy quota reading (paused for: ${ev.pausedReason ?? 'unknown'}). ` +
+            `AI jobs wait for a fresh, healthy quota reading; script checks can run.`
+          );
+          return;
+        }
         this.enqueueNotification(
           `✅ [QUOTA ENFORCEMENT] Scheduler resumed — quota recovered ` +
           `(5-hour rate: ${ev.fiveHourPercent ?? 'unknown'}%, weekly: ${ev.weeklyPercent}%).`
@@ -403,6 +417,7 @@ export class QuotaManager extends EventEmitter {
    * Stop polling and clean up.
    */
   stop(): void {
+    this.migrator?.dispose();
     if (!this.running) return;
     this.running = false;
 
@@ -456,6 +471,18 @@ export class QuotaManager extends EventEmitter {
   }
 
   canSpawnSession(priority?: string): { allowed: boolean; reason: string } {
+    if (this.enforcementUnverifiedReleasedAt !== null) {
+      const state = this.tracker.getState();
+      const thresholds = this.migrator?.getThresholds();
+      const fresh = state && Date.parse(state.lastUpdated) > this.enforcementUnverifiedReleasedAt;
+      const healthy = state && thresholds && Number.isFinite(state.fiveHourPercent) &&
+        state.fiveHourPercent! < thresholds.fiveHourPercent - 5 &&
+        state.usagePercent < thresholds.weeklyPercent;
+      if (!fresh || !healthy) {
+        return { allowed: false, reason: 'Quota enforcement released without a reading — AI jobs await fresh, healthy quota' };
+      }
+      this.enforcementUnverifiedReleasedAt = null;
+    }
     // Check quota thresholds first
     const trackerResult = this.tracker.shouldSpawnSession(priority as any);
     if (!trackerResult.allowed) {
@@ -759,6 +786,8 @@ export class QuotaManager extends EventEmitter {
         history: [],
         config: { enabled: false, fiveHourThreshold: 0, weeklyThreshold: 0, cooldownMinutes: 0 },
         cooldownUntil: null,
+        enforcementPause: null,
+        awaitingFreshQuota: false,
       };
     }
 
@@ -785,6 +814,8 @@ export class QuotaManager extends EventEmitter {
         cooldownMinutes: Math.round(thresholds.cooldownMs / 60000),
       },
       cooldownUntil,
+      enforcementPause: status.enforcementPause,
+      awaitingFreshQuota: this.enforcementUnverifiedReleasedAt !== null,
     };
   }
 

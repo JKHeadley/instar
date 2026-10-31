@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-28T15:17:57.636Z",
+  "slug": "feedback-quota-enforcement-pause",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/QuotaManager.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

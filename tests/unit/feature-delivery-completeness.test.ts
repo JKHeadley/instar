@@ -156,6 +156,7 @@ describe('Feature Delivery Completeness', () => {
       // Codex/Gemini agent also learns its messages are judged by MEANING).
       '### Outbound Message Gate',
       'Self-Discovery',
+      '### Quota-enforcement scheduler pause', // scheduler deadline and fresh-reading guard: template, migration, and Codex/Gemini shadow parity
       'Registry First — capability registry:',
       // channel-registry: which peer channels work right now (templates.ts + migrator parity).
       'Registry First — channel registry:',

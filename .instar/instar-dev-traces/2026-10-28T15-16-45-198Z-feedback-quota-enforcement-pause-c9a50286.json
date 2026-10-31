@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "feedback-quota-enforcement-pause",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-28T15:16:45.198Z",
+  "artifactPath": "upgrades/side-effects/feedback-quota-enforcement-pause.md",
+  "artifactSha256": "810b3bb362fd64050a364199d0c119ed7458dba62169dd537b0affe895b081bb",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/QuotaManager.ts",
+    "src/monitoring/SessionMigrator.ts",
+    "src/scaffold/templates.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This is a reversible scheduler bug fix with no durable state change; the migration change adds only idempotent awareness text. Independent review checked the quota and queue-drain safety boundary.",
+  "eli16Path": "docs/specs/quota-enforcement-pause-release.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-quota-enforcement-pause.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

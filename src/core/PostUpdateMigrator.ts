@@ -7384,6 +7384,13 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    // Existing agents need the same quota-enforcement status guidance as new installs.
+    if (!content.includes('### Quota-enforcement scheduler pause')) {
+      content += `\n### Quota-enforcement scheduler pause\nIf quota enforcement pauses the scheduler, inspect \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/quota/migration\`. Its \`enforcementPause\` shows the reason, start, and latest automatic release time. The scheduler also resumes sooner when quota recovers. After a deadline release, \`awaitingFreshQuota\` keeps AI jobs gated until a new healthy reading arrives; script checks can run.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added bounded quota-enforcement pause awareness');
+    }
+
     if (!content.includes(CONSOLE_MARKER)) {
       // Console makeover (docs/specs/console-makeover.md): one bullet under the Dashboard entry.
       const anchor = '- Features: Real-time terminal streaming';
@@ -13076,6 +13083,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     const markers = [
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
+      '### Quota-enforcement scheduler pause',
       // peer-credential-guard-tailscale-coherence: a pool read's failure reasons
       // are server-side and framework-neutral — a Codex/Gemini agent runs the
       // same fan-out and must not report `url-rejected` and the new

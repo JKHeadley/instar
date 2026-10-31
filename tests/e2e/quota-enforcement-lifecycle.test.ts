@@ -23,6 +23,9 @@ import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { QuotaManager } from '../../src/monitoring/QuotaManager.js';
+import { MAX_ENFORCEMENT_PAUSE_MS } from '../../src/monitoring/SessionMigrator.js';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import { createTempProject, createMockSessionManager, createSampleJobsFile } from '../helpers/setup.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -492,5 +495,72 @@ describe('Quota Enforcement Lifecycle (E2E)', () => {
     } finally {
       project.cleanup();
     }
+  });
+
+  it('a REAL scheduler resumes at the enforcement deadline without another quota collection', async () => {
+    const project = createTempProject();
+    let scheduler: JobScheduler | undefined;
+    let qm: QuotaManager | undefined;
+    let migrator: SessionMigrator | undefined;
+    try {
+      const jobsFile = createSampleJobsFile(project.stateDir);
+      for (const slug of ['health-check', 'email-check']) {
+        project.state.saveJobState({ slug, lastRun: new Date().toISOString(), lastResult: 'success', runCount: 1, consecutiveFailures: 0 });
+      }
+      const sm = createMockSessionManager();
+      scheduler = new JobScheduler(
+        { jobsFile, enabled: true, maxParallelJobs: 2, quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 } },
+        sm as any, project.state, project.stateDir,
+      );
+      scheduler.start();
+      migrator = new SessionMigrator({ stateDir: tmpDir, thresholds: { gracePeriodMs: 10 } });
+      migrator.setDeps(createMockDeps({
+        getAccountStatuses: vi.fn(() => []),
+        pauseScheduler: () => scheduler!.pause(),
+        resumeScheduler: () => scheduler!.resume(),
+      }));
+      qm = new QuotaManager(
+        { stateDir: tmpDir },
+        { tracker: { getState: vi.fn(() => null), shouldSpawnSession: vi.fn(() => ({ allowed: true, reason: 'ok' })) } as any,
+          notifier: { checkAndNotify: vi.fn(async () => {}) } as any, migrator },
+      );
+      qm.setScheduler(scheduler);
+      const spawnGate = vi.spyOn(qm, 'canSpawnSession');
+
+      vi.useFakeTimers();
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 96, activeAccountEmail: 'a@test.io' });
+      expect(scheduler.getStatus().paused).toBe(true);
+      expect(qm.getMigrationStatus().enforcementPause?.result).toBe('enforced_kill');
+      // Resume drains queued work synchronously; the deadline guard must exist first.
+      (scheduler as any).enqueue('health-check', 'queued-before-deadline');
+      vi.advanceTimersByTime(MAX_ENFORCEMENT_PAUSE_MS + 1);
+      expect(scheduler.getStatus().paused).toBe(false);
+      expect(qm.getMigrationStatus().enforcementPause).toBeNull();
+      expect(qm.getMigrationStatus().awaitingFreshQuota).toBe(true);
+      expect(sm._spawnCount).toBe(0);
+      expect(spawnGate).toHaveBeenCalledWith('high');
+      expect(await scheduler.triggerJob('health-check', 'test')).toBe('skipped');
+    } finally {
+      migrator?.dispose();
+      qm?.stop();
+      scheduler?.stop();
+      vi.useRealTimers();
+      project.cleanup();
+    }
+  });
+
+  it('new and updated agents learn where to inspect an enforcement pause', () => {
+    expect(generateClaudeMd('p', 'a', 4042, false)).toContain('Its `enforcementPause` shows the reason');
+    const stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const claudeMd = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(claudeMd, '# Existing agent\n');
+    const migrator = new PostUpdateMigrator({
+      port: 4042, stateDir, projectDir: tmpDir, hasTelegram: false, projectName: 'e2e',
+    } as never) as unknown as { migrateClaudeMd(result: { upgraded: string[]; skipped: string[]; errors: string[] }): void };
+    const result = () => ({ upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] });
+    migrator.migrateClaudeMd(result());
+    migrator.migrateClaudeMd(result());
+    expect(fs.readFileSync(claudeMd, 'utf8').split('Its `enforcementPause` shows the reason')).toHaveLength(2);
   });
 });

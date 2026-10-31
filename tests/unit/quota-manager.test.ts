@@ -65,6 +65,8 @@ function createMockMigrator() {
   const emitter = new EventEmitter();
   return Object.assign(emitter, {
     setDeps: vi.fn(),
+    dispose: vi.fn(),
+    releaseEnforcementPauseIfRecovered: vi.fn(() => false),
     checkAndMigrate: vi.fn(async () => false),
     completeRecovery: vi.fn(async () => {}),
     isMigrating: vi.fn(() => false),
@@ -73,6 +75,7 @@ function createMockMigrator() {
       state: null,
       lastMigration: null,
       history: [],
+      enforcementPause: null,
       config: { fiveHourPercent: 88, weeklyPercent: 92, cooldownMs: 600000, minimumHeadroom: 20, gracePeriodMs: 5000 },
     })),
     getThresholds: vi.fn(() => ({
@@ -278,6 +281,7 @@ describe('QuotaManager', () => {
 
     manager.stop();
     expect(manager.getPollingStatus().running).toBe(false);
+    expect(migrator.dispose).toHaveBeenCalledTimes(1);
   });
 
   it('runs collection on start', async () => {
