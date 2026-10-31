@@ -2554,6 +2554,11 @@ export class LocalVerifyService {
         try { this.preflightReplays?.completeFromJournal(replay.key, this.now()); }
         catch (e) { this.audit({ event: 'preflight-replay-completion-persist-failed', pr: record.pr, detail: String(e) }); }
       }
+      if (record.outcome === 'success' && (record.preflight?.outcome === 'red' || replay)) {
+        this.audit({ event: 'preflight-false-red', pr: record.pr, headSha: record.headSha, baseSha: record.baseSha,
+          mode: record.preflight?.outcome === 'red' ? 'observe' : 'enforce',
+          repeatedFailedFile: record.preflight?.repeatedFailedFile ?? null });
+      }
     }
     this.audit({ event: 'record', source, pr: record.pr, headSha: record.headSha, baseSha: record.baseSha, outcome: record.outcome, errorStep: record.errorStep });
     this.seams.onRecord?.(record);

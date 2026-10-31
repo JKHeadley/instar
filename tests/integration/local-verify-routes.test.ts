@@ -113,6 +113,7 @@ describe('local-verify routes (integration)', () => {
     expect(got.status).toBe(200);
     expect(got.body.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'red', reason: 'observed-stable-red' } });
     expect((await request(a).get('/local-verify')).body.preflight.replays).toEqual([]);
+    expect(fs.readFileSync(s.svc.auditPath, 'utf8')).toContain('"event":"preflight-false-red"');
   });
 
   it('exposes an enforced early red and its durable full-suite replay obligation over HTTP', async () => {

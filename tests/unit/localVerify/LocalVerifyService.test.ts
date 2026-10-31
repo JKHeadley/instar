@@ -159,6 +159,7 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     await h.finish(1, ok(record()));
     expect(store().get(key)?.state).toBe('completed');
     expect(h.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    expect(fs.readFileSync(h.svc.auditPath, 'utf8')).toContain('"event":"preflight-false-red"');
   });
   it('reconstructs one obligation from a published red when the marker was lost before restart', async () => {
     const h = setup({ views: { 1: view() } });
