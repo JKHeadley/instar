@@ -72,6 +72,10 @@ The change addresses the observed identity substitution at source and consumer b
 
 **Followup review:** Concur. After CI found that duplicate-session diagnostics still depended on sanitized display names, the reviewer found a possible false warning from matching internal session keys. Both clients now match the server's platform and conversation ID pair. A negative client test covers two topics with the same session key. The Mac M5 Pro local verifier then found two failures in the browser-helper test fixture changed during this branch: it assumed all basic shell tools lived under `/usr/bin`. The fixture now locates each tool under `/usr/bin` or `/bin`, preserving the intended restricted PATH on Linux and macOS.
 
+**Migration followup:** The Mac Mini verifier passed its full unit lane, then found one failure in the existing browser-skill migration integration test. A deterministic probe reproduced the issue: the new verified-name guidance was appended to a minimal legacy `CLAUDE.md` before the legacy browser section was replaced, making that section appear edited and leaving its old heading beside the new one. The browser section replacement now runs before capability bullets are added. The same probe shows one new heading and zero old headings in both `CLAUDE.md` and `AGENTS.md`; the integration test is being rerun.
+
+**Migration followup independent review:** Concur. The exact-text guard and edited-section preservation remain intact; only the order changes, so the shipped legacy section can be recognized before new guidance is appended. The second run remains idempotent.
+
 ## Evidence pointers
 
 `tests/unit/channelIdentity.test.ts`, `tests/unit/telegram-adapter.test.ts`, `tests/unit/slack-thread-session-routing.test.ts`, `tests/unit/dashboard-duplicateBadge.test.ts`, `tests/integration/telegram-issue-topics-route.test.ts`, `tests/integration/sessions-listing-hygiene.test.ts`, and `tests/e2e/verified-topic-names-lifecycle.test.ts`. Full suite is running; its result will be added to the PR.

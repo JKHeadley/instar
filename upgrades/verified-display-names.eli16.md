@@ -9,3 +9,5 @@ The shared display rule rejects obvious identifiers presented as names, includin
 The duplicate-session warning still works after display names are cleaned up: it matches the conversation's platform and ID internally, so a coincidental match between two session keys does not warn about the wrong conversation.
 
 Tests cover the validator, the platform adapters, the pooled HTTP response, migration, and a live server lifecycle. The separate console preview uses the new endpoint and has been checked at phone and desktop sizes. The remaining live check is to see the released pooled response return real names on the operator's machines.
+
+On an existing agent, the update also keeps older browser guidance from being mistaken for an edited section when it adds the new name rule. This was caught by the Mac local verifier and corrected before release.
