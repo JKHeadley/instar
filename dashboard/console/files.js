@@ -10,6 +10,7 @@
 // markdown, which only ever reaches the page as a DOM fragment DOMPurify produced. When
 // the formatter or the sanitizer is not loaded, the file is shown as plain source.
 
+import { verifiedDisplayName } from './display-identity.js';
 import {
   RECENT_KEY, STASH_KEY, NEVER_EDITABLE, NEVER_SHOWN_WORDS,
   normPath, baseName, parentOf, crumbs, folderWords, fileHash, pathFromHash, sizeWords,
@@ -113,7 +114,7 @@ export async function renderFiles(main, ctx) {
     ctx.get('/pool').then((r) => {
       const ms = r.ok && r.data && Array.isArray(r.data.machines) ? r.data.machines : [];
       const self = ms.find((m) => m && (m.isSelf || m.machineId === r.data.selfMachineId));
-      S.machine = ms.length > 1 ? String((self && (self.nickname || self.name)) || 'this machine') : '';
+      S.machine = ms.length > 1 ? (verifiedDisplayName(self && self.nickname, self && self.machineId) || verifiedDisplayName(self && self.name, self && self.machineId) || 'this machine') : '';
       if (S.machine && page) { const t = page.querySelector('[data-machine]'); if (t) t.textContent = `Files on ${S.machine}. Each machine has its own.`; }
     });
   }

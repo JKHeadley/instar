@@ -52,6 +52,7 @@ function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: 
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { buildHandoffContinuationInstruction, type HandoffCommitment } from '../core/handoffContinuation.js';
@@ -17332,10 +17333,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Bind the notify sink (was a no-op until telegram existed).
       _degradedTmuxRaise = telegram
         ? (ep) => {
-            // Resolve the machine nickname from the pool registry (single-machine ⇒ the id).
-            const nick =
-              (_listPoolMachines?.() ?? []).find((m) => m.machineId === _degradedTmuxMid)?.nickname ??
-              _degradedTmuxMid;
+            const nick = verifiedEntityName(_degradedTmuxMid,
+              (_listPoolMachines?.() ?? []).find((m) => m.machineId === _degradedTmuxMid)?.nickname) ?? 'this machine';
             const ageMin = Math.round(ep.ageMs / 60_000);
             void telegram.createAttentionItem({
               id: `degraded-tmux:${_degradedTmuxMid}:${ep.id}`,
@@ -18652,7 +18651,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           : Promise.resolve({ injected: false as const, definitive: false, reason: 'mesh-not-wired' }),
         remoteReplyEnabled: () => _a2aAskTopicOwner !== null && a2aRelayForwardEnabled(),
         selfMachineId: () => _meshSelfId,
-        selfMachineName: () => _listPoolMachines?.().find((m) => m.machineId === _meshSelfId)?.nickname ?? _meshSelfId,
+        selfMachineName: () => _meshSelfId ? (verifiedEntityName(_meshSelfId, _listPoolMachines?.().find((m) => m.machineId === _meshSelfId)?.nickname) ?? 'this machine') : 'this machine',
         topicOwnerOf: (topicId: number) => sessionOwnershipRegistry?.ownerOf(String(topicId)) ?? null,
         onRemoteReplyEvent: (event) => {
           if (event === 'ask') a2aRelayForwardCtx.counters.replyAsks++;
@@ -21355,7 +21354,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (!reg || !self) return null;
         const machineId = reg.ownerOf(String(topicId));
         if (!machineId || machineId === self) return null;
-        const displayName = machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machineId;
+        const displayName = verifiedEntityName(machineId, machinePoolRegistry?.getCapacity(machineId)?.nickname) ?? 'another machine';
         return { machineId, displayName };
       } catch { return null; /* @silent-fallback-ok — pool not wired yet → rule inert (withhold) */ }
     };
@@ -21582,7 +21581,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!reg || !self) return null;
             const owner = reg.ownerOf(String(topicId));
             if (!owner || owner === self) return null;
-            return machinePoolRegistry?.getCapacity(owner)?.nickname ?? owner;
+            return verifiedEntityName(owner, machinePoolRegistry?.getCapacity(owner)?.nickname) ?? 'another machine';
           } catch { return null; /* @silent-fallback-ok — pool not wired yet → rule inert */ }
         },
         // Post-transfer closeout correctness (F1): the ATOMIC combined owner read
@@ -26708,7 +26707,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             onClose: () => { void _inboundQueue?.onBreakerClose(); },
             flapThresholdPerHour: (config.multiMachine?.sessionPool?.holdForStability as { flapThresholdPerHour?: number } | undefined)?.flapThresholdPerHour ?? 6,
             reportFlapEpisode: ({ machineId, episodesLastHour }) => {
-              const nickname = machinePoolRegistry?.getCapacity(machineId)?.nickname ?? machineId;
+              const nickname = verifiedEntityName(machineId, machinePoolRegistry?.getCapacity(machineId)?.nickname) ?? 'another machine';
               notify('SUMMARY', 'inbound-queue',
                 `"${nickname}" is flapping (${episodesLastHour} suspect episodes in the last hour) — holds are disabled for it until it calms; its conversations move on the usual failover path.`);
             },
@@ -27098,7 +27097,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                       if (survivorEpisodesSeen.has(episodeKey)) continue;
                       survivorEpisodesSeen.add(episodeKey);
                       notify('IMMEDIATE', 'inbound-queue',
-                        `"${cap.nickname ?? cap.machineId}" went dark holding ~${iq.queueDepth} queued message(s) — SUSPECTED loss (it may have delivered some before going dark; last heartbeat ${cap.selfReportedLastSeen ?? 'unknown'}). I'm re-opening its top conversations on a healthy machine — session recovery WITHOUT message replay: the queued messages themselves are not recovered, so resend anything still needed.`);
+                        `"${verifiedEntityName(cap.machineId, cap.nickname) ?? 'another machine'}" went dark holding ~${iq.queueDepth} queued message(s) — SUSPECTED loss (it may have delivered some before going dark; last heartbeat ${cap.selfReportedLastSeen ?? 'unknown'}). I'm re-opening its top conversations on a healthy machine — session recovery WITHOUT message replay: the queued messages themselves are not recovered, so resend anything still needed.`);
                       const respawnCap = Math.min(qcfg.maxFailoverRespawns, iq.topK.length);
                       for (let i = 0; i < respawnCap; i++) {
                         const sk = iq.topK[i].sessionKey;
@@ -28011,8 +28010,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               isHolderHealthy: (machineId) => { try { return leaseCoordinatorRef ? leaseCoordinatorRef.isHolderHealthy(machineId) : false; } catch { return false; } }, // @silent-fallback-ok — an unreadable lease reads as NOT healthy: settling, never a blind forward
             };
             const holderNickname = (machineId: string): string => {
-              try { return coordinator.managers.identityManager.loadRegistry().machines[machineId]?.nickname ?? `machine ${machineId.slice(0, 8)}`; }
-              catch { return `machine ${machineId.slice(0, 8)}`; }
+              try { return verifiedEntityName(machineId, coordinator.managers.identityManager.loadRegistry().machines[machineId]?.nickname) ?? 'another machine'; }
+              catch { return 'another machine'; }
             };
             const heldAuditPath = path.join(config.stateDir, 'logs', 'telegram-origin-held.jsonl');
             const heldAudit = (row: Record<string, unknown>) => {
@@ -28651,7 +28650,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const _ownReg = sessionOwnershipRegistry;
         const _poolReg = machinePoolRegistry;
         const _nickById = (id: string): string =>
-          (_listPoolMachines?.() ?? []).find((m) => m.machineId === id)?.nickname ?? id;
+          verifiedEntityName(id, (_listPoolMachines?.() ?? []).find((m) => m.machineId === id)?.nickname) ?? 'another machine';
         const strandedSentinel = new StrandedTopicSentinel(
           {
             listOwnershipRecords: () => _ownReg.all(),
@@ -28722,7 +28721,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .filter((c) => c.machineId !== rhSelfId)
                 .map((c) => ({
                   machineId: c.machineId,
-                  nickname: c.nickname ?? c.machineId,
+                  nickname: verifiedEntityName(c.machineId, c.nickname) ?? 'another machine',
                   registryOnline: c.online === true,
                 })),
             // The mesh-INDEPENDENT liveness discriminator (R-r2-1): the git-synced
@@ -29274,7 +29273,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             return false;
           }
         };
-        const nick = (id: string, e?: { nickname?: string; name?: string }) => e?.nickname ?? e?.name ?? id;
+        const nick = (id: string, e?: { nickname?: string; name?: string }) => verifiedEntityName(id, e?.nickname) ?? verifiedEntityName(id, e?.name) ?? 'another machine';
         // The registry readers below are TOLERANT: `loadRegistry()` throws on a corrupt file,
         // and a corrupt registry is one of the postures this feature exists to serve (§1.1
         // `unreadable` → refuse to mint, stay loud, keep serving). An unreadable registry reads

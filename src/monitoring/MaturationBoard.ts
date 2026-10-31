@@ -318,6 +318,8 @@ export interface CommitmentFact {
 export interface SourceStatus {
   name: string;
   machine: string | null;
+  machineId?: string;
+  machineIds?: string[];
   ok: boolean;
   reason?: string;
   at?: string | null;

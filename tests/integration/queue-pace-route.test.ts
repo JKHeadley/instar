@@ -101,8 +101,9 @@ describe('GET /queue-pace', () => {
     expect(res.body.queues.some((x: { id: string }) => x.id === 'not-a-queue')).toBe(false);
     expect(res.body.context.feedbackReportsPerDay).toBe(351);
     expect(res.body.sources).toEqual(expect.arrayContaining([
-      { machine: 'Studio', ok: true }, { machine: 'Laptop', ok: true }, { machine: 'm_off', ok: false, reason: 'off' },
-      expect.objectContaining({ machine: 'm_dead', ok: false }),
+      { machine: 'Studio', machineId: 'm_self', ok: true }, { machine: 'Laptop', machineId: 'm_peer', ok: true },
+      { machine: 'another machine', machineId: 'm_off', ok: false, reason: 'off' },
+      expect.objectContaining({ machine: 'another machine', machineId: 'm_dead', ok: false }),
     ]));
   });
 });
