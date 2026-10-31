@@ -39,7 +39,15 @@ function harness(onOpen?: () => void) {
   };
   const peer = new FailedFileDiagnosisPeerService(cfg, deps);
   return { peer, root, reboot: () => new FailedFileDiagnosisPeerService(cfg, deps), killed, resultPath: () => resultPath,
-    exit: async () => { alive = false; resolveExit({ status: 0, signal: null }); await new Promise((r) => setImmediate(r)); },
+    exit: async () => {
+      alive = false;
+      resolveExit({ status: 0, signal: null });
+      // The child exit starts asynchronous result validation and private-tree
+      // cleanup. Wait for that observable lifecycle boundary, not one event-loop
+      // turn, which can finish before filesystem cleanup does.
+      for (let n = 0; n < 100 && peer.busy(); n++) await new Promise((r) => setTimeout(r, 10));
+      if (peer.busy()) throw new Error('diagnosis peer did not settle after child exit');
+    },
     setMode: (v: typeof mode) => { mode = v; }, setFullBusy: (v: boolean) => { fullBusy = v; },
     setLease: (v: typeof ctx) => { liveLease = v; } };
 }
