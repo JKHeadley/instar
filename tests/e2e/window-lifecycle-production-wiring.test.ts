@@ -164,7 +164,10 @@ describe('Window lifecycle production wiring', () => {
 
   async function advanceCadenceTo(target: string): Promise<void> {
     while (Date.parse(clock) < Date.parse(target)) {
-      clock = new Date(Math.min(Date.parse(clock) + 30 * 60_000, Date.parse(target))).toISOString();
+      // Cadence reports are due every three hours. Visit each due boundary once;
+      // 30-minute ticks repeated the same expensive full-ledger evaluation six
+      // times per interval without exercising a different decision boundary.
+      clock = new Date(Math.min(Date.parse(clock) + 3 * 60 * 60_000, Date.parse(target))).toISOString();
       let ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
       syncCommitments(ledger.obligations);
       await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
