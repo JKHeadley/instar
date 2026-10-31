@@ -103,7 +103,7 @@ jobs:
               throw 'Windows-local signed preparation did not return an update token'
             }
             $env:INSTAR_DESKTOP_UPDATE_TOKEN = $prepared.updateToken
-            $committed = (& powershell.exe @common -Operation 'commit-update' | Select-Object -Last 1) | ConvertFrom-Json
+            $committed = (& powershell.exe @common -Operation 'commit-update' 2>$null | Select-Object -Last 1) | ConvertFrom-Json
             # The companion can exit as it writes the final reply. A lost reply
             # is acceptable only when the exact prepared process has exited.
             $companion.WaitForExit(5000) | Out-Null
