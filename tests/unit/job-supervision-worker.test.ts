@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
 import { JobSupervisionWorker, parseJevSupervisionVerdict } from '../../src/scheduler/JobSupervisionWorker.js';
+import { parseJobReplacementVerdictStrict } from '../../src/scheduler/JobSupervisionReplacementPrompt.js';
 import { jobSupervisionRolloutState } from '../../src/scheduler/JobSupervisionRollout.js';
 
 const t0 = Date.parse('2026-10-28T00:00:00Z');
@@ -92,7 +93,8 @@ describe('JobSupervisionWorker', () => {
 
   it('uses the benchmarked replacement only when Jev is unavailable', async () => {
     const id = add(store, 'r1', true);
-    const call = vi.fn(async () => ({ verdict: 'routine' as const, actualModel: 'haiku', actualProvider: 'anthropic', tokensIn: 20 }));
+    const call = vi.fn(async () => ({ verdict: 'routine' as const, formatValid: true,
+      actualModel: 'haiku', actualProvider: 'anthropic', tokensIn: 20 }));
     const worker = new JobSupervisionWorker({ store, readJevKey: () => null, auditReady: () => true,
       replacement: () => ({ model: 'haiku', provider: 'anthropic', benchmarkReady: true, call }),
       now: () => t0 + 1000 });
@@ -101,6 +103,51 @@ describe('JobSupervisionWorker', () => {
     expect(store.get(id)).toMatchObject({ status: 'resolved', provider: 'replacement' });
     expect(store.callRows(id)).toHaveLength(1);
     expect(store.callRows(id)[0]).toMatchObject({ intended_model: 'haiku', actual_model: 'haiku' });
+  });
+
+  it('keeps malformed replacement output unchecked and records a failed call', async () => {
+    const id = add(store, 'malformed-replacement', true);
+    const worker = new JobSupervisionWorker({ store, readJevKey: () => null, auditReady: () => true,
+      replacement: () => ({ model: 'haiku', provider: 'claude-code', benchmarkReady: true,
+        call: async () => {
+          let formatValid = true;
+          try { parseJobReplacementVerdictStrict('```json\n{"verdict":"routine"}\n```'); }
+          catch { formatValid = false; }
+          return { verdict: 'cannot-tell' as const, formatValid,
+            actualModel: 'haiku', actualProvider: 'claude-code', tokensIn: 123, tokensOut: 9 };
+        } }),
+      now: () => t0 + 1000 });
+    expect(await worker.drain()).toBe(1);
+    expect(store.get(id)).toMatchObject({ status: 'unchecked', reason: 'provider-format-error' });
+    expect(store.callRows(id)).toHaveLength(1);
+    expect(store.callRows(id)[0]).toMatchObject({ provider: 'replacement', settlement: 'failed',
+      actual_model: 'haiku', tokens_in: 123, tokens_out: 9 });
+  });
+
+  it('records a wrong served model and its usage without accepting the answer', async () => {
+    const id = add(store, 'wrong-model', true);
+    const worker = new JobSupervisionWorker({ store, readJevKey: () => null, auditReady: () => true,
+      replacement: () => ({ model: 'expected-model', provider: 'claude-code', benchmarkReady: true,
+        call: async () => ({ verdict: 'routine' as const, formatValid: true, actualModel: 'other-model',
+          actualProvider: 'claude-code', tokensIn: 45 }) }), now: () => t0 + 1000 });
+    expect(await worker.drain()).toBe(1);
+    expect(store.get(id)).toMatchObject({ status: 'unchecked', reason: 'provider-model-mismatch' });
+    expect(store.callRows(id)[0]).toMatchObject({ intended_model: 'expected-model',
+      actual_model: 'other-model', tokens_in: 45, settlement: 'failed' });
+  });
+
+  it('retains usage observed before a replacement provider throws', async () => {
+    const id = add(store, 'throw-after-usage', true);
+    const worker = new JobSupervisionWorker({ store, readJevKey: () => null, auditReady: () => true,
+      replacement: () => ({ model: 'gpt-6-luna', provider: 'codex-cli', benchmarkReady: true,
+        call: async (_prompt, _runId, _signal, observe) => {
+          observe({ actualModel: 'gpt-6-luna', actualProvider: 'codex-cli', tokensIn: 321, tokensOut: 12 });
+          throw new Error('provider failed after reporting usage');
+        } }), now: () => t0 + 1000 });
+    expect(await worker.drain()).toBe(1);
+    expect(store.get(id)).toMatchObject({ status: 'unchecked', reason: 'provider-error' });
+    expect(store.callRows(id)[0]).toMatchObject({ settlement: 'failed', actual_model: 'gpt-6-luna',
+      actual_provider: 'codex-cli', tokens_in: 321, tokens_out: 12 });
   });
 
   it('leaves no-key one-provider results visibly unchecked without an unbenchmarked call', async () => {

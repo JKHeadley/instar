@@ -23,13 +23,17 @@ export interface ReplacementChoice {
   /** True only after the job-shaped benchmark and audit readiness checks. */
   benchmarkReady: boolean;
   /** Receives the exact code-owned prompt whose hash is committed pre-call. */
-  call(prompt: string, runId: string, signal: AbortSignal): Promise<{
+  call(prompt: string, runId: string, signal: AbortSignal,
+    observe: (value: { actualModel?: string; actualProvider?: string;
+      tokensIn?: number; tokensOut?: number; costUsd?: number }) => void): Promise<{
     verdict: Exclude<SupervisionVerdict, null>;
     actualModel: string;
     actualProvider: string;
     tokensIn?: number;
     tokensOut?: number;
     costUsd?: number;
+    /** A parsed but malformed reply is a failed call, not a cannot-tell verdict. */
+    formatValid: boolean;
   }>;
 }
 
@@ -177,15 +181,39 @@ export class JobSupervisionWorker {
     }
     const started = this.now();
     const controller = new AbortController();
+    const observed: { actualModel?: string; actualProvider?: string;
+      tokensIn?: number; tokensOut?: number; costUsd?: number } = {};
+    let failed = false;
+    const observe = (value: typeof observed): void => {
+      Object.assign(observed, value);
+      if (failed) {
+        // The provider may finish reporting usage after our timeout. This can
+        // enrich the exact failed call, but cannot revive its verdict.
+        try { this.deps.store.recordLateFailedCallObservation(attemptId, audit.epoch, observed); }
+        catch { /* @silent-fallback-ok — Store may have closed during shutdown; the reserved budget remains. */ }
+      }
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => { controller.abort(); reject(new Error('replacement-timeout')); }, 30_000);
       timer.unref?.();
     });
     try {
-      const result = await Promise.race([choice.call(buildJobReplacementPrompt(evidence), row.runId, controller.signal), timeout]);
+      const result = await Promise.race([choice.call(buildJobReplacementPrompt(evidence), row.runId, controller.signal, observe), timeout]);
+      if (result.formatValid !== true) {
+        this.deps.store.failCall(attemptId, audit.epoch, 'provider-format-error', this.now(), {
+          actualProvider: result.actualProvider, actualModel: result.actualModel,
+          latencyMs: this.now() - started, tokensIn: result.tokensIn,
+          tokensOut: result.tokensOut, costUsd: result.costUsd,
+        });
+        return;
+      }
       if (result.actualModel !== choice.model || result.actualProvider !== choice.provider) {
-        this.deps.store.failCall(attemptId, audit.epoch, 'provider-error', this.now());
+        this.deps.store.failCall(attemptId, audit.epoch, 'provider-model-mismatch', this.now(), {
+          actualProvider: result.actualProvider, actualModel: result.actualModel,
+          latencyMs: this.now() - started, tokensIn: result.tokensIn,
+          tokensOut: result.tokensOut, costUsd: result.costUsd,
+        });
         return;
       }
       const settled = this.deps.store.settleCall({ attemptId, epoch: audit.epoch,
@@ -194,8 +222,9 @@ export class JobSupervisionWorker {
         tokensIn: result.tokensIn, tokensOut: result.tokensOut, costUsd: result.costUsd, now: this.now() });
       if (settled === 'settled') this.afterVerdict(attemptId);
     } catch (error) {
-      this.deps.store.failCall(attemptId, audit.epoch,
-        error instanceof Error && error.message === 'replacement-timeout' ? 'provider-timeout' : 'provider-error', this.now());
+      failed = this.deps.store.failCall(attemptId, audit.epoch,
+        error instanceof Error && error.message === 'replacement-timeout' ? 'provider-timeout' : 'provider-error',
+        this.now(), { ...observed, latencyMs: this.now() - started });
     } finally { if (timer) clearTimeout(timer); }
   }
 

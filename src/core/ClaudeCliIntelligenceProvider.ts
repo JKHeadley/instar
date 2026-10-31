@@ -59,6 +59,7 @@ const REVIEWER_ENV_ALLOW_PREFIXES = ['LC_', 'ANTHROPIC_'] as const;
  */
 export function buildClaudeReviewerChildEnv(
   parentEnv: NodeJS.ProcessEnv = process.env,
+  structuredOutput = false,
 ): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(parentEnv)) {
@@ -69,6 +70,9 @@ export function buildClaudeReviewerChildEnv(
   }
   delete out.CLAUDECODE;
   delete out.CLAUDE_SESSION_ID;
+  // The CLI can retry a schema-invalid answer internally. A single audited
+  // supervision call must represent a single model request.
+  if (structuredOutput) out.MAX_STRUCTURED_OUTPUT_RETRIES = '0';
   return out;
 }
 
@@ -80,7 +84,7 @@ export function buildClaudeReviewerChildEnv(
  * `--strict-mcp-config` refuses user MCP servers. `--setting-sources user`
  * excludes project/local CLAUDE.md (kept from the base door).
  */
-export function buildClaudeReviewerArgs(model: string): string[] {
+export function buildClaudeReviewerArgs(model: string, jsonSchema?: string): string[] {
   return [
     '--print',
     '--allowedTools', '',
@@ -89,6 +93,7 @@ export function buildClaudeReviewerArgs(model: string): string[] {
     '--max-turns', '1',
     '--output-format', 'json',
     '--setting-sources', 'user',
+    ...(jsonSchema ? ['--json-schema', jsonSchema] : []),
   ];
 }
 
@@ -120,7 +125,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
 
     return new Promise((resolve, reject) => {
       const args = hardened
-        ? buildClaudeReviewerArgs(model)
+        ? buildClaudeReviewerArgs(model, hardened.jsonSchema)
         : [
             '-p', prompt,
             '--model', model,
@@ -140,7 +145,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
       // cross); the default path strips only the Claude Code session markers so a
       // nested session can't wedge it (unchanged behavior).
       const childEnv = hardened
-        ? buildClaudeReviewerChildEnv(process.env)
+        ? buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema))
         : (() => {
             const e = { ...process.env };
             delete e.CLAUDECODE;
@@ -170,7 +175,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
           return;
         }
 
-        resolve(parseJsonResult(stdout, options?.onUsage));
+        resolve(parseJsonResult(stdout, options?.onUsage, Boolean(hardened?.jsonSchema), options?.onServedModel));
       });
 
       // Hardened calls pass the prompt over STDIN (§1.4) so it never appears in
@@ -206,6 +211,8 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
 export function parseJsonResult(
   stdout: string,
   onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
+  preferStructuredOutput = false,
+  onServedModel?: (info: { model: string; framework?: string }) => void,
 ): string {
   const trimmed = stdout.trim();
   let parsed: unknown;
@@ -216,6 +223,14 @@ export function parseJsonResult(
     return trimmed;
   }
   const obj = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : null;
+  if (onServedModel && obj?.modelUsage && typeof obj.modelUsage === 'object'
+    && !Array.isArray(obj.modelUsage)) {
+    const models = Object.keys(obj.modelUsage as Record<string, unknown>);
+    if (models.length === 1) {
+      try { onServedModel({ model: models[0], framework: 'claude-code' }); }
+      catch { /* @silent-fallback-ok: model observation must not break the result path. */ }
+    }
+  }
   if (onUsage && obj && obj.usage && typeof obj.usage === 'object') {
     try {
       const u = obj.usage as Record<string, unknown>;
@@ -228,9 +243,15 @@ export function parseJsonResult(
         onUsage({ inputTokens, outputTokens, cachedTokens });
       }
     } catch {
-      /* usage extraction must never break the result path */
+      /* @silent-fallback-ok — usage extraction must never break the result path. */
     }
   }
+  if (preferStructuredOutput && obj?.is_error === true) return '';
+  if (preferStructuredOutput && obj && obj.structured_output && typeof obj.structured_output === 'object'
+    && !Array.isArray(obj.structured_output)) {
+    return JSON.stringify(obj.structured_output);
+  }
+  if (preferStructuredOutput) return '';
   if (obj && typeof obj.result === 'string') {
     return obj.result.trim();
   }

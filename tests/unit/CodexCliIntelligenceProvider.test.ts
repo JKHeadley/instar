@@ -207,6 +207,16 @@ ${fallbackAlsoFails ? 'echo "fallback failed" >&2\nexit 1' : 'echo "RECOVERED"\n
     expect(models).toEqual(['gpt-5.5', CODEX_CHATGPT_FALLBACK_MODEL]);
   });
 
+  it('does not change models inside one audited call with a strict model pin', async () => {
+    const message = "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.";
+    const fixture = fallbackFixture(message);
+    const provider = new CodexCliIntelligenceProvider({ codexPath: fixture.binary });
+
+    await expect(provider.evaluate('hi', { model: 'gpt-5.5', strictModelPin: true }))
+      .rejects.toThrow(message);
+    expect(callsFrom(fixture.calls)).toEqual(['gpt-5.5']);
+  });
+
   it.each([
     ['rate limit', 'Error 429: rate limit exceeded'],
     ['auth', 'Error 401: unauthorized'],
