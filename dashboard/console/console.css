@@ -1079,3 +1079,12 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   .mb-card { grid-template-columns: 1fr; gap: 2px; }
   .mb-card dd { margin-bottom: 8px; }
 }
+
+/* Queue pace card (docs/specs/queue-pace.md) */
+.pace-card { grid-column: 1 / -1; margin-top: var(--s-4, 16px); }
+.pace-lines { list-style: none; margin: var(--s-2, 8px) 0 0; padding: 0; display: grid; gap: 8px; }
+.pace-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--text); }
+.pace-line .dot { position: relative; top: -1px; }
+.pace-line[data-tone="muted"] .pace-text { color: var(--text-muted); }
+.pace-prs { display: inline-flex; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+.mb-pace { margin-top: 4px; }

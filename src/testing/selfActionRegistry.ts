@@ -1029,6 +1029,52 @@ const feedbackTriageTick: SelfActionController = {
 };
 
 /**
+ * queue-pace-extra-run — the queue-pace tuner's extra feedback-triage ticks (docs/specs/queue-pace.md §3).
+ *
+ * Convergence argument: under sustained pressure (the triage queue keeps falling behind with a
+ * worker bottleneck forever, every gate passes) the tuner adds at most one extra tick per
+ * minGapMinutes (10, floor 10) and at most maxExtraRunsPerDay (12, ceiling 12) per local day,
+ * counted in a durable state file reserved BEFORE each call; missing state fails closed (the day's
+ * budget treated as spent). Keeping a backlog moving is legitimately eternal, so this is a
+ * declared Eternal Sentinel floored at one extra tick per 10 minutes; the daily counter is the
+ * delegated give-up. Each extra tick still passes the triage service's own single flight, rate
+ * limit, quota pause and daily call cap.
+ */
+const queuePaceExtraRun: SelfActionController = {
+  id: 'queue-pace-extra-run',
+  actionVerb: 'nudge-triage-extra-tick',
+  models: 'src/monitoring/QueuePaceTuner.ts (minGapMinutes + durable maxExtraRunsPerDay reservation + 6 h cooldown + fail-closed state)',
+  modelsPath: 'src/monitoring/QueuePaceTuner.ts',
+  delegatedGiveUp: 'the durable per-local-day maxExtraRunsPerDay counter (12) reserved before every extra tick, plus the 10-minute minimum gap',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 60 * 24 * 2,
+  tickMs: 60_000,
+  eternalSentinel: { reason: 'a backlog that keeps growing is sped up at most once per 10 minutes and 12 times per day', rateFloorMs: 10 * 60_000 },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return queuePaceExtraRun.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const GAP_MS = 10 * 60_000;
+    const DAY_MS = 24 * 60 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const day = Math.floor(now / DAY_MS);
+      const count = Number(f.durableState.get(`queue-pace-extra-${day}`) ?? 0);
+      const next = Number(f.durableState.get('queue-pace-next-eligible') ?? 0);
+      if (count >= 12 || now < next) return;
+      // Durable reservation first, then the request (a crash after this counts it spent).
+      f.durableState.set(`queue-pace-extra-${day}`, count + 1);
+      f.durableState.set('queue-pace-next-eligible', now + GAP_MS);
+      sink.emit({ verb: 'nudge-triage-extra-tick', target: 'feedback.triage' });
+      sink.emitTimesMs.push(now);
+    } };
+  },
+};
+
+/**
  * A script anomaly episode may request an investigation more than once as
  * observers retry, but its durable spawned outcome is terminal. New job runs
  * are new external work and separately face the per-slug and machine daily
@@ -3253,6 +3299,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   overloadAdmissionSelfHelp,
   overloadShed,
   feedbackTriageTick,
+  queuePaceExtraRun,
   jobScriptTriageEpisode,
   jobScriptTriageBackup,
   feedbackTriageActionList,

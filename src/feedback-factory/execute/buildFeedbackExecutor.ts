@@ -141,6 +141,8 @@ export function buildFeedbackExecutor(input: {
   updatePending: () => boolean;
   raiseAttention: (item: AttentionInput) => Promise<void>;
   tunnelUrl: () => string | null;
+  /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
+  paceTicks?: FeedbackExecutorServiceOptions['paceTicks'];
   overrides?: Partial<Pick<FeedbackExecutorServiceOptions, 'git' | 'github' | 'runner' | 'deps' | 'sessions' | 'admission' | 'identityFacts' | 'commitIdentity' | 'clock' | 'sleep' | 'sessionWaitMs'>> & { homeDir?: string };
 }): FeedbackExecuteRouteContext {
   const { config } = input;
@@ -261,6 +263,7 @@ export function buildFeedbackExecutor(input: {
     dashboardLink: () => `${input.tunnelUrl() ?? `http://localhost:${config.port}`}/dashboard?tab=feedback-drain`,
     ...(input.overrides?.sleep ? { sleep: input.overrides.sleep } : {}),
     ...(input.overrides?.sessionWaitMs !== undefined ? { sessionWaitMs: input.overrides.sessionWaitMs } : {}),
+    paceTicks: input.paceTicks ?? null,
     clock,
   });
 

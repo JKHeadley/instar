@@ -16,7 +16,7 @@ import { FeedbackTriageAuditLog } from '../../src/feedback-factory/triage/Feedba
 import {
   FeedbackTriageArbiter, FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID,
 } from '../../src/feedback-factory/triage/FeedbackTriageArbiter.js';
-import { FeedbackTriageService, type AttentionInput, type TriageLiveConfig } from '../../src/feedback-factory/triage/FeedbackTriageService.js';
+import { FeedbackTriageService, type AttentionInput, type FeedbackTriageServiceOptions, type TriageLiveConfig } from '../../src/feedback-factory/triage/FeedbackTriageService.js';
 import { TRIAGE_AUTHORITY_ID } from '../../src/feedback-factory/triage/triageAuthorityProposal.js';
 import type { Cluster, FeedbackItem } from '../../src/feedback-factory/processor/types.js';
 import type { IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
@@ -69,7 +69,7 @@ export interface Harness {
   cleanup(): void;
 }
 
-export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; approve?: boolean; maxWallClockMs?: number } = {}): Promise<Harness> {
+export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; approve?: boolean; maxWallClockMs?: number; paceTicks?: FeedbackTriageServiceOptions['paceTicks'] } = {}): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-triage-'));
   const now = { value: T0 };
   const drain = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: KEY, clock: () => now.value });
@@ -123,6 +123,7 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
     sendToTopic: async (topicId, text) => { h.sent.push({ topicId, text }); },
     dashboardLink: () => 'https://agent.example/dashboard?tab=feedback-drain',
     ...(opts.maxWallClockMs ? { maxWallClockMs: opts.maxWallClockMs } : {}),
+    ...(opts.paceTicks ? { paceTicks: opts.paceTicks } : {}),
     clock: () => now.value,
   });
   h.approve = (action = 'create') => {

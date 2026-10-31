@@ -1843,6 +1843,80 @@
         "maxRecords": 501,
         "note": "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window, plus one green-main entry; rewritten in place."
       }
+    },
+    {
+      "category": "queue-pace-ledger",
+      "description": "Queue pace hourly ledger (docs/specs/queue-pace.md): one row per queue per fixed hour (arrivals, completions, other exits, open count, coverage flags, cursorAfter, ids digest) plus notice audit rows. Machine-local: each machine measures its own queues; GET /queue-pace?scope=pool merges peers live.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/queue-pace.jsonl",
+        "logs/queue-pace-notices.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "compactAfterMs": 1209600000,
+        "maxAgeMs": 7776000000,
+        "note": "Hourly rows older than 14 days are compacted to one daily row per queue; daily rows are kept 90 days. About 5 queues x 24 x 14 hourly rows plus 90 daily rows each, rewritten atomically once a day."
+      }
+    },
+    {
+      "category": "queue-pace-ticks",
+      "description": "Queue pace tick rows: one server-written row per feedback triage tick attempt (decided, calls, stop reason, depth after) and per executor admission check. Written in-process only while queuePace resolves enabled; evidence for the bottleneck and the tuner.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/queue-pace-ticks.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "compactAfterMs": 1209600000,
+        "maxAgeMs": 7776000000,
+        "note": "Rows older than 14 days are compacted to daily counts per source; daily rows are kept 90 days. Roughly 100-300 rows per day."
+      }
+    },
+    {
+      "category": "queue-pace-tuner",
+      "description": "Queue pace tuner: the durable daily extra-tick counter, cooldown and step state (state/queue-pace/tuner.json, write-temp-then-rename, fsync) and its audit (reservations, outcomes, step changes, flag changes). Missing state fails closed.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/queue-pace/tuner.json",
+        "logs/queue-pace-tuner.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "The state file is one record replaced in place. The audit is bounded by the tuner itself: at most 12 reservations a day plus their outcomes and a handful of step and config rows (under 100 rows a day)."
+      }
+    },
+    {
+      "category": "queue-pace-state",
+      "description": "Queue pace per-queue reconciliation state: the cursor, the previous open id set (at most 20,000 ids) and the last written hour per queue, plus the per-queue evaluation (hysteresis and notice state). Replaced atomically after each ledger row; rebuilt from the ledger row's cursorAfter after a crash.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/queue-pace/*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 6,
+        "note": "One file per queue (5) plus evaluations.json, each replaced in place; the id set per queue is capped at 20,000 ids (a larger queue records too-large instead)."
+      }
     }
   ]
 }

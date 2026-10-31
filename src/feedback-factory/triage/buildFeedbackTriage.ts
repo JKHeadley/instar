@@ -75,6 +75,8 @@ export function buildFeedbackTriage(input: {
   telegram: { sendToTopic: (topicId: number, text: string, opts?: { provenance?: 'automation' }) => Promise<unknown> } | null;
   raiseAttention: (item: AttentionInput) => Promise<void>;
   tunnelUrl: () => string | null;
+  /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
+  paceTicks?: FeedbackTriageServiceOptions['paceTicks'];
   overrides?: Partial<Pick<FeedbackTriageServiceOptions, 'secondOpinion' | 'quotaUsedPercent' | 'listMergedPrs' | 'sendToTopic' | 'raiseAttention' | 'clock'>>;
 }): FeedbackTriageRouteContext {
   const { config } = input;
@@ -157,6 +159,7 @@ export function buildFeedbackTriage(input: {
     reportDegradation: (event) => DegradationReporter.getInstance().report(event),
     sendToTopic,
     dashboardLink: () => `${input.tunnelUrl() ?? `http://localhost:${config.port}`}/dashboard?tab=feedback-drain`,
+    paceTicks: input.paceTicks ?? null,
     clock,
   });
 
