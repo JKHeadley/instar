@@ -4593,6 +4593,16 @@ export interface InstarConfig {
   outboundQueueExpiry?: { enabled?: boolean };
   /** Monitoring config */
   monitoring: MonitoringConfig;
+  /**
+   * Claude Code hook wiring (docs/specs/native-hook-events.md).
+   * `nativeEventReporter.enabled` (default FALSE): replace the
+   * hook-event-reporter.js command entry on the 7 reporting events with native
+   * `type: "http"` hooks (no process per event). Takes effect at the next
+   * server restart (boot reconcile) or update; new sessions only. Kept as
+   * command entries below Claude Code 2.1.310, when the version is unreadable,
+   * or when the server is not listening on loopback.
+   */
+  hooks?: { nativeEventReporter?: { enabled?: boolean } };
   /** Feature-rollout reconciler config (docs/specs/RELEASE-READINESS-VISIBILITY-SPEC.md §4.3
    *  Layer C). Off by default — flips on to scan against canonical `main`
    *  instead of the local working tree (which silently misses freshly-merged
@@ -6089,6 +6099,12 @@ export interface MessagingAdapterConfig {
 export interface MonitoringConfig {
   /** Enable quota tracking */
   quotaTracking: boolean;
+  /**
+   * HelperWatchdog (subagent stall / failure). `injectAlerts` (default FALSE,
+   * docs/specs/native-hook-events.md D2): when off the stall / helper-failed
+   * alerts are logged and counted, nothing is typed into the parent session.
+   */
+  helperWatchdog?: { injectAlerts?: boolean };
   /** Enable memory pressure monitoring */
   memoryMonitoring: boolean;
   /** Health check interval in ms */

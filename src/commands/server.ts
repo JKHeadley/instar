@@ -4648,6 +4648,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           port: config.port,
           hasTelegram,
           projectName: config.projectName,
+          claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
+          host: config.host,
         });
         const migration = await migrator.migrateAsync();
         if (migration.upgraded.length > 0) {
@@ -6747,6 +6749,41 @@ export async function startServer(options: StartOptions): Promise<void> {
       ownerEpochForConversation: (conversationId) => stageBOwnerEpochForConversation(conversationId),
       stageCRecoveryEnabled,
     });
+
+    // Native hook events (docs/specs/native-hook-events.md D4): reconcile the
+    // reporter entries in .claude/settings.json to this machine's decision at
+    // boot (a flag flip takes effect at the next restart, not the next
+    // release), and re-validate them immediately before each claude-code spawn.
+    try {
+      const nhGate = await import('../core/nativeHookEventsGate.js');
+      const { SafeGitExecutor: NhGit } = await import('../core/SafeGitExecutor.js');
+      const nhDecision = nhGate.decideNativeReporterFromConfig(config as unknown as import('../core/nativeHookEventsGate.js').NativeHookConfigView, {
+        projectDir: config.projectDir,
+        port: config.port,
+      });
+      const nhBoot = nhGate.bootReconcileNativeReporter({
+        projectDir: config.projectDir,
+        decision: nhDecision,
+        reportNotInEffect: (reason, detail) => DegradationReporter.getInstance().report({
+          feature: 'NativeHookEvents.notInEffect',
+          primary: 'Claude Code native HTTP hooks report events without a process per event',
+          fallback: 'hook-event-reporter.js command entries (today\'s behaviour)',
+          reason: `${reason}: ${detail}`,
+          impact: 'hooks.nativeEventReporter.enabled is on, but this machine keeps the command reporter entries.',
+        }),
+        isSettingsTracked: (settingsPath) => {
+          try {
+            NhGit.readSync(['ls-files', '--error-unmatch', settingsPath], { cwd: config.projectDir, stdio: 'pipe', operation: 'src/commands/server.ts:native-hook-events-tracked-check' });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      });
+      sessionManager.setNativeHookLaunchCheck(nhBoot.launchCheck);
+    } catch (err) {
+      console.warn(`[native-hook-events] boot reconcile skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
     const originTelegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
     const originBotToken = (originTelegramConfig?.config as { token?: unknown } | undefined)?.token;
     let telegramOriginBoot: Awaited<ReturnType<typeof import('../messaging/telegram-origin/TelegramOriginBoot.js').bootTelegramOrigin>> | undefined;
@@ -13002,6 +13039,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       port: config.port,
       hasTelegram: config.messaging.some(m => m.type === 'telegram' && m.enabled),
       projectName: config.projectName,
+      claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
+      host: config.host,
     });
 
     // Check for updates on startup (non-blocking)
@@ -13707,7 +13746,14 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Hook Event Receiver — receives HTTP hook events from Claude Code sessions
     const { HookEventReceiver } = await import('../monitoring/HookEventReceiver.js');
-    const hookEventReceiver = new HookEventReceiver({ stateDir: config.stateDir });
+    const hookEventReceiver = new HookEventReceiver({
+      stateDir: config.stateDir,
+      // Tmux-name lookups are scoped to the name's CURRENT incarnation; eviction
+      // never removes a live incarnation's file (native-hook-events D1).
+      resolveCurrentInstarSessionId: (tmux) =>
+        state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === tmux)?.id ?? null,
+      isLiveInstarSession: (id) => state.listSessions({ status: 'running' }).some((s) => s.id === id),
+    });
     console.log(pc.green('  Hook event receiver enabled'));
 
     // ── Compaction Resume: unified recovery for one session ──────────────
@@ -14370,16 +14416,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       (wedgeRecoveryActive?.(session.tmuxSession) ?? false);
     sessionManager.setActiveRecoveryChecker(composedRecoveryActive);
 
-    // Trigger 1: PreCompact hook event — report to sentinel.
-    hookEventReceiver.on('PreCompact', () => {
-      // Delay to let compaction + recovery hooks finish
-      setTimeout(() => {
-        if (!telegram) return;
-        const topicSessions = telegram.getAllTopicSessions();
-        for (const [, sessionName] of topicSessions) {
-          compactionSentinel.report(sessionName, 'PreCompact');
-        }
-      }, 10_000);
+    // Trigger 1: PreCompact hook event — report ONLY the emitting session
+    // (docs/specs/native-hook-events.md D2). It used to report EVERY topic
+    // session on any PreCompact; that only stayed harmless because the
+    // reporter never delivered a real PreCompact. Resolved synchronously at
+    // receive time against the current incarnation; anything else reports
+    // nothing (Triggers 2 and 3 still cover it).
+    const { wireCompactionTrigger1, wirePreCompactionFlush, createHelperAlertDelivery } = await import('../monitoring/hookEventConsumers.js');
+    wireCompactionTrigger1(hookEventReceiver, {
+      report: (name, trigger) => compactionSentinel.report(name, trigger),
+      getSessionById: (id) => sessionManager.getSessionById(id),
+      topicSessionNames: () => (telegram ? telegram.getAllTopicSessions().values() : null),
     });
     console.log(pc.green('  Compaction auto-resume wired (PreCompact hook event)'));
 
@@ -14398,11 +14445,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         mergeDefaults(DEFAULT_PRE_COMPACTION_FLUSH_CONFIG, preCompactFlushCfg),
       );
-      hookEventReceiver.on('PreCompact', (payload) => {
-        flush.handle(payload as Parameters<typeof flush.handle>[0]).catch(() => {
-          /* handle() owns its audit; never throws. */
-        });
-      });
+      wirePreCompactionFlush(hookEventReceiver, flush as unknown as { handle: (payload: never) => Promise<unknown> });
       console.log(pc.green('  Pre-compaction memory flush enabled'));
     }
 
@@ -14440,17 +14483,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         .filter((s) => s.claudeSessionId === claudeSessionId);
       return running[0]?.tmuxSession ?? null;
     };
-    const deliverHelperAlert = (tmux: string | null, msg: string): void => {
-      console.warn(msg);
-      if (!tmux) return;
-      try {
-        sessionManager.injectMessage(tmux, msg);
-      } catch (err) {
-        console.warn(
-          `[HelperWatchdog] inject failed for ${tmux}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    };
+    // Injection into the parent session is gated (native-hook-events D2):
+    // `monitoring.helperWatchdog.injectAlerts`, default FALSE — the alert is
+    // logged and counted, nothing is typed into a session, until the 5-minute
+    // threshold is reviewed separately.
+    const helperAlertDelivery = createHelperAlertDelivery({
+      injectAlerts: (config.monitoring as { helperWatchdog?: { injectAlerts?: boolean } } | undefined)?.helperWatchdog?.injectAlerts === true,
+      inject: (tmux, msg) => { sessionManager.injectMessage(tmux, msg); },
+    });
+    const deliverHelperAlert = (tmux: string | null, msg: string): void => helperAlertDelivery.deliver(tmux, msg);
     helperWatchdog.on(
       'stall',
       (e: { agentId: string; agentType: string; sessionId: string; elapsedMs: number }) => {
@@ -14478,22 +14519,15 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Wire subagent awareness into zombie cleanup — prevents killing sessions
     // that are idle at the prompt but waiting for subagent results.
-    const MAX_SUBAGENT_WAIT_MS = 60 * 60_000; // 60 minutes — stale subagent safety cap
+    // Reads the CAPPED helper (native-hook-events D2): a subagent with no stop
+    // for > 60 min no longer counts, the same cap SubagentTracker applies.
     sessionManager.setSubagentChecker((session: import('../core/types.js').Session) => {
       if (!session.claudeSessionId) return false;
-      const active = subagentTracker.getActiveSubagents(session.claudeSessionId);
-      if (active.length === 0) return false;
-      // Safety cap: if ALL active subagents have been running > 60 minutes,
-      // treat them as stale (likely missed a SubagentStop event) and allow the kill.
-      const now = Date.now();
-      const allStale = active.every(a =>
-        now - new Date(a.startedAt).getTime() > MAX_SUBAGENT_WAIT_MS,
-      );
-      if (allStale) {
-        console.warn(`[SessionManager] Session "${session.name}" has ${active.length} stale subagent(s) (>60m). Allowing zombie kill.`);
-        return false;
+      if (subagentTracker.hasActiveSubagents(session.claudeSessionId)) return true;
+      if (subagentTracker.getActiveSubagents(session.claudeSessionId).length > 0) {
+        console.warn(`[SessionManager] Session "${session.name}" has only stale subagent(s) (>60m). Allowing zombie kill.`);
       }
-      return true;
+      return false;
     });
 
     // Worktree Monitor — detects orphaned worktrees after sessions complete

@@ -43,6 +43,10 @@ export interface UpdateCheckerConfig {
   hasTelegram?: boolean;
   /** Project name for migrated files */
   projectName?: string;
+  /** Configured claude-code binary (native-hook-events version gate). */
+  claudeCodePath?: string | null;
+  /** Server listen host (native-hook-events loopback gate). */
+  host?: string;
 }
 
 export class UpdateChecker {
@@ -70,6 +74,8 @@ export class UpdateChecker {
         port: config.port ?? 4040,
         hasTelegram: config.hasTelegram ?? false,
         projectName: config.projectName ?? 'agent',
+        claudeCodePath: config.claudeCodePath ?? null,
+        ...(config.host !== undefined ? { host: config.host } : {}),
       } : null;
     }
     this.stateFile = path.join(this.stateDir, 'state', 'update-check.json');

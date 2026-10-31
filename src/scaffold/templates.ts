@@ -1833,6 +1833,13 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
 - Current findings: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/hooks/worktrees\` (live scan) or \`/hooks/worktrees/last-report\` (last scan; \`actions\` shows whether it alerted or suppressed an unchanged finding).
 - Proactive: user asks "why did the worktree alerts stop?" / "is that branch still unmerged?" → read \`/hooks/worktrees\`; silence means nothing changed, not that it was fixed.
 
+## Native Hook Events
+
+Claude Code can report session events (tool used, subagent started/stopped, stop, task completed, session end, compaction) straight to the server as native HTTP hooks, instead of starting \`hook-event-reporter.js\` for every event. Off by default: \`hooks.nativeEventReporter.enabled\` in \`.instar/config.json\`. It takes effect at the next server restart (or update) and reaches NEW sessions only (Claude Code reads its settings at session start). This machine keeps the command entries when its Claude Code is below 2.1.310, its version cannot be read, or the server does not listen on loopback; a flag that is on but not in effect reports a \`NativeHookEvents.notInEffect\` degradation. Stored events keep only a fixed set of fields (no command text, no tool output; message tails redacted). The HelperWatchdog's warnings are not typed into sessions unless \`monitoring.helperWatchdog.injectAlerts\` is true (default false).
+
+- Counters (received, never "fired"): authenticated \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`hookEvents\` (\`admitted\`, \`stored\`, \`failedProcessing\`, \`emptyCredential\`, \`queueOverflow\`, \`malformedEvents\`, …).
+- Proactive: user asks "are my hook events arriving?" / "why is the dashboard telemetry empty?" → read \`hookEvents\` and \`GET /hooks/sessions\`; turning the flag off and restarting restores the command entries exactly.
+
 ## Test-As-Self (Throwaway-Deploy Harness)
 
 \`instar test-as-self\` deploys the CURRENT dist into a throwaway agent home, verifies it's healthy, optionally runs a real Telegram round-trip, and tears down — clean evidence instead of post-hoc log forensics. Use it BEFORE shipping a change to the deploy/lifeline/server path, AFTER landing one, or to reproduce a crash deterministically.

@@ -174,6 +174,8 @@ import { createThroughputRoutes } from './throughputRoutes.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
+import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
+import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { assertSqliteAvailable, PendingRelayStore } from '../messaging/pending-relay-store.js';
@@ -355,6 +357,11 @@ export class AgentServer {
   private sessionManager: SessionManager;
   private state: StateManager;
   private hookEventReceiver?: import('../monitoring/HookEventReceiver.js').HookEventReceiver;
+  /** Native hook events ingest (docs/specs/native-hook-events.md D1). Always
+   *  constructed: the route exists regardless of the flag (a settings file
+   *  carrying native entries must never see hook errors), and costs nothing
+   *  when no native hook posts to it. */
+  readonly nativeHookIngest: NativeHookEventIngest;
   private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
@@ -1240,6 +1247,13 @@ export class AgentServer {
     // Claim observation has a much smaller privacy/cost boundary than the
     // general API. Parse it under 96 KiB before the broad server parser.
     this.app.use('/completion-claim/observe', express.json({ limit: '96kb' }));
+    // Native hook events: admission (loopback, no forwarding headers, bearer,
+    // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
+    // 4 MB parser — both ahead of the global parser, which runs before
+    // authMiddleware and would otherwise parse a large unauthenticated body.
+    // The handler itself stays in the normal routes (after auth/timeout/CORS).
+    this.nativeHookIngest = new NativeHookEventIngest({ getAuthToken: () => this.config.authToken });
+    this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     this.app.use(express.json({ limit: '12mb' }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -4672,6 +4686,7 @@ export class AgentServer {
       imessage: options.imessage ?? null,
       messageBridge: options.messageBridge ?? null,
       hookEventReceiver: options.hookEventReceiver ?? null,
+      nativeHookIngest: this.nativeHookIngest,
       worktreeMonitor: options.worktreeMonitor ?? null,
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,

@@ -119,6 +119,11 @@ export const NEVER_SERVED_PREFIXES = [
   // meter spec §5.3) — the dashboard file editor must not read or rewrite it
   // (serve-deny implies edit-deny via isNeverEditable).
   '.instar/state/external-hog-decisions.json',
+  // Hook telemetry (docs/specs/native-hook-events.md D1): per-session event
+  // records (paths, redacted message tails) and subagent records. Machine-local
+  // observability, read through /hooks/events/* — never served as files.
+  '.instar/hook-events/',
+  '.instar/subagent-tracking/',
   // Machine-bound subscription authority: active directory, witness,
   // candidates, rollbacks, and atomic temp siblings. Dual-root is required:
   // production paths include `.instar/`, legacy/test paths may not.

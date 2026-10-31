@@ -87,10 +87,18 @@ export interface SessionEventSummary {
 export interface HookEventReceiverConfig {
   /** State directory for persisting events */
   stateDir: string;
-  /** Max events to keep per session (default: 500) */
+  /** Max events to keep per session (default: 500). Reaching it trims to 80% (hysteresis). */
   maxEventsPerSession?: number;
-  /** Max sessions to keep (default: 50) */
+  /** Max sessions to keep (default: 50). Live sessions are never evicted. */
   maxSessions?: number;
+  /**
+   * The tmux name's CURRENT incarnation id (its running session's
+   * INSTAR_SESSION_ID), or null. Tmux-scoped lookups read only events stamped
+   * with this id, so an earlier incarnation of a reused name never answers.
+   */
+  resolveCurrentInstarSessionId?: (tmuxSession: string) => string | null;
+  /** Is this incarnation (INSTAR_SESSION_ID) live right now? Eviction never removes a live one. */
+  isLiveInstarSession?: (instarSessionId: string) => boolean;
 }
 
 // ── Implementation ─────────────────────────────────────────────────
@@ -98,10 +106,68 @@ export interface HookEventReceiverConfig {
 const DEFAULT_MAX_EVENTS = 500;
 const DEFAULT_MAX_SESSIONS = 50;
 
+/** Running summary of one (Claude session, incarnation) slice of retained events. */
+interface SummaryAcc {
+  eventCount: number;
+  eventTypes: Record<string, number>;
+  firstEvent: string;
+  lastEvent: string;
+  toolsUsed: Set<string>;
+  subagentsSpawned: Set<string>;
+  lastAssistantMessage?: string;
+  lastAssistantAt?: string;
+  taskCompleted: boolean;
+  sawSessionEnd: boolean;
+  exitReason: string | null;
+}
+
+interface SessionMeta {
+  count: number;
+  lastReceivedMs: number;
+  /** keyed by instar_session_id ('' for events stored without one) */
+  accs: Map<string, SummaryAcc>;
+}
+
+function newAcc(at: string): SummaryAcc {
+  return {
+    eventCount: 0, eventTypes: {}, firstEvent: at, lastEvent: at,
+    toolsUsed: new Set(), subagentsSpawned: new Set(),
+    taskCompleted: false, sawSessionEnd: false, exitReason: null,
+  };
+}
+
+function applyToAcc(acc: SummaryAcc, ev: StoredHookEvent): void {
+  const p = ev.payload;
+  const type = p.event;
+  acc.eventCount++;
+  acc.eventTypes[type] = (acc.eventTypes[type] ?? 0) + 1;
+  acc.lastEvent = ev.receivedAt;
+  if (typeof p.tool_name === 'string' && p.tool_name) acc.toolsUsed.add(p.tool_name);
+  if (type === 'SubagentStart' && typeof p.agent_type === 'string' && p.agent_type) acc.subagentsSpawned.add(p.agent_type);
+  if (typeof p.last_assistant_message === 'string' && p.last_assistant_message) {
+    acc.lastAssistantMessage = p.last_assistant_message;
+    acc.lastAssistantAt = ev.receivedAt;
+  }
+  if (type === 'TaskCompleted') acc.taskCompleted = true;
+  if (type === 'SessionEnd' && !acc.sawSessionEnd) {
+    acc.sawSessionEnd = true;
+    acc.exitReason = typeof p.reason === 'string' ? p.reason : null;
+  }
+}
+
+function incarnationOf(p: HookEventPayload): string {
+  return typeof p.instar_session_id === 'string' ? p.instar_session_id : '';
+}
+
 export class HookEventReceiver extends EventEmitter {
   private config: HookEventReceiverConfig;
   private eventsDir: string;
-  private sessionIndex: Map<string, number> = new Map(); // sessionId -> event count
+  /** safe sessionId (file stem) -> event count. Kept for getIndex() compat. */
+  private sessionIndex: Map<string, number> = new Map();
+  /** safe sessionId -> in-memory summary state over the retained events. */
+  private meta: Map<string, SessionMeta> = new Map();
+  /** instar_session_id -> safe Claude session ids (one per incarnation; more after /clear). */
+  private incarnationIndex: Map<string, Set<string>> = new Map();
 
   constructor(config: HookEventReceiverConfig) {
     super();
@@ -113,12 +179,22 @@ export class HookEventReceiver extends EventEmitter {
     this.loadIndex();
   }
 
+  /** Late-bind the session-manager lookups (server.ts builds the receiver first). */
+  setSessionResolvers(resolvers: {
+    resolveCurrentInstarSessionId?: (tmuxSession: string) => string | null;
+    isLiveInstarSession?: (instarSessionId: string) => boolean;
+  }): void {
+    if (resolvers.resolveCurrentInstarSessionId) this.config.resolveCurrentInstarSessionId = resolvers.resolveCurrentInstarSessionId;
+    if (resolvers.isLiveInstarSession) this.config.isLiveInstarSession = resolvers.isLiveInstarSession;
+  }
+
   /**
    * Receive a hook event. Called from the HTTP endpoint.
    * Returns true if stored successfully.
    */
   receive(payload: HookEventPayload): boolean {
     const sessionId = payload.session_id ?? 'unknown';
+    const key = this.safeId(sessionId);
     const stored: StoredHookEvent = {
       receivedAt: new Date().toISOString(),
       payload,
@@ -132,14 +208,16 @@ export class HookEventReceiver extends EventEmitter {
       return false;
     }
 
-    // Update index
-    const count = (this.sessionIndex.get(sessionId) ?? 0) + 1;
-    this.sessionIndex.set(sessionId, count);
+    // Update index + in-memory summary
+    const m = this.metaFor(key);
+    this.applyEvent(key, m, stored);
+    this.sessionIndex.set(key, m.count);
 
-    // Enforce per-session limit
+    // Enforce per-session limit, with hysteresis: reaching the cap trims to
+    // 80%, so a long session is not rewritten on every event.
     const maxEvents = this.config.maxEventsPerSession ?? DEFAULT_MAX_EVENTS;
-    if (count > maxEvents) {
-      this.trimSessionEvents(sessionId, maxEvents);
+    if (m.count >= maxEvents) {
+      this.trimSessionEvents(sessionId, Math.max(1, Math.floor(maxEvents * 0.8)));
     }
 
     // Enforce session count limit
@@ -167,46 +245,41 @@ export class HookEventReceiver extends EventEmitter {
         try { return JSON.parse(line); }
         catch { return null; }
       })
-      .filter((e): e is StoredHookEvent => e !== null);
+      .filter((e): e is StoredHookEvent => e !== null && typeof e === 'object' && !!e.payload);
   }
 
   /**
-   * Get a summary of events for a session.
+   * Get a summary of events for a session (keyed by Claude session id), from
+   * the in-memory summaries over the retained events.
    */
   getSessionSummary(sessionId: string): SessionEventSummary | null {
-    const events = this.getSessionEvents(sessionId);
-    if (events.length === 0) return null;
+    const m = this.meta.get(this.safeId(sessionId));
+    if (!m || m.count === 0) return null;
+    return this.mergeAccs(sessionId, [...m.accs.values()]);
+  }
 
-    const eventTypes: Record<string, number> = {};
-    const toolsUsed = new Set<string>();
-    const subagentsSpawned = new Set<string>();
-    let lastAssistantMessage: string | undefined;
+  /**
+   * Summary for a tmux session name, scoped to its CURRENT incarnation:
+   * only events stamped with that incarnation's INSTAR_SESSION_ID count.
+   */
+  getSessionSummaryForTmux(tmuxSession: string): SessionEventSummary | null {
+    const accs = this.accsForTmux(tmuxSession);
+    if (accs.length === 0) return null;
+    return this.mergeAccs(tmuxSession, accs);
+  }
 
-    for (const event of events) {
-      const type = event.payload.event;
-      eventTypes[type] = (eventTypes[type] ?? 0) + 1;
+  hasTaskCompletedForTmux(tmuxSession: string): boolean {
+    return this.accsForTmux(tmuxSession).some(a => a.taskCompleted);
+  }
 
-      if (event.payload.tool_name) {
-        toolsUsed.add(event.payload.tool_name);
-      }
-      if (type === 'SubagentStart' && event.payload.agent_type) {
-        subagentsSpawned.add(event.payload.agent_type);
-      }
-      if (event.payload.last_assistant_message) {
-        lastAssistantMessage = event.payload.last_assistant_message;
-      }
-    }
+  getExitReasonForTmux(tmuxSession: string): string | null {
+    const ends = this.accsForTmux(tmuxSession).filter(a => a.sawSessionEnd);
+    return ends.length > 0 ? ends[0].exitReason : null;
+  }
 
-    return {
-      sessionId,
-      eventCount: events.length,
-      eventTypes,
-      firstEvent: events[0].receivedAt,
-      lastEvent: events[events.length - 1].receivedAt,
-      toolsUsed: [...toolsUsed],
-      subagentsSpawned: [...subagentsSpawned],
-      lastAssistantMessage,
-    };
+  /** Claude session ids recorded for an incarnation (empty when unknown). */
+  claudeSessionIdsForIncarnation(instarSessionId: string): string[] {
+    return [...(this.incarnationIndex.get(instarSessionId) ?? [])];
   }
 
   /**
@@ -216,8 +289,9 @@ export class HookEventReceiver extends EventEmitter {
    * (vs. just the process dying).
    */
   hasTaskCompleted(sessionId: string): boolean {
-    const events = this.getSessionEvents(sessionId);
-    return events.some(e => e.payload.event === 'TaskCompleted');
+    const m = this.meta.get(this.safeId(sessionId));
+    if (!m) return false;
+    return [...m.accs.values()].some(a => a.taskCompleted);
   }
 
   /**
@@ -266,42 +340,165 @@ export class HookEventReceiver extends EventEmitter {
 
   // ── Internals ──────────────────────────────────────────────────
 
-  private getSessionFile(sessionId: string): string {
+  private safeId(sessionId: string): string {
     // Sanitize session ID for filesystem safety
-    const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100);
-    return path.join(this.eventsDir, `${safe}.jsonl`);
+    return sessionId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100);
   }
 
-  private trimSessionEvents(sessionId: string, maxEvents: number): void {
-    const events = this.getSessionEvents(sessionId);
-    if (events.length <= maxEvents) return;
+  private getSessionFile(sessionId: string): string {
+    return path.join(this.eventsDir, `${this.safeId(sessionId)}.jsonl`);
+  }
 
-    const trimmed = events.slice(events.length - maxEvents);
+  private metaFor(key: string): SessionMeta {
+    let m = this.meta.get(key);
+    if (!m) {
+      m = { count: 0, lastReceivedMs: 0, accs: new Map() };
+      this.meta.set(key, m);
+    }
+    return m;
+  }
+
+  private applyEvent(key: string, m: SessionMeta, ev: StoredHookEvent): void {
+    const inc = incarnationOf(ev.payload);
+    let acc = m.accs.get(inc);
+    if (!acc) {
+      acc = newAcc(ev.receivedAt);
+      m.accs.set(inc, acc);
+    }
+    applyToAcc(acc, ev);
+    m.count++;
+    const t = Date.parse(ev.receivedAt);
+    if (Number.isFinite(t) && t > m.lastReceivedMs) m.lastReceivedMs = t;
+    if (inc) {
+      let set = this.incarnationIndex.get(inc);
+      if (!set) {
+        set = new Set();
+        this.incarnationIndex.set(inc, set);
+      }
+      set.add(key);
+    }
+  }
+
+  /** Rebuild one session's in-memory state from its retained events. */
+  private rebuildMeta(key: string, events: StoredHookEvent[]): void {
+    this.forgetMeta(key);
+    const m = this.metaFor(key);
+    for (const ev of events) this.applyEvent(key, m, ev);
+    this.sessionIndex.set(key, m.count);
+  }
+
+  private forgetMeta(key: string): void {
+    const old = this.meta.get(key);
+    if (old) {
+      for (const inc of old.accs.keys()) {
+        if (!inc) continue;
+        const set = this.incarnationIndex.get(inc);
+        set?.delete(key);
+        if (set && set.size === 0) this.incarnationIndex.delete(inc);
+      }
+    }
+    this.meta.delete(key);
+    this.sessionIndex.delete(key);
+  }
+
+  private accsForTmux(tmuxSession: string): SummaryAcc[] {
+    const inc = this.config.resolveCurrentInstarSessionId?.(tmuxSession) ?? null;
+    if (!inc) return [];
+    const out: SummaryAcc[] = [];
+    for (const key of this.incarnationIndex.get(inc) ?? []) {
+      const acc = this.meta.get(key)?.accs.get(inc);
+      if (acc && acc.eventCount > 0) out.push(acc);
+    }
+    return out;
+  }
+
+  private mergeAccs(sessionId: string, accs: SummaryAcc[]): SessionEventSummary | null {
+    const live = accs.filter(a => a.eventCount > 0);
+    if (live.length === 0) return null;
+    const eventTypes: Record<string, number> = {};
+    const tools = new Set<string>();
+    const subagents = new Set<string>();
+    let eventCount = 0;
+    let first = live[0].firstEvent;
+    let last = live[0].lastEvent;
+    let lastMsg: string | undefined;
+    let lastMsgAt = '';
+    for (const a of live) {
+      eventCount += a.eventCount;
+      for (const [t, n] of Object.entries(a.eventTypes)) eventTypes[t] = (eventTypes[t] ?? 0) + n;
+      for (const t of a.toolsUsed) tools.add(t);
+      for (const t of a.subagentsSpawned) subagents.add(t);
+      if (a.firstEvent < first) first = a.firstEvent;
+      if (a.lastEvent > last) last = a.lastEvent;
+      if (a.lastAssistantMessage !== undefined && (a.lastAssistantAt ?? '') >= lastMsgAt) {
+        lastMsg = a.lastAssistantMessage;
+        lastMsgAt = a.lastAssistantAt ?? '';
+      }
+    }
+    return {
+      sessionId,
+      eventCount,
+      eventTypes,
+      firstEvent: first,
+      lastEvent: last,
+      toolsUsed: [...tools],
+      subagentsSpawned: [...subagents],
+      lastAssistantMessage: lastMsg,
+    };
+  }
+
+  private trimSessionEvents(sessionId: string, keepEvents: number): void {
+    const events = this.getSessionEvents(sessionId);
+    const key = this.safeId(sessionId);
+    if (events.length <= keepEvents) {
+      this.rebuildMeta(key, events);
+      return;
+    }
+
+    const trimmed = events.slice(events.length - keepEvents);
     const file = this.getSessionFile(sessionId);
     fs.writeFileSync(file, trimmed.map(e => JSON.stringify(e)).join('\n') + '\n');
-    this.sessionIndex.set(sessionId, trimmed.length);
+    this.rebuildMeta(key, trimmed);
   }
 
+  private isLiveSession(m: SessionMeta): boolean {
+    const isLive = this.config.isLiveInstarSession;
+    if (!isLive) return false;
+    for (const inc of m.accs.keys()) {
+      if (inc && isLive(inc)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Evict least-recently-received sessions whose incarnation is NOT live. A
+   * live session's file is never evicted, so the count may exceed the limit
+   * by at most the number of live sessions.
+   */
   private enforceSessionLimit(): void {
     const maxSessions = this.config.maxSessions ?? DEFAULT_MAX_SESSIONS;
-    const sessions = this.listSessions();
-    if (sessions.length <= maxSessions) return;
-
-    // Remove oldest sessions (by filename sort, which is creation order)
-    const toRemove = sessions.slice(0, sessions.length - maxSessions);
-    for (const sessionId of toRemove) {
-      const file = this.getSessionFile(sessionId);
+    if (this.meta.size <= maxSessions) return;
+    const candidates = [...this.meta.entries()]
+      .filter(([, m]) => !this.isLiveSession(m))
+      .sort((a, b) => a[1].lastReceivedMs - b[1].lastReceivedMs);
+    let excess = this.meta.size - maxSessions;
+    for (const [key] of candidates) {
+      if (excess <= 0) break;
+      const file = path.join(this.eventsDir, `${key}.jsonl`);
       try {
-        SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/monitoring/HookEventReceiver.ts:295' });
-        this.sessionIndex.delete(sessionId);
+        if (fs.existsSync(file)) {
+          SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/monitoring/HookEventReceiver.ts:enforceSessionLimit' });
+        }
+        this.forgetMeta(key);
+        excess--;
       } catch { /* best effort */ }
     }
   }
 
   private loadIndex(): void {
-    for (const sessionId of this.listSessions()) {
-      const events = this.getSessionEvents(sessionId);
-      this.sessionIndex.set(sessionId, events.length);
+    for (const key of this.listSessions()) {
+      const events = this.getSessionEvents(key);
+      this.rebuildMeta(key, events);
     }
   }
 }
