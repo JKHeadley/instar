@@ -349,6 +349,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let failureReason: string | null = null;
   let evaluationReasons: string[] = [];
   let failures: FailureDetail[] = [];
+  let boundedFailedFiles: string[] | null = null;
   const flakyRetried: FlakyRetry[] = [];
   const firstMessages = new Map<string, string>();
   const rerunMessages = new Map<string, string>();
@@ -650,6 +651,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       .filter(([, c]) => c.failed > 0)
       .slice(0, FAILURE_DETAILS_MAX)
       .map(([file, c]) => ({ file, lane: c.lane, failed: c.failed, message: firstMessages.get(file) ?? c.message ?? '', ...(rerunMessages.has(file) ? { rerunMessage: rerunMessages.get(file)! } : {}) }));
+    const allFailedFiles = Object.entries(ev.perFile)
+      .filter(([, c]) => c.failed > 0)
+      .map(([file]) => file).sort();
+    if (!dirty && allFailedFiles.length >= 1 && allFailedFiles.length <= 3
+      && allFailedFiles.every((file) => isInventoried(file))) boundedFailedFiles = allFailedFiles;
     if (dirty) evaluationReasons = [...evaluationReasons, 'dirty-tree'];
     if (evaluationReasons.length > 0) {
       outcome = 'failure';
@@ -689,6 +695,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   if (input.attempt && input.kind !== 'main') record.attempt = { id: input.attempt.id, coordinatorMachineId: input.attempt.coordinatorMachineId, leaseEpoch: input.attempt.leaseEpoch };
   if (flakyRetried.length > 0) record.flakyRetried = flakyRetried.slice(0, FLAKY_RETRIED_MAX);
   if (preflight) record.preflight = preflight;
+  if (outcome === 'failure' && input.kind !== 'main' && boundedFailedFiles) record.failedFiles = boundedFailedFiles;
   const kept = await cleanup(outcome !== 'success');
   const v = validateRecord(record);
   if (!v.ok) return { kind: 'invalid', errors: v.errors };

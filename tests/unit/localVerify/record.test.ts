@@ -102,6 +102,21 @@ describe('validateRecord', () => {
     }
   });
 
+  it('accepts only a complete, bounded, sorted PR failed-file set', () => {
+    const files = ['tests/integration/b.test.ts', 'tests/unit/a.test.ts'];
+    expect(validateRecord(rec({ outcome: 'failure', failedFiles: files })).ok).toBe(true);
+    for (const bad of [
+      [], [...files].reverse(), [files[0], files[0]],
+      ['tests/unit/../fixtures/a.test.ts'], ['src/outside.test.ts'],
+      ['tests/unit/a.test.ts', 'tests/unit/b.test.ts', 'tests/unit/c.test.ts', 'tests/unit/d.test.ts'],
+    ]) {
+      const v = validateRecord(rec({ outcome: 'failure', failedFiles: bad }));
+      expect(!v.ok && v.errors).toContain('failedFiles');
+    }
+    expect(validateRecord(rec({ failedFiles: [files[0]] })).ok).toBe(false);
+    expect(validateRecord(rec({ kind: 'main', pr: 0, headSha: B, outcome: 'failure', failedFiles: [files[0]] })).ok).toBe(false);
+  });
+
   it('rejects non-objects', () => {
     expect(validateRecord(null)).toEqual({ ok: false, errors: ['not-an-object'] });
   });

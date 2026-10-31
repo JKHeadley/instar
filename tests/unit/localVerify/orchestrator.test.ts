@@ -524,6 +524,7 @@ describe('runVerify — failures', () => {
     expect(r.kind).toBe('record');
     if (r.kind !== 'record') return;
     expect(r.record.outcome).toBe('failure');
+    expect(r.record.failedFiles).toEqual(['tests/integration/b.test.ts']);
     expect(r.reasons).toContain('file-failed:tests/integration/b.test.ts:1');
     expect(r.keptWorktree).toBe(P.runDir);
   });
@@ -531,6 +532,7 @@ describe('runVerify — failures', () => {
     const r = await runVerify(input(), fake({ porcelain: '?? tests/unit/leftover.txt\n' }).seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
     expect(r.kind === 'record' && r.reasons).toContain('dirty-tree');
+    if (r.kind === 'record') expect(r.record.failedFiles).toBeUndefined();
   });
   it('a lint step failure is a failure that stops before the lanes', async () => {
     const f = fake({ lintStatus: 1 });
@@ -908,6 +910,7 @@ describe('runVerify — isolation re-run of failed files (evidence-per-run known
     const f = fake({ laneFiles: { unit: { 'tests/unit/a.test.ts': ['passed'], ...four } } });
     const r = await runVerify(input(), f.seams);
     expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    if (r.kind === 'record') expect(r.record.failedFiles).toBeUndefined();
     expect(vitestCalls(f)).toHaveLength(LANE_PROCS); // unit, the integration shards, the e2e shards
     expect(f.logs.some((l) => l.event === 'isolation-rerun-skipped' && l.reason === 'too-many-failures')).toBe(true);
   });

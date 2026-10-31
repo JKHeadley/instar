@@ -8,6 +8,7 @@
  */
 
 import type { LaneTotals } from './laneReport.js';
+import { classifyTestPath } from './inventory.js';
 import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 
 export type VerifyOutcome = 'success' | 'failure' | 'error';
@@ -70,6 +71,8 @@ export interface LocalVerifyRecord {
    * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
    */
   flakyRetried?: FlakyRetry[];
+  /** Complete failed test-file set when a full PR run failed in 1–3 inventoried files. */
+  failedFiles?: string[];
   /**
    * Present only on a record a PEER verifier produced for a coordinator's hand-off
    * (spec local-verify-capacity.md Part D): the attempt it answers, the coordinator that
@@ -170,6 +173,17 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
         && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000;
     });
     if (!ok) errors.push('flakyRetried');
+  }
+  if (x.failedFiles !== undefined) {
+    const files = x.failedFiles;
+    const valid = Array.isArray(files) && files.length >= 1 && files.length <= 3
+      && files.every((f) => typeof f === 'string' && f.length <= 300
+        && /^[A-Za-z0-9_./-]+\.test\.ts$/.test(f) && !f.startsWith('/')
+        && !f.split('/').includes('..') && !f.includes('//')
+        && classifyTestPath(f).kind === 'laned')
+      && new Set(files).size === files.length
+      && [...files].sort().every((f, i) => f === files[i]);
+    if (!valid || x.outcome !== 'failure' || x.kind === 'main') errors.push('failedFiles');
   }
   if (x.independentReview !== undefined) {
     const ir = x.independentReview as Record<string, unknown> | null;
