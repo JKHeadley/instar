@@ -25,6 +25,7 @@ import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
 import { makeDiagnosisPeerClient } from '../../src/localVerify/failedFileDiagnosisClient.js';
 import { computePolicyHash } from '../../src/localVerify/policy.js';
+import { projectLocal } from '../../src/localVerify/statusProjection.js';
 import { validateRecord, type LocalVerifyRecord } from '../../src/localVerify/record.js';
 import { PROTECTED_PATH_PREFIXES } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
@@ -158,6 +159,14 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(r.body.record).not.toHaveProperty('diagnosis');
     expect(r.body.diagnosis.result.classification).toBe('machine-or-flake');
     expect(svc.getRecord(9, head, 'main')?.outcome).toBe('failure');
+    // This is the same local-floor projection the production status loop uses
+    // for GitHub's required merge check. The advisory diagnosis cannot turn a
+    // failed full verification into merge authority.
+    expect(projectLocal({
+      pr: { number: 9, headSha: head, baseRefName: 'main', eligible: true, floor: 'local' },
+      repo: record.repo, record: svc.getRecord(9, head, 'main'), verifying: false,
+      mainHealth: { state: 'healthy', mainHeadSha: base },
+    })).toMatchObject({ state: 'failure', reason: 'verify-failed' });
     svc.shutdown();
   });
 
