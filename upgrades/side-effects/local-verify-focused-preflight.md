@@ -61,6 +61,8 @@ Set `monitoring.localVerify.preflightMode` to `off`. The next child spawn reads 
 
 The optional cost is a bounded targeted check on green PRs; the optional liveness cost is an early red followed by a full replay. Full-suite green authority is unchanged.
 
+The final Astra pass found two restart/retention edge cases before rollout: restored queue entries could outrun a replay marker's backoff or breaker, and a full set of replay proofs could make journal compaction retain unlimited ordinary rows through `slice(-0)`. The service now delegates restored replay entries to the durable admission loop and explicitly gives ordinary rows zero slots when proofs fill the cap. Both cases have unit regression coverage.
+
 ## Evidence pointers
 
 - `tests/unit/localVerify/preflight.test.ts`, `runFocusedPreflight.test.ts`, `preflightReplay.test.ts`, `orchestrator.test.ts`, `LocalVerifyService.test.ts`

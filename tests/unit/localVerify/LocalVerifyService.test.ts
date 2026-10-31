@@ -219,6 +219,43 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     expect(input.preflightMode).toBe('off');
     upgraded.svc.shutdown();
   });
+  it('lets the replay marker, not a restored queue copy, enforce restart backoff and the breaker', async () => {
+    const h = setup({ views: { 1: view() } });
+    const state = path.join(h.stateDir, 'state');
+    const store = new PreflightReplayStore(state);
+    const key = store.ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z')).key;
+    store.admitted(key, Date.parse('2026-10-21T12:00:01Z'));
+    fs.writeFileSync(h.svc.journalPath, JSON.stringify({ v: 1, writtenAt: '2026-10-21T12:00:00Z', record: preflightRed() }) + '\n');
+    h.svc.shutdown();
+    fs.writeFileSync(h.svc.queuePath, JSON.stringify({ v: 1, entries: [{
+      pr: 1, headSha: sha('a'), baseSha: sha('b'), baseRefName: 'main',
+      firstQueuedAt: Date.parse('2026-10-21T12:00:00Z'), attempts: 1, errorRetries: 0,
+      starvedRaised: false, inFlight: true,
+    }] }));
+    const restarted = setup({ stateDir: h.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    expect(new PreflightReplayStore(state).get(key)).toMatchObject({ state: 'retryable-error', executionAttempts: 1 });
+    expect(restarted.svc.snapshot().queue).toHaveLength(0);
+    expect(restarted.spawned).toHaveLength(0);
+    expect(fs.readFileSync(restarted.svc.auditPath, 'utf8')).toContain('"reason":"replay-managed"');
+    restarted.svc.shutdown();
+  });
+  it('keeps the journal cap when pending replay proofs fill every slot', async () => {
+    const h = setup();
+    const state = path.join(h.stateDir, 'state');
+    const sample = new PreflightReplayStore(state).ensureRed(preflightRed(), Date.parse('2026-10-21T12:00:00Z'));
+    const reds = Array.from({ length: LOCAL_VERIFY_LIMITS.journalCap }, (_, n) => ({ ...preflightRed(), pr: n + 1 }));
+    const entries = reds.map((r) => ({ ...sample, pr: r.pr, key: replayKey(r) }));
+    fs.writeFileSync(path.join(state, 'local-verify', 'preflight-replays.json'), JSON.stringify({ v: 1, entries }));
+    const lines = [...reds, record({ pr: LOCAL_VERIFY_LIMITS.journalCap + 1 })]
+      .map((r, n) => JSON.stringify({ v: 1, writtenAt: new Date(Date.parse('2026-10-21T12:00:00Z') + n).toISOString(), record: r }));
+    fs.writeFileSync(h.svc.journalPath, lines.join('\n') + '\n');
+    const restarted = setup({ stateDir: h.stateDir });
+    await restarted.svc.rebuildIndex();
+    expect(fs.readFileSync(h.svc.journalPath, 'utf8').trim().split('\n')).toHaveLength(LOCAL_VERIFY_LIMITS.journalCap);
+    expect(fs.readFileSync(h.svc.journalPath, 'utf8')).not.toContain(`"pr":${LOCAL_VERIFY_LIMITS.journalCap + 1}`);
+    restarted.svc.shutdown();
+  });
   it('runs in observe mode at capacity, then reclaims a closed terminal key in a bounded tick', async () => {
     const h = setup({ views: { 1: view() } });
     const state = path.join(h.stateDir, 'state');

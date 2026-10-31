@@ -951,9 +951,19 @@ export class LocalVerifyService {
   private async doRestoreQueue(): Promise<{ restored: number; dropped: number }> {
     const saved = this.readQueueFile();
     let restored = 0;
-    const drops = { closed: 0, 'head-or-base-moved': 0, 'already-recorded': 0, duplicate: 0, 'queue-full': 0, 'server-restarted': 0 };
+    const drops = { closed: 0, 'head-or-base-moved': 0, 'already-recorded': 0, duplicate: 0, 'queue-full': 0, 'server-restarted': 0, 'replay-managed': 0 };
     for (const e of saved) {
       if (this.queue.some((q) => q.pr === e.pr) || (this.inFlight && this.inFlight.entry.pr === e.pr)) { drops.duplicate++; continue; }
+      const replay = this.preflightReplays?.get(replayKey({ repo: this.cfg.repo, pr: e.pr, headSha: e.headSha,
+        baseRefName: e.baseRefName, policyHash: this.policyHash }));
+      // The replay marker is the durable admission authority. A queued copy from
+      // before a restart must not bypass its backoff or execution breaker. The
+      // replay admission loop will re-read the PR and requeue when due.
+      if (replay && (replay.state === 'pending' || replay.state === 'retryable-error' || e.inFlight)) {
+        drops['replay-managed']++;
+        this.audit({ event: 'queue-restore-dropped', pr: e.pr, headSha: e.headSha, reason: 'replay-managed', replayState: replay.state });
+        continue;
+      }
       const open = await this.seams.isPrOpen(e.pr).catch(() => null);
       const view = open === false ? null : await this.seams.prView(e.pr).catch(() => null);
       const why = open === false ? 'closed'
@@ -1178,7 +1188,8 @@ export class LocalVerifyService {
     // infrastructure-error record superseded it in the latest-value index.
     const essential = [...replayReds.values()];
     const ordinary = keep.filter((l) => !essential.includes(l));
-    const capped = [...ordinary.slice(-Math.max(0, LOCAL_VERIFY_LIMITS.journalCap - essential.length)), ...essential]
+    const ordinaryRoom = Math.max(0, LOCAL_VERIFY_LIMITS.journalCap - essential.length);
+    const capped = [...(ordinaryRoom > 0 ? ordinary.slice(-ordinaryRoom) : []), ...essential]
       .sort((a, b) => (a.writtenAt < b.writtenAt ? -1 : a.writtenAt > b.writtenAt ? 1 : 0));
     this.rewriteJournal(capped);
     for (const pr of Object.keys(closedSeen)) {
