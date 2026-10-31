@@ -361,7 +361,7 @@ describe('server boot reconcile + launch-time check', () => {
   it('criterion 6a: the launcher runs the check immediately before a claude-code spawn (and only for claude-code)', async () => {
     const { SessionManager } = await import('../../src/core/SessionManager.js');
     const calls: string[] = [];
-    const fake = { nativeHookLaunchCheck: () => { calls.push('check'); }, claudeBinaryRetainer: { resolve: (p: string) => ({ path: p, source: 'original' }) } };
+    const fake = { nativeHookLaunchCheck: () => { calls.push('check'); }, claudeLaunchVersions: new Map(), claudeBinaryRetainer: { resolve: (p: string) => ({ path: p, source: 'original', version: null }) } };
     const resolve = SessionManager.prototype.resolveLaunchBinary;
     expect(resolve.call(fake as never, 'claude-code' as never, '/bin/claude')).toBe('/bin/claude');
     expect(resolve.call(fake as never, 'codex-cli' as never, '/bin/codex')).toBe('/bin/codex');

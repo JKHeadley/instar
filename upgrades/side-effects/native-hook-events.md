@@ -106,3 +106,7 @@ No agent-authored-artifact defect fix — not applicable for that part.
 ## Follow-up commit (Local Verify, round 1)
 
 Local Verify (peer machine, unit lane) failed two ratchets, both bookkeeping: `feature-delivery-completeness` needed the Claude-only `## Native Hook Events` CLAUDE.md section tracked (added to the legacy/Claude-specific list, with the Ultracode precedent: deliberately not mirrored to Codex/Gemini, whose hooks are unchanged), and `no-silent-fallbacks` counted this change's logged, safe-direction catches plus one pre-existing prune catch in `SessionManager.resolveLaunchBinary` that the inserted launch check moved out of its old exemption window. Each now carries a `@silent-fallback-ok` reason; the scanner is back at the 494 baseline. No behaviour change.
+
+## Follow-up commit (rebase onto the Threadline MCP local HTTP merge)
+
+Rebased onto main after #2510 (Threadline MCP over local HTTP) merged. One textual conflict in `AgentServer.ts`: both changes mount a route-specific parser ahead of the global 12 MB parser; both mounts are kept (`/mcp/threadline` 256 KB, then the native hook guard + 4 MB parser). main also added `claudeLaunchVersions` to `SessionManager.resolveLaunchBinary`; the unit test's fake now carries it. No behaviour change.
