@@ -48,7 +48,9 @@ describe('AutoUpdater restart holds', () => {
     u.setRestartHold('pairing-invite', holds);
     return u;
   }
-  const gated = (u: AutoUpdater, bypass = false) => (u as unknown as { gatedRestart(v: string, b?: boolean): Promise<void> }).gatedRestart('0.9.9', bypass);
+  const gated = (u: AutoUpdater, bypassWindow = false, bypassHolds = false) =>
+    (u as unknown as { gatedRestart(v: string, w?: boolean, h?: boolean): Promise<void> })
+      .gatedRestart('0.9.9', bypassWindow, bypassHolds);
 
   it('holds while an invite waits, logs why, and records it on the existing durable deferral', async () => {
     const until = Date.now() + 40 * 60_000;
@@ -190,11 +192,60 @@ describe('AutoUpdater restart holds', () => {
     u.stop();
   });
 
-  it('a manual apply (operator act) is not held', async () => {
+  it('a manual apply skips the restart window but preserves in-flight holds until explicitly forced', async () => {
     const u = updater(() => [{ name: 'pairing-invite:abcd1234', until: Date.now() + 40 * 60_000, reason: 'invite waiting' }]);
     await gated(u, true);
     await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    expect(u.getStatus().restartDeferral?.currentBlockers).toEqual(['pairing-invite:abcd1234']);
+    await gated(u, true, true);
+    await vi.advanceTimersByTimeAsync(3_000);
     expect(fs.existsSync(restartFile())).toBe(true);
+    u.stop();
+  });
+
+  it('keeps a manual window bypass across hold release, session retry, and durable recovery', async () => {
+    vi.setSystemTime(new Date('2026-10-31T19:00:00.000Z')); // noon PDT, outside 02:00–03:00
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }];
+    let sessions = [{ name: 'interactive-work', tmuxSession: 'interactive-work' }];
+    const create = () => {
+      const u = new AutoUpdater(checker(), state(), tmpDir, {
+        preRestartDelaySecs: 0,
+        restartWindow: { start: '02:00', end: '03:00' },
+      });
+      u.setSessionDeps({ listRunningSessions: () => sessions });
+      u.setRestartHold('local-verify', () => holds);
+      return u;
+    };
+
+    const first = create();
+    await gated(first, true);
+    expect(first.getStatus().restartDeferral).toMatchObject({ bypassWindow: true, currentBlockers: ['local-verify:pr-7'] });
+    first.stop();
+
+    const recovered = create();
+    recovered.start();
+    holds = [];
+    recovered.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(recovered.getStatus().restartDeferral).toMatchObject({ bypassWindow: true, currentBlockers: ['interactive-work'] });
+    expect(recovered.getStatus().restartDeferral?.reason).not.toContain('outside restart window');
+
+    sessions = [];
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(recovered.getStatus().restartDeferral).toBeNull();
+    recovered.stop();
+  });
+
+  it('can force the deferred restart after the update has already been installed', async () => {
+    const u = updater(() => [{ name: 'local-verify:pr-7', until: Date.now() + 40 * 60_000, reason: 'verify running' }]);
+    await gated(u, true);
+    expect(u.getStatus().restartDeferral?.currentBlockers).toEqual(['local-verify:pr-7']);
+    await u.applyPendingUpdate({ bypassWindow: true, bypassHolds: true });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(u.getStatus().restartDeferral).toBeNull();
     u.stop();
   });
 

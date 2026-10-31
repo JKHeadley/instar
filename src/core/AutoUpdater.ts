@@ -130,6 +130,8 @@ export interface AutoUpdaterStatus {
 export interface RestartDeferralState {
   active: boolean;
   targetVersion: string;
+  /** A manual apply keeps its window bypass through hold retries and process restarts. */
+  bypassWindow?: boolean;
   firstDeferredAt: string;
   reason: string;
   currentBlockers: string[];
@@ -379,9 +381,10 @@ export class AutoUpdater {
   }
 
   /**
-   * Hold automatic update restarts while in-flight work a restart would LOSE exists (see
+   * Hold update restarts while in-flight work a restart would LOSE exists (see
    * UpdateGate "Restart holds"). Each hold ends at its own `until`, so the hold is bounded.
-   * A manual apply (POST /updates/apply) is an operator act and is not held.
+   * A manual apply skips the preferred time window but keeps these holds unless
+   * its caller explicitly forces the restart.
    */
   setRestartHold(key: string, provider: () => RestartHold[]): void {
     this.gate.setRestartHoldProvider(key, provider);
@@ -600,13 +603,19 @@ export class AutoUpdater {
    * Extracted from tick() so it can be called by the coalescing timer
    * and by manual trigger (POST /updates/apply).
    */
-  async applyPendingUpdate(options?: { bypassWindow?: boolean }): Promise<void> {
+  async applyPendingUpdate(options?: { bypassWindow?: boolean; bypassHolds?: boolean }): Promise<void> {
     if (this.isApplying) {
       console.log('[AutoUpdater] Skipping apply — already in progress');
       return;
     }
 
     if (!this.pendingUpdate) {
+      // A manual apply may have installed the update but left its restart waiting
+      // for a running verify. An explicit override must still work after that apply.
+      if (options?.bypassHolds && this.restartDeferral?.active) {
+        await this.gatedRestart(this.restartDeferral.targetVersion, true, true);
+        return;
+      }
       console.log('[AutoUpdater] No pending update to apply');
       return;
     }
@@ -667,7 +676,7 @@ export class AutoUpdater {
       // The loop breaker in tick() (checking lastAppliedVersion === latestVersion)
       // prevents this from becoming an infinite loop. After restart, the loop
       // breaker catches the next cycle and returns early.
-      await this.gatedRestart(targetVersion, options?.bypassWindow ?? false);
+      await this.gatedRestart(targetVersion, options?.bypassWindow ?? false, options?.bypassHolds ?? false);
     } catch (err) {
       this.isApplying = false;
       this.lastError = err instanceof Error ? err.message : String(err);
@@ -727,7 +736,7 @@ export class AutoUpdater {
    * If sessions are active, defers and retries on a timer.
    * After max deferral, restarts regardless with warnings.
    */
-  private async gatedRestart(newVersion: string, bypassWindow = false): Promise<void> {
+  private async gatedRestart(newVersion: string, bypassWindow = false, bypassHolds = false): Promise<void> {
     // RESTART COOLDOWN: If we already requested a restart for this exact version
     // within the last 30 minutes, don't restart again. This is the safety net
     // for binary path mismatches (npx cache, etc.) where the loop breaker in
@@ -769,13 +778,14 @@ export class AutoUpdater {
     // invite waiting for the operator; its secret lives only in memory). Uses the same durable
     // deferral record and retry timer as session deferral. The retry runs at the next 5-minute
     // check or when the soonest hold ends, whichever is first, so the restart proceeds once the
-    // work finishes or expires. Not applied to a manual apply (bypassWindow).
+    // work finishes or expires. A manual apply skips the time window, but still
+    // protects in-flight work unless the caller explicitly bypasses holds.
     //
     // Holds also respect the gate's maxDeferralHours, counted from this version's first durable
     // deferral (whatever its cause): past it, holds are logged and no longer hold. A hold whose
     // end comes from untrusted input (an inviter-written expiry) can therefore never hold an
     // update longer than the session gate's own ceiling.
-    if (!bypassWindow) {
+    if (!bypassHolds) {
       const maxDeferralMs = this.gate.getStatus().maxDeferralHours * 3_600_000;
       const firstDeferredAt = this.getActiveRestartDeferral(newVersion)?.firstDeferredAt;
       const deferredSince = firstDeferredAt ? Date.parse(firstDeferredAt) : Number.NaN;
@@ -792,6 +802,7 @@ export class AutoUpdater {
         console.log(`[AutoUpdater] Restart deferred for v${newVersion}: ${reason}. Will retry in ${Math.ceil(retryMs / 1000)}s`);
         this.recordRestartDeferral({
           targetVersion: newVersion,
+          bypassWindow,
           reason,
           currentBlockers: holds.map((h) => h.name),
           nextRetryAt: new Date(Date.now() + retryMs).toISOString(),
@@ -824,6 +835,7 @@ export class AutoUpdater {
         console.log(`[AutoUpdater] Outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}) with ${blockers.length} active session(s). Deferring restart for v${newVersion} (~${waitH}h)`);
         this.recordRestartDeferral({
           targetVersion: newVersion,
+          bypassWindow,
           reason: `outside restart window (${this.config.restartWindow!.start}-${this.config.restartWindow!.end}); ${blockers.length} active session(s)`,
           currentBlockers: blockers,
           nextRetryAt: new Date(Date.now() + waitMs).toISOString(),
@@ -961,6 +973,7 @@ export class AutoUpdater {
     console.log(`[AutoUpdater] Restart deferred: ${result.reason}. Will retry in ${Math.round((result.retryInMs ?? 300_000) / 60_000)}m`);
     this.recordRestartDeferral({
       targetVersion: newVersion,
+      bypassWindow,
       reason: result.reason ?? 'active sessions',
       currentBlockers: result.blockingSessions ?? [],
       nextRetryAt: new Date(Date.now() + (result.retryInMs ?? 300_000)).toISOString(),
@@ -1057,7 +1070,7 @@ export class AutoUpdater {
    */
   private async retryDeferredRestart(targetVersion: string, generation: number): Promise<void> {
     try {
-      await this.gatedRestart(targetVersion);
+      await this.gatedRestart(targetVersion, this.getActiveRestartDeferral(targetVersion)?.bypassWindow === true);
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       console.error(`[AutoUpdater] Deferred restart retry failed: ${this.lastError}`);
@@ -1066,6 +1079,7 @@ export class AutoUpdater {
       const nextRetryAt = new Date(Date.now() + DEFAULT_RESTART_RETRY_MS).toISOString();
       this.recordRestartDeferral({
         targetVersion,
+        bypassWindow: deferral.bypassWindow,
         reason: deferral.reason,
         currentBlockers: deferral.currentBlockers,
         nextRetryAt,
@@ -1352,6 +1366,7 @@ export class AutoUpdater {
 
   private recordRestartDeferral(input: {
     targetVersion: string;
+    bypassWindow?: boolean;
     reason: string;
     currentBlockers: string[];
     nextRetryAt: string | null;
@@ -1362,6 +1377,7 @@ export class AutoUpdater {
     this.restartDeferral = {
       active: true,
       targetVersion: input.targetVersion,
+      ...(input.bypassWindow === true || existing?.bypassWindow === true ? { bypassWindow: true } : {}),
       firstDeferredAt: existing?.firstDeferredAt ?? new Date().toISOString(),
       reason: input.reason,
       currentBlockers: input.currentBlockers,
@@ -1384,6 +1400,7 @@ export class AutoUpdater {
     return {
       active: true,
       targetVersion: data.targetVersion,
+      ...(data.bypassWindow === true ? { bypassWindow: true } : {}),
       firstDeferredAt: typeof data.firstDeferredAt === 'string' ? data.firstDeferredAt : new Date().toISOString(),
       reason: data.reason,
       currentBlockers: Array.isArray(data.currentBlockers)

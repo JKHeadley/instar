@@ -984,9 +984,9 @@ export class LocalVerifyService {
   }
 
   /**
-   * The restart hold for the AutoUpdater: while a verify runs, an automatic update
-   * restart waits until the run's own ceiling (capped by `maxDeferralMs`). A manual
-   * apply is not held (the AutoUpdater skips holds for it).
+   * The restart hold for the AutoUpdater: while a verify runs, an update restart
+   * waits until the run's own ceiling (capped by `maxDeferralMs`). Manual applies
+   * keep the hold unless their caller explicitly requests a forced restart.
    */
   restartHolds(maxDeferralMs: number): RestartHold[] {
     const f = this.inFlight;

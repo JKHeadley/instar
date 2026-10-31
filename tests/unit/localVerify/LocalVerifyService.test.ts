@@ -854,9 +854,11 @@ describe('restart hold', () => {
     let tmp: string;
     const checker = () => ({ getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker);
     const state = () => ({ get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager);
-    const gated = (u: AutoUpdater, bypass: boolean) => (u as unknown as { gatedRestart(v: string, b?: boolean): Promise<void> }).gatedRestart('0.9.9', bypass);
+    const gated = (u: AutoUpdater, bypassWindow: boolean, bypassHolds = false) =>
+      (u as unknown as { gatedRestart(v: string, w?: boolean, h?: boolean): Promise<void> })
+        .gatedRestart('0.9.9', bypassWindow, bypassHolds);
 
-    it('an automatic update waits for a running verify; a manual apply is not held', async () => {
+    it('automatic and manual updates wait for a running verify unless the caller explicitly forces a restart', async () => {
       tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-au-')));
       dirs.push(tmp);
       fs.mkdirSync(path.join(tmp, 'state'), { recursive: true });
@@ -876,6 +878,10 @@ describe('restart hold', () => {
         m.setSessionDeps({ listRunningSessions: () => [] });
         registerLocalVerifyRestartHold(m, s.svc);
         await gated(m, true);
+        await new Promise((r) => setTimeout(r, 50));
+        expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(false);
+        expect(m.getStatus().restartDeferral?.currentBlockers).toEqual(['local-verify:pr-1']);
+        await gated(m, true, true);
         await new Promise((r) => setTimeout(r, 50));
         expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
         m.stop();

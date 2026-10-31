@@ -355,6 +355,9 @@ export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced s
 export const LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE = '- Local Verify focused PR preflight: optional `monitoring.localVerify.preflightMode: off|observe|enforce` (default off) runs bounded changed tests after build/lint and before the full suite; `main` never uses it. Observe records a diagnostic and always continues. Enforce can stop an automatically rediscoverable PR on a repeated assertion failure, then schedules a full-suite replay without preflight; only the complete full-suite record can authorize a green merge. A skipped preflight is not a passed check. `GET /local-verify` → `preflight` shows mode and replay obligations. When a PR is red with `preflight-red` or appears to be waiting on a replay, read this status and its exact-head record before describing the result.';
 export const LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE = '- Local Verify failed-file diagnosis: optional `monitoring.localVerify.failedFileDiagnosis: off|observe|auto` (default off) asks one idle peer to run one to three failed test files on the exact PR merge and base. It is advisory: `GET /local-verify/record?pr=&head=&base=` includes a separate `diagnosis` projection, and `GET /local-verify/diagnosis?pr=&head=&base=` reads it directly. `pr-reproducible`, `machine-or-flake`, `base-or-shared`, and `inconclusive` describe file-level evidence only; no diagnosis changes the red record, merge gate, or main health. When a PR failure has named files and the user asks whether it reproduces elsewhere, read that projection before explaining. A full verify preempts any peer diagnosis.';
 
+/** Shared by fresh agent templates and the existing-agent migration. */
+export const UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE = '- Manual updates: `POST /updates/apply` installs the update but waits to restart while a Local Verify run is active; check `GET /updates/auto` for `restartDeferral`. Only when an immediate restart is explicitly required, send `{"forceRestart":true}` to the same route. That override cancels the active verify, which must run again.';
+
 /**
  * Local Verify merge-throughput label — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on the label name).
@@ -9976,6 +9979,11 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify failed-file diagnosis awareness');
+    }
+    if (content.includes('/updates/apply') && !content.includes('forceRestart')) {
+      content += '\n' + UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added manual-update verify-hold awareness');
     }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';
