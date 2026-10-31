@@ -135,7 +135,7 @@ describe('Window lifecycle production wiring', () => {
   async function addManualEvidence(obligation: any): Promise<void> {
     let text = proofText(obligation);
     const signedOperatorPath = /^continuous\.telegram\.(?:send-path-classified|signature-verified|act-as-principal-guard)$/.test(obligation.id);
-    const topicId = obligation.responsibleRole.startsWith('observer-') ? 43003 : 36966;
+    const topicId = /^cadence\.report\.3h@/.test(obligation.id) ? 36966 : obligation.responsibleRole.startsWith('observer-') ? 43003 : 36966;
     if (signedOperatorPath) { const unsigned = { messageId: nextMessageId++, topicId, text, fromUser: false, timestamp: clock, sessionName: `${obligation.responsibleRole}-session`, provenance: 'agent', authorship: 'agent-outbound', forwarded: false }; history.push(unsigned); fs.appendFileSync(path.join(project.stateDir, 'telegram-messages.jsonl'), `${JSON.stringify(unsigned)}\n`); await auth(request(server.getApp()).post('/window-lifecycle/evidence')).send({ ...body, obligationId: obligation.id, topicId, messageId: unsigned.messageId, authority: obligation.evidencePolicy.requiredAuthority }).expect(409); }
     if (/^cadence\.report\.3h@/.test(obligation.id)) { const nonSynthesis = { messageId: nextMessageId++, topicId, text: 'This is a long generic message that contains enough characters to defeat a length-only check but has no required report structure at all.', fromUser: false, timestamp: clock, sessionName: `${obligation.responsibleRole}-session`, provenance: 'agent', authorship: 'agent-outbound', forwarded: false }; history.push(nonSynthesis); fs.appendFileSync(path.join(project.stateDir, 'telegram-messages.jsonl'), `${JSON.stringify(nonSynthesis)}\n`); await auth(request(server.getApp()).post('/window-lifecycle/evidence')).send({ ...body, obligationId: obligation.id, topicId, messageId: nonSynthesis.messageId, authority: obligation.evidencePolicy.requiredAuthority }).expect(409); }
     if (/plan-(?:input|position|outcome)/.test(obligation.id)) { for (const invalid of [{ planNodeId: 'wrong-node', charterIncluded: true, leafToRoot: ['wrong-node', 'root'] }, { planNodeId: 'current-work', charterIncluded: false, leafToRoot: ['current-work', 'w28', 'root'] }, { planNodeId: 'Plan', charterIncluded: true, leafToRoot: ['Plan', 'root'] }, { planNodeId: '#', charterIncluded: true, leafToRoot: ['#', 'root'] }]) { const bad = { messageId: nextMessageId++, topicId, text: JSON.stringify({ obligationId: obligation.id, verdict: 'pass', sourceHashes: obligation.sourceSpans.map((span: any) => span.hash), ...(obligation.predicate.expected ?? {}), ...invalid }), fromUser: false, timestamp: clock, sessionName: `${obligation.responsibleRole}-session`, provenance: 'agent', authorship: 'agent-outbound', forwarded: false }; history.push(bad); fs.appendFileSync(path.join(project.stateDir, 'telegram-messages.jsonl'), `${JSON.stringify(bad)}\n`); await auth(request(server.getApp()).post('/window-lifecycle/evidence')).send({ ...body, obligationId: obligation.id, topicId, messageId: bad.messageId, authority: obligation.evidencePolicy.requiredAuthority }).expect(409); } }
@@ -144,7 +144,7 @@ describe('Window lifecycle production wiring', () => {
     history.push(row);
     fs.appendFileSync(path.join(project.stateDir, 'telegram-messages.jsonl'), `${JSON.stringify(row)}\n`);
     const added = await auth(request(server.getApp()).post('/window-lifecycle/evidence')).send({ ...body, obligationId: obligation.id, topicId, messageId: row.messageId, authority: obligation.evidencePolicy.requiredAuthority });
-    expect(added.status, `${obligation.id}: ${JSON.stringify(added.body)}`).toBe(201);
+    expect(added.status, `${obligation.id}: ${JSON.stringify(added.body)} binding=${JSON.stringify(obligation.executorBinding)} producer=session:${row.sessionName} topic=${topicId}`).toBe(201);
   }
 
   async function satisfyEligible(phases: string[]): Promise<any> {
@@ -171,8 +171,10 @@ describe('Window lifecycle production wiring', () => {
       const ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
       syncCommitments(ledger.obligations);
       await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
+      const materialized = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
+      syncCommitments(materialized.obligations);
+      await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
       if ((Date.parse(clock) - Date.parse(BASE)) % (3 * 60 * 60_000) === 0) {
-        await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
         const ready = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
         const dueReports = ready.obligations.filter((obligation: any) => /^cadence\.report\.3h@/.test(obligation.id) && Date.parse(obligation.deadline.dueAt) <= Date.parse(clock) && !obligation.evidence.some((evidence: any) => evidence.verifierPassed));
         for (const report of dueReports) await addManualEvidence(report);
