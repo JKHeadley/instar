@@ -19505,8 +19505,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               // When the relay does not post (agent-internal, rate-limited, send failed) the
               // existing hub surface still runs, so no message is left with no topic at all.
               const hubSurface = () => {
-                if (!collaborationSurfacer) return;
-                void collaborationSurfacer.surface({
+                // No bare early exit here: the ACT-091 audit pins every exit after the ack stage.
+                void collaborationSurfacer?.surface({
                   threadId: gateThreadId,
                   senderName,
                   text: textContent,

@@ -137,3 +137,7 @@ The reviewer found no authority gained, the pairing listener correct, and the of
 - **`defectClass`** — `unbounded-self-action`
 - **`closure`** — `n/a`
 - **reason** — one-shot reaction to an inbound peer message: at most one Telegram post per message (per-thread 1/min, per-topic 3/min caps), plus a create-once homebase ensure on a pairing notice; no feedback path re-triggers it, so it is not a self-triggered loop.
+
+## Follow-up: no bare early exit in the relay hub fallback
+
+The hub-fallback closure added to the relay handler used `if (!collaborationSurfacer) return;`. The ACT-091 audit test splits the handler after the ack stage at every bare `return;` to prove each exit settles the relay ack exactly once, so the extra return broke that audit (Local Verify, `tests/unit/threadline/ack-stage-wiring.test.ts`). The closure now uses optional chaining instead. Behaviour is unchanged: with no surfacer, nothing is surfaced, exactly as before.
