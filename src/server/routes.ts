@@ -25137,11 +25137,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ autoApply, persisted: true });
   });
 
-  router.post('/updates/apply', async (_req, res) => {
+  router.post('/updates/apply', async (req, res) => {
+    if (refuseUnsupportedFields(res, req.body, ['forceRestart'])) return;
+    const forceRestart = req.body && Object.prototype.hasOwnProperty.call(req.body, 'forceRestart')
+      ? req.body.forceRestart
+      : false;
+    if (typeof forceRestart !== 'boolean') {
+      res.status(400).json({ error: 'forceRestart must be a boolean' });
+      return;
+    }
     // Prefer AutoUpdater path (coalescing + session-aware gating)
     if (ctx.autoUpdater) {
       try {
-        await ctx.autoUpdater.applyPendingUpdate({ bypassWindow: true });
+        await ctx.autoUpdater.applyPendingUpdate({ bypassWindow: true, bypassHolds: forceRestart });
         res.json(ctx.autoUpdater.getStatus());
       } catch (err) {
         // @silent-fallback-ok — returns HTTP 500 with error details to caller; not a silent degradation

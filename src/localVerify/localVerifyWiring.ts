@@ -289,8 +289,9 @@ export function updatePendingFromAutoUpdater(
 /**
  * Register the local-verify restart hold with the AutoUpdater, and give the service the
  * rule (b) view of it. While a verify runs, an automatic update restart waits for it
- * (bounded by the run's own ceiling and the gate's `maxDeferralHours`); a manual apply is
- * not held. While an update is pending and only this hold delays it, no NEW verify starts,
+ * (bounded by the run's own ceiling and the gate's `maxDeferralHours`); a manual apply
+ * also waits unless it explicitly forces a restart. While an update is pending and
+ * only this hold delays it, no NEW verify starts,
  * so a busy queue cannot hold updates indefinitely. `extraHolds` is the seam for the spec's
  * later "hold heads whose projected status is success" rule (merges, not live yet).
  */

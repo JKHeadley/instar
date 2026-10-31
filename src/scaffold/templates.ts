@@ -22,6 +22,7 @@ import { JOB_DECLARED_FAILURE_AWARENESS } from "../scheduler/jobDeclaredFailure.
 // never imports templates).
 import { APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { MINIMUM_OPERATOR_EFFORT_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE } from '../core/PostUpdateMigrator.js';
 
 export interface AgentIdentity {
   name: string;
@@ -868,6 +869,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 - Check: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/updates\`
 - Last update: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/updates/last\`
 - Apply: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/updates/apply\`
+${UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE}
 - Rollback: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/updates/rollback\`
 - Auto-update status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/updates/auto\`
 
@@ -2354,6 +2356,8 @@ Before answering ANY question about my capabilities or architecture from memory 
 | Messaging the user | Read \`.instar/context/communication.md\` if it exists |
 | Update / install latest version | \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/updates/apply\` |
 | Detailed capability docs | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/self-knowledge/search?q=TOPIC"\` |
+
+${UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE}
 
 ## Coherence Gate (Pre-Action Verification)
 
