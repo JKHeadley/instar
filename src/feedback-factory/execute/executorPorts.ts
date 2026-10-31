@@ -63,6 +63,12 @@ export interface GitHubGateway {
   prFiles(slug: string, pr: number): Promise<string[] | null>;
   /** Leave a comment on the PR; false on a gh error. */
   comment(slug: string, pr: number, body: string): Promise<boolean>;
+  /**
+   * Close the PR (the branch is kept, so it can be reopened). Idempotent for an already closed PR.
+   * A PR found MERGED is reported as `merged`, never as closed: the caller must record the merge,
+   * not finalize a close. `failed` on a gh error.
+   */
+  closePr(slug: string, pr: number): Promise<'closed' | 'merged' | 'failed'>;
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
@@ -258,6 +264,17 @@ export class GhGateway implements GitHubGateway {
     finally {
       try { SafeFsExecutor.safeUnlinkSync(bodyFile, { operation: 'feedback-execute PR comment temp cleanup' }); } catch { /* @silent-fallback-ok: a leftover temp body holds only the posted comment text */ }
     }
+  }
+
+  async closePr(slug: string, pr: number): Promise<'closed' | 'merged' | 'failed'> {
+    try {
+      // RULE 3: EXEMPT — gh's documented --json output (a stable, versioned data contract).
+      const view = JSON.parse(await this.gh(['pr', 'view', String(pr), '--repo', slug, '--json', 'state'])) as { state?: string };
+      if (view.state === 'MERGED') return 'merged';
+      if (view.state === 'CLOSED') return 'closed';
+      await this.gh(['pr', 'close', String(pr), '--repo', slug]);
+      return 'closed';
+    } catch { return 'failed'; } // @silent-fallback-ok: the caller keeps the close intent and retries next tick (degradation after 3 failures)
   }
 
   async safeMerge(slug: string, pr: number, sha: string): Promise<{ exitCode: number | null; stdout: string }> {

@@ -150,12 +150,34 @@ export function reviewRefusalIsAboutTheChange(reason: string): boolean {
   return reason.startsWith('serious:') || reason.startsWith('unparseable:') || reason === 'diff-too-large' || reason === 'spec-head-shape';
 }
 
+/**
+ * What happens next to a refused PR, for its comment
+ * (docs/specs/feedback-executor-review-failed-recovery.md §5). Absent (or grace 0) keeps the
+ * original wording.
+ */
+export interface ReviewCommentNext {
+  /** When the executor closes the PR on its own (epoch ms), or null when it never closes it (grace 0, or not close-eligible yet). */
+  closesAt: number | null;
+  /** True when a close would be the recovery episode's second: the item is parked instead of reworked. */
+  parksAfterClose?: boolean;
+  /** An unparseable reply: the same head is asked again at this time (epoch ms) before it can be closed. */
+  reaskAt?: number | null;
+}
+
 /** The comment left on a PR the gate refused: the rule, then each reviewer's verdict and (bounded) findings. */
-export function renderReviewComment(verdict: IndependentReviewVerdict, headSha: string): string {
+export function renderReviewComment(verdict: IndependentReviewVerdict, headSha: string, next?: ReviewCommentNext): string {
+  let outcomeLine = 'The feedback executor will not merge this PR as it stands. A new push is reviewed again; the repository owner\'s approval on GitHub merges it anyway; closing it parks the item.';
+  if (next?.reaskAt) {
+    outcomeLine = `The feedback executor will not merge this PR as it stands. A reviewer's reply could not be read, so this head is reviewed again after ${new Date(next.reaskAt).toISOString()}. A new push is reviewed again; the repository owner's approval on GitHub merges it anyway.`;
+  } else if (next?.closesAt) {
+    outcomeLine = `The feedback executor will not merge this PR as it stands. Unless a new commit or the repository owner's approval arrives first, it closes this PR on its own at ${new Date(next.closesAt).toISOString()}` +
+      (next.parksAfterClose ? ' and parks the item until new reports arrive (this is the item\'s second fix that did not pass).' : ' and retries the item once, starting from these findings.') +
+      ' A new push is reviewed again; the owner\'s approval on GitHub merges it anyway.';
+  }
   const lines = [
     `**Independent review did not pass at \`${headSha.slice(0, 12)}\`** — \`${verdict.reason}\`.`,
     '',
-    'The feedback executor will not merge this PR as it stands. A new push is reviewed again; the repository owner\'s approval on GitHub merges it anyway; closing it parks the item.',
+    outcomeLine,
     '',
   ];
   for (const r of verdict.reviewers) {
@@ -167,4 +189,32 @@ export function renderReviewComment(verdict: IndependentReviewVerdict, headSha: 
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * The executor's OWN reviewer output for a refused head (never text read back from GitHub), as
+ * plain text for the rework attempt: the refusal reason, then each reviewer's verdict and findings.
+ * The caller scrubs and bounds it before storing (these findings are untrusted: the reviewer read a
+ * diff built partly from reporters' text).
+ */
+export function reviewFindingsText(verdict: IndependentReviewVerdict): string {
+  const parts = [`Refusal: ${verdict.reason}`];
+  if (verdict.reason === 'diff-too-large') parts.push(`The diff was larger than ${REVIEW_DIFF_MAX_BYTES} bytes and was not reviewed; a smaller change is needed.`);
+  if (verdict.reason === 'spec-head-shape') parts.push('A spec PR must add exactly one new file at the expected docs/specs path and nothing else.');
+  for (const r of verdict.reviewers) {
+    parts.push(`${r.family}${r.model ? ` (${r.model})` : ''}: ${r.status === 'ok' ? r.verdict ?? 'UNKNOWN' : r.status}`);
+    if (r.status === 'ok' && r.body && r.verdict !== 'CLEAN') parts.push(r.body.replace(/\r/g, '').trim().slice(0, 1_500));
+  }
+  return parts.join('\n');
+}
+
+/** The comment the executor posts when it closes a review-failed PR (the marker makes a duplicate post recognisable). */
+export function renderCloseComment(attemptId: string, graceHours: number, parksItem: boolean): string {
+  const tail = parksItem
+    ? 'The item is parked until new reports arrive.'
+    : 'The item goes back to the queue for one more attempt that starts from these findings.';
+  return [
+    `<!-- instar-review-failed-close:${attemptId} -->`,
+    `Closing: the independent review found serious problems and no new commit or approval arrived within ${graceHours} h. ${tail}`,
+  ].join('\n');
 }
