@@ -79,6 +79,38 @@ jobs:
           }
           & "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" --self-test
           if ($LASTEXITCODE -ne 0) { throw "Windows companion lease self-test failed: $LASTEXITCODE" }
+      - name: Verify Windows-local signed update handoff
+        shell: powershell
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA 'InstarDesktop'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $secret = Join-Path $root 'companion.secret'
+          $key = New-Object byte[] 32
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          try { $rng.GetBytes($key) } finally { $rng.Dispose() }
+          [System.IO.File]::WriteAllBytes($secret, $key)
+          $port = Get-Random -Minimum 45000 -Maximum 55000
+          $companion = Start-Process -FilePath "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" `
+            -ArgumentList @('127.0.0.1', [string]$port, ('"' + $secret + '"')) -PassThru
+          try {
+            Start-Sleep -Seconds 1
+            $common = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+              'scripts/install-windows-desktop-companion.ps1', '-Source',
+              'dist/native/windows/InstarDesktopCompanion.cs', '-BindAddress', '127.0.0.1',
+              '-Port', [string]$port, '-Phase', 'RequestUpdate', '-RequestAddress', '127.0.0.1')
+            $prepared = (& powershell.exe @common -Operation 'prepare-update' | Select-Object -Last 1) | ConvertFrom-Json
+            if (-not $prepared.ok -or $prepared.updateToken -notmatch '^[A-Za-z0-9_-]{32}$') {
+              throw 'Windows-local signed preparation did not return an update token'
+            }
+            $env:INSTAR_DESKTOP_UPDATE_TOKEN = $prepared.updateToken
+            $committed = (& powershell.exe @common -Operation 'commit-update' | Select-Object -Last 1) | ConvertFrom-Json
+            if (-not $committed.ok) { throw 'Windows-local signed commit failed' }
+            $companion.WaitForExit(5000) | Out-Null
+            if (-not $companion.HasExited) { throw 'Companion did not exit after signed commit' }
+          } finally {
+            Remove-Item Env:INSTAR_DESKTOP_UPDATE_TOKEN -ErrorAction SilentlyContinue
+            if (-not $companion.HasExited) { Stop-Process -Id $companion.Id -Force }
+          }
       - name: Check npm package contents
         shell: powershell
         run: |
