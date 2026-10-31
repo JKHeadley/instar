@@ -611,6 +611,8 @@ import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLe
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
+import type { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
+import { dispatchHookEvent, type HookEventDispatchDeps } from './hookEventDispatch.js';
 import type { WorktreeMonitor } from '../monitoring/WorktreeMonitor.js';
 import type { SubagentTracker } from '../monitoring/SubagentTracker.js';
 import type { InstructionsVerifier } from '../monitoring/InstructionsVerifier.js';
@@ -1293,6 +1295,8 @@ export interface RouteContext {
   imessage: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter | null;
   messageBridge: import('../messaging/shared/MessageBridge.js').MessageBridge | null;
   hookEventReceiver: HookEventReceiver | null;
+  /** Native hook events ingest (docs/specs/native-hook-events.md); null when not constructed. */
+  nativeHookIngest?: NativeHookEventIngest | null;
   worktreeMonitor: WorktreeMonitor | null;
   subagentTracker: SubagentTracker | null;
   instructionsVerifier: InstructionsVerifier | null;
@@ -5260,6 +5264,9 @@ export function createRoutes(ctx: RouteContext): Router {
         base.version = ctx.config.version || '0.0.0';
       }
       base.sessions = { current: sessionCount, max: maxSessions };
+      // Native hook events (docs/specs/native-hook-events.md FD11): counts are
+      // "received", never "fired" — delivery failures are invisible here.
+      if (ctx.nativeHookIngest) base.hookEvents = ctx.nativeHookIngest.snapshot();
       base.schedulerRunning = ctx.scheduler !== null;
       base.consecutiveJobFailures = totalFailures;
       // What the currency bound excluded, so the information is MOVED rather than
@@ -6341,6 +6348,50 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ annotations });
   });
 
+  // Deps for the shared hook-event dispatch (both hook routes).
+  const hookEventDispatchDeps = (): HookEventDispatchDeps => ({
+    receive: (p) => ctx.hookEventReceiver!.receive(p),
+    recordToolCall: () => reflectionMetrics.recordToolCall(),
+    observeToolAction: (i) => getJevCirclesShadow()?.observe(i),
+    recordCommit: () => homeostasisMonitor.recordCommit(),
+    recordAdvisoryArtifact: ({ filePath, toolName, sessionId }) => {
+      const mapped = autonomousRunStore.resolveSession(sessionId);
+      if (mapped) {
+        autonomousRunStore.appendAdvisoryArtifact(mapped.topicId, mapped.runId, { filePath, toolName, sessionId });
+      }
+    },
+    sessionManager: ctx.sessionManager ?? null,
+    subagentTracker: ctx.subagentTracker ?? null,
+  });
+
+  // POST /hooks/native-events — Claude Code native HTTP hooks
+  // (docs/specs/native-hook-events.md D1). Admission (loopback, credential,
+  // size) and the 4 MB parser are mounted AHEAD of the global body parser in
+  // AgentServer; this handler only projects + enqueues and answers 204 at once.
+  // Processing (store + the shared side effects) happens in the ingest's
+  // bounded drain worker.
+  if (ctx.nativeHookIngest) {
+    ctx.nativeHookIngest.setProcessor((event, instarSid) => {
+      if (!ctx.hookEventReceiver) return false;
+      return dispatchHookEvent(hookEventDispatchDeps(), event, instarSid);
+    });
+  }
+  router.post('/hooks/native-events', (req, res) => {
+    const ingest = ctx.nativeHookIngest;
+    if (ingest) {
+      const header = (name: string): string | undefined => {
+        const v = req.headers[name];
+        return Array.isArray(v) ? v[0] : v;
+      };
+      ingest.accept(req.body, {
+        instarSessionId: (header('x-instar-session-id') ?? '').trim(),
+        instarSession: (header('x-instar-session') ?? '').trim(),
+      });
+    }
+    // Empty 2xx = success to Claude Code; a reporter never blocks a session.
+    res.status(204).end();
+  });
+
   router.post('/hooks/events', (req, res) => {
     if (!ctx.hookEventReceiver) {
       res.status(503).json({ error: 'HookEventReceiver not initialized' });
@@ -6373,77 +6424,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const stored = ctx.hookEventReceiver.receive(payload);
+    // The ONE shared side-effect function (docs/specs/native-hook-events.md D1):
+    // both this route and /hooks/native-events go through it.
+    const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
+    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
     if (!stored) {
       res.status(500).json({ error: 'Failed to store event' });
       return;
-    }
-
-    // Track tool calls for reflection metrics
-    if (payload.event === 'PostToolUse') {
-      reflectionMetrics.recordToolCall();
-
-      // jev-circles-shadow: log-only "going in circles" measurement. Synchronous
-      // counter here; every 5th action a detached check runs. Delivers nothing.
-      getJevCirclesShadow()?.observe({ sessionId: payload.session_id, transcriptPath: payload.transcript_path });
-
-      // Track commits for homeostasis (work-velocity awareness).
-      // Detect git commit in Bash tool output — Structure > Willpower.
-      const toolName = payload.tool_name || payload.toolName || '';
-      const toolInput = payload.tool_input || payload.toolInput || '';
-      if (toolName === 'Bash' && typeof toolInput === 'string' && /git\s+commit\b/.test(toolInput)) {
-        homeostasisMonitor.recordCommit();
-      }
-
-      // Scope-accretion ADVISORY tool-event ledger (R18): attribution detail
-      // (which turn, which tool) — never the blocking set (the git sweep is the
-      // load-bearing layer). Resolution miss degrades the advisory layer only (R19).
-      const filePath = typeof payload.file_path === 'string' ? payload.file_path : '';
-      const sid = typeof payload.session_id === 'string' ? payload.session_id : '';
-      if (filePath && sid && (toolName === 'Write' || toolName === 'Edit')) {
-        const mapped = autonomousRunStore.resolveSession(sid);
-        if (mapped) {
-          autonomousRunStore.appendAdvisoryArtifact(mapped.topicId, mapped.runId, {
-            filePath,
-            toolName,
-            sessionId: sid,
-          });
-        }
-      }
-    }
-
-    // Bridge instar session ID ↔ Claude Code session ID.
-    // Hook URLs include ?instar_sid=<INSTAR_SESSION_ID> set via tmux env var.
-    // Populates claudeSessionId on the instar Session record (enabling
-    // SubagentTracker lookups + sentinel jsonl-growth verification) and KEEPS
-    // it current: a respawn/--resume rotates the conversation UUID, and the
-    // first event carrying the new id updates the record (last-writer-wins —
-    // see SessionManager.setClaudeSessionId). The old `!session.claudeSessionId`
-    // guard here made the bridge write-once, leaving records pointing at dead
-    // transcripts after every respawn (2026-06-06 false-escalation incident).
-    const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
-    // Every Claude Code hook event carries the MAIN conversation's session_id
-    // (subagents are identified by separate agent_id/agent_transcript_path
-    // fields). Missing/empty session_id = malformed or custom event — skip.
-    if (instarSid && payload.session_id && ctx.sessionManager) {
-      const session = ctx.sessionManager.getSessionById(instarSid);
-      if (session && session.claudeSessionId !== payload.session_id) {
-        ctx.sessionManager.setClaudeSessionId(instarSid, payload.session_id);
-      }
-    }
-
-    // Dispatch to specialized trackers
-    if (ctx.subagentTracker && payload.session_id) {
-      if (payload.event === 'SubagentStart' && payload.agent_id && payload.agent_type) {
-        ctx.subagentTracker.onStart(payload.agent_id, payload.agent_type, payload.session_id);
-      } else if (payload.event === 'SubagentStop' && payload.agent_id) {
-        ctx.subagentTracker.onStop(
-          payload.agent_id,
-          payload.session_id,
-          payload.last_assistant_message,
-          payload.agent_transcript_path,
-        );
-      }
     }
 
     res.json({ ok: true, event: payload.event });
@@ -11104,15 +11091,18 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Add hook event telemetry
       if (req.query.enrich !== 'false' && ctx.hookEventReceiver) {
-        const summary = ctx.hookEventReceiver.getSessionSummary(s.tmuxSession);
+        // Tmux-scoped + incarnation-scoped (native-hook-events D1): events are
+        // filed by Claude session id, so the old id-keyed lookup by tmux name
+        // always came back empty.
+        const summary = ctx.hookEventReceiver.getSessionSummaryForTmux(s.tmuxSession);
         if (summary) {
           result.telemetry = {
             eventCount: summary.eventCount,
             toolsUsed: summary.toolsUsed,
             subagentsSpawned: summary.subagentsSpawned,
             lastActivity: summary.lastEvent,
-            taskCompleted: ctx.hookEventReceiver!.hasTaskCompleted(s.tmuxSession),
-            exitReason: ctx.hookEventReceiver!.getExitReason(s.tmuxSession),
+            taskCompleted: ctx.hookEventReceiver!.hasTaskCompletedForTmux(s.tmuxSession),
+            exitReason: ctx.hookEventReceiver!.getExitReasonForTmux(s.tmuxSession),
           };
         }
       }

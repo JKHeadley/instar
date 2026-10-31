@@ -2070,6 +2070,8 @@ const migrateCmd = program
         port: config.port,
         hasTelegram,
         projectName: config.projectName,
+        claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
+        host: config.host,
       });
       const result = await migrator.migrateAsync();
 

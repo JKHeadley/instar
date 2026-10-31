@@ -46,7 +46,8 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { classifyTccProtectedPath, describeTccProtectedPath } from './TccProtectedPathGuard.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
-import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
+import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings, isNativeReporterHook, reconcileReporterHooks } from '../data/http-hook-templates.js';
+import { decideNativeReporterFromConfig, readNativeHookConfigFile, type NativeReporterDecision, type NativeHookConfigView } from './nativeHookEventsGate.js';
 // One symbol per line, sorted. This single import is the file's merge hot-spot: every change that
 // adds a CLAUDE.md awareness marker appends to it, so two branches adding different symbols always
 // collided on the same line (resolved by hand five times on 2026-10-21 alone). One line each means
@@ -130,7 +131,7 @@ import { PlaywrightProfileRegistry } from './PlaywrightProfileRegistry.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { installCodexHooks } from './installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from './codexHookArm.js';
-import { detectCodexPath, detectTmuxPath } from './Config.js';
+import { detectCodexPath, detectTmuxPath, standaloneAgentsDir } from './Config.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import {
   MigratorStepEngine,
@@ -1127,6 +1128,13 @@ export interface MigratorConfig {
   hasTelegram: boolean;
   projectName: string;
   identityMigrationSecretStore?: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'>;
+  /**
+   * The configured claude-code binary (native-hook-events D4 version gate).
+   * Absent ⇒ read from `<stateDir>/config.json` (never PATH).
+   */
+  claudeCodePath?: string | null;
+  /** The server's configured listen host (absent ⇒ read from config.json). */
+  host?: string;
 }
 
 /**
@@ -2048,6 +2056,7 @@ export class PostUpdateMigrator {
     this.migrateFractalEightyTwentyTriage(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
+    this.migrateHookTelemetryGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
@@ -2828,6 +2837,86 @@ export class PostUpdateMigrator {
       result.upgraded.push('gitignore: state/judgment-provenance/ (machine-local provenance rows)');
     } catch (err) {
       result.errors.push(`judgment-provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Hook telemetry gitignore (docs/specs/native-hook-events.md D1) ──
+  //
+  // `.instar/hook-events/` and `.instar/subagent-tracking/` hold per-session
+  // hook telemetry (paths, redacted message tails). Git sync commits with
+  // `git add -A`, so without an ignore line they ride to every peer (one agent
+  // repo was found tracking a hook-events file since 2026-10-05). After the
+  // ignore is in place, a copy already tracked is untracked (`git rm --cached`)
+  // ONLY where instar's own git sync makes the commits — a standalone agent
+  // home. In a project-bound agent the project folder is the user's own
+  // repository: there the migration only appends the ignore lines and leaves a
+  // one-line notice, because `git rm --cached` would stage a deletion in the
+  // user's next commit. Idempotent.
+  private static readonly HOOK_TELEMETRY_IGNORES = ['.instar/hook-events/', '.instar/subagent-tracking/'];
+
+  private resolveAgentTypeForGitSync(): 'standalone' | 'project-bound' {
+    // Same distinction Config.ts resolves (and `instar git` enforces): a home
+    // under the standalone agents dir is standalone; otherwise the file's
+    // agentType, defaulting to project-bound.
+    try {
+      const root = path.resolve(this.config.projectDir);
+      const agentsDir = path.resolve(standaloneAgentsDir());
+      if (root === agentsDir || root.startsWith(agentsDir + path.sep)) return 'standalone';
+    } catch { /* fall through to the config file */ }
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(this.config.stateDir, 'config.json'), 'utf-8')) as { agentType?: unknown };
+      if (cfg.agentType === 'standalone') return 'standalone';
+    } catch { /* default below */ }
+    return 'project-bound';
+  }
+
+  private migrateHookTelemetryGitignore(result: MigrationResult): void {
+    const root = this.config.projectDir;
+    const gitignorePath = path.join(root, '.gitignore');
+    const agentType = this.resolveAgentTypeForGitSync();
+    const isRepo = fs.existsSync(path.join(root, '.git'));
+    try {
+      if (!fs.existsSync(gitignorePath) && !(isRepo && agentType === 'standalone')) return; // nothing to protect
+      const content = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
+      const lines = content.split('\n').map((l) => l.trim().replace(/^\//, '').replace(/\/+$/, ''));
+      const has = (entry: string) => lines.includes(entry.replace(/\/+$/, ''));
+      const missing = PostUpdateMigrator.HOOK_TELEMETRY_IGNORES.filter((e) => !has(e));
+      if (missing.length > 0) {
+        const block =
+          (content.length === 0 || content.endsWith('\n') ? '' : '\n') +
+          '\n# Hook telemetry (per-session, machine-local — never commit)\n' +
+          missing.join('\n') + '\n';
+        fs.writeFileSync(gitignorePath, content + block);
+        result.upgraded.push(`gitignore: ${missing.join(', ')} (machine-local hook telemetry)`);
+      }
+    } catch (err) {
+      result.errors.push(`hook telemetry gitignore: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!isRepo) return;
+    let tracked: string[] = [];
+    try {
+      const out = SafeGitExecutor.readSync(['ls-files', '--', '.instar/hook-events', '.instar/subagent-tracking'], {
+        cwd: root,
+        operation: 'src/core/PostUpdateMigrator.ts:migrateHookTelemetryGitignore:ls-files',
+      });
+      tracked = out.split('\n').map((l) => l.trim()).filter(Boolean);
+    } catch {
+      return; // @silent-fallback-ok — not a usable repo; the ignore line above is the protection
+    }
+    if (tracked.length === 0) return;
+    if (agentType !== 'standalone') {
+      result.skipped.push(`gitignore: ${tracked.length} hook telemetry file(s) are tracked in this project's own repository — left tracked (untrack with \`git rm --cached -r .instar/hook-events .instar/subagent-tracking\` if you want them out of your history)`);
+      return;
+    }
+    try {
+      SafeGitExecutor.execSync(['rm', '--cached', '-r', '--quiet', '--ignore-unmatch', '--', '.instar/hook-events', '.instar/subagent-tracking'], {
+        cwd: root,
+        operation: 'src/core/PostUpdateMigrator.ts:migrateHookTelemetryGitignore:untrack',
+      });
+      result.upgraded.push(`git: untracked ${tracked.length} hook telemetry file(s) (machine-local; working copy kept)`);
+    } catch (err) {
+      result.errors.push(`hook telemetry untrack: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -6834,6 +6923,39 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     return count > 0;
   }
 
+  /** The native-reporter decision for this machine (shared resolver, D4). */
+  nativeReporterDecision(): NativeReporterDecision {
+    const cfg: NativeHookConfigView = readNativeHookConfigFile(this.config.stateDir) ?? {};
+    const view: NativeHookConfigView = this.config.host !== undefined ? { ...cfg, host: this.config.host } : cfg;
+    return decideNativeReporterFromConfig(view, {
+      projectDir: this.config.projectDir,
+      port: this.config.port,
+      claudeCodePath: this.config.claudeCodePath ?? null,
+    });
+  }
+
+  private reconcileNativeReporterHooks(hooks: Record<string, unknown[]>, result: MigrationResult): boolean {
+    let decision: NativeReporterDecision;
+    try {
+      decision = this.nativeReporterDecision();
+    } catch (err) {
+      // @silent-fallback-ok — recorded in the migration result's errors; the reporter entries are left as they are.
+      result.errors.push(`native hook events decision: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+    if (decision.notInEffect) {
+      result.skipped.push(`.claude/settings.json: native hook events flag on but not in effect (${decision.notInEffect.reason}: ${decision.notInEffect.detail}) — command reporter entries kept`);
+    }
+    const changed = reconcileReporterHooks(hooks as Record<string, unknown>, {
+      native: decision.native,
+      baseUrl: decision.baseUrl ?? undefined,
+    });
+    if (changed) {
+      result.upgraded.push(`.claude/settings.json: reporter hooks reconciled to ${decision.native ? 'native http' : 'command'} entries (native-hook-events)`);
+    }
+    return changed;
+  }
+
   /**
    * Migrate HTTP hook URLs to include INSTAR_SESSION_ID query parameter.
    * This enables the server to map Claude Code's session_id to the instar session,
@@ -6864,6 +6986,8 @@ if [[ "$ACTIVE" != "true" ]]; then`;
             const hookObj = hook as Record<string, unknown>;
 
             if (hookObj.type !== 'http' || typeof hookObj.url !== 'string') continue;
+            // Native reporter entries are owned by reconcileReporterHooks.
+            if (isNativeReporterHook(hookObj)) continue;
 
             // Update URL: add ?instar_sid= if the URL hits /hooks/events without it
             if (hookObj.url.includes('/hooks/events') && !hookObj.url.includes('instar_sid')) {
@@ -6886,7 +7010,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         }
 
         // Handle direct hook entries (not nested)
-        if (entryObj.type === 'http' && typeof entryObj.url === 'string') {
+        if (entryObj.type === 'http' && typeof entryObj.url === 'string' && !isNativeReporterHook(entryObj)) {
           if (entryObj.url.includes('/hooks/events') && !entryObj.url.includes('instar_sid')) {
             entryObj.url = (entryObj.url as string).replace(
               '/hooks/events',
@@ -6933,6 +7057,8 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         const e = entry as Record<string, unknown>;
         if (Array.isArray(e.hooks)) {
           return (e.hooks as Array<Record<string, unknown>>).some(h => {
+            // Native reporter entry (native-hook-events D1) — an existing reporter.
+            if (isNativeReporterHook(h)) return true;
             // Check for command hook (new style)
             if (h.type === 'command' && typeof h.command === 'string' && (h.command as string).includes('hook-event-reporter')) return true;
             // Check for HTTP hook (old style, with valid URL)
@@ -7305,7 +7431,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         if (Array.isArray(entryObj.hooks)) {
           const hooksArr = entryObj.hooks as Array<Record<string, unknown>>;
           const hasHttpHook = hooksArr.some(h =>
-            h.type === 'http' && typeof h.url === 'string' && (h.url as string).includes('/hooks/events'),
+            h.type === 'http' && typeof h.url === 'string' && (h.url as string).includes('/hooks/events') && !isNativeReporterHook(h),
           );
           if (hasHttpHook) {
             // Replace the entire entry with a command hook entry
@@ -7318,7 +7444,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         }
 
         // Check direct HTTP hook entries
-        if (entryObj.type === 'http' && typeof entryObj.url === 'string' && (entryObj.url as string).includes('/hooks/events')) {
+        if (entryObj.type === 'http' && typeof entryObj.url === 'string' && (entryObj.url as string).includes('/hooks/events') && !isNativeReporterHook(entryObj)) {
           entries[i] = {
             matcher: '',
             hooks: [commandHook],
@@ -12664,6 +12790,25 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       result.skipped.push('CLAUDE.md: Worktree Notices section already present');
     }
 
+    // Native Hook Events (docs/specs/native-hook-events.md D4): names the flag
+    // and the injection gate, and that a change reaches new sessions only.
+    // Idempotent via content-sniffing on the heading.
+    if (!content.includes('## Native Hook Events')) {
+      const section = `
+## Native Hook Events
+
+Claude Code can report session events (tool used, subagent started/stopped, stop, task completed, session end, compaction) straight to the server as native HTTP hooks, instead of starting \`hook-event-reporter.js\` for every event. Off by default: \`hooks.nativeEventReporter.enabled\` in \`.instar/config.json\`. It takes effect at the next server restart (or update) and reaches NEW sessions only (Claude Code reads its settings at session start). This machine keeps the command entries when its Claude Code is below 2.1.310, its version cannot be read, or the server does not listen on loopback; a flag that is on but not in effect reports a \`NativeHookEvents.notInEffect\` degradation. Stored events keep only a fixed set of fields (no command text, no tool output; message tails redacted). The HelperWatchdog's warnings are not typed into sessions unless \`monitoring.helperWatchdog.injectAlerts\` is true (default false).
+
+- Counters (received, never "fired"): authenticated \`curl -H "Authorization: Bearer $AUTH" http://localhost:4040/health\` → \`hookEvents\` (\`admitted\`, \`stored\`, \`failedProcessing\`, \`emptyCredential\`, \`queueOverflow\`, \`malformedEvents\`, …).
+- Proactive: user asks "are my hook events arriving?" / "why is the dashboard telemetry empty?" → read \`hookEvents\` and \`GET /hooks/sessions\`; turning the flag off and restarting restores the command entries exactly.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Native Hook Events section');
+    } else {
+      result.skipped.push('CLAUDE.md: Native Hook Events section already present');
+    }
+
     // W26 item 0(a) — refresh the Worktree Convention's identity paragraph on
     // agents that ALREADY carry the section. The insert above is add-if-absent,
     // so without this those agents would keep reading the old promise: that the
@@ -14455,6 +14600,15 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // Must run after the two steps above: migrateHttpHooksToCommandHooks rewrites any
     // reporter HTTP hook on any event, including the worktree events, into a command hook.
     if (this.removeWorktreeReporterHooks(hooks, result)) {
+      patched = true;
+    }
+
+    // Native hook events (docs/specs/native-hook-events.md D4): rewrite the
+    // instar-owned reporter entries on the 7 reporting events to match the
+    // flag + this machine's version/loopback gate — both directions, so
+    // turning the flag off and updating restores today's command entries
+    // exactly. Never touches WorktreeCreate/WorktreeRemove or custom hooks.
+    if (this.reconcileNativeReporterHooks(hooks, result)) {
       patched = true;
     }
 

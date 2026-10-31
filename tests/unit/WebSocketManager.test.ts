@@ -483,8 +483,10 @@ describe('WebSocketManager', () => {
     });
 
     it('enriches sessions with hook event telemetry when available', () => {
+      // Tmux-name lookup (native-hook-events D1): the id-keyed getSessionSummary
+      // never matched a tmux name, so the list now asks the tmux-scoped method.
       const hookEventReceiver = {
-        getSessionSummary: vi.fn((tmuxSession: string) => ({
+        getSessionSummaryForTmux: vi.fn((tmuxSession: string) => ({
           eventCount: 42,
           toolsUsed: 15,
           subagentsSpawned: 2,
