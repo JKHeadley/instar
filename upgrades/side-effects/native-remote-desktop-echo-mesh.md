@@ -89,6 +89,8 @@ The design keeps input authority on the physical target and adds only bounded, s
 
 **Flagged-path review for PR #2471, head `398b222f4a4595268129cd2c63a1adf11428ec7e`:** Astra independently read the CI workflow and all 14 desktop unit, integration, and production-boot test files flagged by the local verifier. Astra concurred with no P1/P2 finding. The Windows CI job compiles the companion, runs its timed-session self-test, and checks package contents without removing existing gates. The tests retain substantive assertions for authority refusal, replay, Stop races, production wiring, and the machine picker. The Darwin-only boot test is conditionally skipped on other platforms; Windows mocks and native self-tests remain distinct from live Windows screen, input, and Stop evidence. This source review does not establish host readiness.
 
+**Documentation coverage repair on the later PR merge tree:** GitHub's Docs Coverage check found that concurrent main additions raised the exported class count from 979 to 981, leaving class coverage at 54% against its 55% floor. The multi-machine documentation now explains the desktop assertion, replay, delegated session, local controller lock, and Windows host boundaries, linking to the remote desktop guide. This raises measured class coverage to 55% in the branch check. The CI merge-tree check remains the authority for this repair; no runtime desktop behavior changed.
+
 ## Evidence pointers
 
 - `docs/specs/blocker-handoff-across-machines-and-surfaces.md` — approved converged source spec.

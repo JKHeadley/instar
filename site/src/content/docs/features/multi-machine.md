@@ -31,6 +31,10 @@ Agent state synchronized via git with commit signing. Secrets encrypted with AES
 
 Distributed heartbeat coordination with split-brain detection. If the primary machine goes offline, the standby takes over.
 
+## Remote desktop across machines
+
+The dashboard's desktop picker shows only machines that report a ready screen and input adapter. The dashboard on the designated front machine checks the existing PIN and issues a short-lived `DesktopOperatorAssertion` for one selected machine. `DesktopAssertionReplayStore` rejects reuse, while `DesktopDelegatedSessionStore` ties the granted stream to that machine and revokes it on Stop, expiry, or disconnect. `DirectDesktopAccess` enforces the local controller lock. On Windows, `WindowsDesktopHost` reaches the signed-in Windows session through its local companion; a WSL display is never presented as the Windows desktop. See the [remote desktop guide](/guides/remote-desktop/) for setup and limits.
+
 ## Lost-key identity recovery
 
 Pairing can establish a keychain-backed recovery root so a machine that loses its normal
