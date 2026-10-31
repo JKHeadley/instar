@@ -186,10 +186,11 @@ describe('feedback executor — production lifecycle (live on a development agen
     tracker = new InitiativeTracker(stateDir);
     const intelligence: IntelligenceProvider = {
       evaluate: async (prompt: string, options?: IntelligenceOptions) => {
-        options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
         if (prompt.includes('registered Feedback Factory triage authority')) {
+          options?.onModel?.({ model: 'gpt-6-astra', framework: 'codex-cli' });
           return JSON.stringify({ decisions: packetsFrom(prompt).map((p) => decisionRow(p.clusterId, { severity: 'high', priority: 85, userFacing: false })) });
         }
+        options?.onModel?.({ model: 'claude-fable-5', framework: 'claude-code' });
         const ids = [...prompt.matchAll(/"clusterId"\s*:\s*"([^"]+)"/g)].map((m) => m[1]).filter((id) => id !== '...');
         return JSON.stringify({ decisions: [...new Set(ids)].map((clusterId) => ({ clusterId, outcome: 'ready', confidence: 0.97, reasonCodes: ['coherent-recurrence'], evidenceIds: [`cluster:${clusterId}`] })) });
       },
@@ -242,7 +243,7 @@ describe('feedback executor — production lifecycle (live on a development agen
 
     expect((await request(app).post('/feedback-factory/triage/authority').set(HX).send({
       pin: PIN, action: 'create', operatorDecisionRef: 'operator-triage', agentId: 'e2e', ownerMachineId: 'e2e', ownerEpoch: 1,
-      provider: 'claude-code', modelFamily: 'fable-5', maxBatch: 20, maxTokens: 8000, maxDailySpendUsd: 5,
+      provider: 'codex-cli', modelFamily: 'gpt-6-astra', maxBatch: 20, maxTokens: 8000, maxDailySpendUsd: 5,
     })).status).toBe(200);
     clock.now += 60_000;
     const triageTick = await request(app).post('/feedback-factory/triage/tick').set(HX);
