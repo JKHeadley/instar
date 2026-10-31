@@ -575,7 +575,9 @@ esac`;
       fs.mkdirSync(toolsDir, { recursive: true });
       for (const name of ['basename', 'tr', 'shasum', 'cut', 'cksum', 'mkdir', 'dirname', 'date']) {
         const target = path.join(toolsDir, name);
-        if (!fs.existsSync(target)) fs.symlinkSync(`/usr/bin/${name}`, target);
+        const source = [`/usr/bin/${name}`, `/bin/${name}`].find((candidate) => fs.existsSync(candidate));
+        if (!source) throw new Error(`Missing system utility for guarded PATH: ${name}`);
+        if (!fs.existsSync(target)) fs.symlinkSync(source, target);
       }
       return `${bin}:${toolsDir}`;
     };

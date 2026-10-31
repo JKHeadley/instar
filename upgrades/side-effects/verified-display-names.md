@@ -70,7 +70,7 @@ The change addresses the observed identity substitution at source and consumer b
 **Reviewer:** independent `identity_review` agent
 **Independent read of the artifact:** Concur. The review first identified a Secret Drop spawn path, stale standby title precedence, local/status/WebSocket and older-peer pooled session leaks, and a collision if unknown topics shared a generic spawn key. Those were fixed and re-read. The final review found no remaining concern.
 
-**Followup review:** Concur. After CI found that duplicate-session diagnostics still depended on sanitized display names, the reviewer found a possible false warning from matching internal session keys. Both clients now match the server's platform and conversation ID pair. A negative client test covers two topics with the same session key.
+**Followup review:** Concur. After CI found that duplicate-session diagnostics still depended on sanitized display names, the reviewer found a possible false warning from matching internal session keys. Both clients now match the server's platform and conversation ID pair. A negative client test covers two topics with the same session key. The Mac M5 Pro local verifier then found two failures in the browser-helper test fixture changed during this branch: it assumed all basic shell tools lived under `/usr/bin`. The fixture now locates each tool under `/usr/bin` or `/bin`, preserving the intended restricted PATH on Linux and macOS.
 
 ## Evidence pointers
 
