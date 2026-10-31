@@ -1,8 +1,8 @@
 # Side-Effects Review — Feedback triage account selection
 
-**Version / slug:** `feedback-triage-account-selection`  
-**Date:** 2026-10-31  
-**Author:** Echo  
+**Version / slug:** `feedback-triage-account-selection`
+**Date:** 2026-10-31
+**Author:** Echo
 **Second-pass reviewer:** GPT-6 Astra, read-only independent review; concurred after the evidence correction below
 
 ## Summary of the change
@@ -66,7 +66,7 @@ The main tradeoff is a visible pause when identity or quota cannot be proved. Th
 
 ## Second-pass review (required)
 
-**Reviewer:** GPT-6 Astra (`/root/account_side_effect_review`), read-only.  
+**Reviewer:** GPT-6 Astra (`/root/account_side_effect_review`), read-only.
 **Independent read of the artifact:** The reviewer concurred with the signal/authority boundary, deliberate pause behavior, post-launch identity risk, machine-local choice, and rollback limits. It found that the first class-closure wording overstated what the convergence fixture tests. I narrowed that declaration below: the ratchet covers the durable per-item 24-hour throttle, while separate reservation tests cover daily and per-kind caps. The reviewer re-read the correction and concurred, with no remaining mismatch. The reviewer did not run tests.
 
 After the queue-pace integration was rebased in, the same reviewer identified two cross-system mismatches: the tuner read ambient quota while triage could spend from a selected account, and the shared bottleneck classifier treated a new margin refusal as a normal tick. The candidate now reads verified selected-account quota, carries the tuner's stricter ceiling into the accepted tick, and classifies `quota-margin-lost` as quota evidence. The reviewer re-read both fixes and reported no remaining findings. The reviewer did not run tests.
