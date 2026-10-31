@@ -54,3 +54,7 @@ Revert the PR.
 ## Second-pass review
 
 Independent reviewer (subagent): the widening is safe. A forged header through the port proxy only lets the forger submit its own PIN guesses in plaintext, and the same guessing is already possible through the public https front. `trust proxy` is off, so every client on this path already shared one rate-limit bucket keyed on 172.22.96.1. That limits brute force more, but anyone on the network can use up the bucket and briefly lock the operator out of unlock. This was true before the change and is noted, not widened. WSL detection fails closed. Under WSL mirrored networking the gateway is the LAN router, which gives the same harmless "own guesses" case. The desktop routes still require TLS or loopback, so remote desktop through this front stays 403. That functional gap belongs to the WSL desktop work. Concur with the review.
+
+## Follow-up commit
+
+Annotated the fail-closed catch in `wslWindowsHostAddress` (`@silent-fallback-ok`). The silent-fallback ratchet failed without it. No behaviour change.

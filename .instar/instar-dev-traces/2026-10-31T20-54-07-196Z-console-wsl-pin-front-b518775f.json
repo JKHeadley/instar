@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-wsl-pin-front",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-10-31T20:54:07.196Z",
+  "artifactPath": "upgrades/side-effects/console-wsl-pin-front.md",
+  "artifactSha256": "716a3c921e00cdc7761069ed456f42288ee8fdadf241e88e45c741d8c01b3d43",
+  "coveredFiles": [
+    "src/core/desktopTransport.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Annotate the fail-closed catch in WSL detection; no behaviour change.",
+  "eli16Path": "upgrades/side-effects/console-wsl-pin-front.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-wsl-pin-front.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

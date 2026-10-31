@@ -33,7 +33,10 @@ export function wslWindowsHostAddress(now = Date.now(), read: (file: string) => 
     if (process.platform === 'linux' && (process.env.WSL_DISTRO_NAME || /microsoft/i.test(read('/proc/version')))) {
       address = defaultGatewayFromProcRoute(read('/proc/net/route'));
     }
-  } catch { address = null; }
+  } catch {
+    // @silent-fallback-ok — unreadable /proc means "not provably WSL": the forwarded-https mark is then refused, the safe direction.
+    address = null;
+  }
   wslHostCache = { at: now, address };
   return address;
 }

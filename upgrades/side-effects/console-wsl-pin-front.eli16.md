@@ -7,3 +7,5 @@
 **Safeguards.** Someone could fake the mark from the local network, but that would only let them type their own PIN unencrypted, which they would still need to know. The operator's PIN stays off the network as before. The remote-desktop checks are untouched.
 
 **What to decide.** Nothing beyond review. Reverting the change undoes it.
+
+**Follow-up.** The safe fallback in the WSL check now carries an explanatory note, as a project rule requires. Behaviour is unchanged.
