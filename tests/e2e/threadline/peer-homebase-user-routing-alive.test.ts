@@ -35,10 +35,13 @@ describe('§2.6 user-meant peer messages land in the homebase — wiring', () =>
     expect(serverSrc).toMatch(/threadlineRouter\.setPeerUserTopicResolver\(/);
   });
 
-  it('the relay is invoked at BOTH inbound seams, before the silent-hub surface', () => {
+  it('the relay is invoked at every inbound seam, with the silent hub as its fallback', () => {
     const relaySeam = serverSrc.indexOf('peerHomebaseRelay.relayInbound({');
     expect(relaySeam).toBeGreaterThan(0);
-    expect(relaySeam).toBeLessThan(serverSrc.indexOf('collaborationSurfacer.surface({', relaySeam - 2000));
+    // The hub surface is the fallback the relay chains to when it does not post.
+    const hubDef = serverSrc.lastIndexOf('const hubSurface = () => {', relaySeam);
+    expect(hubDef).toBeGreaterThan(0);
+    expect(serverSrc.slice(hubDef, relaySeam)).toContain('collaborationSurfacer.surface({');
     const routeIdx = routesSrc.indexOf("router.post('/messages/relay-agent'");
     expect(routesSrc.indexOf('ctx.peerHomebaseRelay.relayInbound({')).toBeGreaterThan(routeIdx);
     // The signed-HTTP receive path is wired too, keyed on the verified fingerprint.
