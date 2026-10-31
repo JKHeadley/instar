@@ -17,6 +17,7 @@ import {
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
+import { topicNameMap } from './topic-names.js';
 
 const EYEBROW = 'People · Other agents';
 const TIMEOUT_MS = 5000;
@@ -48,11 +49,11 @@ async function send(path, body, method = 'POST') {
 
 export async function renderAgents(main, ctx) {
   if (!main.querySelector('.agents-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading other agents' })));
-  const [health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes] = await Promise.all([
+  const [health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes, topicsRes] = await Promise.all([
     read('/threadline/health'), read('/threadline/pairing'), read('/threadline/pairing/invites'),
-    read('/threadline/peers/health?scope=pool', POOL_TIMEOUT_MS), read('/threadline/conversations?scope=mesh'), read('/threadline/observability/threads'), read('/pool'),
+    read('/threadline/peers/health?scope=pool', POOL_TIMEOUT_MS), read('/threadline/conversations?scope=mesh'), read('/threadline/observability/threads'), read('/pool'), read('/telegram/topics?scope=pool', POOL_TIMEOUT_MS),
   ]);
-  const page = buildAgentsPage({ health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes }, Date.now());
+  const page = buildAgentsPage({ health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes, topicNames: topicNameMap(topicsRes) }, Date.now());
   const refresh = () => renderAgents(main, ctx);
   const deps = { refresh, page };
 
@@ -64,7 +65,8 @@ export async function renderAgents(main, ctx) {
     return;
   }
 
-  const agentRows = page.agents.map((a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, tone: a.tone === 'ok' ? null : a.tone, agent: a }));
+  const agentRows = page.agents.filter((a) => !a.historyOnly).map((a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, tone: a.tone === 'ok' ? null : a.tone, agent: a }));
+  const pastRows = page.agents.filter((a) => a.historyOnly).map((a) => ({ key: a.key, main: a.main, sub: a.sub, end: a.end, agent: a }));
   const connect = el('button', { class: 'btn-primary btn-inline connect-btn', type: 'button', text: '+ Connect another agent', onclick: () => openConnect(deps) });
   setKids(main, el('div', { class: 'agents-page' },
     pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
@@ -73,8 +75,9 @@ export async function renderAgents(main, ctx) {
     page.relay.state === 'cant-tell' ? note(page.relay.word + '.') : null,
     page.notes.map((n) => note(n)),
     el('div', { class: 'page-sections' },
-      section({ id: 'agents', title: 'Agents', rows: agentRows, empty: page.pairing.state === 'ok' ? 'No other agents yet. Connect one below.' : 'No agents are known on this machine.', onRow: (r) => openAgent(r.agent, deps) }),
-      page.pairing.openInvites.length ? section({ id: 'open-invites', title: 'Invites not used yet', collapsed: true, rows: page.pairing.openInvites.map((i) => ({ key: `inv:${i.iid}`, main: `Invite ${String(i.iid).slice(0, 6)}`, sub: `works once · expires at ${localTime(i.exp)}`, invite: i })), onRow: (r) => openInvite(r.invite, deps) }) : null,
+      agentRows.length || page.pairing.state === 'ok' ? section({ id: 'agents', title: 'Agents', rows: agentRows, empty: 'No other agents yet. Connect one below.', onRow: (r) => openAgent(r.agent, deps) }) : null,
+      pastRows.length ? section({ id: 'past-agents', title: 'Past conversations', collapsed: true, rows: pastRows, onRow: (r) => openAgent(r.agent, deps) }) : null,
+      page.pairing.openInvites.length ? section({ id: 'open-invites', title: 'Invites not used yet', collapsed: true, rows: page.pairing.openInvites.map((i) => ({ key: `inv:${i.iid}`, main: 'Unused invitation', sub: `works once · expires at ${localTime(i.exp)}`, invite: i })), onRow: (r) => openInvite(r.invite, deps) }) : null,
     ),
     page.pairing.state === 'off' ? turnOnCard(deps) : page.pairing.state === 'elsewhere' ? note(page.pairing.holder ? `Pairing runs on ${page.pairing.holder.name}; open the console there to connect another agent.` : 'Pairing runs on another of my machines; connect another agent from there.') : el('div', { class: 'page-primary' }, connect),
     footLink(),
@@ -233,7 +236,7 @@ function openInvite(i, deps) {
     const w = bearerResultWords(r.status, r.data, 'Cancelled. That invite no longer works.');
     status.textContent = w.text; if (w.ok) setTimeout(() => { closeSheet(); deps.refresh(); }, 900); else cancel.disabled = false;
   });
-  sheet({ title: `Invite ${String(i.iid).slice(0, 6)}` }, story([{ label: 'State', text: 'not used yet' }, { label: 'Expires', text: localTime(i.exp) }]), el('div', { class: 'sheet-actions' }, own, cancel), status, details(i, ['iid', 'state', 'exp', 'createdAt']));
+  sheet({ title: 'Unused invitation' }, story([{ label: 'State', text: 'not used yet' }, { label: 'Expires', text: localTime(i.exp) }]), el('div', { class: 'sheet-actions' }, own, cancel), status, details(i, ['iid', 'state', 'exp', 'createdAt']));
 }
 
 // ── One agent ────────────────────────────────────────────────────────────────
@@ -287,7 +290,7 @@ async function openConversation(c, a, deps) {
 
 /** The hub binding: open as its own Telegram topic, or tie to an existing one (bearer; POST /threadline/hub/bind). */
 function bindBlock(c, deps) {
-  if (c.boundTopicId) return block('Telegram', el('p', { class: 'card-line', text: 'Tied to a Telegram conversation; its replies go there.' }));
+  if (c.boundTopicId) return block('Telegram', el('p', { class: 'card-line', text: (() => { const n = verifiedDisplayName(deps.page.topicNames?.[String(c.boundTopicId)], c.boundTopicId); return n ? `Tied to ${n}; its replies go there.` : 'Tied to a Telegram conversation; its replies go there.'; })() }));
   const status = el('p', { class: 'action-status', role: 'status' });
   const target = el('input', { class: 'reason-input', placeholder: 'Topic id or name', 'aria-label': 'Telegram topic id or name' });
   const run = async (button, action) => {

@@ -15,6 +15,7 @@ import {
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
+import { topicNameMap } from './topic-names.js';
 
 const XTERM_JS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js';
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -56,7 +57,8 @@ export async function renderSessions(main, ctx) {
     st.view = null;
   }
   connectWs();
-  const res = await ctx.get('/sessions?scope=pool', POOL_TIMEOUT_MS);
+  const [res, topics] = await Promise.all([ctx.get('/sessions?scope=pool', POOL_TIMEOUT_MS), ctx.get('/telegram/topics?scope=pool', POOL_TIMEOUT_MS)]);
+  if (topics.ok) st.topicNames = topicNameMap(topics);
   if (res.ok) { st.poolData = res; st.lastGoodAt = Date.now(); st.lastFailReason = null; } else st.lastFailReason = res.reason;
   paint();
 }
@@ -67,7 +69,7 @@ const onPage = () => Boolean(st.main && st.main.isConnected && st.main.querySele
 function currentModel() {
   const src = st.poolData || (st.lastFailReason ? { ok: false, reason: st.lastFailReason } : null);
   if (!src) return null;
-  return buildSessions(src, { ws: st.wsUp ? st.wsList : null, now: Date.now() });
+  return buildSessions(src, { ws: st.wsUp ? st.wsList : null, now: Date.now(), topicNames: st.topicNames || {} });
 }
 
 function paint() {

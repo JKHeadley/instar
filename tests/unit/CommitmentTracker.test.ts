@@ -528,19 +528,20 @@ describe('CommitmentTracker', () => {
       expect(report.violations[0].autoCorrected).toBe(true);
     });
 
-    it('handles missing configPath gracefully', () => {
+    it('handles a historical missing configPath without a false violation', async () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'config-change',
         userRequest: 'req',
         agentResponse: 'resp',
-        // Missing configPath!
+        configPath: 'updates.autoApply',
+        configExpectedValue: false,
       });
-
+      await tracker.mutate(c.id, prev => ({ ...prev, configPath: undefined }));
+      const before = tracker.get(c.id)!.violationCount;
       const result = tracker.verifyOne(c.id);
-      expect(result).not.toBeNull();
-      expect(result!.passed).toBe(false);
-      expect(result!.detail).toContain('Missing configPath');
+      expect(result).toBeNull();
+      expect(tracker.get(c.id)?.violationCount).toBe(before);
     });
   });
 
@@ -720,6 +721,26 @@ describe('CommitmentTracker', () => {
       expect(tracker.get(c.id)!.status).toBe('delivered');
     });
 
+    it('rejects prose in verificationMethod before storing a new promise', () => {
+      const tracker = makeTracker(stateDir);
+      expect(() => tracker.record({ type: 'one-time-action', userRequest: 'Review the research',
+        agentResponse: 'I will review it', verificationMethod: 'Review the research evidence' as 'manual' })).toThrow('verificationMethod must be');
+      expect(tracker.getAll()).toHaveLength(0);
+    });
+
+    it('stops verification ticks on a legacy unsupported method without marking it delivered', () => {
+      const storePath = path.join(stateDir, 'state', 'commitments.json');
+      fs.writeFileSync(storePath, JSON.stringify({ version: 1, commitments: [{
+        id: 'CMT-LEGACY-UNSUPPORTED', type: 'one-time-action', status: 'violated',
+        userRequest: 'Review the research', agentResponse: 'I will review it',
+        createdAt: '2026-10-27T18:03:07.914Z', verificationMethod: 'Review the research evidence',
+        verificationCount: 0, violationCount: 4563, correctionCount: 0, correctionHistory: [], escalated: false, version: 4563,
+      }] }));
+      const tracker = makeTracker(stateDir);
+      for (let i = 0; i < 10; i++) expect(tracker.verifyOne('CMT-LEGACY-UNSUPPORTED')).toBeNull();
+      expect(tracker.get('CMT-LEGACY-UNSUPPORTED')).toMatchObject({ status: 'violated', violationCount: 4563 });
+    });
+
     it('one-time-action with no verificationMethod stays PENDING across sweeps with zero violations (#76 spam + CMT-1101 evaporation both dead)', () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
@@ -841,6 +862,17 @@ describe('CommitmentTracker', () => {
   // ── Full Verification Cycle ────────────────────────────
 
   describe('verify() — full cycle', () => {
+    it('does not count missing check coordinates as repeated failed verifications', async () => {
+      const tracker = makeTracker(stateDir);
+      expect(() => tracker.record({ type: 'config-change', userRequest: 'Change the schedule', agentResponse: 'I will do it' })).toThrow('config-change requires configPath');
+      const recorded = tracker.record({ type: 'config-change', userRequest: 'Change the schedule', agentResponse: 'I will do it',
+        configPath: 'updates.autoApply', configExpectedValue: false });
+      await tracker.mutate(recorded.id, prev => ({ ...prev, status: 'violated', violationCount: 23161,
+        configPath: undefined, configExpectedValue: undefined }));
+      tracker.verify();
+      tracker.verify();
+      expect(tracker.get(recorded.id)).toMatchObject({ status: 'violated', violationCount: 23161 });
+    });
     it('returns comprehensive report', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('updates.autoApply', false);

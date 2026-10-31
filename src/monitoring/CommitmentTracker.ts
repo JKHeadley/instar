@@ -584,6 +584,9 @@ export class CommitmentTracker extends EventEmitter {
       if (c.type !== 'one-time-action') continue;
       if (c.status === 'delivered' || c.status === 'withdrawn' || c.status === 'expired') continue;
       if (!CommitmentTracker.isUnverifiableOneTime(c)) continue;
+      // An unsupported legacy method can never have verified the promise.
+      // Stop its tick storm in verifyOne(), but never mark it delivered here.
+      if (c.verificationMethod != null && c.verificationMethod !== 'manual') continue;
       // Scope to what the docstring above always claimed: ONLY the historical
       // noisy rows (stuck violated, violations accumulated, never verified).
       // Without this check, every BOOT retro-terminalized every pending
@@ -734,6 +737,12 @@ export class CommitmentTracker extends EventEmitter {
     if (input.externalKey) {
       const existing = this.getActive().find((c) => c.externalKey === input.externalKey);
       if (existing) return existing;
+    }
+    if (!CommitmentTracker.supportsVerificationMethod(input.verificationMethod)) {
+      throw new Error('verificationMethod must be manual, config-value, file-exists, or threadline-reply');
+    }
+    if (input.type === 'config-change' && (!input.configPath || input.configExpectedValue === undefined)) {
+      throw new Error('config-change requires configPath and configExpectedValue');
     }
     // ── C1+C2 well-formedness gates (spec §4.1) — STRUCTURAL only (Signal-vs-
     // Authority): validate the agent's own declaration; do NOT classify prose;
@@ -1319,7 +1328,15 @@ export class CommitmentTracker extends EventEmitter {
   private static isUnverifiableOneTime(c: Commitment): boolean {
     if (c.type !== 'one-time-action') return false;
     const m = c.verificationMethod;
-    return m === undefined || m === null || m === 'manual';
+    // Old HTTP callers could persist arbitrary prose here. An unsupported
+    // method is not evidence of a broken promise; do not add a violation on
+    // every sweep. Preserve the raw value for diagnosis.
+    return m !== 'config-value' && m !== 'file-exists' && m !== 'threadline-reply';
+  }
+
+  static supportsVerificationMethod(value: unknown): boolean {
+    return value === undefined || value === null || value === 'manual' ||
+      value === 'config-value' || value === 'file-exists' || value === 'threadline-reply';
   }
 
   /**
@@ -1550,6 +1567,17 @@ export class CommitmentTracker extends EventEmitter {
       // file self-heals if it has gone missing. That is bookkeeping repair, and
       // it is no longer mistaken for evidence about the promise.
       this.ensureBehavioralRulesFile();
+      return null;
+    }
+
+    // Legacy sentinel records sometimes called prose about a configuration
+    // change a verifiable config-change without naming any setting. Every
+    // sweep then reported the missing field as another violation (CMT-806
+    // accumulated 23,161). An absent check target is missing evidence, not a
+    // failed check. Leave the record open for agent follow-up without another
+    // false violation tick.
+    if (commitment.type === 'config-change' &&
+        (!commitment.configPath || commitment.configExpectedValue === undefined)) {
       return null;
     }
 

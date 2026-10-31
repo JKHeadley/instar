@@ -34015,6 +34015,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
       return;
     }
+    if (!CommitmentTracker.supportsVerificationMethod(verificationMethod)) {
+      res.status(400).json({ error: 'verificationMethod must be manual, config-value, file-exists, or threadline-reply' });
+      return;
+    }
     const correctionDerived = origin === 'correction' || typeof correctionId === 'string' || typeof classReviewRef === 'string';
     const classReviewAdmission = evaluateCorrectionInstanceFix({
       originCorrection: correctionDerived,
@@ -34177,7 +34181,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
       const msg = err instanceof Error ? err.message : 'Failed to record';
-      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass/.test(msg);
+      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass|config-change requires configPath|verificationMethod must be/.test(msg);
       const isBinderRefusal = /conversation-recording-disabled|conversation-registration-capacity|conversation-bind-unresolvable|multi-workspace-unsupported/.test(msg);
       res.status(isWellFormedness ? 400 : isBinderRefusal ? 409 : 500).json({ error: msg });
     }

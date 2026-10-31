@@ -227,7 +227,7 @@ function spell(mins) { if (mins < 60) return `${mins} min`; const h = Math.floor
 /** One observed run as a row. */
 export function autonomousRow(r, topicNames = {}) {
   const topic = r.topicId;
-  const main = topicNames[String(topic)] || (topic != null ? `Topic ${topic}` : 'A conversation');
+  const main = topicNames[String(topic)] || 'Conversation name unavailable';
   const d = r.decision;
   let sub; let tone = null;
   if (d === 'healthy') sub = 'making progress';
