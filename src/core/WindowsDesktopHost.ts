@@ -17,10 +17,12 @@ export class WindowsDesktopHost implements DesktopHost {
   private readonly pending = new Set<AbortController>();
 
   constructor(private readonly endpoint: string, private readonly secret: Buffer,
-    private readonly send: typeof fetch = fetch) {
+    private readonly send: typeof fetch = fetch,
+    private readonly requestTimeoutMs: number = REQUEST_TIMEOUT_MS) {
     const url = new URL(endpoint);
     if (url.protocol !== 'http:' || url.username || url.password || url.search || url.hash
-      || url.pathname !== '/' || secret.length !== 32) {
+      || url.pathname !== '/' || secret.length !== 32
+      || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1_000 || requestTimeoutMs > 5_000) {
       throw new Error('windows-desktop-companion-config-invalid');
     }
   }
@@ -154,7 +156,7 @@ export class WindowsDesktopHost implements DesktopHost {
       .digest('base64url');
     const controller = new AbortController();
     this.pending.add(controller);
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     try {
       const response = await this.send(`${this.endpoint}${op}`, {
         method: 'POST', body, redirect: 'manual', signal: controller.signal,

@@ -194,6 +194,7 @@ import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js'
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
+import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
 import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
@@ -2651,7 +2652,10 @@ export class AgentServer {
             ? new MacDesktopHost()
             : (() => {
                 const companion = discoverWindowsDesktopCompanion();
-                return new WindowsDesktopHost(companion.endpoint, companion.secret);
+                // PowerShell interop can reach the Windows-local companion even
+                // when WSL's TCP path to the host is filtered by Windows.
+                return new WindowsDesktopHost(companion.endpoint, companion.secret,
+                  windowsDesktopLocalSend(companion.endpoint, companion.localTransportScript), 5_000);
               })();
           this.directDesktopAccess = new DirectDesktopAccess(
           this.meshSelfId, label, host, new FileRemoteStepUpLockouts(options.config.stateDir),

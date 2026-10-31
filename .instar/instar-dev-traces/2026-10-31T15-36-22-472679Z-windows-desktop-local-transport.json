@@ -1,0 +1,37 @@
+{
+  "phase": "complete",
+  "slug": "windows-desktop-local-transport",
+  "tier": 3,
+  "tierReasoning": "Cross-OS remote input and revocation boundary; approved desktop spec and independent Astra review apply.",
+  "coveredFiles": [
+    "scripts/install-windows-desktop-companion.mjs",
+    "scripts/windows-desktop-local-transport.ps1",
+    "src/core/WindowsDesktopCompanionDiscovery.ts",
+    "src/core/WindowsDesktopHost.ts",
+    "src/core/WindowsDesktopLocalTransport.ts",
+    "src/server/AgentServer.ts"
+  ],
+  "artifactPath": "upgrades/side-effects/windows-desktop-local-transport.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-local-transport.md",
+  "artifactSha256": "958e92eccd2af66061193ad3d291af918106173e14552c9ef6dee5d0c75108e0",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/windows-desktop-local-transport.test.ts",
+      "howCaught": "Each local request starts at most one child, has a 4.5 second bound, aborts on authority loss, and the desktop stream permits at most one in-flight frame capture per stream."
+    }
+  },
+  "createdAt": "2026-10-31T15:36:22.472832+00:00",
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2494
+    ],
+    "notes": "The earlier companion update repair proved Windows-local signed requests work but the normal WSL-to-Windows TCP desktop probe still timed out after installing 1.3.1544."
+  }
+}
