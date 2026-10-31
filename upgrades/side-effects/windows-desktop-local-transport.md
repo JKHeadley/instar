@@ -22,7 +22,7 @@ The installer stages the transport script alongside the companion on each opted-
 
 ## External surfaces
 
-The Windows package CI exercises the script against an actual companion probe. No new dashboard step, user permission, public port, or PIN flow is introduced. The internal endpoint remains Windows-local.
+The Windows package CI uses Node's standard-input pipe to exercise the script against an actual companion probe. No new dashboard step, user permission, public port, or PIN flow is introduced. The internal endpoint remains Windows-local.
 
 ## Multi-machine posture
 

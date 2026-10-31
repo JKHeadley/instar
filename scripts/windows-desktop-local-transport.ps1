@@ -23,10 +23,12 @@ try {
     }
   }
   if (-not $owned) { throw 'address' }
-  $phase = 'input'
+  $phase = 'input-read'
   $line = [Console]::ReadLine()
   if (-not $line -or $line.Length -gt 12000) { throw 'request' }
+  $phase = 'input-parse'
   $command = $line | ConvertFrom-Json
+  $phase = 'input-body'
   $body = [System.Text.Encoding]::UTF8.GetBytes([string]$command.body)
   if ($body.Length -gt 4096) { throw 'request' }
   $phase = 'request'

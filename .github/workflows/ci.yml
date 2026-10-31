@@ -96,30 +96,10 @@ jobs:
             Start-Sleep -Seconds 1
             # Exercise the packaged WSL-to-Windows local hop against a real
             # companion process before the update handshake stops that process.
-            $body = '{}'
-            $time = [string]([DateTimeOffset]::UtcNow).ToUnixTimeMilliseconds()
-            $nonceBytes = New-Object byte[] 24
-            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-            try { $rng.GetBytes($nonceBytes) } finally { $rng.Dispose() }
-            $nonce = [Convert]::ToBase64String($nonceBytes).TrimEnd('=').Replace('+','-').Replace('/','_')
-            $sha = [System.Security.Cryptography.SHA256]::Create()
-            try { $digest = [BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($body))).Replace('-','').ToLowerInvariant() }
-            finally { $sha.Dispose() }
-            $hmac = [System.Security.Cryptography.HMACSHA256]::new($key)
-            try { $signed = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("instar-windows-desktop-v1`nprobe`n$time`n$nonce`n$digest")) }
-            finally { $hmac.Dispose() }
-            $mac = [Convert]::ToBase64String($signed).TrimEnd('=').Replace('+','-').Replace('/','_')
-            $line = @{ body = $body; time = $time; nonce = $nonce; mac = $mac } | ConvertTo-Json -Compress
-            $transport = ($line | & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-              -File 'scripts/windows-desktop-local-transport.ps1' -Address '127.0.0.1' `
-              -Port $port -Operation 'probe' | Select-Object -Last 1) | ConvertFrom-Json
-            if ($transport.status -ne 200 -or $transport.type -ne 'application/json') {
-              throw "Windows-local desktop transport did not return a probe (status=$($transport.status), phase=$($transport.error))"
-            }
-            $probe = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($transport.body)) | ConvertFrom-Json
-            if ($null -eq $probe.screenPermission -or $null -eq $probe.sessionActive) {
-              throw 'Windows-local desktop transport returned an invalid probe'
-            }
+            $env:INSTAR_DESKTOP_TEST_PORT = [string]$port
+            $env:INSTAR_DESKTOP_TEST_SECRET = $secret
+            node tests/e2e/windows-desktop-local-transport-smoke.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'Windows-local desktop transport probe failed' }
             $common = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
               'scripts/install-windows-desktop-companion.ps1', '-Source',
               'dist/native/windows/InstarDesktopCompanion.cs', '-BindAddress', '127.0.0.1',
@@ -147,6 +127,8 @@ jobs:
             # native status only after the exact process passed every check.
             $global:LASTEXITCODE = 0
           } finally {
+            Remove-Item Env:INSTAR_DESKTOP_TEST_PORT -ErrorAction SilentlyContinue
+            Remove-Item Env:INSTAR_DESKTOP_TEST_SECRET -ErrorAction SilentlyContinue
             Remove-Item Env:INSTAR_DESKTOP_UPDATE_TOKEN -ErrorAction SilentlyContinue
             if (-not $companion.HasExited) { Stop-Process -Id $companion.Id -Force }
           }

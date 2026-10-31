@@ -13,7 +13,7 @@
   ],
   "artifactPath": "upgrades/side-effects/windows-desktop-local-transport.md",
   "sideEffectsPath": "upgrades/side-effects/windows-desktop-local-transport.md",
-  "artifactSha256": "958e92eccd2af66061193ad3d291af918106173e14552c9ef6dee5d0c75108e0",
+  "artifactSha256": "339bae12bdebfafb8963c6f21b042e32e80937221e837841e65e3420d78f38a4",
   "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
   "secondPass": true,
   "reviewerConcurred": true,
