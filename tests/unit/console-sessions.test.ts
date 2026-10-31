@@ -410,7 +410,7 @@ describe('sessions in a DOM', () => {
     for (let i = 0; i < 25; i++) await new Promise((r) => setTimeout(r, 20));
     const doc = dom.window.document;
     expect(doc.querySelector('.page-title')!.textContent).toBe('Can’t tell what is running.');
-    expect(doc.body.textContent).toContain('Couldn’t list sessions: the server answered 500.');
+    expect(doc.body.textContent).toContain('Couldn’t list sessions: the server answered 500, twice.');
     expect(doc.body.textContent).not.toContain('Nothing is running');
     expect(doc.querySelector('.stale-banner')!.textContent).toBe('Live updates paused, reconnecting.');
   });

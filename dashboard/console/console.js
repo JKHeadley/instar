@@ -80,18 +80,35 @@ function toggleTheme() {
 }
 
 // ── fetch with an honest failure reason ───────────────────────────────────
-async function get(path, timeoutMs = TIMEOUT_MS) {
+// Every page reads through this one function, so robustness lives here once:
+// no read gives up sooner than MIN_TIMEOUT_MS (a page's own shorter deadline is
+// raised to it), and a timeout, a dropped connection or a server error (5xx,
+// except 503 "switched off") is retried once on its own before any page is
+// told "can't tell". Cross-machine reads in particular can be slow for a moment.
+const MIN_TIMEOUT_MS = 20000;
+const RETRY_DELAY_MS = 0; // retry at once: a timeout already waited MIN_TIMEOUT_MS
+async function getOnce(path, timeoutMs) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
     if (r.status === 401 || r.status === 403) { signOut(); return failure('not signed in'); }
     if (r.status === 503) return failure('switched off on this agent');
-    if (!r.ok) return failure(`the server answered ${r.status}`);
+    if (!r.ok) return { ...failure(`the server answered ${r.status}`), retryable: r.status >= 500 };
     try { return { ok: true, data: await r.json() }; } catch { return failure('the answer was not readable'); }
   } catch (e) {
-    return failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached');
+    return { ...failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached'), retryable: true };
   } finally { clearTimeout(t); }
+}
+async function get(path, timeoutMs = TIMEOUT_MS) {
+  const ms = Math.max(Number(timeoutMs) || 0, MIN_TIMEOUT_MS);
+  const first = await getOnce(path, ms);
+  if (first.ok || !first.retryable) return first;
+  await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  const second = await getOnce(path, ms);
+  if (second.ok) return second;
+  const { retryable: _r, ...out } = second;
+  return { ...out, reason: `${out.reason}, twice` };
 }
 
 async function getCommitments() {

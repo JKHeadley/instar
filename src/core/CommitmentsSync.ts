@@ -193,6 +193,14 @@ export class CommitmentReplicaStore {
   private readonly now: () => Date;
   private readonly logger: (msg: string) => void;
   private cache = new Map<string, ReplicaFileShape>();
+  /**
+   * When the owner's advert last showed this replica fully caught up (same
+   * incarnation, cursor at or past its replication seq). Kept in memory only:
+   * a quiet peer has nothing to pull, so receivedAt alone made an idle but
+   * current machine look hours out of date. Staleness is measured from the
+   * later of the two. After a restart the first presence pass re-confirms it.
+   */
+  private confirmedAt = new Map<string, string>();
 
   constructor(config: { stateDir: string; now?: () => Date; logger?: (msg: string) => void }) {
     this.dir = path.join(config.stateDir, 'state', 'commitment-replicas');
@@ -248,6 +256,18 @@ export class CommitmentReplicaStore {
     return { applied, forgedRows, replaced };
   }
 
+  /**
+   * Record that the owner's advert shows nothing new to pull. Returns true
+   * when the replica was confirmed current (it exists, the incarnation
+   * matches, and the cursor covers the advertised seq); false changes nothing.
+   */
+  confirmCurrent(ownerMachineId: string, advert: { incarnation?: string; replicationSeq: number }): boolean {
+    const r = this.load(ownerMachineId);
+    if (!r || !advert.incarnation || r.incarnation !== advert.incarnation || r.sinceSeq < advert.replicationSeq) return false;
+    this.confirmedAt.set(ownerMachineId, this.now().toISOString());
+    return true;
+  }
+
   /** Every replica's rows, tagged with owner + receivedAt. */
   allReplicas(): { ownerMachineId: string; receivedAt: string; records: ReplicatedCommitment[] }[] {
     const out: { ownerMachineId: string; receivedAt: string; records: ReplicatedCommitment[] }[] = [];
@@ -260,7 +280,10 @@ export class CommitmentReplicaStore {
       const owner = name.replace(/\.json$/, '');
       if (name === 'pending-mutations.json') continue; // sibling store, not a replica
       const r = this.load(owner);
-      if (r) out.push({ ownerMachineId: r.ownerMachineId, receivedAt: r.receivedAt, records: Object.values(r.records) });
+      if (!r) continue;
+      const confirmed = this.confirmedAt.get(r.ownerMachineId);
+      const receivedAt = confirmed && Date.parse(confirmed) > Date.parse(r.receivedAt) ? confirmed : r.receivedAt;
+      out.push({ ownerMachineId: r.ownerMachineId, receivedAt, records: Object.values(r.records) });
     }
     return out;
   }

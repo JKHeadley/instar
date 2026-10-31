@@ -300,7 +300,11 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     yours.length ? `${plural(yours.length, 'promise')} waiting on you.` : null,
     !yours.length ? (rest > 0 ? 'I’m handling the open work.' : 'Nothing open.') : null,
   ].filter(Boolean).join(' ');
-  const incomplete = origins.size === 0 || staleReplica || missingPeers === null || missingPeers > 0;
+  // Only a blind read makes the operator's list partial: no other machine's
+  // promises arrived at all while other machines exist. One machine that is
+  // behind, or one that has no promises, is named in the note under "See agent
+  // status" instead of turning every Home view into "part could not be checked".
+  const incomplete = res.data && res.data.scope === 'mesh' && origins.size === 0 && (expectedPeers === null || expectedPeers > 0);
   const state = yours.length ? 'attn' : (incomplete ? 'partial' : 'ok');
   return {
     state, count: yours.length, missedCount: violated.length, reviewCount: review.length, coverage: incomplete ? 'partial view' : null, value: yours.length ? `${yours.length} waiting on you` : plural(open.length, 'open promise'),
