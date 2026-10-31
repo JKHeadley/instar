@@ -14,13 +14,13 @@ afterEach(() => { for (const root of roots.splice(0)) SafeFsExecutor.safeRmSync(
   recursive: true, force: true, operation: 'diagnosisProcessGroup.test.ts' }); });
 
 describe('real detached diagnosis process group', () => {
-  it.skipIf(spawnSync('tmux', ['-V']).status !== 0)('keeps a real tmux socket short with a production-length agent path', () => {
+  it.skipIf(spawnSync('tmux', ['-V']).status !== 0)('keeps a real tmux socket short with a production-length agent path', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lv-diagnosis-group-'));
     roots.push(root);
     const attemptId = crypto.randomBytes(16).toString('hex');
     const attemptRoot = path.join(root, 'a-very-long-agent-home-path-like-the-production-echo-agent', '.worktrees', '.verify', 'diagnosis', attemptId);
     fs.mkdirSync(attemptRoot, { recursive: true });
-    roots.push(path.join('/tmp', `lvd-${attemptId}`));
+    roots.push(path.join('/tmp', `lv-${attemptId}`));
     const seams = realDiagnosisSeams(() => {}, root, attemptRoot, new AbortController().signal);
     const tmuxDir = seams.fs.mkdtemp('lv-diagnosis-tmux-');
     const env = { ...process.env, TMUX_TMPDIR: tmuxDir };
@@ -28,6 +28,7 @@ describe('real detached diagnosis process group', () => {
     const started = spawnSync('tmux', ['-L', socket, 'new-session', '-d', '-s', 'proof', 'true'], { env, encoding: 'utf8' });
     spawnSync('tmux', ['-L', socket, 'kill-server'], { env });
     expect(started.status, started.stderr).toBe(0);
+    await expect(seams.fs.removeTree(tmuxDir)).resolves.toBeUndefined();
   });
 
   it('recognizes an exited command as quiescent despite its own ps probe', async () => {
@@ -36,7 +37,7 @@ describe('real detached diagnosis process group', () => {
     const attemptId = crypto.randomBytes(16).toString('hex');
     const attemptRoot = path.join(root, attemptId);
     fs.mkdirSync(attemptRoot);
-    roots.push(path.join('/tmp', `lvd-${attemptId}`));
+    roots.push(path.join('/tmp', `lv-${attemptId}`));
     const entry = path.resolve(__dirname, '../../../dist/localVerify/diagnosisSeams.js');
     expect(fs.existsSync(entry)).toBe(true);
     const script = path.join(root, 'probe.mjs');

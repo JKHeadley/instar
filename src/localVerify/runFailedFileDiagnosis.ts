@@ -38,7 +38,7 @@ export function failedFileRunPaths(agentHome: string, attemptId: string) {
   const verifyRoot = path.join(agentHome, '.worktrees', '.verify');
   const root = path.join(verifyRoot, 'diagnosis', attemptId);
   // tmux socket paths have a small OS limit; keep this private root short.
-  const shortTemps = path.join('/tmp', `lvd-${attemptId}`);
+  const shortTemps = path.join('/tmp', `lv-${attemptId}`);
   return { verifyRoot, root, shortTemps, bare: path.join(root, 'repo.git'), pr: path.join(root, 'pr'), base: path.join(root, 'base'), reports: path.join(root, 'reports') };
 }
 

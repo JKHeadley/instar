@@ -654,7 +654,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     const allFailedFiles = Object.entries(ev.perFile)
       .filter(([, c]) => c.failed > 0)
       .map(([file]) => file).sort();
-    if (!dirty && allFailedFiles.length >= 1 && allFailedFiles.length <= 3
+    const onlyAssertionFailureReasons = ev.reasons.every((r) => /^file-failed:|^lane-failed:|^lane-zero-passed:|^lane-stopped-early:/.test(r));
+    if (!dirty && onlyAssertionFailureReasons && allFailedFiles.length >= 1 && allFailedFiles.length <= 3
       && allFailedFiles.every((file) => isInventoried(file)
         && (ev.perFile[file]?.assertionFailures ?? 0) > 0 && !ev.perFile[file]?.nonAssertionFailure)) boundedFailedFiles = allFailedFiles;
     if (dirty) evaluationReasons = [...evaluationReasons, 'dirty-tree'];

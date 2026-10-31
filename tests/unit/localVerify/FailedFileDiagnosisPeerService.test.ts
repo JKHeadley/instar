@@ -98,9 +98,15 @@ describe('peer failed-file diagnosis lifecycle', () => {
     const attempt = path.join(h.root, '.worktrees', '.verify', 'diagnosis', req.attemptId);
     fs.mkdirSync(path.join(attempt, 'pr', 'node_modules'), { recursive: true });
     fs.writeFileSync(path.join(attempt, 'pr', 'node_modules', 'package.json'), '{}');
+    const shortTemps = path.join('/tmp', `lv-${req.attemptId}`);
+    fs.mkdirSync(shortTemps, { mode: 0o700 });
+    roots.push(shortTemps);
+    fs.writeFileSync(path.join(shortTemps, '.owner'), req.attemptId);
+    fs.mkdirSync(path.join(shortTemps, 't-private'));
     await h.exit(); // no result file: child crash
     expect(h.peer.result(req.attemptId)).toMatchObject({ state: 'done', answer: { classification: 'inconclusive' } });
     expect(fs.existsSync(attempt)).toBe(false);
+    expect(fs.existsSync(shortTemps)).toBe(false);
   });
 
   it('retires a restart intent whose child never started or created a worktree', async () => {

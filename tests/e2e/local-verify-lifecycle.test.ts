@@ -24,6 +24,8 @@ import { scrubbedEnv } from '../../src/localVerify/serviceSeams.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
 import { makeDiagnosisPeerClient } from '../../src/localVerify/failedFileDiagnosisClient.js';
+import { computePolicyHash } from '../../src/localVerify/policy.js';
+import { validateRecord, type LocalVerifyRecord } from '../../src/localVerify/record.js';
 import { PROTECTED_PATH_PREFIXES } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 
@@ -107,6 +109,56 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(r.body.preflight).toMatchObject({ mode: 'off', replayStoreReady: true, replays: [] });
     expect(r.body.diagnosis).toMatchObject({ mode: 'off', storeReady: true, pending: 0, completed: 0 });
     built.service!.shutdown();
+  });
+
+  it('production boot keeps an enabled peer diagnosis separate from a red PR record', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    const svc = built.service!;
+    expect(svc).not.toBeNull();
+    const head = 'a'.repeat(40), base = 'b'.repeat(40), file = 'tests/unit/localVerify/record.test.ts';
+    const seams = (svc as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    seams.prView = async () => ({ headRefOid: head, baseRefName: 'main', baseRefOid: base,
+      author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/proof' }) as never;
+    seams.baseHead = async () => base;
+    seams.isPrOpen = async () => true;
+    const record: LocalVerifyRecord = {
+      repo: 'JKHeadley/instar', pr: 9, headSha: head, baseSha: base, baseRefName: 'main', mergeTree: 'd'.repeat(40),
+      lanes: [{ name: 'unit', gating: true, files: 1, tests: 1, passed: 0, failed: 1, skipped: 0, todo: 0, seconds: 1 }],
+      nodeVersion: process.version, machineId: 'm_e2e', startedAt: '2026-10-31T10:00:00.000Z',
+      finishedAt: '2026-10-31T10:01:00.000Z', outcome: 'failure', harnessChanging: false,
+      protectedPath: false, skipsAdded: false, testsRemoved: false, verifierVersion: seams.installedVerifierVersion!(),
+      policyHash: computePolicyHash(), failedFiles: [file],
+    };
+    expect(validateRecord(record).ok).toBe(true);
+    fs.mkdirSync(path.dirname(svc.journalPath), { recursive: true });
+    fs.writeFileSync(svc.journalPath, JSON.stringify({ v: 1, writtenAt: '2026-10-31T10:02:00.000Z', record }) + '\n');
+    await svc.boot();
+    svc.setPeerWiring({ peers: () => [{ machineId: 'm_peer', url: 'http://peer:4042' }],
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_e2e' } });
+    await svc.wireFailedFileDiagnosis(() => 'auto', {
+      status: async () => ({ enabled: true, busy: false, verifierVersion: record.verifierVersion, policyHash: record.policyHash }),
+      diagnose: async () => ({ accepted: true }),
+      result: async (_peer, attemptId) => ({ state: 'done', answer: {
+        attemptId, identity: { repo: record.repo, pr: record.pr, headSha: head, baseSha: base,
+          baseRefName: 'main', verifierVersion: record.verifierVersion, policyHash: record.policyHash, failedFiles: [file] },
+        peerMachineId: 'm_peer', coordinatorMachineId: 'm_e2e', leaseEpoch: 7,
+        classification: 'machine-or-flake', files: [{ file, originalPr: 'assertion-fail', peerPr: 'pass', peerBase: 'pass' }],
+        machineMinutes: 0.5,
+      } }),
+    });
+    await svc.tick();
+    await svc.tick();
+    const r = await request(serve(ctx(stateDir, svc))).get(`/local-verify/record?pr=9&head=${head}&base=main`);
+    expect(r.status).toBe(200);
+    expect(r.body.record.outcome).toBe('failure');
+    expect(r.body.record).not.toHaveProperty('diagnosis');
+    expect(r.body.diagnosis.result.classification).toBe('machine-or-flake');
+    expect(svc.getRecord(9, head, 'main')?.outcome).toBe('failure');
+    svc.shutdown();
   });
 
   it('production wiring publishes and clears a real host priority claim', async () => {

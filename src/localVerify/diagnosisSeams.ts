@@ -45,7 +45,7 @@ export function realDiagnosisSeams(log: (event: Record<string, unknown>) => void
   const base = realSeams(log, verifyRoot);
   const attemptId = path.basename(attemptRoot);
   if (!/^[0-9a-f]{32}$/.test(attemptId)) throw new Error('invalid diagnosis attempt root');
-  const shortTemps = path.join('/tmp', `lvd-${attemptId}`);
+  const shortTemps = path.join('/tmp', `lv-${attemptId}`);
   fs.mkdirSync(shortTemps, { mode: 0o700 });
   fs.writeFileSync(path.join(shortTemps, '.owner'), attemptId, { mode: 0o600 });
   return {
@@ -58,9 +58,15 @@ export function realDiagnosisSeams(log: (event: Record<string, unknown>) => void
       let release: (() => void) | null = null;
       if (isVitest) {
         const sem = getHostTestRunnerSemaphore();
-        const held = await sem.acquire({ lane: 'targeted', runClass: 'background', fileCount: 1,
-          budgetMs: Math.min(60_000, opts.deadlineMs) });
-        if (held.kind === 'acquired') release = () => sem.release(held.id);
+        let held: Awaited<ReturnType<typeof sem.acquire>>;
+        try { held = await sem.acquire({ lane: 'targeted', runClass: 'background', fileCount: 1,
+          budgetMs: Math.min(60_000, opts.deadlineMs) }); }
+        catch { return { status: null, signal: null, pid: null, stdout: '', stderr: '', deadlineKilled: true, quiescent: true }; }
+        // A fail-open capacity witness is appropriate for the primary test
+        // runner, but this optional diagnosis must not consume unclaimed CPU.
+        if (held.kind !== 'acquired') return { status: null, signal: null, pid: null,
+          stdout: '', stderr: '', deadlineKilled: true, quiescent: true };
+        release = () => sem.release(held.id);
       }
       try {
         const left = opts.deadlineMs - (Date.now() - started);
