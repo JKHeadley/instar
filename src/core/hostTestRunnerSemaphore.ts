@@ -105,6 +105,8 @@ export const MERGE_GATE_PRIORITY_MAX_CLAIMS = 64;
  * merge-gate work, so a busy merge queue cannot starve a live host check (2026-10-28).
  */
 export const SUITE_WAITER_AGING_MS = 900_000;
+/** One fixed offer per free suite-slot episode; longer than two 5±1s polls. */
+export const SUITE_MERGE_HANDOFF_MS = 12_000;
 /** A waiter renews its ticket on every poll; a killed or stalled waiter loses its place. */
 export const SUITE_WAITER_LEASE_MS = 60_000;
 export const SUITE_WAITER_MAX_TICKETS = 64;
@@ -118,6 +120,8 @@ export type TestRunClass = 'interactive' | 'background';
 export interface TestRunnerPaths {
   baseDir: string;
   holders: string;
+  holdersProof: string;
+  turnInvalidationDir: string;
   lock: string;
   witnessDir: string;
   tuning: string;
@@ -138,6 +142,8 @@ export function resolveTestRunnerPaths(env: NodeJS.ProcessEnv = process.env): Te
   return {
     baseDir,
     holders: path.join(baseDir, 'host-test-runner-holders.json'),
+    holdersProof: path.join(baseDir, 'host-test-runner-holders-proof.json'),
+    turnInvalidationDir: path.join(baseDir, 'host-test-runner-turn-invalidations'),
     lock: path.join(baseDir, 'host-test-runner-holders.lock'),
     witnessDir: path.join(baseDir, 'host-test-runner-witness'),
     tuning: path.join(baseDir, 'host-test-runner-tuning.json'),
@@ -179,6 +185,8 @@ export interface TestRunnerHolderRow {
 export interface TestRunnerTuningFile {
   v: 1;
   enforcing?: boolean;
+  /** Independent of the host limiter's enforcing posture; dark by default. */
+  alternatingSuiteTurns?: 'off' | 'observe' | 'enforce';
   clampActive?: boolean;
   maxConcurrent?: number;
   targetedMax?: number;
@@ -190,6 +198,10 @@ export interface TestRunnerTuningFile {
   flippedAt?: string;
   by?: string;
   [k: string]: unknown;
+}
+
+export function resolveAlternatingSuiteTurns(raw: unknown): 'off' | 'observe' | 'enforce' {
+  return raw === 'observe' || raw === 'enforce' ? raw : 'off';
 }
 
 // ── Typed errors (§2.6) ───────────────────────────────────────────────────
@@ -914,6 +926,36 @@ interface HoldersReadResult {
   rows: unknown[];
   status: 'ok' | 'missing' | 'unparseable' | 'poisoned';
   raw: string | null;
+  turn: SuiteTurnRecord | null;
+  episode: SuiteFreeEpisode | null;
+  proofValid: boolean;
+}
+
+interface SuiteTurnRecord {
+  v: 1;
+  hostname: string;
+  last: 'ordinary' | 'merge-gate';
+  grantedAt: number;
+  grantId: string;
+}
+
+interface SuiteFreeEpisode {
+  v: 1;
+  id: string;
+  startedAt: number;
+  offeredTicketId: string | null;
+  handoffState: 'unused' | 'offered' | 'consumed';
+}
+
+interface HoldersProof {
+  v: 1;
+  hostname: string;
+  dev: string;
+  ino: string;
+  ctimeNs: string;
+  mtimeNs: string;
+  size: string;
+  digest: string;
 }
 
 export class HostTestRunnerSemaphore {
@@ -937,6 +979,7 @@ export class HostTestRunnerSemaphore {
   private rendezvousUnwritable: string | null = null;
   private readonly pollIntervalMs: number;
   private readonly genId: () => string;
+  private lastTicketOverflowLogAt = Number.NEGATIVE_INFINITY;
 
   constructor(deps: HostTestRunnerSemaphoreDeps = {}) {
     this.env = deps.env ?? process.env;
@@ -1093,7 +1136,13 @@ export class HostTestRunnerSemaphore {
               SafeFsExecutor.safeUnlinkSync(path.join(dir, name), { operation: 'HostTestRunnerSemaphore.pruneWaiterTicket' });
             }
           }
-          if (fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).length >= SUITE_WAITER_MAX_TICKETS) return;
+          if (fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).length >= SUITE_WAITER_MAX_TICKETS) {
+            if (this.now() - this.lastTicketOverflowLogAt >= 60_000) {
+              this.lastTicketOverflowLogAt = this.now();
+              this.ledger('suite-turn-ticket-overflow', { cap: SUITE_WAITER_MAX_TICKETS });
+            }
+            return;
+          }
         }
       }
       atomicWriteFileSync(file, JSON.stringify({
@@ -1141,13 +1190,170 @@ export class HostTestRunnerSemaphore {
     return out.sort((a, b) => compareSuiteWaiters(a, b, nowMs));
   }
 
-  /** How many live waiters stand ahead of this request for the next suite slot. */
-  private suiteWaitersAhead(self: SuiteWaiter): number {
-    const nowMs = this.now();
-    return this.listSuiteWaiters().filter((w) => w.id !== self.id && compareSuiteWaiters(w, self, nowMs) < 0).length;
+  // ── Holders IO ──────────────────────────────────────────────────────
+
+  /** A legacy atomic rewrite changes the file identity even if it preserves unknown fields. */
+  private holdersIdentity(raw: string): Omit<HoldersProof, 'v' | 'hostname'> {
+    const stat = fs.statSync(this.paths.holders, { bigint: true });
+    return {
+      dev: stat.dev.toString(), ino: stat.ino.toString(),
+      ctimeNs: stat.ctimeNs.toString(), mtimeNs: stat.mtimeNs.toString(),
+      size: stat.size.toString(), digest: crypto.createHash('sha256').update(raw).digest('hex'),
+    };
   }
 
-  // ── Holders IO ──────────────────────────────────────────────────────
+  private validHoldersProof(raw: string): boolean {
+    try {
+      const proofRaw = fs.readFileSync(this.paths.holdersProof, 'utf-8');
+      if (proofRaw.length > 2048) return false;
+      const proof = JSON.parse(proofRaw) as HoldersProof;
+      if (proof.v !== 1 || proof.hostname !== this.host) return false;
+      const identity = this.holdersIdentity(raw);
+      return Object.entries(identity).every(([key, value]) => proof[key as keyof HoldersProof] === value);
+    } catch {
+      return false; // @silent-fallback-ok: absent/mismatched proof makes turn history unknown.
+    }
+  }
+
+  private invalidationFiles(): string[] | null {
+    try {
+      return fs.readdirSync(this.paths.turnInvalidationDir)
+        .filter((name) => /^[a-f0-9]{24}\.json$/.test(name));
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
+    }
+  }
+
+  private turnInvalidated(): boolean {
+    const files = this.invalidationFiles();
+    return files === null || files.length > 0;
+  }
+
+  private markTurnInvalidated(witnessFile: string): void {
+    try {
+      fs.mkdirSync(this.paths.turnInvalidationDir, { recursive: true, mode: 0o700 });
+      const name = `${crypto.createHash('sha256').update(witnessFile).digest('hex').slice(0, 24)}.json`;
+      atomicWriteFileSync(path.join(this.paths.turnInvalidationDir, name),
+        JSON.stringify({ v: 1, at: this.now(), pid: process.pid }), {
+          mode: 0o600, operation: 'HostTestRunnerSemaphore.markTurnInvalidated',
+        });
+    } catch { /* @silent-fallback-ok: the visible witness still invalidates while readable. */ }
+  }
+
+  private clearTurnInvalidations(files: string[]): void {
+    for (const name of files) {
+      try {
+        SafeFsExecutor.safeUnlinkSync(path.join(this.paths.turnInvalidationDir, name), {
+          operation: 'HostTestRunnerSemaphore.clearTurnInvalidation',
+        });
+      } catch { /* @silent-fallback-ok: a retained marker conservatively keeps history unknown. */ }
+    }
+  }
+
+  /** A visible fail-open admission makes one-slot turn history unprovable. */
+  private hasVisibleBypassWitness(): boolean {
+    try {
+      const names = fs.readdirSync(this.paths.witnessDir).filter((name) => name.startsWith('w-'));
+      if (names.length > 64) return true; // too many to prove absence within the bounded scan
+      for (const name of names) {
+        try {
+          const row = JSON.parse(fs.readFileSync(path.join(this.paths.witnessDir, name), 'utf8')) as { pid?: unknown };
+          if (!Number.isInteger(row.pid) || this.pidAlive(row.pid as number)) return true;
+        } catch { return true; }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return true;
+      /* @silent-fallback-ok: no witness directory is the normal state. */
+    }
+    return false;
+  }
+
+  private validTurn(raw: unknown): SuiteTurnRecord | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const row = raw as SuiteTurnRecord;
+    if (row.v !== 1 || row.hostname !== this.host ||
+      (row.last !== 'ordinary' && row.last !== 'merge-gate') ||
+      !Number.isFinite(row.grantedAt) || row.grantedAt > this.now() + START_TIME_SKEW_MS ||
+      typeof row.grantId !== 'string' || row.grantId.length > 160) return null;
+    return row;
+  }
+
+  private validEpisode(raw: unknown): SuiteFreeEpisode | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const row = raw as SuiteFreeEpisode;
+    if (row.v !== 1 || typeof row.id !== 'string' || row.id.length > 160 ||
+      !Number.isFinite(row.startedAt) || row.startedAt > this.now() + START_TIME_SKEW_MS ||
+      (row.offeredTicketId !== null && (typeof row.offeredTicketId !== 'string' || row.offeredTicketId.length > 160)) ||
+      !['unused', 'offered', 'consumed'].includes(row.handoffState)) return null;
+    return row;
+  }
+
+  private turnHistoryEligible(ctx: ReturnType<HostTestRunnerSemaphore['resolveContext']>): boolean {
+    return ctx.posture.posture === 'enforcing' && ctx.suiteCap.cap === 1;
+  }
+
+  private turnAfterAdmission(
+    req: AcquireRequest,
+    ctx: ReturnType<HostTestRunnerSemaphore['resolveContext']>,
+    row: TestRunnerHolderRow,
+    prior: SuiteTurnRecord | null,
+    claimPids: Set<number>,
+  ): SuiteTurnRecord | null {
+    if (!this.turnHistoryEligible(ctx) || this.hasVisibleBypassWitness()) return null;
+    if (req.lane !== 'suite') return prior;
+    return {
+      v: 1, hostname: this.host,
+      last: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary',
+      grantedAt: this.now(), grantId: row.id,
+    };
+  }
+
+  private liveMergeClaimPids(): Set<number> {
+    const out = new Set<number>();
+    const dir = path.join(this.paths.baseDir, 'host-test-runner-priority');
+    try {
+      for (const name of fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).slice(0, MERGE_GATE_PRIORITY_MAX_CLAIMS)) {
+        const file = path.join(dir, name);
+        if (!this.livePriorityClaim(file)) continue;
+        const row = JSON.parse(fs.readFileSync(file, 'utf-8')) as { pid?: unknown };
+        if (typeof row.pid === 'number') out.add(row.pid);
+      }
+    } catch { /* @silent-fallback-ok: no trusted claim means old admission order. */ }
+    return out;
+  }
+
+  /** Purely classifies one locked free-slot decision; the caller persists an episode change. */
+  private alternatingDecision(
+    self: SuiteWaiter,
+    turn: SuiteTurnRecord,
+    priorEpisode: SuiteFreeEpisode | null,
+    waiters: SuiteWaiter[],
+    claimPids: Set<number>,
+  ): { eligible: boolean; episode: SuiteFreeEpisode | null; reason: string } {
+    const nowMs = this.now();
+    const merge = waiters.filter((w) => w.priority === 'merge-gate' && claimPids.has(w.pid))
+      .sort((a, b) => a.since - b.since || a.id.localeCompare(b.id));
+    const aged = waiters.filter((w) => w.priority === 'ordinary' && nowMs - w.since >= SUITE_WAITER_AGING_MS)
+      .sort((a, b) => a.since - b.since || a.id.localeCompare(b.id));
+    if (!merge.length || !aged.length) return { eligible: false, episode: priorEpisode, reason: 'no-two-class-contention' };
+    if (turn.last === 'merge-gate') {
+      return { eligible: self.id === aged[0].id, episode: priorEpisode, reason: 'ordinary-turn' };
+    }
+    let episode = priorEpisode;
+    if (!episode) {
+      episode = { v: 1, id: this.genId(), startedAt: nowMs, offeredTicketId: merge[0].id, handoffState: 'offered' };
+    } else if (episode.handoffState === 'offered' &&
+      (nowMs - episode.startedAt >= SUITE_MERGE_HANDOFF_MS || !merge.some((w) => w.id === episode!.offeredTicketId))) {
+      episode = { ...episode, handoffState: 'consumed' };
+    }
+    if (episode.handoffState === 'offered') {
+      return { eligible: self.id === episode.offeredTicketId, episode, reason: 'merge-offer' };
+    }
+    return {
+      eligible: self.id === merge[0].id || self.id === aged[0].id,
+      episode, reason: 'offer-consumed-first-poll',
+    };
+  }
 
   private readHolders(): HoldersReadResult {
     let raw: string;
@@ -1155,31 +1361,49 @@ export class HostTestRunnerSemaphore {
       raw = fs.readFileSync(this.paths.holders, 'utf-8');
     } catch {
       // @silent-fallback-ok: a missing holders file is an empty set.
-      return { rows: [], status: 'missing', raw: null };
+      return { rows: [], status: 'missing', raw: null, turn: null, episode: null, proofValid: false };
     }
     try {
       const obj = JSON.parse(raw);
       if (!obj || typeof obj !== 'object' || !Array.isArray(obj.holders)) {
-        return { rows: [], status: 'unparseable', raw };
+        return { rows: [], status: 'unparseable', raw, turn: null, episode: null, proofValid: false };
       }
+      const proofValid = this.validHoldersProof(raw);
+      const parsedEpisode = proofValid && obj.suiteFreeEpisode !== undefined
+        ? this.validEpisode(obj.suiteFreeEpisode) : null;
+      const metadataValid = proofValid && !this.turnInvalidated() &&
+        (obj.suiteTurn === undefined || !this.hasVisibleBypassWitness()) &&
+        (obj.suiteFreeEpisode === undefined || parsedEpisode !== null);
+      const turn = metadataValid ? this.validTurn(obj.suiteTurn) : null;
+      const episode = turn ? parsedEpisode : null;
       // §2.4/§5: a holders file AT HOST_TEST_POISON_CEILING (64) rows
       // quarantines; one below it does not (>=, not >).
       if (obj.holders.length >= HOST_TEST_POISON_CEILING) {
-        return { rows: obj.holders, status: 'poisoned', raw };
+        return { rows: obj.holders, status: 'poisoned', raw, turn: null, episode: null, proofValid };
       }
-      return { rows: obj.holders, status: 'ok', raw };
+      return { rows: obj.holders, status: 'ok', raw, turn, episode, proofValid };
     } catch {
       // @silent-fallback-ok: unparseable → the caller's quarantine+admit branch (§2.4 fail-OPEN).
-      return { rows: [], status: 'unparseable', raw };
+      return { rows: [], status: 'unparseable', raw, turn: null, episode: null, proofValid: false };
     }
   }
 
-  private writeHolders(rows: unknown[]): void {
+  private writeHolders(rows: unknown[], turn: SuiteTurnRecord | null = null, episode: SuiteFreeEpisode | null = null): void {
     ensureBaseDir(this.paths);
-    atomicWriteFileSync(this.paths.holders, JSON.stringify({ v: 1, holders: rows }), {
+    const raw = JSON.stringify({ v: 1, holders: rows, ...(turn ? { suiteTurn: turn } : {}), ...(episode ? { suiteFreeEpisode: episode } : {}) });
+    atomicWriteFileSync(this.paths.holders, raw, {
       mode: 0o600,
       operation: 'HostTestRunnerSemaphore.writeHolders',
     });
+    try {
+      const proof: HoldersProof = { v: 1, hostname: this.host, ...this.holdersIdentity(raw) };
+      atomicWriteFileSync(this.paths.holdersProof, JSON.stringify(proof), {
+        mode: 0o600, operation: 'HostTestRunnerSemaphore.writeHoldersProof',
+      });
+    } catch (err) {
+      // Holder mutation already succeeded. Tests continue; later readers reject turn history.
+      process.stderr.write(`[test-runner-bound] turn proof unavailable: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 
   /**
@@ -1488,6 +1712,7 @@ export class HostTestRunnerSemaphore {
       fs.mkdirSync(this.paths.witnessDir, { recursive: true, mode: 0o700 });
       const file = path.join(this.paths.witnessDir, `w-${process.pid}-${Math.random().toString(36).slice(2, 8)}.json`);
       fs.writeFileSync(file, JSON.stringify({ v: 1, pid: process.pid, hostname: this.host, acquiredAt: this.now() }), { mode: 0o600 });
+      this.markTurnInvalidated(file);
       return file;
     } catch {
       // @silent-fallback-ok: the witness is best-effort observability.
@@ -1748,6 +1973,13 @@ export class HostTestRunnerSemaphore {
       since: this.now(),
     };
     try {
+      if (req.lane === 'suite') {
+        const ctx = this.resolveContext();
+        if (resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns) !== 'off' &&
+          this.turnHistoryEligible(ctx)) {
+          this.renewWaiterTicket(waiter.id, waiter.priority, waiter.since);
+        }
+      }
       return await this.acquireLoop(req, waiter);
     } finally {
       if (req.lane === 'suite') this.clearWaiterTicket(waiter.id);
@@ -1822,17 +2054,114 @@ export class HostTestRunnerSemaphore {
           this.flushEvents(events);
           const live = req.lane === 'suite' ? pass.report.liveSuite : pass.report.liveTargeted;
           const cap = req.lane === 'suite' ? ctx.suiteCap.cap : ctx.targetedCap.cap;
+          const turnMode = resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns);
+          const useTurn = req.lane === 'suite' && turnMode === 'enforce' && this.turnHistoryEligible(ctx) && read.turn !== null;
+          const claimPids = req.lane === 'suite' && this.turnHistoryEligible(ctx)
+            ? this.liveMergeClaimPids() : new Set<number>();
+          const suiteWaitersSnapshot = req.lane === 'suite' ? this.listSuiteWaiters() : [];
+          const waiters = useTurn ? suiteWaitersSnapshot.map((w) =>
+            w.priority === 'merge-gate' && !claimPids.has(w.pid) ? { ...w, priority: 'ordinary' as const } : w) : [];
+          const currentWaiter: SuiteWaiter = useTurn && waiter.priority === 'merge-gate' && !claimPids.has(waiter.pid)
+            ? { ...waiter, priority: 'ordinary' } : waiter;
           // An aged ordinary suite stops yielding to the coordinator's claim; the
           // tickets then put it ahead of merge-gate waiters (fair aging).
-          const aged = suiteWaiterTier(waiter, this.now()) === 0;
-          priorityWait = req.lane === 'suite' && req.priority !== 'merge-gate' && !aged && this.hasMergeGatePriority();
-          waitersAhead = req.lane === 'suite' ? this.suiteWaitersAhead(waiter) : 0;
+          const aged = suiteWaiterTier(currentWaiter, this.now()) === 0;
+          priorityWait = req.lane === 'suite' && currentWaiter.priority !== 'merge-gate' && !aged &&
+            (this.turnHistoryEligible(ctx) ? claimPids.size > 0 : this.hasMergeGatePriority());
+          waitersAhead = req.lane !== 'suite' ? 0 : useTurn
+            ? waiters.filter((w) => w.id !== currentWaiter.id && compareSuiteWaiters(w, currentWaiter, this.now()) < 0).length
+            : suiteWaitersSnapshot.filter((w) => w.id !== waiter.id && compareSuiteWaiters(w, waiter, this.now()) < 0).length;
+          let episodeForWrite = read.episode;
+          let wroteEpisode = false;
+          if (useTurn && read.turn && live === 0) {
+            if (waiters.some((w) => w.id === waiter.id)) {
+              const decision = this.alternatingDecision(currentWaiter, read.turn, read.episode, waiters, claimPids);
+              if (decision.reason !== 'no-two-class-contention') {
+                priorityWait = !decision.eligible;
+                waitersAhead = decision.eligible ? 0 : 1;
+                if (!decision.eligible && decision.episode !== read.episode) {
+                  try {
+                    this.writeHolders(pass.kept, read.turn, decision.episode);
+                    episodeForWrite = decision.episode;
+                    wroteEpisode = true;
+                    if (decision.episode && !read.episode) this.ledger('suite-turn-offer', {
+                      episodeId: decision.episode.id, priorClass: read.turn.last,
+                      selectedClass: 'merge-gate', contenderClasses: ['ordinary', 'merge-gate'],
+                      handoffMs: SUITE_MERGE_HANDOFF_MS,
+                    });
+                    if (decision.episode?.handoffState === 'consumed' && read.episode?.handoffState === 'offered') {
+                      this.ledger('suite-turn-offer-outcome', {
+                        episodeId: decision.episode.id,
+                        outcome: this.now() - read.episode.startedAt >= SUITE_MERGE_HANDOFF_MS ? 'expired' : 'claim-lost',
+                      });
+                    }
+                  }
+                  catch (err) {
+                    this.ledger('warn', { warnType: 'suite-turn-episode-write-failed', detail: err instanceof Error ? err.message : String(err) });
+                    // A failed offer write cannot reserve the slot; use the old policy.
+                    priorityWait = currentWaiter.priority !== 'merge-gate' && !aged && claimPids.size > 0;
+                    waitersAhead = waiters.filter((w) => w.id !== currentWaiter.id && compareSuiteWaiters(w, currentWaiter, this.now()) < 0).length;
+                  }
+                }
+              }
+            }
+          }
           if (live + waitersAhead < cap && !priorityWait) {
+            let turnObservation: { episodeId: string; priorClass: string; selectedClass: string; actualWinner: string } | null = null;
+            if (req.lane === 'suite' && turnMode === 'observe' && this.turnHistoryEligible(ctx) && read.turn) {
+              const nowMs = this.now();
+              const mergePresent = suiteWaitersSnapshot.some((w) => w.priority === 'merge-gate' && claimPids.has(w.pid));
+              const agedPresent = suiteWaitersSnapshot.some((w) => w.priority === 'ordinary' && nowMs - w.since >= SUITE_WAITER_AGING_MS);
+              if (mergePresent && agedPresent) {
+                const actual = req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary';
+                const selected = read.turn.last === 'merge-gate' ? 'ordinary' : 'merge-gate';
+                const episodeId = `observe:${this.genId()}`;
+                turnObservation = { episodeId, priorClass: read.turn.last, selectedClass: selected, actualWinner: actual };
+              }
+            }
             // Under the lock, so no other waiter counts this one twice (holder + ticket).
             if (req.lane === 'suite') this.clearWaiterTicket(waiter.id);
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
-            this.writeHolders(pass.kept);
+            const newTurn = this.turnAfterAdmission(req, ctx, row, read.turn, claimPids);
+            const invalidationsBeforeAdmission = newTurn && req.lane === 'suite' ? this.invalidationFiles() : [];
+            this.writeHolders(pass.kept, newTurn,
+              req.lane === 'suite' || !this.turnHistoryEligible(ctx) ? null : read.episode);
+            if (newTurn && req.lane === 'suite' && invalidationsBeforeAdmission && !this.hasVisibleBypassWitness()) {
+              this.clearTurnInvalidations(invalidationsBeforeAdmission);
+            }
+            if (req.lane === 'suite' && turnMode === 'enforce' && this.turnHistoryEligible(ctx) && !read.turn) {
+              this.ledger('suite-turn-fallback', {
+                reason: read.proofValid ? 'no-valid-history' : 'proof-missing-or-mismatched',
+                actualWinner: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary',
+              });
+            }
+            if (turnObservation) {
+              this.ledger('suite-turn-counterfactual', {
+                ...turnObservation, contenderClasses: ['ordinary', 'merge-gate'],
+                eligibilityReason: 'enforcing-cap-one-valid-history',
+              });
+              if (turnObservation.selectedClass === 'merge-gate') this.ledger('suite-turn-offer-outcome', {
+                episodeId: turnObservation.episodeId,
+                outcome: turnObservation.actualWinner === 'merge-gate' ? 'admitted' : 'not-applied-observe',
+              });
+              this.ledger('suite-turn-episode-outcome', {
+                episodeId: turnObservation.episodeId,
+                actualWinner: turnObservation.actualWinner, selectedClass: turnObservation.selectedClass,
+              });
+            }
+            if (req.lane === 'suite' && turnMode === 'enforce' && read.episode) {
+              if (read.episode.handoffState === 'offered') this.ledger('suite-turn-offer-outcome', {
+                episodeId: read.episode.id,
+                outcome: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'admitted' : 'bypassed',
+              });
+              this.ledger('suite-turn-episode-outcome', {
+                episodeId: read.episode.id,
+                priorClass: read.turn?.last ?? 'unknown',
+                actualWinner: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary',
+                handoffState: read.episode.handoffState,
+              });
+            }
             this.ledger('acquire', this.acquireFields(req, row, false));
             this.armSelfTtlWarn(row);
             this.sweepWitnesses();
@@ -1845,7 +2174,7 @@ export class HostTestRunnerSemaphore {
             // logs `would-block` (with the live holder set) and ADMITS.
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
-            this.writeHolders(pass.kept);
+            this.writeHolders(pass.kept, null, null);
             this.ledger('would-block', { lane: req.lane, holders: lastHolders, cap, priorityWait, waitersAhead });
             this.ledger('acquire', this.acquireFields(req, row, true));
             this.armSelfTtlWarn(row);
@@ -1854,7 +2183,9 @@ export class HostTestRunnerSemaphore {
           // Enforcing: persist reclaim work — but ONLY when the pass actually
           // changed something (§2.2 item 3: skip the holders rewrite on a
           // failed acquire when prune removed nothing — no O(waiters) churn).
-          if (pass.changed) this.writeHolders(pass.kept);
+          if (pass.changed && !wroteEpisode) this.writeHolders(pass.kept,
+            this.turnHistoryEligible(ctx) ? read.turn : null,
+            this.turnHistoryEligible(ctx) ? episodeForWrite : null);
         } finally {
           releaseLock(this.paths.lock, fd, 'HostTestRunnerSemaphore.acquire:release');
         }
@@ -2039,7 +2370,8 @@ export class HostTestRunnerSemaphore {
           const remaining = read.rows.filter(
             (r) => !(r && typeof r === 'object' && (r as TestRunnerHolderRow).id === id),
           );
-          this.writeHolders(remaining);
+          const keepHistory = this.turnHistoryEligible(this.resolveContext());
+          this.writeHolders(remaining, keepHistory ? read.turn : null, keepHistory ? read.episode : null);
         }
         this.ledger('release', { holderId: id });
         return;
@@ -2106,7 +2438,9 @@ export class HostTestRunnerSemaphore {
         this.flushEvents(events);
         // Write-only-on-change (§2.2 item 3) — a no-op prune pass never churns
         // the holders file.
-        if (pass.changed) this.writeHolders(pass.kept);
+        if (pass.changed) this.writeHolders(pass.kept,
+          this.turnHistoryEligible(ctx) ? read.turn : null,
+          this.turnHistoryEligible(ctx) ? read.episode : null);
         this.sweepWitnesses();
         return pass.report;
       } finally {
@@ -2123,6 +2457,8 @@ export class HostTestRunnerSemaphore {
     cap: number;
     targetedCap: number;
     posture: TestPosture;
+    alternatingSuiteTurns: 'off' | 'observe' | 'enforce';
+    suiteTurn: { validity: 'valid' | 'unknown'; last: 'ordinary' | 'merge-gate' | null; handoffState: 'unused' | 'offered' | 'consumed' | null; nextSuiteClass: 'ordinary' | 'merge-gate' | 'unknown' };
     clampActive: boolean;
     ttlSignalArmed: boolean;
     liveHolders: Array<{ pid: number; hostname: string; acquiredAt: number; ttlMs: number; state: string }>;
@@ -2161,6 +2497,17 @@ export class HostTestRunnerSemaphore {
       });
     }
     const recentEvents = readLedgerTail(this.paths, 50);
+    let nextSuiteClass: 'ordinary' | 'merge-gate' | 'unknown' = 'unknown';
+    if (this.turnHistoryEligible(ctx) && read.turn &&
+        resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns) !== 'off') {
+      const claims = this.liveMergeClaimPids();
+      const waiters = this.listSuiteWaiters();
+      const mergeVisible = waiters.some((w) => w.priority === 'merge-gate' && claims.has(w.pid));
+      const agedVisible = waiters.some((w) => w.priority === 'ordinary' && nowMs - w.since >= SUITE_WAITER_AGING_MS);
+      if (mergeVisible && agedVisible && read.episode?.handoffState !== 'consumed') {
+        nextSuiteClass = read.turn.last === 'ordinary' ? 'merge-gate' : 'ordinary';
+      }
+    }
     const skipHistogram: Record<string, number> = {};
     for (const e of recentEvents) {
       if (e.kind === 'skip' && typeof e.reason === 'string') {
@@ -2171,6 +2518,13 @@ export class HostTestRunnerSemaphore {
       cap: ctx.suiteCap.cap,
       targetedCap: ctx.targetedCap.cap,
       posture: ctx.posture.posture,
+      alternatingSuiteTurns: resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns),
+      suiteTurn: {
+        validity: this.turnHistoryEligible(ctx) && read.turn ? 'valid' : 'unknown',
+        last: this.turnHistoryEligible(ctx) ? read.turn?.last ?? null : null,
+        handoffState: this.turnHistoryEligible(ctx) ? read.episode?.handoffState ?? null : null,
+        nextSuiteClass,
+      },
       clampActive: ctx.clampActive,
       ttlSignalArmed: ctx.ttlSignal.armed,
       liveHolders: liveByLane.suite,

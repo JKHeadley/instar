@@ -13010,6 +13010,14 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       patched = true;
       result.upgraded.push('CLAUDE.md: added fair suite-waiter ordering');
     }
+    // Existing agents receive the dark, host-local alternating-turn guidance too.
+    if (content.includes('Test-Runner Concurrency Bound') && !content.includes('`alternatingSuiteTurns` and `suiteTurn`')) {
+      const line = '- On a host with `alternatingSuiteTurns: enforce` in `~/.instar/host-test-runner-tuning.json`, eligible Studio merge checks and aged ordinary full suites alternate free-slot admissions. A merge child gets one bounded 12-second handoff after an ordinary suite. `observe` records the proposed turn without changing admission; the default is `off`. `GET /test-runner-limiter` → `alternatingSuiteTurns` and `suiteTurn` shows the host\'s mode and validated last admission. When a full suite waits, read this status before changing the host tuning. (Spec: `docs/specs/merge-slot-alternating-turns.md`.)\n';
+      const anchor = '- **"Why is my test run waiting?"';
+      content = content.includes(anchor) ? content.replace(anchor, line + anchor) : content + '\n' + line;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added host-local alternating suite turns');
+    }
 
     // Sender-Rejection Notices (silent-loss-refusal-conservation §2.E) — Agent
     // Awareness + Migration Parity: an agent that doesn't know a "sender not
