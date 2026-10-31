@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { DESKTOP_OPERATOR_CLOCK_SKEW_MS, DESKTOP_OPERATOR_MAX_TTL_MS } from './DesktopOperatorAssertion.js';
 
 /** Durable one-use ledger for desktop operator assertions. A read or write
  * failure denies admission; losing replay state must never enable control. */
@@ -16,8 +17,10 @@ export class DesktopAssertionReplayStore {
 
   record(jti: string, expiresAtMs: number): void {
     this.load();
+    const now = this.now();
     if (!/^[A-Za-z0-9_-]{32}$/.test(jti) || !Number.isSafeInteger(expiresAtMs)
-      || expiresAtMs <= this.now() || expiresAtMs > this.now() + 30_000) {
+      || expiresAtMs <= now
+      || expiresAtMs > now + DESKTOP_OPERATOR_MAX_TTL_MS + DESKTOP_OPERATOR_CLOCK_SKEW_MS) {
       throw new Error('desktop-replay-invalid');
     }
     if (this.consumed.has(jti)) throw new Error('desktop-operator-replayed');

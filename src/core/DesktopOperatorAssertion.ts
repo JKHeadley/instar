@@ -17,8 +17,8 @@ export interface DesktopOperatorAssertion {
   signature: string;
 }
 
-const MAX_TTL_MS = 30_000;
-const CLOCK_SKEW_MS = 2_000;
+export const DESKTOP_OPERATOR_MAX_TTL_MS = 30_000;
+export const DESKTOP_OPERATOR_CLOCK_SKEW_MS = 2_000;
 const MACHINE_ID = /^m_[a-f0-9]{32}$/;
 const DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
@@ -59,7 +59,7 @@ export function mintDesktopOperatorAssertion(input: {
     operation: 'begin',
     jti: randomBytes(24).toString('base64url'),
     issuedAtMs: input.nowMs,
-    expiresAtMs: input.nowMs + MAX_TTL_MS,
+    expiresAtMs: input.nowMs + DESKTOP_OPERATOR_MAX_TTL_MS,
   };
   return { ...unsigned, signature: input.sign(canonicalDesktopOperatorAssertion(unsigned)) };
 }
@@ -98,8 +98,8 @@ export function verifyDesktopOperatorAssertion(input: {
   catch { return { ok: false, reason: 'wrong-browser' }; }
   if (a.browserKeyDigest !== digest || a.browserNonce !== input.browserNonce) return { ok: false, reason: 'wrong-browser' };
   if (a.expiresAtMs <= input.nowMs) return { ok: false, reason: 'expired' };
-  if (a.issuedAtMs > input.nowMs + CLOCK_SKEW_MS) return { ok: false, reason: 'not-yet-valid' };
-  if (a.expiresAtMs <= a.issuedAtMs || a.expiresAtMs - a.issuedAtMs > MAX_TTL_MS) {
+  if (a.issuedAtMs > input.nowMs + DESKTOP_OPERATOR_CLOCK_SKEW_MS) return { ok: false, reason: 'not-yet-valid' };
+  if (a.expiresAtMs <= a.issuedAtMs || a.expiresAtMs - a.issuedAtMs > DESKTOP_OPERATOR_MAX_TTL_MS) {
     return { ok: false, reason: 'ttl-invalid' };
   }
   const key = input.resolveIssuerKey(a.issuerMachineId);
