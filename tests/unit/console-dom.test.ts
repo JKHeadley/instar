@@ -164,8 +164,10 @@ describe('console shell (jsdom)', () => {
     } });
     try {
       const doc = await boot('t');
-      expect(doc.querySelector('#card-promised')?.textContent).toContain('Checking again automatically');
+      // Each read retries once on its own, so three failures in a row are
+      // absorbed on the first load: no "can't tell" ever reaches the page.
       for (let i = 0; i < 80 && reads < 4; i++) await flush();
+      expect(doc.querySelector('#card-promised')?.textContent).not.toContain("Can't tell");
       expect(reads).toBe(4);
       expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
     } finally {

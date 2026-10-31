@@ -27629,7 +27629,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               const cursor = commitmentReplicaStore.cursorFor(machineId);
               const upToDate =
                 cursor.incarnation === advert.incarnation && cursor.sinceSeq >= advert.replicationSeq;
-              if (upToDate) return;
+              // Caught up: record the confirmation so an idle peer reads as current, not stale.
+              if (upToDate) { commitmentReplicaStore.confirmCurrent(machineId, advert); return; }
               const csCfg = config.multiMachine?.coherenceJournal?.commitments;
               const maxPages = csCfg?.maxSyncPagesPerTick ?? 4;
               let since = cursor.incarnation === advert.incarnation ? cursor.sinceSeq : 0;

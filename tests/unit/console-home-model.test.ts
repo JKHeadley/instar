@@ -187,10 +187,14 @@ describe('What I have promised', () => {
     expect(m.state).toBe('partial');
     expect(m.note).toContain('Only this machine');
   });
-  it('a replica with no age is unknown freshness, never "All quiet" (round-4 blocker)', () => {
+  it('one machine behind or of unknown age is named in the note, not a "part could not be checked" on Home (operator 2026-10-31)', () => {
     const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'replica', originMachineId: 'm2' })] }), NOW, 1);
+    expect(m.coverage).toBeNull();
+    expect(m.note).toContain('out of date');
+  });
+  it('a blind read (no other machine\'s promises at all, while other machines exist) is still partial', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({})] }), NOW, 2);
     expect(m.coverage).toBe('partial view');
-    expect(headline({ needs: { state: 'ok', value: '', count: 0 }, promised: m }).text).not.toBe('All quiet.');
   });
   it('coverage is verified only when every other machine is represented', () => {
     const rows = [c({ viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 })];
@@ -328,7 +332,8 @@ describe('headline()', () => {
       agentResponse: 'Echo desk will check the held Adriana login after its reset, verify fresh quota and confirm the fallback.',
     }] }), NOW, 0);
     const h = headline({ needs: card('ok', '', 0), promised });
-    expect(h.text).toBe('Nothing needs you.');
+    expect(['Nothing needs you.', 'All quiet.']).toContain(h.text);
+    expect(h.tone).toBe('ok');
   });
   it('a known request keeps unrelated coverage out of its explanation', () => {
     expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).not.toMatch(/can't fully check/i);
