@@ -38,6 +38,7 @@ describe('merge-gate preparation awareness migration', () => {
     run();
     expect(fs.readFileSync(file, 'utf8')).toBe(once);
     expect(once.split('`suiteWaiters`').length).toBe(2);
+    expect(once.split('`alternatingSuiteTurns` and `suiteTurn`').length).toBe(2);
     expect(once.indexOf('`suiteWaiters`')).toBeLessThan(once.indexOf('Why is my test run waiting?'));
   });
 });

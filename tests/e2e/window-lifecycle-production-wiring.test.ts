@@ -144,7 +144,7 @@ describe('Window lifecycle production wiring', () => {
     history.push(row);
     fs.appendFileSync(path.join(project.stateDir, 'telegram-messages.jsonl'), `${JSON.stringify(row)}\n`);
     const added = await auth(request(server.getApp()).post('/window-lifecycle/evidence')).send({ ...body, obligationId: obligation.id, topicId, messageId: row.messageId, authority: obligation.evidencePolicy.requiredAuthority });
-    expect(added.status, `${obligation.id}: ${JSON.stringify(added.body)}`).toBe(201);
+    expect(added.status, `${obligation.id}: ${JSON.stringify(added.body)} binding=${JSON.stringify(obligation.executorBinding)} producer=session:${row.sessionName} topic=${topicId}`).toBe(201);
   }
 
   async function satisfyEligible(phases: string[]): Promise<any> {
@@ -164,17 +164,22 @@ describe('Window lifecycle production wiring', () => {
 
   async function advanceCadenceTo(target: string): Promise<void> {
     while (Date.parse(clock) < Date.parse(target)) {
+      // Stall duties require every 30-minute boundary. Report duties are due
+      // every three hours and need two evaluation passes before evidence can
+      // bind to the newly assigned responsible role.
       clock = new Date(Math.min(Date.parse(clock) + 30 * 60_000, Date.parse(target))).toISOString();
-      let ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
+      const ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
       syncCommitments(ledger.obligations);
       await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
-      ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
-      syncCommitments(ledger.obligations);
+      const materialized = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
+      syncCommitments(materialized.obligations);
       await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
-      ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
-      const dueReports = ledger.obligations.filter((obligation: any) => /^cadence\.report\.3h@/.test(obligation.id) && Date.parse(obligation.deadline.dueAt) <= Date.parse(clock) && !obligation.evidence.some((evidence: any) => evidence.verifierPassed));
-      for (const report of dueReports) await addManualEvidence(report);
-      await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
+      if ((Date.parse(clock) - Date.parse(BASE)) % (3 * 60 * 60_000) === 0) {
+        const ready = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
+        const dueReports = ready.obligations.filter((obligation: any) => /^cadence\.report\.3h@/.test(obligation.id) && Date.parse(obligation.deadline.dueAt) <= Date.parse(clock) && !obligation.evidence.some((evidence: any) => evidence.verifierPassed));
+        for (const report of dueReports) await addManualEvidence(report);
+        await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
+      }
     }
   }
 

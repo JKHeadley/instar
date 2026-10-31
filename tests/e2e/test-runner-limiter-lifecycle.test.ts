@@ -131,6 +131,8 @@ describe('E2E: /test-runner-limiter is ALIVE through the real AgentServer', () =
       'suite',
       'mergeGatePriority',
       'suiteWaiters',
+      'alternatingSuiteTurns',
+      'suiteTurn',
       'targeted',
       'liveHolders',
       'admittedOpen',
@@ -150,6 +152,8 @@ describe('E2E: /test-runner-limiter is ALIVE through the real AgentServer', () =
     expect(res.body.suite).toMatchObject({ available: HOST_TEST_SUITE_CAP_DEFAULT, saturated: false });
     expect(res.body.mergeGatePriority).toEqual({ active: false });
     expect(res.body.suiteWaiters).toEqual([]);
+    expect(res.body.alternatingSuiteTurns).toBe('off');
+    expect(res.body.suiteTurn).toMatchObject({ validity: 'unknown', last: null, nextSuiteClass: 'unknown' });
     expect(res.body.targeted).toMatchObject({
       available: HOST_TEST_TARGETED_CAP_DEFAULT,
       saturated: false,

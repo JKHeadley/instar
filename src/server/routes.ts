@@ -13850,6 +13850,8 @@ export function createRoutes(ctx: RouteContext): Router {
         cap: status.cap,
         targetedCap: status.targetedCap,
         posture: status.posture,
+        alternatingSuiteTurns: status.alternatingSuiteTurns, // scheduling posture only; merge verdicts live in Local Verify
+        suiteTurn: status.suiteTurn,
         clampActive: status.clampActive,
         ttlSignalArmed: status.ttlSignalArmed,
         liveHolders: status.liveHolders.map(projectHolder),

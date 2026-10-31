@@ -1,0 +1,19 @@
+# Bounded turns for full-suite merge checks
+
+<!-- bump: minor -->
+
+## What Changed
+
+The host test runner can reserve the next free full-suite slot for a waiting merge verifier when an aged ordinary full-suite run is also waiting. The handoff is bounded to 12 seconds, verifies the live holder and claim, and falls back to the existing policy on stale or invalid state. The new `alternatingSuiteTurns` mode is off by default; status exposes its current mode and evidence.
+
+## What to Tell Your User
+
+Merge checks can get a fair turn at the single full-suite slot without interrupting tests that are already running. The feature starts off and will be enabled only after the staged rehearsal and observation period.
+
+## Summary of New Capabilities
+
+An optional, host-local next-slot scheduling policy for merge checks and ordinary full suites, with a visible observe mode and a bounded enforce mode.
+
+## Evidence
+
+The 24-hour baseline, seven-round design review, focused unit and route/lifecycle tests, and exact-head full-suite results are documented with the change. Activation requires the spec's dark, test-agent, and development-agent stages.

@@ -237,6 +237,20 @@ function pidAlive(pid: number): boolean {
 // ── GET /test-runner-limiter ───────────────────────────────────────────────
 
 describe('GET /test-runner-limiter (integration — real routes pipeline)', () => {
+  it('reports the host turn mode and validated admission history through the authenticated route', async () => {
+    writeTuningFile(paths, { v: 1, maxConcurrent: 1, enforcing: true, alternatingSuiteTurns: 'observe' });
+    const app = appWith();
+    const sem = getHostTestRunnerSemaphore();
+    const before = await request(app).get('/test-runner-limiter').set(auth());
+    expect(before.status).toBe(200);
+    expect(before.body.alternatingSuiteTurns).toBe('observe');
+    expect(before.body.suiteTurn.validity).toBe('unknown');
+    const admitted = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(admitted.kind).toBe('acquired');
+    const after = await request(app).get('/test-runner-limiter').set(auth());
+    expect(after.body.suiteTurn).toMatchObject({ validity: 'valid', last: 'ordinary' });
+    if (admitted.kind === 'acquired') sem.release(admitted.id);
+  });
   it('shows the live merge-gate priority claim and its release', async () => {
     const app = appWith();
     const sem = getHostTestRunnerSemaphore();

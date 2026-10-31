@@ -467,6 +467,222 @@ describe('suite waiter tickets — fair aging between merge-gate and ordinary su
   });
 });
 
+describe('alternating suite turns — validated history and bounded offers', () => {
+  it('applies an off flip to a queued ordinary request before its 12-second offer expires', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    let t = 10_000_000_000;
+    const now = () => t;
+    const seed = makeSem(paths, { now });
+    const first = await seed.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind === 'acquired') seed.release(first.id);
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const mergeTicket = path.join(dir, `${'ad'.padEnd(24, '0')}.json`);
+    const refreshMerge = () => {
+      seed.setMergeGatePriority('paused-child', true);
+      fs.writeFileSync(mergeTicket, JSON.stringify({
+        v: 1, id: 'waiter:paused', pid: process.pid, hostname: HOST,
+        priority: 'merge-gate', since: 10_000_000_000, expiresAt: t + 60_000,
+      }));
+    };
+    refreshMerge();
+    let flipped = false;
+    const ordinary = makeSem(paths, { now, sleep: async () => {
+      if (t < 10_000_000_000 + SUITE_WAITER_AGING_MS) t += 30_000;
+      else if (!flipped) {
+        enforcing(paths, { alternatingSuiteTurns: 'off' });
+        flipped = true;
+        t += 1000;
+      } else t += 1000;
+      refreshMerge();
+    } });
+    const result = await ordinary.acquire({ lane: 'suite', runClass: 'background', budgetMs: 20 * 60_000 });
+    expect(result.kind).toBe('acquired');
+    expect(flipped).toBe(true);
+    expect(t).toBeLessThan(10_000_000_000 + SUITE_WAITER_AGING_MS + 12_000);
+    expect(ordinary.status().alternatingSuiteTurns).toBe('off');
+  });
+
+  it('marks history unknown while a live fail-open witness is visible', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem, now } = clockSem(paths);
+    const admitted = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(admitted.kind).toBe('acquired');
+    if (admitted.kind === 'acquired') sem.release(admitted.id);
+    expect(sem.status().suiteTurn.validity).toBe('valid');
+    const witness = (sem as unknown as { writeWitness(): string | null }).writeWitness();
+    expect(witness).not.toBeNull();
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'unknown', last: null });
+    SafeFsExecutor.safeUnlinkSync(witness!, { operation: 'host-test-runner-test:remove-witness' });
+    expect(sem.status().suiteTurn.validity).toBe('unknown');
+    const repaired = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(repaired.kind).toBe('acquired');
+    expect(sem.status().suiteTurn.validity).toBe('valid');
+  });
+
+  it('rejects a future-version free-slot episode even when the file proof matches', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem } = clockSem(paths);
+    const admitted = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(admitted.kind).toBe('acquired');
+    if (admitted.kind === 'acquired') sem.release(admitted.id);
+    const turn = JSON.parse(fs.readFileSync(paths.holders, 'utf8')).suiteTurn;
+    const writer = sem as unknown as { writeHolders(rows: unknown[], turn: unknown, episode: unknown): void };
+    writer.writeHolders([], turn, { v: 2, id: 'future', startedAt: 10_000_000_000, offeredTicketId: null, handoffState: 'offered' });
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'unknown', last: null });
+  });
+
+  it('lets an aged ordinary requester take a free slot after one missed 12-second merge handoff', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    let t = 10_000_000_000;
+    const now = () => t;
+    const seed = makeSem(paths, { now });
+    const first = await seed.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind === 'acquired') seed.release(first.id);
+    seed.setMergeGatePriority('paused-child', true);
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const pausedTicket = path.join(dir, `${'ac'.padEnd(24, '0')}.json`);
+    const refreshPaused = () => {
+      seed.setMergeGatePriority('paused-child', true);
+      fs.writeFileSync(pausedTicket, JSON.stringify({
+        v: 1, id: 'waiter:paused', pid: process.pid, hostname: HOST,
+        priority: 'merge-gate', since: 10_000_000_000, expiresAt: t + 60_000,
+      }));
+    };
+    refreshPaused();
+    const ordinary = makeSem(paths, { now, sleep: async () => {
+      t += t < 10_000_000_000 + SUITE_WAITER_AGING_MS ? 30_000 : 13_000;
+      refreshPaused();
+    } });
+    const result = await ordinary.acquire({ lane: 'suite', runClass: 'background', budgetMs: 20 * 60_000 });
+    expect(result.kind).toBe('acquired');
+    expect(t).toBeGreaterThanOrEqual(10_000_000_000 + SUITE_WAITER_AGING_MS + 12_000);
+    expect(ordinary.status().suiteTurn.last).toBe('ordinary');
+    const offerOutcomes = readLedgerTail(paths, 50).filter((event) => event.kind === 'suite-turn-offer-outcome');
+    expect(offerOutcomes.map((event) => event.outcome)).toEqual(['expired']);
+  });
+
+  it('admits merge after ordinary, then an aged ordinary waiter ahead of another merge', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    let t = 10_000_000_000;
+    const now = () => t;
+    const sem = makeSem(paths, { now });
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind !== 'acquired') return;
+    sem.release(first.id);
+
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const ordinaryTicket = path.join(dir, `${'aa'.padEnd(24, '0')}.json`);
+    fs.writeFileSync(ordinaryTicket, JSON.stringify({
+      v: 1, id: 'waiter:aa', pid: 41_000, hostname: HOST, priority: 'ordinary',
+      since: t - SUITE_WAITER_AGING_MS - 1, expiresAt: t + 60_000,
+    }));
+    sem.setMergeGatePriority('child', true);
+    const advisoryTicket = path.join(dir, `${'ab'.padEnd(24, '0')}.json`);
+    fs.writeFileSync(advisoryTicket, JSON.stringify({
+      v: 1, id: 'waiter:ab', pid: process.pid, hostname: HOST, priority: 'merge-gate',
+      since: t - 1, expiresAt: t + 60_000,
+    }));
+    expect(sem.status().suiteTurn.nextSuiteClass).toBe('merge-gate');
+    SafeFsExecutor.safeUnlinkSync(advisoryTicket, { operation: 'host-test-runner-test:remove-ticket' });
+    const merge = await sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 });
+    expect(merge.kind).toBe('acquired');
+    expect(sem.status().suiteTurn.last).toBe('merge-gate');
+    if (merge.kind !== 'acquired') return;
+    SafeFsExecutor.safeUnlinkSync(ordinaryTicket, { operation: 'host-test-runner-test:remove-ticket' });
+
+    const mergeTicket = path.join(dir, `${'bb'.padEnd(24, '0')}.json`);
+    const ordinary = makeSem(paths, {
+      now,
+      sleep: async () => {
+        t += 60_000;
+        sem.setMergeGatePriority('child', true);
+        fs.writeFileSync(mergeTicket, JSON.stringify({
+          v: 1, id: 'waiter:bb', pid: process.pid, hostname: HOST, priority: 'merge-gate',
+          since: 10_000_000_000, expiresAt: t + 60_000,
+        }));
+        if (t >= 10_000_000_000 + SUITE_WAITER_AGING_MS + 60_000) sem.release(merge.id);
+      },
+    });
+    const next = await ordinary.acquire({ lane: 'suite', runClass: 'background', budgetMs: 20 * 60_000 });
+    expect(next.kind).toBe('acquired');
+    expect(ordinary.status().suiteTurn.last).toBe('ordinary');
+  });
+
+  it('rejects a legacy holders rewrite even when it preserves turn metadata, and does not launder it on targeted writes', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem } = clockSem(paths);
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind !== 'acquired') return;
+    sem.release(first.id);
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'valid', last: 'ordinary' });
+
+    // The old writer preserves unknown top-level fields but atomically rewrites holders.
+    const raw = fs.readFileSync(paths.holders, 'utf-8');
+    const tmp = `${paths.holders}.legacy`;
+    fs.writeFileSync(tmp, raw);
+    fs.renameSync(tmp, paths.holders);
+    expect(sem.status().suiteTurn.validity).toBe('unknown');
+
+    const targeted = await sem.acquire({ lane: 'targeted', runClass: 'background', fileCount: 1, budgetMs: 0 });
+    expect(targeted.kind).toBe('acquired');
+    if (targeted.kind === 'acquired') sem.release(targeted.id);
+    expect(sem.status().suiteTurn.validity).toBe('unknown');
+
+    const repaired = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(repaired.kind).toBe('acquired');
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'valid', last: 'ordinary' });
+  });
+
+  it('keeps a consumed offer tied to one free-slot episode when merge tickets churn', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem, now, advance } = clockSem(paths);
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind !== 'acquired') return;
+    sem.release(first.id);
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const ticket = (name: string, priority: 'ordinary' | 'merge-gate', since: number) => {
+      fs.writeFileSync(path.join(dir, `${name.padEnd(24, '0')}.json`), JSON.stringify({
+        v: 1, id: `waiter:${name}`, pid: priority === 'merge-gate' ? process.pid : 41_000,
+        hostname: HOST, priority, since, expiresAt: now() + 60_000,
+      }));
+    };
+    ticket('aa', 'ordinary', now() - SUITE_WAITER_AGING_MS - 1);
+    ticket('bb', 'merge-gate', now() - 1000);
+    sem.setMergeGatePriority('child', true);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    const offered = JSON.parse(fs.readFileSync(paths.holders, 'utf-8')).suiteFreeEpisode;
+    expect(offered.handoffState).toBe('offered');
+    advance(12_001);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    const consumed = JSON.parse(fs.readFileSync(paths.holders, 'utf-8')).suiteFreeEpisode;
+    expect(consumed).toMatchObject({ id: offered.id, startedAt: offered.startedAt, handoffState: 'consumed' });
+    SafeFsExecutor.safeUnlinkSync(path.join(dir, `${'bb'.padEnd(24, '0')}.json`), { operation: 'host-test-runner-test:remove-ticket' });
+    ticket('cc', 'merge-gate', now() - 500);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(JSON.parse(fs.readFileSync(paths.holders, 'utf-8')).suiteFreeEpisode)
+      .toMatchObject({ id: offered.id, startedAt: offered.startedAt, handoffState: 'consumed' });
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // §2.4 ReclaimPolicy — DEFAULT capacity-reclaim-only
 // ═══════════════════════════════════════════════════════════════════════════
