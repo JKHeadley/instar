@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readWindowsDesktopUnicastAddresses, selectWindowsDesktopBridgeAddress, validateWindowsDesktopBridgeAddress } from '../dist/core/WindowsDesktopBridgeAddress.js';
+import { classifyWindowsDesktopPrepareFailure } from '../dist/core/WindowsDesktopBootstrapStatus.js';
 
 let installPhase = 'preflight';
 process.on('uncaughtException', error => {
@@ -125,20 +126,21 @@ if (staged.taskRunning) {
         const result = JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
         return result;
       }
-      throw new Error(`Windows companion ${op} refused`);
+      throw new Error(`companion-reply-http-${response.status}`);
   };
+  let lastPrepareFailure = 'prepare-reply-invalid';
   for (let attempt = 0; attempt < 8 && !updateToken; attempt++) {
     try {
       const prepared = await request('prepare-update', {});
       if (prepared?.ok === true && /^[A-Za-z0-9_-]{32}$/.test(prepared.updateToken)) {
         updateToken = prepared.updateToken;
-      }
-    } catch {
-      if (attempt === 7) throw new Error('Running Windows companion did not prepare for update');
+      } else lastPrepareFailure = 'prepare-reply-invalid';
+    } catch (error) {
+      lastPrepareFailure = classifyWindowsDesktopPrepareFailure(error);
     }
     if (!updateToken) await new Promise(resolve => setTimeout(resolve, 1_000));
   }
-  if (!updateToken) throw new Error('Running Windows companion did not return an update token');
+  if (!updateToken) throw new Error(`Running Windows companion did not prepare for update: ${lastPrepareFailure}`);
   cancelUpdate = () => request('cancel-update', { updateToken });
   try {
     const committed = await request('commit-update', { updateToken });

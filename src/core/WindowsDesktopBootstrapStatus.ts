@@ -9,6 +9,19 @@ export interface WindowsDesktopBootstrapStatus {
   code?: string;
 }
 
+/** Collapse a failed update handshake to a fixed, non-sensitive reason. */
+export function classifyWindowsDesktopPrepareFailure(error: unknown): string {
+  const value = error as { message?: unknown; name?: unknown; cause?: { code?: unknown } } | null;
+  const message = typeof value?.message === 'string' ? value.message : '';
+  if (message === 'companion-reply-http-403') return 'prepare-http-forbidden';
+  if (message === 'companion-reply-http-404') return 'prepare-http-not-found';
+  if (message.startsWith('companion-reply-http-')) return 'prepare-http-other';
+  if (value?.cause?.code === 'ECONNREFUSED') return 'prepare-connect-refused';
+  if (value?.cause?.code === 'ETIMEDOUT' || value?.cause?.code === 'ENETUNREACH') return 'prepare-connect-unavailable';
+  if (value?.name === 'TimeoutError') return 'prepare-timeout';
+  return 'prepare-reply-invalid';
+}
+
 const phases = new Set<WindowsDesktopBootstrapPhase>(['preflight', 'address', 'stage', 'update', 'install', 'confirm']);
 const codes: Array<[RegExp, string]> = [
   [/Windows companion installer requires WSL/i, 'wsl-unavailable'],
@@ -20,6 +33,13 @@ const codes: Array<[RegExp, string]> = [
   [/Windows companion stage did not confirm/i, 'stage-unconfirmed'],
   [/Running companion has no shared secret/i, 'companion-secret-missing'],
   [/Existing Windows companion secret is invalid/i, 'companion-secret-invalid'],
+  [/prepare-http-forbidden/i, 'prepare-http-forbidden'],
+  [/prepare-http-not-found/i, 'prepare-http-not-found'],
+  [/prepare-http-other/i, 'prepare-http-other'],
+  [/prepare-connect-refused/i, 'prepare-connect-refused'],
+  [/prepare-connect-unavailable/i, 'prepare-connect-unavailable'],
+  [/prepare-timeout/i, 'prepare-timeout'],
+  [/prepare-reply-invalid/i, 'prepare-reply-invalid'],
   [/Running Windows companion did not prepare/i, 'prepare-update-failed'],
   [/Running Windows companion did not return an update token/i, 'update-token-missing'],
   [/Windows companion installer did not confirm/i, 'install-unconfirmed'],

@@ -82,3 +82,18 @@ The review found no new authority or irreversible side effect. The main risk is 
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect and no self-triggered controller added — not applicable.
+
+## Follow-up: Windows update handshake classification
+
+The first live result was `phase=update, code=prepare-update-failed`, which still grouped connection failure, a signed HTTP refusal, timeout, and malformed reply. The follow-up maps only those failure classes to fixed codes. It does not add an update bypass or change the requirement for an update token before replacing a running Windows task. The code runs only after desktop opt-in during WSL bootstrap. If the companion cannot prepare, the desktop stays off while the Instar agent remains reachable. Addresses, paths, HTTP bodies, and keys stay out of the diagnostic. The focused classifier test covers both the observed generic failure and each new boundary; HTTP and production-boot coverage remain on the same route/provider path. Live Mama PC retest after package activation is required to identify the cause and to prove the eventual repair.
+
+### Follow-up decision review
+
+1. **Over-block:** A failed prepare still turns desktop off, as before. Classification does not reject a new input; a malformed successful reply remains a failure.
+2. **Under-block:** Unknown fetch errors become `prepare-reply-invalid`, so diagnosis can still be coarse. Raw errors never escape through the maintenance API.
+3. **Layer:** The installer owns the transport observation; the status parser owns the fixed vocabulary. The existing desktop admission check remains the authority.
+4. **Signal versus authority:** This is a maintenance signal. No brittle error mapping can grant or block a desktop session. A failed token handoff still blocks replacement under the approved update protocol.
+5. **Interactions:** A later successful boot writes `ready`, clearing the current boot's failure. Per-process nonce rejects prior-boot status. No retry timer or task restart is added.
+6. **External surfaces:** Bearer-only diagnostics can show a more precise fixed code. The PIN viewer, machine picker, grant, and input protocol are unchanged.
+7. **Multi-machine:** Status is local to the Windows WSL host by design. The Studio front does not proxy this maintenance detail or display paths/addresses.
+8. **Rollback:** Revert the classifier and installer message in a patch release. Existing failure status remains bounded and expires at process restart; no migration is needed.
