@@ -7,7 +7,8 @@ import type { OriginSessionLifecycle } from '../../../src/messaging/telegram-ori
 import { OriginTransportCancelledBeforeNetwork } from '../../../src/messaging/telegram-origin/OriginTransportCancellation.js';
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { TelegramOriginRuntime } from '../../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
-import { telegramFetch } from '../../../src/messaging/telegram-egress.js';
+import { telegramFetch, TELEGRAM_API_CALL_TIMEOUT_MS } from '../../../src/messaging/telegram-egress.js';
+import { describeTransportUnknown } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
 import { compileOriginWorker, temporaryState } from '../../helpers/telegramOriginStore.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
 
@@ -70,7 +71,7 @@ describe('Telegram network deadlines after origin preparation', () => {
     await expect(h.runtime.service.runWithSessionToken(h.sessionToken, () => lifeline.apiCall('sendMessage', {
       chat_id: '-100123', message_thread_id: 42, text: 'Requested Lifeline status',
     }))).resolves.toMatchObject({ message_id: 27 });
-    expect(h.review).toHaveBeenCalledOnce(); expect(timeout).toHaveBeenCalledWith(15_000);
+    expect(h.review).toHaveBeenCalledOnce(); expect(timeout).toHaveBeenCalledWith(TELEGRAM_API_CALL_TIMEOUT_MS);
     expect(h.network.mock.calls[0][1].signal).toBe(deadline.signal);
     await lifeline.apiCall('getUpdates', { timeout: 30 });
     expect(timeout).toHaveBeenLastCalledWith(60_000);
@@ -112,6 +113,29 @@ describe('Telegram network deadlines after origin preparation', () => {
     expect((await h.runtime.store.listOrigins()).records[0].children[0].state).toBe('outcome-unknown');
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
     expect(h.network).toHaveBeenCalledOnce();
+  });
+  it('logs why a send became outcome-unknown, with the error and elapsed time, never the token', async () => {
+    const h = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.network.mockImplementation(async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) }); });
+    await expect(h.send({ networkTimeoutMs: TELEGRAM_API_CALL_TIMEOUT_MS })).rejects.toMatchObject({ outcome: 'outcome-unknown' });
+    const lines = warn.mock.calls.map(call => String(call[0])).filter(line => line.includes('outcome unknown'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[telegram-origin\] sendMessage outcome unknown after \d+ms \(operation [0-9a-f-]+\): TypeError: fetch failed; cause Error: socket hang up \(ECONNRESET\)$/);
+    expect(lines[0]).not.toContain(h.token.split(':')[1]);
+  });
+  it('waits longer for a send than Telegram holds a throttled request, inside the relay budget', () => {
+    // Measured 2026-10-26: throttled chat-scoped requests answered after 14-33 s (200 or 429).
+    expect(TELEGRAM_API_CALL_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
+    // telegram-reply.sh gives the whole request --max-time 125.
+    expect(TELEGRAM_API_CALL_TIMEOUT_MS).toBeLessThan(125_000);
+  });
+  it('redacts a bot token that appears inside an error message', () => {
+    const fakeToken = ['8615114091', 'A'.repeat(35)].join(':');
+    const line = describeTransportUnknown('sendMessage', 'op-1', new Error(`bad url /bot${fakeToken}/x`), 12);
+    expect(line).toContain('[REDACTED]');
+    expect(line).not.toContain(fakeToken);
+    expect(describeTransportUnknown('sendMessage', 'op-2', 'plain', 3)).toBe('[telegram-origin] sendMessage outcome unknown after 3ms (operation op-2): plain');
   });
   it('keeps the deadline live after headers while the receipt body is read', async () => {
     const h = await harness(), deadline = new AbortController();

@@ -105,6 +105,21 @@ async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   } finally { if (timer) clearTimeout(timer); }
 }
 /** Preparation, recording and sole-outbox execution. Evidence copies never grant a claim. */
+/**
+ * One log line for a send whose network call threw after it was invoked (outcome unknown).
+ * Names the method, the operation, the error and how long the network wait lasted, so a run
+ * of these reads as "Telegram answered slowly" or "the connection broke" instead of silence.
+ * Never includes the request URL; anything shaped like a bot token is redacted.
+ */
+export function describeTransportUnknown(method: string, operationId: string, error: unknown, elapsedMs: number): string {
+  const describe = (value: unknown): string => value instanceof Error
+    ? `${value.name}: ${value.message}${(value as { code?: unknown }).code ? ` (${String((value as { code?: unknown }).code)})` : ''}`
+    : String(value);
+  const cause = error instanceof Error && error.cause !== undefined ? `; cause ${describe(error.cause)}` : '';
+  const text = `[telegram-origin] ${method} outcome unknown after ${elapsedMs}ms (operation ${operationId}): ${describe(error)}${cause}`;
+  return text.replace(/\d{6,}:[A-Za-z0-9_-]{30,}/g, '[REDACTED]');
+}
+
 export class TelegramOriginService {
   readonly #scope = new AsyncLocalStorage<OriginScope>();
   readonly #producers = new Map<string, TelegramOriginProducer>();
@@ -608,6 +623,7 @@ export class TelegramOriginService {
         await this.authorizeOriginDispatch(operation.record);
         this.authorizeSendPolicyDispatch(operation.record);
         let response: Response;
+        const networkStartedAt = Date.now();
         try { response = prepared ? await prepared.send() : await network(Object.freeze(request)); }
         catch (error) {
           const localRefusal = consumeOriginLocalRefusal(error, request);
@@ -624,6 +640,9 @@ export class TelegramOriginService {
               ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
             return this.#hold(operation, reason);
           }
+          // The only trace of WHY a send became outcome-unknown. Without it an hour of Telegram
+          // throttling (2026-10-26) left server.log empty while every send was held.
+          console.warn(describeTransportUnknown(request.method, operation.record.operationId, error, Date.now() - networkStartedAt));
           await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
           throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');
         }
