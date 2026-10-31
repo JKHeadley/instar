@@ -179,7 +179,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
     const valid = Array.isArray(files) && files.length >= 1 && files.length <= 3
       && files.every((f) => typeof f === 'string' && f.length <= 300
         && /^[A-Za-z0-9_./-]+\.test\.ts$/.test(f) && !f.startsWith('/')
-        && !f.split('/').includes('..') && !f.includes('//')
+        && !f.split('/').some((part) => part === '' || part === '.' || part === '..')
         && classifyTestPath(f).kind === 'laned')
       && new Set(files).size === files.length
       && [...files].sort().every((f, i) => f === files[i]);

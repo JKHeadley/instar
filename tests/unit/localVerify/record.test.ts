@@ -107,7 +107,7 @@ describe('validateRecord', () => {
     expect(validateRecord(rec({ outcome: 'failure', failedFiles: files })).ok).toBe(true);
     for (const bad of [
       [], [...files].reverse(), [files[0], files[0]],
-      ['tests/unit/../fixtures/a.test.ts'], ['src/outside.test.ts'],
+      ['tests/unit/../fixtures/a.test.ts'], ['tests/unit/./a.test.ts'], ['src/outside.test.ts'],
       ['tests/unit/a.test.ts', 'tests/unit/b.test.ts', 'tests/unit/c.test.ts', 'tests/unit/d.test.ts'],
     ]) {
       const v = validateRecord(rec({ outcome: 'failure', failedFiles: bad }));
