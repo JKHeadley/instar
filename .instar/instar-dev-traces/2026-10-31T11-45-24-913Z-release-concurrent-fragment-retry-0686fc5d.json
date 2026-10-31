@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "release-concurrent-fragment-retry",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-31T11:45:24.913Z",
+  "artifactPath": "upgrades/side-effects/release-concurrent-fragment-retry.md",
+  "artifactSha256": "90cf1fa3e8e7a60f7ee1fbf10ac50704ac05c31f07ea35ce79f9271395df5b33",
+  "specPath": "docs/specs/local-release.md",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "docs/specs/release-concurrent-fragment-retry.eli16.md",
+    "scripts/lib/release-local-steps.mjs",
+    "tests/unit/release-local-parity.test.ts",
+    "tests/unit/release-local-steps.test.ts",
+    "upgrades/next/release-concurrent-fragment-retry.md",
+    "upgrades/side-effects/release-concurrent-fragment-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Release tag placement is externally durable, so this narrow retry repair uses the approved local-release specification, a real Git regression, and independent second-pass review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "gpt-6-astra",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
