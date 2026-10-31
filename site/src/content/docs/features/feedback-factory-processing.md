@@ -60,6 +60,56 @@ Instar agent under deterministic safety floors; human approval is reserved for e
 and break-glass cases. Every accepted work item has a stable key, so retries, crashes, and
 concurrent ticks converge on one Initiative link.
 
+## Which component owns each stage
+
+These components have distinct responsibilities when tracing a report from intake to a
+reviewed fix. The names below are useful when a stage is stalled: the upstream stage can
+be healthy while the next stage is paused or at capacity.
+
+| Component | Responsibility |
+|---|---|
+| `InboxDrainer` | Brings durable incoming reports into the canonical local store, deduplicating by feedback ID. |
+| `FeedbackProcessingService` | Reloads that store and runs a bounded clustering pass. |
+| `FeedbackDrainService` | Advances operated readiness work through bounded owner-run ticks. |
+| `FeedbackReadinessArbiter` | Gets the registered model's readiness decision within the approved floors. |
+| `FeedbackDrainStore` | Persists work, owner fences, authority and call accounting across restarts. |
+| `FeedbackDrainTickProxy` | Forwards a non-owner's tick request to the canonical owner. |
+| `FeedbackInitiativeConsumer` | Hands accepted work to its linked Initiative. |
+| `FeedbackConsumerPromotionStore` | Records which consumer proposal set may hand off live work. |
+| `FeedbackDrainBackupCadence` | Schedules and records backups for the operated drain. |
+| `FeedbackTriageStore` | Holds triage decisions separately from report and cluster state. |
+| `FeedbackTriageArbiter` | Calls the registered model and checks the response contract. |
+| `FeedbackTriageService` | Runs the triage tick, applies decisions and quota pauses. |
+| `FeedbackExecutorService` | Starts bounded confined fix attempts and reconciles open PRs through review and merge. |
+
+Triage account selection must bind a verified subscription and a fresh quota reading to
+the model call before `FeedbackTriageArbiter` can return a disposition. A paused sorter
+does not imply that intake or clustering stopped; check each stage's status separately.
+
+## Capacity and queue diagnostics
+
+The feedback pipeline also depends on shared account, model, and queue services. These
+names identify the code responsible for each observation when a stage stops advancing:
+
+| Component | What to inspect |
+|---|---|
+| `SubscriptionPoolAuthority` | Whether a subscription pool record is valid and can be trusted. |
+| `SubscriptionLoginLedger` | The durable record of login and refresh outcomes. |
+| `SubscriptionReloginStore` | State held while a subscription login needs repair. |
+| `SubscriptionReloginService` | The supervised repair path for a subscription login. |
+| `IntelligenceRouter` | Which provider a component's model call actually uses. |
+| `SpawnCapIntelligenceProvider` | The per-call host capacity bound before a model process starts. |
+| `QueuePace` | The measured arrival and completion rates, and the resulting pace verdict. |
+| `QueuePaceAdapters` | How each queue's raw events become bounded pace observations. |
+| `QueuePaceLedger` | Durable cursors and evaluations for those observations. |
+| `QueuePaceTuner` | Optional extra triage ticks, subject to fresh quota and owner checks. |
+| `AutonomousThroughputFloor` | Whether autonomous work produced actual deliverables during its window. |
+| `CiFailurePoller` | CI failures that keep a fix PR from being accepted. |
+| `GreenPrAutoMerger` | The normal green-PR merge path; executor PRs have their own review path. |
+
+A healthy intake count only proves reports arrived. For an end-to-end pace claim, inspect
+the triage decisions, reviewed fixes merged, and their rate against new high-priority work.
+
 ## How it is gated
 
 Resolution goes through the standard development-agent gate
