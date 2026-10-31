@@ -25,6 +25,20 @@ export const CROSS_FAMILY_REVIEWERS: readonly string[] = ['codex-cli', 'gemini-c
 /** The Claude-side reviewer (the agent's own careful read, run as a clean door with no stake in the change). */
 export const CLAUDE_REVIEWER = 'claude-code';
 
+/** Which model leads the safety review. Both families are still required to admit a merge. */
+export type FeedbackReviewLead = 'astra' | 'opus';
+export const FEEDBACK_REVIEW_PASS_PREFIX = 'pass:feedback-routing-v1:';
+
+/** Conservative routing from persisted triage facts and the actual PR paths. */
+export function feedbackReviewLead(input: {
+  severity: string | null; effort: string | null; needsSpec: boolean | null; changedPaths: string[];
+}): FeedbackReviewLead {
+  if (!input.severity || !input.effort) return 'astra';
+  if (input.severity === 'critical' || input.needsSpec !== false || input.effort === 'l' || input.effort === 'xl') return 'astra';
+  if (input.changedPaths.some((path) => /(?:auth|crypt|secret|security|credential|keychain|token|password|pin|permission|sandbox|reviewgate|audit|configfilewriter)/i.test(path))) return 'astra';
+  return 'opus';
+}
+
 export interface ReviewerOutcome {
   family: string;
   model: string | null;
@@ -143,6 +157,19 @@ export function judgeIndependentReview(outcomes: ReviewerOutcome[]): { pass: boo
   const claudePass = claude.find(passed);
   if (!claudePass) return { pass: false, reason: claude.some((o) => o.status === 'degraded') ? 'claude-reviewer-degraded' : 'claude-reviewer-unavailable' };
   return { pass: true, reason: `pass:${crossPass.family}+${claudePass.family}` };
+}
+
+/** Feedback's selected models are required; Gemini cannot replace a failed Astra/Sol call. */
+export function judgeRoutedFeedbackReview(outcomes: ReviewerOutcome[], lead: FeedbackReviewLead): { pass: boolean; reason: string } {
+  const base = judgeIndependentReview(outcomes);
+  if (!base.pass) return base;
+  const expectedCodex = lead === 'astra' ? 'gpt-6-astra' : 'gpt-6-sol';
+  const codex = outcomes.find((o) => o.family === 'codex-cli' && o.status === 'ok' && (o.verdict === 'CLEAN' || o.verdict === 'MINOR ISSUES'));
+  if (!codex) return { pass: false, reason: 'required-codex-unavailable' };
+  if (codex.model !== expectedCodex) return { pass: false, reason: 'required-codex-model-mismatch' };
+  const claude = outcomes.find((o) => o.family === CLAUDE_REVIEWER && o.status === 'ok' && (o.verdict === 'CLEAN' || o.verdict === 'MINOR ISSUES'));
+  if (!claude || claude.model !== 'claude-opus-5-5') return { pass: false, reason: 'required-opus-model-mismatch' };
+  return { pass: true, reason: `${FEEDBACK_REVIEW_PASS_PREFIX}${lead}:${expectedCodex}+claude-opus-5-5` };
 }
 
 /** True when a refusal is about the CHANGE (recorded against the head, listed once) rather than about a reviewer being away (retried). */

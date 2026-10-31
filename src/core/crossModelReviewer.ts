@@ -1134,16 +1134,19 @@ export const GROK_REVIEWER_MODEL = 'grok-4.6';
 export const CLAUDE_REVIEWER_DEFAULT_MODEL = 'claude-fable-5';
 
 /**
- * The accept-set a config override (`specConverge.reviewers.anthropic.model`) is
- * validated against (§1.3). A concrete-but-non-frontier id — e.g.
+ * The default frontier accept-set for a config override (§1.3). A concrete
+ * id outside this set and the explicit operator set — e.g.
  * `claude-opus-4-8` — is REJECTED (`override-not-frontier`), never silently
- * honored, because a misconfigured override could otherwise re-pin the reviewer
- * to opus and re-create the exact door-penalty gap this spec closes. Kept fresh
+ * honored. The exact Opus 5.5 exception below records the operator's later
+ * feedback-routing decision. Kept fresh
  * by the same freshness lint that pins `CLAUDE_REVIEWER_DEFAULT_MODEL`, so this
  * "derived-from-the-manifest frontier set" stays current structurally rather than
  * by willpower (Structure > Willpower).
  */
 export const CLAUDE_REVIEWER_FRONTIER_MODELS: readonly string[] = [CLAUDE_REVIEWER_DEFAULT_MODEL];
+
+/** Operator-authorized concrete review pin. It is never a default or fallback. */
+export const CLAUDE_REVIEWER_EXPLICIT_MODELS: readonly string[] = ['claude-opus-5-5'];
 
 /** The default Claude config-home path (`$CLAUDE_CONFIG_DIR` or `~/.claude`). */
 function defaultClaudeConfigHome(env: NodeJS.ProcessEnv = process.env): string {
@@ -1203,7 +1206,7 @@ export type ClaudeReviewerModelResolution =
  * Resolve the Claude reviewer's concrete model (§1.3), with NO silent fallback:
  *   1. a config override (`specConverge.reviewers.anthropic.model`) if set — it
  *      MUST be a concrete id (`isConcreteReviewerModel`) AND a member of the
- *      frontier accept-set (`CLAUDE_REVIEWER_FRONTIER_MODELS`); a non-frontier
+ *      frontier accept-set or the explicit operator set; an unapproved
  *      concrete id (e.g. `claude-opus-4-8`) is REJECTED (`override-not-frontier`);
  *   2. else the default pin `CLAUDE_REVIEWER_DEFAULT_MODEL` (`claude-fable-5`).
  * A rejected override degrades the round LOUDLY (§1.4) — it is never coerced to
@@ -1219,7 +1222,7 @@ export function resolveClaudeReviewerModel(
     if (!isConcreteReviewerModel(id)) {
       return { ok: false, reason: 'override-not-concrete', model: id };
     }
-    if (!CLAUDE_REVIEWER_FRONTIER_MODELS.includes(id)) {
+    if (!CLAUDE_REVIEWER_FRONTIER_MODELS.includes(id) && !CLAUDE_REVIEWER_EXPLICIT_MODELS.includes(id)) {
       return { ok: false, reason: 'override-not-frontier', model: id };
     }
     return { ok: true, model: id };
@@ -1311,7 +1314,7 @@ export interface ReviewerConfig {
       anthropic?: {
         /** Omitted ⇒ developmentAgent gate (live-on-dev / dark-fleet); explicit wins. */
         enabled?: boolean;
-        /** Optional concrete frontier model override, validated in §1.3. */
+        /** Optional concrete allowlisted model override, validated in §1.3. */
         model?: string;
       };
       /**
@@ -1388,6 +1391,8 @@ export interface ReviewerInvokeArgs {
    * Absent → the entry runs its own real-host detect, as before (back-compat).
    */
   detectionOverride?: CrossModelDetectionResult;
+  /** Feedback safety-review selection, verified against the concrete Codex tier map. */
+  codexModelOverride?: 'astra' | 'sol';
   /**
    * Agent config for the claude clean-door family (REVIEWER-DOOR-REWIRING §1.3):
    * the model override is resolved + validated from this at invocation. Ignored
@@ -1438,12 +1443,13 @@ const codexReviewer: SupportedReviewerFramework = {
   detect: (inputs) => detectCodexReviewer(inputs),
   review: async (args) => {
     const detection = args.detectionOverride ?? detectCodexReviewer();
-    const model = detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
+    const tier = args.codexModelOverride === 'sol' ? 'balanced' : REVIEW_MODEL_TIER;
+    const model = args.codexModelOverride ? resolveCliModelFlag(tier) : detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
     const tag = `cross-model:codex-cli:${model}`;
 
     // Fail-loud model canary (Piece 3): NEVER silently review with a
     // tier-word model — a fall-through 'capable' is a dead reviewer.
-    if (!isConcreteReviewerModel(model)) {
+    if (!isConcreteReviewerModel(model) || (args.codexModelOverride && model !== (args.codexModelOverride === 'sol' ? 'gpt-6-sol' : 'gpt-6-astra'))) {
       return {
         status: 'degraded',
         framework: 'codex-cli',
@@ -1477,7 +1483,8 @@ const codexReviewer: SupportedReviewerFramework = {
     let raw: string;
     try {
       raw = await provider.evaluate(args.promptText, {
-        model: REVIEW_MODEL_TIER,
+        model: tier,
+        strictModelPin: true,
         timeoutMs: args.timeoutMs,
         attribution: { component: 'crossModelReviewer' }, // attribution for /metrics/features
       });
@@ -2601,6 +2608,7 @@ async function invokeReviewerWithContextGuard(
     assembled: AssembledPrompt;
     timeoutMs?: number;
     providerOverride?: ReviewerInvokeArgs['providerOverride'];
+    codexModelOverride?: ReviewerInvokeArgs['codexModelOverride'];
     config?: ReviewerConfig;
   },
 ): Promise<ReviewerResult> {
@@ -2652,6 +2660,7 @@ async function invokeReviewerWithContextGuard(
     // Hand the already-computed detection down so the entry never re-probes
     // the host (and tests stay hermetic to the injected inputs).
     detectionOverride: detection,
+    ...(args.codexModelOverride ? { codexModelOverride: args.codexModelOverride } : {}),
     ...(args.config ? { reviewerConfig: args.config } : {}),
     ...(args.providerOverride ? { providerOverride: args.providerOverride } : {}),
   });
@@ -2662,6 +2671,7 @@ export async function runCrossModelReview(args: {
   timeoutMs?: number;
   detectInputs?: CrossModelDetectInputs;
   providerOverride?: ReviewerInvokeArgs['providerOverride'];
+  codexModelOverride?: ReviewerInvokeArgs['codexModelOverride'];
   /** Agent config for the config-gated claude clean-door family (§1.5). */
   config?: ReviewerConfig;
   /**

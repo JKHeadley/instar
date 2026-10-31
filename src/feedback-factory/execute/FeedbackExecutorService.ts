@@ -39,7 +39,7 @@ import {
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
-import { REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, isSpecReviewHead, judgeIndependentReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
+import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
 import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
@@ -86,7 +86,7 @@ export interface ConfinedSessionPort {
 
 /** Runs the independent reviewers over one prompt (one outcome per family that was asked). */
 export interface IndependentReviewPort {
-  run(input: { prompt: string }): Promise<ReviewerOutcome[]>;
+  run(input: { prompt: string; lead?: FeedbackReviewLead }): Promise<ReviewerOutcome[]>;
 }
 
 /** Consecutive saturated admission checks before one degradation report (12 × 30 min ≈ 6 h). */
@@ -1433,6 +1433,13 @@ export class FeedbackExecutorService {
         this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, headSha: pr.headRefOid, reason: 'merge-refused:head-moved', disarmFailed: false });
         return;
       }
+      if (row.reviewVerdict === 'pass' && !row.reviewReason?.startsWith(FEEDBACK_REVIEW_PASS_PREFIX)) {
+        // A pre-policy independent pass may already have armed GitHub auto-merge.
+        // Disarm it before a fresh exact-model review; an owner's approval can re-arm next tick.
+        if (!(await this.disarm(row, epoch, 'review-policy-changed'))) return;
+        this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, reason: 'disarmed:review-policy-changed', disarmFailed: false });
+        return;
+      }
       if (row.mergeDeadlineAt !== null && this.now() > row.mergeDeadlineAt) await this.mergeRefused(row, epoch, 'deadline');
       return;
     }
@@ -1501,12 +1508,16 @@ export class FeedbackExecutorService {
   private async independentAdmission(row: ExecutionRow, epoch: number, slug: string, prNumber: number, headSha: string): Promise<'independent' | null> {
     if (row.codeownersOutside.length > 0) return null;
     if (row.reviewSha === headSha) {
-      if (row.reviewVerdict === 'pass') return 'independent';
-      // An unparseable reply is the reviewer's fault, not the change's: the same head is asked again
-      // after the merge-retry delay, up to UNPARSEABLE_REVIEW_REASKS more times, before it becomes close-eligible.
-      const reask = row.reviewVerdict === 'fail' && (row.reviewReason ?? '').startsWith('unparseable:') && row.reviewRetries < UNPARSEABLE_REVIEW_REASKS
-        && row.reviewedAt !== null && this.now() - row.reviewedAt >= MERGE_RETRY_DELAY_MS;
-      if (!reask) return null;
+      if (row.reviewVerdict === 'pass') {
+        if (row.reviewReason?.startsWith(FEEDBACK_REVIEW_PASS_PREFIX)) return 'independent';
+        // A pass from before this model policy has no exact-model proof; review it again.
+      } else {
+        // An unparseable reply is the reviewer's fault, not the change's: the same head is asked again
+        // after the merge-retry delay, up to UNPARSEABLE_REVIEW_REASKS more times, before it becomes close-eligible.
+        const reask = row.reviewVerdict === 'fail' && (row.reviewReason ?? '').startsWith('unparseable:') && row.reviewRetries < UNPARSEABLE_REVIEW_REASKS
+          && row.reviewedAt !== null && this.now() - row.reviewedAt >= MERGE_RETRY_DELAY_MS;
+        if (!reask) return null;
+      }
     }
     // Re-asks of the same head count up; a new head starts from zero.
     const retries = row.reviewSha === headSha ? row.reviewRetries + 1 : 0;
@@ -1535,16 +1546,17 @@ export class FeedbackExecutorService {
     else if (row.needsSpec && !isSpecReviewHead(files, diff, `docs/specs/feedback-${safeSlug(row.initiativeId)}.md`)) outcome = { pass: false, reason: 'spec-head-shape', reviewers: [] };
     else {
       const triage = this.opts.triageStore.get(row.initiativeId);
+      const lead = feedbackReviewLead({ severity: triage?.severity ?? null, effort: triage?.effort ?? null, needsSpec: triage?.needsSpec ?? null, changedPaths: files });
       const prompt = buildExecutorReviewPrompt({
         kind: row.needsSpec ? 'spec' : 'fix', prNumber, headSha, summary: triage?.summary ?? '', brief: triage?.brief ?? { component: '', symptom: '', expected: '', reproduction: '' }, changedPaths: files, diff,
       });
       let reviewers: ReviewerOutcome[];
-      try { reviewers = await this.opts.review.run({ prompt }); } catch (error) {
+      try { reviewers = await this.opts.review.run({ prompt, lead }); } catch (error) {
         // A throwing reviewer port is a degraded reviewer (every family, the cross-family one
         // included), never an aborted tick for every later row.
         reviewers = [{ family: 'review-port', model: null, status: 'degraded', verdict: null, crossFamily: true, reason: error instanceof Error ? error.name : 'threw', body: null }];
       }
-      outcome = { ...judgeIndependentReview(reviewers), reviewers };
+      outcome = { ...judgeRoutedFeedbackReview(reviewers, lead), reviewers };
     }
     this.opts.audit.append('execute:independent-review', { attemptId: row.attemptId, pr: prNumber, head: headSha, pass: outcome.pass, reason: outcome.reason,
       reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict })) });

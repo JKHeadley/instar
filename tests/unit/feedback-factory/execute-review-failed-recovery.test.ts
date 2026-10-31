@@ -17,8 +17,8 @@ let h: ExecHarness;
 afterEach(() => h?.cleanup());
 
 const PASS = () => [
-  { family: 'codex-cli', model: 'gpt-5.5', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: true, reason: null, body: 'Verdict: CLEAN' },
-  { family: 'claude-code', model: 'claude-fable-5', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: false, reason: null, body: 'Verdict: CLEAN' },
+  { family: 'codex-cli', model: 'gpt-6-sol', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: true, reason: null, body: 'Verdict: CLEAN' },
+  { family: 'claude-code', model: 'claude-opus-5-5', status: 'ok' as const, verdict: 'CLEAN' as const, crossFamily: false, reason: null, body: 'Verdict: CLEAN' },
 ];
 const SERIOUS = () => PASS().map((o) => (o.family === 'claude-code' ? { ...o, verdict: 'SERIOUS ISSUES' as const, body: 'Verdict: SERIOUS ISSUES\n- deletes a test (rule 4)' } : o));
 const UNPARSEABLE = () => PASS().map((o) => (o.family === 'claude-code' ? { ...o, verdict: 'UNKNOWN' as const, body: 'no verdict line' } : o));

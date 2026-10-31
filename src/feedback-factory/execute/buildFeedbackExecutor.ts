@@ -125,6 +125,30 @@ export function executorUpdatePending(
   return now - detected < UPDATE_PENDING_BRAKE_MAX_MS;
 }
 
+/** Production reviewer wiring, with only the external model call replaceable in tests. */
+export function buildFeedbackReviewPort(config: ReviewerConfig, invoke: typeof runCrossModelReview = runCrossModelReview): IndependentReviewPort {
+  return {
+    async run({ prompt, lead }) {
+      const assembled = { promptText: prompt, truncated: false, bytes: Buffer.byteLength(prompt, 'utf8'), omittedLoadBearing: [], undeliverableLoadBearing: [] };
+      const out = [];
+      const families = lead === 'opus' ? [CLAUDE_REVIEWER, ...CROSS_FAMILY_REVIEWERS] : [...CROSS_FAMILY_REVIEWERS, CLAUDE_REVIEWER];
+      for (const family of families) {
+        if (family === CLAUDE_REVIEWER && config.specConverge?.reviewers?.anthropic?.model !== 'claude-opus-5-5') {
+          out.push({ family, model: null, status: 'unavailable' as const, verdict: null, crossFamily: false, reason: 'opus-pin-required', body: null });
+          continue;
+        }
+        const timeoutMs = resolveReviewerTimeoutMs(config, family as 'codex-cli');
+        const result = await invoke({ assembled, family, config, timeoutMs,
+          ...(family === 'codex-cli' ? { codexModelOverride: lead === 'opus' ? 'sol' as const : 'astra' as const } : {}),
+        }).catch((error: unknown) => ({
+          status: 'degraded' as const, reason: error instanceof Error ? error.name : 'reviewer-threw', flag: '', crossFamily: CROSS_FAMILY_REVIEWERS.includes(family) }));
+        out.push(toReviewerOutcome(family, result));
+      }
+      return out;
+    },
+  };
+}
+
 export function buildFeedbackExecutor(input: {
   config: InstarConfig;
   drainStore: FeedbackDrainStore;
@@ -220,19 +244,7 @@ export function buildFeedbackExecutor(input: {
   // guard, provider allowlist and circuit breaker). An unavailable family answers `unavailable`,
   // never a silent swap to another model.
   const reviewerConfig = config as unknown as ReviewerConfig & { enabledFrameworks?: string[] };
-  const review: IndependentReviewPort = {
-    async run({ prompt }) {
-      const assembled = { promptText: prompt, truncated: false, bytes: Buffer.byteLength(prompt, 'utf8'), omittedLoadBearing: [], undeliverableLoadBearing: [] };
-      const out = [];
-      for (const family of [...CROSS_FAMILY_REVIEWERS, CLAUDE_REVIEWER]) {
-        const timeoutMs = resolveReviewerTimeoutMs(reviewerConfig, family as 'codex-cli');
-        const result = await runCrossModelReview({ assembled, family, config: reviewerConfig, timeoutMs }).catch((error: unknown) => ({
-          status: 'degraded' as const, reason: error instanceof Error ? error.name : 'reviewer-threw', flag: '', crossFamily: CROSS_FAMILY_REVIEWERS.includes(family) }));
-        out.push(toReviewerOutcome(family, result));
-      }
-      return out;
-    },
-  };
+  const review = buildFeedbackReviewPort(reviewerConfig);
 
   const service = new FeedbackExecutorService({
     triageStore: input.triage.store,
