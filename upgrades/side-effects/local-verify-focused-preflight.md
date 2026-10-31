@@ -63,6 +63,18 @@ The optional cost is a bounded targeted check on green PRs; the optional livenes
 
 The final Astra pass found two restart/retention edge cases before rollout: restored queue entries could outrun a replay marker's backoff or breaker, and a full set of replay proofs could make journal compaction retain unlimited ordinary rows through `slice(-0)`. The service now delegates restored replay entries to the durable admission loop and explicitly gives ordinary rows zero slots when proofs fill the cap. Both cases have unit regression coverage.
 
+Installed guidance states that a skipped preflight is not a passed check. This applies to new agents through the template and existing agents through migration; both describe the same full-suite green boundary.
+
+A further Astra pass found that the child could legitimately spend the extra 90-second preflight allowance after the server's restart hold had expired. The service now latches that allowance at child spawn and includes it in the restart ceiling even if the live mode changes while an update waits. A unit boundary test covers the time calculation.
+
+The final review also found that the post-run git cleanliness check could consume an ordinary git timeout outside the 90-second preflight cap. It now uses the remaining preflight budget, and the recorded elapsed time includes that check. A timed-out check produces an infrastructure error before any full lane starts. Malformed enforced-red records with a null `lanes` field now fail validation without throwing during peer import.
+
+Independent second pass raised four concerns: elapsed telemetry could include the later full suite, the final cleanliness check could incorrectly subtract the teardown reserve twice after a contained timeout, a signaled process with complete reports could establish early red, and a preflight cleanup error retry could run preflight again. All four are corrected and covered by boundary tests. Elapsed evidence freezes before lanes; the final status check spends only the actual remaining 90-second budget; red proof requires ordinary numeric failing exits; and the bounded error retry persists a preflight bypass so it reaches a fresh full verification tree.
+
+The second pass on those fixes found that peer-origin cleanup errors could lose that bypass on the coordinator. The coordinator now persists the bypass when importing such an error and keeps its retry local because the peer request schema has no bypass field. A peer-origin regression checks the durable marker, local scheduling, and child input.
+
+**Independent reviewer verdict:** Concur with the review. After the peer retry correction, the reviewer found no remaining concrete P1 or P2 issue in the inspected changes and tests.
+
 ## Evidence pointers
 
 - `tests/unit/localVerify/preflight.test.ts`, `runFocusedPreflight.test.ts`, `preflightReplay.test.ts`, `orchestrator.test.ts`, `LocalVerifyService.test.ts`

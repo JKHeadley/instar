@@ -1,4 +1,5 @@
 /**
+ * The focused preflight switch is resolved live for each child and defaults off.
  * Builds the LocalVerifyService for the agent server (spec
  * docs/specs/local-verify-merge-authority.md §2).
  *

@@ -1,4 +1,5 @@
 /**
+ * A preflight field is evidence about an attempt, not independent proof of full-suite green.
  * The local-verify record (spec local-verify-merge-authority.md §2 step 6, Keys).
  *
  * Records are keyed by (repo, pr, headSha, baseRefName); execution is
@@ -190,8 +191,8 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
       && p.headSha === x.headSha && p.baseSha === x.baseSha
       && (p.repeatedFailedFile === undefined || (typeof p.repeatedFailedFile === 'string' && (p.selectedFiles as string[]).includes(p.repeatedFailedFile)))
       && (p.outcome !== 'red' || (p.repeatedFailedFile !== undefined && (p.selectedCases as number) > 0))
-      && (p.mode !== 'enforce' || p.outcome !== 'red' || (p.reason === 'preflight-red' && x.outcome === 'failure' && (x.lanes as unknown[]).length === 0))
-      && (p.mode !== 'observe' || !(x.outcome === 'failure' && x.lanes && (x.lanes as unknown[]).length === 0 && p.outcome === 'red'))
+      && (p.mode !== 'enforce' || p.outcome !== 'red' || (p.reason === 'preflight-red' && x.outcome === 'failure' && Array.isArray(x.lanes) && x.lanes.length === 0))
+      && (p.mode !== 'observe' || !(x.outcome === 'failure' && Array.isArray(x.lanes) && x.lanes.length === 0 && p.outcome === 'red'))
       && Object.keys(p).every((k) => ['mode', 'outcome', 'reason', 'elapsedMs', 'changedFiles', 'selectedFiles', 'selectedCases', 'headSha', 'baseSha', 'repeatedFailedFile'].includes(k));
     if (!valid) errors.push('preflight');
   }

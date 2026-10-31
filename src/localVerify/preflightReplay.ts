@@ -1,4 +1,4 @@
-/** Coordinator-owned durable replay obligation for an enforced preflight red. */
+/** Coordinator-owned durable replay obligation for an enforced preflight red; one exact key. */
 import fs from 'node:fs';
 import path from 'node:path';
 import type { LocalVerifyRecord } from './record.js';

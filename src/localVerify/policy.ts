@@ -1,4 +1,5 @@
 /**
+ * The optional focused preflight cannot loosen full-suite merge criteria.
  * The fixed policy local-verify runs under (spec local-verify-merge-authority.md §2).
  *
  * Deadlines are constants reviewed at Acceptance, never derived from a run's own

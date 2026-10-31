@@ -136,6 +136,18 @@ const preflightRed = () => record({ outcome: 'failure', lanes: [], preflight: {
 } });
 
 describe('automatic full-suite replay after enforced preflight red', () => {
+  it('bypasses preflight on a fresh-tree retry after a preflight cleanup error', async () => {
+    const h = setup({ views: { 1: view() } });
+    h.svc.setPreflightMode(() => 'enforce');
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    await h.finish(0, ok(record({ outcome: 'error', errorStep: 'preflight-dirty-tree', lanes: [] })));
+    expect(h.spawned).toHaveLength(2);
+    const args = h.spawned[1].args;
+    const input = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
+    expect(fs.readFileSync(h.svc.auditPath, 'utf8')).toContain('"event":"error-auto-retry"');
+  });
   it('persists before red publication, joins a same-head request, and supersedes red with full green', async () => {
     const h = setup({ views: { 1: view() } });
     h.svc.setPreflightMode(() => 'enforce');
@@ -824,6 +836,18 @@ describe('restart hold', () => {
     await s.finish(0, ok(record()));
     expect(s.svc.restartHolds(4 * H)).toEqual([]);
     expect(restartHoldUntil(0, 0, 4 * H)).toBe(LOCAL_VERIFY_DEADLINES.totalActiveMs + 2 * LOCAL_VERIFY_LIMITS.waitInPlaceMs);
+  });
+
+  it('retains the child preflight allowance when the live mode changes during an update wait', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setPreflightMode(() => 'observe');
+    await s.svc.request(1);
+    const startedAt = Date.parse('2026-10-21T12:00:00.000Z');
+    const fullCeiling = startedAt + LOCAL_VERIFY_DEADLINES.totalActiveMs + 2 * LOCAL_VERIFY_LIMITS.waitInPlaceMs;
+    expect(s.svc.restartHolds(4 * H)[0].until).toBe(fullCeiling + 90_000);
+    s.svc.setPreflightMode(() => 'off');
+    expect(s.svc.restartHolds(4 * H)[0].until).toBe(fullCeiling + 90_000);
+    await s.finish(0, ok(record()));
   });
 
   describe('through the real AutoUpdater', () => {

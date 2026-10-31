@@ -10,7 +10,7 @@ const filesList = JSON.stringify([{ file }]);
 const report = (status: 'passed' | 'failed') => JSON.stringify({ testResults: [{ name: file, status, assertionResults: [{ status }] }] });
 const noErrors = JSON.stringify({ v: 1, unhandledErrors: 0, messages: [] });
 
-function harness(runs: Array<{ status: number; json: string; errors?: string | null; quiescent?: boolean; deadlineKilled?: boolean }>) {
+function harness(runs: Array<{ status: number | null; json: string; errors?: string | null; quiescent?: boolean; deadlineKilled?: boolean; signal?: NodeJS.Signals | null; aborted?: boolean }>) {
   const files = new Map<string, string>();
   const calls: string[][] = [];
   let now = 0;
@@ -25,7 +25,8 @@ function harness(runs: Array<{ status: number; json: string; errors?: string | n
       files.set(output, next.json);
       if (opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE && next.errors !== null) files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE, next.errors ?? noErrors);
       now += 1000;
-      return { status: next.status, signal: null, stdout: '', stderr: '', deadlineKilled: next.deadlineKilled ?? false, pid: 12, quiescent: next.quiescent ?? true };
+      return { status: next.status, signal: next.signal ?? null, aborted: next.aborted ?? false,
+        stdout: '', stderr: '', deadlineKilled: next.deadlineKilled ?? false, pid: 12, quiescent: next.quiescent ?? true };
     },
     fs: {
       mkdtemp: (prefix: string) => `/tmp/${prefix}${Math.random()}`,
@@ -56,6 +57,14 @@ describe('focused verifier preflight', () => {
   it('treats a failed first run followed by green as diagnostic pass', async () => {
     const h = harness([{ status: 0, json: filesList }, { status: 0, json: goodList }, { status: 1, json: report('failed') }, { status: 0, json: report('passed') }]);
     expect(await h.run('enforce')).toMatchObject({ outcome: 'pass', reason: 'retry-green' });
+  });
+  it('does not establish early red from a signaled first run or retry, even with complete reports', async () => {
+    const first = harness([{ status: 0, json: filesList }, { status: 0, json: goodList },
+      { status: null, signal: 'SIGTERM', json: report('failed') }]);
+    expect(await first.run('enforce')).toMatchObject({ outcome: 'error', reason: 'first-run-interrupted' });
+    const retry = harness([{ status: 0, json: filesList }, { status: 0, json: goodList },
+      { status: 1, json: report('failed') }, { status: null, aborted: true, json: report('failed') }]);
+    expect(await retry.run('enforce')).toMatchObject({ outcome: 'error', reason: 'retry-interrupted' });
   });
   it('skips on selected-file breadth before collecting cases or running tests', async () => {
     const wide = JSON.stringify(Array.from({ length: 6 }, (_, n) => ({ file: `${root}/tests/unit/f${n}.test.ts` })));

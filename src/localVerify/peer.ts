@@ -1,4 +1,5 @@
 /**
+ * A peer's preflight evidence is imported for diagnosis, never as standalone green authority.
  * Peer verifiers (spec docs/specs/local-verify-capacity.md Part D): a second machine runs
  * single PR verifies the serving-lease holder (the coordinator) hands it, and the
  * coordinator imports the records. This module holds the pure decisions and the

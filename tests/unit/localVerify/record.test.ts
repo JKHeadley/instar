@@ -76,6 +76,9 @@ describe('validateRecord', () => {
     const enforced = { ...evidence, mode: 'enforce' as const, reason: 'preflight-red' };
     expect(validateRecord(rec({ preflight: enforced })).ok).toBe(false);
     expect(validateRecord(rec({ outcome: 'failure', lanes: [], preflight: enforced })).ok).toBe(true);
+    const malformed = validateRecord({ ...rec({ outcome: 'failure', preflight: enforced }), lanes: null });
+    expect(malformed.ok).toBe(false);
+    if (!malformed.ok) expect(malformed.errors).toContain('lanes');
   });
 
   it('refuses malformed or mismatched preflight evidence before peer import', () => {

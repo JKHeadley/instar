@@ -1,4 +1,5 @@
 /**
+ * Preflight uses the same installed process and filesystem seams as the full verify.
  * Real seams for the local-verify orchestrator. Used only inside the
  * `runVerifyMain` child process (never on the server's event loop), so the
  * synchronous git funnel blocks nothing that matters.

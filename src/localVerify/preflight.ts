@@ -1,4 +1,4 @@
-/** Pure, installed-verifier decisions for the bounded PR preflight. */
+/** Pure, installed-verifier decisions for the bounded PR preflight; no green authority. */
 import path from 'node:path';
 import { parseVitestJson } from './laneReport.js';
 

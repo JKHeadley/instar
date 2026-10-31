@@ -1,4 +1,4 @@
-/** Bounded, diagnostic-only affected-test check in a verifier's synthetic merge tree. */
+/** Bounded, diagnostic-only affected-test check in a verifier's synthetic merge tree; full lanes decide green. */
 import path from 'node:path';
 import type { OrchestratorSeams } from './orchestrator.js';
 import type { PreflightEvidence } from './record.js';
@@ -65,7 +65,8 @@ export async function runFocusedPreflight(i: FocusedPreflightInput): Promise<Pre
       catch (e) { throw new PreflightCleanupError(`${name}: temporary files could not be removed: ${String(e)}`); }
     }
     if (r.quiescent !== true) throw new PreflightCleanupError(`${name}: process group did not exit`);
-    return { status: r.status, timeout: r.deadlineKilled, report: seams.fs.readFile(report), errors: withReporter && i.reporter ? readUnhandledErrors(seams.fs.readFile(errors)) : null };
+    return { status: r.status, signal: r.signal, aborted: r.aborted, timeout: r.deadlineKilled,
+      report: seams.fs.readFile(report), errors: withReporter && i.reporter ? readUnhandledErrors(seams.fs.readFile(errors)) : null };
   };
   try {
     const changedCap = preflightBreadth(i.changedFiles, 1, 1);
@@ -94,6 +95,7 @@ export async function runFocusedPreflight(i: FocusedPreflightInput): Promise<Pre
     const firstReport = path.join(reportsDir, 'preflight-first.json');
     const first = await step('first-run', ['run', '--config', 'vitest.push.config.ts', '--changed', i.baseSha, '--allowOnly=false', '--reporter=json', ...(i.reporter ? [`--reporter=${i.reporter}`] : []), `--outputFile.json=${firstReport}`], firstReport, true);
     if (first.timeout) return finish('timeout', 'first-run-timeout');
+    if (first.status === null || first.signal || first.aborted) return finish('error', 'first-run-interrupted');
     const firstFailed = preflightAssertionFailures(first.report ?? null, runDir, files.files);
     if (!firstFailed) return finish('error', 'first-report-indeterminate');
     if (first.status === 0 && firstFailed.length === 0) return finish('pass', 'first-run-green');
@@ -103,6 +105,7 @@ export async function runFocusedPreflight(i: FocusedPreflightInput): Promise<Pre
     const retryReport = path.join(reportsDir, 'preflight-retry.json');
     const retry = await step('retry', ['run', '--config', 'vitest.push.config.ts', '--allowOnly=false', '--reporter=json', ...(i.reporter ? [`--reporter=${i.reporter}`] : []), `--outputFile.json=${retryReport}`, ...firstFailed], retryReport, true);
     if (retry.timeout) return finish('timeout', 'retry-timeout');
+    if (retry.status === null || retry.signal || retry.aborted) return finish('error', 'retry-interrupted');
     const retryFailed = preflightAssertionFailures(retry.report ?? null, runDir, firstFailed);
     if (!retryFailed) return finish('error', 'retry-report-indeterminate');
     if (retry.status === 0 && retryFailed.length === 0) return finish('pass', 'retry-green');

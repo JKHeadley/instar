@@ -63,6 +63,7 @@ interface FakeOpts {
   /** Per-step durations (ms) for exec steps, by step key: npm-ci, build, lint, unit, integration, e2e. */
   durations?: Partial<Record<string, number>>;
   gitTimeout?: string; // a git verb that times out
+  gitDurations?: Partial<Record<string, number>>;
   mergeTreeStatus?: number;
   npmCiStatus?: number;
   lintStatus?: number;
@@ -98,6 +99,7 @@ interface FakeOpts {
   /** Results of the focused first run and optional retry. */
   preflightStatuses?: Array<'passed' | 'failed'>;
   preflightQuiescent?: boolean;
+  preflightRunDurationMs?: number;
 }
 
 function fake(o: FakeOpts = {}) {
@@ -159,6 +161,9 @@ function fake(o: FakeOpts = {}) {
   const seams: OrchestratorSeams = {
     async git(args, opts) {
       gitCalls.push({ args, cwd: opts.cwd, gitDir: opts.gitDir, workTree: opts.workTree, timeoutMs: opts.timeoutMs });
+      const duration = o.gitDurations?.[args[0]] ?? 0;
+      t += Math.min(duration, opts.timeoutMs);
+      if (duration > opts.timeoutMs) return { status: null, stdout: '', stderr: 'timeout', timedOut: true };
       return gitImpl(args);
     },
     async exec(command, args, opts) {
@@ -175,9 +180,15 @@ function fake(o: FakeOpts = {}) {
           return { status: 0, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid, quiescent: o.preflightQuiescent ?? true };
         }
         const status = o.preflightStatuses?.[preflightRun++] ?? 'passed';
+        const duration = o.preflightRunDurationMs ?? 1000;
+        if (duration > opts.deadlineMs) {
+          t += opts.deadlineMs;
+          return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', deadlineKilled: true, pid,
+            quiescent: o.preflightQuiescent ?? true };
+        }
         files.set(out, vitestReport(selected, [status]));
         if (opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE) files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE, JSON.stringify({ v: 1, unhandledErrors: 0, messages: [] }));
-        t += 1000;
+        t += duration;
         return { status: status === 'failed' ? 1 : 0, signal: null, stdout: '', stderr: '', deadlineKilled: false, pid, quiescent: o.preflightQuiescent ?? true };
       }
       const key = stepKey(command, args);
@@ -444,6 +455,28 @@ describe('runVerify — focused PR preflight', () => {
     const r = await runVerify(focused('enforce'), f.seams);
     expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'preflight-cleanup', lanes: [] });
     expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('charges a slow post-preflight cleanliness check to the 90-second cap', async () => {
+    const f = fake({ gitDurations: { status: 100_000 } });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error', errorStep: 'deadline:preflight-porcelain', lanes: [] });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThanOrEqual(90_000);
+    expect(f.gitCalls.find((c) => c.args[0] === 'status')?.timeoutMs).toBeLessThanOrEqual(90_000);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(0);
+  });
+  it('continues full verification after a contained preflight deadline and a clean final status check', async () => {
+    const f = fake({ preflightRunDurationMs: 100_000 });
+    const r = await runVerify(focused('enforce'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'timeout', reason: 'first-run-timeout' } });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThanOrEqual(90_000);
+    expect(f.gitCalls.find((c) => c.args[0] === 'status')?.timeoutMs).toBeGreaterThan(0);
+    expect(f.execCalls.filter((c) => c.args.includes('vitest.config.ts'))).toHaveLength(1);
+  });
+  it('freezes preflight elapsed time before the full suite runs', async () => {
+    const f = fake({ durations: { unit: 60_000, integration: 60_000, e2e: 60_000 } });
+    const r = await runVerify(focused('observe'), f.seams);
+    expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'success', preflight: { outcome: 'pass' } });
+    expect(r.kind === 'record' && r.record?.preflight?.elapsedMs).toBeLessThan(10_000);
   });
   it('skips focused work for a changed harness file while the full lanes still decide green', async () => {
     const f = fake({ diff: 'M\ttests/vitest-setup.ts\n' });

@@ -1,4 +1,5 @@
 /**
+ * Focused preflight may shorten a stable red, but a green still requires every full lane.
  * The local-verify run orchestrator (spec local-verify-merge-authority.md §2 Run
  * steps 1–5 and 8): one verify of one (head, base) merge, driven entirely through
  * injected seams (git, process, fs, clock, test-runner holders) so it is unit
@@ -290,6 +291,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let flags: Flags = { harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false };
   let enteredPreflight = false;
   let preflight: PreflightEvidence | undefined;
+  let preflightStartedAt: number | null = null;
+  let preflightEnded = false;
 
   const remaining = () => d.totalActiveMs + (enteredPreflight ? PREFLIGHT_LIMITS.totalMs : 0) - (seams.now() - startedAtMs);
   /** Deadline for a step: its own budget, capped by what is left of the total. */
@@ -421,10 +424,14 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     // Charge the optional preflight for its exact-base changed-file scan too.
     // The scan remains necessary for isolation re-runs when preflight is off.
     const mode = effectivePreflightMode(input.preflightMode, input.kind === 'main' ? 'main' : 'pr', input.preflightRediscoverable === true);
-    const preflightStartedAt = mode === 'off' ? null : seams.now();
+    preflightStartedAt = mode === 'off' ? null : seams.now();
     if (preflightStartedAt !== null) enteredPreflight = true;
-    const preflightGitBudget = () => preflightStartedAt === null ? d.gitStepMs
-      : Math.max(1, Math.min(d.gitStepMs, PREFLIGHT_LIMITS.totalMs - (seams.now() - preflightStartedAt) - PREFLIGHT_LIMITS.teardownReserveMs));
+    const preflightGitBudget = (reserveMs: number = PREFLIGHT_LIMITS.teardownReserveMs) => {
+      if (preflightStartedAt === null) return d.gitStepMs;
+      const left = PREFLIGHT_LIMITS.totalMs - (seams.now() - preflightStartedAt) - reserveMs;
+      if (left <= 0) throw new RunError('deadline:preflight', 'preflight budget exhausted');
+      return Math.min(d.gitStepMs, left);
+    };
     // Changed files (merge-base→head) for the isolation re-run's PR rule; null = unreadable.
     if (input.kind !== 'main') {
       try {
@@ -459,9 +466,11 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         });
         const wtGitDir = worktreeGitDir(seams, p);
         if (!wtGitDir) throw new RunError('preflight-porcelain', 'run worktree admin dir unreadable');
-        const clean = await git(['status', '--porcelain'], 'preflight-porcelain', { gitDir: wtGitDir, workTree: p.runDir });
+        const clean = await git(['status', '--porcelain'], 'preflight-porcelain', { gitDir: wtGitDir, workTree: p.runDir }, preflightGitBudget(0));
         if (clean.status !== 0 || clean.stdout.trim()) throw new RunError('preflight-dirty-tree', 'preflight changed the merge worktree');
       }
+      preflight.elapsedMs = Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt!));
+      preflightEnded = true;
       seams.log({ event: 'preflight', mode, outcome: preflight.outcome, reason: preflight.reason, elapsedMs: preflight.elapsedMs,
         changedFiles: preflight.changedFiles, selectedFiles: preflight.selectedFiles.length, selectedCases: preflight.selectedCases,
         headSha: input.headSha, baseSha: input.baseSha, baseRefName: input.baseRefName });
@@ -648,6 +657,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     }
     flags = await classify();
   } catch (e) {
+    if (preflight && preflightStartedAt !== null && !preflightEnded) {
+      preflight.elapsedMs = Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt));
+      preflightEnded = true;
+    }
     if (e instanceof Requeue) {
       await cleanup(false);
       return { kind: 'requeue', reason: e.reason, overlaps };

@@ -426,6 +426,24 @@ describe('coordinator — results', () => {
     expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
   });
 
+  it('keeps a peer preflight cleanup retry local and bypasses preflight', async () => {
+    const { c, req } = await dispatched();
+    c.svc.setPreflightMode(() => 'enforce');
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req, {
+      outcome: 'error', errorStep: 'preflight-dirty-tree', lanes: [],
+    }) }));
+    await c.svc.tick();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
+    const saved = c.queueFile() as { entries: Array<{ pr: number; preflightBypassRetry?: boolean }> };
+    expect(saved.entries.find((e) => e.pr === 2)?.preflightBypassRetry).toBe(true);
+    await c.runTimers();
+    expect(c.peer.runs()).toHaveLength(1);
+    await c.finish(0, ok(record({ machineId: 'coord' })));
+    expect(c.spawned).toHaveLength(2);
+    const input = JSON.parse(fs.readFileSync(c.spawned[1].inputPath, 'utf8')) as { preflightMode: string };
+    expect(input.preflightMode).toBe('off');
+  });
+
   it('`unknown` past the grace reclaims (and cancels) the attempt; within the grace it waits', async () => {
     const { c } = await dispatched();
     c.peer.setResult(() => ({ state: 'unknown' }));

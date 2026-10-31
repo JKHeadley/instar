@@ -1,4 +1,5 @@
 /**
+ * A preflight red creates a durable full-suite replay obligation; only full green is merge authority.
  * LocalVerifyService — the server-side queue, in-flight protocol, completion
  * path and record index for local-verify (spec local-verify-merge-authority.md
  * §2: "Who starts a verify" (POST path), Keys, Retry transitions, Single flight,
@@ -55,6 +56,7 @@ import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from '
 import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
 import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult } from './orchestrator.js';
+import { PREFLIGHT_LIMITS } from './preflight.js';
 import {
   PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
@@ -254,6 +256,8 @@ export interface QueueEntry {
   preflightRediscoverable?: boolean;
   /** This attempt consumes the durable full-suite replay, never a new preflight. */
   preflightReplay?: boolean;
+  /** A contained preflight infrastructure error retries in a fresh tree without another preflight. */
+  preflightBypassRetry?: true;
   /** First time this (pr, head) was queued; capacity waits never reset it. */
   firstQueuedAt: number;
   attempts: number;
@@ -488,6 +492,8 @@ interface InFlight {
   suiteSlotAcquired?: boolean;
   /** When the run child started (restart-hold bound). */
   startedAt: number;
+  /** Latched at spawn: a live setting change cannot shorten this child's restart hold. */
+  preflightAllowanceMs: number;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -536,6 +542,7 @@ export interface PersistedQueueEntry {
   /** A peer reservation (Part D), kept as written so a restart resumes polling the same attempt. */
   remote?: RemoteMarker;
   remoteAttempts?: number;
+  preflightBypassRetry?: true;
 }
 
 /** What the AutoUpdater tells the verifier (spec §2 Restarts rule (b)); null = unknown (never pauses). */
@@ -586,19 +593,21 @@ export function decideUpdatePause(u: UpdatePendingState | null, now: number, max
  * The longest a verify that started at `startedAt` can still be running: its whole
  * active-work budget plus the in-place waits it may make before lanes 2 and 3 (the
  * child's own hard bounds — the server cannot see how much of either it has used, so
- * this is the run's own ceiling, never longer). Capped at `now + maxDeferralMs`.
+ * this is the run's own ceiling, never longer). A child that can enter focused
+ * preflight has one additional bounded allowance. Capped at `now + maxDeferralMs`.
  */
 export function restartHoldUntil(
   startedAt: number,
   now: number,
   maxDeferralMs: number,
+  preflightAllowanceMs: number = 0,
   limits: { totalActiveMs: number; waitInPlaceMs: number; inPlaceWaits: number } = {
     totalActiveMs: LOCAL_VERIFY_DEADLINES.totalActiveMs,
     waitInPlaceMs: LOCAL_VERIFY_LIMITS.waitInPlaceMs,
     inPlaceWaits: 2,
   },
 ): number {
-  const runCeiling = startedAt + limits.totalActiveMs + limits.inPlaceWaits * limits.waitInPlaceMs;
+  const runCeiling = startedAt + limits.totalActiveMs + limits.inPlaceWaits * limits.waitInPlaceMs + preflightAllowanceMs;
   return Math.min(runCeiling, now + maxDeferralMs);
 }
 
@@ -927,7 +936,7 @@ export class LocalVerifyService {
     const what = f.entry.kind === 'main' ? `main ${f.entry.headSha.slice(0, 12)}` : `PR #${f.entry.pr} at ${f.entry.headSha.slice(0, 12)}`;
     return [{
       name: f.entry.kind === 'main' ? 'local-verify:main' : `local-verify:pr-${f.entry.pr}`,
-      until: restartHoldUntil(f.startedAt, now, maxDeferralMs),
+      until: restartHoldUntil(f.startedAt, now, maxDeferralMs, f.preflightAllowanceMs),
       reason: `a local verify of ${what} is running`,
     }];
   }
@@ -993,6 +1002,7 @@ export class LocalVerifyService {
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
         ...(e.remote ? { remote: e.remote } : {}),
         ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
+        ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
         ...(e.interruptions ? { interruptions: e.interruptions } : {}),
         ...(e.resumeFirst ? { resumeFirst: true as const } : {}),
       };
@@ -1634,6 +1644,9 @@ export class LocalVerifyService {
     // The replay marker is coordinator-owned and changes state at local child
     // start. Keep these entries local until peer handoff carries that authority.
     if (this.preflightReplays?.get(replayKey({ repo: this.cfg.repo, ...e, policyHash: this.policyHash }))) return false;
+    // A contained preflight error must reach a fresh full-only local attempt;
+    // the peer request protocol has no preflight-bypass field.
+    if (e.preflightBypassRetry) return false;
     return e.kind !== 'main' && !e.remote && !e.peerAttempt && e !== this.dispatching && e !== this.starting && this.inFlight?.entry !== e
       && !heldPrs.has(e.pr) && (e.remoteAttempts ?? 0) < PEER_LIMITS.maxAttemptsPerEntry && !(e.notBefore && e.notBefore > this.now());
   }
@@ -1833,6 +1846,7 @@ export class LocalVerifyService {
         }
         if (res.record.outcome === 'error') {
           this.audit({ event: 'peer-record-error', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, errorStep: res.record.errorStep });
+          if (this.preflightErrorNeedsBypass(res.record.errorStep)) entry.preflightBypassRetry = true;
           this.abandonRemote(entry, 'peer-error', { failure: true, cancel: false });
           continue;
         }
@@ -2321,7 +2335,7 @@ export class LocalVerifyService {
       ...(entry.kind === 'main' ? {} : { isolation: entry.peerIsolation ?? this.isolationInput() }),
       // PR verifies: stop the other lanes once one lane has a failure its re-run did not clear.
       ...(entry.kind !== 'main' && this.failFastOn() ? { failFast: true } : {}),
-      ...(entry.kind !== 'main' ? { preflightMode: replay ? 'off' as const : this.preflightMode() } : {}),
+      ...(entry.kind !== 'main' ? { preflightMode: replay || entry.preflightBypassRetry ? 'off' as const : this.preflightMode() } : {}),
       ...(entry.kind !== 'main' ? { preflightRediscoverable: entry.preflightRediscoverable === true } : {}),
       ...(() => { const ls = this.laneShards(); return ls ? { laneShards: ls } : {}; })(),
       ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
@@ -2369,7 +2383,8 @@ export class LocalVerifyService {
     // Phase 2: patch pid/pgid (detached: the child's pid IS its pgid).
     intent.pid = handle.pid;
     intent.pgid = handle.pid;
-    this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt };
+    this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt,
+      preflightAllowanceMs: input.preflightMode && input.preflightMode !== 'off' ? PREFLIGHT_LIMITS.totalMs : 0 };
     this.publishSuitePriority(true);
     const mine = this.inFlight;
     handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
@@ -2453,7 +2468,7 @@ export class LocalVerifyService {
         this.audit({ event: 'run-detail', ...runDetail(rec, result) });
       }
       if (rec) this.noteFlaky(rec);
-      if (rec && rec.outcome === 'error' && !f.entry.preflightReplay) this.handleErrorRetry(f.entry);
+      if (rec && rec.outcome === 'error' && !f.entry.preflightReplay) this.handleErrorRetry(f.entry, rec.errorStep);
     }
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
@@ -2462,12 +2477,17 @@ export class LocalVerifyService {
   }
 
   /* @self-action-controller: local-verify-error-rerun */
-  private handleErrorRetry(entry: QueueEntry): void {
+  private handleErrorRetry(entry: QueueEntry, errorStep?: string): void {
     const d = decideVerifyRetry(entry, 'error');
     if (d.action !== 're-run') return;
     entry.errorRetries = d.errorRetries;
+    if (this.preflightErrorNeedsBypass(errorStep)) entry.preflightBypassRetry = true;
     this.audit({ event: 'error-auto-retry', pr: entry.pr, headSha: entry.headSha });
     this.retry(entry);
+  }
+
+  private preflightErrorNeedsBypass(errorStep?: string): boolean {
+    return errorStep?.startsWith('preflight-') === true || errorStep?.startsWith('deadline:preflight') === true;
   }
 
   /* @self-action-controller: local-verify-capacity-requeue */
@@ -2656,6 +2676,7 @@ export class LocalVerifyService {
         ...(e.priority === QUEUE_PRIORITY.mergeThroughput ? { priority: e.priority } : {}),
         ...(e.remote ? { remote: e.remote } : {}),
         ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
+        ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
         // The running entry is marked: a clean shutdown re-queues it unmarked, so a marked
         // entry found at boot means the server died mid-run.
         ...(f && !f.cancelled && f.entry === e ? { inFlight: true as const } : {}),
@@ -2702,6 +2723,7 @@ export class LocalVerifyService {
       inFlight: x.inFlight === true ? true as const : undefined,
       remote: isRemoteMarker(x.remote) ? x.remote : undefined,
       remoteAttempts: Number.isSafeInteger(x.remoteAttempts) && (x.remoteAttempts as number) > 0 ? x.remoteAttempts : undefined,
+      preflightBypassRetry: x.preflightBypassRetry === true ? true as const : undefined,
       interruptions: Number.isInteger(x.interruptions) && (x.interruptions as number) > 0 ? x.interruptions : undefined,
       resumeFirst: x.resumeFirst === true ? true as const : undefined,
     }));
