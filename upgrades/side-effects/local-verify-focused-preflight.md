@@ -3,7 +3,7 @@
 **Version / slug:** `local-verify-focused-preflight`  
 **Date:** `2026-10-31`  
 **Author:** Echo  
-**Second-pass reviewer:** Focused implementation review and full-suite gate are recorded with the PR.
+**Second-pass reviewer:** Pending independent implementation review before PR publication.
 
 ## Summary of the change
 
