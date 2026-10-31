@@ -43,9 +43,8 @@ namespace InstarDesktop {
     [DllImport("user32.dll", SetLastError = true)] static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder value, int length, out int needed);
-    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
-    [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+    [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
     [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public INPUTUNION data; }
@@ -303,28 +302,41 @@ namespace InstarDesktop {
         default: throw new InvalidDataException();
       }
     }
+    // Mouse input goes through SendInput, the same queue a physical mouse uses,
+    // so the move reaches the window under the cursor before the press. Chrome
+    // and WinUI apps ignored a press injected straight after SetCursorPos.
+    static void SendMouse(uint flags, int dx, int dy, uint data) {
+      INPUT input = new INPUT(); input.type = 0;
+      input.data.mouse.dx = dx; input.data.mouse.dy = dy;
+      input.data.mouse.mouseData = data; input.data.mouse.flags = flags;
+      if (SendInput(1, new INPUT[] { input }, Marshal.SizeOf(typeof(INPUT))) != 1) throw new InvalidOperationException();
+    }
+    static void MoveTo(double fx, double fy) {
+      Rectangle bounds = SystemInformation.VirtualScreen;
+      int x = Coordinate(fx, bounds.Left, bounds.Width), y = Coordinate(fy, bounds.Top, bounds.Height);
+      int ax = (int)Math.Round((x - bounds.Left) * 65535.0 / Math.Max(1, bounds.Width - 1));
+      int ay = (int)Math.Round((y - bounds.Top) * 65535.0 / Math.Max(1, bounds.Height - 1));
+      SendMouse(0x0001u | 0x4000u | 0x8000u, ax, ay, 0);
+    }
     static void Mouse(string button, bool down) {
       if (button != "left" && button != "right") throw new InvalidDataException();
       uint flag = button == "left" ? (down ? 0x0002u : 0x0004u) : (down ? 0x0008u : 0x0010u);
-      mouse_event(flag, 0, 0, 0, UIntPtr.Zero);
+      SendMouse(flag, 0, 0, 0);
       if (down) HeldButtons.Add(button); else HeldButtons.Remove(button);
     }
     static void Input(Dictionary<string,object> action) {
       string kind = Text(action, "kind");
       if (kind == "move" || kind == "click" || kind == "buttonDown" || kind == "buttonUp") {
-        Rectangle bounds = SystemInformation.VirtualScreen;
-        if (!SetCursorPos(Coordinate(Number(action,"x"), bounds.Left, bounds.Width),
-          Coordinate(Number(action,"y"), bounds.Top, bounds.Height))) throw new InvalidOperationException();
-        if (kind != "move") {
-          string button = Text(action,"button");
-          if (kind == "click") { Mouse(button,true); Mouse(button,false); }
-          else Mouse(button,kind == "buttonDown");
-        }
+        string button = kind == "move" ? null : Text(action,"button");
+        if (button != null && button != "left" && button != "right") throw new InvalidDataException();
+        MoveTo(Number(action,"x"), Number(action,"y"));
+        if (kind == "click") { Thread.Sleep(15); Mouse(button,true); Thread.Sleep(30); Mouse(button,false); }
+        else if (kind != "move") { Thread.Sleep(15); Mouse(button,kind == "buttonDown"); }
       } else if (kind == "scroll") {
         double dx = Number(action,"dx"), dy = Number(action,"dy");
         if (Math.Abs(dx) > 1000 || Math.Abs(dy) > 1000) throw new InvalidDataException();
-        mouse_event(0x0800u, 0, 0, unchecked((uint)(int)Math.Round(-dy * 1.2)), UIntPtr.Zero);
-        if (dx != 0) mouse_event(0x01000u, 0, 0, unchecked((uint)(int)Math.Round(dx * 1.2)), UIntPtr.Zero);
+        if (dy != 0) SendMouse(0x0800u, 0, 0, unchecked((uint)(int)Math.Round(-dy * 1.2)));
+        if (dx != 0) SendMouse(0x01000u, 0, 0, unchecked((uint)(int)Math.Round(dx * 1.2)));
       } else if (kind == "keyDown" || kind == "keyUp") {
         string key = Text(action,"key"); byte vk = Key(key);
         keybd_event(vk, 0, kind == "keyUp" ? 0x0002u : 0u, UIntPtr.Zero);
@@ -350,6 +362,11 @@ namespace InstarDesktop {
       BannerShown = false;
       BannerThread = new Thread(() => {
         try {
+          // While someone is connected, keep the display composing and the machine
+          // awake. With the display powered off, Windows keeps returning its last
+          // picture, so the viewer looked frozen and input appeared to do nothing.
+          // The request belongs to this thread and ends when the banner closes.
+          SetThreadExecutionState(0x80000000u | 0x00000002u | 0x00000001u);
           Form form = new Form(); form.Text = "Instar remote control active";
           form.Width = 260; form.Height = 48; form.FormBorderStyle = FormBorderStyle.FixedToolWindow;
           form.ControlBox = false; form.ShowInTaskbar = false; form.TopMost = true;

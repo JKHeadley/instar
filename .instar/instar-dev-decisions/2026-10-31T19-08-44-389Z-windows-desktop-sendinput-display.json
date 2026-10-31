@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-31T19:08:44.389Z",
+  "slug": "windows-desktop-sendinput-display",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 43,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs"
+    ],
+    "addedLines": 30,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

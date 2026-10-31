@@ -1,0 +1,9 @@
+# Windows remote desktop: reliable clicks and a screen that stays on
+
+When you connect to a Windows machine from the Instar dashboard, a small helper program on that Windows machine does two jobs: it takes pictures of the screen, and it presses keys and mouse buttons for you. This change fixes two problems found while testing on Mama PC.
+
+The first problem was the screen turning itself off. Many Windows laptops switch the screen off after ten minutes on battery. When the screen is off, Windows stops drawing new pictures and keeps handing back the last one it drew. The viewer then shows a frozen picture: your clicks may happen, but you never see their effect, so the machine seems broken. Now, while a remote session is active, the helper asks Windows to keep the screen on and the machine awake. As soon as you press Stop, or the session ends for any other reason, that request ends and Windows goes back to its normal power settings. Nothing is changed permanently.
+
+The second problem was how mouse clicks and scrolling were sent. The helper used an old Windows call that jumps the cursor and presses the button at the same instant. Modern apps such as Chrome and the new Notepad can ignore a press that arrives before the cursor has properly moved there. The helper now sends the move, then the press, then the release through the same input path a real mouse uses, with a tiny pause between them, and it checks that Windows accepted each one. If Windows refuses, the dashboard is told the input failed instead of pretending it worked.
+
+What does not change: who may connect, the PIN, the ten-minute limit, the red "remote control active" banner on the Windows screen, and Stop. A Windows laptop with its lid closed still cannot be shown, because its built-in screen is physically off; for that machine, keep the lid open or attach a display (a cheap HDMI dummy plug works).
