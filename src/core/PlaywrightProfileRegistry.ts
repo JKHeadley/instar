@@ -31,6 +31,7 @@ import os from 'node:os';
 // Reuse the EXACT boot-block sanitizer (control-char/ANSI strip + angle-bracket escape
 // + backtick neutralize) so the two boot surfaces can never drift (D16).
 import { sanitizeForBlock } from './BootSelfKnowledge.js';
+import { isWindowsProfileDir, windowsDirToWslPath } from './wslPlatform.js';
 import { validWebKBuildEnrollment } from '../messaging/telegram-origin/TelegramWebKDriver.js';
 
 // ── Types (D-model) ──────────────────────────────────────────────────────────
@@ -93,6 +94,11 @@ export interface PlaywrightProfile {
   id: string;
   /** null = Playwright MCP's built-in default location; else an ABSOLUTE path jailed to the agent home (D2/D9). */
   userDataDir: string | null;
+  /**
+   * WSL only: the Chrome folder this profile really lives in, as a Windows path. WSL's userDataDir
+   * is then metadata, since Windows Chrome cannot use a folder inside the Linux filesystem.
+   */
+  windowsUserDataDir?: string;
   /** Clamped 256, sanitized on render. */
   description: string;
   isDefault: boolean;
@@ -184,6 +190,8 @@ export interface PlaywrightProfileRegistryOptions {
   passkeyEntryExists?: (key: string) => boolean | null;
   /** Optional override for os.hostname() in the block header (tests). */
   hostname?: string;
+  /** Optional override for whether a Windows profile folder exists (tests). */
+  windowsDirExists?: (dir: string) => boolean;
 }
 
 export type PlaywrightRevertLoginMethodResult =
@@ -234,11 +242,13 @@ const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
 export class PlaywrightProfileRegistry {
   private readonly stateDir: string;
   private readonly projectDir: string;
+  private readonly windowsDirExists: ((dir: string) => boolean) | null;
   private readonly listVaultNames: () => string[] | null;
   private readonly passkeyEntryExists: ((key: string) => boolean | null) | null;
   private readonly hostname: string;
 
   constructor(opts: PlaywrightProfileRegistryOptions) {
+    this.windowsDirExists = opts.windowsDirExists ?? null;
     this.stateDir = opts.stateDir;
     this.projectDir = path.resolve(opts.projectDir);
     this.listVaultNames = opts.listVaultNames;
@@ -405,7 +415,7 @@ export class PlaywrightProfileRegistry {
     const liveNames = this.safeVaultNames();
     return store.profiles.map((p) => ({
       ...p,
-      dirExists: this.dirExists(p.userDataDir),
+      dirExists: this.profileDirExists(p),
       accounts: p.accounts.map((a) => ({
         ...a,
         danglingRefs:
@@ -431,13 +441,13 @@ export class PlaywrightProfileRegistry {
       const exact = store.profiles.find((p) =>
         p.accounts.some((a) => a.service === svc && a.identity === id),
       );
-      if (exact) return { profile: exact, dirExists: this.dirExists(exact.userDataDir) };
+      if (exact) return { profile: exact, dirExists: this.profileDirExists(exact) };
       // fall through to service-only
     }
 
     const svcMatches = store.profiles.filter((p) => p.accounts.some((a) => a.service === svc));
     if (svcMatches.length === 1) {
-      return { profile: svcMatches[0], dirExists: this.dirExists(svcMatches[0].userDataDir) };
+      return { profile: svcMatches[0], dirExists: this.profileDirExists(svcMatches[0]) };
     }
     if (svcMatches.length > 1) {
       return {
@@ -514,6 +524,21 @@ export class PlaywrightProfileRegistry {
       );
     }
     return { profileId, userDataDir, created };
+  }
+
+  /** Record (or, with null, clear) the Windows Chrome folder of a WSL profile. */
+  setWindowsUserDataDir(profileId: string, windowsUserDataDir: string | null): PlaywrightProfile {
+    if (windowsUserDataDir !== null && !isWindowsProfileDir(windowsUserDataDir)) {
+      throw new PlaywrightRegistryError('windowsUserDataDir must be a local absolute Windows path (C:\\...)', 400);
+    }
+    return this.mutate<PlaywrightProfile>((store) => {
+      const profile = store.profiles.find((p) => p.id === profileId);
+      if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      if (profile.executionOwner) throw new PlaywrightRegistryError('managed profile is available through typed broker operations only', 409);
+      if (windowsUserDataDir === null) delete profile.windowsUserDataDir;
+      else profile.windowsUserDataDir = windowsUserDataDir;
+      return { next: store, result: profile };
+    });
   }
 
   assignAccount(
@@ -940,6 +965,13 @@ export class PlaywrightProfileRegistry {
       // @silent-fallback-ok — READ-path dangling-ref check is best-effort; null = "don't assert dangling" (D17).
       return null;
     }
+  }
+
+  /** The folder the profile really lives in: its Windows folder when it has one. */
+  private profileDirExists(profile: PlaywrightProfile): boolean {
+    if (!profile.windowsUserDataDir) return this.dirExists(profile.userDataDir);
+    if (this.windowsDirExists) return this.windowsDirExists(profile.windowsUserDataDir);
+    return this.dirExists(windowsDirToWslPath(profile.windowsUserDataDir) ?? '');
   }
 
   /** fs.existsSync on a userDataDir; null userDataDir → built-in profile present (true). */

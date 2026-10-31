@@ -16,7 +16,8 @@ import { AnthropicReloginBrowserDriver, type ReloginBrowserAction, type AgentNav
 import { PlaywrightSeatLease } from './PlaywrightSeatLease.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { validClaudePasteBackCode, type ClaudePasteBackController } from './ClaudePasteBackController.js';
-import { SubscriptionReloginHelper, type ReloginHelperSeat } from './SubscriptionReloginHelper.js';
+import { SubscriptionReloginHelper, type ReloginHelperBrowserDriver, type ReloginHelperSeat } from './SubscriptionReloginHelper.js';
+import { isWslHost } from './wslPlatform.js';
 import type { CliLoginVerdict } from './CliLoginStatus.js';
 import type { ReloginLastResortStatus } from './ReloginLastResortProvider.js';
 
@@ -60,6 +61,7 @@ export interface SubscriptionReloginRuntimeDeps {
     listHelpers: () => Array<{ name: string; tmuxSession: string }>;
     hasCapacity: () => boolean;
     serverPort: number;
+    browserDriver?: ReloginHelperBrowserDriver;
     /** `codex login status` for a config home, proven able to fail (CliLoginStatus). */
     codexLoginStatus?: (codexHome: string) => Promise<CliLoginVerdict>;
     /** Test seams for the helper's timers. */
@@ -116,10 +118,13 @@ export function resolveReloginNavigation(
   navigation: 'agent' | 'closed' | 'agent-session' | undefined,
   config: { developmentAgent?: boolean } | undefined,
   platform: NodeJS.Platform = process.platform,
+  wsl: boolean = isWslHost(platform),
 ): 'agent' | 'closed' | 'agent-session' {
   // Skill-driven sign-in repair (spec skill-driven-signin-repair): `agent-session` is honored on
-  // macOS only; omitted ⇒ `agent-session` on a macOS development agent. Everywhere else the value
-  // resolves to the existing driver exactly as before.
+  // macOS, and on WSL when set explicitly (spec windows-signin-repair); omitted ⇒ `agent-session`
+  // on a macOS development agent. Everywhere else the value resolves to the existing driver
+  // exactly as before.
+  if (wsl && navigation === 'agent-session') return 'agent-session';
   if (platform === 'darwin') {
     if (navigation === 'agent-session') return 'agent-session';
     if (navigation === undefined && resolveDevAgentGate(undefined, config)) return 'agent-session';
@@ -158,6 +163,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
   const store = new SubscriptionReloginStore({ stateDir: deps.stateDir, now });
   const seatLease = deps.seatLease ?? new PlaywrightSeatLease({ now });
   const agentSession = deps.navigation === 'agent-session';
+  const windowsHelper = agentSession && deps.helperSession?.browserDriver === 'windows';
   if (agentSession && !deps.helperSession) throw new Error('relogin-agent-session-ports-missing');
   // Every navigation path honors the configured mode the same way (spec
   // relogin-unattended-agent-session-and-slow-retry, superseding skill-driven-signin-repair's
@@ -253,6 +259,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     },
     validateCode: validClaudePasteBackCode,
     serverPort: deps.helperSession!.serverPort,
+    browserDriver: deps.helperSession!.browserDriver,
     now,
     ...(deps.helperSession!.timing ?? {}),
   }) : null;
@@ -335,7 +342,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         return { outcome: 'refused', failureClass: 'provider-rejected' };
       if (helper && !lastResortDrives.has(episode.id)) {
         const result = await helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
-          provider: acct.provider, profileDir: detail.userDataDir,
+          provider: acct.provider, profileDir: (windowsHelper ? detail.windowsUserDataDir : undefined) ?? detail.userDataDir,
           vaultBindingNames: Object.values(browserAccount.vaultBindings ?? {}).filter((name): name is string => typeof name === 'string'),
         }, signal);
         // A drive resumed past the pre-attempt check (a restart after `cli-starting`) reaches the
@@ -465,7 +472,8 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         item.id !== currentEpisodeId && !['succeeded', 'refused', 'cancelled', 'failed'].includes(item.state)),
       hasLivePendingLogin: livePending?.status === 'pending' && !ownLeftover,
       profile: detail && browserAccount ? { id: detail.id, ambiguous: resolved.ambiguous === true,
-        dirExists: detail.dirExists, dedicated: !!detail.userDataDir, identityHash: identityHash(browserAccount.identity),
+        // A WSL helper can only open a Windows folder; the Linux path is metadata there.
+        dirExists: detail.dirExists && (!windowsHelper || !!detail.windowsUserDataDir), dedicated: !!detail.userDataDir, identityHash: identityHash(browserAccount.identity),
         loginMethod: browserAccount.loginMethod, danglingRefs: browserAccount.danglingRefs,
         passkeyEntryKey: browserAccount.vaultBindings?.passkey ?? null,
         passkeyCell: passkeyCellFor(acct, browserAccount) } : null,
@@ -566,6 +574,7 @@ export function buildReloginHelperSessionPorts(input: {
     'spawnSession' | 'isSessionAlive' | 'killSessionByTmuxName' | 'listRunningSessions'>;
   maxSessions: number;
   serverPort: number;
+  browserDriver?: ReloginHelperBrowserDriver;
   codexLoginStatus?: (codexHome: string) => Promise<CliLoginVerdict>;
 }): NonNullable<SubscriptionReloginRuntimeDeps['helperSession']> {
   const { sessionManager } = input;
@@ -586,6 +595,7 @@ export function buildReloginHelperSessionPorts(input: {
       .map((session) => ({ name: session.name, tmuxSession: session.tmuxSession })),
     hasCapacity: () => sessionManager.listRunningSessions().length < input.maxSessions,
     serverPort: input.serverPort,
+    browserDriver: input.browserDriver ?? 'macos',
     ...(input.codexLoginStatus ? { codexLoginStatus: input.codexLoginStatus } : {}),
   };
 }

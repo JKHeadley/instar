@@ -30119,6 +30119,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // PATCH /playwright-profiles/:id — record a WSL profile's Windows Chrome folder (null clears it).
+  router.patch('/playwright-profiles/:id', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body, ['windowsUserDataDir'])) return;
+    const value = (req.body ?? {}).windowsUserDataDir;
+    if (value !== null && typeof value !== 'string') {
+      res.status(400).json({ error: 'windowsUserDataDir is required (a Windows path, or null to clear)' });
+      return;
+    }
+    try {
+      const profile = buildPlaywrightRegistry().setWindowsUserDataDir(req.params.id, value);
+      appendPlaywrightAudit('patch', req.params.id, { windowsUserDataDir: value, dryRun: false });
+      res.json({ profile });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update profile' });
+    }
+  });
+
   // PATCH /playwright-profiles/:id/accounts — update lastAsserted/lastVerifiedAt/note.
   router.patch('/playwright-profiles/:id/accounts', (req, res) => {
     if (!playwrightFeatureEnabled()) {

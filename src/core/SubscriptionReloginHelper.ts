@@ -1,8 +1,8 @@
 /**
  * Skill-driven sign-in repair (spec docs/specs/skill-driven-signin-repair.md).
  *
- * On macOS the browser step of a repair episode is done by ONE short-lived agent session that
- * follows `/subscription-signin` section 3 — exactly what the hand-run repairs did. The session
+ * On macOS and on WSL (spec windows-signin-repair) the browser step of a repair episode is done by
+ * ONE short-lived agent session that follows `/subscription-signin` section 3 — exactly what the hand-run repairs did. The session
  * is a trusted local operator (same trust as any agent session on the machine). This module is
  * the SERVER side, and it only arbitrates:
  *
@@ -32,6 +32,9 @@ export interface ReloginHelperSeat {
   configHome: string;
 }
 
+/** `windows`: an agent in WSL, driving Windows Chrome through ndrive.sh. */
+export type ReloginHelperBrowserDriver = 'macos' | 'windows';
+
 export interface ReloginHelperDriveInput {
   episode: SubscriptionReloginEpisode;
   artifact: ReloginArtifact;
@@ -40,6 +43,8 @@ export interface ReloginHelperDriveInput {
   provider: 'anthropic' | 'openai';
   /** The account's own Chrome profile directory (opened the ordinary way by the helper). */
   profileDir: string;
+  /** Which normal-Chrome tools the helper has; absent means macOS. */
+  browserDriver?: ReloginHelperBrowserDriver;
   /** Names (never values) of the account's vault bindings. */
   vaultBindingNames: string[];
 }
@@ -67,6 +72,7 @@ export interface SubscriptionReloginHelperDeps {
   validateCode: (code: string) => boolean;
   /** The local server port the helper posts to (loopback). */
   serverPort: number;
+  browserDriver?: ReloginHelperBrowserDriver;
   now?: () => number;
   pollMs?: number;
   leaseRenewMs?: number;
@@ -196,7 +202,7 @@ export class SubscriptionReloginHelper {
       try {
         tmuxSession = await this.deps.spawn({
           name: SubscriptionReloginHelper.sessionName(episode.id),
-          prompt: renderHelperPrompt({ ...input, token, port: this.deps.serverPort, seat }),
+          prompt: renderHelperPrompt({ ...input, browserDriver: this.deps.browserDriver, token, port: this.deps.serverPort, seat }),
           seat, maxDurationMinutes: Math.max(1, Math.ceil(capMs / 60_000)),
         });
       } catch {
@@ -355,12 +361,16 @@ export function renderHelperPrompt(input: ReloginHelperDriveInput & { token: str
   const route = `http://127.0.0.1:${input.port}/subscription-relogin/${episode.id}/code`;
   const post = (json: string) =>
     `printf '%s' '${json}' | curl -s -X POST '${route}' -H 'Content-Type: application/json' -H 'X-Relogin-Helper-Token: ${input.token}' --data-binary @-`;
+  const windows = input.browserDriver === 'windows';
   const lines = [
     `You are a sign-in helper for Instar's automatic subscription repair, episode ${episode.id}.`,
     'Follow the /subscription-signin skill, section 3 ("Signing in by hand"), and its "Agent-run repair" subsection, then stop.',
+    ...(windows ? ['This is Windows: section 3\'s "On Windows (WSL)" subsection replaces its macOS steps. Drive Chrome only through .instar/scripts/browser/ndrive.sh.'] : []),
     '',
     `Account to sign in: ${input.expectedEmail} (${input.provider === 'openai' ? 'Codex / OpenAI' : 'Claude / Anthropic'}). Sign in ONLY this account.`,
-    `Its Chrome profile directory: ${input.profileDir} — open it the ordinary way, as section 3 says.`,
+    windows
+      ? `Its Chrome profile directory (a Windows path): ${input.profileDir} — launch it with ndrive.sh, or attach if Chrome already runs on it.`
+      : `Its Chrome profile directory: ${input.profileDir} — open it the ordinary way, as section 3 says.`,
     `Verification URL: ${input.verificationUrl}`,
     ...(artifact.kind === 'device-code' && artifact.userCode
       ? [`Device code: ${artifact.userCode}. The CLI finishes on its own once the page says you are signed in; do not post a code.`]
@@ -372,21 +382,23 @@ export function renderHelperPrompt(input: ReloginHelperDriveInput & { token: str
     'If Google opens on a passkey screen, choose "Try another way", then "Enter your password".',
     'Once Google accepts the second step, finish in that SAME Chrome window. Do not close and relaunch Chrome mid-sign-in: that loses the session.',
     `If a phone tap or "Is it you?" prompt appears, ask the operator once: ${post('{"notify":"phone-tap"}')}`,
-    'If macOS asks for Screen Recording, Accessibility or Automation permission, report it and stop:',
-    `  ${post('{"notify":"macos-permission","permission":"screen-recording"}')}  (or "accessibility" / "automation")`,
+    ...(windows ? [] : ['If macOS asks for Screen Recording, Accessibility or Automation permission, report it and stop:',
+      `  ${post('{"notify":"macos-permission","permission":"screen-recording"}')}  (or "accessibility" / "automation")`]),
     '',
     'Hard lines (these four, and only these four):',
     `1. Sign in the expected account (${input.expectedEmail}) only.`,
     '2. Never solve or work around a CAPTCHA or a phone / "verify it\'s you" check; only ask for the phone tap above.',
     '3. Type passwords only on Google, Claude or OpenAI pages.',
-    '4. Never touch a Chrome window you did not open.',
+    windows ? '4. Never touch a Chrome window that is not on this account\'s profile directory.' : '4. Never touch a Chrome window you did not open.',
     '',
-    'Before EVERY keystroke burst, check that the frontmost process is the Chrome you opened and that',
-    'document.activeElement is the password or code field you mean. Re-check after anything that can move focus.',
+    ...(windows ? ['Set ND_EXPECT_HOST to the host you mean on every command that clicks or types, so nothing lands on another page. Read the page text before typing.',
+        'Enter the sign-in link the way the skill says (over stdin, into the address bar). Fill every other field only by its `editfields` index, and pipe each secret to typesecretedit on stdin.']
+      : ['Before EVERY keystroke burst, check that the frontmost process is the Chrome you opened and that',
+        'document.activeElement is the password or code field you mean. Re-check after anything that can move focus.']),
     'If you reach a hard line, report which one and stop (the repair then waits for the operator and is never retried on its own):',
     `  ${post('{"notify":"hard-line","line":"captcha"}')}  (or "phone-confirmation" / "wrong-account" / "unexpected-site")`,
     'You cannot message anyone. If you cannot finish for any other reason, write the reason in your final output and exit.',
-    'Instar verifies the signed-in account itself; your word never counts as success. When done, close only the Chrome you opened and exit.',
+    `Instar verifies the signed-in account itself; your word never counts as success. When done, ${windows ? 'close the tab you used (ctrl w)' : 'close only the Chrome you opened'} and exit.`,
   ];
   return lines.join('\n');
 }

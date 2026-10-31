@@ -177,6 +177,7 @@ import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { MachineEvidenceStore } from '../core/MachineEvidenceStore.js';
 import { AttentionConditionStore, baseKeyOfItemId } from '../core/AttentionConditionStore.js';
 import { resolveSubscriptionReloginAttention, subscriptionReloginConditionKey } from '../core/SubscriptionReloginAttention.js';
+import { isWslHost } from '../core/wslPlatform.js';
 import { emailMismatchAttentionIdPrefix } from '../core/AccountFollowMeEmailGate.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from '../server/peerUrlGuard.js';
 import { formatWatchdogUserMessage, formatWatchdogSessionNotice } from '../monitoring/watchdog-notifications.js';
@@ -15525,6 +15526,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           import('../providers/adapters/anthropic-headless/transport/oneShotCompletion.js'),
         ]);
         const vault = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+        const reloginNavigation = resolveReloginNavigation(reloginCfg.navigation, config);
+        // On WSL the helper signs in through Windows Chrome (spec windows-signin-repair). The
+        // last-resort drive needs a server-side browser, and there is none for a Windows folder.
+        const windowsRepair = reloginNavigation === 'agent-session' && isWslHost();
         // Last-resort model (spec relogin-last-resort-model): the repair's own model calls go to
         // the shared provider first; when that fails (on a single-subscription agent it runs on
         // the dead login itself) and the operator placed a key under the repair-specific vault
@@ -15665,13 +15670,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             return action;
           },
           // Agent navigation (spec agent-driven-relogin): omitted ⇒ the development-agent gate.
-          // `agent-session` (spec skill-driven-signin-repair) is macOS-only; omitted ⇒ agent-session
-          // on a macOS development agent.
-          navigation: resolveReloginNavigation(reloginCfg.navigation, config),
+          // `agent-session` (spec skill-driven-signin-repair) runs on macOS and, set explicitly, on
+          // WSL; omitted ⇒ agent-session on a macOS development agent.
+          navigation: reloginNavigation,
           // A Codex repair can only be proven by a LIVE app-server read (spec skill-driven-signin-repair).
           codexLiveReadAvailable: config.subscriptionPool?.codexLiveQuota !== false,
           helperSession: buildReloginHelperSessionPorts({ sessionManager, maxSessions: config.sessions.maxSessions,
-            serverPort: config.port, codexLoginStatus: (codexHome) => codexLoginStatusChecker.check(codexHome) }),
+            serverPort: config.port, browserDriver: windowsRepair ? 'windows' : 'macos',
+            codexLoginStatus: (codexHome) => codexLoginStatusChecker.check(codexHome) }),
           navigate: async (input) => {
             const prompt = [
               'You are signing an expired subscription account back in, in that account\'s own browser, the way a careful person would.',
@@ -15697,7 +15703,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             });
             return raw.trim().split(/\s+/)[0] ?? '';
           },
-          ...(reloginLastResort ? { lastResort: reloginLastResort } : {}),
+          ...(reloginLastResort && !windowsRepair ? { lastResort: reloginLastResort } : {}),
           onSuggested: notify ? (episode, key) => notify(episode, key, 'approval') : undefined,
           onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
           onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
@@ -15708,7 +15714,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           slowRetry: reloginCfg.slowRetry,
         });
         subscriptionReloginRuntime.start();
-        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${resolveReloginNavigation(reloginCfg.navigation, config)}, browser: ${process.platform === 'darwin' ? 'normal' : 'automated'}, last-resort model: ${reloginLastResort ? (reloginLastResort.available() ? reloginLastResort.config.model : `key ${reloginLastResort.config.keyName} not in vault`) : 'off'})`));
+        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${reloginNavigation}, browser: ${process.platform === 'darwin' || windowsRepair ? 'normal' : 'automated'}, last-resort model: ${reloginLastResort && !windowsRepair ? (reloginLastResort.available() ? reloginLastResort.config.model : `key ${reloginLastResort.config.keyName} not in vault`) : 'off'})`));
       } catch (error) {
         // @silent-fallback-ok — bootstrap refusal is logged and the runtime is explicitly darkened; routes return typed 503.
         console.warn(`[subscription-relogin] bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);

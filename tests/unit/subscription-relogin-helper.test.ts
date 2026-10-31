@@ -241,4 +241,16 @@ describe('renderHelperPrompt', () => {
     expect(text).toContain('Try another way');
     expect(text).toContain('SAME Chrome window');
   });
+
+  it('on Windows names ndrive.sh and the Windows folder, and drops every macOS step', () => {
+    const text = renderHelperPrompt({ ...input(), profileDir: 'C:\\Users\\Public\\p1', browserDriver: 'windows', token: 'TOKEN123', port: 4042, seat: SEAT });
+    expect(text).toContain('.instar/scripts/browser/ndrive.sh');
+    expect(text).toContain('C:\\Users\\Public\\p1');
+    expect(text).toContain('On Windows (WSL)');
+    expect(text).toContain('Never solve or work around a CAPTCHA');
+    expect(text).toContain('{"notify":"hard-line","line":"captcha"}');
+    expect(text).not.toContain('macOS asks');
+    expect(text).not.toContain('document.activeElement');
+    expect(text).not.toContain('frontmost');
+  });
 });

@@ -406,4 +406,20 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     expect(audit).toContain('github_token');
     expect(audit).not.toContain('ghp_AUDITSECRET');
   });
+
+  it('PATCH /:id records a Windows folder, refuses a bad one and any other field, and clears with null', async () => {
+    const app = appWith(projectDir, { developmentAgent: true });
+    await request(app).post('/playwright-profiles').set(auth()).send({ id: 'winp' }).expect(200);
+    const set = await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: 'C:\\Users\\Public\\winp' });
+    expect(set.status).toBe(200);
+    const listed = await request(app).get('/playwright-profiles').set(auth());
+    expect(listed.body.profiles.find((p: { id: string }) => p.id === 'winp').windowsUserDataDir).toBe('C:\\Users\\Public\\winp');
+    expect((await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: '/mnt/c/x' })).status).toBe(400);
+    expect((await request(app).patch('/playwright-profiles/winp').set(auth()).send({})).status).toBe(400);
+    expect((await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: 'C:\\a\\b', userDataDir: '/x' })).status).toBe(400);
+    expect((await request(app).patch('/playwright-profiles/nope').set(auth()).send({ windowsUserDataDir: 'C:\\a\\b' })).status).toBe(404);
+    await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: null }).expect(200);
+    const cleared = await request(app).get('/playwright-profiles').set(auth());
+    expect(cleared.body.profiles.find((p: { id: string }) => p.id === 'winp').windowsUserDataDir).toBeUndefined();
+  });
 });
