@@ -38,8 +38,13 @@ describe('failed-file diagnosis on exact private git trees', () => {
       attemptId: 'a'.repeat(32), coordinatorMachineId: 'studio', leaseEpoch: 7 };
     const paths = failedFileRunPaths(agentHome, request.attemptId);
     const base = realSeams(() => {}, paths.verifyRoot);
+    // Source-loaded seams resolve beside src/*.ts. Production resolves beside
+    // the built child, so point this integration fixture at that installed file.
+    const installedReporter = path.resolve(process.cwd(), 'dist/localVerify/unhandledErrorsReporter.js');
+    expect(fs.existsSync(installedReporter)).toBe(true);
     const seams: FailedFileDiagnosisSeams = { ...base,
       now: () => Date.now(),
+      unhandledErrorsReporter: () => installedReporter,
       exec: async (command, args, opts) => {
         if (command === 'npm') return { status: 0, signal: null, pid: null, stdout: '', stderr: '',
           deadlineKilled: false, quiescent: true };
