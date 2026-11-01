@@ -101,12 +101,15 @@ export function classifyLeaseRoute(view: ForwardLeaseView): LeaseRoute {
  * holder on another machine is forwarded to at EVERY session-pool stage: a
  * direct send from a non-holder is always held (`authorize` requires the
  * lease), so answering `local` there muted the machine until the lease came
- * back. Only an UNSETTLED lease keeps the dark-stage answer (send direct, no
- * 15 s settle wait on a pool that is not rolled out). */
-export function decideHolderForward(input: { switchOn: boolean; poolStage: string; route: LeaseRoute }): 'forward' | 'local' | 'settling' {
+ * back. An UNSETTLED lease settles first whenever this machine has a paired
+ * peer: a direct send would be refused by `authorize` and held on the direct
+ * path, which only replays when the lease comes HERE — on a standby that is
+ * never, so every boot-time notice expired unsent (the Mama PC backlog). Only
+ * a dark pool with no known peer keeps the direct answer (no 15 s wait). */
+export function decideHolderForward(input: { switchOn: boolean; poolStage: string; route: LeaseRoute; hasPeer?: boolean }): 'forward' | 'local' | 'settling' {
   if (!input.switchOn || input.route.kind === 'self') return 'local';
   if (input.route.kind === 'peer') return 'forward';
-  return input.poolStage === 'dark' ? 'local' : 'settling';
+  return input.poolStage === 'dark' && input.hasPeer !== true ? 'local' : 'settling';
 }
 
 export type SettledRoute = { kind: 'self' } | { kind: 'peer'; holder: string } | { kind: 'unsettled'; reason: LeaseRoute extends { reason: infer R } ? R : never };

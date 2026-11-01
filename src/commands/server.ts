@@ -28097,6 +28097,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               holdsLease: () => coordinator.holdsLease(),
               isHolderHealthy: (machineId) => { try { return leaseCoordinatorRef ? leaseCoordinatorRef.isHolderHealthy(machineId) : false; } catch { return false; } }, // @silent-fallback-ok — an unreadable lease reads as NOT healthy: settling, never a blind forward
             };
+            // A paired, unrevoked peer: an unsettled lease then settles instead of a
+            // direct send that `authorize` would hold until the lease came here.
+            const forwardHasPeer = (): boolean => {
+              try {
+                return Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
+                  .some(([id, entry]) => id !== meshSelfId && !entry.revokedAt);
+              } catch { return false; } // @silent-fallback-ok — an unreadable registry keeps the old direct-send answer
+            };
             const holderNickname = (machineId: string): string => {
               try { return verifiedEntityName(machineId, coordinator.managers.identityManager.loadRegistry().machines[machineId]?.nickname) ?? 'another machine'; }
               catch { return 'another machine'; }
@@ -28214,7 +28222,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (telegramOriginBoot && hasUsableBotToken && meshSelfId) {
               const runtime = telegramOriginBoot.runtime;
               telegram.holderForwardPolicy = {
-                decide: () => originForwardMod.decideHolderForward({ switchOn: forwardSwitchOn(), poolStage: _sessionPoolStage(), route: originForwardMod.classifyLeaseRoute(forwardLease) }),
+                decide: () => originForwardMod.decideHolderForward({ switchOn: forwardSwitchOn(), poolStage: _sessionPoolStage(), route: originForwardMod.classifyLeaseRoute(forwardLease), hasPeer: forwardHasPeer() }),
               };
               // §4.2 — recovery re-forwards the SAME operation; an outcome-unknown
               // attempt is resolved at the old holder's receipt, never re-sent blind.
