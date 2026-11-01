@@ -1916,7 +1916,10 @@ export class LocalVerifyService {
         if (res.record.outcome === 'error') {
           this.audit({ event: 'peer-record-error', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, errorStep: res.record.errorStep });
           if (this.preflightErrorNeedsBypass(res.record.errorStep)) entry.preflightBypassRetry = true;
-          this.abandonRemote(entry, 'peer-error', { failure: true, cancel: false });
+          // A merge conflict belongs to this PR/base pair. It says nothing about the
+          // peer's health, and counting it can open the breaker on a healthy host.
+          const peerFault = res.record.errorStep !== 'conflict';
+          this.abandonRemote(entry, peerFault ? 'peer-error' : 'merge-conflict', { failure: peerFault, cancel: false });
           continue;
         }
         // Import: the one completion path, then the entry leaves the queue.
