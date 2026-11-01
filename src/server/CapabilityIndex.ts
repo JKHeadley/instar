@@ -157,10 +157,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'remoteDesktop',
     prefixes: ['/desktop'],
-    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
+    description: 'Native operator remote desktop on the registered machine pool. The operator opens the designated front at /dashboard/desktop.html, enters the existing dashboard PIN, chooses a ready target, and can Stop immediately. A target may be online even when its screen helper lacks a GUI session, display, or permission. The PIN proves dashboard credential possession, not independent human identity. Registry First: GET /desktop/diagnostics reports this machine’s own probe signals with Bearer auth, including whether a Mac permission belongs to the helper itself (screenGrant/inputGrant: own) or only to what started the process tree (inherited); POST /desktop/request-permission shows macOS’s prompts to a person at that Mac and grants nothing itself; GET /desktop/availability reports the designated front’s local admission, and the PIN-scoped front /desktop/targets lists the pool.',
     build: ({ ctx }) => ({
       configured: !!ctx.directDesktopAccess,
-      endpoints: ['GET /desktop/diagnostics', 'GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
+      endpoints: ['GET /desktop/diagnostics', 'POST /desktop/request-permission', 'GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
         'GET /desktop/requests/:id', 'POST /desktop/requests/:id/ticket',
         'POST /desktop/requests/:id/revoke', 'WebSocket /desktop-stream'],
     }),

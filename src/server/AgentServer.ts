@@ -5241,6 +5241,7 @@ export class AgentServer {
           return { configured, targetConstructed: true, status: probe.ready ? 'ready' : 'not-ready',
             screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
             displayCount: probe.displayCount, sessionActive: probe.sessionActive,
+            ...(probe.screenGrant ? { screenGrant: probe.screenGrant, inputGrant: probe.inputGrant } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];

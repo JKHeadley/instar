@@ -93,6 +93,8 @@ describe('remote desktop HTTP routes', () => {
     expect((await request(server).get('/desktop/availability').set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
     expect((await request(server).post('/desktop/activate-config').set('Authorization', `Bearer ${AUTH}`)
       .set('X-Instar-Request', '1').send({})).status).toBe(409);
+    expect((await request(server).post('/desktop/request-permission').set('Authorization', `Bearer ${AUTH}`)
+      .set('X-Instar-Request', '1').send({})).status).toBe(503);
   });
 
   it('keeps target diagnostics bearer-only and reports probe signals without a desktop grant', async () => {
@@ -109,6 +111,21 @@ describe('remote desktop HTTP routes', () => {
     expect(getter).toHaveBeenCalledOnce();
     expect((await request(server).get('/desktop/availability')
       .set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
+  });
+
+  it('shows the Mac permission prompt only on an authenticated, intentional, paced request', async () => {
+    let requests = 0;
+    const access = { ...fakeAccess(), requestPermission: async () => { requests++; return { screenPermission: false, inputPermission: true }; } };
+    const { server } = app(access as unknown as DirectDesktopAccess);
+    const url = '/desktop/request-permission';
+    expect((await request(server).post(url).set('X-Instar-Request', '1')).status).toBe(401);
+    expect((await request(server).post(url).set('Authorization', `Bearer ${AUTH}`)).status).toBe(403);
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' };
+    const first = await request(server).post(url).set(headers);
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ screenPermission: false, inputPermission: true });
+    expect((await request(server).post(url).set(headers)).status).toBe(429);
+    expect(requests).toBe(1);
   });
 
   it('reports a fixed Windows bootstrap failure through the authenticated diagnostic only', async () => {
