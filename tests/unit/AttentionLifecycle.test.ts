@@ -61,10 +61,20 @@ describe('class + expiry', () => {
       row({ id: 's1', category: 'security', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
       row({ id: 's2', title: 'Rotate exposed GitHub access token', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
       row({ id: 's3', sticky: true, updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      // Both were missed on the 2026-10-26 cleanup: a secret named inside an identifier,
+      // and a live third-party grant.
+      row({ id: 's4', title: 'Rotate github_token (printed into a session transcript)', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      row({ id: 's5', title: 'Active email authorization for someone else on this machine', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      row({ id: 's6', title: 'Revoke the stale OAuth grant on the shared mailbox', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
     ]) {
       const d = decideAttentionExpiry(r, cfg, NOW);
       expect(d.cls).toBe('security');
       expect(d.expire).toBe(false);
+    }
+  });
+  it('the security floor does not swallow ordinary notices', () => {
+    for (const title of ['Account enrollment needs your check on "this machine"', 'Credential identity drift: adriana', 'Claude Code sign-in repair', 'Rotating log files on the Mini']) {
+      expect(classifyAttentionLifecycle(row({ id: 'x', title }))).not.toBe('security');
     }
   });
   it('operator-asked (agent-raised / needsUser / decision category / URGENT) expires at 30 days, not 14', () => {
