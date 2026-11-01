@@ -804,6 +804,39 @@ export class OriginStoreBackend {
    * receipt for it). Resolves the standby's own held row so recovery stops and
    * the audit names the machine that delivered. Refused for a row already
    * claimed or resolved; never invents a receipt. */
+  /** The holder this operation was forwarded to answers that its OWN send ended
+   * outcome-unknown (Telegram may or may not have it). The forward is settled
+   * the same way: a dispatched attempt with an unknown outcome, so the row
+   * leaves the held set and every reader says "may have arrived, do not
+   * resend" instead of waiting out the deadline and then reading as never sent. */
+  recordForwardedOutcomeUnknown(input: { operationId: string; deliveryMachineId: string; now?: number }): boolean {
+    id(input.operationId); id(input.deliveryMachineId);
+    const now = input.now ?? Date.now();
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId); if (!op || op.kind !== 'ordinary' || op.state !== 'held') return false;
+      const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
+      if (!children.length || children.some(child => child.state !== 'queued')) return false;
+      const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id);
+      if (active) return false;
+      const ownerBootId = `forwarded:${input.deliveryMachineId}`;
+      this.db.prepare('INSERT OR IGNORE INTO telegram_origin_owners VALUES (?,?)').run(ownerBootId, input.deliveryMachineId);
+      for (const child of children) {
+        const materialization = this.db.prepare('SELECT * FROM telegram_origin_materializations WHERE child_id=? AND generation=? ORDER BY rowid LIMIT 1').get(child.child_id, child.generation) as DbMaterialization | undefined;
+        if (!materialization) return false;
+        const attemptId = randomUUID(), claimToken = randomUUID();
+        this.db.prepare('INSERT INTO telegram_origin_attempts VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(attemptId, child.child_id, materialization.materialization_id, claimToken, ownerBootId, 'dispatched', 'outcome-unknown', null, now, now);
+        this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attemptId, 'forwarded-holder-outcome-unknown', null);
+        this.db.prepare("UPDATE telegram_origin_children SET state='outcome-unknown' WHERE child_id=?").run(child.child_id);
+        this.db.prepare("UPDATE entries SET state='delivered-ambiguous',claimed_by=NULL,owner_boot_id=NULL,lease_until=NULL,next_attempt_at=NULL WHERE delivery_id=?").run(child.delivery_id);
+        this.event(attemptId, 'attempt:outcome-unknown');
+        this.event(`${child.child_id}:outcome-unknown`, 'child:outcome-unknown');
+      }
+      this.db.prepare('UPDATE telegram_origin_operations SET hold_reason=NULL,hold_detail_json=NULL WHERE operation_id=?').run(op.operation_id);
+      this.refreshOperation(op.operation_id);
+      return true;
+    }).immediate();
+  }
   recordForwardedAcceptance(input: { operationId: string; deliveryMachineId: string; receiptJson: string; now?: number }): boolean {
     id(input.operationId); id(input.deliveryMachineId); json(input.receiptJson, 64 * 1024);
     const now = input.now ?? Date.now();

@@ -59,7 +59,7 @@ export interface TelegramOriginRuntimeOptions {
   holdsLease?: () => boolean;
   /** §4.2 — recovery of a held FORWARDED operation (execution owner ≠ self).
    * Wired by the server; absent ⇒ such rows are retained, never executed here. */
-  forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'retained' | 'skipped'>;
+  forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'settled' | 'retained' | 'skipped'>;
   /** §4.2 — a held forward reached its deadline: report it ONCE, honestly. */
   onHeldForwardExpired?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward

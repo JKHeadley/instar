@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "forward-holder-unknown-settles",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-11-01T00:44:31.746Z",
+  "artifactPath": "upgrades/side-effects/forward-holder-unknown-settles.md",
+  "artifactSha256": "501b3740458dfe4abac61565272eaac17618c1f0f3f7500f1cb902cbea64263f",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "src/messaging/telegram-origin/OriginStore.worker.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/integration/telegram-origin-forward-on-standby.test.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts",
+    "upgrades/next/forward-holder-unknown-settles.md",
+    "upgrades/side-effects/forward-holder-unknown-settles.eli16.md",
+    "upgrades/side-effects/forward-holder-unknown-settles.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow recovery-state fix: one new receipt answer and one store transaction mirroring recordForwardedAcceptance; no new gate, no send path change; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/forward-holder-unknown-settles.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/forward-holder-unknown-settles.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
