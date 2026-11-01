@@ -12,7 +12,8 @@ import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
 // drives the real TelegramWebKDriver over a private CDP pipe. The "browser" is
 // a node script that speaks CDP and serves whichever Web K build the test
 // names, so a Telegram update is simulated without the network or a login.
-const [b679, b676] = REVIEWED_WEB_K_BUILDS;
+const b679 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-679')!;
+const b676 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-676')!;
 const FAKE_BROWSER = String.raw`#!/usr/bin/env node
 const fs = require('fs'), path = require('path');
 const served = () => JSON.parse(fs.readFileSync(path.join(__dirname, 'served-build.json'), 'utf8'));

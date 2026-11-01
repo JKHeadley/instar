@@ -12,6 +12,16 @@ export interface ReviewedWebKBuild extends WebKBuildEnrollment { evidence: strin
 
 export const REVIEWED_WEB_K_BUILDS: readonly ReviewedWebKBuild[] = Object.freeze<ReviewedWebKBuild[]>([
   {
+    buildId: 'web-k-2.2-684',
+    evidence: 'docs/specs/reports/telegram-message-origin-evidence/web-k-2.2-684-review.md',
+    criticalAssets: ['apiManagerProxy-BsT2jiCe.js', 'app-Y8QFA5bv.js', 'index-kWWFxlHg.js'],
+    assetDigests: {
+      'apiManagerProxy-BsT2jiCe.js': '6f8d5d5bc0b7ce65da1112f443d8ab4a52af11054b880648c5d0a29aee6a9b63',
+      'app-Y8QFA5bv.js': '4e877485f8e9629d0b723468fac7291d47b02fb01fa35493f1b8cda1aafd0e72',
+      'index-kWWFxlHg.js': '1c43fc11afbbaa87272ce5df6b9d1157352cf1142187dfa099782e23f2b1b59d',
+    },
+  },
+  {
     buildId: 'web-k-2.2-679',
     evidence: 'docs/specs/reports/telegram-message-origin-evidence/web-k-2.2-679-review.md',
     criticalAssets: ['apiManagerProxy-DYhbs4ln.js', 'app-DVSixCDs.js', 'index-xJZhS8vI.js'],
