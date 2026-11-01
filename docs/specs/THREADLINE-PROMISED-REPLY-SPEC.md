@@ -251,8 +251,11 @@ current sender would no longer be sending to it, per decision 9).
 
 ## Open questions
 
-- Does a peer capability advertisement exist that decision 9 can read? If not, this PR adds
-  `reply-notice` to the capability list exchanged at pairing. To verify before round 2.
+- Capability source for decision 9. A list exists: `AgentDiscovery` reads `capabilities` from a
+  peer's `/threadline/health` (AgentDiscovery.ts ~36, ~242, `searchByCapability`). But it is
+  filled by HTTP health pings, which a relay-only peer may never answer, so for those peers the
+  list is empty and they would get no notice. Round 2 decides: accept that (fail closed), or
+  carry the capability list on the relay handshake as well.
 - Echo's 3-inbound/465-outbound figure is his measurement and has not been re-checked here.
 
 ## Out of scope
