@@ -145,6 +145,13 @@ describe('native app conversations — production wiring', () => {
     expect(hist.body.messages[1].originVerified).toBe('none');
     const health = await auth(request(app).get('/health'));
     expect(health.body.appConversations).toMatchObject({ count: 1 });
+
+    // A ledger revocation alone refuses the phone at once on the production auth path, even if
+    // the registry write after it failed (the registry still says active here).
+    server.mobilePairing!.keyLedger!.recordRevocation(server.mobilePairing!.devices.get(deviceId)!, new Date().toISOString());
+    expect(server.mobilePairing!.devices.get(deviceId)!.status).toBe('active');
+    const refused = await send('GET', `/mobile/chat/app/${key}/messages`);
+    expect(refused.status).toBe(401);
   });
 
   it('is off on a fleet agent: the routes answer 503', async () => {

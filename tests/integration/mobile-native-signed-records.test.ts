@@ -187,6 +187,25 @@ describe('signed records — native conversations', () => {
   });
 });
 
+describe('signed records — a ledger revocation takes effect at once', () => {
+  it('refuses the device through the production auth middleware when only the ledger row landed', async () => {
+    const e = await setup();
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Plans', requestId: rid() })).body.conversationKey as string;
+    expect((await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).status).toBe(200);
+    // The revoke path wrote the ledger row, then the registry write failed: the registry still says active.
+    e.keyLedger.recordRevocation(e.pairing.devices.get(e.deviceId)!, new Date().toISOString());
+    expect(e.pairing.devices.get(e.deviceId)!.status).toBe('active');
+    const read = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    expect(read.status).toBe(401);
+    expect(read.body.error).toBe('device-unauthorized');
+    const send = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'after the revocation', requestId: rid() });
+    expect(send.status).toBe(401);
+    // Nothing from the refused send was stored.
+    const hist = await request(e.app).get(`/mobile/chat/app/${key}/messages`).set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
+    expect(hist.body.messages).toHaveLength(0);
+  });
+});
+
 describe('signed records — the Telegram history join', () => {
   it('a Telegram history read by the device returns originVerified for an app-sent message', async () => {
     const e = await setup();

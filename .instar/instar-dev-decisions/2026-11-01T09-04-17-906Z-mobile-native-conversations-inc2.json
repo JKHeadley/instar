@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-01T09:04:17.906Z",
+  "slug": "mobile-native-conversations-inc2",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 27,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MobileDeviceKeyLedger.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

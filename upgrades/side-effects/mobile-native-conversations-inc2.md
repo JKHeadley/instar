@@ -15,6 +15,7 @@ Modified: the native send route stores `bodyB64` / redaction attestation / machi
 
 ## Decision-point inventory
 
+- Device authentication lookup — modify — a pairing with a revocation row in the device-key ledger authenticates as `revoked` (refused), on top of the registry status (invariant; the ledger row is the recorded revocation intent).
 - `verifyRecordedOrigin` — add — invariant cryptographic checks; never authorizes anything, only labels a stored record.
 - Session tag "📱 signed" — modify — now only for `verified` (was never shown).
 - Ledger replicated-row acceptance — add — signature under the pinned key of the named machine (invariant).
@@ -53,7 +54,7 @@ No new crypto primitive: machine signatures use `MachineIdentity.sign`/`verify` 
 - [ ] Yes — but the logic is a smart gate with full conversational context.
 - [ ] ⚠️ Yes, with brittle logic — STOP.
 
-The verdict is a label on stored records; nothing gates on it (it only chooses whether the session tag says "📱 signed"). The ledger grants nothing; device authentication is unchanged. The ledger-ingest signature check and the persist-before-dispatch refusal are structural invariants, not judgments.
+The verdict is a label on stored records; nothing gates on it (it only chooses whether the session tag says "📱 signed"). The ledger grants nothing. Device authentication gains one refusal: a pairing with a revocation row in the ledger authenticates as revoked — the ledger can only remove access, never add it. The ledger-ingest signature check and the persist-before-dispatch refusal are structural invariants, not judgments.
 
 ---
 
@@ -65,7 +66,7 @@ No judgment point added. Every check in `verifyRecordedOrigin` is a cryptographi
 
 ## 5. Interactions
 
-- **Write order:** confirm/revoke write the ledger row first; a crash between the two writes is repaired at boot in either direction (tested); a live registry-write failure after a revocation row is retried once, and otherwise left to boot reconciliation (see the review section). Reconciliation runs once per boot in AgentServer after the ledger is attached to the pairing service.
+- **Write order:** confirm/revoke write the ledger row first; a crash between the two writes is repaired at boot in either direction (tested); after a revocation row, device authentication refuses the pairing at once even if the registry write failed (the ledger's in-memory revoked index). Reconciliation runs once per boot in AgentServer after the ledger is attached to the pairing service.
 - **Telegram eventId:** with native on, the Telegram history row's `eventId` becomes the store's event id (`op-…`) instead of `mobile:<device>:<request>`; the pool-merge de-duplication keys on eventId and is unaffected. With native off nothing changes.
 - **Boot recovery:** Telegram sends with native on are reserved with `{op:'send', conversationKey:'telegram:N', messageId}`, so the existing `recoverStranded` treats them like native sends (row missing ⇒ not-delivered; row without delivery ⇒ unknown).
 - **Feedback loops:** replicated ledger rows are appended without calling the emit hook, so they are not re-emitted.
@@ -87,7 +88,7 @@ No operator surface — not applicable (no dashboard file is touched; the app sh
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
-**replicated** — the ledger rides the `mobileDeviceKeyLedger` replicated-store kind, injected into the resolved stateSync flags whenever native is on; peers' rows land at boot from the peer streams and on every commit, each accepted only when it verifies under the pinned key of the machine it names. Verification on any machine uses that machine's copy of the ledger and its pinned key history. Device records stay machine-local (unchanged).
+**replicated** — the ledger rides the `mobileDeviceKeyLedger` replicated-store kind, injected into the resolved stateSync flags whenever native is on; peers' rows land at boot from the peer streams and on every commit, each accepted only when it verifies under the pinned key of the machine it names. Verification on any machine uses that machine's copy of the ledger and its pinned key history. A peer's signature-checked revocation row for the same (keyHash, deviceId) takes effect in this machine's device authentication as soon as it lands (the in-memory revoked index), not at the next boot. If the ledger cannot be read at startup, the index stays empty, the problem is reported, and the registry status still applies; it is not re-read until the next restart, apart from rows appended later in the same process. Device records stay machine-local (unchanged).
 
 ---
 
@@ -113,7 +114,7 @@ The reviewer found no way to get `verified` for a forged, tampered or cross-conv
 - **Must-fix — the join showed messages that never reached the agent.** Store-only rows are now added only for operator messages whose delivery is `delivered`, `intercepted` or `unknown` (never `refused` or `pending`), and carry `deliveryState`. Integration-tested.
 - **One key paired under two device ids** (another machine, or re-paired after the revoked record was pruned). The ledger view, the duplicate checks, reconciliation AND the replicated record key (`ledgerRowId` now includes `deviceId`) are keyed per pairing, so the old pairing's revocation never revokes the new one, the two pairings' rows never overwrite or de-duplicate each other on a peer, and each keeps its own lifetime on every machine. Unit-tested locally and through a peer ledger ingesting both pairings (second review round).
 - **Spec wording, deliberate deviation:** §4.6 lists "`deviceId` … differs from the ledger row" under `failed`. With the ledger keyed per pairing, a record whose (key, device id) has no row on this machine reads `unknown` ("this machine does not know this pairing yet", which replication lag makes normal), and `failed` is kept for a row that exists for that pairing and disagrees (public key, device id field, host). This never yields `verified` for a mismatch; it only avoids marking honest records `failed` during lag (second review round).
-- **Registry write failing after the revocation row:** the route now retries the registry write once; if both fail it answers 500 and boot reconciliation completes the revocation. Residual, accepted: in that window the device can still send, and those messages read `failed` (accepted after the recorded `revokedAt`).
+- **Registry write failing after the revocation row:** the route retries the registry write once; if both fail it answers 500 and boot reconciliation completes the revocation in the registry. Follow-up (coordinator request): the gap is closed — device authentication (`deviceAuthenticator`'s lookup) also refuses a pairing whose key has a revocation row in the device-key ledger, from an in-memory index loaded once at construction and updated on every append (local or replicated), so the ledger row alone takes effect immediately with no file read per request. Unit-tested (row present, registry still active ⇒ refused; index reloaded after a restart; a replicated row; another pairing of the same key is not refused) and integration-tested through the production auth middleware (read and send refused, nothing stored).
 - **receivedAt** is now the moment the device authenticator accepted the signature, not later in the handler.
 - **Path form:** with the signed copy kept, the Telegram route refuses a non-canonical topic id (`/mobile/chat/077`) with 400, so a stored path always names its conversation exactly. Integration-tested.
 - **PostUpdateMigrator** doc comment re-attached to its function.
