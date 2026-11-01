@@ -1,0 +1,1 @@
+- A paired machine no longer holds its automatic Telegram notices in the first seconds after a restart: sends wait (at most 30 s) until forward-to-holder routing is wired, then go to the lease holder.
