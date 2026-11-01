@@ -3917,6 +3917,13 @@ export interface InstarConfig {
      * the developmentAgent gate decides; read at boot.
      */
     native?: { enabled?: boolean };
+    /**
+     * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
+     * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
+     * GET /mobile/routes. `enabled` omitted ⇒ live on a development agent, off on the fleet.
+     * Read at boot.
+     */
+    multiRoute?: { enabled?: boolean };
   };
   maturationBoard?: {
     enabled?: boolean;

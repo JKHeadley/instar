@@ -30,6 +30,7 @@ async function boot(developmentAgent: boolean) {
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
   const config = {
     projectName: 'mp-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
+    mobilePairing: { multiRoute: { enabled: false } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},

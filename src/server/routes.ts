@@ -1311,6 +1311,8 @@ export interface RouteContext {
   hookEventReceiver: HookEventReceiver | null;
   /** Native hook events ingest (docs/specs/native-hook-events.md); null when not constructed. */
   nativeHookIngest?: NativeHookEventIngest | null;
+  /** Multi-route own names (docs/specs/mobile-multi-route.md); null when the flag is off. */
+  mobileOwnNames?: import('../core/MobileOwnNames.js').MobileOwnNames | null;
   worktreeMonitor: WorktreeMonitor | null;
   subagentTracker: SubagentTracker | null;
   instructionsVerifier: InstructionsVerifier | null;
@@ -5284,6 +5286,10 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.nativeHookIngest) base.hookEvents = ctx.nativeHookIngest.snapshot();
       // Native app conversations (mobile-native-conversations §4.5): store size, authed only.
       if (ctx.appConversations) { try { base.appConversations = ctx.appConversations.store.health(); } catch { /* @silent-fallback-ok — observability */ } }
+      // Multi-route (mobile-multi-route §4.1): own names + health, never-proven candidates with
+      // their last failure, and the tailscale-serve state. Bearer only; device principals keep
+      // the basic health and read their routes from GET /mobile/routes.
+      base.mobileRoutes = ctx.mobileOwnNames ? ctx.mobileOwnNames.healthSnapshot() : { enabled: false };
       base.schedulerRunning = ctx.scheduler !== null;
       base.consecutiveJobFailures = totalFailures;
       // What the currency bound excluded, so the information is MOVED rather than
