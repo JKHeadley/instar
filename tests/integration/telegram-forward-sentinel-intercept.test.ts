@@ -268,7 +268,8 @@ describe('/internal/telegram-forward — wiring integrity', () => {
       path.join(__dirname, '..', '..', 'src', 'server', 'routes.ts'),
       'utf-8',
     );
-    const fwdIdx = src.indexOf("router.post('/internal/telegram-forward'");
+    // The forward route's body is the shared inbound handler (mobile-operator-chat §2.2).
+    const fwdIdx = src.indexOf('const telegramForwardHandler = async');
     expect(fwdIdx).toBeGreaterThan(-1);
     // The onTopicMessage routing call marks "message handed to session".
     const routeIdx = src.indexOf('ctx.telegram.onTopicMessage(message)', fwdIdx);

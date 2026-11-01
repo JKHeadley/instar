@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "mobile-pairing-and-device-keys",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T01:35:44.229Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-and-device-keys.md",
+  "artifactSha256": "47b72fcb3aa938b888045e6a679bd12d797f99e95c9c12aa0c4463579e3b11e5",
+  "coveredFiles": [
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/mobile-pairing-routes.test.ts",
+    "tests/unit/capabilities-discoverability.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-gate fixes only: discoverability source list, section-parity tracking, silent-fallback markers on already-reported catches, and a flaky assertion; no behavior change",
+  "eli16Path": "docs/specs/mobile-device-keys.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-pairing-and-device-keys.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

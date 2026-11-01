@@ -420,6 +420,13 @@ interface FixCommandDeps {
  * help list that even advertised "restart sessions" as valid. Scoping the gate
  * to the attention topic closes that hole.
  */
+
+/** mobile-operator-chat: an app message keeps its "via the app" mark when routed or queued. */
+function mobileEnvelope(msg: { metadata?: Record<string, unknown> }): { via?: 'mobile-device'; deviceId?: string; eventId?: string } {
+  if (msg.metadata?.viaMobileDevice !== true) return {};
+  return { via: 'mobile-device', deviceId: String(msg.metadata.deviceId ?? ''), eventId: String(msg.metadata.eventId ?? '') };
+}
+
 export function shouldInterceptFixCommand(
   text: string,
   topicId: number,
@@ -2581,7 +2588,9 @@ export function wireTelegramRouting(
     try {
       const opStore = getTopicOperatorStore?.() ?? null;
       // An inbound the lifeline-secret gate accepted WITHOUT proof never seats an operator.
-      if (opStore && msg.metadata?.senderUnverified !== true && operatorAutoBindPermitted(signedByAgent) && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
+      // A native-app message (mobile-operator-chat) is device-authenticated, not
+      // Telegram-authenticated, so it never seats or refreshes the topic operator.
+      if (opStore && msg.metadata?.senderUnverified !== true && msg.metadata?.viaMobileDevice !== true && operatorAutoBindPermitted(signedByAgent) && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
         // A lifeline-forwarded Message.id may contain a Date.now fallback used
         // only for internal routing. Establishment evidence must use the raw
         // Telegram id carried separately; absent stays absent and fails closed.
@@ -2823,7 +2832,7 @@ export function wireTelegramRouting(
               sessionKey: String(topicId),
               messageId: String(msg.id),
               payload: text,
-              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
             }, 'ordering-behind-queued');
             if (ord.result === 'queued' || ord.result === 'already-queued') {
@@ -2842,7 +2851,7 @@ export function wireTelegramRouting(
           payload: text,
           topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)), // U4.1 §2D: local pin ⊕ fold winner by HLC
           // §2.2: sender identity captured at ingress, persisted with custody.
-          senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+          senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
         });
         // Routing-decision observability — the live transfer path is otherwise a black
         // box (the recognizer logs its pin, but route()'s actual placement/forward
@@ -2959,7 +2968,7 @@ export function wireTelegramRouting(
               sessionKey: String(topicId),
               messageId: String(msg.id),
               payload: text,
-              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
             }, 'spawn-admission-refusal');
             custody = q.result === 'queued' || q.result === 'already-queued';
@@ -3202,7 +3211,7 @@ export function wireTelegramRouting(
               sessionKey: String(topicId),
               messageId: String(msg.id),
               payload: text,
-              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName },
+              senderEnvelope: { userId: telegramUserId || undefined, firstName: pipeline.sender.firstName, ...mobileEnvelope(msg) },
               topicMetadata: _pinPlacementMetadata ? _pinPlacementMetadata(String(topicId)) : _topicPinStore?.asTopicMetadata(String(topicId)),
             }, 'work-admission-refusal');
             custody = q.result === 'queued' || q.result === 'already-queued';

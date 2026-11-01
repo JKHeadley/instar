@@ -204,7 +204,8 @@ describe('/internal/telegram-forward — exactly-once ingress gate', () => {
 describe('/internal/telegram-forward — exactly-once wiring integrity', () => {
   it('the dedup gate is between the sentinel intercept and the routing call', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'server', 'routes.ts'), 'utf-8');
-    const fwdIdx = src.indexOf("router.post('/internal/telegram-forward'");
+    // The forward route's body is the shared inbound handler (mobile-operator-chat §2.2).
+    const fwdIdx = src.indexOf('const telegramForwardHandler = async');
     // operator-channel-sacred (topic 28130): the forward path now decides the
     // inbound disposition via decideInboundDisposition (which consults the
     // sentinel) instead of the old raw `sentinel.classify` — the dedup gate

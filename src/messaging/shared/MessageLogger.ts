@@ -27,6 +27,10 @@ export interface LogEntry {
   platform?: string;
   /** Platform-authenticated forwarding provenance. Undefined means unknown. */
   forwarded?: boolean;
+  /** Set on a message typed in the native app (mobile-operator-chat). */
+  via?: 'mobile-device';
+  deviceId?: string;
+  eventId?: string;
   /** Structural message origin. Undefined only for legacy/non-migrated writers. */
   provenance?: MessageProvenance;
 }
@@ -43,6 +47,10 @@ export interface TelegramLogEntry {
   senderUsername?: string;
   telegramUserId?: number;
   forwarded?: boolean;
+  /** Set on a message typed in the native app (mobile-operator-chat). */
+  via?: 'mobile-device';
+  deviceId?: string;
+  eventId?: string;
   provenance?: MessageProvenance;
 }
 

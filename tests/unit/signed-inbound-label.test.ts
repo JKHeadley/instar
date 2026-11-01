@@ -145,7 +145,8 @@ describe('wiring — the label and the bind-skip sit at the convergence point (s
   it('routes.ts gates the lifeline-side operator bind on the same verdict, after the message is logged', () => {
     const logAt = routes.indexOf('ctx.telegram.logInboundMessage({');
     const resolveAt = routes.indexOf("resolveSignedByAgent(\n      ctx.getAspClassifier?.() ?? null,");
-    const gateAt = routes.indexOf('if (ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined');
+    // The gate also skips app messages (mobile-operator-chat: `!trust &&`).
+    const gateAt = routes.indexOf('if (!trust && ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined');
     const bindAt = routes.indexOf("ingress: 'telegram-lifeline-forward'");
     expect(logAt).toBeGreaterThan(0);
     expect(resolveAt).toBeGreaterThan(logAt);
