@@ -567,6 +567,11 @@ export class DirectDesktopAccess {
         candidateFrameDigest = null;
       },
       requestKeyframe: () => { if (activeCodec === 'h264') forceKeyframe = true; },
+      // A ping from the admitted, still-valid connection keeps a watched
+      // session alive; it never revives a grant that has already lapsed.
+      touch: () => {
+        if (row.grantId === admittedGrantId && this.validGrant(row)) row.lastActivity = this.now();
+      },
       fallbackVideo: () => { activeCodec = 'jpeg'; candidateFrameDigest = null; },
       decryptCommand: (record: Buffer) => {
         if (row.grantId !== admittedGrantId) throw new Error('desktop grant unavailable');

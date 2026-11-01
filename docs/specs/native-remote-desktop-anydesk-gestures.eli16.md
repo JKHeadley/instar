@@ -8,6 +8,6 @@ Keys: the tools panel now has F1 to F12, Home, End, Page Up, Page Down and Delet
 
 On a computer with a mouse, a normal quick click now reaches the remote machine as one click. Before, the press and the release were sent separately and arrived about a second apart over the internet, which some apps treated as press-and-hold. A press that lasts longer or moves still goes out as a real press and release, so dragging works.
 
-Staying connected: the session used to close after two minutes with no input, even if you were just watching. The viewer now tells the machine every 30 seconds that it is still open on screen, so watching keeps the session alive. The ten-minute limit on a single permission and the Stop button are unchanged.
+Staying connected: the session used to close after two minutes with no input, even if you were just watching. The viewer now tells the machine every 30 seconds that it is still open on screen, so watching keeps the session alive (it refreshes the permission itself, not just the connection, and only while that permission is still valid). The ten-minute limit on a single permission and the Stop button are unchanged.
 
 What is not included: Ctrl+Alt+Del on Windows. Windows only accepts that key combination from a system-level program, and the helper deliberately runs as a normal program in the signed-in user's session. Ctrl+Shift+Esc, which opens Task Manager, does work.

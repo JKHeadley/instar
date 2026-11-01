@@ -16,6 +16,8 @@ export interface DesktopStreamSession {
   frameDropped?(): void;
   requestKeyframe?(): void;
   fallbackVideo?(): void;
+  /** An open, visible viewer counts as use: refresh the grant's idle clock. */
+  touch?(): void;
   decryptCommand(record: Buffer): { type: 'stop' | 'ping' | 'input' | 'keyframe' | 'video-fallback'; action?: DesktopInput };
   input(action: DesktopInput): Promise<void>;
   revoke(): Promise<void>;
@@ -182,7 +184,7 @@ export class DesktopStreamManager {
         void session.revoke().then(() => close('stop'), () => close('stop-error'));
         return;
       }
-      if (command.type === 'ping') { lastActivity = Date.now(); refreshHoldLease(); return; }
+      if (command.type === 'ping') { lastActivity = Date.now(); session.touch?.(); refreshHoldLease(); return; }
       if (command.type === 'keyframe') {
         const now = Date.now();
         if (!videoFallbackAccepted && now - lastKeyframeRequestAt >= KEYFRAME_REQUEST_INTERVAL_MS) {

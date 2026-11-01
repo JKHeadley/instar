@@ -22,7 +22,7 @@ No decision point changes.
 
 ## Interactions
 
-Version skew: a newer viewer talking to a host still on the previous release may send a key or middle button that older host refuses, which ends that input with the existing input-failed close. Hosts update with the same release, so the window is the update interval. The 30-second visible ping counts as activity, exactly as the hold heartbeat already did; the ten-minute grant limit is unchanged.
+Version skew: a newer viewer talking to a host still on the previous release may send a key or middle button that older host refuses, which ends that input with the existing input-failed close. Hosts update with the same release, so the window is the update interval. A ping now also refreshes the grant's own idle clock, but only while the grant is still valid on the admitted connection; it never revives a lapsed grant. Before this, a ping kept only the socket alive and the grant still lapsed after two minutes without input (caught by topic 134088's review). The ten-minute grant limit is unchanged.
 
 ## 6b. Operator-surface quality
 
