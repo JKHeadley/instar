@@ -37,6 +37,7 @@ import { detectOutboundCredential } from '../messaging/outbound-credential-guard
 import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 import { APP_CONVERSATION_KEY_PATTERN, derivedEventId } from '../core/appConversationText.js';
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
+import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
@@ -744,7 +745,12 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       { deviceId: id, time: req.headers['x-instar-device-time'], sig: req.headers['x-instar-device-sig'], method: req.method, pathWithQuery: req.originalUrl, rawBody: raw },
       (deviceId) => {
         const d = svc.devices.get(deviceId);
-        return d && d.publicKey && d.host && d.status !== 'legacy-token' ? { publicKey: d.publicKey, host: d.host, status: d.status as DeviceStatus } : null;
+        if (!d || !d.publicKey || !d.host || d.status === 'legacy-token') return null;
+        // A revocation row in the device-key ledger takes effect at once, even when the registry
+        // write after it failed (mobile-native-conversations §4.6: the ledger row is the recorded
+        // intent). In-memory index, no file read per request.
+        const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id);
+        return { publicKey: d.publicKey, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
       },
       rule.statuses, svc.replay,
     );

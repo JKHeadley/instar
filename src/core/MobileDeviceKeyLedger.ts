@@ -118,9 +118,27 @@ export class MobileDeviceKeyLedger {
   private cache: { size: number; mtimeMs: number; rows: LedgerRow[] } | null = null;
   private onLocalAppend: ((row: LedgerRow) => void) | undefined;
 
+  /**
+   * Pairings (`ledgerViewKey(keyHash, deviceId)`) with a revocation row, in memory: loaded once at
+   * construction and updated on every append (local or replicated), so device authentication can
+   * refuse a revoked pairing on the ledger row alone, with no file read per request.
+   */
+  private readonly revokedPairings = new Set<string>();
+
   constructor(private readonly opts: MobileDeviceKeyLedgerOptions) {
     this.file = path.join(opts.stateDir, DEVICE_KEY_LEDGER_FILE);
     this.onLocalAppend = opts.onLocalAppend;
+    try {
+      for (const r of this.rows()) if (r.type === 'revocation') this.revokedPairings.add(ledgerViewKey(r.keyHash, r.deviceId));
+    } catch (err) {
+      // @silent-fallback-ok — reported; the device registry's own revocations still apply, and boot reconciliation completes ledger revocations there
+      opts.reportDegradation?.('MobileDeviceKeyLedger', `the device-key ledger could not be read at startup (${err instanceof Error ? err.message : String(err)}); revocations recorded only in the ledger are not enforced until it can be read`);
+    }
+  }
+
+  /** True when this pairing has a revocation row (in-memory; no file read). */
+  isRevoked(keyHash: string, deviceId: string): boolean {
+    return this.revokedPairings.has(ledgerViewKey(keyHash, deviceId));
   }
 
   setReplicationHook(hook: ((row: LedgerRow) => void) | undefined): void { this.onLocalAppend = hook; }
@@ -184,6 +202,7 @@ export class MobileDeviceKeyLedger {
       try { const dfd = fs.openSync(path.dirname(this.file), 'r'); try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); } } catch { /* @silent-fallback-ok — some filesystems refuse a directory fsync; the file itself was fsynced */ }
     }
     this.cache = null;
+    if (row.type === 'revocation') this.revokedPairings.add(ledgerViewKey(row.keyHash, row.deviceId));
   }
 
   private signRow<T extends Omit<LedgerRow, 'machineId' | 'signerKeyHash' | 'sig'>>(unsigned: T): LedgerRow {
