@@ -318,6 +318,10 @@ interface LogEntry {
    * with no `forwarded` field is forwarded-UNKNOWN and does not count (fail-safe).
    */
   forwarded?: boolean;
+  /** Set on a message typed in the native app (mobile-operator-chat), not Telegram. */
+  via?: 'mobile-device';
+  deviceId?: string;
+  eventId?: string;
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
   /** Joined at read time from the ASP classification authority. */
@@ -1537,7 +1541,13 @@ export class TelegramAdapter implements MessagingAdapter {
      *  Persisted EXPLICITLY (defaults to false) so the standing-authorization
      *  resolver can prove a lifeline-ingested operator row is non-forwarded. */
     forwarded?: boolean;
+    /** A native-app message: recorded with forwarded UNKNOWN so no durable-evidence
+     *  reader (standing authorization, approvals) ever counts it. */
+    via?: 'mobile-device';
+    deviceId?: string;
+    eventId?: string;
   }): void {
+    const fromApp = entry.via === 'mobile-device';
     this.appendToLog({
       messageId: entry.messageId,
       topicId: entry.topicId,
@@ -1548,7 +1558,8 @@ export class TelegramAdapter implements MessagingAdapter {
       senderName: entry.senderName,
       senderUsername: entry.senderUsername,
       telegramUserId: entry.telegramUserId,
-      forwarded: entry.forwarded === true,
+      forwarded: fromApp ? undefined : entry.forwarded === true,
+      ...(fromApp ? { via: 'mobile-device' as const, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
       provenance: 'user',
     });
   }
@@ -1604,6 +1615,10 @@ export class TelegramAdapter implements MessagingAdapter {
        *  2026-07-11 attention-hub rendering bug). Direct sends only; a relayed
        *  (tokenless-standby) send keeps today's default formatting. */
       formatMode?: 'html';
+      /** mobile-operator-chat mirror: the operator's own app message copied into the
+       *  topic. Writes no outbound history row (the inbound row already exists) and
+       *  touches neither stall nor promise tracking. */
+      operatorMirror?: boolean;
     },
   ): Promise<SendResult> {
     // NOT the chokepoint, and this comment is the correction of a claim that stood here.
@@ -1753,6 +1768,8 @@ export class TelegramAdapter implements MessagingAdapter {
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }
+
+    if (options?.operatorMirror) return { messageId: result.message_id, topicId };
 
     // Log outbound messages too
     this.appendToLog({
@@ -4215,6 +4232,7 @@ export class TelegramAdapter implements MessagingAdapter {
         platformUserId: entry.telegramUserId,
         platform: 'telegram',
         forwarded: entry.forwarded,
+        ...(entry.via ? { via: entry.via, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
         provenance: entry.provenance,
       });
       if (!persisted) return;

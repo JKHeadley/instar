@@ -3910,6 +3910,8 @@ export interface InstarConfig {
     enabled?: boolean;
     /** Code lifetime in minutes, default 10, clamped to 1–60. */
     codeTtlMinutes?: number;
+    /** Native operator chat (docs/specs/mobile-operator-chat.md). `enabled` omitted ⇒ follows mobilePairing. */
+    chat?: { enabled?: boolean };
   };
   maturationBoard?: {
     enabled?: boolean;

@@ -901,6 +901,23 @@ The operator can add this agent to the Instar iPhone app with a one-time link in
 `;
 }
 
+/**
+ * CLAUDE.md awareness block for native operator chat (docs/specs/mobile-operator-chat.md).
+ * Unique content-sniff marker: `Mobile operator chat`.
+ */
+export function MOBILE_CHAT_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile operator chat — messages typed in the Instar iPhone app
+
+An active paired phone can send a message into a topic (\`POST /mobile/chat/:topicId\`, device-signed only; a Bearer token gets 403). It reaches me exactly like the owner's Telegram message: same emergency-stop/pause intercepts, same session, the owner's name. A copy is posted into the Telegram topic as "📱 <owner> (from the app): …". The message metadata carries \`viaMobileDevice: true\` and the history row \`via: "mobile-device"\`.
+- An app message never binds the topic operator and never counts as standing-authorization evidence; topic-profile confirmations from the app work only where an operator is already bound.
+- Refused from the app with 422: pairing invites (\`tlinv1:\`), \`/desktop\` codes, and anything credential-shaped (point the operator to a Secret Drop link for secrets).
+- Accepted only on the machine holding the serving lease (\`409 not-serving\` elsewhere). A retried request answers its recorded result; \`409 outcome-unknown\` means the message may or may not have reached me (check the conversation).
+- History for the app across machines: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/topics/TOPIC_ID/messages?scope=pool"\`.
+- Gate: \`mobilePairing.chat.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): the operator asks "can I message you from the app?" → yes, once the phone is paired; "why did a message show up with a 📱 from the app?" → it was typed in the app.
+`;
+}
+
 export function QUEUE_PACE_CLAUDEMD_SECTION(port: number): string {
   return `\n### Queue Pace — is every work pile shrinking or growing? (\`GET /queue-pace\`)
 
@@ -8420,6 +8437,13 @@ setTimeout(() => process.exit(0), 2000);
       content += MOBILE_PAIRING_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mobile pairing link section');
+    }
+
+    // Mobile operator chat (docs/specs/mobile-operator-chat.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile operator chat')) {
+      content += MOBILE_CHAT_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile operator chat section');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.

@@ -4,6 +4,7 @@
  * (not null), reads the live config, and a real mint → redeem round trip works through the
  * server's own app. */
 import { describe, it, expect, afterAll } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -81,6 +82,14 @@ describe('mobile pairing — production wiring', () => {
     expect((await send('GET', '/sessions')).status).toBe(200);
     const d = await request(app).get('/mobile/devices').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e');
     expect(d.body.devices[0]).toMatchObject({ deviceName: 'e2e phone', status: 'active' });
+    // Operator chat (mobile-operator-chat): the device-only route is mounted and its inbound core is
+    // wired (ctx.mobileInbound is real); with no Telegram owner on this boot it answers 503 by name.
+    const rid = `${Date.now()}-${crypto.randomUUID()}`;
+    const chat = await send('POST', '/mobile/chat/1', { text: 'hello', requestId: rid });
+    expect(chat.status).toBe(503);
+    expect(chat.body.error).toBe('chat-unavailable');
+    const bearer = await request(app).post('/mobile/chat/1').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e').send({ text: 'x', requestId: rid });
+    expect(bearer.body.error).toBe('operator-device-required');
   });
 
   it('is off on a fleet agent: 503', async () => {

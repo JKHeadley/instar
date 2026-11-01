@@ -32,6 +32,9 @@ import {
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import type { RouteContext } from './routes.js';
+import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
+import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
+import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -65,7 +68,7 @@ export interface MobilePairingDeps {
   reportDegradation?: (what: string, err: unknown) => void;
 }
 
-type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'>;
+type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram'>>;
 const PEER_TIMEOUT_MS = 5000;
 const MAX_PEER_BYTES = 128 * 1024;
 
@@ -105,6 +108,12 @@ async function fetchPoolDevices(ctx: PoolCtx): Promise<{ rows: Array<Record<stri
 
 export function isMobilePairingEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.enabled, config);
+}
+
+/** `mobilePairing.chat.enabled`, omitted ⇒ follows mobilePairing. Read live. */
+export function isMobileChatEnabled(config: InstarConfig): boolean {
+  if (!isMobilePairingEnabled(config)) return false;
+  return config.mobilePairing?.chat?.enabled !== false;
 }
 
 export class MobilePairingService {
@@ -425,6 +434,138 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.status(202).json({ pending: true, detail: 'No machine holding this phone confirmed yet. Until one does, the phone may still have access. Revoke it on the machine that serves its address for an immediate effect.' });
   });
 
+  // ── Native operator chat (docs/specs/mobile-operator-chat.md) ──
+  // Order: authenticate → look up → preflight → reserve → core → mirror.
+  let chatStore: MobileChatRequestStore | null = null;
+  let chatStoreError = false;
+  const chatRate = new Map<string, number[]>();
+  const chatStoreOf = (): MobileChatRequestStore | null => {
+    if (chatStore || chatStoreError) return chatStore;
+    try { chatStore = new MobileChatRequestStore(deps.stateDir); } catch (err) {
+      chatStoreError = true;
+      deps.reportDegradation?.('MobileChat.requestStore', err);
+    }
+    return chatStore;
+  };
+  router.post('/mobile/chat/:topicId', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device') { res.status(403).json({ error: 'operator-device-required' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const topicId = Number(req.params.topicId);
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    const requestId = body.requestId;
+    if (!Number.isSafeInteger(topicId) || topicId <= 0) { res.status(400).json({ error: 'bad-topic' }); return; }
+    if (text.length < 1 || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
+    if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
+    const store = chatStoreOf();
+    if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read on this machine.' }); return; }
+    const hash = payloadHash(topicId, text);
+    const answer = (l: ReturnType<MobileChatRequestStore['lookup']>): boolean => {
+      if (l.kind === 'done') { res.status(l.status).json(l.body); return true; }
+      if (l.kind === 'in-progress') { res.status(202).json({ state: 'in-progress' }); return true; }
+      if (l.kind === 'outcome-unknown') { res.status(409).json({ error: 'outcome-unknown', detail: 'This message may or may not have reached the agent. Check the conversation.' }); return true; }
+      if (l.kind === 'request-id-reused') { res.status(409).json({ error: 'request-id-reused' }); return true; }
+      return false;
+    };
+    // A request already on record gets its recorded answer, whatever the checks below say now.
+    if (answer(store.lookup(p.deviceId, requestId, hash))) return;
+
+    // Preflight: no effect on any session or history.
+    if (!isMobileChatEnabled(deps.config)) { res.status(503).json({ error: 'Chat from the app is turned off on this agent.' }); return; }
+    const tg = poolCtx?.telegram;
+    const ingest = poolCtx?.mobileInbound?.ingest;
+    const ownerId = tg?.getOwnerUserId?.();
+    if (!tg || !ingest || !ownerId) { res.status(503).json({ error: 'chat-unavailable', detail: 'This agent has no Telegram owner to speak as.' }); return; }
+    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'This machine is not receiving messages right now. Try again shortly or use Telegram.' }); return; }
+    const t = Date.now();
+    const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
+    if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
+    recent.push(t); chatRate.set(p.deviceId, recent);
+    if (!tg.getAllTopicMappings().some((m) => m.topicId === topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
+    if (!requestIdAgeOk(requestId, t)) { res.status(400).json({ error: 'request-id-too-old' }); return; }
+    svc.scanInbound(text); // may cancel a pending pairing; never refuses the message
+    if (PairingInviteTelegram.carriesInvite(text) || /^\/desktop(?:\s|$)/i.test(text)) { res.status(422).json({ error: 'not-from-the-app' }); return; }
+    if (detectOutboundCredential(text).detected) {
+      res.status(422).json({ error: 'credential-refused', detail: 'This looks like a password or key, so it was not sent. Use a Secret Drop link for secrets.' });
+      return;
+    }
+
+    // Reserve (synchronous with the decisive lookup).
+    let r: ReturnType<MobileChatRequestStore['reserve']>;
+    try { r = store.reserve(p.deviceId, requestId, hash, topicId); } catch (err) {
+      deps.reportDegradation?.('MobileChat.requestStore', err);
+      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
+      return;
+    }
+    if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
+    if (r.kind !== 'reserved') { answer(r); return; }
+
+    // Core: the same inbound steps a Telegram message takes.
+    const eventId = `mobile:${p.deviceId}:${requestId}`;
+    const ownerName = cleanText(deps.config.threadline?.ownerName) || 'Operator';
+    const captured: { status: number; body: Record<string, unknown> } = { status: 200, body: {} };
+    const fakeRes = {
+      status(code: number) { captured.status = code; return fakeRes; },
+      json(b: unknown) { captured.body = (b && typeof b === 'object' ? b : {}) as Record<string, unknown>; return fakeRes; },
+      setHeader() { return fakeRes; },
+    };
+    const fakeReq = {
+      headers: {},
+      body: {
+        topicId, text, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
+        fromUserId: ownerId, fromFirstName: ownerName, forwarded: false,
+      },
+    };
+    try {
+      await ingest(fakeReq, fakeRes, { deviceId: p.deviceId, eventId });
+    } catch (err) {
+      store.markUnknown(p.deviceId, requestId);
+      deps.reportDegradation?.('MobileChat.deliver', err);
+      res.status(409).json({ error: 'outcome-unknown', eventId, detail: 'This message may or may not have reached the agent. Check the conversation.' });
+      return;
+    }
+    const b = captured.body;
+    // Only the core's early refusals (missing fields, the app refusal, the boot window) come before
+    // any effect; those release the id. Any other failure answer is uncertain, never a refusal.
+    const earlyRefusal = captured.status === 400 || captured.status === 422 || (captured.status === 503 && b.reason === 'server-boot-incomplete');
+    if (earlyRefusal) {
+      store.release(p.deviceId, requestId);
+      res.status(captured.status).json(b);
+      return;
+    }
+    if (captured.status >= 400 || b.ok === false) {
+      store.markUnknown(p.deviceId, requestId);
+      deps.reportDegradation?.('MobileChat.deliver', new Error(`inbound core answered ${captured.status} ${String(b.error ?? b.reason ?? '')}`));
+      res.status(409).json({ error: 'outcome-unknown', eventId, detail: 'This message may or may not have reached the agent. Check the conversation.' });
+      return;
+    }
+    const outcome = b.sentinel === 'emergency-stop' ? 'sentinel-kill'
+      : b.sentinel === 'pause' ? 'sentinel-pause'
+      : b.deduped ? 'deduped'
+      : b.agentMessage ? 'a2a-handled'
+      : 'delivered';
+
+    // Mirror: best-effort, never decides delivery.
+    let mirrored = false;
+    try {
+      await tg.sendToTopic(topicId, `📱 ${ownerName} (from the app): ${text}`, { silent: true, skipStallClear: true, operatorMirror: true });
+      mirrored = true;
+    } catch (err) {
+      deps.reportDegradation?.('MobileChat.mirror', err);
+    }
+    const response = {
+      ok: true, outcome, eventId, mirrored,
+      ...(b.killed !== undefined ? { stopped: b.killed } : {}),
+      ...(b.paused !== undefined ? { paused: b.paused } : {}),
+    };
+    if (!store.finish(p.deviceId, requestId, { status: 200, body: response })) {
+      deps.reportDegradation?.('MobileChat.requestStore', new Error('could not record the finished request'));
+    }
+    res.json(response);
+  });
+
   return router;
 }
 
@@ -474,6 +615,8 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     { method: 'GET', re: /^\/mobile\/devices$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
     { method: 'POST', re: /^\/mobile\/device\/confirm$/, statuses: new Set(['pending', 'active']) },
+    // The only non-idempotent entry, made idempotent by requestId (mobile-operator-chat §2.4).
+    { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active },
     { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
   ];
 })();

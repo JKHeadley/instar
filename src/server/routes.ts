@@ -1005,7 +1005,16 @@ export function createDeliveryFailedHandler(opts: {
   };
 }
 
+/** Trust a native-app (device-key) message carries into the shared inbound core. */
+export interface MobileInboundTrust {
+  deviceId: string;
+  eventId: string;
+}
+
 export interface RouteContext {
+  /** Installed by createRoutes: feeds a device-authenticated app message through
+   * the same inbound core the lifeline forward uses (mobile-operator-chat spec). */
+  mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
    * this from its owned timer; tests may invoke it deterministically. */
   windowLifecycleTick?: (() => void) | null;
@@ -19313,7 +19322,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.get('/telegram/topics/:topicId/messages', (req, res) => {
+  router.get('/telegram/topics/:topicId/messages', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -19324,12 +19333,60 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'topicId must be a number' });
       return;
     }
+    if (req.query.scope !== undefined && req.query.scope !== 'pool') {
+      res.status(400).json({ error: 'invalid-scope' });
+      return;
+    }
 
-    const limit = parseInt(req.query.limit as string, 10) || 20;
-    const messages = ctx.telegram.getTopicHistory(topicId, Math.min(limit, 100));
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
+    const local = ctx.telegram.getTopicHistory(topicId, limit);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(messages) : messages });
+    if (req.query.scope !== 'pool') {
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(local) : local });
+      return;
+    }
+    // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
+    // machine, one row per event (eventId when present, else direction + Telegram message id).
+    const self = ctx.meshSelfId ?? null;
+    const rows: Array<Record<string, unknown>> = local.map(m => ({ ...m, machine: self }));
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+    await Promise.all(peers.map(async p => {
+      try {
+        const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+        });
+        if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
+        const payload = await r.text();
+        if (Buffer.byteLength(payload) > 512 * 1024) { failed.push({ machineId: p.machineId, error: 'too-large' }); return; }
+        const body = JSON.parse(payload) as { messages?: unknown };
+        for (const raw of Array.isArray(body.messages) ? body.messages.slice(0, 100) : []) {
+          if (!raw || typeof raw !== 'object') continue;
+          const m = raw as Record<string, unknown>;
+          if (typeof m.text !== 'string' || typeof m.timestamp !== 'string' || Number.isNaN(Date.parse(m.timestamp))) continue;
+          rows.push({ ...m, machine: p.machineId });
+        }
+      } catch (error) {
+        failed.push({ machineId: p.machineId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }));
+    const keyOf = (m: Record<string, unknown>) => typeof m.eventId === 'string' && m.eventId ? `e:${m.eventId}` : `m:${m.fromUser ? 'in' : 'out'}:${m.messageId}`;
+    // This machine's own rows win a key collision; a peer's row is untrusted display data.
+    const seen = new Set<string>(rows.filter(m => m.machine === self).map(keyOf));
+    const merged = rows
+      .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+      .filter(m => {
+        if (m.machine === self) return true;
+        const k = keyOf(m);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(-limit);
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(merged) : merged, pool: { failed } });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -26610,7 +26667,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return peerNames.find(candidate => candidate?.serving)?.name ?? localName ?? peerNames.find(candidate => candidate)?.name ?? null;
   };
 
-  router.post('/internal/telegram-forward', async (req, res) => {
+  // Mobile operator chat (docs/specs/mobile-operator-chat.md): the inbound core below is shared.
+  // The lifeline route passes no trust (unchanged behavior); an app message passes
+  // `{ kind: 'mobile-device' }` and the steps that differ are named where they branch.
+  const telegramForwardHandler = async (req: any, res: any, trust?: MobileInboundTrust): Promise<void> => {
     const { topicId, text, messageId, lifelineVersion } = req.body;
     // The sender-identity fields are `let`: a request accepted WITHOUT proof of
     // the lifeline has them removed below, in one place, before any use.
@@ -26627,7 +26687,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // Lifeline-secret gate — FIRST, before any side effect, so a refused
     // request has had no effect at all and its replay applies exactly once.
-    const ingressDecision = lifelineIngressGuard.evaluate(req.headers, 'telegram-forward', { lifelineVersion });
+    // An app message was already authenticated by its device signature (mobile-operator-chat §2.3).
+    const ingressDecision = trust
+      ? { action: 'accept' as const, senderTrusted: true, verified: false, staleSecretHint: false, reason: 'mobile-device' }
+      : lifelineIngressGuard.evaluate(req.headers, 'telegram-forward', { lifelineVersion });
     if (ingressDecision.action === 'refuse') {
       res.status(401).json({ ok: false, error: 'lifeline-secret-required', refused: true, reason: ingressDecision.reason });
       return;
@@ -26665,7 +26728,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (text) ctx.agentActivityState?.markInbound(Date.now());
     // Mobile device keys (§2.2): a live phone-pairing code seen in a conversation voids that
     // pairing, before the message is logged, forwarded or delivered.
-    for (const t of [text, req.body?.caption]) if (typeof t === 'string' && t) ctx.telegram?.mobileInboundScan?.(t);
+    if (!trust) for (const t of [text, req.body?.caption]) if (typeof t === 'string' && t) ctx.telegram?.mobileInboundScan?.(t);
 
     // Version-handshake (only when lifelineVersion field is present AND
     // auth is configured — dev-mode with empty authToken skips the handshake
@@ -26752,6 +26815,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // topic-intent extractor. Whether it may open an Approve prompt is decided inside
     // (verified lifeline forward + enforce mode + the owner); `fromUserId` was already
     // removed above when the forward was not verified.
+    if (trust && (PairingInviteTelegram.carriesInvite(text) || (typeof text === 'string' && /^\/desktop(?:\s|$)/i.test(text.trim())))) {
+      res.status(422).json({ ok: false, error: 'not-from-the-app' });
+      return;
+    }
     if (PairingInviteTelegram.carriesInvite(text)) {
       try {
         if (pairingInviteTelegram) {
@@ -26899,7 +26966,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         telegramUserId: fromUserId,
         // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
         // standing-authorization resolver can prove non-forwarded provenance.
-        forwarded: req.body.forwarded === true,
+        // An app message is recorded with forwarded UNKNOWN, so no durable-evidence
+        // reader (standing authorization, verified-operator approvals) counts it.
+        forwarded: trust ? undefined : req.body.forwarded === true,
+        ...(trust ? { via: 'mobile-device' as const, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
       });
     }
 
@@ -26951,7 +27021,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // or it could pre-claim the id of a real message yet to arrive.
     if (ctx.messageLedger && shouldClaimInbound && !senderUntrusted) {
       try {
-        const eventId = req.body.updateId ?? messageId ?? `${topicId}:${req.body.timestamp ?? Date.now()}`;
+        const eventId = trust ? trust.eventId : (req.body.updateId ?? messageId ?? `${topicId}:${req.body.timestamp ?? Date.now()}`);
         const dedupeKey = dedupeKeyFor('telegram', topicId, eventId);
         const epoch = ctx.coordinator?.getLeaseEpoch() ?? 0;
         const decision = decideIngress(ctx.messageLedger, dedupeKey, {
@@ -26984,7 +27054,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // (serveProgressedMonoMs) to tell a serving holder from a fetched-and-dropped
     // zombie. Machine-global monotonic-MAX watermark; boot-epoch-fenced. Best-effort
     // — a write failure must never affect routing.
-    try {
+    if (!trust) try {
       writeServeProgress(ctx.config.stateDir, {
         bootId: getCurrentBootId() ?? `boot-${process.pid}`,
         serverPid: process.pid,
@@ -27039,7 +27109,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Lifeline-secret gate: belt and braces. The identity was already removed
     // above for an untrusted request; this bind also checks the flag itself.
-    if (ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined && fromUserId !== null
+    if (!trust && ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined && fromUserId !== null
         && typeof topicId === 'number' && !senderUntrusted) {
       try {
         if (ctx.telegram?.isAuthorizedSender?.(fromUserId)) {
@@ -27074,14 +27144,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           username: fromUsername,
           firstName: fromFirstName,
           messageThreadId: topicId,
-          viaLifeline: true,
+          viaLifeline: !trust,
+          ...(trust ? { viaMobileDevice: true, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
           // Explicit, so the message pipeline can refuse authority by the
           // flag as well as by the missing id.
           ...(senderUntrusted ? { senderUnverified: true } : {}),
           // Preserve the platform message id separately from Message.id. The
           // latter has a Date.now fallback for routing/dedupe compatibility and
           // must NEVER be laundered into operator-establishment evidence.
-          telegramMessageId: messageId !== undefined && messageId !== null
+          // An app message's numeric id is server-minted, never a Telegram id.
+          telegramMessageId: !trust && messageId !== undefined && messageId !== null
             ? String(messageId)
             : '',
           // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
@@ -27097,7 +27169,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
 
       try {
-        ctx.telegram.onTopicMessage(message);
+        const delivered = ctx.telegram.onTopicMessage(message) as unknown;
+        if (trust) await delivered;
         res.json({ ok: true, forwarded: true });
       } catch (err) {
         DegradationReporter.getInstance().report({
@@ -27107,6 +27180,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
           impact: 'User message may not reach session, no system alert',
         });
+        // An app message's delivery started: its outcome is uncertain, never a plain refusal.
+        if (trust) throw err;
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     } else if (ctx.sessionManager) {
@@ -27323,7 +27398,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } else {
       res.status(503).json({ error: 'No message routing available' });
     }
-  });
+  };
+  router.post('/internal/telegram-forward', (req, res) => telegramForwardHandler(req, res));
+  ctx.mobileInbound = { ingest: (req: any, res: any, trust: MobileInboundTrust) => telegramForwardHandler(req, res, trust) };
 
   // ── Agent-to-agent inbox (same-machine HTTP transport) ────────
   // The Telegram-bridge transport for a2a (mentor bot → mentee bot in shared
