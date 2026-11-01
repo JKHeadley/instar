@@ -22,6 +22,10 @@ const ROOT = process.cwd();
 const SRC_DIR = path.join(ROOT, 'src');
 
 function packWhileTestsRun(args: string[]): string {
+  // The macOS desktop-host tests create and remove helpers inside dist/native
+  // for about nine seconds. npm pack may race each removal, so four immediate
+  // tries can all fail while that test file is still active on a slower host.
+  const maxTransientHelperRetries = 16;
   for (let attempt = 0; ; attempt++) {
     try {
       return execFileSync('npm', ['pack', ...args, '--ignore-scripts'], {
@@ -33,7 +37,7 @@ function packWhileTestsRun(args: string[]): string {
       // MacDesktopHostCapture creates and removes native test helpers while
       // this suite runs. npm can list one just before its afterEach deletes it.
       const stderr = String((error as { stderr?: Buffer }).stderr ?? error);
-      if (attempt >= 3 || !stderr.includes('ENOENT') || !stderr.includes('instar-desktop-capture-test-')) throw error;
+      if (attempt >= maxTransientHelperRetries || !stderr.includes('ENOENT') || !stderr.includes('instar-desktop-capture-test-')) throw error;
     }
   }
 }
@@ -335,7 +339,9 @@ describe('Package completeness', () => {
 
     const tmpDir = fsDyn.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-mode-'));
     try {
-      const packOut = packWhileTestsRun(['--silent', '--pack-destination', tmpDir]).trim();
+      // Keep npm errors visible to packWhileTestsRun so it can recognize the
+      // temporary macOS helper race. --silent suppresses even ENOENT details.
+      const packOut = packWhileTestsRun(['--loglevel=error', '--pack-destination', tmpDir]).trim();
       const tarballName = packOut.split('\n').pop() as string;
       const tarballPath = path.join(tmpDir, tarballName);
       expect(fsDyn.existsSync(tarballPath), `tarball not produced: ${tarballPath}`).toBe(true);

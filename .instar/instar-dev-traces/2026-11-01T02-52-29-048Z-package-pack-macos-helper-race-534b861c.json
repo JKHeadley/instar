@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "package-pack-macos-helper-race",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-11-01T02:52:29.048Z",
+  "artifactPath": "upgrades/side-effects/package-pack-macos-helper-race.md",
+  "artifactSha256": "1190f63e3e12881026a0e84074452f17162f8eb5341828a508b0a6a0f7cd7e7a",
+  "coveredFiles": [
+    "docs/specs/package-pack-macos-helper-race.eli16.md",
+    "src/threadline/PipeSessionSpawner.ts",
+    "upgrades/side-effects/package-pack-macos-helper-race.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A narrow shell-quoting correction in a reversible tmux cleanup repair, verified by independent safety review and focused integration tests.",
+  "eli16Path": "docs/specs/package-pack-macos-helper-race.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/package-pack-macos-helper-race.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      2521
+    ],
+    "notes": "A nested tmux kill command was enclosed in shell double quotes, allowing /bin/sh to expand a tmux session ID such as $0 before tmux received it. Studio pre-push smoke exposed the error on a retained dead pane."
+  }
+}
