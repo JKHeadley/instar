@@ -81,3 +81,10 @@ misconfiguration. Round 2: Concur with the review; all three closed.
 ## Class-Closure Declaration (display-only mirror)
 
 `{defectClass: "unbounded-self-action", closure: "n/a", reason: "one-shot process start and a route rate-limited to once a minute, not a self-triggered loop"}`
+
+## Verify round
+
+The first full verify failed three unit tests. Two were real: a stray escape left
+`${port}` literal in the generated awareness text, and the new route lacked its
+write-domain declaration. Both are fixed; the third, `console-mandates`, passed on
+rerun without a change.

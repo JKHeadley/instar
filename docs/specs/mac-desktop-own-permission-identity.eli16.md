@@ -29,3 +29,6 @@ What the reader needs to decide: which Apple certificate signs releases. Only
 the Apple account holder can create a Developer ID certificate, the proper kind.
 Each Mac also needs one tap to allow the helper; that can never be automated,
 and that is a good thing.
+
+The helper's own permission is checked on every readiness check, so a Mac that
+has allowed it is ready again as soon as Instar next looks.

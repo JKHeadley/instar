@@ -13057,6 +13057,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // Shows macOS's own Screen Recording and Accessibility prompts on this Mac
   // and lists the helper there. Bearer only, and it grants nothing: a person
   // allows it at the Mac. Call it when someone is at that Mac to answer.
+  // @write-domain:none — machine-local OS prompt; writes no agent state.
   let lastDesktopPermissionRequestAt = 0;
   router.post('/desktop/request-permission', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
