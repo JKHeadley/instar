@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
+import { desktopRouteAccess } from '../../src/server/desktopRouteContext.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import type { DirectDesktopAccess } from '../../src/core/DirectDesktopAccess.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -116,7 +117,8 @@ describe('remote desktop HTTP routes', () => {
   it('shows the Mac permission prompt only on an authenticated, intentional, paced request', async () => {
     let requests = 0;
     const access = { ...fakeAccess(), requestPermission: async () => { requests++; return { screenPermission: false, inputPermission: true }; } };
-    const { server } = app(access as unknown as DirectDesktopAccess);
+    const { server } = app(access as unknown as DirectDesktopAccess,
+      desktopRouteAccess(access as unknown as DirectDesktopAccess, 'machine-1', 'machine-1'));
     const url = '/desktop/request-permission';
     expect((await request(server).post(url).set('X-Instar-Request', '1')).status).toBe(401);
     expect((await request(server).post(url).set('Authorization', `Bearer ${AUTH}`)).status).toBe(403);
@@ -126,6 +128,34 @@ describe('remote desktop HTTP routes', () => {
     expect(first.body).toEqual({ screenPermission: false, inputPermission: true });
     expect((await request(server).post(url).set(headers)).status).toBe(429);
     expect(requests).toBe(1);
+  });
+
+  it('answers the permission prompt on a non-front target while front-only routes stay refused', async () => {
+    let requests = 0;
+    const access = { ...fakeAccess(), requestPermission: async () => {
+      requests++; return { screenPermission: true, inputPermission: false }; } } as unknown as DirectDesktopAccess;
+    const routeAccess = desktopRouteAccess(access, 'm_front', 'm_target');
+    const { server } = app(routeAccess.directDesktopAccess, routeAccess);
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' };
+    const operatorHeaders = { ...headers, 'X-Instar-Operator-Session': 'operator-proof' };
+
+    const prompted = await request(server).post('/desktop/request-permission').set(headers);
+    expect(prompted.status).toBe(200);
+    expect(prompted.body).toEqual({ screenPermission: true, inputPermission: false });
+    expect(requests).toBe(1);
+
+    const refused = [
+      await request(server).get('/desktop/availability').set(headers),
+      await request(server).get('/desktop/targets').set(operatorHeaders),
+      await request(server).post('/desktop/requests').set(operatorHeaders).send({}),
+      await request(server).get('/desktop/requests/request-1').set(operatorHeaders),
+      await request(server).post('/desktop/requests/request-1/resume').set(operatorHeaders).send({}),
+      await request(server).get('/desktop/requests/request-1/cursor').set(operatorHeaders),
+      await request(server).post('/desktop/requests/request-1/ticket').set(operatorHeaders).send({}),
+      await request(server).post('/desktop/requests/request-1/revoke').set(operatorHeaders).send({}),
+    ];
+    expect(refused.map(result => result.status)).toEqual(Array(refused.length).fill(503));
+    expect(refused.every(result => result.body.error === 'Remote desktop is off on this agent')).toBe(true);
   });
 
   it('reports a fixed Windows bootstrap failure through the authenticated diagnostic only', async () => {

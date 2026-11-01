@@ -1,0 +1,30 @@
+# Desktop Permission On Every Target
+
+<!-- bump: patch -->
+
+## What Changed
+
+`POST /desktop/request-permission` answered 503 "Remote desktop is off on this
+agent" on every machine except the designated front, because the route used the
+front-only `directDesktopAccess` handle while target machines are the ones that
+need the prompt. The routes now get a separate target-side
+`desktopRequestPermission` function, set wherever desktop access was constructed.
+All browser admission and control routes stay front-only. Authentication, the
+`X-Instar-Request` header and the one-a-minute pace are unchanged.
+
+## What to Tell Your User
+
+The agent can now bring up the Mac permission prompts for remote desktop on any
+of your machines, not only the main one. Someone still has to be at that Mac to
+allow them, and nothing is granted by asking.
+
+## Summary of New Capabilities
+
+- `POST /desktop/request-permission` works on every desktop target, not only the
+  designated front.
+
+## Evidence
+
+Live on v1.3.1576 (2026-11-01): Mini, Laptop and M5 Pro each reported
+`targetConstructed: true` and answered 503. New unit and integration tests cover
+a non-front target answering 200 and all front-only routes still answering 503.
