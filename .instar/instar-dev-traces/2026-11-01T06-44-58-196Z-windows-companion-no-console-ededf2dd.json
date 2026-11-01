@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "windows-companion-no-console",
+  "sessionId": "22931342-0ba2-4551-8807-182c3b8ae255",
+  "timestamp": "2026-11-01T06:44:58.196Z",
+  "artifactPath": "upgrades/side-effects/windows-companion-no-console.md",
+  "artifactSha256": "67d88ef475ce229165aa19220d0b38f4bfec5450dad9da63c3888c3f4bd41329",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-windows-input.eli16.md",
+    "scripts/install-windows-desktop-companion.ps1",
+    "tests/unit/windows-companion-no-console.test.ts",
+    "upgrades/next/windows-companion-no-console.md",
+    "upgrades/side-effects/windows-companion-no-console.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one build flag; revert restores",
+  "eli16Path": "docs/specs/native-remote-desktop-windows-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-companion-no-console.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
