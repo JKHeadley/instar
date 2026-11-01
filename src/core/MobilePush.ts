@@ -85,6 +85,7 @@ export class MobilePushService {
 
   start(intervalMs = 15_000): void {
     if (this.timer) return;
+    // @silent-fallback-ok — a failed tick is reported through DegradationReporter
     this.timer = setInterval(() => { void this.tick().catch((err) => this.deps.reportDegradation?.('MobilePush.tick', err)); }, intervalMs);
     this.timer.unref?.();
   }
@@ -96,7 +97,7 @@ export class MobilePushService {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')) as Partial<PushState>;
       this.state = { devices: raw.devices ?? {}, dedupe: raw.dedupe ?? {}, paused: raw.paused ?? null, fanout: raw.fanout ?? { sent: 0, received: 0, deduped: 0, refused: 0 } };
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — absent = empty state; unreadable is reported and sends nothing
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         this.state = { devices: {}, dedupe: {}, paused: null, fanout: { sent: 0, received: 0, deduped: 0, refused: 0 } };
       } else {

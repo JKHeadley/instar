@@ -74,5 +74,9 @@ The phone hears exactly what the Attention hub posts, bounded so it can never fl
 ## Class-Closure Declaration (display-only mirror)
 
 - **defectClass:** `unbounded-self-action`
-- **closure:** `bounded`
+- **closure:** `guard`
 - **reason:** Each send is triggered by a hub post the filter admitted; per device at most one per 2 minutes, hourly after 40 per rolling 24 h plus 10 URGENT (at most 74 a day), a persisted 429 backoff, no retries except one JWT refresh; the fan-out is one request per peer per post with no retry, and the receiving route caps 120 triggers per hour.
+
+## Follow-up: silent-fallback markers
+
+Four catch blocks that already report their failure (degradation or log) carry the `@silent-fallback-ok` marker so the repository's silent-fallback count stays at its baseline; one of them is an existing Attention-hub catch that the new hook moved into the scanner's window. No behavior change.

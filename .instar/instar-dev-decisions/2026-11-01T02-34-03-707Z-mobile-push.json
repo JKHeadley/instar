@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-01T02:34:03.707Z",
+  "slug": "mobile-push",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MobilePush.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "citation": "src/core/MobilePush.ts#dueFor"
+    }
+  },
+  "verdict": "pass"
+}

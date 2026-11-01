@@ -5001,7 +5001,7 @@ export class TelegramAdapter implements MessagingAdapter {
       this.attentionHubTopicId = topic.topicId;
       this.topicToName.set(topic.topicId, `${TOPIC_STYLE.ALERT.emoji} Attention`);
       try { this.config.systemTopics?.recordAttentionHubTopicId?.(topic.topicId); }
-      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); }
+      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); } // @silent-fallback-ok — logged; the hub id stays cached in memory
       return this.attentionHubTopicId;
     })();
 

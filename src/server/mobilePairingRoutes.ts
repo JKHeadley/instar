@@ -669,7 +669,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       ...(typeof b.priority === 'string' ? { priority: b.priority.slice(0, 20) } : {}),
     };
     res.status(202).json({ accepted: true });
-    void svc.push.receive(trig, true).catch((err) => deps.reportDegradation?.('MobilePush.receive', err));
+    void svc.push.receive(trig, true).catch((err) => deps.reportDegradation?.('MobilePush.receive', err)); // @silent-fallback-ok — reported through DegradationReporter
   });
 
   router.get('/mobile/push', (_req: Request, res: Response) => {
