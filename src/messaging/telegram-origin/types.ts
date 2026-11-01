@@ -128,6 +128,12 @@ export const DEFAULT_ORIGIN_LIMITS: Readonly<OriginLimits> = Object.freeze({
 });
 export interface OriginConfig {
   display?: Partial<OriginDisplaySettings>;
+  /** One operator-approved, profile-bound Telegram Web destination outside this
+   * agent's own chat. It does not grant raw browser access or a second send path.
+   * The decisionRef identifies the recorded operator instruction. */
+  browserSendAllowance?: {
+    profileId: string; accountId: string; chatId: string; topicId: string | null; decisionRef: string;
+  };
   /** Application permission for the pre-recorded operator-hub outage notice.
    * Omitted means enabled; this never disables ordinary origin recording. */
   outageNotice?: { enabled?: boolean };

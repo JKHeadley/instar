@@ -11,7 +11,9 @@ import type { BrowserCanary, TelegramBrowserDriver } from '../../../src/messagin
 import { temporaryState } from '../../helpers/telegramOriginStore.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
-const [b679, b676] = REVIEWED_WEB_K_BUILDS;
+const b684 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-684')!;
+const b679 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-679')!;
+const b676 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-676')!;
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-browser-reenrollment:cleanup' }); });
 
@@ -40,6 +42,8 @@ function fakeDriver(observed: { accountNumber?: number; accountId?: string; crit
 describe('reviewed Web K build list', () => {
   it('every reviewed build is a valid enrollment and the list stays within the two-build registry bound when enrolled', () => {
     for (const build of REVIEWED_WEB_K_BUILDS) expect(validWebKBuildEnrollment(build)).toBe(true);
+    expect(matchReviewedWebKBuild({ criticalAssets: [...b684.criticalAssets], assetDigests: b684.assetDigests })?.buildId)
+      .toBe('web-k-2.2-684');
     expect(nextSupportedBuilds(b679, [b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
     expect(nextSupportedBuilds(b679, [b679, b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
     expect(nextSupportedBuilds(b679, []).map(b => b.buildId)).toEqual(['web-k-2.2-679']);
