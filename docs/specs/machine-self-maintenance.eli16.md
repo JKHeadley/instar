@@ -14,15 +14,21 @@ on a regular, automatic schedule, as a built-in part of what an agent does for i
 
 ## What changes
 
-**A weekly clean start.** About once a week, between 3 and 6 in the morning machine time, a machine
-restarts when nothing is running. If a build, a test run or a long job is going, it waits. Work that
-we know how to pick back up waits three days at most, then the machine restarts in the next window
-and that work resumes afterward. Work we cannot pick back up, like someone else's program, is never
-interrupted automatically: the owner gets one question instead. It never restarts while someone is
-using the machine. If anyone wants to delay it, there is a Hold button.
+**A weekly clean start, at a set time.** About once a week, a machine restarts at a set time, 4 in the morning machine time. The time is a promise, and work makes way for it. We used to say a machine would wait for work to finish, but work is always going on, so that wait would never end.
 
-**One at a time.** Machines take turns, so there is always one left answering messages. The machine
-currently in charge goes last and hands that job over first.
+**Everything makes way, on one schedule.** An hour before, every Instar agent on that machine, including other people's agents on the same login, and every other machine in the group, learns about the restart from one shared record. New long work stops starting there. Where another machine can take over, the serving role, queued checks and recent conversations move to it. Twenty minutes before, running sessions are told to save their place and stop at the next step. Ten minutes before, test runs are cancelled and go back to the same place in line. Five minutes before, whatever is still going is paused. Then the machine restarts, and the work is brought back automatically. Nobody has to restart anything by hand. Any new kind of work has to say how it makes way, and if it does not, it counts as work that cannot be paused.
+
+**Only a short list can delay it.** There are seven allowed reasons, each with its own limit of 30 to 90 minutes, such as the owner being at the machine, or a program that cannot be paused. Together they can move the restart two hours at most, and never past 6 in the morning. If one of the reasons that ends in a roll reaches its limit, the restart moves to the next night.
+
+**It can only slip so far.** After 9 days without a restart, the owner gets one plain question during the day. It says what would be ended and offers Restart tonight, Restart now, or Skip 3 days. If he does not answer, the machine restarts that night, even over a program that cannot be paused. It only does this once the question has actually reached him.
+
+**A few things it never restarts through.** An operating system update that is really installing, a disk repair or firmware update in progress, someone using the machine right now, or a battery under half. These have no time limit, because restarting through them can do real harm, and the agent reports them every night they stop a restart. Text typed into a browser the agent opened is a delay and not one of these. If it were, one forgotten form could stop every restart for good.
+
+**The owner stays in charge.** Skip once, Change window and Restart now are on the dashboard and in the iPhone app.
+
+**It practises first.** To begin with, the machine only rehearses each night, on paper. It records what it would have stopped and moved, and how long each kind of work takes to reach a stopping point. Real restarts start once those records look safe.
+
+**One at a time.** Machines take turns, so there is always one left answering messages. The machine currently in charge goes last and hands that job over first.
 
 **Proof that it came back.** After restarting, the agent checks that the machine really rebooted and
 that its server, messaging, tunnel, desktop access and logins all work, and it tells Justin in one
@@ -58,23 +64,15 @@ A machine that would stop at a password screen after restarting, such as a lapto
 never restarted by itself. The agent names the one setting involved, and otherwise just reminds the
 owner to restart it. The Windows machine starts out in this reminder mode too, because nothing yet
 brings its agent back after a Windows restart. A machine the agent does not own, like the shared M5 Pro, is refused. Other agents
-on the same machine are told in advance, get ready, and come back afterward.
+on the same machine take part in the same schedule and come back afterward.
 
 ## What is still not solved
 
-The review did not finish clean. It used all six allowed rounds, and the last one still raised safety
-items. Those are fixed in this document. Two extra outside reads followed. The first found three
-problems, now fixed here. If a restart command was sent and the machine stays up, we no longer assume
-it was cancelled: automatic work stays paused, recovery stays ready, and the owner is asked right away.
-A reservation now comes first in every restart, and only a restart that was really sent uses up the
-weekly limit.
-
-The second read found one design question still open: a browser doing background work for a live
-session could still be closed when its default time limit runs out, unless the session renews it. The
-fixes for its other findings were made after that read, so no reviewer has checked them yet.
+The design's review ran out of its allowed rounds, and later outside reads followed, so it was never formally finished. Justin accepted the design with the change above. One more outside read checked this version and found three real problems: an owner's restart could slip past an update that started during the short pause; calling a restart off did not bring back everything already stopped; and a missing check came too late to delay the restart. All three are fixed here, and no reviewer has read those fixes yet.
 
 Instar cannot see unsaved changes in ordinary apps, so an app left open with unsaved work could lose
-it. The enrolment card says so before the owner taps.
+it. The enrolment card says so before the owner taps. If the owner does not answer the question, a
+program that cannot be paused is ended by that night's restart. That is the choice Justin asked for.
 
 Permissions on a Mac can also go wrong in ways we have not explained. On 1 November the Mac Mini showed
 the system's prompt but never listed our desktop helper, and the M5 Pro listed five entries. Enrolment

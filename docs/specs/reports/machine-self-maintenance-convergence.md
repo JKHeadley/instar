@@ -2,28 +2,30 @@
 
 ## Convergence verdict: CONVERGENCE FAILED AT THE ROUND CAP
 
-Six rounds were used, the Tier 2 cap. Round 6 still raised DESIGN findings, and three concern safety or data loss. Under the skill's rule that exit is `convergence-failed` and the operator is asked. The fixes for every round 6 finding are in the spec. Two further external reads ran beyond the cap. Round 7 returned SERIOUS ISSUES with two design findings and a precision finding, all three now resolved in the spec. Round 8 read those fixes and also returned SERIOUS ISSUES: three design findings and one precision finding. Two design findings and the precision finding were clear and are folded in after the read, so no reviewer has seen those fixes. One design finding, about closing a browser at lease expiry, remains open. The spec carries `convergence-status: failed-at-cap` and has no `review-convergence` tag and no `approved: true`. `/instar-dev` will refuse to build from it, which is the correct state.
+Six rounds were used, the Tier 2 cap. Round 6 still raised DESIGN findings, three about safety or data loss, and under the skill's rule that exit is `convergence-failed`. Three external reads ran beyond the cap. The fixes for rounds 6, 7 and 8 are in the spec.
 
-The trend was narrowing, not stalled: round 1's findings were structural (a readable password path, resume entries destroyed before the reboot), and round 6's are about the timing of checks at the edges.
+On 2026-11-01 at 14:30 PST the operator read the overview and answered in topic 134088: "It looks good, however" and that "it waits" is a trap that never ends, so the plan needs global Instar work coordination to pause work and let the machine restart. The spec was amended to make a scheduled restart a commitment with a time. Round 9 read the amended text and returned SERIOUS ISSUES with three design findings. All three were clear and are fixed in the spec, after the read, so **no reviewer has seen those three fixes**.
 
-**Decision for the operator:** settle the open round 8 design finding, then allow a further round or accept the spec as it stands. Rounds 7 and 8 did not change the convergence status.
+The spec carries `approved: true`, citing that message, on the launching session's instruction that the operator accepted the design with this amendment. I checked the message text and time in the local topic log. What it does not cover: he had not seen the amended text, the restart-on-silence default, or this report. The `convergence-status` stays `failed-at-cap` and there is no `review-convergence` tag, so `/instar-dev`, which requires both tags, still refuses to build from it.
+
+**Decision for the operator:** none is needed for the design as instructed. See "For the operator" below for what is his to know before enforcement.
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-Real external passes ran in all six rounds, each returning a verdict, on a changed body each time, and twice more beyond the cap, in rounds 7 and 8. Round 1 first degraded on the agent home's stale module (`gpt-5.5`, `error`); that attempt is not counted, and the worktree was rebuilt with sibling `node_modules` to reach the current reviewer.
+Real external passes ran in all six rounds, each returning a verdict, on a changed body each time, and three times beyond the cap, in rounds 7, 8 and 9. Round 1 first degraded on the agent home's stale module (`gpt-5.5`, `error`); that attempt is not counted, and the worktree was rebuilt with sibling `node_modules` to reach the current reviewer.
 
-⚠ Gemini did not run (`gemini-not-authed`). Grok did not run (`grok-not-enabled`). The clean-door Anthropic read returned `no-supported-framework` in round 1 and was not retried. Every external round's verdict was SERIOUS ISSUES, including rounds 6, 7 and 8.
+⚠ Gemini did not run (`gemini-not-authed`). Grok did not run (`grok-not-enabled`). The clean-door Anthropic read returned `no-supported-framework` in round 1 and was not retried. Every external round's verdict was SERIOUS ISSUES, including rounds 6 to 9.
 
 ## ELI10 Overview
 
-Machines that run agents for weeks collect stuck windows, stuck processes and strange states. On 1 November the Studio got so stuck that remote access failed, and only a restart fixed it. This spec teaches Instar to look after its own machines: a clean restart about once a week when nothing is running, a rescue when a machine wedges, and proof afterward that everything came back. It also makes agents close the browsers they open, and stops one misleading flag being reported as "locked".
+Machines that run agents for weeks collect stuck windows, stuck processes and strange states. On 1 November the Studio got so stuck that remote access failed, and only a restart fixed it. This spec teaches Instar to look after its own machines: a clean restart about once a week at a set time, with all running work paused first and resumed afterward, a rescue when a machine wedges, and proof afterward that everything came back. It also makes agents close the browsers they open, and stops one misleading flag being reported as "locked".
 
-Nothing restarts until the owner taps once per machine. A machine that would stop at a password screen is never restarted by itself. Work that cannot be picked back up blocks an automatic restart. The trade-offs: a weekly restart briefly interrupts everyone on the machine, unsaved work in ordinary apps cannot be seen, and a machine frozen below the level software can reach still needs a person.
+Nothing restarts until the owner taps once per machine. A machine that would stop at a password screen is never restarted by itself. Work that cannot be picked back up delays a restart only up to a fixed limit, and after one plain question to the owner, the default is to restart. The trade-offs: a weekly restart briefly interrupts everyone on the machine, unsaved work in ordinary apps cannot be seen, and a machine frozen below the level software can reach still needs a person.
 
 ## Original vs Converged
 
 - **Password.** Originally a one-time link passed the machine password through Instar. Review showed agent sessions could read it. Now Instar never touches it: macOS's own password box does the job, and Linux without passwordless sudo is refused.
-- **The ceiling.** Originally, "work is safe to interrupt" let an overdue restart end anything. Now only work with a named resume path can be interrupted, and only inside the promised window. Other people's work reaches the owner as one question.
+- **The ceiling.** Originally, "work is safe to interrupt" let an overdue restart end anything. Review made unresumable work block for ever. The operator's amendment replaced both: a restart has a set time, work yields under a declared contract, seven delays have fixed limits, and past a maximum interval the owner gets one question with a default of restarting.
 - **Resume.** Originally entries were queued early, and the queue would have thrown them away while the sessions were still alive. Now they are written at the last moment, held until a real boot, tied to a recorded dispatch, and accounted for by topic.
 - **Dialogs.** Originally, anything on screen for 30 minutes could be clicked away. Now only one known harmless alert type is touched, only inside a confirmed wedge. Permission prompts are never answered.
 - **Wedge detection.** Originally two signals that fail together counted as two, so a healthy Mac with missing permissions could look wedged. Now those are one family, each probe must have worked on that machine first, and the forced path has to earn its authority with evidence.
@@ -41,13 +43,14 @@ Nothing restarts until the owner taps once per machine. A machine that would sto
 | 5 | all-lens, Astra | 6 | 3 | ran (2 flags) | Subagents unrecoverable; census order; claim best-effort |
 | 6 | all-lens, Astra | 5 | 9 | ran (2 flags) | Fixes applied |
 | 7, beyond the cap | Astra only | 2 | 0 | ran (1 flag; parent-principle fit weak) | Dispatch outcomes, browser close conditions, reservation order |
-| 8, beyond the cap | Astra only | 3 | 1 design | not read from the result | Dispatch and wedge-gap fixes and one wording fix, not re-read |
+| 8, beyond the cap | Astra only | 3 | 0 | not read from the result | Dispatch and wedge-gap fixes and one wording fix; browser lease rule settled afterward |
+| 9, beyond the cap, on the operator's amendment | Astra only | 3 | 0 open; fixes not re-read | not returned by the script | Drain amendment, then fixes for operator dispatch, call-off and receipts |
 
-Internal reviewers ran as Claude subagents on the authoring session's model, Opus 5.5, in every round. Rounds 1–2 used split lens groups; rounds 3–6 used one reviewer holding all six lenses, a reduction from six independent reads that a reader should weigh. Rounds 7 and 8 were one external read each and no internal reviewer, so they are not like-for-like rounds.
+Internal reviewers ran as Claude subagents on the authoring session's model, Opus 5.5, in every round. Rounds 1–2 used split lens groups; rounds 3–6 used one reviewer holding all six lenses, a reduction from six independent reads that a reader should weigh. Rounds 7, 8 and 9 were one external read each and no internal reviewer, so they are not like-for-like rounds.
 
 ## Proportion
 
-Tier 2, spec 562 lines, 6 of 6 rounds plus 2 external reads beyond the cap. ⚠ The spec grew from about 49 KB to about 79 KB across review. It is large for one document, though the build order splits it into five parts and later runs.
+Tier 2, 6 of 6 rounds plus 3 external reads beyond the cap. ⚠ The spec grew from about 49 KB to about 100 KB across review and the amendment. It is large for one document, though the build order splits it into five parts and later runs.
 
 ## Left behind
 
@@ -56,18 +59,15 @@ Gate flags, recurring through round 6, not resolved:
 - *Structure beats Willpower:* a session can run the sudo rule directly. Accepted: same OS user, and a wrapper cannot authenticate its caller either. Detected at the next boot.
 - *Mobile-Complete Operator Actions:* a Mac with no passwordless sudo and no desktop path needs a person at the machine once. Accepted: a macOS system password box needs a screen.
 
-Open from round 8, unresolved:
+Round 8's browser finding is settled in the spec on the safe side: a default lease expiry only reports, and only a declared disposable lifetime closes. Round 9 read that text and raised nothing on it.
 
-- **Design, Part B:** an expired default lease permits a close even with a live owner, so a browser doing background work with no helper calls can be closed. The operator's instruction for round 7 named an expired renewable lease as sufficient, and Astra asks for more, so this is left for the operator. The spec's Honest limits names the gap.
-
-Fixed after round 8 and not re-read: `refused` narrowed to failures shown to be before dispatch; a 6-minute observation gap and fresh evidence added to the wedge window; "automatic deferral is bounded" corrected to recoverable work.
+Fixed after their reads and not re-read: round 8's `refused` narrowing, wedge observation gap, and "recoverable-work deferral" wording, which round 9 did read; round 9's three fixes, which nobody has.
 
 New since round 7, by request, with no design: a short Part C reminder that an unusable macOS privacy state needs a guided repair and that enrolment must verify permissions live.
 
 Precision and long-tail:
 
 - Scheduled success notices are routine narration; kept because the operator asked for before and after notices.
-- `max-wall-clock: 30m` in the WedgeMonitor fields does not mention the 2 h idle wait of `restart-at-next-idle`.
 - A controller frozen between claim and dispatch past the lock's staleness bound can cause one extra counted restart.
 - `-lifeline` registry filter, macOS sudoers command paths, and whether a shutdown rewrites a resume UUID were not verified in code.
 - Rung 6 at the cap of its plan window relies on the single `expiresAt` extension.
@@ -123,10 +123,41 @@ Precision and long-tail:
 >
 > - **PRECISION — Part D, “Hard ceiling.”** “Automatic deferral is bounded” overstates the implemented guarantee. The spec expressly permits persistent unrecoverable work to block indefinitely; sending an attention item does not make silence a “person’s recorded choice.” **Resolution:** say that recoverable-work deferral is bounded, while Absolute blockers can persist indefinitely.
 
+**Round 9, run beyond the cap, on the operator's amendment.** External read only, `codex-cli:gpt-6-astra`, verdict SERIOUS ISSUES. All three findings are fixed after the read: S1, S2 and the off switch are enforced inside `claimRung` for every caller and rung, and operator passes are enumerated; each work kind declares `undoYield()` with a durable yield row, covering roll, Skip, expiry, refused Rung 1, verified cancellation and Keep running; receipts move to a new `receipting` phase before `armed`, so D3 can delay or roll. Astra's text, verbatim:
+
+> **Verdict: SERIOUS ISSUES**
+>
+> Review limited to the inlined spec; no implementation or supporting source was supplied.
+>
+> - **DESIGN — Operator dispatch can bypass non-overridable holds (Part D, “Fresh check”; Part E, “Operator trigger” and “Lifeline path”).** The spec says S1/S2 refuse even operator restarts, but explicitly exempts operator dispatches from the entire fresh check. An installer or disk operation could begin during the five-minute drain or before lifeline force escalation. **Resolution:** enforce S1/S2 inside `claimRung` for every caller and every rung. Explicitly enumerate the checks an operator may override instead of skipping the check wholesale.
+>
+> - **DESIGN — Cancelling a drain does not restore all stopped work (Part D, “Allowed delays,” “Work yield contract”; “Self-Heal Before Notify fields”).** A roll sends “carry on,” reopens admission and cancels resume entries. Earlier phases can already have terminated script jobs, interrupted sessions and marked autonomous state files `drain_suspended_for`. The specified compensation does not clear those markers or restart terminated work; a notice cannot restore a dead process. This can occur during an ordinary delayed night, without any reboot. **Resolution:** define durable, per-work-kind compensation for roll, expiry, skip and refused dispatch, including marker cleanup and same-boot revival or requeue. Test cancellation after each destructive phase.
+>
+> - **DESIGN — Missing revival receipts are discovered after their delay mechanism closes (Part D, “Actuate,” state machine and delay rules).** Resume entries and receipts are collected at `armed`; missing autonomous-run receipts become D3. However, delays can open only *up to* `armed`, and only states before `armed` can roll. Thus a non-final episode has no specified valid transition when this required receipt is missing. **Resolution:** collect and validate receipts in a distinct pre-arm state, allowing D3 to delay or roll there. Enter `armed` only after receipts pass or the explicitly authorized final-night exception applies.
+>
+> These are contradictions in the specified behavior, not measured implementation failures. The broader design appropriately uses deterministic scheduling, admission and browser rules; replacing those with additional model judgment would not address these gaps.
+
+## The amendment, in brief
+
+Reused: the host-wide file pattern of the spawn cap and test limiter, `MaintenanceGate` beside `WorkAdmission`, the recovery slot, `ResumeQueue`, Local Verify's `shutdown()` behaviour, `SessionDrainRunner`, overload shed's target rules, the `moved_to` marker pattern. New: `DrainController`, `WorkYieldRegistry`, the drain record's fields, `HostDrainingError`, `yieldForRestart()`, the app's machine-care routes.
+
+Allowed delays: D1 owner at the machine 60 min, D2 work with no resume path 60, D3 agent not answering 30, D4 short critical step 30, D5 lease will not hand off 30, D6 another pool machine restarting 90, D7 unsaved input in an owned browser 30. Total 120 minutes in an episode, never past the window's end. Maximum interval 10 days, with the question at 9.
+
+Safety holds, with no maximum: S1 OS update installing, S2 disk or firmware operation, S3 a person using the machine now, S4 battery under 50%. Reported every night they stop a restart.
+
+Decisions reversed by the amendment: conversations now move where possible, the app gets controls, scheduled restart starts watch-only. Unsaved browser input is a delay, not a hold, and the spec gives the reason.
+
+## For the operator
+
+- On the final night, silence ends work that cannot be paused. That default came through the launching session's instruction and his message does not state it.
+- A person typing at T-0 stops an automatic restart on every night, final included. I chose that; it is his to reverse.
+- Slot times (T-20 and T-5) are estimates until the rehearsal measures them.
+- Safety hold readings are unproven until L7, and an unproven reading is no hold.
+
 ## Counts
 
-Frontloaded decisions 14, cheap-to-change tags surviving 0, contested-then-cleared 4 (round 6). Open questions 0. No constitution file is touched.
+Frontloaded decisions 16, cheap-to-change tags surviving 0, contested-then-cleared 4 (round 6). Open questions 0. No constitution file is touched.
 
 ## Conclusion
 
-Not converged. Round 6 found design issues about safety and data loss, and the round cap stops review there. Round 7 found an unverified reboot cancellation and closing a live browser, both now fixed. Round 8 found the live-browser fix does not fully close that gap, plus two issues now fixed without a further read. The spec is not ready for approval until the operator settles the open finding and allows a further round or accepts it as it stands.
+Not formally converged. The operator accepted the design with an amendment, the amended text had one external read, and its three design findings are fixed without a further read. The tag `approved: true` is present and `review-convergence` is not, so the build gate stays closed until someone decides that second tag.
