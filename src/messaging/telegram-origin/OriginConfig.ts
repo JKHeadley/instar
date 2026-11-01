@@ -1,4 +1,36 @@
 import { DEFAULT_ORIGIN_DISPLAY } from './OriginPresentation.js';
+import type { OriginDestination } from './types.js';
+
+export interface BrowserSendAllowance {
+  readonly profileId: string; readonly accountId: string; readonly chatId: string;
+  readonly topicId: string | null; readonly decisionRef: string;
+}
+
+/** A singular, exact destination from operator-owned config. Malformed or broad
+ * grants fail closed for the browser path without disabling ordinary bot sends. */
+export function readBrowserSendAllowance(origin: unknown): BrowserSendAllowance | null {
+  if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return null;
+  const value = (origin as { browserSendAllowance?: unknown }).browserSendAllowance;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const grant = value as Record<string, unknown>;
+  const keys = ['profileId', 'accountId', 'chatId', 'topicId', 'decisionRef'];
+  if (Object.keys(grant).length !== keys.length || keys.some(key => !Object.hasOwn(grant, key)) ||
+    typeof grant.profileId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(grant.profileId) ||
+    typeof grant.accountId !== 'string' || !/^[1-9][0-9]*$/.test(grant.accountId) ||
+    typeof grant.chatId !== 'string' || !/^channel:[1-9][0-9]*$/.test(grant.chatId) ||
+    !(grant.topicId === null || (typeof grant.topicId === 'string' && /^[1-9][0-9]*$/.test(grant.topicId))) ||
+    typeof grant.decisionRef !== 'string' || grant.decisionRef.length < 8 || grant.decisionRef.length > 160) return null;
+  return Object.freeze({ profileId: grant.profileId, accountId: grant.accountId,
+    chatId: grant.chatId, topicId: grant.topicId, decisionRef: grant.decisionRef });
+}
+
+export function browserSendAllowanceMatches(grant: BrowserSendAllowance | null, profileId: string,
+  enrolledAccountId: string, destination: OriginDestination): boolean {
+  return !!grant && profileId === grant.profileId && enrolledAccountId === grant.accountId &&
+    destination.transport === 'telegram-web' && destination.accountId === grant.accountId &&
+    destination.chatId === grant.chatId && destination.topicId === grant.topicId &&
+    destination.messageId === null && destination.inlineMessageId === null && destination.scheduledMessageId === null;
+}
 
 export const ORIGIN_DETECTOR_CANARY_INTERVAL_MS = 3_600_000;
 export function originDetectorCanaryInterval(origin: unknown): number {

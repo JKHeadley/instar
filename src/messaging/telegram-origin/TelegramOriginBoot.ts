@@ -25,7 +25,7 @@ import { OriginNoticePolicyObserver } from './OriginNoticePolicyObserver.js';
 import { projectOriginNoticePolicy } from './OriginNoticePolicy.js';
 import type { OriginNoticeDestinationPolicy } from './OriginNoticePolicy.js';
 import { OriginDetectorCanary } from './OriginDetectorCanary.js';
-import { originDetectorCanaryInterval } from './OriginConfig.js';
+import { browserSendAllowanceMatches, originDetectorCanaryInterval, readBrowserSendAllowance, type BrowserSendAllowance } from './OriginConfig.js';
 import { toWireParams, ISSUES_TOPIC_OFFSET } from '../telegramTopicSpace.js';
 import { OriginNativeCanaryLane, type OriginNativeCanary } from './OriginNativeCanaryLane.js';
 import { resolveCodexNativeCanaryBinary, runCodexNativeModelCanary } from './OriginCodexModelCanary.js';
@@ -76,6 +76,7 @@ export async function bootTelegramOrigin(options: {
   const configReader = new OriginConfigReader(config.stateDir, options.configWorkerUrl);
   let snapshot: { observedAt: number; configRevision: number; chatId: string; issuesChatId: string | null; ownerIds: string[]; hub: string | null;
     display: Partial<OriginDisplaySettings>; enabled: boolean; demoChatId: string | null;
+    browserSendAllowance: BrowserSendAllowance | null;
     conversationDisplays: Record<string, Partial<OriginDisplaySettings>> } | null = null;
   let closed = false, timer: ReturnType<typeof setTimeout> | undefined, configTimer: ReturnType<typeof setTimeout> | undefined;
   const refresh = async () => {
@@ -103,6 +104,7 @@ export async function bootTelegramOrigin(options: {
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       snapshot = { observedAt: observation.observedAt, configRevision: observation.revision, chatId: telegram.config.chatId,
+        browserSendAllowance: readBrowserSendAllowance(telegram.config.messageOrigin),
         issuesChatId: telegram.config.issuesChatId == null || telegram.config.issuesChatId === '' ? null : String(telegram.config.issuesChatId),
         demoChatId: current.liveTest?.demo?.telegramChatId == null ? null : String(current.liveTest.demo.telegramChatId),
         ownerIds: [telegram.config.ownerUserId, telegram.config.promptGate?.ownerId, ...(telegram.config.authorizedUserIds ?? [])]
@@ -240,8 +242,17 @@ export async function bootTelegramOrigin(options: {
           if (!signing) throw new Error('browser-signing-unavailable');
           return signMessage({ agentId: config.projectName, body, topicId, timestamp, privateKey: signing.privateKey }).text;
         },
-        authorize: destination => healthy() && snapshot!.enabled && options.holdsLease() &&
-          (conversationChatId(destination.chatId) === snapshot!.chatId || snapshot!.ownerIds.includes(conversationChatId(destination.chatId) ?? '')),
+        authorize: destination => {
+          if (!healthy() || !snapshot!.enabled || !options.holdsLease()) return false;
+          const ownDestination = conversationChatId(destination.chatId) === snapshot!.chatId ||
+            snapshot!.ownerIds.includes(conversationChatId(destination.chatId) ?? '');
+          const grant = snapshot!.browserSendAllowance;
+          // Justin's 2026-10-30 user-seat decision is recorded in the local
+          // operator config. It grants one enrolled browser profile and exact
+          // destination; it cannot widen this agent's Bot API destinations.
+          const grantedDestination = browserSendAllowanceMatches(grant, profile.id, enrollment.accountId, destination);
+          return ownDestination || grantedDestination;
+        },
         driverFactory: async () => {
           const current = getDriver();
           return { canary: () => current.canary(), readSnapshot: () => current.readSnapshot(), resolvePeer: destination => current.resolvePeer(destination), invoke: child => current.invoke(child),
