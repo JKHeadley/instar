@@ -236,7 +236,9 @@ describeMaybe('an instance kills only what it can prove it started', () => {
       tmux('set-option', '-t', tmuxId, 'remain-on-exit', 'on');
       process.kill(pid, 'SIGKILL'); // the exact pane pid this test started
       await waitFor(() => tmux('list-panes', '-t', tmuxId, '-F', '#{pane_dead}').trim() === '1', 5000);
-      expect(tmux('list-panes', '-t', tmuxId, '-F', '#{pane_pid}').trim()).toBe(String(pid));
+      // tmux 3.7c on M5 clears pane_pid for a retained dead pane; older tmux
+      // keeps the stale pid. Either shape must not authorize a process signal.
+      expect([String(pid), '']).toContain(tmux('list-panes', '-t', tmuxId, '-F', '#{pane_pid}').trim());
       const spawner = spawnerIn();
       record(spawner, name, pid, tmuxId);
       const kill = vi.spyOn(process, 'kill');

@@ -25251,6 +25251,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         lastCheck: auto.lastCheck,
         lastApply: auto.lastApply,
         lastAppliedVersion: auto.lastAppliedVersion,
+        updateActivationPendingSince: auto.updateActivationPendingSince,
         lastError: auto.lastError,
       });
     }

@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type PrView } from '../../src/localVerify/LocalVerifyService.js';
 import { computePolicyHash } from '../../src/localVerify/policy.js';
-import { makePeerClient } from '../../src/localVerify/localVerifyWiring.js';
+import { makePeerClient, updatePendingFromAutoUpdater } from '../../src/localVerify/localVerifyWiring.js';
 import { makeDiagnosisPeerClient } from '../../src/localVerify/failedFileDiagnosisClient.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
@@ -91,6 +91,27 @@ const runBody = () => ({
 });
 
 describe('peer verifier routes (integration, real HTTP)', () => {
+  it('refuses a new peer attempt over HTTP while installed bytes still await a restart', async () => {
+    const p = peerService();
+    let activation: string | null = new Date().toISOString();
+    p.svc.setUpdatePendingProvider(() => updatePendingFromAutoUpdater({
+      config: { autoApply: false }, pendingUpdate: null, coalescingUntil: null,
+      pendingUpdateDetectedAt: null, restartDeferral: null, updateActivationPendingSince: activation,
+    }, []));
+    const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'echo' };
+    expect((await request(url).get('/local-verify/peer-status').set(headers)).body.slotBusy).toBe(true);
+    expect((await request(url).post('/local-verify/peer-run').set(headers).send(runBody())).body)
+      .toMatchObject({ ok: false, reason: 'peer-busy' });
+    expect(p.children).toHaveLength(0);
+
+    activation = null; // A new process has activated the installed version.
+    expect((await request(url).get('/local-verify/peer-status').set(headers)).body.slotBusy).toBe(false);
+    expect((await request(url).post('/local-verify/peer-run').set(headers).send(runBody())).status).toBe(202);
+    expect(p.children).toHaveLength(1);
+    p.svc.shutdown();
+  });
+
   it('authenticates diagnosis routes and accepts only an exact, current peer request', async () => {
     const p = peerService();
     await p.svc.wireFailedFileDiagnosis(() => 'auto', makeDiagnosisPeerClient(AUTH, 'echo'));

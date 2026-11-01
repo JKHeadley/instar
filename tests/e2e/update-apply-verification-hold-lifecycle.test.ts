@@ -19,6 +19,54 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 
 describe('manual update preserves Local Verify E2E lifecycle', () => {
+  it('keeps peer admission paused after a successful apply until this server process restarts', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-verify-activation-e2e-'));
+    const stateDir = path.join(dir, '.instar');
+    const statePath = path.join(stateDir, 'state');
+    fs.mkdirSync(statePath, { recursive: true });
+    fs.writeFileSync(path.join(statePath, 'auto-updater.json'), JSON.stringify({ pendingUpdate: '0.9.9' }));
+    const state = new StateManager(stateDir);
+    const checker = new UpdateChecker(stateDir);
+    checker.applyUpdate = async () => ({
+      success: true, previousVersion: '0.9.8', newVersion: '0.9.9',
+      message: 'Updated', restartNeeded: true, healthCheck: 'skipped',
+    });
+    const updater = new AutoUpdater(checker, state, stateDir, { preRestartDelaySecs: 0, autoApply: false });
+    updater.setSessionDeps({ listRunningSessions: () => [] });
+    let updatePending: (() => { pending: boolean }) | null = null;
+    registerLocalVerifyRestartHold(updater, {
+      restartHolds: () => [], setRunEndedListener: () => {},
+      setUpdatePendingProvider: (provider: () => { pending: boolean }) => { updatePending = provider; },
+    } as unknown as LocalVerifyService);
+    const config = {
+      projectName: 'update-verify-e2e', projectDir: dir, stateDir, port: 0,
+      authToken: 'update-verify-test',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [] },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      users: [], messaging: [], monitoring: {}, updates: { autoApply: false },
+    } as InstarConfig;
+    const app = new AgentServer({
+      config, sessionManager: createMockSessionManager() as never,
+      state, updateChecker: checker, autoUpdater: updater,
+    }).getApp();
+
+    try {
+      const applied = await request(app).post('/updates/apply')
+        .set('Authorization', 'Bearer update-verify-test').send({});
+      expect(applied.status).toBe(200);
+      expect(applied.body.pendingUpdate).toBeNull();
+      expect(applied.body.restartDeferral).toBeNull();
+      expect(fs.existsSync(path.join(statePath, 'restart-requested.json'))).toBe(true);
+      const status = await request(app).get('/updates/status').set('Authorization', 'Bearer update-verify-test');
+      expect(status.body.updateActivationPendingSince).toBeTypeOf('string');
+      expect(updatePending).toBeTypeOf('function');
+      expect(updatePending!().pending).toBe(true);
+    } finally {
+      updater.stop();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/update-apply-verification-hold-lifecycle.test.ts' });
+    }
+  }, 15_000);
+
   it('keeps an active verify on a normal apply and allows an explicit forced restart later', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-verify-e2e-'));
     const stateDir = path.join(dir, '.instar');

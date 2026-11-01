@@ -47,3 +47,9 @@ First the faster tests. Then the server starts posting the mark on every open pu
 ## What it means for Justin
 
 Merges stop waiting on GitHub, and nobody has to remember to "just run the tests locally": the merge itself requires it.
+
+## Update restart gap repair
+
+An update can finish installing before the server has restarted into it. During that short gap, an idle helper machine previously accepted a new PR check and then lost it when the restart arrived. From installation until the restart decision, the old server now keeps new checks paused. A deferred restart releases that brief pause, and the existing hold rules govern later retries. When a retry actually decides whether to restart, the brief pause returns so a new check cannot slip into the gap. Checks already running still get the existing restart hold. A failed install releases the pause, and a newly started server begins with it clear. This also covers an update Justin asks to apply manually while automatic updates are off.
+
+The M5 exposed a separate test fixture assumption: tmux 3.7c sometimes leaves a dead pane's pid field empty, while older tmux keeps the old number. The process-ownership test now accepts either observation and still verifies that cleanup sends no process signal. That stops unrelated PRs from going red because of the helper machine's tmux version.
