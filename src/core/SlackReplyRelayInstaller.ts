@@ -63,6 +63,15 @@ function atomicInstall(destination: string, content: string): void {
 }
 
 function reconcile(destination: string, content: string, result: SlackRelayInstallResult): void {
+  reconcileRelayFile(destination, content, PRIOR_SHIPPED_SLACK_RELAY_SHA256, result);
+}
+
+/**
+ * SHA-provenance install of one relay script (shared with the app reply relay): install when
+ * absent, keep when current, overwrite a known prior-shipped version (keeping a .bak), and never
+ * overwrite customized content (write `<dest>.new` and report it degraded).
+ */
+export function reconcileRelayFile(destination: string, content: string, priorShas: ReadonlySet<string>, result: SlackRelayInstallResult): void {
   const label = destination;
   try {
     let stat: fs.Stats;
@@ -86,7 +95,7 @@ function reconcile(destination: string, content: string, result: SlackRelayInsta
       result.current.push(label);
       return;
     }
-    if (PRIOR_SHIPPED_SLACK_RELAY_SHA256.has(existingSha)) {
+    if (priorShas.has(existingSha)) {
       fs.copyFileSync(destination, `${destination}.bak.${existingSha.slice(0, 12)}`);
       atomicInstall(destination, content);
       result.installed.push(label);

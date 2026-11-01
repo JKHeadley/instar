@@ -600,6 +600,7 @@ async function loadTargetsAndMaybeOpen() {
   const targets = await api('/desktop/targets');
   const machines = targets.machines || [];
   $('machine').replaceChildren();
+  $('machineNotes')?.replaceChildren();
   trustedTargetKeys.clear();
   for (const target of machines) {
     const option = document.createElement('option');
@@ -611,6 +612,15 @@ async function loadTargetsAndMaybeOpen() {
       ? `${target.label} — ${target.unavailableReason || 'Unavailable right now'}`
       : target.label;
     if (!option.disabled) trustedTargetKeys.set(target.machineId, trustedKey);
+    else {
+      // A phone truncates a disabled option, so each reason and its fix also
+      // appears in full below the picker.
+      const note = document.createElement('li');
+      const name = document.createElement('strong');
+      name.textContent = target.label;
+      note.append(name, ` ${target.unavailableReason || 'Unavailable right now.'}`);
+      $('machineNotes')?.append(note);
+    }
     $('machine').append(option);
   }
   const preferredMachine = new URLSearchParams(location.search).get('machineId');

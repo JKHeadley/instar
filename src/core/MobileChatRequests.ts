@@ -27,6 +27,12 @@ export interface ChatRecord {
   /** When the id can no longer be accepted (embedded time + 24h 5m); the record lives until then. */
   keepUntil: number;
   result?: { status: number; body: Record<string, unknown> };
+  /**
+   * Operation details written WITH the reservation, before any effect (native app conversations,
+   * docs/specs/mobile-native-conversations.md §4.1/§4.2): e.g. a create's chosen conversation key,
+   * so recovery re-applies the same effect instead of a second one. Never the message text.
+   */
+  extra?: Record<string, string>;
 }
 
 export type ChatLookup =
@@ -87,7 +93,7 @@ export class MobileChatRequestStore {
    * The decisive lookup and the reservation in one synchronous step (no await between them).
    * Returns `reserved`, `full` (2,000 live records for this device), or the existing answer.
    */
-  reserve(deviceId: string, requestId: string, hash: string, topicId: number): { kind: 'reserved' } | { kind: 'full' } | ChatLookup {
+  reserve(deviceId: string, requestId: string, hash: string, topicId: number, extra?: Record<string, string>): { kind: 'reserved' } | { kind: 'full' } | ChatLookup {
     const existing = this.lookup(deviceId, requestId, hash);
     if (existing.kind !== 'none') return existing;
     let count = 0;
@@ -97,6 +103,7 @@ export class MobileChatRequestStore {
     const rec: ChatRecord = {
       deviceId, requestId, state: 'entered', payloadHash: hash, topicId, bootId: this.bootId,
       at: new Date(this.now()).toISOString(), keepUntil: (requestIdTime(requestId) ?? this.now()) + PAST_MS + FUTURE_MS,
+      ...(extra ? { extra: { ...extra } } : {}),
     };
     this.records.set(k, rec);
     try { this.persist(); } catch (err) { this.records.delete(k); throw err; }
@@ -135,6 +142,27 @@ export class MobileChatRequestStore {
     this.active.delete(k);
     if (!this.records.delete(k)) return;
     try { this.persist(); } catch { /* @silent-fallback-ok — a lingering entered record only reads as outcome-unknown */ }
+  }
+
+  /** The stored record (a copy), or null. */
+  get(deviceId: string, requestId: string): ChatRecord | null {
+    const r = this.records.get(key(deviceId, requestId));
+    return r ? { ...r, ...(r.extra ? { extra: { ...r.extra } } : {}) } : null;
+  }
+
+  /**
+   * `entered` records not running in this process whose reservation is older than `minAgeMs`:
+   * the boot-recovery set of mobile-native-conversations §4.2 step 8.
+   */
+  stranded(minAgeMs: number): ChatRecord[] {
+    const t = this.now();
+    const out: ChatRecord[] = [];
+    for (const [k, r] of this.records) {
+      if (r.state !== 'entered' || (this.active.has(k) && r.bootId === this.bootId)) continue;
+      if (t - Date.parse(r.at) < minAgeMs) continue;
+      out.push({ ...r, ...(r.extra ? { extra: { ...r.extra } } : {}) });
+    }
+    return out;
   }
 
   private prune(): void {

@@ -35,6 +35,7 @@ import type { RouteContext } from './routes.js';
 import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
+import { APP_CONVERSATION_KEY_PATTERN } from '../core/appConversationText.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -116,7 +117,18 @@ export function isMobileChatEnabled(config: InstarConfig): boolean {
   return config.mobilePairing?.chat?.enabled !== false;
 }
 
+/**
+ * `mobilePairing.native.enabled` (docs/specs/mobile-native-conversations.md): omitted ⇒ the
+ * development-agent gate; requires mobilePairing itself. Read ONCE at boot by AgentServer.
+ */
+export function isMobileNativeEnabled(config: InstarConfig): boolean {
+  if (!isMobilePairingEnabled(config)) return false;
+  return resolveDevAgentGate(config.mobilePairing?.native?.enabled, config);
+}
+
 export class MobilePairingService {
+  /** Native app conversations resolved on at boot (set by AgentServer). Gates the send-route rate move. */
+  nativeOn = false;
   readonly codes: PairingCodeStore;
   readonly devices: DeviceRegistry;
   readonly confirm: ConfirmationCodes;
@@ -156,6 +168,23 @@ export class MobilePairingService {
   stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; }
 
   holdsLease(): boolean { return this.deps.holdsLease?.() ?? true; }
+
+  /**
+   * The ONE request-id store for every app mutation on this machine (Telegram chat route and the
+   * native conversation routes share it: two instances over the same file would overwrite each
+   * other's records). Lazily created; `useChatRequests` installs one constructed elsewhere.
+   */
+  private chatRequestStore: MobileChatRequestStore | null = null;
+  private chatRequestStoreError = false;
+  chatRequests(): MobileChatRequestStore | null {
+    if (this.chatRequestStore || this.chatRequestStoreError) return this.chatRequestStore;
+    try { this.chatRequestStore = new MobileChatRequestStore(this.deps.stateDir); } catch (err) {
+      this.chatRequestStoreError = true;
+      this.deps.reportDegradation?.('MobileChat.requestStore', err);
+    }
+    return this.chatRequestStore;
+  }
+  useChatRequests(store: MobileChatRequestStore): void { this.chatRequestStore = store; this.chatRequestStoreError = false; }
 
   /** 120 device requests per minute per device. */
   deviceRateOk(deviceId: string): boolean {
@@ -436,17 +465,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
   // ── Native operator chat (docs/specs/mobile-operator-chat.md) ──
   // Order: authenticate → look up → preflight → reserve → core → mirror.
-  let chatStore: MobileChatRequestStore | null = null;
-  let chatStoreError = false;
   const chatRate = new Map<string, number[]>();
-  const chatStoreOf = (): MobileChatRequestStore | null => {
-    if (chatStore || chatStoreError) return chatStore;
-    try { chatStore = new MobileChatRequestStore(deps.stateDir); } catch (err) {
-      chatStoreError = true;
-      deps.reportDegradation?.('MobileChat.requestStore', err);
-    }
-    return chatStore;
-  };
+  const chatStoreOf = (): MobileChatRequestStore | null => svc.chatRequests();
   router.post('/mobile/chat/:topicId', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!svc.enabled()) { json503(res); return; }
@@ -604,7 +624,11 @@ async function forwardRevoke(ctx: PoolCtx, id: string): Promise<{ confirmedBy: s
 // ── Device authentication (wired into authMiddleware) ───────────────────────────────
 
 /** Exact routes a device principal may use (spec 2.3); path lowercased, trailing slash removed. */
-const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus> }> = (() => {
+// `sendRoute`: a send route (Telegram, app). Its authentication-time device rate limit is skipped
+// when native conversations are on: sends have their own limit in preflight, so the app's read
+// polling can never use up the allowance an emergency stop needs (mobile-native-conversations §4.2).
+const UUID = APP_CONVERSATION_KEY_PATTERN;
+const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean }> = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   return [
     { method: 'GET', re: /^\/health$/, statuses: active },
@@ -617,8 +641,16 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     { method: 'GET', re: /^\/mobile\/devices$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
     { method: 'POST', re: /^\/mobile\/device\/confirm$/, statuses: new Set(['pending', 'active']) },
-    // The only non-idempotent entry, made idempotent by requestId (mobile-operator-chat §2.4).
-    { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active },
+    // Every POST, PATCH and DELETE below is idempotent through MobileChatRequestStore (requestId).
+    { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
+    // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
+    { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active },
+    { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
+    { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active },
+    { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active },
+    { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active },
     { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
   ];
 })();
@@ -649,7 +681,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       rule.statuses, svc.replay,
     );
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
-    if (!svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
+    if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
     return 'ok';
   };
