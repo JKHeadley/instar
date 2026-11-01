@@ -872,7 +872,7 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'mobilePairingNative',
     configPath: 'mobilePairing.native.enabled',
-    description: 'Native app conversations (docs/specs/mobile-native-conversations.md): the iPhone app starts, lists, reads and writes conversations stored by Instar itself (POST/GET /mobile/conversations, POST /mobile/chat/app/:key, its messages/events reads), the agent answers through app-reply.sh (POST /app/session-reply), and every app message is stored with its device-signature fields. The store replicates to every machine whenever this is on.',
+    description: 'Native app conversations (docs/specs/mobile-native-conversations.md): the iPhone app starts, lists, reads and writes conversations stored by Instar itself (POST/GET /mobile/conversations, POST /mobile/chat/app/:key, its messages/events reads), the agent answers through app-reply.sh (POST /app/session-reply), and every app message is stored with its device signature and this machine\'s signed receipt, checked against a replicated, machine-signed device-key ledger (originVerified in history). The store and the ledger replicate to every machine whenever this is on.',
     justification: 'Device-signed only, behind the existing device allowlist; every mutation is idempotent by requestId; messages are persisted before dispatch and delivery is never claimed without a recorded outcome. Off ⇒ the new routes answer 503 and the Telegram chat route is unchanged. Dark on the fleet until the development-agent live proof passes.',
   },
 ];
