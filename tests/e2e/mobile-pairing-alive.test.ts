@@ -61,6 +61,8 @@ describe('mobile pairing — production wiring', () => {
     const m = await request(app).post('/mobile/pairing-codes').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e').send({});
     expect(m.status).toBe(200);
     expect(m.body.link).toContain('https://instar.sh/pair#v=1&o=');
+    // The link names the agent (config.projectName), so the phone can show "Pair with mp-e2e?".
+    expect(m.body.link).toContain('&n=mp-e2e');
     const dms: string[] = [];
     server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
     const dev = makeDevice();
@@ -80,6 +82,8 @@ describe('mobile pairing — production wiring', () => {
     // The device authenticator is wired into the production auth middleware.
     expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
     expect((await send('GET', '/sessions')).status).toBe(200);
+    // The conversation list's recency read is on the device allowlist (not refused for a device).
+    expect([401, 403]).not.toContain((await send('GET', '/topic/list')).status);
     const d = await request(app).get('/mobile/devices').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e');
     expect(d.body.devices[0]).toMatchObject({ deviceName: 'e2e phone', status: 'active' });
     // Operator chat (mobile-operator-chat): the device-only route is mounted and its inbound core is

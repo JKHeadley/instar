@@ -349,7 +349,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const label = cleanText((req.body as Record<string, unknown> | undefined)?.label);
     const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '');
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
-    res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code) });
+    res.json({ code: m.code, expiresAt: new Date(m.expiresAt).toISOString(), link: buildPairLink(origin, m.code, deps.config.projectName) });
   });
 
   router.get('/mobile/devices', async (req: Request, res: Response) => {
@@ -611,6 +611,8 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     { method: 'GET', re: /^\/attention$/, statuses: active },
     { method: 'GET', re: /^\/sessions$/, statuses: active },
     { method: 'GET', re: /^\/telegram\/topics$/, statuses: active },
+    // Topic recency for the app's conversation list (newest first); read-only.
+    { method: 'GET', re: /^\/topic\/list$/, statuses: active },
     { method: 'GET', re: /^\/telegram\/topics\/[^/]+\/messages$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/devices$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
