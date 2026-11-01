@@ -291,6 +291,27 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(h.network).toHaveBeenCalledOnce();
     expect((await h.runtime.store.listOrigins()).records).toHaveLength(1);
   });
+  it('audit routes still serve an origin whose full detail moved to the archive', async () => {
+    const h = await appHarness();
+    const sent = await request(h.app).post('/telegram/reply/42')
+      .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
+      .send({ text: 'The archive read report is ready for your review.' });
+    expect(sent.status).toBe(200);
+    const [origin] = (await h.runtime.store.listOrigins()).records;
+    const before = Date.now() + 1000;
+    expect((await h.runtime.store.archive({ before })).archived).toBe(1);
+    expect(await h.runtime.store.purgeArchived({ before })).toBe(1);
+    const operator = (path: string) => request(h.app).get(path).set('Authorization', 'Bearer agent-test')
+      .set('X-Instar-AgentId', 'echo').set('X-Instar-Operator-Session', 'operator-test');
+    const single = await operator(`/telegram/origins/${origin.record.originId}`);
+    expect(single.status).toBe(200);
+    expect(single.body.operation.state).toBe('accepted'); expect(single.body.attempts).toHaveLength(1);
+    const listed = await operator(`/telegram/origins?originId=${origin.record.originId}`);
+    expect(listed.status).toBe(200); expect(listed.body.records[0].children[0].state).toBe('accepted');
+    // The outcome lookup still knows it was delivered, so nothing gets resent.
+    const outcome = await request(h.app).get(`/telegram/origins/operations/${origin.operation!.operationId}/outcome`).set('Authorization', 'Bearer agent-test');
+    expect(outcome.status).toBe(200); expect(outcome.body).toMatchObject({ outcome: 'delivered', safeToResend: false });
+  });
   it('shares deterministic content suppression between browser and Bot sends and makes suppressed operations terminal', async () => {
     const h = await browserHarness(), text = 'The completed review is ready, including the implementation and its verified test results.';
     const first = await h.send(text); expect(first.status).toBe(200); expect(first.body.receipts).toHaveLength(1);

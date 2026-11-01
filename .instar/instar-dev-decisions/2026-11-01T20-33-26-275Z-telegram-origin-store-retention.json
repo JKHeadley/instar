@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-01T20:33:26.275Z",
+  "slug": "telegram-origin-store-retention",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 436,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/telegram-origin/OriginPoolAudit.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/OriginUnrecordedReceipts.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts"
+    ],
+    "addedLines": 377,
+    "deletedLines": 59
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

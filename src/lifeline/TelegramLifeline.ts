@@ -392,6 +392,7 @@ export class TelegramLifeline {
     const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js');
     this.telegramOriginBoot = await bootTelegramOrigin({ config: this.projectConfig, token: this.config.token,
       noticeOwner: true,
+      skipRetention: true,
       diagnosticMode: 'delegate',
       holdsLease: () => this.polling && shouldOwnTelegramPoll(this.projectConfig),
       diagnoseUnknown: async (originId, reason) => {

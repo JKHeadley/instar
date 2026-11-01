@@ -269,6 +269,10 @@ describe('Telegram origin production bootstrap', () => {
     expect((await boot.runtime.store.getChild(old.children[0].childId))?.materializations).toEqual([]);
     expect((await boot.runtime.store.getOrigin(row.record.originId))?.attempts[0].receiptJson).toBe(row.attempts[0].receiptJson);
     expect((await boot.runtime.store.archive({ before: Date.now() + 1000 })).archived).toBeGreaterThan(0);
+    // Past the hot window full detail leaves the hot tables; the audit read does not change.
+    expect(await boot.runtime.store.purgeArchived({ before: Date.now() + 1000 })).toBeGreaterThan(0);
+    expect(await boot.runtime.store.getChild(old.children[0].childId)).toBeNull();
+    expect((await boot.runtime.store.getOrigin(old.record.originId))?.operation?.state).toBe('expired');
     const historical = JSON.parse(row.record.envelopeJson);
     new MachineIdentityManager(stateDir).removeLocalIdentity();
     expect(await boot.runtime.options.authorizeOrigin!(historical)).toBe(false);
