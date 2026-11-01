@@ -207,6 +207,7 @@ import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
 import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
+import { desktopRouteAccess } from './desktopRouteContext.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
 import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
 import { DesktopAccessAudit } from '../core/DesktopAccessAudit.js';
@@ -5222,8 +5223,7 @@ export class AgentServer {
       correctionClassReview: this.correctionClassReview,
       completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
-      directDesktopAccess: options.config.remoteDesktop?.frontMachineId === this.meshSelfId
-        ? this.directDesktopAccess : null,
+      ...desktopRouteAccess(this.directDesktopAccess, options.config.remoteDesktop?.frontMachineId, this.meshSelfId),
       desktopLocalDiagnostics: async () => {
         const configured = options.config.remoteDesktop?.enabled === true;
         if (!configured || !this.directDesktopAccess) {

@@ -1681,6 +1681,7 @@ export interface RouteContext {
    *  blocks a message; the true-blocker settle routes through the B17 authority. */
   blockerLedger?: import('../monitoring/BlockerLedger.js').BlockerLedger | null;
   directDesktopAccess?: import('../core/DirectDesktopAccess.js').DirectDesktopAccess | null;
+  desktopRequestPermission?: import('./desktopRouteContext.js').DesktopRouteAccess['desktopRequestPermission'];
   desktopLocalDiagnostics?: () => Promise<Record<string, unknown>>;
   desktopMeshBroker?: import('./DesktopMeshBroker.js').DesktopMeshBroker | null;
   desktopTargetSigningKey?: (machineId: string) => string | null;
@@ -13056,19 +13057,20 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   // Shows macOS's own Screen Recording and Accessibility prompts on this Mac
   // and lists the helper there. Bearer only, and it grants nothing: a person
-  // allows it at the Mac. Call it when someone is at that Mac to answer.
+  // allows it at the Mac. Call it when someone is at that Mac to answer. Every
+  // target serves this, not only the designated front.
   // @write-domain:none — machine-local OS prompt; writes no agent state.
   let lastDesktopPermissionRequestAt = 0;
   router.post('/desktop/request-permission', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!desktopIntent(req, res)) return;
-    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!ctx.desktopRequestPermission) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (Date.now() - lastDesktopPermissionRequestAt < 60_000) {
       res.status(429).json({ error: 'A permission prompt was requested in the last minute' }); return;
     }
     lastDesktopPermissionRequestAt = Date.now();
     try {
-      res.json(await ctx.directDesktopAccess.requestPermission());
+      res.json(await ctx.desktopRequestPermission());
     } catch {
       // @silent-fallback-ok — the caller gets an explicit failure; no secret or path belongs in this body.
       res.status(409).json({ error: 'This machine cannot show desktop permission prompts' });
