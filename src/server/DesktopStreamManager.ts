@@ -3,7 +3,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { DesktopInput } from '../core/DesktopHost.js';
+import type { DesktopButton, DesktopInput } from '../core/DesktopHost.js';
+// E2E-PAIRING: EXEMPT — type-only change (held button may be middle); no route change.
 
 export interface DesktopStreamSession {
   grantId: string;
@@ -84,7 +85,7 @@ export class DesktopStreamManager {
     let captureFailures = 0;
     let lastKeyframeRequestAt = -Infinity;
     let videoFallbackAccepted = false;
-    let heldButton: 'left' | 'right' | null = null;
+    let heldButton: DesktopButton | null = null;
     const heldKeys = new Set<string>();
     let holdTimer: ReturnType<typeof setTimeout> | undefined;
     const refreshHoldLease = () => {
