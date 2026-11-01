@@ -28,7 +28,8 @@ describe('CMT-509 collaboration surfacing — wiring integrity', () => {
   });
 
   it('invokes the surfacer at the relay funnel seam (after the gate, parentless only)', () => {
-    const idx = serverSrc.indexOf('collaborationSurfacer.surface({');
+    // The call may be optional-chained (`collaborationSurfacer?.surface({`, the homebase hub fallback).
+    const idx = serverSrc.search(/collaborationSurfacer\??\.surface\(\{/);
     expect(idx).toBeGreaterThan(0);
     const block = serverSrc.slice(idx, idx + 400);
     expect(block).toMatch(/hasParentTopic/);

@@ -41,7 +41,7 @@ describe('§2.6 user-meant peer messages land in the homebase — wiring', () =>
     // The hub surface is the fallback the relay chains to when it does not post.
     const hubDef = serverSrc.lastIndexOf('const hubSurface = () => {', relaySeam);
     expect(hubDef).toBeGreaterThan(0);
-    expect(serverSrc.slice(hubDef, relaySeam)).toContain('collaborationSurfacer.surface({');
+    expect(serverSrc.slice(hubDef, relaySeam)).toMatch(/collaborationSurfacer\??\.surface\(\{/);
     const routeIdx = routesSrc.indexOf("router.post('/messages/relay-agent'");
     expect(routesSrc.indexOf('ctx.peerHomebaseRelay.relayInbound({')).toBeGreaterThan(routeIdx);
     // The signed-HTTP receive path is wired too, keyed on the verified fingerprint.
