@@ -802,6 +802,13 @@ Beyond the tone gate, a response-review pipeline (nine specialist reviewers driv
 export const PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET = `- **Passkey login method (\`google-passkey\`, ⚗️ dark)**: an account may carry \`loginMethod: "google-passkey"\` with a \`vaultBindings.passkey\` entry KEY (a machine-local passkey store key, never material; refused unless that store exists on this machine). The registry records the method it REPLACED as \`priorLoginMethod\`. Rollback lever: \`POST /passkeys/revert-method\` with the dashboard PIN (\`{"pin":"…"}\`, optional \`accounts:[{profileId,service,identity}]\`; default = every passkey account) restores the prior method and lists accounts with none as \`noPriorMethod\` — it never guesses a method. Repair for a passkey account is admitted ONLY when its cell is \`ready\`; on this build the cell always reads unknown, so the path is inert.\n- **Passkey grants + issuers (per account × machine, ⚗️ dark)**: a passkey may be minted/loaded on a machine only under a GRANT written on that machine. Read them: \`GET /passkeys/grants\` (grants, issued peer-grant copies, confirmed issuers, revoke high-water, \`issuerBootstrapRequired\`). PIN levers: \`POST /passkeys/grant\` \`{"pin":"…","email":"…"}\`, \`POST /passkeys/revoke\` \`{"pin":"…","email":"…"}\` (stops THIS agent's passkey path only — live sessions and stored passwords remain), \`POST /passkeys/issuer-add\` / \`issuer-remove\` \`{"pin":"…","machineId":"…"}\`. Add \`targetMachineId\` to act on a PEER: the op is signed with this machine's identity key as a \`passkey-cell\` mandate and delivered to the peer's \`POST /passkeys/cell-action\`, which accepts it only from a machine the operator confirmed as an issuer on THAT machine's own dashboard (no trust-on-first-use), once per nonce, within 15 minutes (revokes never expire). On a multi-machine agent the first grant is refused with \`issuer-bootstrap-required\` until a peer issuer is confirmed. NEVER ask the user to paste the PIN into chat — point them at the dashboard.\n`;
 
 /**
+ * Codex device-limit tripwire (docs/specs/codex-device-limit-tripwire.md §11): the one bullet
+ * under the Subscription Pool section. generateClaudeMd emits it; migrateClaudeMd inserts it into
+ * an existing CLAUDE.md, content-sniffed on the marker "Codex device-limit tripwire".
+ */
+export const CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET = `- **Codex device-limit tripwire (one machine, never a sign-in)** — OpenAI caps how many paid personal Codex accounts one device may hold. A pool account whose \`statusCause\` is \`codex-device-limit\` is a SUSPECTED device limit, not proven provider attribution: it is benched (needs-reauth) on THIS machine only, and stays usable elsewhere. The judge is Jev, with a Luna (Codex fast tier) referee running on a different signed-in account, reading the Codex app-server's own refusal text; benching needs two separate refusals 5–60 min apart, plus another account on this machine reading clean. The prepared refusal text (secrets scrubbed, personal data masked) is sent to TypeSafe and the Codex fast tier. Read it: \`GET /subscription-pool\` → each account's \`statusCause\` and this machine's \`deviceLimit\` block, and \`logs/codex-device-limit.jsonl\`. The fix is a layout decision (which accounts live on which machine), not a sign-in: the dashboard cell says "Suspected device limit: benched on this machine" and offers no Sign in or Repair. To keep using an account here anyway, add its id to \`subscriptionPool.codexDeviceLimit.ignoreAccounts\` in THAT machine's own config when the operator says so (I write it; per machine). Switch: \`subscriptionPool.codexDeviceLimit.enabled\` (read live; omitted ⇒ live on a development agent, off on the fleet until graduation). **Proactive trigger:** "why is this Codex account benched?" / "did we hit the device limit?" → read \`statusCause\` + \`deviceLimit\` and the log, never guess.\n`;
+
+/**
  * The dedicated-profile provisioning bullet inside the Playwright Profile Registry section. The
  * dashboard's "Create a dedicated sign-in profile" form was removed (it only made an empty profile
  * and never signed in); the agent creates and signs in these profiles itself.
@@ -2045,6 +2052,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninCrossMachine(result);
     this.migrateSubscriptionSigninDropProfileFormPointer(result);
     this.migrateSubscriptionSigninApprovalBoundary(result);
+    this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
@@ -2092,6 +2100,7 @@ export class PostUpdateMigrator {
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHookTelemetryGitignore(result);
+    this.migrateDeviceLimitProvenanceGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
@@ -2952,6 +2961,28 @@ export class PostUpdateMigrator {
       result.upgraded.push(`git: untracked ${tracked.length} hook telemetry file(s) (machine-local; working copy kept)`);
     } catch (err) {
       result.errors.push(`hook telemetry untrack: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Codex device-limit judge provenance gitignore (codex-device-limit-tripwire §1) ──
+  //
+  // The judge keeps its prepared (masked) refusal text machine-local under
+  // `state/codex-device-limit-provenance/`. Fresh installs get the entry via GITIGNORE_ENTRIES;
+  // existing agents get it here (same idempotent pattern as judgment-provenance).
+  private migrateDeviceLimitProvenanceGitignore(result: MigrationResult): void {
+    try {
+      const gitignorePath = path.join(this.config.projectDir, '.gitignore');
+      if (!fs.existsSync(gitignorePath)) return;
+      const content = fs.readFileSync(gitignorePath, 'utf8');
+      if (/^\s*state\/codex-device-limit-provenance\/?\s*$/m.test(content)) return; // idempotent
+      const block =
+        (content.endsWith('\n') ? '' : '\n') +
+        '\n# Codex device-limit judge provenance (machine-local masked provider text — never commit)\n' +
+        'state/codex-device-limit-provenance/\n';
+      fs.writeFileSync(gitignorePath, content + block);
+      result.upgraded.push('gitignore: state/codex-device-limit-provenance/ (machine-local judge provenance)');
+    } catch (err) {
+      result.errors.push(`device-limit provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -5325,6 +5356,53 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/subscription-signin/SKILL.md (removed the pointer to the retired dashboard profile form)');
     } catch (err) {
       result.errors.push(`skills/subscription-signin/SKILL.md profile-form pointer migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Codex device-limit tripwire (codex-device-limit-tripwire §11): name the device-limit page in an
+   * installed /subscription-signin skill — a hard rule (by-hand sign-in) and the helper's agent-run
+   * bullet. installBuiltinSkills never overwrites, so this is the only update path. Each line is
+   * inserted after its stock anchor and is idempotent on its own text; local edits are kept; a copy
+   * with neither stock anchor is reported as customised and left untouched.
+   */
+  private migrateSubscriptionSigninDeviceLimit(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const ruleMarker = '- If a page says this device has reached its limit of paid accounts';
+    const ruleAnchor = '- Never use an automated browser for a sign-in page.';
+    const helperMarker = '- **A device-limit page:**';
+    const helperAnchor = '- **At a hard line**';
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      let current = fs.readFileSync(skillFile, 'utf8');
+      if (!current.includes('name: subscription-signin')) return;
+      if (current.includes(ruleMarker) && current.includes(helperMarker)) return;
+      const source = SUBSCRIPTION_SIGNIN_SKILL_CONTENT;
+      const lineOf = (text: string, start: string): string | null => {
+        const i = text.indexOf(start);
+        if (i < 0) return null;
+        const eol = text.indexOf('\n', i);
+        return text.slice(i, eol === -1 ? text.length : eol + 1);
+      };
+      const insertAfterLine = (anchor: string, marker: string): boolean => {
+        const anchorLine = lineOf(current, anchor);
+        const newLine = lineOf(source, marker);
+        if (!anchorLine || !newLine || !anchorLine.endsWith('\n')) return false;
+        const at = current.indexOf(anchorLine) + anchorLine.length;
+        current = current.slice(0, at) + newLine + current.slice(at);
+        return true;
+      };
+      const changes: string[] = [];
+      if (!current.includes(ruleMarker) && insertAfterLine(ruleAnchor, ruleMarker)) changes.push('hard rule');
+      if (!current.includes(helperMarker) && insertAfterLine(helperAnchor, helperMarker)) changes.push('agent-run line');
+      if (changes.length === 0) {
+        result.skipped.push('skills/subscription-signin/SKILL.md: customized — left untouched (no device-limit lines)');
+        return;
+      }
+      fs.writeFileSync(skillFile, current);
+      result.upgraded.push(`skills/subscription-signin/SKILL.md (added the device-limit ${changes.join(' and ')}; local edits kept)`);
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md device-limit migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -9390,6 +9468,27 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(seePoolAnchor, seePoolAnchor + poolScopeBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added Subscription Pool pool-scope (?scope=pool) bullet');
+      }
+    }
+
+    // Codex device-limit tripwire (codex-device-limit-tripwire §11). Existing agents carrying the
+    // Subscription Pool section get the bullet after "Why a sign-in repair did not start" (or, on a
+    // customised section without it, right after the section heading line). Content-sniffed on the
+    // marker phrase, so a re-run is a no-op.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      !content.includes('Codex device-limit tripwire')
+    ) {
+      const blockerIdx = content.indexOf('- **Why a sign-in repair did not start**');
+      const headingIdx = content.indexOf('**Subscription Pool (multi-account quota');
+      const anchorIdx = blockerIdx !== -1 ? blockerIdx : headingIdx;
+      if (anchorIdx !== -1) {
+        const eol = content.indexOf('\n', anchorIdx);
+        const insertAt = eol === -1 ? content.length : eol + 1;
+        const prefix = eol === -1 ? '\n' : '';
+        content = content.slice(0, insertAt) + prefix + CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET + content.slice(insertAt);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Subscription Pool Codex device-limit tripwire bullet');
       }
     }
 

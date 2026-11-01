@@ -917,6 +917,16 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     })()`);
   }
 
+  /** Visible main-content text, capped (codex-device-limit-tripwire §2 C). Never logged here. */
+  async mainText(): Promise<string> {
+    await this.followNewestPage();
+    const text = await this.evaluate<string>(`(() => {
+      const root = document.querySelector('main') || document.querySelector('[role="main"]') || document.body;
+      return root ? String(root.innerText || '').slice(0, 4096) : '';
+    })()`);
+    return typeof text === 'string' ? text.slice(0, 2048) : '';
+  }
+
   async wait(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(5_000, ms))));
   }

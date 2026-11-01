@@ -129,6 +129,8 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
  */
 export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   'judgment-provenance',
+  // Codex device-limit judge provenance (codex-device-limit-tripwire §1): machine-local only.
+  'codex-device-limit-provenance',
   'claim-verification',
   // External-hog decision store (llm-decision-quality-meter spec §5.3): same
   // machine-local posture as the provenance rows; the filename segment closes

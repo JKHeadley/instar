@@ -14782,6 +14782,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       return resolveClaudeSlotAccountId(subscriptionPool.list(), await credSwapOracle.resolveSlotTenant(slot));
     };
     let quotaPollerRef: import('../core/QuotaPoller.js').QuotaPoller | null = null;
+    // Late-bound for the device-limit tripwire (built before the sign-in repair runtime).
+    let subscriptionReloginRuntimeRef: import('../core/SubscriptionReloginRuntime.js').SubscriptionReloginRuntime | null = null;
     const credentialSwapExecutor = new CredentialSwapExecutor({
       funnel: credentialWriteFunnel,
       ledger: credentialLocationLedger,
@@ -15085,6 +15087,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // refusal is told apart from a transport failure, and only a live read proves login.
       codexLiveUsageReaderDetailed: buildCodexLiveUsageReaderDetailed(config.subscriptionPool),
       codexLoginStatus: (codexHome) => codexLoginStatusChecker.check(codexHome),
+      // codex-device-limit-tripwire §2 A′: the same single run, with its status text kept.
+      codexLoginStatusWithText: (codexHome) => codexLoginStatusChecker.checkWithText(codexHome),
       loginObservationSink: subscriptionLoginLedger
         ? (input) => subscriptionLoginLedger!.recordObservation(input)
         : undefined,
@@ -15163,6 +15167,95 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
     });
     sessionManager.setInteractiveLoginExpiredSink((signal) => interactiveLoginExpiredRecovery.handle(signal));
+    // Codex device-limit tripwire (spec codex-device-limit-tripwire): Jev (Luna referee on another
+    // account) judges the Codex app-server's own refusal text; only two such judgements 5–60 min
+    // apart, with another account here reading clean, bench an account ON THIS MACHINE. Screens and
+    // sign-in pages only ask for a fresh read or stop one repair. Dev-gated: live on a development
+    // agent, off on the fleet until graduation; `subscriptionPool.codexDeviceLimit.enabled` wins.
+    let codexDeviceLimit: import('../core/codexDeviceLimitWiring.js').CodexDeviceLimitWiring | null = null;
+    if (subscriptionPoolMachineId) {
+      try {
+        const { buildCodexDeviceLimitWiring, installCodexDeviceLimitWiring } = await import('../core/codexDeviceLimitWiring.js');
+        const { SecretStore: DeviceLimitSecretStore } = await import('../core/SecretStore.js');
+        const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+        let deviceLimitReferee: import('../core/types.js').IntelligenceProvider | null = null;
+        try {
+          const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+          const { buildIntelligenceProvider: buildDeviceLimitReferee } = await import('../core/intelligenceProviderFactory.js');
+          // Its own Codex provider (own breaker); every call names its account explicitly.
+          deviceLimitReferee = buildDeviceLimitReferee({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+        } catch { /* @silent-fallback-ok — no Codex CLI means no referee; Jev alone, or undecided (no action) */ }
+        const deviceLimitCfg = () => {
+          const raw = liveConfig.get<{ enabled?: boolean; ignoreAccounts?: unknown } | undefined>('subscriptionPool.codexDeviceLimit',
+            (config.subscriptionPool as { codexDeviceLimit?: { enabled?: boolean; ignoreAccounts?: unknown } } | undefined)?.codexDeviceLimit);
+          return {
+            enabled: resolveDevAgentGate(typeof raw?.enabled === 'boolean' ? raw.enabled : undefined, config),
+            ignoreAccounts: Array.isArray(raw?.ignoreAccounts) ? raw!.ignoreAccounts.filter((x): x is string => typeof x === 'string') : [],
+          };
+        };
+        const dlTelegram = telegram;
+        codexDeviceLimit = buildCodexDeviceLimitWiring({
+          pool: subscriptionPool,
+          ledger: subscriptionLoginLedger ?? null,
+          quotaPoller,
+          machineId: subscriptionPoolMachineId,
+          stateDir: config.stateDir,
+          logsDir: path.join(config.stateDir, '..', 'logs'),
+          config: deviceLimitCfg,
+          judgeConfig: () => liveConfig.get<import('../core/CodexDeviceLimitJudge.js').JevCodexDeviceLimitConfig | undefined>(
+            'intelligence.jevCodexDeviceLimit', (config.intelligence as { jevCodexDeviceLimit?: import('../core/CodexDeviceLimitJudge.js').JevCodexDeviceLimitConfig } | undefined)?.jevCodexDeviceLimit),
+          readKey: () => {
+            try { const v = new DeviceLimitSecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get('typesafe_api_key'); return typeof v === 'string' && v ? v : null; }
+            catch { return null; } // @silent-fallback-ok — no key ⇒ the referee alone, or undecided
+          },
+          referee: deviceLimitReferee,
+          listSessions: () => sessionManager.listRunningSessions().map((s) => ({
+            tmuxSession: s.tmuxSession, name: s.name, subscriptionAccountId: s.subscriptionAccountId ?? null,
+            jobSlug: s.jobSlug ?? null, protected: config.sessions.protectedSessions.includes(s.tmuxSession),
+          })),
+          swap: async (args) => {
+            if (!_quotaAwareScheduler) return { swapped: false, toAccountId: null, reason: 'scheduler-not-configured' };
+            return _quotaAwareScheduler.onQuotaPressure(args);
+          },
+          swapEnabled: () => liveConfig.get<unknown>('subscriptionPool.loginExpiredSwap.enabled', (config.subscriptionPool as { loginExpiredSwap?: { enabled?: boolean } } | undefined)?.loginExpiredSwap?.enabled ?? true) !== false,
+          // The sign-in repair runtime is built later; this reads it at call time.
+          endRepairs: (accountId) => subscriptionReloginRuntimeRef?.endForDeviceLimit(accountId),
+          raiseNotice: (notice) => {
+            if (!dlTelegram) return;
+            void dlTelegram.createAttentionItem({
+              id: `codex-device-limit-${notice.machineId}`,
+              conditionKey: notice.conditionKey,
+              category: notice.category,
+              title: notice.title,
+              summary: notice.body,
+              description: notice.body,
+              priority: notice.priority === 'HIGH' ? 'HIGH' : notice.priority === 'normal' ? 'NORMAL' : 'LOW',
+              sourceContext: 'codex-device-limit-tripwire',
+              needsUser: true,
+              ...(notice.silent ? { silent: true } : {}),
+            }).catch((err) => console.warn(`[DeviceLimit] notice failed: ${err instanceof Error ? err.message : String(err)}`));
+          },
+          clearNotice: (conditionKey, resolution) => {
+            try { dlTelegram?.clearAttentionCondition({ conditionKey }, resolution); }
+            catch { /* @silent-fallback-ok — the hourly resolver closes it on the next pass */ }
+          },
+          metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+          // Late-bound: the judgment-provenance log is constructed later in boot.
+          provenance: () => _judgmentProvenance as unknown as { recordDecision(input: Record<string, unknown>): string | null } | null,
+          reportDegradation: (e) => DegradationReporter.getInstance().report(e),
+          logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+        });
+        installCodexDeviceLimitWiring(codexDeviceLimit);
+        const dl = codexDeviceLimit;
+        sessionManager.setCodexSigninTriggerSink((input) => dl.onSessionSigninSighting(input));
+        dlTelegram?.registerAttentionConditionResolver('subscription-device-limit', (item) => dl.resolveNotice(item));
+        console.log(pc.dim(`  Codex device-limit tripwire: ${deviceLimitCfg().enabled ? 'on' : 'off'} (judge: Jev${deviceLimitReferee ? ' + Luna referee' : ''})`));
+      } catch (err) {
+        // @silent-fallback-ok (logged): without the tripwire, today's sign-out handling applies unchanged.
+        console.warn(`[DeviceLimit] tripwire not started: ${err instanceof Error ? err.message : String(err)}`);
+        codexDeviceLimit = null;
+      }
+    }
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
       console.log(pc.green('  Subscription quota poller started'));
@@ -15759,7 +15852,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
           unattendedPolicy: reloginCfg.unattendedPolicy,
           slowRetry: reloginCfg.slowRetry,
+          // codex-device-limit-tripwire §2 C / §4: page judgement, stopped-repair report, retry hold.
+          ...(codexDeviceLimit ? {
+            deviceLimitHold: codexDeviceLimit.deviceLimitHold,
+            judgeDeviceLimitPage: codexDeviceLimit.judgeDeviceLimitPage,
+            onDeviceLimitStopped: codexDeviceLimit.onDeviceLimitStopped,
+          } : {}),
         });
+        subscriptionReloginRuntimeRef = subscriptionReloginRuntime;
         subscriptionReloginRuntime.start();
         console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${reloginNavigation}, browser: ${process.platform === 'darwin' || windowsRepair ? 'normal' : 'automated'}, last-resort model: ${reloginLastResort && !windowsRepair ? (reloginLastResort.available() ? reloginLastResort.config.model : `key ${reloginLastResort.config.keyName} not in vault`) : 'off'})`));
       } catch (error) {

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { classifyCodexLoginStatus, CodexLoginStatusChecker, type CliRunResult } from '../../src/core/CliLoginStatus.js';
+import { classifyCodexLoginStatus, CodexLoginStatusChecker, CLI_LOGIN_STATUS_TEXT_MAX_BYTES, type CliRunResult } from '../../src/core/CliLoginStatus.js';
 
 /**
  * The Codex CLI's own login check (spec skill-driven-signin-repair). A "signed in" answer is
@@ -99,5 +99,43 @@ describe('CodexLoginStatusChecker', () => {
     now = 10 * 60_000;
     await checker.check('/accounts/a');
     expect(canaryRuns()).toBe(before); // a pass is not re-run
+  });
+
+  it('checkWithText returns the verdict plus the CLI status lines from ONE run; check() is unchanged', async () => {
+    const run = vi.fn(async (env: Record<string, string>) => env.CODEX_HOME.includes('instar-codex-login-canary-')
+      ? SIGNED_OUT
+      : { code: 1, stdout: 'Not logged in\n\n', stderr: 'Error: device limit reached for this account\n' });
+    const checker = new CodexLoginStatusChecker({ run, scratchDir: scratch() });
+    expect(await checker.checkWithText('/accounts/a')).toEqual({
+      verdict: 'signed-out',
+      text: 'Not logged in\nError: device limit reached for this account',
+    });
+    expect(run).toHaveBeenCalledTimes(2); // canary + one run
+    expect(await checker.check('/accounts/a')).toBe('signed-out');
+    expect(run).toHaveBeenCalledTimes(3); // check() is one run too
+  });
+
+  it('checkWithText keeps the canary gating and yields empty text when it cannot speak', async () => {
+    const unproven = new CodexLoginStatusChecker({ run: vi.fn(async () => SIGNED_IN), scratchDir: scratch() });
+    expect(await unproven.checkWithText('/accounts/a')).toEqual({ verdict: 'unavailable', text: '' });
+    const run = vi.fn(async () => SIGNED_OUT);
+    const checker = new CodexLoginStatusChecker({ run, scratchDir: scratch() });
+    expect(await checker.checkWithText('relative')).toEqual({ verdict: 'unavailable', text: '' });
+    expect(run).not.toHaveBeenCalled();
+    let calls = 0;
+    const throwing = new CodexLoginStatusChecker({ scratchDir: scratch(), run: vi.fn(async () => {
+      if (++calls === 1) return SIGNED_OUT; throw new Error('boom');
+    }) });
+    expect(await throwing.checkWithText('/accounts/a')).toEqual({ verdict: 'unavailable', text: '' });
+  });
+
+  it('checkWithText caps the status text at 2 KiB', async () => {
+    const run = vi.fn(async (env: Record<string, string>) => env.CODEX_HOME.includes('instar-codex-login-canary-')
+      ? SIGNED_OUT : { code: 0, stdout: `Logged in using ChatGPT ${'z'.repeat(5000)}`, stderr: 'w'.repeat(3000) });
+    const checker = new CodexLoginStatusChecker({ run, scratchDir: scratch() });
+    const out = await checker.checkWithText('/accounts/a');
+    expect(out.verdict).toBe('signed-in');
+    expect(Buffer.byteLength(out.text, 'utf8')).toBe(CLI_LOGIN_STATUS_TEXT_MAX_BYTES);
+    expect(out.text.startsWith('Logged in using ChatGPT')).toBe(true);
   });
 });

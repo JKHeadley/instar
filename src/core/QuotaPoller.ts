@@ -33,6 +33,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { CodexDeviceLimitTripwire } from './CodexDeviceLimitTripwire.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -132,6 +133,12 @@ export interface QuotaPollerConfig {
    * to fail by its canary. Required for the CLI-signed-out rule; absent ⇒ that rule never fires.
    */
   codexLoginStatus?: ((codexHome: string) => Promise<CliLoginVerdict>) | null;
+  /**
+   * The same CLI check, with its status text (codex-device-limit-tripwire §2 A′). When present it
+   * REPLACES `codexLoginStatus` for the signed-out rule (one process run) and its text is handed
+   * to the device-limit tripwire as a trigger.
+   */
+  codexLoginStatusWithText?: ((codexHome: string) => Promise<{ verdict: CliLoginVerdict; text: string }>) | null;
   /** Clock injection for Codex reset-boundary normalization. */
   now?: () => number;
   /** Logger (defaults to console). */
@@ -197,6 +204,13 @@ const CLI_LOGIN_EXPIRED_MAX_SIGHTINGS = 20;
  * observed again by the next session that lands on it.
  */
 export const CLI_LOGIN_EXPIRED_HOLD_MAX_MS = 12 * 60 * 60_000;
+
+/** codex-device-limit-tripwire §3: concurrent poller-family Codex live reads per process. */
+export const CODEX_LIVE_READ_CONCURRENCY = 2;
+/** A trigger-requested Codex read is skipped within this long of the account's last read. */
+export const CODEX_CHECK_FLOOR_MS = 10 * 60_000;
+export type CodexReadPriority = 'scheduled' | 'confirmation' | 'trigger';
+const CODEX_READ_PRIORITY_RANK: Record<CodexReadPriority, number> = { confirmation: 0, scheduled: 1, trigger: 2 };
 
 /** Two consecutive CLI-signed-out + auth-refused polls move a Codex account to needs-reauth. */
 const CLI_SIGNED_OUT_POLLS_REQUIRED = 2;
@@ -435,6 +449,17 @@ export class QuotaPoller {
   private readonly codexLiveUsageReader: CodexUsageReader | null;
   private readonly codexLiveUsageReaderDetailed: QuotaPollerConfig['codexLiveUsageReaderDetailed'];
   private readonly codexLoginStatus: QuotaPollerConfig['codexLoginStatus'];
+  private readonly codexLoginStatusWithText: QuotaPollerConfig['codexLoginStatusWithText'];
+  /** codex-device-limit-tripwire: the per-machine state machine (set after construction). */
+  private deviceLimit: CodexDeviceLimitTripwire | null = null;
+  /** CodexReadGate: one in-flight live read per resolved home, at most 2 at once, priority-queued. */
+  private readonly liveReadsByHome = new Map<string, Promise<CodexLiveRead | null>>();
+  private liveReadsRunning = 0;
+  private readonly liveReadWaiters: Array<{ priority: number; enqueuedAt: number; maxWaitMs: number; start: () => void; drop: () => void }> = [];
+  /** When each account was last read by any path (requestCodexCheck's 10-minute floor). */
+  private readonly lastCodexReadAt = new Map<string, number>();
+  /** Reads already handed to the tripwire: callers sharing one in-flight read hook it ONCE. */
+  private readonly hookedReads = new WeakSet<CodexLiveRead>();
   private readonly loginChecks = new Map<string, PoolLoginCheck>();
   private readonly cliSignedOutStreak = new Map<string, { count: number; lastAt: number }>();
   /** Pane sightings of Claude Code's "Login expired" frame, keyed by resolved config home. */
@@ -476,6 +501,7 @@ export class QuotaPoller {
     this.codexLiveUsageReader = config.codexLiveUsageReader ?? null;
     this.codexLiveUsageReaderDetailed = config.codexLiveUsageReaderDetailed ?? null;
     this.codexLoginStatus = config.codexLoginStatus ?? null;
+    this.codexLoginStatusWithText = config.codexLoginStatusWithText ?? null;
     this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
@@ -661,7 +687,10 @@ export class QuotaPoller {
    * a fresh token) yields needs-reauth. Returns null when the token is
    * unresolvable or the read fails. NEVER logs or returns the token.
    */
-  async pollAccount(account: SubscriptionAccount): Promise<AccountQuotaSnapshot | null> {
+  async pollAccount(
+    account: SubscriptionAccount,
+    opts: { scheduled?: boolean; priority?: CodexReadPriority } = {},
+  ): Promise<AccountQuotaSnapshot | null> {
     // Census #1/#2/#4: every per-account credential read (token resolve, 401-refresh, needs-reauth
     // attribution) targets the account's LIVE slot per the ledger gate — NOT its enrollment home —
     // so a swap mid-poll can't read/refresh/flag the wrong tenant. account.id is preserved (only
@@ -684,12 +713,13 @@ export class QuotaPoller {
       // guard also catches an injected test reader that does.
       let usage: CodexUsageSnapshot | null = null;
       if (this.codexLiveUsageReaderDetailed) {
-        let live: CodexLiveRead;
-        try {
-          live = await this.codexLiveUsageReaderDetailed({ codexHome: slotAccount.configHome, nowMs });
-        } catch {
-          live = { kind: 'unavailable' }; // @silent-fallback-ok: a throwing reader is a transport failure
-        }
+        const live = await this.gatedLiveRead(slotAccount.configHome, nowMs, opts.priority ?? (opts.scheduled ? 'scheduled' : 'trigger'));
+        // codex-device-limit-tripwire §3: a gate-dropped read (null) is not a read at all: it
+        // changes no counter, no login signal, no snapshot, and does not start the 10-minute floor.
+        if (live === null) return null;
+        this.lastCodexReadAt.set(slotAccount.id, this.now());
+        // Every live read, on every path, passes through the tripwire first.
+        this.afterCodexRead(slotAccount, live, opts.scheduled === true);
         if (live.kind === 'ok') {
           usage = live.snapshot;
           this.loginChecks.set(slotAccount.id, 'ok');
@@ -905,34 +935,144 @@ export class QuotaPoller {
         this.observe(account.id, { kind: 'skipped-disabled' });
         continue;
       }
-      const snap = await this.pollAccount(account);
-      if (!snap) {
-        failed++;
-        continue;
-      }
-      polled++;
-      const attributedId = this.attributionByExpected.get(account.id) ?? account.id;
-      const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
-      // A clean AUTHENTICATED read on an account previously flagged needs-reauth restores it. A
-      // Codex rollout-file snapshot is usage history, not proof of login (spec
-      // skill-driven-signin-repair), so it never restores `active`.
-      // A pane-observed expired login on the same credential is never undone by a usage read.
-      const restores = account.status === 'needs-reauth' && snap.source !== 'codex-rollout'
-        && !this.cliLoginExpiredHolds.has(attributedId) && !this.cliLoginExpiredHolds.has(account.id);
-      if (restores) patch.status = 'active';
-      // Email is provider-attested identity, not quota metadata. Quota polling
-      // must never mutate it; drift detection and the identity registrar own
-      // that authority.
-      try {
-        this.pool.update(attributedId, patch);
-      } catch {
-        // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
-      }
-      if (account.status !== 'needs-reauth' || restores) {
-        this.observe(attributedId, restores ? { kind: 'transition-to-active' } : { kind: 'resolved-clean' });
-      }
+      // codex-device-limit-tripwire §6: a benched account's scheduled read backs off (1 h → 6 h,
+      // breaker after ~2 days); trigger and confirmation reads still run.
+      if (this.deviceLimit?.skipScheduledRead(account)) continue;
+      const snap = await this.pollOne(account, { scheduled: true });
+      if (!snap) failed++;
+      else polled++;
+    }
+    try { this.deviceLimit?.tick(); }
+    catch (err) { // @silent-fallback-ok — logged; a failed upkeep pass is retried on the next poll
+      this.logger.warn(`[QuotaPoller] device-limit upkeep failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return { polled, failed };
+  }
+
+  /**
+   * Read one account and persist the result: the per-account body of {@link pollAll}, shared with
+   * {@link requestCodexCheck} so a triggered read restores, holds and observes exactly like the
+   * scheduled pass.
+   */
+  private async pollOne(
+    account: SubscriptionAccount,
+    opts: { scheduled: boolean; priority?: CodexReadPriority },
+  ): Promise<AccountQuotaSnapshot | null> {
+    const snap = await this.pollAccount(account, opts);
+    if (!snap) return null;
+    const attributedId = this.attributionByExpected.get(account.id) ?? account.id;
+    const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
+    // A clean AUTHENTICATED read on an account previously flagged needs-reauth restores it. A
+    // Codex rollout-file snapshot is usage history, not proof of login (spec
+    // skill-driven-signin-repair), so it never restores `active`.
+    // A pane-observed expired login on the same credential is never undone by a usage read, and a
+    // device-limit bench is released only by the tripwire's two clean reads (its own hold).
+    const current = this.pool.get(attributedId) ?? account;
+    const restores = current.status === 'needs-reauth' && snap.source !== 'codex-rollout'
+      && !this.cliLoginExpiredHolds.has(attributedId) && !this.cliLoginExpiredHolds.has(account.id)
+      && !this.deviceLimit?.holdsRestore(attributedId) && !this.deviceLimit?.holdsRestore(account.id);
+    if (restores) patch.status = 'active';
+    // Email is provider-attested identity, not quota metadata. Quota polling
+    // must never mutate it; drift detection and the identity registrar own
+    // that authority.
+    try {
+      this.pool.update(attributedId, patch);
+    } catch {
+      // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
+    }
+    if (current.status !== 'needs-reauth' || restores) {
+      this.observe(attributedId, restores ? { kind: 'transition-to-active' } : { kind: 'resolved-clean' });
+    }
+    return snap;
+  }
+
+  /** Attach the device-limit tripwire (server composition; it needs this poller to read). */
+  setDeviceLimitTripwire(tripwire: CodexDeviceLimitTripwire | null): void {
+    this.deviceLimit = tripwire;
+  }
+
+  /**
+   * Read one Codex account now (codex-device-limit-tripwire §3). Trigger requests (a session
+   * screen, a sign-in page, a judged initialize error or login-status text) honour a 10-minute
+   * floor per account; a confirmation read bypasses it and the benched-account backoff, and goes
+   * ahead of triggers in the read gate. Resolves true when the read was a clean live read.
+   */
+  async requestCodexCheck(accountId: string, opts: { confirmation?: boolean } = {}): Promise<boolean> {
+    const account = this.pool.get(accountId);
+    if (!account || account.framework !== 'codex-cli' || account.provider !== 'openai' || account.status === 'disabled') return false;
+    const last = this.lastCodexReadAt.get(accountId);
+    if (!opts.confirmation && last !== undefined && this.now() - last < CODEX_CHECK_FLOOR_MS) return false;
+    const snap = await this.pollOne(account, { scheduled: false, priority: opts.confirmation ? 'confirmation' : 'trigger' });
+    return snap?.source === 'codex-app-server';
+  }
+
+  /** The hand-off to the device-limit tripwire. Never throws into a read. */
+  private afterCodexRead(account: SubscriptionAccount, live: CodexLiveRead, scheduled: boolean): void {
+    if (!this.deviceLimit) return;
+    // A single-flight read shared by several callers is ONE observation: counting it twice could
+    // turn one clean read into a "two clean reads" release.
+    if (this.hookedReads.has(live)) return;
+    this.hookedReads.add(live);
+    try {
+      this.deviceLimit.afterCodexRead(account, {
+        kind: live.kind,
+        ...(live.kind !== 'ok' && live.refusal ? { refusal: live.refusal } : {}),
+        scheduled,
+      });
+    } catch (err) {
+      this.logger.warn(`[QuotaPoller] device-limit read hook failed for ${account.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * CodexReadGate (codex-device-limit-tripwire §3): one in-flight live read per resolved
+   * CODEX_HOME (a caller that finds one awaits it instead of spawning a second app-server on the
+   * same home), at most {@link CODEX_LIVE_READ_CONCURRENCY} at once per process, waiting reads
+   * ordered by priority (scheduled and confirmation reads ahead of triggers). A trigger read that
+   * would wait past its own floor is dropped (null). Never throws.
+   */
+  private async gatedLiveRead(home: string, nowMs: number, priority: CodexReadPriority): Promise<CodexLiveRead | null> {
+    const reader = this.codexLiveUsageReaderDetailed;
+    if (!reader) return { kind: 'unavailable' };
+    const key = path.resolve(expandHome(home));
+    // Registered at QUEUE time, not start time: a second caller for the same home while the first
+    // is still waiting for a slot shares that one read instead of queueing another.
+    const pending = this.liveReadsByHome.get(key);
+    if (pending) return pending;
+    const run = async (): Promise<CodexLiveRead> => {
+      try { return await reader({ codexHome: home, nowMs }); }
+      catch { return { kind: 'unavailable' }; } // @silent-fallback-ok: a throwing reader is a transport failure
+    };
+    const settled = new Promise<CodexLiveRead | null>((resolve) => {
+      const go = () => {
+        this.liveReadsRunning++;
+        void run().then((r) => {
+          this.liveReadsRunning--;
+          resolve(r);
+          this.releaseNextLiveRead();
+        });
+      };
+      if (this.liveReadsRunning < CODEX_LIVE_READ_CONCURRENCY) { go(); return; }
+      this.liveReadWaiters.push({
+        priority: CODEX_READ_PRIORITY_RANK[priority],
+        enqueuedAt: this.now(),
+        maxWaitMs: priority === 'trigger' ? CODEX_CHECK_FLOOR_MS : Number.POSITIVE_INFINITY,
+        start: go,
+        drop: () => resolve(null),
+      });
+      this.liveReadWaiters.sort((a, b) => a.priority - b.priority || a.enqueuedAt - b.enqueuedAt);
+    });
+    this.liveReadsByHome.set(key, settled);
+    void settled.then(() => { if (this.liveReadsByHome.get(key) === settled) this.liveReadsByHome.delete(key); });
+    return settled;
+  }
+
+  private releaseNextLiveRead(): void {
+    while (this.liveReadWaiters.length > 0 && this.liveReadsRunning < CODEX_LIVE_READ_CONCURRENCY) {
+      const next = this.liveReadWaiters.shift()!;
+      if (this.now() - next.enqueuedAt > next.maxWaitMs) { next.drop(); continue; }
+      next.start();
+    }
   }
 
   /**
@@ -978,7 +1118,13 @@ export class QuotaPoller {
    */
   private async onCodexAuthRefused(account: SubscriptionAccount): Promise<void> {
     let cli: CliLoginVerdict = 'unavailable';
-    if (this.codexLoginStatus) {
+    if (this.codexLoginStatusWithText) {
+      try {
+        const r = await this.codexLoginStatusWithText(account.configHome);
+        cli = r.verdict;
+        if (r.text && cli !== 'signed-in') this.deviceLimit?.afterLoginStatusText(account, r.text);
+      } catch { cli = 'unavailable'; } // @silent-fallback-ok — no signal; status kept
+    } else if (this.codexLoginStatus) {
       try { cli = await this.codexLoginStatus(account.configHome); }
       catch { cli = 'unavailable'; } // @silent-fallback-ok — no signal; status kept
     }
