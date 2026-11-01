@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-01T02:23:50.191Z",
+  "slug": "package-pack-macos-helper-race",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 53,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/PipeSessionSpawner.ts"
+    ],
+    "addedLines": 45,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

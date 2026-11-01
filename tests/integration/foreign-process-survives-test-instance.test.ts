@@ -21,6 +21,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -206,21 +207,42 @@ describeMaybe('an instance kills only what it can prove it started', () => {
   }, 30_000);
 
   describe('PipeSessionSpawner', () => {
-    type Active = Map<string, { sessionName: string; threadId: string; pid: number; tmuxId?: string; startedAt: number; timeoutTimer: ReturnType<typeof setTimeout> }>;
-    const record = (spawner: PipeSessionSpawner, sessionName: string, pid: number, tmuxId?: string) => {
+    type Active = Map<string, { sessionName: string; threadId: string; pid: number; tmuxId?: string; tmuxNonce?: string; startedAt: number; timeoutTimer: ReturnType<typeof setTimeout> }>;
+    const stamp = (tmuxId: string): string => {
+      const nonce = crypto.randomBytes(16).toString('hex');
+      tmux('set-option', '-t', tmuxId, '@instar_pipe_nonce', nonce);
+      return nonce;
+    };
+    const record = (spawner: PipeSessionSpawner, sessionName: string, pid: number, tmuxId?: string, tmuxNonce?: string) => {
       (spawner as unknown as { activeSessions: Active }).activeSessions.set(sessionName, {
-        sessionName, threadId: sessionName.slice('pipe-'.length), pid, tmuxId, startedAt: Date.now(),
+        sessionName, threadId: sessionName.slice('pipe-'.length), pid, tmuxId, tmuxNonce, startedAt: Date.now(),
         timeoutTimer: setTimeout(() => {}, 0),
       });
     };
     const spawnerIn = () => new PipeSessionSpawner({ stateDir: fs.mkdtempSync(path.join(scratch, 'pipe-')) });
+
+    it('stamps a newly created session before tracking it', async () => {
+      const stateDir = fs.mkdtempSync(path.join(scratch, 'pipe-spawn-'));
+      fs.mkdirSync(path.join(stateDir, 'logs'));
+      const spawner = new PipeSessionSpawner({ stateDir, binaryPath: fakeClaude });
+      const threadId = `stamp-${process.pid}`;
+      const name = `pipe-${threadId}`;
+      handMade.push(name);
+      const result = await spawner.spawn({
+        threadId, messageText: 'hi', fromFingerprint: 'abc', fromName: 'peer', trustLevel: 'trusted', iqsBand: 90,
+      });
+      expect(result.spawned).toBe(true);
+      expect(tmux('show-options', '-qv', '-t', name, '@instar_pipe_nonce').trim()).toMatch(/^[a-f0-9]{32}$/);
+      spawner.killAll();
+      expect(sessionExists(name)).toBe(false);
+    }, 15_000);
 
     it('kills its own recorded session (process group and tmux session)', async () => {
       const name = `pipe-own-${process.pid}`;
       handMade.push(name);
       const { tmuxId, pid } = newSession(name, 'sleep 600');
       const spawner = spawnerIn();
-      record(spawner, name, pid, tmuxId);
+      record(spawner, name, pid, tmuxId, stamp(tmuxId));
       spawner.killAll();
       expect(sessionExists(name)).toBe(false);
       await waitFor(() => !alive(pid), 5000);
@@ -238,11 +260,22 @@ describeMaybe('an instance kills only what it can prove it started', () => {
       await waitFor(() => tmux('list-panes', '-t', tmuxId, '-F', '#{pane_dead}').trim() === '1', 5000);
       // tmux 3.7c on M5 clears pane_pid for a retained dead pane; older tmux
       // keeps the stale pid. Either shape must not authorize a process signal.
-      expect([String(pid), '']).toContain(tmux('list-panes', '-t', tmuxId, '-F', '#{pane_pid}').trim());
+      const deadPanePid = tmux('list-panes', '-t', tmuxId, '-F', '#{pane_pid}').trim();
+      expect([String(pid), '']).toContain(deadPanePid);
       const spawner = spawnerIn();
-      record(spawner, name, pid, tmuxId);
+      const nonce = stamp(tmuxId);
+      record(spawner, name, pid, tmuxId, nonce);
       const kill = vi.spyOn(process, 'kill');
       try {
+        if (deadPanePid === '') {
+          // A restarted tmux server could reuse the name and id. A different
+          // session nonce must leave even that exact-looking dead pane alone.
+          tmux('set-option', '-t', tmuxId, '@instar_pipe_nonce', 'replacement-nonce');
+          spawner.killAll();
+          expect(sessionExists(name)).toBe(true);
+          tmux('set-option', '-t', tmuxId, '@instar_pipe_nonce', nonce);
+          record(spawner, name, pid, tmuxId, nonce);
+        }
         spawner.killAll();
         expect(kill).not.toHaveBeenCalled();
       } finally {
@@ -255,10 +288,11 @@ describeMaybe('an instance kills only what it can prove it started', () => {
       const name = `pipe-replaced-${process.pid}`;
       handMade.push(name);
       const original = newSession(name, 'sleep 600');
+      const originalNonce = stamp(original.tmuxId);
       tmux('kill-session', '-t', original.tmuxId);
       const replacement = newSession(name, 'sleep 600'); // someone else's, same name
       const spawner = spawnerIn();
-      record(spawner, name, original.pid, original.tmuxId);
+      record(spawner, name, original.pid, original.tmuxId, originalNonce);
       spawner.killAll();
       expect(sessionExists(name)).toBe(true);
       expect(alive(replacement.pid)).toBe(true);
