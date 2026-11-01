@@ -126,7 +126,7 @@ export class MobilePairingService {
     this.now = now;
     // The confirmation-code key is per process: any device still pending from before
     // this boot can never be confirmed, so it is expired now (spec 2.2, Restarts).
-    try { this.devices.expireAllPending(); } catch (err) { deps.reportDegradation?.('MobilePairing.bootExpiry', err); }
+    try { this.devices.expireAllPending(); } catch (err) { deps.reportDegradation?.('MobilePairing.bootExpiry', err); } // @silent-fallback-ok — reported through DegradationReporter
     // Lease watch (spec 2.2, Lease changes): the moment this machine is seen without the
     // serving lease, every live code is voided and pending devices expire, so a code issued
     // before a lease move can never confirm after the lease comes back.
@@ -141,7 +141,7 @@ export class MobilePairingService {
     if (!this.enabled() || this.holdsLease()) return;
     this.confirm.clearAll();
     this.declineNonces.clear();
-    try { this.devices.expireAllPending(); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leaseExpiry', err); }
+    try { this.devices.expireAllPending(); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leaseExpiry', err); } // @silent-fallback-ok — reported through DegradationReporter
   }
 
   stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; }
@@ -175,7 +175,7 @@ export class MobilePairingService {
     if (!id) return 'unknown';
     this.declineNonces.delete(nonce);
     this.confirm.drop(id);
-    try { this.devices.decline(id); } catch (err) {
+    try { this.devices.decline(id); } catch (err) { // @silent-fallback-ok — reported through DegradationReporter
       // The code is already gone, so the device can never confirm; it expires on its own.
       this.deps.reportDegradation?.('MobilePairing.declineWrite', err);
     }
@@ -229,7 +229,7 @@ export class MobilePairingService {
         const r = await f(`${origin}${MOBILE_PING_PATH}?n=${nonce}`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), cache: 'no-store' } as RequestInit);
         if (!r.ok) return { ok: false, error: 'address-unverified', detail: `Checking ${host} got an HTTP ${r.status} answer, so I could not confirm this machine serves it.` };
         answer = ((await r.json()) as { h?: unknown }).h;
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok — not silent: the mint is refused 409 naming the unreachable address
         return { ok: false, error: 'address-unverified', detail: `Could not reach ${host} to confirm this machine serves it (${err instanceof Error ? err.name : 'error'}).` };
       }
       if (answer !== pingAnswer(nonce)) {

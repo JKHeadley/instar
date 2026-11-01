@@ -92,8 +92,8 @@ describe('mobile pairing routes', () => {
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ agentName: 'echo', status: 'pending' });
     expect(r.body.token).toBeUndefined();
-    expect(JSON.stringify(r.body)).not.toMatch(/\d{6}/);
     expect(ctx.dms).toHaveLength(1);
+    expect(JSON.stringify(r.body)).not.toContain(codeFrom(ctx.dms[0])); // the code never comes back to the phone
     expect(ctx.dms[0].decline).toMatch(/^md:d:[0-9a-f]{24}$/);
     expect((await redeem(ctx.app, m.body.code)).status).toBe(403);
   });

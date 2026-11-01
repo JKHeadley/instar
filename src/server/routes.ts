@@ -27627,7 +27627,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         await ctx.telegram.handleMobileDecline({ callbackQueryId, data, fromUserId, chatId, verified: callbackDecision.verified });
         claimStore.markDone(callbackQueryId);
         res.json({ ok: true, mobileDecline: true });
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok — not silent: the tap is answered 500 and its claim marked failed
         claimStore.markFailed(callbackQueryId);
         res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
       }

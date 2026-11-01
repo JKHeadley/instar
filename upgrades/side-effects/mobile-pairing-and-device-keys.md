@@ -77,3 +77,7 @@ Phones get revocable credentials anchored in the owner's private chat, never the
 - **defectClass:** `unbounded-self-action`
 - **closure:** `n/a`
 - **reason:** No self-triggered loop. The 5-second lease watch only expires pending pairing records and clears in-memory codes (idempotent, no outward action, no retry). Owner DMs fire once per user-caused event (a wrong-code decline or a code pasted into a chat), bounded by the 10-wrong-codes-per-24h budget and the 10-live-codes cap.
+
+## Follow-up: unit-gate fixes (no behavior change)
+
+The first local verify failed on repository gates, not on behavior: the route-discoverability lint now reads `mobilePairingRoutes.ts`; the CLAUDE.md section is listed in the parity test; five already-reported catch blocks carry the `@silent-fallback-ok` marker; and one integration assertion that a redeem answer contains no six-digit run (which a random device id can contain) now checks that the actual code is absent.
