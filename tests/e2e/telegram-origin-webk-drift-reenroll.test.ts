@@ -82,7 +82,9 @@ describe('Telegram Web K drift through the production boot', () => {
     const destination = { version: 1 as const, transport: 'telegram-web' as const, accountId: '7812716706',
       chatId: 'channel:4290919884', topicId: null, messageId: null, inlineMessageId: null, scheduledMessageId: null };
     expect(await authorize(destination)).toBe(true);
-    expect(await authorize({ ...destination, chatId: 'channel:123' })).toBe(false);
+    // channel:123 is this agent's existing Bot API chat and remains allowed.
+    expect(await authorize({ ...destination, chatId: 'channel:123' })).toBe(true);
+    expect(await authorize({ ...destination, chatId: 'channel:456' })).toBe(false);
     expect(await authorize({ ...destination, topicId: '1' })).toBe(false);
     expect(await authorize({ ...destination, messageId: '42' })).toBe(false);
     expect(await authorize({ ...destination, accountId: '1' })).toBe(false);
