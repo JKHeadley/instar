@@ -1,0 +1,17 @@
+# Windows remote desktop: one relay process instead of one per request
+
+## What Changed
+
+An Instar agent in WSL reaches the Windows desktop companion through a small PowerShell relay when WSL cannot open a direct connection. It used to start a new powershell.exe for every request (each click, key, cursor read and screen picture), and starting PowerShell from WSL takes about a second. The relay now stays running and handles requests one line at a time, with a separate relay for screen pictures so a capture never delays input. An installed relay script from before this change has no relay mode; the agent detects that and keeps using one process per request until the next companion install.
+
+## What to Tell Your User
+
+Controlling a Windows machine is much more responsive: clicks and typing reach it right away instead of about a second each, the picture refreshes faster, and double clicks work.
+
+## Summary of New Capabilities
+
+Low-latency input and capture on Windows hosts reached from WSL.
+
+## Evidence
+
+Unit tests in tests/unit/windows-desktop-local-transport.test.ts (one process per lane across many requests, fallback for an older script, restart after the relay dies, abort). Live on Mama PC: one process per request took 331-426 ms each (5 runs); the relay answered 19 follow-up requests in 2-17 ms (median about 5 ms) after a 527 ms first request. Before the change a mouse hook logged 1.2 to 1.5 seconds between consecutive input commands.

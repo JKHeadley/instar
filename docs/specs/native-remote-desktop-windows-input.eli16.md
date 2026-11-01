@@ -11,3 +11,13 @@ What does not change: who may connect, the PIN, the ten-minute limit, the red "r
 ## Correction and a third fix: scaled displays
 
 The "frozen picture, screen off" explanation above was wrong for Mama PC; its lid was open the whole time. The real problem was display scaling. Mama's screen is 1920x1200 but set to show everything at 150%. The helper never told Windows it understands scaling, so Windows told it the screen was only 1280x800. The helper then photographed only that top-left part of the screen, so the viewer looked zoomed in and cut off, and the part showing could look frozen. Mouse input, though, was spread over the whole real screen, so a click landed below and to the right of where the cursor was drawn. The helper now tells Windows it understands scaling as soon as it starts. Pictures, cursor position and clicks then all use the same real pixels. This was tested live on Mama PC: the full screen with its taskbar showed, and one click each opened a terminal tab, closed it, and opened the Start menu.
+
+## Faster: one relay instead of one per click
+
+On Mama, the Instar agent runs inside Linux (WSL), and the helper that touches the screen runs in Windows. When the agent can't talk to the helper directly, it uses a small PowerShell program to carry each request across. It used to start a fresh PowerShell for every single request: every click, key and screen picture. Starting PowerShell that way takes about a second, so each click waited that long, and two clicks could never arrive close enough together to count as a double click. Now one PowerShell stays running and carries all the requests, with a second one just for screen pictures so they never hold up a click. A machine that still has the older copy of that small program keeps working the old way until its helper is reinstalled.
+
+## Faster: one relay instead of one per click
+
+On Mama, the Instar agent runs inside Linux (WSL), and the helper that touches the screen runs in Windows. When the agent can't talk to the helper directly, it uses a small PowerShell program to carry each request across. It used to start a fresh PowerShell for every single request: every click, key and screen picture. Starting PowerShell that way takes about a second, so each click waited that long, and two clicks could never arrive close enough together to count as a double click. Now one PowerShell stays running and carries all the requests, with a second one just for screen pictures so they never hold up a click. A machine that still has the older copy of that small program keeps working the old way until its helper is reinstalled.
+
+If a request fails, the relay keeps later requests in order and still reports that request's failure to whoever sent it; nothing is silently dropped.
