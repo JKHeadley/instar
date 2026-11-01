@@ -404,9 +404,11 @@ export class MobileOwnNames {
       try {
         if (this.deps.active && !this.deps.active()) return;
         await this.ensureServe(); await this.tick();
-      } catch (err) { this.deps.reportDegradation?.('MobileRoutes.probe', err); }
+      } catch (err) { this.deps.reportDegradation?.('MobileRoutes.probe', err); } // @silent-fallback-ok — not silent: reported through the injected DegradationReporter (AgentServer wiring); the next tick retries
     })();
-    this.timer = setInterval(() => { void this.tick().catch((err) => this.deps.reportDegradation?.('MobileRoutes.probe', err)); }, TICK_MS);
+    this.timer = setInterval(() => {
+      void this.tick().catch((err) => this.deps.reportDegradation?.('MobileRoutes.probe', err)); // @silent-fallback-ok — reported through the injected DegradationReporter; the interval simply runs again
+    }, TICK_MS);
     this.timer.unref?.();
   }
 

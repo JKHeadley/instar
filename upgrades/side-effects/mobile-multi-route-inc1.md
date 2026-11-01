@@ -108,3 +108,9 @@ The change implements increment 1 as specified. The second-pass review raised fo
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. The probe loop is not a self-action controller in the `unbounded-self-action` sense (it issues read-only pings, no restart/swap/spawn/kill/notify); its frequency is bounded by the fixed brakes above.
+
+---
+
+## Follow-up: silent-fallback ratchet
+
+Local verify flagged one catch over the `tests/unit/no-silent-fallbacks.test.ts` baseline (494). The two catches in `MobileOwnNames.start()` (the boot step and the interval tick) already report through the injected DegradationReporter (`deps.reportDegradation`, wired to `DegradationReporter` in AgentServer), but the heuristic only recognises the literal `DegradationReporter`. Both now carry `@silent-fallback-ok` naming that reporting path. Behaviour is unchanged; the baseline is unchanged (494).
