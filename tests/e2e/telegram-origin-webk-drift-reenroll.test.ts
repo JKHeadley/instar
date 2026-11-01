@@ -88,7 +88,12 @@ describe('Telegram Web K drift through the production boot', () => {
     expect(await authorize({ ...destination, topicId: '1' })).toBe(false);
     expect(await authorize({ ...destination, messageId: '42' })).toBe(false);
     expect(await authorize({ ...destination, accountId: '1' })).toBe(false);
+  });
+
+  it('an absent allowance does not authorize an external browser destination', { timeout: 60_000 }, async () => {
     const absent = await fixture();
+    const destination = { version: 1 as const, transport: 'telegram-web' as const, accountId: '7812716706',
+      chatId: 'channel:4290919884', topicId: null, messageId: null, inlineMessageId: null, scheduledMessageId: null };
     expect(await absent.boot.runtime.browsers.get('operator-telegram')!.executor.options.authorize(destination)).toBe(false);
   });
 
