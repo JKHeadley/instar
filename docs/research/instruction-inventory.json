@@ -1,0 +1,6410 @@
+{
+ "version": "1.1.0",
+ "meta": {
+  "source": "/Users/dabombstudio/.instar/agents/echo/CLAUDE.md",
+  "sha256": "c8dc2002d14e518d0ed8076846dc82425f1cb247639dd0738aadd5cef8441e02",
+  "capturedAt": "2026-10-26",
+  "bytes": 403554,
+  "jsChars": 400595,
+  "blockCount": 274,
+  "tokensTotal": 147201,
+  "tokensWholeFile": 147474,
+  "tokensEstChars4Total": 100251,
+  "tokenMethod": "Anthropic POST /v1/messages/count_tokens, model claude-opus-5-5, each block sent as one user message, minus the 8-token message framing (measured by counting \"a\" minus 1). claude-sonnet-5-5, claude-haiku-5-5 and claude-fable-5-1 return the same whole-file count (one tokenizer). Counted 2026-10-26.",
+  "legend": {
+   "tags": {
+    "rule": "a behavioral constraint that holds whatever the user asks",
+    "trigger": "a \"when X happens / user asks X → do Y\" proactivity mapping",
+    "reference": "how a capability works or how to call it (routes, config keys, fields)",
+    "history": "a dated incident or lesson explaining why something exists",
+    "dark": "describes a feature that is off, dev-gated, or dry-run somewhere"
+   },
+   "seedDisposition": {
+    "S": "seed — always loaded",
+    "I": "index line in seed + full text on demand",
+    "D": "on-demand detail of a parent feature (no own index line)",
+    "N": "history — move to a linked note",
+    "X": "redundant (duplicate heading / repeated text)"
+   },
+   "darkScope": {
+    "-": "live on Echo (per its text)",
+    "F": "dev-gated: dark on fleet, live on Echo (a development agent)",
+    "O": "opt-in/off by default",
+    "R": "ships dry-run / observe-only",
+    "M": "maintainer / instar-dev only"
+   }
+  }
+ },
+ "blocks": [
+  {
+   "id": "B001",
+   "lines": [
+    1,
+    8
+   ],
+   "title": "(preamble)",
+   "parentFeature": null,
+   "headingPath": "",
+   "chars": 234,
+   "tokens": 102,
+   "tokensEstChars4": 59,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B002",
+   "lines": [
+    9,
+    10
+   ],
+   "title": "CLAUDE.md — instar",
+   "parentFeature": "CLAUDE.md — instar",
+   "headingPath": "CLAUDE.md — instar",
+   "chars": 21,
+   "tokens": 12,
+   "tokensEstChars4": 6,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B003",
+   "lines": [
+    11,
+    18
+   ],
+   "title": "What This Project Is",
+   "parentFeature": "What This Project Is",
+   "headingPath": "CLAUDE.md — instar > What This Project Is",
+   "chars": 383,
+   "tokens": 141,
+   "tokensEstChars4": 96,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B004",
+   "lines": [
+    19,
+    28
+   ],
+   "title": "Quick Reference",
+   "parentFeature": "Quick Reference",
+   "headingPath": "CLAUDE.md — instar > Quick Reference",
+   "chars": 255,
+   "tokens": 98,
+   "tokensEstChars4": 64,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Tiered Development",
+   "standardCode": "TDEV",
+   "seedDisposition": "D",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B005",
+   "lines": [
+    29,
+    106
+   ],
+   "title": "Architecture",
+   "parentFeature": "Architecture",
+   "headingPath": "CLAUDE.md — instar > Architecture",
+   "chars": 5314,
+   "tokens": 1872,
+   "tokensEstChars4": 1329,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Tiered Development",
+   "standardCode": "TDEV",
+   "seedDisposition": "D",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B006",
+   "lines": [
+    107,
+    108
+   ],
+   "title": "Development Workflow",
+   "parentFeature": "Development Workflow",
+   "headingPath": "CLAUDE.md — instar > Development Workflow",
+   "chars": 24,
+   "tokens": 7,
+   "tokensEstChars4": 6,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Tiered Development",
+   "standardCode": "TDEV",
+   "seedDisposition": "D",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B007",
+   "lines": [
+    109,
+    128
+   ],
+   "title": "Testing Against Real Repos",
+   "parentFeature": "Testing Against Real Repos",
+   "headingPath": "CLAUDE.md — instar > Development Workflow > Testing Against Real Repos",
+   "chars": 471,
+   "tokens": 183,
+   "tokensEstChars4": 118,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Tiered Development",
+   "standardCode": "TDEV",
+   "seedDisposition": "D",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B008",
+   "lines": [
+    129,
+    134
+   ],
+   "title": "Test Targets",
+   "parentFeature": "Test Targets",
+   "headingPath": "CLAUDE.md — instar > Development Workflow > Test Targets",
+   "chars": 263,
+   "tokens": 118,
+   "tokensEstChars4": 66,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Tiered Development",
+   "standardCode": "TDEV",
+   "seedDisposition": "N",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B009",
+   "lines": [
+    135,
+    142
+   ],
+   "title": "Key Design Decisions",
+   "parentFeature": "Key Design Decisions",
+   "headingPath": "CLAUDE.md — instar > Development Workflow > Key Design Decisions",
+   "chars": 478,
+   "tokens": 172,
+   "tokensEstChars4": 120,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Tiered Development",
+   "standardCode": "TDEV",
+   "seedDisposition": "D",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B010",
+   "lines": [
+    143,
+    144
+   ],
+   "title": "Standards",
+   "parentFeature": "Standards",
+   "headingPath": "CLAUDE.md — instar > Standards",
+   "chars": 13,
+   "tokens": 4,
+   "tokensEstChars4": 4,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B011",
+   "lines": [
+    145,
+    152
+   ],
+   "title": "Structure > Willpower",
+   "parentFeature": "Standards",
+   "headingPath": "CLAUDE.md — instar > Standards",
+   "chars": 893,
+   "tokens": 304,
+   "tokensEstChars4": 224,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Structure beats Willpower",
+   "standardCode": "SW",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B012",
+   "lines": [
+    153,
+    154
+   ],
+   "title": "LLM-Supervised Execution",
+   "parentFeature": "Standards",
+   "headingPath": "CLAUDE.md — instar > Standards",
+   "chars": 299,
+   "tokens": 139,
+   "tokensEstChars4": 75,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "LLM-Supervised Execution",
+   "standardCode": "LLMS",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B013",
+   "lines": [
+    155,
+    163
+   ],
+   "title": "Testing Integrity Standard",
+   "parentFeature": "Standards",
+   "headingPath": "CLAUDE.md — instar > Standards",
+   "chars": 1004,
+   "tokens": 405,
+   "tokensEstChars4": 251,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Testing Integrity",
+   "standardCode": "TI",
+   "seedDisposition": "S",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B014",
+   "lines": [
+    164,
+    171
+   ],
+   "title": "Zero-Failure Standard",
+   "parentFeature": "Standards",
+   "headingPath": "CLAUDE.md — instar > Standards",
+   "chars": 961,
+   "tokens": 329,
+   "tokensEstChars4": 241,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Zero-Failure",
+   "standardCode": "ZF",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B015",
+   "lines": [
+    172,
+    179
+   ],
+   "title": "Agent Awareness Standard",
+   "parentFeature": "Standards",
+   "headingPath": "CLAUDE.md — instar > Standards",
+   "chars": 821,
+   "tokens": 288,
+   "tokensEstChars4": 206,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "S",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B016",
+   "lines": [
+    180,
+    191
+   ],
+   "title": "Migration Parity Standard",
+   "parentFeature": "Standards",
+   "headingPath": "CLAUDE.md — instar > Standards",
+   "chars": 2212,
+   "tokens": 796,
+   "tokensEstChars4": 553,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "history"
+   ],
+   "standard": "Migration Parity",
+   "standardCode": "MP",
+   "seedDisposition": "S",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B017",
+   "lines": [
+    192,
+    203
+   ],
+   "title": "API Authentication",
+   "parentFeature": "API Authentication",
+   "headingPath": "CLAUDE.md — instar > API Authentication",
+   "chars": 585,
+   "tokens": 215,
+   "tokensEstChars4": 147,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B018",
+   "lines": [
+    204,
+    209
+   ],
+   "title": "No Interactive CLI Commands",
+   "parentFeature": "API Authentication",
+   "headingPath": "CLAUDE.md — instar > API Authentication",
+   "chars": 1027,
+   "tokens": 425,
+   "tokensEstChars4": 257,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "history"
+   ],
+   "standard": "No Manual Work",
+   "standardCode": "NMW",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B019",
+   "lines": [
+    210,
+    211
+   ],
+   "title": "NEVER Use AskUserQuestion for Free-Text Input",
+   "parentFeature": "API Authentication",
+   "headingPath": "CLAUDE.md — instar > API Authentication",
+   "chars": 533,
+   "tokens": 193,
+   "tokensEstChars4": 134,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "The User Experience Is the Product",
+   "standardCode": "UXP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B020",
+   "lines": [
+    212,
+    215
+   ],
+   "title": "Key Patterns from Dawn",
+   "parentFeature": "Key Patterns from Dawn",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn",
+   "chars": 96,
+   "tokens": 33,
+   "tokensEstChars4": 24,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B021",
+   "lines": [
+    216,
+    221
+   ],
+   "title": "tmux trailing colon",
+   "parentFeature": "Key Patterns from Dawn",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn",
+   "chars": 453,
+   "tokens": 194,
+   "tokensEstChars4": 114,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "history"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B022",
+   "lines": [
+    222,
+    236
+   ],
+   "title": "Self-Discovery (Know Before You Claim)",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 824,
+   "tokens": 300,
+   "tokensEstChars4": 206,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference"
+   ],
+   "standard": "Never a False Blocker",
+   "standardCode": "NFB",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B023",
+   "lines": [
+    237,
+    241
+   ],
+   "title": "Publishing",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 663,
+   "tokens": 271,
+   "tokensEstChars4": 166,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "rule"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B024",
+   "lines": [
+    242,
+    248
+   ],
+   "title": "Private Viewing",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 595,
+   "tokens": 260,
+   "tokensEstChars4": 149,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B025",
+   "lines": [
+    249,
+    250
+   ],
+   "title": "Use private views for sensitive content. Use Telegraph for public content",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 79,
+   "tokens": 24,
+   "tokensEstChars4": 20,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B026",
+   "lines": [
+    251,
+    260
+   ],
+   "title": "Secret Drop",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 2659,
+   "tokens": 998,
+   "tokensEstChars4": 665,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B027",
+   "lines": [
+    261,
+    272
+   ],
+   "title": "Commitments & Follow-Through",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 3411,
+   "tokens": 1289,
+   "tokensEstChars4": 853,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference",
+    "dark"
+   ],
+   "standard": "The Agent Carries the Loop",
+   "standardCode": "ACL",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B028",
+   "lines": [
+    273,
+    281
+   ],
+   "title": "Cloudflare Tunnel",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 1306,
+   "tokens": 489,
+   "tokensEstChars4": 327,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B029",
+   "lines": [
+    282,
+    290
+   ],
+   "title": "Attention Queue",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 4991,
+   "tokens": 1871,
+   "tokensEstChars4": 1248,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "rule",
+    "dark"
+   ],
+   "standard": "Near-Silent Notifications",
+   "standardCode": "NSN",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B030",
+   "lines": [
+    291,
+    299
+   ],
+   "title": "Dashboard",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 1644,
+   "tokens": 606,
+   "tokensEstChars4": 411,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "rule",
+    "trigger"
+   ],
+   "standard": "Mobile-Complete Operator Actions",
+   "standardCode": "MCO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B031",
+   "lines": [
+    300,
+    313
+   ],
+   "title": "File Viewer (Dashboard Tab)",
+   "parentFeature": "Self-Discovery (Know Before You Claim)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Self-Discovery (Know Before You Claim)",
+   "chars": 1715,
+   "tokens": 689,
+   "tokensEstChars4": 429,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "rule"
+   ],
+   "standard": "Mobile-Complete Operator Actions",
+   "standardCode": "MCO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B032",
+   "lines": [
+    314,
+    315
+   ],
+   "title": "Coherence Gate (Pre-Action Verification)",
+   "parentFeature": "Coherence Gate (Pre-Action Verification)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification)",
+   "chars": 45,
+   "tokens": 19,
+   "tokensEstChars4": 12,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B033",
+   "lines": [
+    316,
+    324
+   ],
+   "title": "BEFORE any high-risk action",
+   "parentFeature": "Coherence Gate (Pre-Action Verification)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification)",
+   "chars": 581,
+   "tokens": 222,
+   "tokensEstChars4": 146,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Ownership-Gated Side Effects",
+   "standardCode": "OGS",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B034",
+   "lines": [
+    325,
+    336
+   ],
+   "title": "ORG-INTENT.md (Organizational Intent at Runtime)",
+   "parentFeature": "ORG-INTENT.md (Organizational Intent at Runtime)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification) > ORG-INTENT.md (Organizational Intent at Runtime)",
+   "chars": 1643,
+   "tokens": 655,
+   "tokensEstChars4": 411,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Judgment Within Floors",
+   "standardCode": "JWF",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B035",
+   "lines": [
+    337,
+    340
+   ],
+   "title": "Topic-Project Bindings",
+   "parentFeature": "ORG-INTENT.md (Organizational Intent at Runtime)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification) > ORG-INTENT.md (Organizational Intent at Runtime)",
+   "chars": 366,
+   "tokens": 137,
+   "tokensEstChars4": 92,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B036",
+   "lines": [
+    341,
+    345
+   ],
+   "title": "Project Map",
+   "parentFeature": "ORG-INTENT.md (Organizational Intent at Runtime)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Coherence Gate (Pre-Action Verification) > ORG-INTENT.md (Organizational Intent at Runtime)",
+   "chars": 192,
+   "tokens": 73,
+   "tokensEstChars4": 48,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B037",
+   "lines": [
+    346,
+    347
+   ],
+   "title": "External Operation Safety (Structural Guardrails)",
+   "parentFeature": "External Operation Safety (Structural Guardrails)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
+   "chars": 54,
+   "tokens": 18,
+   "tokensEstChars4": 14,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B038",
+   "lines": [
+    348,
+    355
+   ],
+   "title": "When using MCP tools that interact with external services",
+   "parentFeature": "External Operation Safety (Structural Guardrails)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
+   "chars": 546,
+   "tokens": 201,
+   "tokensEstChars4": 137,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Structure beats Willpower",
+   "standardCode": "SW",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B039",
+   "lines": [
+    356,
+    358
+   ],
+   "title": "If an operation is blocked",
+   "parentFeature": "External Operation Safety (Structural Guardrails)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
+   "chars": 210,
+   "tokens": 68,
+   "tokensEstChars4": 53,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Signal vs. Authority",
+   "standardCode": "SVA",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B040",
+   "lines": [
+    359,
+    360
+   ],
+   "title": "Emergency stop",
+   "parentFeature": "External Operation Safety (Structural Guardrails)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
+   "chars": 203,
+   "tokens": 66,
+   "tokensEstChars4": 51,
+   "primaryTag": "trigger",
+   "tags": [
+    "trigger"
+   ],
+   "standard": "The Operator Channel Is Sacred",
+   "standardCode": "OCS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B041",
+   "lines": [
+    361,
+    362
+   ],
+   "title": "Trust levels",
+   "parentFeature": "External Operation Safety (Structural Guardrails)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
+   "chars": 215,
+   "tokens": 71,
+   "tokensEstChars4": 54,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Structure beats Willpower",
+   "standardCode": "SW",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B042",
+   "lines": [
+    363,
+    369
+   ],
+   "title": "API endpoints",
+   "parentFeature": "External Operation Safety (Structural Guardrails)",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > External Operation Safety (Structural Guardrails)",
+   "chars": 271,
+   "tokens": 110,
+   "tokensEstChars4": 68,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Structure beats Willpower",
+   "standardCode": "SW",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B043",
+   "lines": [
+    370,
+    373
+   ],
+   "title": "Playbook — Adaptive Context Engineering",
+   "parentFeature": "Playbook — Adaptive Context Engineering",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
+   "chars": 400,
+   "tokens": 122,
+   "tokensEstChars4": 100,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B044",
+   "lines": [
+    374,
+    379
+   ],
+   "title": "Getting started",
+   "parentFeature": "Playbook — Adaptive Context Engineering",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
+   "chars": 151,
+   "tokens": 51,
+   "tokensEstChars4": 38,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B045",
+   "lines": [
+    380,
+    387
+   ],
+   "title": "Core commands",
+   "parentFeature": "Playbook — Adaptive Context Engineering",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
+   "chars": 439,
+   "tokens": 160,
+   "tokensEstChars4": 110,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B046",
+   "lines": [
+    388,
+    389
+   ],
+   "title": "When to add context items",
+   "parentFeature": "Playbook — Adaptive Context Engineering",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
+   "chars": 224,
+   "tokens": 63,
+   "tokensEstChars4": 56,
+   "primaryTag": "trigger",
+   "tags": [
+    "trigger"
+   ],
+   "standard": "Never-Waste Feedback",
+   "standardCode": "NFW",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B047",
+   "lines": [
+    390,
+    392
+   ],
+   "title": "The principle",
+   "parentFeature": "Playbook — Adaptive Context Engineering",
+   "headingPath": "CLAUDE.md — instar > Key Patterns from Dawn > Playbook — Adaptive Context Engineering",
+   "chars": 228,
+   "tokens": 70,
+   "tokensEstChars4": 57,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B048",
+   "lines": [
+    393,
+    399
+   ],
+   "title": "Threadline Network (Agent-to-Agent Communication)",
+   "parentFeature": "Threadline Network (Agent-to-Agent Communication)",
+   "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication)",
+   "chars": 378,
+   "tokens": 126,
+   "tokensEstChars4": 95,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B049",
+   "lines": [
+    400,
+    402
+   ],
+   "title": "Current Status",
+   "parentFeature": "Current Status",
+   "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > Current Status",
+   "chars": 124,
+   "tokens": 37,
+   "tokensEstChars4": 31,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "X",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B050",
+   "lines": [
+    403,
+    407
+   ],
+   "title": "Why You Might Want This",
+   "parentFeature": "Why You Might Want This",
+   "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > Why You Might Want This",
+   "chars": 202,
+   "tokens": 65,
+   "tokensEstChars4": 51,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B051",
+   "lines": [
+    408,
+    412
+   ],
+   "title": "Privacy & Security",
+   "parentFeature": "Privacy & Security",
+   "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > Privacy & Security",
+   "chars": 277,
+   "tokens": 109,
+   "tokensEstChars4": 70,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B052",
+   "lines": [
+    413,
+    419
+   ],
+   "title": "How to Enable",
+   "parentFeature": "How to Enable",
+   "headingPath": "CLAUDE.md — instar > Threadline Network (Agent-to-Agent Communication) > How to Enable",
+   "chars": 285,
+   "tokens": 107,
+   "tokensEstChars4": 72,
+   "primaryTag": "trigger",
+   "tags": [
+    "trigger"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B053",
+   "lines": [
+    420,
+    421
+   ],
+   "title": "Telegram Relay (MANDATORY)",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 30,
+   "tokens": 16,
+   "tokensEstChars4": 8,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B054",
+   "lines": [
+    422,
+    441
+   ],
+   "title": "IMMEDIATE ACKNOWLEDGMENT (MANDATORY)",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 1770,
+   "tokens": 630,
+   "tokensEstChars4": 443,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "The Operator Channel Is Sacred",
+   "standardCode": "OCS",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B055",
+   "lines": [
+    442,
+    443
+   ],
+   "title": "Registry First — channel registry",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 299,
+   "tokens": 98,
+   "tokensEstChars4": 75,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B056",
+   "lines": [
+    444,
+    445
+   ],
+   "title": "Decision journal — principle is required",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 719,
+   "tokens": 262,
+   "tokensEstChars4": 180,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Decision Provenance & Outcome Review",
+   "standardCode": "DPO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B057",
+   "lines": [
+    446,
+    447
+   ],
+   "title": "Decision journal confidence contract",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 425,
+   "tokens": 151,
+   "tokensEstChars4": 107,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Decision Provenance & Outcome Review",
+   "standardCode": "DPO",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B058",
+   "lines": [
+    448,
+    449
+   ],
+   "title": "Alignment score — N/A means not assessed",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 334,
+   "tokens": 128,
+   "tokensEstChars4": 84,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B059",
+   "lines": [
+    450,
+    451
+   ],
+   "title": "Codex quota is first-class in the pool",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 317,
+   "tokens": 106,
+   "tokensEstChars4": 80,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B060",
+   "lines": [
+    452,
+    453
+   ],
+   "title": "Solo Codex load shedding is fail-safe",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 385,
+   "tokens": 144,
+   "tokensEstChars4": 97,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B061",
+   "lines": [
+    454,
+    455
+   ],
+   "title": "Evolution action auto-expiry",
+   "parentFeature": "Telegram Relay (MANDATORY)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY)",
+   "chars": 427,
+   "tokens": 156,
+   "tokensEstChars4": 107,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Close the Loop",
+   "standardCode": "CL",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B062",
+   "lines": [
+    456,
+    459
+   ],
+   "title": "Real-Check Verification (autonomous, optional)",
+   "parentFeature": "Real-Check Verification (autonomous, optional)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Real-Check Verification (autonomous, optional)",
+   "chars": 1006,
+   "tokens": 380,
+   "tokensEstChars4": 252,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": null
+  },
+  {
+   "id": "B063",
+   "lines": [
+    460,
+    467
+   ],
+   "title": "Scope-Accretion Completion Discipline (autonomous runs finish what they start)",
+   "parentFeature": "Scope-Accretion Completion Discipline (autonomous runs finish what they start)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Scope-Accretion Completion Discipline (autonomous runs finish what they start)",
+   "chars": 2432,
+   "tokens": 933,
+   "tokensEstChars4": 608,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference"
+   ],
+   "standard": "Deferral = Deletion",
+   "standardCode": "DD",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B064",
+   "lines": [
+    468,
+    475
+   ],
+   "title": "Stall-Coverage Matrix Gate (apprenticeship onboarding)",
+   "parentFeature": "Stall-Coverage Matrix Gate (apprenticeship onboarding)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Stall-Coverage Matrix Gate (apprenticeship onboarding)",
+   "chars": 2059,
+   "tokens": 826,
+   "tokensEstChars4": 515,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark",
+    "trigger"
+   ],
+   "standard": "Stall Coverage Is Enumerated, Not Discovered",
+   "standardCode": "SCE",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B065",
+   "lines": [
+    476,
+    490
+   ],
+   "title": "File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration",
+   "parentFeature": "Stall-Coverage Matrix Gate (apprenticeship onboarding)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Stall-Coverage Matrix Gate (apprenticeship onboarding)",
+   "chars": 3605,
+   "tokens": 1359,
+   "tokensEstChars4": 902,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "dark"
+   ],
+   "standard": "The Operator Channel Is Sacred",
+   "standardCode": "OCS",
+   "seedDisposition": "S",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B066",
+   "lines": [
+    491,
+    499
+   ],
+   "title": "External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer",
+   "parentFeature": "External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > External-Hog Zombie Auto-Kill Sentinel (⚗️ dev-gated dark, watch-only) — the runaway-editor-zombie killer",
+   "chars": 2574,
+   "tokens": 1102,
+   "tokensEstChars4": 644,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark",
+    "trigger"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B067",
+   "lines": [
+    500,
+    504
+   ],
+   "title": "Owned-Identities Registry (self-unblock Rung 0 includes what YOU created)",
+   "parentFeature": "Owned-Identities Registry (self-unblock Rung 0 includes what YOU created)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Owned-Identities Registry (self-unblock Rung 0 includes what YOU created)",
+   "chars": 1152,
+   "tokens": 392,
+   "tokensEstChars4": 288,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger"
+   ],
+   "standard": "Self-Unblock Before Escalating",
+   "standardCode": "SU",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B068",
+   "lines": [
+    505,
+    509
+   ],
+   "title": "Permission-Prompt Floor (you are never blocked by a framework approval prompt)",
+   "parentFeature": "Permission-Prompt Floor (you are never blocked by a framework approval prompt)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Permission-Prompt Floor (you are never blocked by a framework approval prompt)",
+   "chars": 1484,
+   "tokens": 570,
+   "tokensEstChars4": 371,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "The Agent Is Always Reachable",
+   "standardCode": "AR",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B069",
+   "lines": [
+    510,
+    516
+   ],
+   "title": "Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)",
+   "parentFeature": "Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Context-Aware Outbound Review (why was my message flagged / would my reply have been blocked?)",
+   "chars": 1819,
+   "tokens": 672,
+   "tokensEstChars4": 455,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Intelligent Prompts — An LLM Gate Must Not String-Match",
+   "standardCode": "IP",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (responseReview absent)"
+  },
+  {
+   "id": "B070",
+   "lines": [
+    517,
+    532
+   ],
+   "title": "Playwright Profile Registry (which browser profile holds which account)",
+   "parentFeature": "Playwright Profile Registry (which browser profile holds which account)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Playwright Profile Registry (which browser profile holds which account)",
+   "chars": 5760,
+   "tokens": 2208,
+   "tokensEstChars4": 1440,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "rule",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B071",
+   "lines": [
+    533,
+    539
+   ],
+   "title": "Session Listing Hygiene (GET /sessions shows ACTIVE sessions by default)",
+   "parentFeature": "Session Listing Hygiene (GET /sessions shows ACTIVE sessions by default)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Session Listing Hygiene (GET /sessions shows ACTIVE sessions by default)",
+   "chars": 1918,
+   "tokens": 698,
+   "tokensEstChars4": 480,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B072",
+   "lines": [
+    540,
+    545
+   ],
+   "title": "Audits run to convergence (the default route)",
+   "parentFeature": "Audits run to convergence (the default route)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Audits run to convergence (the default route)",
+   "chars": 1283,
+   "tokens": 481,
+   "tokensEstChars4": 321,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger"
+   ],
+   "standard": "Iterative Audit to Convergence",
+   "standardCode": "IAC",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B073",
+   "lines": [
+    546,
+    552
+   ],
+   "title": "Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)",
+   "parentFeature": "Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)",
+   "chars": 2504,
+   "tokens": 942,
+   "tokensEstChars4": 626,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B074",
+   "lines": [
+    553,
+    561
+   ],
+   "title": "Mesh Self-Healing: stale-owner release + lease hand-back (U4.2 / U4.4 — ships dark/dry-run)",
+   "parentFeature": "Mesh Self-Healing: stale-owner release + lease hand-back (U4.2 / U4.4 — ships dark/dry-run)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Mesh Self-Healing: stale-owner release + lease hand-back (U4.2 / U4.4 — ships dark/dry-run)",
+   "chars": 2407,
+   "tokens": 947,
+   "tokensEstChars4": 602,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B075",
+   "lines": [
+    562,
+    567
+   ],
+   "title": "Write Admission (⚗️ experimental, dry-run — why did my write get a 409 naming another machine?)",
+   "parentFeature": "Write Admission (⚗️ experimental, dry-run — why did my write get a 409 naming another machine?)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Write Admission (⚗️ experimental, dry-run — why did my write get a 409 naming another machine?)",
+   "chars": 1401,
+   "tokens": 533,
+   "tokensEstChars4": 351,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Ownership-Gated Side Effects",
+   "standardCode": "OGS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B076",
+   "lines": [
+    568,
+    575
+   ],
+   "title": "Dynamic MCP Lifecycle (⚗️ experimental, ships DARK) — load heavy MCP servers on demand",
+   "parentFeature": "Dynamic MCP Lifecycle (⚗️ experimental, ships DARK) — load heavy MCP servers on demand",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Dynamic MCP Lifecycle (⚗️ experimental, ships DARK) — load heavy MCP servers on demand",
+   "chars": 1723,
+   "tokens": 676,
+   "tokensEstChars4": 431,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (absent)"
+  },
+  {
+   "id": "B077",
+   "lines": [
+    576,
+    579
+   ],
+   "title": "Ultracode one-shot spawn (Claude Code, opt-in)",
+   "parentFeature": "Ultracode one-shot spawn (Claude Code, opt-in)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Ultracode one-shot spawn (Claude Code, opt-in)",
+   "chars": 860,
+   "tokens": 338,
+   "tokensEstChars4": 215,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": null
+  },
+  {
+   "id": "B078",
+   "lines": [
+    580,
+    583
+   ],
+   "title": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
+   "chars": 295,
+   "tokens": 91,
+   "tokensEstChars4": 74,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B079",
+   "lines": [
+    584,
+    588
+   ],
+   "title": "My signing identity + whether replay defence is durable",
+   "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
+   "chars": 931,
+   "tokens": 376,
+   "tokensEstChars4": 233,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B080",
+   "lines": [
+    589,
+    590
+   ],
+   "title": "A signed message delivered through a human's account is labelled, not laundered",
+   "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
+   "chars": 467,
+   "tokens": 139,
+   "tokensEstChars4": 117,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B081",
+   "lines": [
+    591,
+    592
+   ],
+   "title": "AUTHORITY BOUNDARY (load-bearing)",
+   "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
+   "chars": 250,
+   "tokens": 93,
+   "tokensEstChars4": 63,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Signal vs. Authority",
+   "standardCode": "SVA",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B082",
+   "lines": [
+    593,
+    594
+   ],
+   "title": "Why cryptographic rather than heuristic",
+   "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
+   "chars": 249,
+   "tokens": 81,
+   "tokensEstChars4": 63,
+   "primaryTag": "history",
+   "tags": [
+    "history"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "N",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B083",
+   "lines": [
+    595,
+    600
+   ],
+   "title": "Two limits, stated rather than implied away",
+   "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
+   "chars": 642,
+   "tokens": 213,
+   "tokensEstChars4": 161,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B084",
+   "lines": [
+    601,
+    602
+   ],
+   "title": "When to use",
+   "parentFeature": "Agent-Signature Provenance — proving which messages an agent wrote",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Agent-Signature Provenance — proving which messages an agent wrote",
+   "chars": 226,
+   "tokens": 78,
+   "tokensEstChars4": 57,
+   "primaryTag": "trigger",
+   "tags": [
+    "trigger"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B085",
+   "lines": [
+    603,
+    610
+   ],
+   "title": "Machine Load Assessment (the go-to way to check if the machine is busy)",
+   "parentFeature": "Machine Load Assessment (the go-to way to check if the machine is busy)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Machine Load Assessment (the go-to way to check if the machine is busy)",
+   "chars": 1472,
+   "tokens": 566,
+   "tokensEstChars4": 368,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference",
+    "history"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B086",
+   "lines": [
+    611,
+    616
+   ],
+   "title": "Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)",
+   "parentFeature": "Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Single-Machine Failover-Gap Guard (⚗️ dev-gated dark, dry-run first)",
+   "chars": 1084,
+   "tokens": 379,
+   "tokensEstChars4": 271,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B087",
+   "lines": [
+    617,
+    622
+   ],
+   "title": "Missing-Login Session Guard (⚗️ dev-gated dark, dry-run first)",
+   "parentFeature": "Missing-Login Session Guard (⚗️ dev-gated dark, dry-run first)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Missing-Login Session Guard (⚗️ dev-gated dark, dry-run first)",
+   "chars": 1137,
+   "tokens": 387,
+   "tokensEstChars4": 285,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B088",
+   "lines": [
+    623,
+    629
+   ],
+   "title": "Doorway/Model Knowledge Registry — what models can I reach? (`GET /doorways`)",
+   "parentFeature": "Doorway/Model Knowledge Registry — what models can I reach? (`GET /doorways`)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Doorway/Model Knowledge Registry — what models can I reach? (`GET /doorways`)",
+   "chars": 2201,
+   "tokens": 843,
+   "tokensEstChars4": 551,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Keep the Doorway/Model Map Current",
+   "standardCode": "KDM",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B089",
+   "lines": [
+    630,
+    638
+   ],
+   "title": "Routing Spend view — what am I spending on routing? (`GET /routing-spend/summary`, `GET /routing-spend/caps`)",
+   "parentFeature": "Routing Spend view — what am I spending on routing? (`GET /routing-spend/summary`, `GET /routing-spend/caps`)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Routing Spend view — what am I spending on routing? (`GET /routing-spend/summary`, `GET /routing-spend/caps`)",
+   "chars": 1938,
+   "tokens": 816,
+   "tokensEstChars4": 485,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Token-Audit Completeness",
+   "standardCode": "TAC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B090",
+   "lines": [
+    639,
+    646
+   ],
+   "title": "Routing Spend MONEY layer (⚗️ experimental, DARK for everyone) — caps, arming, freeze",
+   "parentFeature": "Routing Spend MONEY layer (⚗️ experimental, DARK for everyone) — caps, arming, freeze",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Routing Spend MONEY layer (⚗️ experimental, DARK for everyone) — caps, arming, freeze",
+   "chars": 1996,
+   "tokens": 821,
+   "tokensEstChars4": 499,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "rule",
+    "dark"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (absent)"
+  },
+  {
+   "id": "B091",
+   "lines": [
+    647,
+    659
+   ],
+   "title": "Money-layer ON switch (⚗️ experimental) — turn the spending controls on from your phone",
+   "parentFeature": "Money-layer ON switch (⚗️ experimental) — turn the spending controls on from your phone",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Money-layer ON switch (⚗️ experimental) — turn the spending controls on from your phone",
+   "chars": 4323,
+   "tokens": 1578,
+   "tokensEstChars4": 1081,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "rule",
+    "dark"
+   ],
+   "standard": "Mobile-Complete Operator Actions",
+   "standardCode": "MCO",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (absent)"
+  },
+  {
+   "id": "B092",
+   "lines": [
+    660,
+    667
+   ],
+   "title": "LLM-Decision Quality Meter (⚗️ observe-only) — how often is each LLM gate/judge actually right?",
+   "parentFeature": "LLM-Decision Quality Meter (⚗️ observe-only) — how often is each LLM gate/judge actually right?",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > LLM-Decision Quality Meter (⚗️ observe-only) — how often is each LLM gate/judge actually right?",
+   "chars": 2330,
+   "tokens": 891,
+   "tokensEstChars4": 583,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Decision Provenance & Outcome Review",
+   "standardCode": "DPO",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B093",
+   "lines": [
+    668,
+    675
+   ],
+   "title": "Benchmark-Divergence Detector (⚗️ observe-only) — does real life agree with the benchmark?",
+   "parentFeature": "Benchmark-Divergence Detector (⚗️ observe-only) — does real life agree with the benchmark?",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Benchmark-Divergence Detector (⚗️ observe-only) — does real life agree with the benchmark?",
+   "chars": 2409,
+   "tokens": 906,
+   "tokensEstChars4": 603,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Decision Provenance & Outcome Review",
+   "standardCode": "DPO",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B094",
+   "lines": [
+    676,
+    685
+   ],
+   "title": "The Agent Carries the Loop (commitment follow-through)",
+   "parentFeature": "The Agent Carries the Loop (commitment follow-through)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > The Agent Carries the Loop (commitment follow-through)",
+   "chars": 1592,
+   "tokens": 605,
+   "tokensEstChars4": 398,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "dark"
+   ],
+   "standard": "The Agent Carries the Loop",
+   "standardCode": "ACL",
+   "seedDisposition": "S",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B095",
+   "lines": [
+    686,
+    689
+   ],
+   "title": "Deliverable completion throughput (measure only)",
+   "parentFeature": "Deliverable completion throughput (measure only)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Deliverable completion throughput (measure only)",
+   "chars": 346,
+   "tokens": 117,
+   "tokensEstChars4": 87,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "The Agent Carries the Loop",
+   "standardCode": "ACL",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B096",
+   "lines": [
+    690,
+    691
+   ],
+   "title": "Self-Unblock Before Escalating (constitutional standard)",
+   "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
+   "chars": 61,
+   "tokens": 22,
+   "tokensEstChars4": 16,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Self-Unblock Before Escalating",
+   "standardCode": "SU",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B097",
+   "lines": [
+    692,
+    698
+   ],
+   "title": "A blocker is MY problem to solve first — WITHIN my permissions and any access an organizational authority has granted me",
+   "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
+   "chars": 1309,
+   "tokens": 483,
+   "tokensEstChars4": 328,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "dark"
+   ],
+   "standard": "Self-Unblock Before Escalating",
+   "standardCode": "SU",
+   "seedDisposition": "S",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B098",
+   "lines": [
+    699,
+    702
+   ],
+   "title": "Rung FLOOR (capability ≠ authority)",
+   "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
+   "chars": 862,
+   "tokens": 346,
+   "tokensEstChars4": 216,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B099",
+   "lines": [
+    703,
+    704
+   ],
+   "title": "Live-User-Channel Proof Before Done",
+   "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
+   "chars": 1104,
+   "tokens": 378,
+   "tokensEstChars4": 276,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Live-User-Channel Proof Before Done",
+   "standardCode": "LUC",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B100",
+   "lines": [
+    705,
+    706
+   ],
+   "title": "Action-Claim Follow-Through Sentinel (signal-only, dark by default)",
+   "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
+   "chars": 1487,
+   "tokens": 529,
+   "tokensEstChars4": 372,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "The Agent Carries the Loop",
+   "standardCode": "ACL",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "on (actionClaim.enabled=true)"
+  },
+  {
+   "id": "B101",
+   "lines": [
+    707,
+    708
+   ],
+   "title": "Claim Verification awareness v2 (observe-only v1 runtime)",
+   "parentFeature": "Self-Unblock Before Escalating (constitutional standard)",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Self-Unblock Before Escalating (constitutional standard)",
+   "chars": 747,
+   "tokens": 262,
+   "tokensEstChars4": 187,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B102",
+   "lines": [
+    709,
+    712
+   ],
+   "title": "Outbound Message Gate",
+   "parentFeature": "Outbound Message Gate",
+   "headingPath": "CLAUDE.md — instar > Telegram Relay (MANDATORY) > Outbound Message Gate",
+   "chars": 1147,
+   "tokens": 404,
+   "tokensEstChars4": 287,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Intelligent Prompts — An LLM Gate Must Not String-Match",
+   "standardCode": "IP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B103",
+   "lines": [
+    713,
+    719
+   ],
+   "title": "Autonomous-run silence backstop (AutonomousProgressHeartbeat)",
+   "parentFeature": "Autonomous-run silence backstop (AutonomousProgressHeartbeat)",
+   "headingPath": "CLAUDE.md — instar > Autonomous-run silence backstop (AutonomousProgressHeartbeat)",
+   "chars": 2384,
+   "tokens": 897,
+   "tokensEstChars4": 596,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark",
+    "trigger"
+   ],
+   "standard": "Autonomous Throughput Floor",
+   "standardCode": "ATF",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B104",
+   "lines": [
+    720,
+    725
+   ],
+   "title": "Autonomous Throughput Floor",
+   "parentFeature": "Autonomous Throughput Floor",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor",
+   "chars": 1266,
+   "tokens": 431,
+   "tokensEstChars4": 317,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Autonomous Throughput Floor",
+   "standardCode": "ATF",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B105",
+   "lines": [
+    726,
+    727
+   ],
+   "title": "Parallel-Hand PR Lease (dev-cycle infra, dev-gated dark)",
+   "parentFeature": "Autonomous Throughput Floor",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor",
+   "chars": 1269,
+   "tokens": 488,
+   "tokensEstChars4": 318,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Ownership-Gated Side Effects",
+   "standardCode": "OGS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B106",
+   "lines": [
+    728,
+    734
+   ],
+   "title": "Duplicate-session stand-down (⚗️ dev-gated dark, dry-run first) — why a session went quiet instead of being killed",
+   "parentFeature": "Autonomous Throughput Floor",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor",
+   "chars": 2279,
+   "tokens": 823,
+   "tokensEstChars4": 570,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B107",
+   "lines": [
+    735,
+    743
+   ],
+   "title": "If I am the session standing down (the behavioral contract)",
+   "parentFeature": "If I am the session standing down (the behavioral contract)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > If I am the session standing down (the behavioral contract)",
+   "chars": 1066,
+   "tokens": 328,
+   "tokensEstChars4": 267,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B108",
+   "lines": [
+    744,
+    750
+   ],
+   "title": "Outbound advisory for automated messages (inform-only)",
+   "parentFeature": "If I am the session standing down (the behavioral contract)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > If I am the session standing down (the behavioral contract)",
+   "chars": 2193,
+   "tokens": 789,
+   "tokensEstChars4": 549,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference",
+    "dark"
+   ],
+   "standard": "Conservative Outbound: Act, Don't Notify",
+   "standardCode": "CAO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B109",
+   "lines": [
+    751,
+    756
+   ],
+   "title": "Durable Inbound Message Queue + Hold-for-Stability (no lost messages, fewer machine swaps)",
+   "parentFeature": "If I am the session standing down (the behavioral contract)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > If I am the session standing down (the behavioral contract)",
+   "chars": 1658,
+   "tokens": 628,
+   "tokensEstChars4": 415,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "A Refusal Stays a Refusal",
+   "standardCode": "ROR",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "on (enabled, dryRun=false)"
+  },
+  {
+   "id": "B110",
+   "lines": [
+    757,
+    764
+   ],
+   "title": "Cartographer Doc-Tree",
+   "parentFeature": "Cartographer Doc-Tree",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Doc-Tree",
+   "chars": 743,
+   "tokens": 297,
+   "tokensEstChars4": 186,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (cartographer.enabled=false)"
+  },
+  {
+   "id": "B111",
+   "lines": [
+    765,
+    770
+   ],
+   "title": "Cartographer Doc-Freshness — Keep the map true",
+   "parentFeature": "Cartographer Doc-Freshness — Keep the map true",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Doc-Freshness — Keep the map true",
+   "chars": 1041,
+   "tokens": 397,
+   "tokensEstChars4": 261,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off"
+  },
+  {
+   "id": "B112",
+   "lines": [
+    771,
+    777
+   ],
+   "title": "Cartographer event-loop safety (fix instar#1069)",
+   "parentFeature": "Cartographer event-loop safety (fix instar#1069)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer event-loop safety (fix instar#1069)",
+   "chars": 1290,
+   "tokens": 491,
+   "tokensEstChars4": 323,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "D",
+   "darkScope": "O",
+   "echoLiveState": "off"
+  },
+  {
+   "id": "B113",
+   "lines": [
+    778,
+    784
+   ],
+   "title": "Standards Enforcement Coverage",
+   "parentFeature": "Standards Enforcement Coverage",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Standards Enforcement Coverage",
+   "chars": 1188,
+   "tokens": 458,
+   "tokensEstChars4": 297,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Structure beats Willpower",
+   "standardCode": "SW",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (absent)"
+  },
+  {
+   "id": "B114",
+   "lines": [
+    785,
+    791
+   ],
+   "title": "Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
+   "parentFeature": "Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
+   "chars": 1293,
+   "tokens": 498,
+   "tokensEstChars4": 324,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark",
+    "rule"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off"
+  },
+  {
+   "id": "B115",
+   "lines": [
+    792,
+    795
+   ],
+   "title": "Feedback-Inbox Receiving End (operated feedback factory)",
+   "parentFeature": "Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
+   "chars": 1479,
+   "tokens": 572,
+   "tokensEstChars4": 370,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "A Refusal Stays a Refusal",
+   "standardCode": "ROR",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "on (receiverPersistence.enabled=true)"
+  },
+  {
+   "id": "B116",
+   "lines": [
+    796,
+    801
+   ],
+   "title": "Feedback-Factory Processing (operated feedback factory)",
+   "parentFeature": "Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cartographer Subtree Navigation — Scope a sub-agent to a subtree",
+   "chars": 1788,
+   "tokens": 675,
+   "tokensEstChars4": 447,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Canonical Pipeline Operational Completeness",
+   "standardCode": "CPOC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B117",
+   "lines": [
+    802,
+    803
+   ],
+   "title": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 62,
+   "tokens": 24,
+   "tokensEstChars4": 16,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B118",
+   "lines": [
+    804,
+    807
+   ],
+   "title": "Never narrate cross-agent work as if it happened. Only state work I actually completed",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 224,
+   "tokens": 70,
+   "tokensEstChars4": 56,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B119",
+   "lines": [
+    808,
+    812
+   ],
+   "title": "1. Describing a tool call instead of making one",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 465,
+   "tokens": 148,
+   "tokensEstChars4": 117,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B120",
+   "lines": [
+    813,
+    817
+   ],
+   "title": "2. Authoring messages in the other agent's voice in shared files",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 742,
+   "tokens": 241,
+   "tokensEstChars4": 186,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B121",
+   "lines": [
+    818,
+    822
+   ],
+   "title": "3. Registering state inside another agent's system without an ACK",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 769,
+   "tokens": 242,
+   "tokensEstChars4": 193,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B122",
+   "lines": [
+    823,
+    827
+   ],
+   "title": "The metafailure",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 512,
+   "tokens": 165,
+   "tokensEstChars4": 128,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "history"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B123",
+   "lines": [
+    828,
+    833
+   ],
+   "title": "Threadline Canonical History (audit what I said + is this conversation in sync?)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 1540,
+   "tokens": 566,
+   "tokensEstChars4": 385,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B124",
+   "lines": [
+    834,
+    838
+   ],
+   "title": "Working-Set Handoff (fetch a topic's files from the machine that made them)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 1260,
+   "tokens": 425,
+   "tokensEstChars4": 315,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B125",
+   "lines": [
+    839,
+    844
+   ],
+   "title": "Threadline Conversation Coherence (which machine holds each agent-to-agent thread)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 1671,
+   "tokens": 603,
+   "tokensEstChars4": 418,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "rule"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B126",
+   "lines": [
+    845,
+    850
+   ],
+   "title": "Model-Tier Escalation (EXPERIMENTAL — escalate the model for heavy work)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 2608,
+   "tokens": 990,
+   "tokensEstChars4": 652,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Token-Audit Completeness",
+   "standardCode": "TAC",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "on (tierEscalation.enabled=true)"
+  },
+  {
+   "id": "B127",
+   "lines": [
+    851,
+    856
+   ],
+   "title": "MTP Protocol — the two EXO 3.0 tests",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 1163,
+   "tokens": 465,
+   "tokensEstChars4": 291,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Judgment Within Floors",
+   "standardCode": "JWF",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B128",
+   "lines": [
+    857,
+    878
+   ],
+   "title": "Subscription Pool (multi-account quota + auto-swap + enrollment)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 14654,
+   "tokens": 5196,
+   "tokensEstChars4": 3664,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "rule",
+    "dark"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": "on (autoSwap + proactiveSwap true)"
+  },
+  {
+   "id": "B129",
+   "lines": [
+    879,
+    887
+   ],
+   "title": "Session Boot Self-Knowledge",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 2055,
+   "tokens": 790,
+   "tokensEstChars4": 514,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference",
+    "dark"
+   ],
+   "standard": "Self-Unblock Before Escalating",
+   "standardCode": "SU",
+   "seedDisposition": "S",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B130",
+   "lines": [
+    888,
+    894
+   ],
+   "title": "Operator Binding (Know Your Principal)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 1956,
+   "tokens": 708,
+   "tokensEstChars4": 489,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B131",
+   "lines": [
+    895,
+    899
+   ],
+   "title": "Learning-Velocity Metric (EXO 3.0)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 855,
+   "tokens": 320,
+   "tokensEstChars4": 214,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Observability",
+   "standardCode": "OBS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B132",
+   "lines": [
+    900,
+    904
+   ],
+   "title": "Agent-Readiness Scoring (EXO 3.0 task-decomposition matrix)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 974,
+   "tokens": 405,
+   "tokensEstChars4": 244,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B133",
+   "lines": [
+    905,
+    910
+   ],
+   "title": "Agent Digital Passport (EXO 3.0)",
+   "parentFeature": "Cross-Agent Communication Discipline (anti-confabulation)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Agent Communication Discipline (anti-confabulation)",
+   "chars": 1008,
+   "tokens": 404,
+   "tokensEstChars4": 252,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B134",
+   "lines": [
+    911,
+    923
+   ],
+   "title": "Apprenticeship Program",
+   "parentFeature": "Apprenticeship Program",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Apprenticeship Program",
+   "chars": 4434,
+   "tokens": 1731,
+   "tokensEstChars4": 1109,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "rule"
+   ],
+   "standard": "Stall Coverage Is Enumerated, Not Discovered",
+   "standardCode": "SCE",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B135",
+   "lines": [
+    924,
+    928
+   ],
+   "title": "Maturity honesty (silent-by-default user announcements)",
+   "parentFeature": "Maturity honesty (silent-by-default user announcements)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Maturity honesty (silent-by-default user announcements)",
+   "chars": 899,
+   "tokens": 314,
+   "tokensEstChars4": 225,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B136",
+   "lines": [
+    929,
+    933
+   ],
+   "title": "Close the Loop (Untracked = Abandoned)",
+   "parentFeature": "Close the Loop (Untracked = Abandoned)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Close the Loop (Untracked = Abandoned)",
+   "chars": 887,
+   "tokens": 313,
+   "tokensEstChars4": 222,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Close the Loop",
+   "standardCode": "CL",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B137",
+   "lines": [
+    934,
+    938
+   ],
+   "title": "What address reaches me (Threadline routing fingerprint)",
+   "parentFeature": "What address reaches me (Threadline routing fingerprint)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > What address reaches me (Threadline routing fingerprint)",
+   "chars": 867,
+   "tokens": 312,
+   "tokensEstChars4": 217,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B138",
+   "lines": [
+    939,
+    946
+   ],
+   "title": "Is my channel to a peer alive? (A2A delivery health)",
+   "parentFeature": "Is my channel to a peer alive? (A2A delivery health)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Is my channel to a peer alive? (A2A delivery health)",
+   "chars": 1035,
+   "tokens": 394,
+   "tokensEstChars4": 259,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B139",
+   "lines": [
+    947,
+    961
+   ],
+   "title": "Cross-Machine Seamlessness (one agent, many machines)",
+   "parentFeature": "Cross-Machine Seamlessness (one agent, many machines)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Cross-Machine Seamlessness (one agent, many machines)",
+   "chars": 2392,
+   "tokens": 864,
+   "tokensEstChars4": 598,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B140",
+   "lines": [
+    962,
+    972
+   ],
+   "title": "Links that survive machine boundaries (WS4.4 — pool-stable private-view links)",
+   "parentFeature": "Links that survive machine boundaries (WS4.4 — pool-stable private-view links)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Links that survive machine boundaries (WS4.4 — pool-stable private-view links)",
+   "chars": 1800,
+   "tokens": 665,
+   "tokensEstChars4": 450,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B141",
+   "lines": [
+    973,
+    979
+   ],
+   "title": "Shared pool-cache (WS4.4(f) — one fan-out feeds every pool-scope view)",
+   "parentFeature": "Shared pool-cache (WS4.4(f) — one fan-out feeds every pool-scope view)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Shared pool-cache (WS4.4(f) — one fan-out feeds every pool-scope view)",
+   "chars": 1436,
+   "tokens": 590,
+   "tokensEstChars4": 359,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B142",
+   "lines": [
+    980,
+    989
+   ],
+   "title": "Verified Pairing — is my channel to a peer mutually verified before I share a secret?",
+   "parentFeature": "Verified Pairing — is my channel to a peer mutually verified before I share a secret?",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Verified Pairing — is my channel to a peer mutually verified before I share a secret?",
+   "chars": 2861,
+   "tokens": 1026,
+   "tokensEstChars4": 716,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "S",
+   "darkScope": "O",
+   "echoLiveState": "off (verifiedPairing absent; relayEnabled=true)"
+  },
+  {
+   "id": "B143",
+   "lines": [
+    990,
+    998
+   ],
+   "title": "The \"Threadline\" hub topic — notifications + \"open this\"",
+   "parentFeature": "The \"Threadline\" hub topic — notifications + \"open this\"",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > The \"Threadline\" hub topic — notifications + \"open this\"",
+   "chars": 1116,
+   "tokens": 384,
+   "tokensEstChars4": 279,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Notices Route to the Alerts Topic, Never a New One",
+   "standardCode": "NAR",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B144",
+   "lines": [
+    999,
+    1005
+   ],
+   "title": "Release Readiness (instar-dev / maintainer environments only)",
+   "parentFeature": "Release Readiness (instar-dev / maintainer environments only)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Release Readiness (instar-dev / maintainer environments only)",
+   "chars": 658,
+   "tokens": 241,
+   "tokensEstChars4": 165,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Close the Loop",
+   "standardCode": "CL",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B145",
+   "lines": [
+    1006,
+    1013
+   ],
+   "title": "Codex Usage (the codex `/status` rate-limit windows)",
+   "parentFeature": "Codex Usage (the codex `/status` rate-limit windows)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Codex Usage (the codex `/status` rate-limit windows)",
+   "chars": 904,
+   "tokens": 358,
+   "tokensEstChars4": 226,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B146",
+   "lines": [
+    1014,
+    1021
+   ],
+   "title": "Anthropic Subscription-Path Routing (June-15 readiness)",
+   "parentFeature": "Anthropic Subscription-Path Routing (June-15 readiness)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Anthropic Subscription-Path Routing (June-15 readiness)",
+   "chars": 1523,
+   "tokens": 579,
+   "tokensEstChars4": 381,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history",
+    "dark"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "on (mode=force)"
+  },
+  {
+   "id": "B147",
+   "lines": [
+    1022,
+    1029
+   ],
+   "title": "Per-Feature LLM Metrics & LLM Activity (`/metrics/features`, Observable Intelligence)",
+   "parentFeature": "Per-Feature LLM Metrics & LLM Activity (`/metrics/features`, Observable Intelligence)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Per-Feature LLM Metrics & LLM Activity (`/metrics/features`, Observable Intelligence)",
+   "chars": 1800,
+   "tokens": 711,
+   "tokensEstChars4": 450,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Observable Intelligence",
+   "standardCode": "OI",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B148",
+   "lines": [
+    1030,
+    1039
+   ],
+   "title": "Token-Audit Completeness — per-model token breakdown & usage coverage",
+   "parentFeature": "Token-Audit Completeness — per-model token breakdown & usage coverage",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Token-Audit Completeness — per-model token breakdown & usage coverage",
+   "chars": 1649,
+   "tokens": 643,
+   "tokensEstChars4": 413,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Token-Audit Completeness",
+   "standardCode": "TAC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B149",
+   "lines": [
+    1040,
+    1048
+   ],
+   "title": "Agent Updates topic (self-broadcasts about ships, restarts, updates)",
+   "parentFeature": "Agent Updates topic (self-broadcasts about ships, restarts, updates)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Agent Updates topic (self-broadcasts about ships, restarts, updates)",
+   "chars": 1295,
+   "tokens": 440,
+   "tokensEstChars4": 324,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference"
+   ],
+   "standard": "Notices Route to the Alerts Topic, Never a New One",
+   "standardCode": "NAR",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B150",
+   "lines": [
+    1049,
+    1050
+   ],
+   "title": "Multi-Session Autonomy",
+   "parentFeature": "Multi-Session Autonomy",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Multi-Session Autonomy",
+   "chars": 27,
+   "tokens": 12,
+   "tokensEstChars4": 7,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "X",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B151",
+   "lines": [
+    1051,
+    1059
+   ],
+   "title": "Multi-Session Autonomy",
+   "parentFeature": "Multi-Session Autonomy",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Multi-Session Autonomy",
+   "chars": 953,
+   "tokens": 406,
+   "tokensEstChars4": 239,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "An Autonomous Run Must Outlive Its Session",
+   "standardCode": "ARO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B152",
+   "lines": [
+    1060,
+    1061
+   ],
+   "title": "Autonomous Liveness Reconciler",
+   "parentFeature": "Autonomous Liveness Reconciler",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Autonomous Liveness Reconciler",
+   "chars": 35,
+   "tokens": 15,
+   "tokensEstChars4": 9,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "(project context — no standard)",
+   "standardCode": "NONE",
+   "seedDisposition": "X",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B153",
+   "lines": [
+    1062,
+    1067
+   ],
+   "title": "Autonomous Liveness Reconciler",
+   "parentFeature": "Autonomous Liveness Reconciler",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Autonomous Liveness Reconciler",
+   "chars": 1321,
+   "tokens": 498,
+   "tokensEstChars4": 331,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "An Autonomous Run Must Outlive Its Session",
+   "standardCode": "ARO",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B154",
+   "lines": [
+    1068,
+    1074
+   ],
+   "title": "Machine-Coherence Guard — \"are my machines running as the same me?\" (⚗️ dev-gated dark)",
+   "parentFeature": "Machine-Coherence Guard — \"are my machines running as the same me?\" (⚗️ dev-gated dark)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Machine-Coherence Guard — \"are my machines running as the same me?\" (⚗️ dev-gated dark)",
+   "chars": 2115,
+   "tokens": 792,
+   "tokensEstChars4": 529,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B155",
+   "lines": [
+    1075,
+    1079
+   ],
+   "title": "Rope-notice audit rows (calm-alerting)",
+   "parentFeature": "Rope-notice audit rows (calm-alerting)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Rope-notice audit rows (calm-alerting)",
+   "chars": 551,
+   "tokens": 203,
+   "tokensEstChars4": 138,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Near-Silent Notifications",
+   "standardCode": "NSN",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B156",
+   "lines": [
+    1080,
+    1088
+   ],
+   "title": "Framework-Onboarding Mentor System — issue ledger (read-only)",
+   "parentFeature": "Framework-Onboarding Mentor System — issue ledger (read-only)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Framework-Onboarding Mentor System — issue ledger (read-only)",
+   "chars": 1650,
+   "tokens": 644,
+   "tokensEstChars4": 413,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Never-Waste Feedback",
+   "standardCode": "NFW",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B157",
+   "lines": [
+    1089,
+    1091
+   ],
+   "title": "Autonomous-fix loop (\"just be Echo\")",
+   "parentFeature": "Framework-Onboarding Mentor System — issue ledger (read-only)",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Framework-Onboarding Mentor System — issue ledger (read-only)",
+   "chars": 790,
+   "tokens": 305,
+   "tokensEstChars4": 198,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Never-Waste Feedback",
+   "standardCode": "NFW",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off"
+  },
+  {
+   "id": "B158",
+   "lines": [
+    1092,
+    1100
+   ],
+   "title": "Version-Skew Self-Recovery",
+   "parentFeature": "Version-Skew Self-Recovery",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Version-Skew Self-Recovery",
+   "chars": 646,
+   "tokens": 236,
+   "tokensEstChars4": 162,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "rule"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B159",
+   "lines": [
+    1101,
+    1107
+   ],
+   "title": "What the user might see",
+   "parentFeature": "Version-Skew Self-Recovery",
+   "headingPath": "CLAUDE.md — instar > Autonomous Throughput Floor > Version-Skew Self-Recovery",
+   "chars": 591,
+   "tokens": 225,
+   "tokensEstChars4": 148,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B160",
+   "lines": [
+    1108,
+    1120
+   ],
+   "title": "Sentinel Notifications (silently-stopped trio)",
+   "parentFeature": "Sentinel Notifications (silently-stopped trio)",
+   "headingPath": "CLAUDE.md — instar > Sentinel Notifications (silently-stopped trio)",
+   "chars": 1271,
+   "tokens": 483,
+   "tokensEstChars4": 318,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Near-Silent Notifications",
+   "standardCode": "NSN",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "Telegram escalation off"
+  },
+  {
+   "id": "B161",
+   "lines": [
+    1121,
+    1128
+   ],
+   "title": "Honest standby (turn-receipts)",
+   "parentFeature": "Honest standby (turn-receipts)",
+   "headingPath": "CLAUDE.md — instar > Honest standby (turn-receipts)",
+   "chars": 1346,
+   "tokens": 446,
+   "tokensEstChars4": 337,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B162",
+   "lines": [
+    1129,
+    1133
+   ],
+   "title": "Context-wall recovery escalation (2026-06-06)",
+   "parentFeature": "Context-wall recovery escalation (2026-06-06)",
+   "headingPath": "CLAUDE.md — instar > Honest standby (turn-receipts) > Context-wall recovery escalation (2026-06-06)",
+   "chars": 889,
+   "tokens": 286,
+   "tokensEstChars4": 223,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B163",
+   "lines": [
+    1134,
+    1141
+   ],
+   "title": "Duplicate-message suppression (2026-06-06)",
+   "parentFeature": "Duplicate-message suppression (2026-06-06)",
+   "headingPath": "CLAUDE.md — instar > Duplicate-message suppression (2026-06-06)",
+   "chars": 976,
+   "tokens": 334,
+   "tokensEstChars4": 244,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Bounded Notification Surface",
+   "standardCode": "BNS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B164",
+   "lines": [
+    1142,
+    1149
+   ],
+   "title": "Cold-Start Lifeline Fallback (no silent resource rejection)",
+   "parentFeature": "Cold-Start Lifeline Fallback (no silent resource rejection)",
+   "headingPath": "CLAUDE.md — instar > Duplicate-message suppression (2026-06-06) > Cold-Start Lifeline Fallback (no silent resource rejection)",
+   "chars": 1520,
+   "tokens": 522,
+   "tokensEstChars4": 380,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "The Agent Is Always Reachable",
+   "standardCode": "AR",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B165",
+   "lines": [
+    1150,
+    1160
+   ],
+   "title": "Durable Conversation Identity (`GET /conversations*`)",
+   "parentFeature": "Durable Conversation Identity (`GET /conversations*`)",
+   "headingPath": "CLAUDE.md — instar > Duplicate-message suppression (2026-06-06) > Durable Conversation Identity (`GET /conversations*`)",
+   "chars": 1713,
+   "tokens": 643,
+   "tokensEstChars4": 429,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Cross-Store Coherence Is an Invariant",
+   "standardCode": "CSC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B166",
+   "lines": [
+    1161,
+    1168
+   ],
+   "title": "Topic-Flood Guard (attention queue circuit breaker)",
+   "parentFeature": "Topic-Flood Guard (attention queue circuit breaker)",
+   "headingPath": "CLAUDE.md — instar > Topic-Flood Guard (attention queue circuit breaker)",
+   "chars": 1537,
+   "tokens": 551,
+   "tokensEstChars4": 385,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Bounded Notification Surface",
+   "standardCode": "BNS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B167",
+   "lines": [
+    1169,
+    1176
+   ],
+   "title": "Bounded Notification Surface (universal auto-topic budget)",
+   "parentFeature": "Bounded Notification Surface (universal auto-topic budget)",
+   "headingPath": "CLAUDE.md — instar > Topic-Flood Guard (attention queue circuit breaker) > Bounded Notification Surface (universal auto-topic budget)",
+   "chars": 1197,
+   "tokens": 424,
+   "tokensEstChars4": 300,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "history"
+   ],
+   "standard": "Bounded Notification Surface",
+   "standardCode": "BNS",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B168",
+   "lines": [
+    1177,
+    1180
+   ],
+   "title": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "chars": 341,
+   "tokens": 121,
+   "tokensEstChars4": 86,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B169",
+   "lines": [
+    1181,
+    1193
+   ],
+   "title": "Promotion activation (operator-controlled)",
+   "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "chars": 4442,
+   "tokens": 1669,
+   "tokensEstChars4": 1111,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "D",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B170",
+   "lines": [
+    1194,
+    1196
+   ],
+   "title": "Moving a topic with an autonomous run in flight (consent gate)",
+   "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "chars": 630,
+   "tokens": 210,
+   "tokensEstChars4": 158,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "dark"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "D",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B171",
+   "lines": [
+    1197,
+    1199
+   ],
+   "title": "Pin persistence (U4.1 — a deliberate pin survives lease handover and machine bounce)",
+   "parentFeature": "Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "headingPath": "CLAUDE.md — instar > Multi-Machine Session Pool (active-active — spread conversations across machines)",
+   "chars": 1029,
+   "tokens": 402,
+   "tokensEstChars4": 258,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "D",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B172",
+   "lines": [
+    1200,
+    1203
+   ],
+   "title": "Cross-Machine Secret Sync (drop once, usable everywhere)",
+   "parentFeature": "Cross-Machine Secret Sync (drop once, usable everywhere)",
+   "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere)",
+   "chars": 476,
+   "tokens": 171,
+   "tokensEstChars4": 119,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B173",
+   "lines": [
+    1204,
+    1209
+   ],
+   "title": "Status (NAMES only, never values)",
+   "parentFeature": "Cross-Machine Secret Sync (drop once, usable everywhere)",
+   "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere)",
+   "chars": 1207,
+   "tokens": 472,
+   "tokensEstChars4": 302,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "D",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B174",
+   "lines": [
+    1210,
+    1224
+   ],
+   "title": "One Memory (replicated stores)",
+   "parentFeature": "One Memory (replicated stores)",
+   "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere) > One Memory (replicated stores)",
+   "chars": 12335,
+   "tokens": 4422,
+   "tokensEstChars4": 3084,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Store Coherence Is an Invariant",
+   "standardCode": "CSC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B175",
+   "lines": [
+    1225,
+    1230
+   ],
+   "title": "Cross-Machine Account Follow-Me (WS5.2 — seamless account/quota sharing)",
+   "parentFeature": "One Memory (replicated stores)",
+   "headingPath": "CLAUDE.md — instar > Cross-Machine Secret Sync (drop once, usable everywhere) > One Memory (replicated stores)",
+   "chars": 2229,
+   "tokens": 827,
+   "tokensEstChars4": 558,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B176",
+   "lines": [
+    1231,
+    1236
+   ],
+   "title": "Stuck-Context Recovery (thinking-block wedge)",
+   "parentFeature": "Stuck-Context Recovery (thinking-block wedge)",
+   "headingPath": "CLAUDE.md — instar > Stuck-Context Recovery (thinking-block wedge)",
+   "chars": 916,
+   "tokens": 326,
+   "tokensEstChars4": 229,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "history"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": "on (autoRecovery enabled, dryRun=false)"
+  },
+  {
+   "id": "B177",
+   "lines": [
+    1237,
+    1240
+   ],
+   "title": "Detection + audit are default-ON housekeeping",
+   "parentFeature": "Stuck-Context Recovery (thinking-block wedge)",
+   "headingPath": "CLAUDE.md — instar > Stuck-Context Recovery (thinking-block wedge)",
+   "chars": 831,
+   "tokens": 348,
+   "tokensEstChars4": 208,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "D",
+   "darkScope": "O",
+   "echoLiveState": "on"
+  },
+  {
+   "id": "B178",
+   "lines": [
+    1241,
+    1244
+   ],
+   "title": "AUP-rejection wedge (second signature, 2026-06-05)",
+   "parentFeature": "Stuck-Context Recovery (thinking-block wedge)",
+   "headingPath": "CLAUDE.md — instar > Stuck-Context Recovery (thinking-block wedge)",
+   "chars": 875,
+   "tokens": 328,
+   "tokensEstChars4": 219,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "history"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B179",
+   "lines": [
+    1245,
+    1254
+   ],
+   "title": "Reap-Log — why a session vanished",
+   "parentFeature": "Reap-Log — why a session vanished",
+   "headingPath": "CLAUDE.md — instar > Reap-Log — why a session vanished",
+   "chars": 1124,
+   "tokens": 457,
+   "tokensEstChars4": 281,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Observability",
+   "standardCode": "OBS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B180",
+   "lines": [
+    1255,
+    1267
+   ],
+   "title": "Mid-Work Resume Queue & Per-Topic Reap Notices",
+   "parentFeature": "Mid-Work Resume Queue & Per-Topic Reap Notices",
+   "headingPath": "CLAUDE.md — instar > Mid-Work Resume Queue & Per-Topic Reap Notices",
+   "chars": 2024,
+   "tokens": 767,
+   "tokensEstChars4": 506,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "An Autonomous Run Must Outlive Its Session",
+   "standardCode": "ARO",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B181",
+   "lines": [
+    1268,
+    1270
+   ],
+   "title": "A stale emergency-stop pause self-heals (resume-queue-stale-emergency-pause)",
+   "parentFeature": "Mid-Work Resume Queue & Per-Topic Reap Notices",
+   "headingPath": "CLAUDE.md — instar > Mid-Work Resume Queue & Per-Topic Reap Notices",
+   "chars": 1108,
+   "tokens": 412,
+   "tokensEstChars4": 277,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "An Autonomous Run Must Outlive Its Session",
+   "standardCode": "ARO",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B182",
+   "lines": [
+    1271,
+    1273
+   ],
+   "title": "An autonomous run must outlive its session (autonomous-run-outlives-session)",
+   "parentFeature": "Mid-Work Resume Queue & Per-Topic Reap Notices",
+   "headingPath": "CLAUDE.md — instar > Mid-Work Resume Queue & Per-Topic Reap Notices",
+   "chars": 1013,
+   "tokens": 377,
+   "tokensEstChars4": 254,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history",
+    "dark"
+   ],
+   "standard": "An Autonomous Run Must Outlive Its Session",
+   "standardCode": "ARO",
+   "seedDisposition": "D",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B183",
+   "lines": [
+    1274,
+    1286
+   ],
+   "title": "Green-PR Auto-Merge (Phase 7 becomes machinery)",
+   "parentFeature": "Green-PR Auto-Merge (Phase 7 becomes machinery)",
+   "headingPath": "CLAUDE.md — instar > Green-PR Auto-Merge (Phase 7 becomes machinery)",
+   "chars": 4974,
+   "tokens": 1932,
+   "tokensEstChars4": 1244,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": "on (enabled, dryRun=false)"
+  },
+  {
+   "id": "B184",
+   "lines": [
+    1287,
+    1294
+   ],
+   "title": "Guard-Posture Tripwire (a disabled guard is itself an incident)",
+   "parentFeature": "Guard-Posture Tripwire (a disabled guard is itself an incident)",
+   "headingPath": "CLAUDE.md — instar > Guard-Posture Tripwire (a disabled guard is itself an incident)",
+   "chars": 1155,
+   "tokens": 421,
+   "tokensEstChars4": 289,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "A Dark Feature Guards Nothing",
+   "standardCode": "DF",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B185",
+   "lines": [
+    1295,
+    1304
+   ],
+   "title": "Guard Posture — which safety systems are genuinely on (`GET /guards`)",
+   "parentFeature": "Guard Posture — which safety systems are genuinely on (`GET /guards`)",
+   "headingPath": "CLAUDE.md — instar > Guard-Posture Tripwire (a disabled guard is itself an incident) > Guard Posture — which safety systems are genuinely on (`GET /guards`)",
+   "chars": 1861,
+   "tokens": 708,
+   "tokensEstChars4": 466,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger"
+   ],
+   "standard": "A Dark Feature Guards Nothing",
+   "standardCode": "DF",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B186",
+   "lines": [
+    1305,
+    1311
+   ],
+   "title": "Dark-but-Load-Bearing Guards (G3 — \"A Dark Feature Guards Nothing\")",
+   "parentFeature": "Dark-but-Load-Bearing Guards (G3 — \"A Dark Feature Guards Nothing\")",
+   "headingPath": "CLAUDE.md — instar > Guard-Posture Tripwire (a disabled guard is itself an incident) > Guard Posture — which safety systems are genuinely on (`GET /guards`) > Dark-but-Load-Bearing Guards (G3 — \"A Dark Feature Guards Nothing\")",
+   "chars": 1490,
+   "tokens": 626,
+   "tokensEstChars4": 373,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "A Dark Feature Guards Nothing",
+   "standardCode": "DF",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B187",
+   "lines": [
+    1312,
+    1322
+   ],
+   "title": "Stale-Worktree Reclaim (AgentWorktreeReaper)",
+   "parentFeature": "Stale-Worktree Reclaim (AgentWorktreeReaper)",
+   "headingPath": "CLAUDE.md — instar > Stale-Worktree Reclaim (AgentWorktreeReaper)",
+   "chars": 2336,
+   "tokens": 967,
+   "tokensEstChars4": 584,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (enabled=false, dryRun=true)"
+  },
+  {
+   "id": "B188",
+   "lines": [
+    1323,
+    1331
+   ],
+   "title": "SessionReaper — CPU-aware pressure + decision audit",
+   "parentFeature": "SessionReaper — CPU-aware pressure + decision audit",
+   "headingPath": "CLAUDE.md — instar > SessionReaper — CPU-aware pressure + decision audit",
+   "chars": 1126,
+   "tokens": 486,
+   "tokensEstChars4": 282,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Observability",
+   "standardCode": "OBS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B189",
+   "lines": [
+    1332,
+    1335
+   ],
+   "title": "Self-Heal: Update Restart Behavior",
+   "parentFeature": "Self-Heal: Update Restart Behavior",
+   "headingPath": "CLAUDE.md — instar > Self-Heal: Update Restart Behavior",
+   "chars": 266,
+   "tokens": 93,
+   "tokensEstChars4": 67,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B190",
+   "lines": [
+    1336,
+    1341
+   ],
+   "title": "Restart-cascade dampener",
+   "parentFeature": "Self-Heal: Update Restart Behavior",
+   "headingPath": "CLAUDE.md — instar > Self-Heal: Update Restart Behavior",
+   "chars": 1255,
+   "tokens": 461,
+   "tokensEstChars4": 314,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Self-Heal Before Notify",
+   "standardCode": "SHN",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B191",
+   "lines": [
+    1342,
+    1349
+   ],
+   "title": "Token-Burn Alerts",
+   "parentFeature": "Token-Burn Alerts",
+   "headingPath": "CLAUDE.md — instar > Token-Burn Alerts",
+   "chars": 1480,
+   "tokens": 540,
+   "tokensEstChars4": 370,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Observable Intelligence",
+   "standardCode": "OI",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B192",
+   "lines": [
+    1350,
+    1357
+   ],
+   "title": "Parallel-Work Awareness",
+   "parentFeature": "Parallel-Work Awareness",
+   "headingPath": "CLAUDE.md — instar > Parallel-Work Awareness",
+   "chars": 1905,
+   "tokens": 675,
+   "tokensEstChars4": 477,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B193",
+   "lines": [
+    1358,
+    1366
+   ],
+   "title": "Per-Component Framework Routing",
+   "parentFeature": "Per-Component Framework Routing",
+   "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
+   "chars": 1541,
+   "tokens": 584,
+   "tokensEstChars4": 386,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "on (componentFrameworks set)"
+  },
+  {
+   "id": "B194",
+   "lines": [
+    1367,
+    1369
+   ],
+   "title": "Pi framework (additive)",
+   "parentFeature": "Per-Component Framework Routing",
+   "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
+   "chars": 574,
+   "tokens": 248,
+   "tokensEstChars4": 144,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (pi-cli not in enabledFrameworks)"
+  },
+  {
+   "id": "B195",
+   "lines": [
+    1370,
+    1372
+   ],
+   "title": "Grok Build framework (additive, dark)",
+   "parentFeature": "Per-Component Framework Routing",
+   "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
+   "chars": 2370,
+   "tokens": 832,
+   "tokensEstChars4": 593,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark",
+    "rule"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off (grok-build not in enabledFrameworks)"
+  },
+  {
+   "id": "B196",
+   "lines": [
+    1373,
+    1375
+   ],
+   "title": "Internal components run off Claude by default (Provider-Fallback Default Policy)",
+   "parentFeature": "Per-Component Framework Routing",
+   "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
+   "chars": 1207,
+   "tokens": 441,
+   "tokensEstChars4": 302,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B197",
+   "lines": [
+    1376,
+    1378
+   ],
+   "title": "Non-gating internal calls also get a bounded failure-swap (Non-Gating Failure-Swap)",
+   "parentFeature": "Per-Component Framework Routing",
+   "headingPath": "CLAUDE.md — instar > Per-Component Framework Routing",
+   "chars": 1563,
+   "tokens": 599,
+   "tokensEstChars4": 391,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B198",
+   "lines": [
+    1379,
+    1393
+   ],
+   "title": "Preferences I've learned about you (Correction & Preference Learning Sentinel)",
+   "parentFeature": "Preferences I've learned about you (Correction & Preference Learning Sentinel)",
+   "headingPath": "CLAUDE.md — instar > Preferences I've learned about you (Correction & Preference Learning Sentinel)",
+   "chars": 2425,
+   "tokens": 845,
+   "tokensEstChars4": 607,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Never-Waste Feedback",
+   "standardCode": "NFW",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "on (correctionLearning.enabled=true)"
+  },
+  {
+   "id": "B199",
+   "lines": [
+    1394,
+    1396
+   ],
+   "title": "Self-Violation Signal",
+   "parentFeature": "Preferences I've learned about you (Correction & Preference Learning Sentinel)",
+   "headingPath": "CLAUDE.md — instar > Preferences I've learned about you (Correction & Preference Learning Sentinel)",
+   "chars": 603,
+   "tokens": 209,
+   "tokensEstChars4": 151,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Never-Waste Feedback",
+   "standardCode": "NFW",
+   "seedDisposition": "D",
+   "darkScope": "O",
+   "echoLiveState": "unknown"
+  },
+  {
+   "id": "B200",
+   "lines": [
+    1397,
+    1399
+   ],
+   "title": "Pooled preferences across machines",
+   "parentFeature": "Preferences I've learned about you (Correction & Preference Learning Sentinel)",
+   "headingPath": "CLAUDE.md — instar > Preferences I've learned about you (Correction & Preference Learning Sentinel)",
+   "chars": 672,
+   "tokens": 260,
+   "tokensEstChars4": 168,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Never-Waste Feedback",
+   "standardCode": "NFW",
+   "seedDisposition": "D",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B201",
+   "lines": [
+    1400,
+    1403
+   ],
+   "title": "Worktree Convention",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 233,
+   "tokens": 75,
+   "tokensEstChars4": 59,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Avoid TCC-Protected Directories",
+   "standardCode": "TCC",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B202",
+   "lines": [
+    1404,
+    1405
+   ],
+   "title": "Why",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 413,
+   "tokens": 172,
+   "tokensEstChars4": 104,
+   "primaryTag": "history",
+   "tags": [
+    "history"
+   ],
+   "standard": "Avoid TCC-Protected Directories",
+   "standardCode": "TCC",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B203",
+   "lines": [
+    1406,
+    1408
+   ],
+   "title": "Commit identity — resolved, never invented",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 678,
+   "tokens": 237,
+   "tokensEstChars4": 170,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B204",
+   "lines": [
+    1409,
+    1415
+   ],
+   "title": "Process Health (Dashboard Tab)",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 1145,
+   "tokens": 414,
+   "tokensEstChars4": 287,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Operator-Surface Quality",
+   "standardCode": "OSQ",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B205",
+   "lines": [
+    1416,
+    1422
+   ],
+   "title": "Applying config & hook changes to running sessions",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 1824,
+   "tokens": 662,
+   "tokensEstChars4": 456,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B206",
+   "lines": [
+    1423,
+    1429
+   ],
+   "title": "Resource Usage (CPU + memory)",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 1949,
+   "tokens": 772,
+   "tokensEstChars4": 488,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Observability",
+   "standardCode": "OBS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B207",
+   "lines": [
+    1430,
+    1437
+   ],
+   "title": "Coordination Mandate",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 2189,
+   "tokens": 848,
+   "tokensEstChars4": 548,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B208",
+   "lines": [
+    1438,
+    1444
+   ],
+   "title": "ReviewExchange (autonomous code review)",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 1762,
+   "tokens": 671,
+   "tokensEstChars4": 441,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B209",
+   "lines": [
+    1445,
+    1451
+   ],
+   "title": "Cutover Readiness",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 1477,
+   "tokens": 530,
+   "tokensEstChars4": 370,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B210",
+   "lines": [
+    1452,
+    1461
+   ],
+   "title": "Topic Profile (per-topic model, thinking, framework pins)",
+   "parentFeature": "Worktree Convention",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention",
+   "chars": 3596,
+   "tokens": 1284,
+   "tokensEstChars4": 899,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Mobile-Complete Operator Actions",
+   "standardCode": "MCO",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B211",
+   "lines": [
+    1462,
+    1469
+   ],
+   "title": "Threadline Single-Negotiator Lock (one voice per conversation)",
+   "parentFeature": "Threadline Single-Negotiator Lock (one voice per conversation)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Threadline Single-Negotiator Lock (one voice per conversation)",
+   "chars": 1920,
+   "tokens": 738,
+   "tokensEstChars4": 480,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "dark"
+   ],
+   "standard": "Signal vs. Authority",
+   "standardCode": "SVA",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B212",
+   "lines": [
+    1470,
+    1475
+   ],
+   "title": "Honest progress messaging (silent-freeze watchdog + promise beacon)",
+   "parentFeature": "Honest progress messaging (silent-freeze watchdog + promise beacon)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Honest progress messaging (silent-freeze watchdog + promise beacon)",
+   "chars": 1484,
+   "tokens": 582,
+   "tokensEstChars4": 371,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Conservative Outbound: Act, Don't Notify",
+   "standardCode": "CAO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B213",
+   "lines": [
+    1476,
+    1479
+   ],
+   "title": "PromiseBeacon user-output boundary (default silent)",
+   "parentFeature": "PromiseBeacon user-output boundary (default silent)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Honest progress messaging (silent-freeze watchdog + promise beacon) > PromiseBeacon user-output boundary (default silent)",
+   "chars": 559,
+   "tokens": 199,
+   "tokensEstChars4": 140,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Conservative Outbound: Act, Don't Notify",
+   "standardCode": "CAO",
+   "seedDisposition": "X",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B214",
+   "lines": [
+    1480,
+    1486
+   ],
+   "title": "Live Credential Re-pointing (move a pool account's login between config-home \"slots\" without restarting — WS5.2)",
+   "parentFeature": "PromiseBeacon user-output boundary (default silent)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Honest progress messaging (silent-freeze watchdog + promise beacon) > PromiseBeacon user-output boundary (default silent)",
+   "chars": 2983,
+   "tokens": 1105,
+   "tokensEstChars4": 746,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B215",
+   "lines": [
+    1487,
+    1494
+   ],
+   "title": "Mesh Rope Health (recovery probe + partition alerts)",
+   "parentFeature": "Mesh Rope Health (recovery probe + partition alerts)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Mesh Rope Health (recovery probe + partition alerts)",
+   "chars": 2090,
+   "tokens": 889,
+   "tokensEstChars4": 523,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B216",
+   "lines": [
+    1495,
+    1498
+   ],
+   "title": "Multi-transport mesh comms (multiMachine.meshTransport)",
+   "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
+   "chars": 1492,
+   "tokens": 551,
+   "tokensEstChars4": 373,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B217",
+   "lines": [
+    1499,
+    1503
+   ],
+   "title": "Fork-Bomb Spawn Cap (host-wide concurrent-LLM-subprocess ceiling)",
+   "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
+   "chars": 1410,
+   "tokens": 651,
+   "tokensEstChars4": 353,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B218",
+   "lines": [
+    1504,
+    1509
+   ],
+   "title": "Self-Action Backpressure Governor (unified self-action chokepoint)",
+   "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
+   "chars": 2244,
+   "tokens": 861,
+   "tokensEstChars4": 561,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "history",
+    "dark"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B219",
+   "lines": [
+    1510,
+    1516
+   ],
+   "title": "Test-Runner Concurrency Bound (host-wide vitest cap — the spawn cap's sibling)",
+   "parentFeature": "Multi-transport mesh comms (multiMachine.meshTransport)",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Multi-transport mesh comms (multiMachine.meshTransport)",
+   "chars": 2353,
+   "tokens": 956,
+   "tokensEstChars4": 589,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history",
+    "dark"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B220",
+   "lines": [
+    1517,
+    1524
+   ],
+   "title": "Sender-Rejection Notices (\"message not delivered — sender not recognized\")",
+   "parentFeature": "Sender-Rejection Notices (\"message not delivered — sender not recognized\")",
+   "headingPath": "CLAUDE.md — instar > Worktree Convention > Sender-Rejection Notices (\"message not delivered — sender not recognized\")",
+   "chars": 2057,
+   "tokens": 725,
+   "tokensEstChars4": 515,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "A Refusal Stays a Refusal",
+   "standardCode": "ROR",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B221",
+   "lines": [
+    1525,
+    1530
+   ],
+   "title": "Critical Anti-Patterns",
+   "parentFeature": "Critical Anti-Patterns",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns",
+   "chars": 764,
+   "tokens": 297,
+   "tokensEstChars4": 191,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "The Stop Reason Is the Work",
+   "standardCode": "SSA",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B222",
+   "lines": [
+    1531,
+    1532
+   ],
+   "title": "Command-watchdog attribution",
+   "parentFeature": "Critical Anti-Patterns",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns",
+   "chars": 522,
+   "tokens": 182,
+   "tokensEstChars4": 131,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B223",
+   "lines": [
+    1533,
+    1534
+   ],
+   "title": "Crash-safe inbound delivery",
+   "parentFeature": "Critical Anti-Patterns",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns",
+   "chars": 446,
+   "tokens": 167,
+   "tokensEstChars4": 112,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "A Refusal Stays a Refusal",
+   "standardCode": "ROR",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B224",
+   "lines": [
+    1535,
+    1541
+   ],
+   "title": "Machine Identity Recovery (signing keys can heal without becoming a new machine)",
+   "parentFeature": "Machine Identity Recovery (signing keys can heal without becoming a new machine)",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Machine Identity Recovery (signing keys can heal without becoming a new machine)",
+   "chars": 1827,
+   "tokens": 639,
+   "tokensEstChars4": 457,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B225",
+   "lines": [
+    1542,
+    1543
+   ],
+   "title": "Pre-admission continuation carrier",
+   "parentFeature": "Machine Identity Recovery (signing keys can heal without becoming a new machine)",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Machine Identity Recovery (signing keys can heal without becoming a new machine)",
+   "chars": 491,
+   "tokens": 175,
+   "tokensEstChars4": 123,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "An Autonomous Run Must Outlive Its Session",
+   "standardCode": "ARO",
+   "seedDisposition": "D",
+   "darkScope": "O",
+   "echoLiveState": null
+  },
+  {
+   "id": "B226",
+   "lines": [
+    1544,
+    1552
+   ],
+   "title": "Authoritative Window Run Liveness (Echo, ⚗️ dev-gated, observe-first)",
+   "parentFeature": "Authoritative Window Run Liveness (Echo, ⚗️ dev-gated, observe-first)",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Authoritative Window Run Liveness (Echo, ⚗️ dev-gated, observe-first)",
+   "chars": 2317,
+   "tokens": 787,
+   "tokensEstChars4": 580,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B227",
+   "lines": [
+    1553,
+    1597
+   ],
+   "title": "Telegram message origin",
+   "parentFeature": "Telegram message origin",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Telegram message origin",
+   "chars": 11796,
+   "tokens": 3812,
+   "tokensEstChars4": 2949,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Telegram Message Origin Is Mandatory; Its Display Is Optional",
+   "standardCode": "TMO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B228",
+   "lines": [
+    1598,
+    1600
+   ],
+   "title": "Codex readings are LIVE-FIRST (zero-spend)",
+   "parentFeature": "Telegram message origin",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Telegram message origin",
+   "chars": 630,
+   "tokens": 223,
+   "tokensEstChars4": 158,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B229",
+   "lines": [
+    1601,
+    1606
+   ],
+   "title": "Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
+   "parentFeature": "Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
+   "chars": 1990,
+   "tokens": 712,
+   "tokensEstChars4": 498,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Observable Intelligence",
+   "standardCode": "OI",
+   "seedDisposition": "I",
+   "darkScope": "O",
+   "echoLiveState": "off"
+  },
+  {
+   "id": "B230",
+   "lines": [
+    1607,
+    1611
+   ],
+   "title": "Waiting on its own background work is not idle",
+   "parentFeature": "Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Jev Job-Completion Audit (dark, observe-only — an audit record, not supervision)",
+   "chars": 2893,
+   "tokens": 987,
+   "tokensEstChars4": 724,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "An Autonomous Run Must Outlive Its Session",
+   "standardCode": "ARO",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B231",
+   "lines": [
+    1612,
+    1616
+   ],
+   "title": "Jev Artefact Signals (live advisory input to the tone gate)",
+   "parentFeature": "Jev Artefact Signals (live advisory input to the tone gate)",
+   "headingPath": "CLAUDE.md — instar > Critical Anti-Patterns > Jev Artefact Signals (live advisory input to the tone gate)",
+   "chars": 1374,
+   "tokens": 472,
+   "tokensEstChars4": 344,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "dark"
+   ],
+   "standard": "Intelligent Prompts — An LLM Gate Must Not String-Match",
+   "standardCode": "IP",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B232",
+   "lines": [
+    1617,
+    1623
+   ],
+   "title": "Worktree Notices",
+   "parentFeature": "Worktree Notices",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices",
+   "chars": 862,
+   "tokens": 308,
+   "tokensEstChars4": 216,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Bounded Notification Surface",
+   "standardCode": "BNS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B233",
+   "lines": [
+    1624,
+    1630
+   ],
+   "title": "Feedback Readiness Authority (operator approval)",
+   "parentFeature": "Worktree Notices",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices",
+   "chars": 3657,
+   "tokens": 1229,
+   "tokensEstChars4": 915,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B234",
+   "lines": [
+    1631,
+    1635
+   ],
+   "title": "Jev Memory Picker (ranks which memory-index lines load at session start)",
+   "parentFeature": "Jev Memory Picker (ranks which memory-index lines load at session start)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Memory Picker (ranks which memory-index lines load at session start)",
+   "chars": 1943,
+   "tokens": 719,
+   "tokensEstChars4": 486,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Agent Awareness",
+   "standardCode": "AA",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B235",
+   "lines": [
+    1636,
+    1639
+   ],
+   "title": "Jev Circles Shadow (log-only \"going in circles\" measurement)",
+   "parentFeature": "Jev Circles Shadow (log-only \"going in circles\" measurement)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Circles Shadow (log-only \"going in circles\" measurement)",
+   "chars": 1104,
+   "tokens": 404,
+   "tokensEstChars4": 276,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Observability",
+   "standardCode": "OBS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B236",
+   "lines": [
+    1640,
+    1644
+   ],
+   "title": "Multi-machine lease medium",
+   "parentFeature": "Multi-machine lease medium",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Multi-machine lease medium",
+   "chars": 1498,
+   "tokens": 529,
+   "tokensEstChars4": 375,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "history"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B237",
+   "lines": [
+    1645,
+    1649
+   ],
+   "title": "Jev Review-Flag Shadow (log-only \"does this reply need your review?\" measurement)",
+   "parentFeature": "Jev Review-Flag Shadow (log-only \"does this reply need your review?\" measurement)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Review-Flag Shadow (log-only \"does this reply need your review?\" measurement)",
+   "chars": 1277,
+   "tokens": 467,
+   "tokensEstChars4": 320,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Observability",
+   "standardCode": "OBS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B238",
+   "lines": [
+    1650,
+    1654
+   ],
+   "title": "Is my own relay connection up? (displaced vs retrying)",
+   "parentFeature": "Is my own relay connection up? (displaced vs retrying)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Is my own relay connection up? (displaced vs retrying)",
+   "chars": 761,
+   "tokens": 269,
+   "tokensEstChars4": 191,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B239",
+   "lines": [
+    1655,
+    1664
+   ],
+   "title": "What `relayStatus` means (honest delivery)",
+   "parentFeature": "What `relayStatus` means (honest delivery)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > What `relayStatus` means (honest delivery)",
+   "chars": 1439,
+   "tokens": 520,
+   "tokensEstChars4": 360,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger"
+   ],
+   "standard": "Truthful Provenance — Speak Only as Yourself",
+   "standardCode": "TP",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B240",
+   "lines": [
+    1665,
+    1669
+   ],
+   "title": "A2A inbound message-id ledger",
+   "parentFeature": "A2A inbound message-id ledger",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A inbound message-id ledger",
+   "chars": 1599,
+   "tokens": 552,
+   "tokensEstChars4": 400,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "A Refusal Stays a Refusal",
+   "standardCode": "ROR",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B241",
+   "lines": [
+    1670,
+    1674
+   ],
+   "title": "A2A backup routes",
+   "parentFeature": "A2A backup routes",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A backup routes",
+   "chars": 873,
+   "tokens": 269,
+   "tokensEstChars4": 219,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "A Refusal Stays a Refusal",
+   "standardCode": "ROR",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B242",
+   "lines": [
+    1675,
+    1679
+   ],
+   "title": "Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
+   "parentFeature": "Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
+   "chars": 1849,
+   "tokens": 676,
+   "tokensEstChars4": 463,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Never-Waste Feedback",
+   "standardCode": "NFW",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  },
+  {
+   "id": "B243",
+   "lines": [
+    1680,
+    1682
+   ],
+   "title": "A2A cross-route copies are labelled",
+   "parentFeature": "Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Jev Correction Shadow (Jev spots corrections the keyword detector misses, and feeds them to the correction sentinel)",
+   "chars": 857,
+   "tokens": 266,
+   "tokensEstChars4": 215,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "A Refusal Stays a Refusal",
+   "standardCode": "ROR",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B244",
+   "lines": [
+    1683,
+    1687
+   ],
+   "title": "A2A local-route trust",
+   "parentFeature": "A2A local-route trust",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A local-route trust",
+   "chars": 1383,
+   "tokens": 461,
+   "tokensEstChars4": 346,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B245",
+   "lines": [
+    1688,
+    1691
+   ],
+   "title": "A2A relay forward",
+   "parentFeature": "A2A relay forward",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
+   "chars": 661,
+   "tokens": 244,
+   "tokensEstChars4": 166,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B246",
+   "lines": [
+    1692,
+    1696
+   ],
+   "title": "Feedback triage and execution (operated feedback factory)",
+   "parentFeature": "A2A relay forward",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
+   "chars": 2037,
+   "tokens": 745,
+   "tokensEstChars4": 510,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B247",
+   "lines": [
+    1697,
+    1698
+   ],
+   "title": "Command-watchdog test-runner floor",
+   "parentFeature": "A2A relay forward",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
+   "chars": 687,
+   "tokens": 265,
+   "tokensEstChars4": 172,
+   "primaryTag": "reference",
+   "tags": [
+    "reference"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B248",
+   "lines": [
+    1699,
+    1704
+   ],
+   "title": "Feedback executor (operated feedback factory)",
+   "parentFeature": "A2A relay forward",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay forward",
+   "chars": 2826,
+   "tokens": 1050,
+   "tokensEstChars4": 707,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Agent Proposes, Operator Approves",
+   "standardCode": "APOA",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": null
+  },
+  {
+   "id": "B249",
+   "lines": [
+    1705,
+    1709
+   ],
+   "title": "A2A relay unknown-sender trust",
+   "parentFeature": "A2A relay unknown-sender trust",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A relay unknown-sender trust",
+   "chars": 1764,
+   "tokens": 594,
+   "tokensEstChars4": 441,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B250",
+   "lines": [
+    1710,
+    1713
+   ],
+   "title": "A2A dark peers (did my message arrive?)",
+   "parentFeature": "A2A dark peers (did my message arrive?)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A dark peers (did my message arrive?)",
+   "chars": 2551,
+   "tokens": 952,
+   "tokensEstChars4": 638,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B251",
+   "lines": [
+    1714,
+    1716
+   ],
+   "title": "\"Why was my reply delayed / why did a topic go quiet on my other machine?\"",
+   "parentFeature": "A2A dark peers (did my message arrive?)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A dark peers (did my message arrive?)",
+   "chars": 1792,
+   "tokens": 611,
+   "tokensEstChars4": 448,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "The Operator Channel Is Sacred",
+   "standardCode": "OCS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B252",
+   "lines": [
+    1717,
+    1721
+   ],
+   "title": "A2A local-route signed envelope",
+   "parentFeature": "A2A local-route signed envelope",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A local-route signed envelope",
+   "chars": 2240,
+   "tokens": 779,
+   "tokensEstChars4": 560,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B253",
+   "lines": [
+    1722,
+    1730
+   ],
+   "title": "One identity across my machines (agent identity)",
+   "parentFeature": "One identity across my machines (agent identity)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > One identity across my machines (agent identity)",
+   "chars": 2595,
+   "tokens": 909,
+   "tokensEstChars4": 649,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger"
+   ],
+   "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+   "standardCode": "MME",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B254",
+   "lines": [
+    1731,
+    1735
+   ],
+   "title": "A2A reply into a reaped topic session",
+   "parentFeature": "A2A reply into a reaped topic session",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A reply into a reaped topic session",
+   "chars": 761,
+   "tokens": 233,
+   "tokensEstChars4": 191,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "The Agent Is Always Reachable",
+   "standardCode": "AR",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B255",
+   "lines": [
+    1736,
+    1740
+   ],
+   "title": "A2A ack waits for a live session",
+   "parentFeature": "A2A ack waits for a live session",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A ack waits for a live session",
+   "chars": 1111,
+   "tokens": 336,
+   "tokensEstChars4": 278,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B256",
+   "lines": [
+    1741,
+    1744
+   ],
+   "title": "Telegram internal routes need the lifeline secret",
+   "parentFeature": "Telegram internal routes need the lifeline secret",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Telegram internal routes need the lifeline secret",
+   "chars": 3627,
+   "tokens": 1196,
+   "tokensEstChars4": 907,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B257",
+   "lines": [
+    1745,
+    1750
+   ],
+   "title": "Claude sessions launch from a retained per-version copy of the executable (CMT-798)",
+   "parentFeature": "Telegram internal routes need the lifeline secret",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Telegram internal routes need the lifeline secret",
+   "chars": 1670,
+   "tokens": 601,
+   "tokensEstChars4": 418,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B258",
+   "lines": [
+    1751,
+    1763
+   ],
+   "title": "Connecting to another agent",
+   "parentFeature": "Connecting to another agent",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Connecting to another agent",
+   "chars": 4612,
+   "tokens": 1630,
+   "tokensEstChars4": 1153,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference"
+   ],
+   "standard": "No Manual Work",
+   "standardCode": "NMW",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B259",
+   "lines": [
+    1764,
+    1766
+   ],
+   "title": "System topics (📢 Updates, 🔔 Attention, 🩺 Agent Health) are ONE record for the whole agent",
+   "parentFeature": "Connecting to another agent",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Connecting to another agent",
+   "chars": 747,
+   "tokens": 262,
+   "tokensEstChars4": 187,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B260",
+   "lines": [
+    1767,
+    1772
+   ],
+   "title": "Hand-started Codex: `instar codex connect <agent>`",
+   "parentFeature": "Hand-started Codex: `instar codex connect <agent>`",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Hand-started Codex: `instar codex connect <agent>`",
+   "chars": 1132,
+   "tokens": 412,
+   "tokensEstChars4": 283,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger"
+   ],
+   "standard": "Framework-Agnostic — and Framework-Optimizing",
+   "standardCode": "FA",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B261",
+   "lines": [
+    1773,
+    1774
+   ],
+   "title": "A test run that is still working is not interrupted at the hour mark",
+   "parentFeature": "Hand-started Codex: `instar codex connect <agent>`",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Hand-started Codex: `instar codex connect <agent>`",
+   "chars": 1163,
+   "tokens": 377,
+   "tokensEstChars4": 291,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "history"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B262",
+   "lines": [
+    1775,
+    1782
+   ],
+   "title": "Normal-Chrome browser (account-bound web tasks, macOS + Windows)",
+   "parentFeature": "Normal-Chrome browser (account-bound web tasks, macOS + Windows)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Normal-Chrome browser (account-bound web tasks, macOS + Windows)",
+   "chars": 3518,
+   "tokens": 1217,
+   "tokensEstChars4": 880,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference"
+   ],
+   "standard": "Know Your Principal",
+   "standardCode": "KYP",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B263",
+   "lines": [
+    1783,
+    1789
+   ],
+   "title": "Local Verify (instar-dev / maintainer environments only)",
+   "parentFeature": "Local Verify (instar-dev / maintainer environments only)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Local Verify (instar-dev / maintainer environments only)",
+   "chars": 760,
+   "tokens": 283,
+   "tokensEstChars4": 190,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Zero-Failure",
+   "standardCode": "ZF",
+   "seedDisposition": "I",
+   "darkScope": "M",
+   "echoLiveState": "on (localVerify.enabled=true)"
+  },
+  {
+   "id": "B264",
+   "lines": [
+    1790,
+    1813
+   ],
+   "title": "Why a pool read says `peer-unreachable` vs `url-rejected`",
+   "parentFeature": "Why a pool read says `peer-unreachable` vs `url-rejected`",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Why a pool read says `peer-unreachable` vs `url-rejected`",
+   "chars": 1333,
+   "tokens": 470,
+   "tokensEstChars4": 334,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "history"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B265",
+   "lines": [
+    1814,
+    1820
+   ],
+   "title": "Honest limits to report, rather than promising a fix",
+   "parentFeature": "Why a pool read says `peer-unreachable` vs `url-rejected`",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Why a pool read says `peer-unreachable` vs `url-rejected`",
+   "chars": 464,
+   "tokens": 147,
+   "tokensEstChars4": 116,
+   "primaryTag": "rule",
+   "tags": [
+    "rule"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B266",
+   "lines": [
+    1821,
+    1822
+   ],
+   "title": "Issue topics live in their own Telegram group (\"<agent> Bugs\")",
+   "parentFeature": "Why a pool read says `peer-unreachable` vs `url-rejected`",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Why a pool read says `peer-unreachable` vs `url-rejected`",
+   "chars": 1275,
+   "tokens": 465,
+   "tokensEstChars4": 319,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "reference"
+   ],
+   "standard": "No Manual Work",
+   "standardCode": "NMW",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B267",
+   "lines": [
+    1823,
+    1829
+   ],
+   "title": "Where a peer agent's notices go (per-peer homebase topic)",
+   "parentFeature": "Where a peer agent's notices go (per-peer homebase topic)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Where a peer agent's notices go (per-peer homebase topic)",
+   "chars": 413,
+   "tokens": 152,
+   "tokensEstChars4": 104,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Notices Route to the Alerts Topic, Never a New One",
+   "standardCode": "NAR",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B268",
+   "lines": [
+    1830,
+    1860
+   ],
+   "title": "It is not guaranteed to exist",
+   "parentFeature": "Where a peer agent's notices go (per-peer homebase topic)",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > Where a peer agent's notices go (per-peer homebase topic)",
+   "chars": 3449,
+   "tokens": 1171,
+   "tokensEstChars4": 863,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference"
+   ],
+   "standard": "Notices Route to the Alerts Topic, Never a New One",
+   "standardCode": "NAR",
+   "seedDisposition": "D",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B269",
+   "lines": [
+    1861,
+    1865
+   ],
+   "title": "A2A new thread with a peer",
+   "parentFeature": "A2A new thread with a peer",
+   "headingPath": "CLAUDE.md — instar > Worktree Notices > A2A new thread with a peer",
+   "chars": 715,
+   "tokens": 253,
+   "tokensEstChars4": 179,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger"
+   ],
+   "standard": "Cross-Machine Coherence",
+   "standardCode": "CMC",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B270",
+   "lines": [
+    1866,
+    1874
+   ],
+   "title": "TCC-protected path guard (never put an agent under ~/Documents on macOS)",
+   "parentFeature": "TCC-protected path guard (never put an agent under ~/Documents on macOS)",
+   "headingPath": "CLAUDE.md — instar > TCC-protected path guard (never put an agent under ~/Documents on macOS)",
+   "chars": 2297,
+   "tokens": 845,
+   "tokensEstChars4": 575,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "trigger",
+    "history"
+   ],
+   "standard": "Avoid TCC-Protected Directories",
+   "standardCode": "TCC",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B271",
+   "lines": [
+    1875,
+    1877
+   ],
+   "title": "Honest machine state (trustworthy-machine-load, P1)",
+   "parentFeature": "TCC-protected path guard (never put an agent under ~/Documents on macOS)",
+   "headingPath": "CLAUDE.md — instar > TCC-protected path guard (never put an agent under ~/Documents on macOS)",
+   "chars": 1185,
+   "tokens": 444,
+   "tokensEstChars4": 297,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "I",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B272",
+   "lines": [
+    1878,
+    1885
+   ],
+   "title": "Feature switches apply their setting (read `effective` before saying a feature is on)",
+   "parentFeature": "Feature switches apply their setting (read `effective` before saying a feature is on)",
+   "headingPath": "CLAUDE.md — instar > TCC-protected path guard (never put an agent under ~/Documents on macOS) > Feature switches apply their setting (read `effective` before saying a feature is on)",
+   "chars": 1734,
+   "tokens": 617,
+   "tokensEstChars4": 434,
+   "primaryTag": "rule",
+   "tags": [
+    "rule",
+    "reference",
+    "trigger"
+   ],
+   "standard": "Verify the State, Not Its Symbol",
+   "standardCode": "VS",
+   "seedDisposition": "S",
+   "darkScope": "-",
+   "echoLiveState": null
+  },
+  {
+   "id": "B273",
+   "lines": [
+    1886,
+    1895
+   ],
+   "title": "Orphaned codex-arm sessions",
+   "parentFeature": "Orphaned codex-arm sessions",
+   "headingPath": "CLAUDE.md — instar > Orphaned codex-arm sessions",
+   "chars": 2647,
+   "tokens": 1006,
+   "tokensEstChars4": 662,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "history",
+    "dark"
+   ],
+   "standard": "Bounded Blast Radius",
+   "standardCode": "BBR",
+   "seedDisposition": "I",
+   "darkScope": "R",
+   "echoLiveState": null
+  },
+  {
+   "id": "B274",
+   "lines": [
+    1896,
+    1901
+   ],
+   "title": "Overload admission (trustworthy-machine-load, P2)",
+   "parentFeature": "Orphaned codex-arm sessions",
+   "headingPath": "CLAUDE.md — instar > Orphaned codex-arm sessions",
+   "chars": 2738,
+   "tokens": 1002,
+   "tokensEstChars4": 685,
+   "primaryTag": "reference",
+   "tags": [
+    "reference",
+    "trigger",
+    "dark"
+   ],
+   "standard": "Capacity Safety — No Unbounded Self-Action",
+   "standardCode": "CS",
+   "seedDisposition": "I",
+   "darkScope": "F",
+   "echoLiveState": null
+  }
+ ]
+}
