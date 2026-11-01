@@ -180,6 +180,8 @@ import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { AppConversationService } from '../core/AppConversationService.js';
+import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
@@ -5527,7 +5529,12 @@ export class AgentServer {
           // The reply relay must be on disk before any app session spawns (boot-time install).
           const relayTemplate = packagedAppReplyRelayTemplate();
           if (relayTemplate) ensureAppReplyRelay({ projectDir: options.config.projectDir, stateDir: options.config.stateDir, template: relayTemplate, claudeCompatibility: fs.existsSync(path.join(options.config.projectDir, '.claude')) });
+          // Signed records (§4.6): identity signer, signing-key history lookup, device-key ledger.
+          const signer = loadMachineSigner(options.config.stateDir);
+          const keyLookup = identityKeyLookup(options.config.stateDir);
+          const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
+            signer, keyLookup, keyLedger,
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
             registry: routeCtx.conversationRegistry!,
@@ -5557,6 +5564,28 @@ export class AgentServer {
               return t ? appReplyRelayReadiness(options.config.stateDir, t) : { ready: false, reason: 'packaged app reply relay template is unavailable' };
             },
             log: (line) => console.log(line),
+          });
+        }
+        // The device-key ledger (§4.6): activation/revocation write it first; at every boot it is
+        // reconciled against the device registry in both directions (a crash between the writes).
+        const keyLedger = svc.deps.keyLedger ?? null;
+        this.mobilePairing.keyLedger = keyLedger;
+        if (keyLedger) {
+          try {
+            const rec = keyLedger.reconcile(this.mobilePairing.devices);
+            if (rec.backfilledActivations + rec.backfilledRevocations + rec.completedRevocations > 0) {
+              console.log(`  [device-key-ledger] reconciled: ${rec.backfilledActivations} activation(s), ${rec.backfilledRevocations} revocation(s) backfilled; ${rec.completedRevocations} revocation(s) completed`);
+            }
+          } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'MobileDeviceKeyLedger', primary: 'reconcile the device-key ledger with the device registry at boot', fallback: 'the next boot retries',
+              reason: err instanceof Error ? err.message : String(err), impact: 'Some signed app messages may read "couldn\'t check" until it is repaired.',
+            });
+          }
+        } else {
+          DegradationReporter.getInstance().report({
+            feature: 'MobileDeviceKeyLedger', primary: 'sign app message receipts and keep the device-key ledger', fallback: 'messages are stored and delivered without a machine receipt',
+            reason: 'this machine has no identity key', impact: 'Signed app messages read "couldn\'t check" on this machine.',
           });
         }
         svc.start();

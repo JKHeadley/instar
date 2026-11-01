@@ -2023,6 +2023,23 @@
         "maxOpenItems": 5000,
         "note": "One row per app conversation that has had a session on this machine; replaced in place."
       }
+    },
+    {
+      "category": "mobile-device-key-ledger",
+      "description": "Device-key ledger (docs/specs/mobile-native-conversations.md §4.6): append-only, machine-signed activation and revocation rows for every paired phone key, keyed by the full key hash. It grants nothing (device authentication stays machine-bound); it lets a stored app message be re-checked later on any machine. Written ledger-first by the device registry's activation/revocation paths and by boot reconciliation; replicated through the mobileDeviceKeyLedger kind, a peer's row accepted only when it verifies under the pinned identity key of the machine it names.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "mobile-device-key-ledger.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "complianceHold": true,
+        "note": "Never pruned by design: a message signed by a key must stay checkable after the key is revoked. One activation and at most one revocation row per paired phone key per writing machine, so it grows only with pairings."
+      }
     }
   ]
 }

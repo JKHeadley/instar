@@ -83,6 +83,9 @@ const LONG_LIVED_STORES = [
   // Script-result supervision keeps its WAL journal open for the scheduler's
   // lifetime and must close before process exit.
   'src/scheduler/JobSupervisionStore.ts',
+  // Native app conversations (mobile-native-conversations §4.5): the derived index over the
+  // conversation JSONL files registers its handle in the constructor, process-lifetime.
+  'src/core/AppConversationStore.ts',
 ];
 
 /**

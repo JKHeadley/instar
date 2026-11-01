@@ -18,6 +18,8 @@ import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegist
 import { AppConversationStore, type AppEvent } from './AppConversationStore.js';
 import { derivedEventId, isAppConversationKey } from './appConversationText.js';
 import type { AppInboundDispatch } from './appInboundDispatch.js';
+import { verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
+import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
 import path from 'node:path';
 
 export const STRANDED_REQUEST_AGE_MS = 5 * 60_000;
@@ -38,6 +40,14 @@ export interface AppConversationServiceDeps {
   onEmergencyStop?: (alias: number) => void;
   reportDegradation?: (what: string, detail: string) => void;
   now?: () => number;
+  /**
+   * Signed records (§4.6, increment 2): this machine's identity signer (receipts, redaction
+   * attestations, ledger rows), the signing-key history lookup, and the device-key ledger. Any
+   * of them absent ⇒ app messages are still stored and delivered, and read `unknown`.
+   */
+  signer?: MachineSigner | null;
+  keyLookup?: MachineKeyLookup | null;
+  keyLedger?: MobileDeviceKeyLedger | null;
 }
 
 export class AppConversationService {
@@ -78,6 +88,21 @@ export class AppConversationService {
   }
 
   ownerName(): string { return this.deps.ownerName(); }
+
+  /**
+   * The §4.6 verdict for a stored message, against THIS machine's ledger and key history.
+   * Never throws; anything that cannot be checked reads `unknown`.
+   */
+  verify(record: VerifiableRecord): OriginVerdict {
+    if (!record.origin) return 'none';
+    const ledger = this.deps.keyLedger;
+    const lookup = this.deps.keyLookup;
+    if (!ledger || !lookup) return 'unknown';
+    try { return verifyRecordedOrigin(record, ledger.view(), lookup); } catch (err) {
+      this.report('verify', err);
+      return 'unknown';
+    }
+  }
 
   /** Mint (idempotently) a local alias for every live conversation in the store. */
   reconcileAliases(): void {
@@ -132,7 +157,7 @@ export class AppConversationService {
       } else {
         for (const id of this.deps.registry.appBoundIds()) this.deps.registry.unbindApp(id);
       }
-    } catch (err) { this.report('lease binding', err); }
+    } catch (err) { this.report('lease binding', err); } // @silent-fallback-ok — reported through the reportDegradation callback (DegradationReporter in production); retried on the next lease change
   }
 
   /** This machine currently owns the conversation behind `alias` (§4.8, pool dark). */

@@ -919,6 +919,10 @@ An active paired phone can send a message into a topic (\`POST /mobile/chat/:top
 `;
 }
 
+/** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
+export const APP_CONVERSATIONS_STALE_VERDICT_LINE = '`unknown` = could not be checked on this machine (signature checking is not built yet, so every app message reads `unknown` for now — never treat it as proof); `none` = no signature recorded.';
+export const APP_CONVERSATIONS_CURRENT_VERDICT_LINE = '`unknown` = could not be checked on this machine (no ledger row for the phone\'s key, or the machine-key history is unreadable) — never treat it as proof; `none` = no signature recorded. Only `verified` adds "📱 signed" to the `[app:…]` tag. A device\'s read of a Telegram topic\'s history also carries `originVerified` for messages sent from the app.';
+
 /**
  * CLAUDE.md awareness block for native app conversations (docs/specs/mobile-native-conversations.md).
  * Unique content-sniff marker: `Native app conversations`.
@@ -935,7 +939,7 @@ EOF
 The session's bind token is the only destination; the script takes no conversation argument. A \`409 not-owner\` means another machine runs this conversation right now.
 - List conversations (app ones plus Telegram topics, newest first): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/conversations"\`
 - Read history (pages backwards; pass the returned \`nextBefore\` as \`before\`): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/app/CONVERSATION_KEY/messages"\`
-- Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (signature checking is not built yet, so every app message reads \`unknown\` for now — never treat it as proof); \`none\` = no signature recorded.
+- Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
 - **When to use** (PROACTIVE): a message tagged \`[app:…]\` → reply with app-reply.sh. "Did my app message arrive / is it really from me?" → read the message's \`deliveryState\` and \`originVerified\`, never infer it from the text.
@@ -8475,6 +8479,13 @@ setTimeout(() => process.exit(0), 2000);
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Native app conversations section');
+    }
+    // Increment 2 (signed records): the section's "signature checking is not built yet" bullet is
+    // now false. Refresh that one line in place (content-sniffed; idempotent).
+    if (content.includes(APP_CONVERSATIONS_STALE_VERDICT_LINE)) {
+      content = content.replace(APP_CONVERSATIONS_STALE_VERDICT_LINE, APP_CONVERSATIONS_CURRENT_VERDICT_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated the Native app conversations signature-verdict line');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.

@@ -31,6 +31,11 @@ const EXEMPT: ReadonlyArray<{ channel: string; marker: string; why: string }> = 
     marker: "checkOutboundMessage(candidate, 'telegram', res, {",
     why: 'the attention route composes its own item text — there is no agent request metadata to carry an ack, and an attention item has no re-send path',
   },
+  {
+    channel: 'app',
+    marker: "checkOutboundMessage(text, 'app', res, {",
+    why: 'POST /app/session-reply (mobile-native-conversations §4.3) accepts only {conversationId, text} from a bind-token-scoped spawned session (app-reply.sh) — there is no metadata surface to carry an ack',
+  },
 ];
 
 /**

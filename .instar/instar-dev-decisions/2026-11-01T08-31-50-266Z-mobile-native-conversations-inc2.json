@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-01T08:31:50.266Z",
+  "slug": "mobile-native-conversations-inc2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 18,
+  "loc": 1053,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/AppConversationsReplicatedStore.ts",
+      "src/core/AppRecordSignatures.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/MobileDeviceKeyLedger.ts",
+      "src/core/MobileDeviceKeyLedgerReplicatedStore.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/state-coherence-registry.json",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 996,
+    "deletedLines": 57
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
