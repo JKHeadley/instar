@@ -45,6 +45,8 @@ namespace InstarDesktop {
     static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder value, int length, out int needed);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
     [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public INPUTUNION data; }
@@ -414,7 +416,18 @@ namespace InstarDesktop {
       Console.WriteLine("Windows companion lease self-test passed");
       return 0;
     }
+    // Without this, on a display scaled above 100% Windows reports scaled-down
+    // screen bounds: the capture covered only the top-left part of the screen
+    // (the viewer looked zoomed and cropped) while SendInput spans the real
+    // desktop, so clicks landed below and right of the drawn cursor. Declared
+    // before any Screen/SystemInformation call; per-monitor v2 (-4), with the
+    // Vista-era system-aware call as the fallback on older Windows.
+    static bool DeclareDpiAware() {
+      try { if (SetProcessDpiAwarenessContext(new IntPtr(-4))) return true; } catch (EntryPointNotFoundException) { }
+      return SetProcessDPIAware();
+    }
     public static int Main(string[] args) {
+      DeclareDpiAware();
       if (args.Length == 1 && args[0] == "--self-test") return SelfTest();
       IPAddress bind; int port;
       if (args.Length != 3 || !IPAddress.TryParse(args[0], out bind)
