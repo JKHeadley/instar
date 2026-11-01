@@ -26733,7 +26733,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 send: async (machineId, command) => {
                   const url = peerUrl(machineId);
                   if (!url) return { ok: false, reason: 'no peer url' };
-                  const r = await meshClient.send({ machineId, url }, command, 0);
+                  // The receiver decrypts and writes the whole set before answering, which can take
+                  // longer than the mesh default (5 s): a WSL peer stored every push yet the sender
+                  // reported "aborted" (2026-10-31). 30 s keeps a slow answer from reading as a failure.
+                  const r = await meshClient.send({ machineId, url }, command, 0, { timeoutMs: 30_000 });
                   return { ok: r.ok, reason: r.reason };
                 },
                 log: (m) => console.log(pc.dim(`  ${m}`)),
