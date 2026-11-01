@@ -7,6 +7,7 @@
 // the DOM.
 
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
+import { sessionTopicName } from './topic-names.js';
 
 export const WORKING_MS = 2 * 60_000;   // activity under 2 min reads "working"
 export const QUIET_MS = 10 * 60_000;    // 10+ min without activity reads "quiet" (never "stuck")
@@ -54,8 +55,8 @@ export function sessionKey(s) {
 }
 
 /** The name the operator knows: the Telegram topic name when there is one. */
-export function sessionTitle(s) {
-  const n = String((s && (s.platformName || s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
+export function sessionTitle(s, topicNames = {}) {
+  const n = String(sessionTopicName(s, topicNames) || (s && (s.name || s.tmuxSession)) || 'A session').replace(/^\[.*?\]\s*/, '').trim();
   return n.length > 80 ? n.slice(0, 77) + '…' : n || 'A session';
 }
 
@@ -101,7 +102,7 @@ function nicknameOf(pool, machineId) {
  * The whole list. sessionsRes is the GET /sessions?scope=pool read; ws is the live
  * socket's list for this machine (null when the socket has not sent one).
  */
-export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {}) {
+export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicNames = {} } = {}) {
   if (!sessionsRes || !sessionsRes.ok) return { ok: false, reason: `Couldn’t list sessions: ${(sessionsRes && sessionsRes.reason) || 'no answer'}.` };
   const data = sessionsRes.data || {};
   if (!Array.isArray(data.sessions)) return { ok: false, reason: 'The session list answered without sessions.' };
@@ -122,7 +123,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now() } = {})
     const running = Number.isFinite(started) ? spanWords(now - started) : null;
     const sub = [machine, running && running !== 'now' ? running : running ? 'just started' : null, duplicate ? 'running on two machines at once' : a.state === 'no-reading' ? null : a.words].filter(Boolean).join(' · ');
     return {
-      key: sessionKey(s), title: sessionTitle(s), sub, end: a.end, activity: a.state, duplicate,
+      key: sessionKey(s), title: sessionTitle(s, topicNames), sub, end: a.end, activity: a.state, duplicate,
       tone: duplicate ? 'bad' : a.state === 'quiet' ? 'attn' : a.state === 'no-reading' ? 'unknown' : null,
       machine, remote: s.remote === true, model: modelWords(s.model),
       session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
@@ -318,12 +319,13 @@ export function createBody({ name, platform = 'auto', framework = '', model = ''
 /** The create answer in words: started, starting elsewhere, unsettled, or refused. */
 export function createResultWords(status, data, name) {
   const d = data || {};
+  const machineName = verifiedDisplayName(d.machine?.nickname, d.machine?.machineId) || 'the chosen machine';
   if (!(status >= 200 && status < 300)) return { ok: false, text: d.error || d.message || (status ? `Not created: the server answered ${status}.` : 'Not created: the server could not be reached.') };
   const where = d.profile ? ` on ${d.profile.label}${d.profile.model ? ' · ' + modelOptionWords(d.profile.model) : ''}` : '';
   if (d.ownership === 'superseded' || d.ownership === 'not-confirmed') return { ok: true, warn: true, text: d.error || `“${name}” was created, but which machine owns it is not settled yet. Send it a message.` };
-  if (d.started === 'unknown') return { ok: true, warn: true, text: d.error || `“${name}” may still be starting on ${d.machine ? d.machine.nickname : 'the chosen machine'}.` };
-  if (d.started === 'requested' && d.machine) return { ok: true, text: `Starting “${name}” on ${d.machine.nickname}.` };
-  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : ' with no chat'}${d.machine ? ` on ${d.machine.nickname}` : ''}.` };
+  if (d.started === 'unknown') return { ok: true, warn: true, text: d.error || `“${name}” may still be starting on ${machineName}.` };
+  if (d.started === 'requested' && d.machine) return { ok: true, text: `Starting “${name}” on ${machineName}.` };
+  return { ok: true, text: `Started “${name}”${d.topicId ? ` with a Telegram topic${where}` : ' with no chat'}${d.machine ? ` on ${machineName}` : ''}.` };
 }
 
 /** The new-topic default in words, for the "Change the default" line. */

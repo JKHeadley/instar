@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { SubscriptionReloginOrchestrator } from '../../src/core/SubscriptionReloginOrchestrator.js';
 import { SubscriptionReloginService } from '../../src/core/SubscriptionReloginService.js';
-import { SubscriptionReloginStore } from '../../src/core/SubscriptionReloginStore.js';
+import { SubscriptionReloginConflictError, SubscriptionReloginStore } from '../../src/core/SubscriptionReloginStore.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -170,6 +170,106 @@ describe('SubscriptionReloginService', () => {
     await vi.waitFor(() => expect(tick).toHaveBeenCalled());
     expect(store.get(ep.id)?.state).toBe('auth-verifying');
     expect(store.listEvents(ep.id).some((e) => e.eventClass === 'resolved-elsewhere')).toBe(false);
+    store.close();
+  });
+});
+
+describe('SubscriptionReloginService.endForDeviceLimit (codex-device-limit-tripwire §4)', () => {
+  function setup() {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-service-devlimit-')); dirs.push(stateDir);
+    let n = 0;
+    const store = new SubscriptionReloginStore({ stateDir, now: () => Date.parse('2026-10-31T12:00:00.000Z'), idFactory: () => `repair-d${++n}` });
+    let source = 100;
+    const open = (opts: { account?: string; machine?: string; to?: 'suggested' | 'approved' | 'waiting-operator-only' | 'browser-driving' | 'failed' | 'succeeded' } = {}) => {
+      let ep = store.suggest({ sourceEpisodeId: ++source, accountId: opts.account ?? 'acct-codex', machineId: opts.machine ?? 'machine-1',
+        mode: 'unattended', inputDigest: `sha256:${'a'.repeat(64)}`, profileId: 'profile-1', framework: 'codex-cli', provider: 'openai' });
+      const to = opts.to ?? 'suggested';
+      if (to === 'suggested') return ep;
+      ep = store.approve(ep.id, { inputDigest: ep.inputDigest });
+      if (to === 'approved') return ep;
+      if (to === 'waiting-operator-only') return store.transition(ep.id, { expectedVersion: ep.version, to, eventClass: 'operator-only-challenge', failureClass: 'permission-expansion' });
+      for (const step of ['cli-starting', 'artifact-ready', 'browser-driving'] as const)
+        ep = store.transition(ep.id, { expectedVersion: ep.version, to: step, eventClass: step, incrementAttempt: step === 'cli-starting' });
+      if (to === 'browser-driving') return ep;
+      if (to === 'failed') return store.transition(ep.id, { expectedVersion: ep.version, to: 'failed', eventClass: 'provider-rejected', failureClass: 'provider-rejected' });
+      for (const step of ['identity-verifying', 'auth-verifying', 'succeeded'] as const)
+        ep = store.transition(ep.id, { expectedVersion: ep.version, to: step, eventClass: step });
+      return ep;
+    };
+    const tick = vi.fn(() => new Promise<never>(() => {}));
+    const service = new SubscriptionReloginService({ store, orchestrator: { tick } as unknown as SubscriptionReloginOrchestrator,
+      scanCandidates: async () => [], revalidate: async () => ({ admissible: true, inputDigest: `sha256:${'a'.repeat(64)}` }) });
+    return { store, service, open, tick };
+  }
+
+  for (const [from, expected] of [
+    ['suggested', 'refused'], ['approved', 'failed'], ['waiting-operator-only', 'failed'], ['browser-driving', 'failed'],
+  ] as const) {
+    it(`${from} → ${expected}/device-limit, with no per-episode notice and never cancelled-by-operator`, async () => {
+      const { store, service, open } = setup();
+      const ep = open({ to: from });
+      store.claimNotifications(20).forEach((n) => store.completeNotification(n.id)); // drain prior notices
+      expect(await service.endForDeviceLimit('acct-codex', 'machine-1')).toEqual([{ id: ep.id, ended: true }]);
+      expect(store.get(ep.id)).toMatchObject({ state: expected, failureClass: 'device-limit' });
+      expect(store.listEvents(ep.id)[0]).toMatchObject({ eventClass: 'device-limit-stopped', toState: expected });
+      expect(store.claimNotifications(20)).toEqual([]);
+      // Idempotent: a second call finds nothing live.
+      expect(await service.endForDeviceLimit('acct-codex', 'machine-1')).toEqual([]);
+      store.close();
+    });
+  }
+
+  it('aborts a live drive this process holds, after the store transition', async () => {
+    const { store, service, open, tick } = setup();
+    const ep = open({ to: 'approved' });
+    let signal: AbortSignal | undefined;
+    let stateAtAbort: string | undefined;
+    tick.mockImplementation((_id: string, s: AbortSignal) => {
+      signal = s;
+      s.addEventListener('abort', () => { stateAtAbort = store.get(ep.id)?.state; });
+      return new Promise<never>(() => {});
+    });
+    await service.tick();
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    expect(signal!.aborted).toBe(false);
+    await service.endForDeviceLimit('acct-codex', 'machine-1');
+    expect(signal!.aborted).toBe(true);
+    expect(stateAtAbort).toBe('failed'); // store first, then abort
+    store.close();
+  });
+
+  it('returns a CAS conflict instead of throwing, leaving the episode as it was', async () => {
+    const { store, service, open, tick } = setup();
+    const ep = open({ to: 'approved' });
+    let signal: AbortSignal | undefined;
+    tick.mockImplementation((_id: string, s: AbortSignal) => { signal = s; return new Promise<never>(() => {}); });
+    await service.tick();
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    vi.spyOn(store, 'transition').mockImplementation(() => { throw new SubscriptionReloginConflictError('episode-version-conflict'); });
+    await expect(service.endForDeviceLimit('acct-codex', 'machine-1'))
+      .resolves.toEqual([{ id: ep.id, ended: false, reason: 'episode-version-conflict' }]);
+    expect(store.get(ep.id)?.state).toBe('approved');
+    expect(signal!.aborted).toBe(false); // nothing aborted when the store ending did not land
+    store.close();
+  });
+
+  it('an illegal transition is reported, never thrown', async () => {
+    const { store, service, open } = setup();
+    const ep = open({ to: 'approved' });
+    vi.spyOn(store, 'transition').mockImplementation(() => { throw new Error('invalid-transition'); });
+    await expect(service.endForDeviceLimit('acct-codex', 'machine-1')).resolves.toEqual([{ id: ep.id, ended: false, reason: 'invalid-transition' }]);
+    store.close();
+  });
+
+  it('leaves other machines\' and other accounts\' episodes, and terminal ones, untouched', async () => {
+    const { store, service, open } = setup();
+    const otherMachine = open({ to: 'approved', machine: 'machine-2' });
+    const otherAccount = open({ to: 'approved', account: 'acct-other' });
+    const failed = open({ to: 'failed' });
+    const succeeded = open({ to: 'succeeded' });
+    const snapshot = [otherMachine, otherAccount, failed, succeeded].map((ep) => store.get(ep.id));
+    expect(await service.endForDeviceLimit('acct-codex', 'machine-1')).toEqual([]);
+    expect([otherMachine, otherAccount, failed, succeeded].map((ep) => store.get(ep.id))).toEqual(snapshot);
     store.close();
   });
 });

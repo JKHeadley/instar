@@ -168,20 +168,21 @@ with the operator session (`X-Instar-Operator-Session`), **Unlock with PIN** on 
 - Settings are a drill-down tile, so the most common change takes three taps.
 
 **The new design.**
-- *Arrival:* headline from `/health` `telegramOrigin.heldForward` plus status — "3 replies to you are held; the oldest since 09:40." / "No replies held." / "Can't tell whether replies are held." Facts: held now · expired undelivered (from `expiredUnreported`) · recording (on / partly). Whether the footer is shown is the first line of Settings, not a fact.
-- *Layout:* (1) **Held replies** list when any — conversation name, how long held, why in plain words (`hold_reason` mapped: "waiting to be routed through the machine that holds the conversation", "addressed outside the chats this agent may write to"; `dashboard/console/messages-model.js:7`), tap for detail. The list is the `held[]` array `/telegram/origins/status` already returns (`src/messaging/telegram-origin/TelegramOriginRuntime.ts:266`). (2) **Settings** — the **Footer on messages** row → settings sheet. (3) **Recording details**, collapsed, only when some part of recording is not ready. (4) **The message log** (who wrote each message) stays in the legacy tab for now, as a link at the foot of the page; see *Recent messages, later* below.
+- *Arrival:* headline from `/health` `telegramOrigin.heldForward` plus status. The quick summary separates `sessionReplies`, `automaticMessages`, and `otherMessages`; it never calls all held sends “replies.” For example: “1 reply and 23 automatic messages are held on this machine.” If the breakdown is unavailable, say “24 messages are held.” A held send is a delivery problem Echo owns, not a feature or an operator task. Expired messages appear only when present; incomplete recording is explained in the detail section. Whether the footer is shown is the first line of Settings, not a fact.
+- *Layout:* (1) **Where delivery is delayed** when any — named conversations stay distinct; anonymous sends with the same cause become one row with the affected count and oldest delay. The sheet says what happened and that Echo owns restoring delivery, without raw operation IDs. The rows come from `held[]` in `/telegram/origins/status` (`src/messaging/telegram-origin/TelegramOriginRuntime.ts:266`). (2) **Settings** — the **Footer on messages** row → settings sheet. (3) **Recording details**, collapsed, only when some part of recording is not ready. (4) **The message log** (who wrote each message) stays in the legacy tab for now, as a link at the foot of the page; see *Recent messages, later* below.
 - *Primary action:* reading. The settings sheet: "Show who wrote each message" master switch, then machine / app / model switches, a "For one conversation" picker with "Same as everywhere" — one Save, conflict shown as "Changed elsewhere — reload to see it".
 - *Secondary:* a "Recording details" disclosure holds the parts of recording that are not ready, verbatim for support.
 - *Recent messages, later:* a native list (conversation, time, "Mac Studio · Claude Code · Opus 5.5", delivered/held/failed dot, tap for the full record in plain labels, Load more) is built only when the server can return the newest messages first. `GET /telegram/origins` takes a `limit`, a `cursor` and exact-match filters and nothing else (`src/server/telegramOriginRoutes.ts:141`–`:149`), so a native page could not promise "recent". Asked for as feedback fb-bd38d155-5ea; until it lands, the legacy tab keeps the log.
 - *Honest states:* operator session missing → one unlock card ("Message records need your PIN") using the shared PIN sheet with adapter (b): `POST /dashboard/unlock`, the session token held in page memory only until its server expiry (15 minutes by default, `src/server/DashboardOperatorSessionStore.ts:18`), then asked again; the raw PIN is not kept; status unavailable → can't tell, held count never shown as zero; pool audit failing → local list with "Only this machine's messages — the others didn't answer"; `topicsMayBeIncomplete` → "Some conversations aren't listed".
-- *Multi-machine:* held replies are this machine's (the status route is local); the page says "on this machine" when the pool has more than one. When the native message log arrives it uses `scope=pool` with a coverage line ("All 3 machines" / "This machine only").
+- *Multi-machine:* held messages are this machine's (the status route is local); the page says "on this machine" when the pool has more than one. When the native message log arrives it uses `scope=pool` with a coverage line ("All 3 machines" / "This machine only").
 - *Rough sketch:*
 ```
 ┌ Messages to you ────────────────┐
-│ 3 replies to you are held.      │
+│ 1 reply, 2 automatic messages   │
+│ are held on this machine.       │
 │ Oldest since 09:40.             │
 │ held 3 · expired 0 · recording on│
-├ Held replies ───────────────────┤
+├ Held messages ──────────────────┤
 │ ▌Instar 2.0             42 min  │
 │ ▌waiting to be routed through │
 │ ▌the machine that holds it    › │

@@ -216,6 +216,17 @@ try {
       || Math.abs(layout.surface.height - layout.viewport.height) > 2 || !layout.dockInside) {
       throw new Error(`mobile viewer did not fill viewport: ${JSON.stringify(layout)}`);
     }
+    const touchPolicy = await evaluate(`(() => {
+      const control = getComputedStyle(document.getElementById('control'));
+      const input = getComputedStyle(document.getElementById('typeText'));
+      return { mode: document.getElementById('modeButton').getAttribute('aria-pressed'),
+        touchAction: control.touchAction, select: control.webkitUserSelect || control.userSelect,
+        inputSelect: input.webkitUserSelect || input.userSelect };
+    })()`);
+    if (touchPolicy.mode !== 'false' || touchPolicy.touchAction !== 'none'
+      || touchPolicy.select !== 'none' || touchPolicy.inputSelect !== 'text') {
+      throw new Error(`mobile tap/selection policy is stale: ${JSON.stringify(touchPolicy)}`);
+    }
     const x = layout.surface.x + layout.surface.width / 2;
     const y = layout.surface.y + layout.surface.height / 2;
     const touch = (type, points) => call('Input.dispatchTouchEvent', { type, touchPoints: points });
@@ -227,6 +238,13 @@ try {
     if (!zoomed.fitVisible || !/scale\((?:1\.[1-9]|[2-4])/.test(zoomed.zoom)) {
       throw new Error(`mobile pinch did not zoom: ${JSON.stringify(zoomed)}`);
     }
+    const panBefore = await evaluate("document.getElementById('viewTransform').style.transform");
+    await touch('touchStart', [{ x, y, id: 4 }]);
+    await touch('touchMove', [{ x: layout.surface.x + layout.surface.width - 3, y, id: 4 }]);
+    await sleep(120);
+    const panAfter = await evaluate("document.getElementById('viewTransform').style.transform");
+    await touch('touchEnd', []);
+    if (panBefore === panAfter) throw new Error('zoomed mobile edge drag did not pan the desktop');
     const keyboardRect = await evaluate(`(() => {
       const r = document.getElementById('keyboardButton').getBoundingClientRect();
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
@@ -237,7 +255,8 @@ try {
       && !document.getElementById('keyboardBar').hidden`);
     if (!keyboardOpen) throw new Error('mobile keyboard control did not focus the typing field');
     mobileResult = { viewport: `${layout.viewport.width}x${layout.viewport.height}`,
-      surface: `${layout.surface.width}x${layout.surface.height}`, pinch: true, keyboard: true };
+      surface: `${layout.surface.width}x${layout.surface.height}`, pinch: true,
+      edgeFollow: true, directMode: true, keyboard: true };
   }
   stopAttempted = true;
   const stopped = await evaluate(`(async () => {

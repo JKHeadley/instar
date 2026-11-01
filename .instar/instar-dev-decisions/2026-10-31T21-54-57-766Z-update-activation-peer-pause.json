@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-31T21:54:57.766Z",
+  "slug": "update-activation-peer-pause",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 64,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoUpdater.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 52,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

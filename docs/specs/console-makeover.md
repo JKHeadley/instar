@@ -39,6 +39,17 @@ Every one was recorded correctly. Nothing displayed them.
 
 ## Design rule
 
+**Channel identity is a verified pair.** Every user-facing Telegram topic or
+Slack channel title must be tied to its platform ID by the source registry.
+Generated `topic-N` strings and raw channel IDs are lookup failures, not names.
+The pool read joins verified titles from reachable machines before rendering;
+unresolved IDs are reported as missing names and retried. A screen must never
+turn an unresolved identifier into a plausible title. Registering a session
+with a generated placeholder must not overwrite a verified title already held.
+The same rule applies to machine nicknames, account names, agent names, and
+other identity labels across Instar; fingerprints and shortened hashes belong
+in support details, not headlines or row titles.
+
 **A value that could not be read says so. It never renders as fine.** Three
 cases, each with its own look:
 
@@ -72,6 +83,12 @@ instar.sh main site themes/colors". Visual quality is a pass/fail MVP criterion.
 - **Colour carries meaning only:** teal = healthy/brand, amber = needs you,
   red = failing, dashed slate = can't tell. Healthy state recedes; what needs the
   operator is the most prominent thing on screen.
+- **Every expanded view stays readable:** the console's shared detail fold uses
+  plain labels and readable values. It omits opaque IDs, tokens, file paths,
+  nested JSON, and fields that cannot be explained from their data. Empty folds
+  stay hidden. Feature sheets put the next action in ordinary words beside the
+  direct action link; the Promise sheet shows actual due dates or says that a
+  date was not recorded.
 - **Phone first** (designed at 390 px; bottom navigation), widened to desktop
   (sidebar), never squeezed down. Short purposeful motion; `prefers-reduced-motion`
   honoured.
@@ -92,10 +109,11 @@ at most three rows, and either an inline "See all" (the records it already
 fetched, each row expandable to its full text) or a link to the legacy tab that
 holds the detail. Page-wide budget before interaction: one headline, six cards,
 at most 18 rows. Each card fetches and renders on its own (a skeleton until it
-resolves; 5 s deadline, 8 s for the two pool reads, which wait up to 5 s on peers
-server-side and show "Still checking the other machines…" meanwhile), refreshes
-every 30 s while visible, keeps its last good data with an age when a refresh
-fails, and keeps any opened row or list open across refreshes.
+resolves; 20 s local and 25 s cross-machine read deadlines), refreshes every
+30 s while visible, keeps its last good data with an age when a refresh fails,
+and keeps any opened row or list open across refreshes. Failed reads and pool
+answers with missing peers retry independently while Home is open, with bounded
+backoff and one request per source. The screen says when it is checking again.
 
 | Card | Route (existing) | Fields used | Scope | Can't tell when | Detail |
 |---|---|---|---|---|---|
@@ -132,8 +150,10 @@ Block specifics:
   "active N min ago". Topic focus is not used in MVP.
 - **What I've promised** leads with promises *waiting on you* (owner user, or
   blocked on your input or authorization) touched in the last 14 days, then
-  missed ones; older waiting promises are listed as "untouched 14+ days" but not
-  counted (47 → 11 on live data); the rest is not counted on Home (see "A calm front page"). Replica rows say they come from another machine and how old they are.
+  older waiting promises as "untouched 14+ days" without counting them. All
+  Echo-owned work, including missed dates and failed checks, stays off the
+  default Home list and in collapsed Work audit sections until a concrete
+  operator dependency is recorded. Replica rows say they come from another machine and how old they are.
   Coverage is stated beside the value: no replica rows means "only this machine's
   promises are visible", a replica over 15 min old means "some of it is out of
   date"; either marks the card a partial view even when it also needs you.
@@ -153,8 +173,48 @@ Block specifics:
   weeks (they stay under See all), a miss untouched for 14+ days is history
   rather than a red row, a promise waiting on the operator is listed once (in
   What needs you), and when every machine is answering the machine list
-  collapses to that one line. The headline names the areas it cannot fully
-  see instead of counting them.
+  collapses to that one line. Incomplete readings stay under agent status
+  instead of joining the action headline.
+- **An actionable front page** (operator, 2026-10-28: the repeated "things" count
+  is annoying, the headline is vague, and a need must open something easy to
+  understand and act on). When a known request exists, the headline names its
+  actual action rather than counting requests. Its link opens that request's
+  detail sheet in one tap; the sheet shows the original request and a link to
+  the conversation where the operator can respond. The same request is not
+  repeated as a second count on Home. An alert with no evidence that the
+  operator must act, such as a refused Telegram request, stays out of "What
+  needs you" even if its category is security. Incomplete coverage remains
+  visible. The dev copy is the review surface before release.
+  On a phone the front page shows the named request and its action link;
+  status cards sit behind a single "See agent status" disclosure. A machine
+  reachability note stays in that status area even when a request is present;
+  it must not appear as an adjacent line in "What needs you" or imply that it
+  caused the request (operator, 2026-10-30). Context such as PR numbers stays
+  under the short action headline.
+  The mesh promise read gets a 25-second budget and continues retrying on Home
+  while that page is open. The Promises page retries a failed read once per
+  refresh. A failed Home refresh keeps the last successful
+  promise result in both the Promises card and What needs you, marked as old;
+  a first load with no successful reading still says it cannot tell. The
+  machine-pool read has the same 25-second budget.
+  A missed deadline on Echo-owned work is not an operator request at any age.
+  It remains in collapsed Work history for Echo to verify; a stale promise
+  record alone does not prove the original problem persists. Internal
+  `pipeline-wake-*` records also do not say the operator asked for them.
+  On 2026-10-29 Justin clarified that a conversation link does not complete an
+  approval handoff: the detail sheet must offer an approval control or the exact
+  page where approval happens. The known rulebook request links to its verified
+  GitHub PR pages, with the open 1.x review first and the merged 2.0 PR labeled
+  as such. The console validates exact `actionLinks` when a record carries them;
+  the commitment creation API does not yet accept that field, so producer support
+  remains future work. A missing destination is never invented from a PR number
+  alone.
+- **A failure opens its evidence** (operator, 2026-10-30: the Home headline said
+  "Something is failing" without a path into the issue). When no operator request
+  takes precedence, a failing headline names the failure and offers a visible
+  link into the specific record when possible. An actual user dependency opens
+  its promise sheet directly; lost replies and unreachable machines link to their detail
+  pages. Completed records cannot reopen as active handoffs.
 - **No internal text on Home.** No card or headline shows an internal id, a
   placeholder value (undefined/null), an internal field name or bookkeeping
   phrasing; `tests/unit/console-home-one-answer.test.ts` scans every builder's
@@ -162,7 +222,8 @@ Block specifics:
 - **The headline** counts What needs you (which already includes waiting
   promises). It is teal "All quiet." only when every card is observed and
   fine. Unknown, partial or stale cards make it "Nothing urgent that I can see."
-  in a muted tone, and a known count always carries the coverage qualification.
+  in a muted tone. A known request keeps its action link prominent while
+  incomplete coverage is stated in the status disclosure and relevant card.
 
 ### 2. Navigation
 
@@ -195,9 +256,11 @@ No embedding. The dashboard keeps `X-Frame-Options: DENY`; no header changes.
   (`/sessions`), never `/health`, which is public. With no valid token it shows
   its own PIN screen, which calls the existing `POST /dashboard/unlock` and stores
   only the bearer token, exactly as legacy does.
-- The console is read-only in MVP, so it needs no operator proof. PIN-gated
-  actions happen in the legacy tab, which keeps its own in-memory proof and asks
-  for the PIN when it has none. Nothing persists the operator proof.
+- Home is read-only. The native Promises page can close, drop, or resume a
+  promise through the existing bearer-protected commitment routes. Those
+  actions do not perform an external approval or send a reply. PIN-gated
+  actions remain in the legacy tab, which keeps its own in-memory proof and
+  asks for the PIN when it has none. Nothing persists the operator proof.
 
 ### 4. What is deliberately not in this plan
 

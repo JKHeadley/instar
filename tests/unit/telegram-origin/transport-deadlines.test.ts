@@ -105,6 +105,36 @@ describe('Telegram network deadlines after origin preparation', () => {
     expect(row.children[0].state).toBe('queued');
     expect(row.operation?.operationId).toBe(JSON.parse(row.record.envelopeJson).operationId);
   });
+  // Node's fetch wraps the socket error: TypeError('fetch failed', { cause }).
+  const fetchFailed = (cause: Record<string, unknown>) => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(String(cause.code)), cause) });
+  it.each([
+    ['refused connect', { code: 'ECONNREFUSED', syscall: 'connect' }],
+    ['DNS failure', { code: 'ENOTFOUND', syscall: 'getaddrinfo' }],
+    ['undici connect timeout', { code: 'UND_ERR_CONNECT_TIMEOUT' }],
+  ])('a %s proves nothing reached Telegram: retryable, never "outcome unknown"', async (_label, cause) => {
+    const h = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.network.mockImplementation(async () => { throw fetchFailed(cause); });
+    await expect(h.send({ networkTimeoutMs: 15_000 })).rejects.toMatchObject({ reason: 'telegram-connect-failed' });
+    const row = (await h.runtime.store.listOrigins()).records[0];
+    expect(row.attempts[0]).toMatchObject({ phase: 'dispatched', outcome: 'known-failed', reason: 'telegram-connect-failed' });
+    expect(row.children[0].state).toBe('queued');
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('send outcome unknown'));
+  });
+  it.each([
+    ['reset after the connection opened', { code: 'ECONNRESET', syscall: 'read' }],
+    ['undici socket closed', { code: 'UND_ERR_SOCKET' }],
+    ['a connect-only code from a non-connect call', { code: 'ETIMEDOUT', syscall: 'read' }],
+  ])('a %s stays "outcome unknown", and the log names the network error', async (_label, cause) => {
+    const h = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.network.mockImplementation(async () => { throw fetchFailed(cause); });
+    await expect(h.send({ networkTimeoutMs: 15_000 })).rejects.toMatchObject({ outcome: 'outcome-unknown' });
+    expect((await h.runtime.store.listOrigins()).records[0].children[0].state).toBe('outcome-unknown');
+    const line = warn.mock.calls.map(c => String(c[0])).find(l => l.includes('send outcome unknown'));
+    expect(line).toContain(`code=${cause.code}`);
+    expect(line).not.toContain(h.token);
+  });
   it('retains caller cancellation after invocation as unknown and never automatically replays it', async () => {
     const h = await harness(), caller = new AbortController();
     h.network.mockImplementation(async (_url, init) => { caller.abort(); init.signal!.throwIfAborted(); throw new Error('unreachable'); });

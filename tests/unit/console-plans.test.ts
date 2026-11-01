@@ -233,8 +233,8 @@ describe('autonomous runs', () => {
     ] }), { 2: 'Console build' });
     expect(r.openOnArrival).toBe(true);
     expect(r.rows.map((x) => [x.main, x.sub])).toEqual([
-      ['Topic 13481', 'making progress'], ['Console build', 'no new work and no message from me for 1 h 35 min'],
-      ['Topic 3', 'just started being watched'], ['Topic 4', 'can’t tell · read breaker open'],
+      ['Conversation name unavailable', 'making progress'], ['Console build', 'no new work and no message from me for 1 h 35 min'],
+      ['Conversation name unavailable', 'just started being watched'], ['Conversation name unavailable', 'can’t tell · read breaker open'],
     ]);
     expect(autonomousRow({ topicId: 1, decision: 'unknown' }).tone).toBe('unknown');
   });

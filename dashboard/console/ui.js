@@ -76,6 +76,8 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
 let openSheet = null;
 export function sheet({ title, onClose }, ...content) {
   closeSheet();
+  const priorOverflow = document.documentElement.style.overflow;
+  document.documentElement.style.overflow = 'hidden';
   const panel = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
     el('div', { class: 'sheet-grab', 'aria-hidden': 'true' }),
     el('div', { class: 'sheet-head' }, el('h2', { class: 'sheet-title', text: title }),
@@ -86,15 +88,16 @@ export function sheet({ title, onClose }, ...content) {
   document.body.append(root);
   const onKey = (e) => { if (e.key === 'Escape') closeSheet(); };
   document.addEventListener('keydown', onKey);
-  openSheet = { root, onClose, onKey };
+  openSheet = { root, onClose, onKey, priorOverflow };
   requestAnimationFrame(() => root.classList.add('open'));
   panel.querySelector('.sheet-close').focus({ preventScroll: true });
   return panel;
 }
 export function closeSheet() {
   if (!openSheet) return;
-  const { root, onClose, onKey } = openSheet;
+  const { root, onClose, onKey, priorOverflow } = openSheet;
   openSheet = null;
+  document.documentElement.style.overflow = priorOverflow;
   document.removeEventListener('keydown', onKey);
   root.remove();
   if (onClose) onClose();
@@ -106,14 +109,48 @@ export function story(lines) {
   return el('dl', { class: 'story' }, lines.flatMap((l) => [el('dt', { text: l.label }), el('dd', { text: l.text })]));
 }
 
-/** A fold with raw fields (identifiers last, mono). */
+// Only fields with a clear operator meaning belong in a detail sheet. Raw
+// records still exist in the API, but dumping their keys, IDs and JSON into
+// the console makes an expanded view harder to understand than the summary.
+const DETAIL_LABELS = {
+  name: 'Name', nickname: 'Name', description: 'Description', reason: 'Reason', resolution: 'Outcome',
+  status: 'Status', state: 'State', priority: 'Priority', severity: 'Severity',
+  email: 'Email', provider: 'Provider', framework: 'App', model: 'Model',
+  online: 'Answering', connectedNow: 'Connected now',
+  startedAt: 'Started', createdAt: 'Recorded', updatedAt: 'Updated', lastActivity: 'Last activity',
+  lastRun: 'Last run', nextRun: 'Next run', lastSentAt: 'Last sent', lastAckedAt: 'Last acknowledged',
+  lastInboundAt: 'Last received', lastRefreshAt: 'Last refreshed',
+  toolsUsed: 'Tools used', backgroundTasks: 'Background tasks', eventCount: 'Recorded events',
+  pendingCount: 'Waiting', failedCount: 'Failed', unconfirmedCount: 'Unconfirmed',
+  attempts: 'Attempts', lastOutcome: 'Last outcome', lastResult: 'Last result',
+  scheduleWords: 'Schedule', machineNickname: 'Machine',
+};
+
+function detailValue(key, value) {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'number') return Number.isFinite(value) ? value.toLocaleString() : null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text || /^(?:[a-f0-9]{24,}|m_[a-f0-9]{16,})$/i.test(text)) return null;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text)) {
+    const time = Date.parse(text);
+    if (Number.isFinite(time)) return new Date(time).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+  return ['status', 'state', 'priority', 'severity', 'lastOutcome', 'lastResult', 'provider', 'framework'].includes(key)
+    ? text.replace(/[-_]/g, ' ') : text;
+}
+
+/** A fold of readable context; unknown technical fields are omitted. */
 export function details(obj, keys) {
-  const d = el('details', { class: 'raw' }, el('summary', { text: 'Details' }));
+  const d = el('details', { class: 'raw' }, el('summary', { text: 'More context' }));
   const dl = el('dl', { class: 'raw-fields' });
   for (const k of keys) {
-    if (obj[k] === undefined || obj[k] === null || obj[k] === '') continue;
-    dl.append(el('dt', { text: k }), el('dd', { class: 'mono', text: typeof obj[k] === 'object' ? JSON.stringify(obj[k]) : String(obj[k]) }));
+    const label = DETAIL_LABELS[k];
+    const value = label ? detailValue(k, obj[k]) : null;
+    if (value === null) continue;
+    dl.append(el('dt', { text: label }), el('dd', { text: value }));
   }
+  if (!dl.childNodes.length) d.hidden = true;
   d.append(dl);
   return d;
 }
@@ -169,9 +206,50 @@ export function operatorSession() {
 }
 export function forgetOperatorSession() { opSession = null; }
 
+/**
+ * Asks the server whether a PIN typed on this connection can be accepted.
+ * A PIN box is shown only when it can; otherwise the caller shows the reason
+ * and a link to the secure address. If the check itself cannot be read, the
+ * box is shown as before (the unlock route still answers for itself).
+ */
+export async function unlockCheck() {
+  try {
+    const r = await fetch('/dashboard/unlock-check', { cache: 'no-store' });
+    if (!r.ok) return { accepted: true };
+    const d = await r.json();
+    if (d && d.accepted === false) {
+      return { accepted: false, reason: typeof d.reason === 'string' ? d.reason : 'Your PIN cannot be accepted on this address.', secureUrl: secureHref(d.secureUrl) };
+    }
+  } catch { /* unreadable check: fall back to the box */ }
+  return { accepted: true };
+}
+
+/** The same page on the secure address, or null when none is known. */
+export function secureHref(url) {
+  if (typeof url !== 'string' || !/^https:\/\//i.test(url)) return null;
+  try {
+    const u = new URL(url);
+    return `${u.origin}${location.pathname}${location.search}${location.hash}`;
+  } catch { return null; }
+}
+
+/** What to show instead of a PIN box the server would refuse. */
+export function refusedUnlock(check) {
+  return el('div', { class: 'pin-form' },
+    el('p', { class: 'confirm-text', text: check.reason }),
+    check.secureUrl
+      ? el('a', { class: 'btn-primary', href: check.secureUrl, text: 'Open the secure address' })
+      : el('p', { class: 'confirm-text', text: 'Open this dashboard from your usual dashboard link, or on the machine itself.' }),
+  );
+}
+
 export function askPin({ title, explain, adapter = 'body' }) {
   if (adapter === 'session' && operatorSession()) return Promise.resolve({ session: operatorSession() });
-  return new Promise((resolve) => {
+  return unlockCheck().then((check) => new Promise((resolve) => {
+    if (!check.accepted) {
+      sheet({ title: title || 'Your PIN', onClose: () => resolve(null) }, refusedUnlock(check));
+      return;
+    }
     const input = el('input', { class: 'pin-input', type: 'password', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '12', 'aria-label': 'Dashboard PIN' });
     const err = el('p', { class: 'unlock-error', role: 'alert' });
     const go = el('button', { class: 'btn-primary', type: 'submit', text: 'Continue' });
@@ -198,5 +276,5 @@ export function askPin({ title, explain, adapter = 'body' }) {
     });
     sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
     setTimeout(() => input.focus(), 50);
-  });
+  }));
 }

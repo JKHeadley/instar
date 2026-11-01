@@ -923,8 +923,13 @@ const GITIGNORE_ENTRIES = [
   '.worktrees/',
   '# Judgment-call provenance rows (machine-local decision context — never commit)',
   'state/judgment-provenance/',
+  // Codex device-limit judge provenance (codex-device-limit-tripwire §1): machine-local only.
+  'state/codex-device-limit-provenance/',
   '# Subscription pool login locations (machine-local — never commit)',
   '.instar/subscription-pool.json',
+  '# Hook telemetry (per-session, machine-local — never commit)',
+  '.instar/hook-events/',
+  '.instar/subagent-tracking/',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

@@ -34,19 +34,31 @@ describe('one answer to "what needs you"', () => {
     expect(needs.value).toBe('Nothing needs you'); // the old card alone
     const card = combineNeeds(needs, promised);
     const h = headline({ needs: card, promised, reach: { state: 'ok' } });
-    expect(h.text).toBe('One thing needs you.');
+    expect(h.text).toBe('Merge each PR as soon as you approve it');
     expect(card.value).toBe('1 thing');
     expect(card.count).toBe(1);
     expect(card.rows[0].main).toContain('Merge each PR');
     expect(card.rows[0].sub).toMatch(/^a promise · waiting on your authorization/);
-    expect(card.line).toContain('Includes 1 promise waiting on you');
+    expect(card.line).toBe('');
+    expect(h.action).toMatchObject({ kind: 'promise' });
   });
   it('queue items and waiting promises are counted once, never twice', () => {
     const needs = buildNeeds(ok({ items: [item(), item({ title: 'Rotate the key', category: 'security', source: 'agent' })], pool: { failed: [] } }), NOW);
     const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ blockedOn: 'user-input', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 })] }), NOW, 1);
     const card = combineNeeds(needs, promised);
     expect(card.count).toBe(3);
-    expect(headline({ needs: card, promised }).text).toBe('3 things need you.');
+    // The urgent queue item leads; the waiting promise follows it.
+    expect(headline({ needs: card, promised }).text).toBe('Approve the deploy');
+  });
+  it('the live reported case names the approval and does not treat a refused request as work for the operator', () => {
+    const needs = buildNeeds(ok({ items: [{ id: 'guard-refusal', title: 'Something other than the lifeline called my Telegram intake', category: 'security', priority: 'HIGH', status: 'OPEN', summary: 'The request was refused.', createdAt: minsAgo(2) }], pool: { failed: [] } }), NOW);
+    const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ id: 'CMT-1043', owner: 'user', blockedOn: 'user-authorization', userRequest: 'Approve rulebook changes (2.0 PR 182, 1.x PR 2380)', agentResponse: 'Merge each PR as soon as Justin approves it on GitHub.', originMachineId: 'm2', viewSource: 'replica', stalenessMs: 1000 })] }), NOW, 1);
+    const card = combineNeeds(needs, promised);
+    expect(card.count).toBe(1);
+    expect(card.rows[0].main).toBe('Approve rulebook changes (2.0 PR 182, 1.x PR 2380)');
+    expect(headline({ needs: card, promised }).text).toBe('Approve rulebook changes');
+    expect(headline({ needs: card, promised }).sub).toContain('2.0 PR 182 · 1.x PR 2380');
+    expect(card.rows[0].action).toMatchObject({ kind: 'promise', id: 'CMT-1043' });
   });
   it('nothing anywhere: both say so', () => {
     const needs = buildNeeds(ok({ items: [], pool: { failed: [] } }), NOW);
@@ -102,7 +114,7 @@ function strings(v: unknown, out: string[] = [], key = ''): string[] {
   // Collect only what the page renders: text fields, not ids or row keys.
   if (typeof v === 'string') { if (!['key', 'state', 'tone', 'valueTone', 'href', 'coverage'].includes(key)) out.push(v); }
   else if (Array.isArray(v)) v.forEach((x) => strings(x, out, key));
-  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (k !== 'machines' && k !== 'detail') strings(x, out, k);
+  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) if (k !== 'machines' && k !== 'detail' && k !== 'action') strings(x, out, k);
   return out;
 }
 
@@ -164,11 +176,11 @@ describe('a calm front page', () => {
   });
   it('a miss untouched for 14+ days is history, not a red row', () => {
     const p = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [
-      promise({ status: 'violated', createdAt: minsAgo(60 * 24 * 70) }),
-      promise({ status: 'violated', createdAt: minsAgo(60) }),
+      promise({ status: 'violated', createdAt: minsAgo(60 * 24 * 70), hardDeadlineAt: minsAgo(60 * 24 * 69) }),
+      promise({ status: 'violated', createdAt: minsAgo(60), hardDeadlineAt: minsAgo(30) }),
     ] }), NOW, 0);
-    expect(p.line).toBe('1 recently missed its deadline.');
-    expect(p.rows.filter((r: { tone: string }) => r.tone === 'bad')).toHaveLength(1);
+    expect(p.line).toBe('I’m handling the open work.');
+    expect(p.rows.filter((r: { tone: string }) => r.tone === 'bad')).toHaveLength(0);
   });
   it('a promise waiting on the operator is listed once, in What needs you', () => {
     const p = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [promise({ blockedOn: 'user-input' }), promise({ status: 'violated', createdAt: minsAgo(60) })] }), NOW, 0);
@@ -177,6 +189,33 @@ describe('a calm front page', () => {
     expect(card.rows.filter((r: { tone: string }) => r.tone === 'attn')).toHaveLength(1);
   });
   it('the headline names what it cannot fully see', () => {
-    expect(headline({ needs: { state: 'ok', count: 0 }, promised: { state: 'partial', count: 0 } }).sub).toBe("Can't fully see promises.");
+    expect(headline({ needs: { state: 'ok', count: 0 }, promised: { state: 'partial', count: 0 } })).toMatchObject({ text: 'Nothing needs you.', tone: 'ok' });
+  });
+});
+
+describe('the same ask is never listed twice (the PR 2380 double)', () => {
+  it('a promise waiting on the same pull request as a queue item is dropped; the queue item (with its action) stays', async () => {
+    const { buildNeeds, buildPromised, combineNeeds, pullRequestRefs } = await import('../../dashboard/console/home-model.js');
+    const NOW = Date.now();
+    const needs = buildNeeds({ ok: true, data: { items: [{ id: 'a', title: 'Approve PR 2380 on GitHub', status: 'OPEN', priority: 'HIGH', category: 'approval', source: 'agent', createdAt: new Date(NOW - 60_000).toISOString() }], pool: { failed: [] } } } as never, NOW);
+    const promised = buildPromised({ ok: true, data: { enabled: true, scope: 'mesh', commitments: [
+      { id: 'c1', status: 'pending', createdAt: new Date(NOW - 3600_000).toISOString(), blockedOn: 'user-authorization', owner: 'user', userRequest: 'Approve PR 2380', agentResponse: 'Merge PR 2380 as soon as you approve it.', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 },
+    ] } } as never, NOW, 1);
+    const card = combineNeeds(needs, promised);
+    expect(card.count).toBe(1);
+    expect(card.rows.map((r: { main: string }) => r.main)).toEqual(['Approve PR 2380 on GitHub']);
+    expect(pullRequestRefs({ main: 'see https://github.com/x/y/pull/2380 and PR #77, topic #4242' })).toEqual(['2380', '77']);
+    expect(pullRequestRefs({ main: 'Topic 2380 is quiet' })).toEqual([]);
+  });
+});
+
+describe('no confident all-clear while part of the list could not be read', () => {
+  it('an empty queue plus a failed promises read is "that I can see", muted, with a re-check', async () => {
+    const { buildNeeds, buildPromised, combineNeeds, headline } = await import('../../dashboard/console/home-model.js');
+    const NOW = Date.now();
+    const needs = buildNeeds({ ok: true, data: { items: [], pool: { failed: [] } } } as never, NOW);
+    const promised = buildPromised({ ok: false, reason: 'no answer within 5 seconds' } as never, NOW, 1);
+    const h = headline({ needs: combineNeeds(needs, promised), promised });
+    expect(h).toMatchObject({ text: 'Nothing needs you that I can see.', tone: 'muted' });
   });
 });

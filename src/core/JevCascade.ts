@@ -137,6 +137,19 @@ export async function askReferee(
      * `component`, `category` or `deferrable`.
      */
     attribution?: Record<string, string | number | boolean | null | undefined>;
+    /**
+     * Run this one call on a named provider account (its config home) instead of
+     * the provider's ambient login. Absent ⇒ today's behaviour.
+     */
+    accountOverride?: { accountId: string; configHome: string };
+    /**
+     * Pin the call to one CLI door and exact model, with no router fallbacks.
+     * When set, the call also carries that model id and `strictModelPin`, because
+     * the provider reads the model from those fields, not from the route. Codex
+     * refuses a required route without an `accountOverride`, so a missing
+     * account fails the call instead of falling back to the default home.
+     */
+    requiredRoute?: { framework: 'codex-cli'; modelId: string };
   },
 ): Promise<RefereeOutcome> {
   const now = opts.now ?? Date.now;
@@ -146,7 +159,9 @@ export async function askReferee(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const call = referee.evaluate(buildRefereePrompt(state, questions), {
-      model: 'fast',
+      model: (opts.requiredRoute ? opts.requiredRoute.modelId : 'fast') as IntelligenceOptions['model'],
+      ...(opts.requiredRoute ? { requiredRoute: opts.requiredRoute, strictModelPin: true } : {}),
+      ...(opts.accountOverride ? { accountOverride: opts.accountOverride } : {}),
       timeoutMs,
       onModel: (m) => { model = m.model; },
       attribution: {

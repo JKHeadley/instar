@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-10-31T23:14:38.038Z",
+  "slug": "codex-device-limit-tripwire",
+  "carriers": {
+    "CMT-020": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Follow-up to the device-limit tripwire: operator Yes/No grade control on a benched Subscriptions cell (PIN session, verified principal) and Decision Quality Meter aggregation of agreement/observed/grade under codex-device-limit-judge. Measurement only; mirrors ACT-007."
+    }
+  }
+}

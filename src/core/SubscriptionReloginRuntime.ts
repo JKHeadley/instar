@@ -85,6 +85,15 @@ export interface SubscriptionReloginRuntimeDeps {
    * false`). Then no Codex repair can ever prove authenticated use (the rollout file is not proof),
    * so Codex episodes are refused at admission with a named reason instead of burning attempts.
    */
+  /**
+   * codex-device-limit-tripwire §4: true while the account is suspected or benched for a device
+   * limit on this machine (switch-aware). Defers slow retries; never mutates an episode.
+   */
+  deviceLimitHold?: (accountId: string) => boolean;
+  /** codex-device-limit-tripwire §2 C: judge an `unknown` OpenAI sign-in page (true ⇒ device limit). */
+  judgeDeviceLimitPage?: (accountId: string, text: string) => Promise<boolean>;
+  /** codex-device-limit-tripwire §4: a repair ended at a (suspected) device-limit page. */
+  onDeviceLimitStopped?: (accountId: string) => void;
   codexLiveReadAvailable?: boolean;
   /** Host seat lease override (tests); defaults to the host-wide Playwright seat lease. */
   seatLease?: PlaywrightSeatLease;
@@ -144,6 +153,8 @@ export interface SubscriptionReloginRuntime {
    * repair start?" is a read, never a guess). Read-only: no row, ledger entry or login is written.
    */
   blockers(): Promise<SubscriptionReloginBlocker[]>;
+  /** codex-device-limit-tripwire §4: end every live repair for a benched account on this machine. */
+  endForDeviceLimit(accountId: string): Promise<Array<{ id: string; ended: boolean; reason?: string }>>;
   start(): void; stop(): void; close(): void;
 }
 
@@ -257,6 +268,10 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       store.enqueuePhoneTap(episodeId);
       void serviceRef?.flushNotifications();
     },
+    onDeviceLimitReported: (episodeId) => {
+      const accountId = store.get(episodeId)?.accountId;
+      if (accountId) deps.onDeviceLimitStopped?.(accountId);
+    },
     validateCode: validClaudePasteBackCode,
     serverPort: deps.helperSession!.serverPort,
     browserDriver: deps.helperSession!.browserDriver,
@@ -357,13 +372,16 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // its model calls are capped per drive by the port, bracketed here.
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
         resolveSecret: deps.resolveSecret, takeBackupCode: deps.takeBackupCode, supervise: deps.supervise, seatLease, now,
-        navigation: agentNavigation || lastResortDrive ? 'agent' : 'closed', navigate: deps.navigate });
+        navigation: agentNavigation || lastResortDrive ? 'agent' : 'closed', navigate: deps.navigate,
+        ...(deps.judgeDeviceLimitPage ? { judgeDeviceLimitPage: (text: string) => deps.judgeDeviceLimitPage!(acct.id, text) } : {}) });
       deps.lastResort?.beginDrive(episode.id);
       try {
-        return await driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
+        const driven = await driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
           expectedIdentity: acct.email,
           loginMethod: autonomousLoginMethod(browserAccount), secretRefs: browserAccount.vaultBindings ?? {},
           allowedScopes: resolveAllowedScopes(deps.allowedScopes, login.verificationUrl) }, signal);
+        if (driven.outcome === 'refused' && driven.failureClass === 'device-limit') deps.onDeviceLimitStopped?.(acct.id);
+        return driven;
       } finally {
         deps.lastResort?.endDrive(episode.id);
       }
@@ -467,7 +485,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     }
     return evaluateSubscriptionReloginAdmission({ configuredMode: effectiveMode,
       poolAuthority: deps.pool.getAvailability().state, account: { id: acct.id, machineId: deps.machineId,
-        status: acct.status, framework: acct.framework, provider: acct.provider, identityHash: identityHash(acct.email) },
+        status: acct.status, framework: acct.framework, provider: acct.provider, identityHash: identityHash(acct.email), statusCause: acct.statusCause ?? null },
       sourceEpisode, hasLiveRepair: store.list({ accountId: acct.id, limit: 10 }).some((item) =>
         item.id !== currentEpisodeId && !['succeeded', 'refused', 'cancelled', 'failed'].includes(item.state)),
       hasLivePendingLogin: livePending?.status === 'pending' && !ownLeftover,
@@ -519,6 +537,8 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       if (acct.status !== 'needs-reauth' || !isReloginSupportedPath(acct.provider, acct.framework)) continue;
       const sourceEpisode = open.find((item) => item.accountId === acct.id);
       const base = { accountId: acct.id, machineId: deps.machineId, framework: acct.framework };
+      // A device-limit bench is the reason, with or without an open incident (spec codex-device-limit-tripwire §8).
+      if (acct.statusCause === 'codex-device-limit') { out.push({ ...base, reason: 'device-limit-benched' }); continue; }
       if (!sourceEpisode) { out.push({ ...base, reason: 'no-open-incident' }); continue; }
       // A repair row for this incident is already visible as an episode; its state says the rest.
       if (store.list({ accountId: acct.id, limit: 100 }).some((item) => item.sourceEpisodeId === sourceEpisode.id
@@ -543,6 +563,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     onOperatorOnly: deps.onOperatorOnly, onPhoneTap: deps.onPhoneTap, tickMs: deps.tickMs, now,
     // Verified healthy by the server: pool `active`, no identity drift (the poller reconciles the
     // credential's identity), and this process's latest poll was an authenticated read.
+    deviceLimitHold: deps.deviceLimitHold ? (episode) => deps.deviceLimitHold!(episode.accountId) : undefined,
     cellHealthy: (episode) => {
       if (episode.machineId !== deps.machineId) return false;
       const acct = account(episode);
@@ -551,6 +572,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     } });
   serviceRef = service;
   return { store, service, helper, lastResort: deps.lastResort ?? null, blockers,
+    endForDeviceLimit: (accountId: string) => service.endForDeviceLimit(accountId, deps.machineId),
     start: () => {
       // Boot cleanup: a `relogin-*` helper left by a previous process can never finish.
       if (helper) {

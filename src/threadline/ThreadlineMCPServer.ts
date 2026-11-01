@@ -131,6 +131,13 @@ export interface ThreadlineMCPDeps {
    * is visible (spec §3.6). Never set in-process, where a reload could drop debounced writes.
    */
   reloadTrustBeforePairingRead?: boolean;
+  /**
+   * In-server HTTP route only (threadline-mcp-local-http D1 Bounds): every tool
+   * handler runs through this, so the route can hold a capacity slot until the
+   * handler itself settles (a client disconnect does not end the work). Absent
+   * on stdio: handlers run unwrapped, exactly as today.
+   */
+  toolCallTracker?: <T>(toolName: string, run: () => Promise<T>) => Promise<T>;
 }
 
 export interface SendMessageParams {
@@ -156,6 +163,12 @@ export interface SendMessageResult {
   reply?: string;
   replyFrom?: string;
   error?: string;
+  /**
+   * True when the send timed out or was aborted after it went out (a 408, an
+   * undici header/body timeout, an abort): the message may already have been
+   * sent, so it is never reported as "not sent" (threadline-mcp-local-http Bounds).
+   */
+  outcomeUnknown?: boolean;
   /** Human-readable delivery outcome (e.g. "spawned new session", "resumed existing thread", "queued (no live session)") */
   deliveryOutcome?: string;
   /** How the message was delivered (local, relay) */
@@ -349,6 +362,22 @@ export class ThreadlineMCPServer {
         },
       },
     );
+
+    const tracker = deps.toolCallTracker;
+    if (tracker) {
+      // Wrap every registered tool handler (the last argument of tool()).
+      const server = this.mcpServer as unknown as { tool: (...args: unknown[]) => unknown };
+      const originalTool = server.tool.bind(this.mcpServer);
+      server.tool = (...args: unknown[]) => {
+        const handler = args[args.length - 1];
+        if (typeof handler === 'function') {
+          const name = String(args[0]);
+          args[args.length - 1] = (...callArgs: unknown[]) =>
+            tracker(name, () => Promise.resolve((handler as (...a: unknown[]) => unknown)(...callArgs)));
+        }
+        return originalTool(...args);
+      };
+    }
 
     this.registerTools();
   }

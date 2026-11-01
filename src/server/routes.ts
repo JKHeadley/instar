@@ -1,4 +1,6 @@
+import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
+import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
@@ -611,6 +613,8 @@ import { recordDuplicateAck, projectInboundRow } from '../threadline/inboundIdLe
 import { ScopeCoherenceTracker } from '../core/ScopeCoherenceTracker.js';
 import type { ScopeCoherenceState } from '../core/ScopeCoherenceTracker.js';
 import type { HookEventReceiver } from '../monitoring/HookEventReceiver.js';
+import type { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
+import { dispatchHookEvent, type HookEventDispatchDeps } from './hookEventDispatch.js';
 import type { WorktreeMonitor } from '../monitoring/WorktreeMonitor.js';
 import type { SubagentTracker } from '../monitoring/SubagentTracker.js';
 import type { InstructionsVerifier } from '../monitoring/InstructionsVerifier.js';
@@ -1002,7 +1006,16 @@ export function createDeliveryFailedHandler(opts: {
   };
 }
 
+/** Trust a native-app (device-key) message carries into the shared inbound core. */
+export interface MobileInboundTrust {
+  deviceId: string;
+  eventId: string;
+}
+
 export interface RouteContext {
+  /** Installed by createRoutes: feeds a device-authenticated app message through
+   * the same inbound core the lifeline forward uses (mobile-operator-chat spec). */
+  mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
    * this from its owned timer; tests may invoke it deterministically. */
   windowLifecycleTick?: (() => void) | null;
@@ -1293,6 +1306,8 @@ export interface RouteContext {
   imessage: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter | null;
   messageBridge: import('../messaging/shared/MessageBridge.js').MessageBridge | null;
   hookEventReceiver: HookEventReceiver | null;
+  /** Native hook events ingest (docs/specs/native-hook-events.md); null when not constructed. */
+  nativeHookIngest?: NativeHookEventIngest | null;
   worktreeMonitor: WorktreeMonitor | null;
   subagentTracker: SubagentTracker | null;
   instructionsVerifier: InstructionsVerifier | null;
@@ -1445,6 +1460,9 @@ export interface RouteContext {
    *  can collide when multiple agents share a name). Value: resolve callback
    *  with reply text. */
   threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+  /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md):
+   *  the service behind `POST /mcp/threadline`. Absent ⇒ the route answers 503. */
+  threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null;
   /** UnjustifiedStopGate authority (PR3 — context-death spec). Null
    *  when no intelligence provider is configured; the evaluate route
    *  fail-opens in that case. */
@@ -2820,28 +2838,34 @@ export function createRoutes(ctx: RouteContext): Router {
     windowStore.save(expired);
     return true;
   };
-  const runtimeRegistry = () => new ProductionRuntimeRegistry((): RuntimeExecutorSnapshot[] => {
-    const running = ctx.sessionManager.listRunningSessions();
-    const duties = new Map((windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE)?.obligations ?? []).map(duty => [duty.id, duty]));
-    return (ctx.commitmentTracker?.getAll() ?? []).flatMap(commitment => {
-      if (!commitment.externalKey || !commitment.beaconEnabled) return [];
-      const duty = duties.get(commitment.externalKey);
-      if (!duty || !commitment.createdAt || !Number.isFinite(Date.parse(commitment.createdAt)) || Date.parse(commitment.createdAt) > Date.parse(duty.deadline.dueAt)) return [];
-      const session = commitment.sessionEpoch ? running.find(s => s.claudeSessionId === commitment.sessionEpoch) : undefined;
-      const driverPath = commitment.topicId === undefined ? null : path.join(ctx.config.stateDir, 'autonomous', `active-${commitment.topicId}.json`);
-      let driverPresent = false; let driverMatches = false;
-      if (driverPath) { try { const driver = JSON.parse(fs.readFileSync(driverPath, 'utf8')) as { topic?: unknown; windowId?: unknown; status?: unknown }; driverPresent = true; driverMatches = String(driver.topic) === String(commitment.topicId) && driver.windowId === duty.windowId && driver.status !== 'stopped'; } catch { /* @silent-fallback-ok — unreadable authority fails closed as not live */ } }
-      const completionMature = commitment.status === 'delivered' && !!commitment.resolvedAt && Date.parse(commitment.resolvedAt) <= Date.parse(windowNow());
-      const triggerAt = [commitment.checkInAt, commitment.nextUpdateDueAt].find(value => typeof value === 'string' && Number.isFinite(Date.parse(value)));
-      return [{ executorId: commitment.id, owner: commitment.boundBy ?? 'server:commitment-tracker', kind: 'commitment-beacon', registryCoordinates: `obligation:${commitment.externalKey}`,
-        enabled: commitment.beaconEnabled === true, dryRun: false, running: !!session, heartbeatAt: commitment.lastHeartbeatAt,
-        nextAttemptAt: commitment.nextUpdateDueAt, deliversOutput: true, sinkReachable: ctx.telegram !== null,
-        suppressionActive: commitment.beaconSuppressed === true || commitment.beaconPaused === true,
-        needsClientDriver: true, driverPresent, driverMatches,
-        triggerEnabled: commitment.status === 'pending' && !!triggerAt, durableTriggerState: !!triggerAt, eligibilityAt: triggerAt,
-        assignedAt: commitment.createdAt, completedAt: completionMature ? commitment.resolvedAt : undefined, completionDigest: completionMature ? createHash('sha256').update(`${commitment.id}:${commitment.resolvedAt}:${commitment.deliveryMessageId ?? ''}`).digest('hex') : undefined, deliveryMessageId: commitment.deliveryMessageId, deliveryTopicId: commitment.topicId }];
+  const runtimeRegistry = (ledger?: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument | null) => {
+    // The caller already loaded the authoritative ledger for this synchronous
+    // evaluation. Re-reading it once per obligation was the dominant cost of
+    // cadence ticks; keep only duty metadata stable for this evaluation while
+    // sessions, commitments, and driver state remain live on every resolve.
+    const duties = new Map((ledger ?? windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE))?.obligations.map(duty => [duty.id, duty]) ?? []);
+    return new ProductionRuntimeRegistry((): RuntimeExecutorSnapshot[] => {
+      const running = ctx.sessionManager.listRunningSessions();
+      return (ctx.commitmentTracker?.getAll() ?? []).flatMap(commitment => {
+        if (!commitment.externalKey || !commitment.beaconEnabled) return [];
+        const duty = duties.get(commitment.externalKey);
+        if (!duty || !commitment.createdAt || !Number.isFinite(Date.parse(commitment.createdAt)) || Date.parse(commitment.createdAt) > Date.parse(duty.deadline.dueAt)) return [];
+        const session = commitment.sessionEpoch ? running.find(s => s.claudeSessionId === commitment.sessionEpoch) : undefined;
+        const driverPath = commitment.topicId === undefined ? null : path.join(ctx.config.stateDir, 'autonomous', `active-${commitment.topicId}.json`);
+        let driverPresent = false; let driverMatches = false;
+        if (driverPath) { try { const driver = JSON.parse(fs.readFileSync(driverPath, 'utf8')) as { topic?: unknown; windowId?: unknown; status?: unknown }; driverPresent = true; driverMatches = String(driver.topic) === String(commitment.topicId) && driver.windowId === duty.windowId && driver.status !== 'stopped'; } catch { /* @silent-fallback-ok — unreadable authority fails closed as not live */ } }
+        const completionMature = commitment.status === 'delivered' && !!commitment.resolvedAt && Date.parse(commitment.resolvedAt) <= Date.parse(windowNow());
+        const triggerAt = [commitment.checkInAt, commitment.nextUpdateDueAt].find(value => typeof value === 'string' && Number.isFinite(Date.parse(value)));
+        return [{ executorId: commitment.id, owner: commitment.boundBy ?? 'server:commitment-tracker', kind: 'commitment-beacon', registryCoordinates: `obligation:${commitment.externalKey}`,
+          enabled: commitment.beaconEnabled === true, dryRun: false, running: !!session, heartbeatAt: commitment.lastHeartbeatAt,
+          nextAttemptAt: commitment.nextUpdateDueAt, deliversOutput: true, sinkReachable: ctx.telegram !== null,
+          suppressionActive: commitment.beaconSuppressed === true || commitment.beaconPaused === true,
+          needsClientDriver: true, driverPresent, driverMatches,
+          triggerEnabled: commitment.status === 'pending' && !!triggerAt, durableTriggerState: !!triggerAt, eligibilityAt: triggerAt,
+          assignedAt: commitment.createdAt, completedAt: completionMature ? commitment.resolvedAt : undefined, completionDigest: completionMature ? createHash('sha256').update(`${commitment.id}:${commitment.resolvedAt}:${commitment.deliveryMessageId ?? ''}`).digest('hex') : undefined, deliveryMessageId: commitment.deliveryMessageId, deliveryTopicId: commitment.topicId }];
+      });
     });
-  });
+  };
   const messageEvidenceAuthority = () => new ProductionMessageEvidenceAuthority(path.join(ctx.config.stateDir, 'telegram-messages.jsonl'), (topicId, messageId) => {
     const row = ctx.telegram?.getTopicHistory(topicId, 1_000).find(item => item.messageId === messageId); if (!row || row.topicId === null) return null;
     const operator = ctx.topicOperatorStore?.asVerifiedOperator(topicId); const verifiedOperator = !!operator && String(row.telegramUserId) === String(operator.uid) && row.fromUser && row.forwarded === false;
@@ -3064,7 +3088,7 @@ export function createRoutes(ctx: RouteContext): Router {
         || !verifyCadenceReportProducer(report, cadence!.state!, row.text)) return null;
       return { ...verified, verifierPassed: true, verifiedPayload: proofPayload(obligation, { deliveredTopicId: row.topicId, deliveryMessageId: row.messageId, reportId: report.reportId, dueAt: report.dueAt, reportBodyHash: createHash('sha256').update(row.text).digest('hex'), synthesisSectionsVerified: true }) };
     }
-    if (record.authority === 'runtime-registry-proof' && obligation) { const real = runtimeRegistry().resolve(obligation.executorBinding.executorId, obligation.id); if (!real) return null; const requiresCompletion = obligation.predicate.recurring === true || obligation.id.includes('@'); let payload: string; if (requiresCompletion) { if (!real.completedAt || !real.completionDigest || Date.parse(real.completedAt) > Date.parse(obligation.deadline.dueAt) + obligation.deadline.graceMs) return null; const completion = runtimeCompletionProof(obligation, real); if (!completion) return null; payload = proofPayload(obligation, completion); } else { const bound = bindRuntimeAuthority(obligation, runtimeRegistry()); if (evaluateExecutor(bound, windowNow()).issues.length) return null; payload = proofPayload(obligation, { runtimeSnapshot: { executorId: real.executorId, registryCoordinates: real.registryCoordinates, heartbeatAt: real.heartbeatAt, nextAttemptAt: real.nextAttemptAt, running: real.running, driverPresent: real.driverPresent, driverMatches: real.driverMatches } }); } if (createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; }
+    if (record.authority === 'runtime-registry-proof' && obligation) { const real = runtimeRegistry(ledger).resolve(obligation.executorBinding.executorId, obligation.id); if (!real) return null; const requiresCompletion = obligation.predicate.recurring === true || obligation.id.includes('@'); let payload: string; if (requiresCompletion) { if (!real.completedAt || !real.completionDigest || Date.parse(real.completedAt) > Date.parse(obligation.deadline.dueAt) + obligation.deadline.graceMs) return null; const completion = runtimeCompletionProof(obligation, real); if (!completion) return null; payload = proofPayload(obligation, completion); } else { const bound = bindRuntimeAuthority(obligation, runtimeRegistry(ledger)); if (evaluateExecutor(bound, windowNow()).issues.length) return null; payload = proofPayload(obligation, { runtimeSnapshot: { executorId: real.executorId, registryCoordinates: real.registryCoordinates, heartbeatAt: real.heartbeatAt, nextAttemptAt: real.nextAttemptAt, running: real.running, driverPresent: real.driverPresent, driverMatches: real.driverMatches } }); } if (createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; }
     if (record.authority === 'run-liveness-authority' && obligation) { const payload = runLivenessPayload(ledger!, obligation); if (!payload || createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; }
     if (record.authority === 'deterministic-replay' && obligation) { const payload = deterministicPayload(ledger!, obligation); if (!payload || createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; }
     if (record.authority === 'content-bound-store-row' && obligation && record.nativeCoordinates?.storePath) { try { const bytes = fs.readFileSync(record.nativeCoordinates.storePath); if (!obligation.sourceSpans.some(s => s.source === record.nativeCoordinates!.storePath && s.hash === createHash('sha256').update(bytes).digest('hex'))) return null; const payload = proofPayload(obligation, { charterExpiry: obligation.predicate.expected?.charterExpiry, sourceByteRange: obligation.sourceSpans.map(span => ({ source: span.source, byteStart: span.byteStart, byteEnd: span.byteEnd, hash: span.hash })) }); if (createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; } catch { /* @silent-fallback-ok — store read uncertainty fails closed */ return null; } }
@@ -3074,9 +3098,10 @@ export function createRoutes(ctx: RouteContext): Router {
     return { ...record, verifierPassed: true, verifiedPayload: JSON.stringify(native.output) };
   } });
   const materializeMachineEvidence = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument) => {
+    const registry = runtimeRegistry(ledger);
     for (const obligation of ledger.obligations.filter(o => (['pending', 'unknown', 'open-unexecuted', 'blocked', 'failed'].includes(o.status) || o.evidencePolicy.requiredAuthority === 'run-liveness-authority') && (!o.eligibleAt || Date.parse(o.eligibleAt) <= Date.parse(windowNow())))) {
       let payload: string | null = null; let producer = ''; let storePath: string | undefined;
-      if (obligation.evidencePolicy.requiredAuthority === 'runtime-registry-proof') { const bound = bindRuntimeAuthority(obligation, runtimeRegistry()); const real = runtimeRegistry().resolve(bound.executorBinding.executorId, obligation.id); if (!real) continue; const requiresCompletion = obligation.predicate.recurring === true || obligation.id.includes('@'); if (requiresCompletion) { if (!real.completedAt || !real.completionDigest || Date.parse(real.completedAt) > Date.parse(obligation.deadline.dueAt) + obligation.deadline.graceMs) continue; if (/^cadence\.stall-check\.30m@/.test(obligation.id) && !ensureStallInspection(obligation)) continue; const completion = runtimeCompletionProof(obligation, real); if (!completion) continue; payload = proofPayload(obligation, completion); } else { if (evaluateExecutor(bound, windowNow()).issues.length) continue; payload = proofPayload(obligation, { runtimeSnapshot: { executorId: real.executorId, registryCoordinates: real.registryCoordinates, heartbeatAt: real.heartbeatAt, nextAttemptAt: real.nextAttemptAt, running: real.running, driverPresent: real.driverPresent, driverMatches: real.driverMatches } }); } obligation.executorBinding = bound.executorBinding; producer = `executor:${bound.executorBinding.executorId}`; }
+      if (obligation.evidencePolicy.requiredAuthority === 'runtime-registry-proof') { const bound = bindRuntimeAuthority(obligation, registry); const real = registry.resolve(bound.executorBinding.executorId, obligation.id); if (!real) continue; const requiresCompletion = obligation.predicate.recurring === true || obligation.id.includes('@'); if (requiresCompletion) { if (!real.completedAt || !real.completionDigest || Date.parse(real.completedAt) > Date.parse(obligation.deadline.dueAt) + obligation.deadline.graceMs) continue; if (/^cadence\.stall-check\.30m@/.test(obligation.id) && !ensureStallInspection(obligation)) continue; const completion = runtimeCompletionProof(obligation, real); if (!completion) continue; payload = proofPayload(obligation, completion); } else { if (evaluateExecutor(bound, windowNow()).issues.length) continue; payload = proofPayload(obligation, { runtimeSnapshot: { executorId: real.executorId, registryCoordinates: real.registryCoordinates, heartbeatAt: real.heartbeatAt, nextAttemptAt: real.nextAttemptAt, running: real.running, driverPresent: real.driverPresent, driverMatches: real.driverMatches } }); } obligation.executorBinding = bound.executorBinding; producer = `executor:${bound.executorBinding.executorId}`; }
       else if (obligation.evidencePolicy.requiredAuthority === 'run-liveness-authority') { payload = runLivenessPayload(ledger, obligation); producer = 'server:window-run-liveness-authority'; }
       else if (obligation.evidencePolicy.requiredAuthority === 'deterministic-replay') { payload = deterministicPayload(ledger, obligation); producer = 'server:window-deterministic-replay'; }
       else if (obligation.evidencePolicy.requiredAuthority === 'live-requeried-message' && /^cadence\.report\.3h@/.test(obligation.id)) {
@@ -3114,8 +3139,8 @@ export function createRoutes(ctx: RouteContext): Router {
   const initializeShadowCensus = (lifecycleRunId: string) => { const census = readShadowCensus(); const unsigned = { lifecycleRunId, count: 0, headHash: '0'.repeat(64) }; census[lifecycleRunId] = { ...unsigned, signature: signCensus(unsigned) }; saveShadowCensus(census); };
   const auditWouldBlock = (action: string, reasons: string[]) => {
     const ledger = windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE); if (!ledger) return; let expectedReasons: string[];
-    if (action === 'admission') expectedReasons = evaluateFromAuthorities(ledger.obligations, runtimeRegistry(), evidenceAuthority(), windowNow()).issues;
-    else if (action === 'lifecycle-tick') expectedReasons = evaluateLifecycleTick(structuredClone(ledger), runtimeRegistry(), evidenceAuthority(), windowNow()).issues;
+    if (action === 'admission') expectedReasons = evaluateFromAuthorities(ledger.obligations, runtimeRegistry(ledger), evidenceAuthority(), windowNow()).issues;
+    else if (action === 'lifecycle-tick') expectedReasons = evaluateLifecycleTick(structuredClone(ledger), runtimeRegistry(ledger), evidenceAuthority(), windowNow()).issues;
     else expectedReasons = evaluateLifecycleGuard(ledger, action as 'new-scope' | 'telegram-send' | 'completion-claim').reasons;
     const authorityDigest = createHash('sha256').update(JSON.stringify({ lifecycleRunId: ledger.lifecycleRunId, sourceHashes: ledger.sourceHashes, native: ledger.nativeEvaluations.at(-1) ?? null, obligations: ledger.obligations.map(item => ({ id: item.id, status: item.status, evidence: item.evidence.map(record => ({ nonce: record.nonce, hash: record.canonicalPayloadHash })), executor: item.executorBinding })) })).digest('hex');
     const census = readShadowCensus(); const current = census[ledger.lifecycleRunId]; if (!current || current.signature !== signCensus({ lifecycleRunId: current.lifecycleRunId, count: current.count, headHash: current.headHash })) return;
@@ -3130,7 +3155,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const censusEntry = readShadowCensus()[ledger.lifecycleRunId]; if (!censusEntry || censusEntry.signature !== signCensus({ lifecycleRunId: censusEntry.lifecycleRunId, count: censusEntry.count, headHash: censusEntry.headHash }) || censusEntry.count !== runAudits.length) return false; let expectedPrevious = '0'.repeat(64);
     if (runAudits.some((row, index) => { const { adjudicationSignature, rowHash, ...unsigned } = row; const computedHash = createHash('sha256').update(JSON.stringify({ ...unsigned, adjudicationSignature })).digest('hex'); const invalid = row.sequence !== index + 1 || row.previousHash !== expectedPrevious || row.mode !== 'dry-run' || typeof row.expectedBlock !== 'boolean' || typeof row.observedBlock !== 'boolean' || !Array.isArray(row.expectedReasons) || !/^[a-f0-9]{64}$/.test(row.authorityDigest) || adjudicationSignature !== createHmac('sha256', maturationAuthority.key).update(JSON.stringify(unsigned)).digest('hex') || rowHash !== computedHash; expectedPrevious = rowHash; return invalid; }) || censusEntry.headHash !== expectedPrevious) return false;
     const omissionLedger = structuredClone(ledger); omissionLedger.state = 'pre_start_gate'; const omissionTarget = omissionLedger.obligations.find(item => item.id === 'start.cadence-commitment'); if (!omissionTarget) return false; omissionTarget.status = 'pending'; omissionTarget.evidence = []; omissionTarget.executorBinding = { ...omissionTarget.executorBinding, executorId: `controlled-omission:${ledger.lifecycleRunId}`, enabled: false, running: false };
-    const omissionEvaluation = evaluateFromAuthorities(omissionLedger.obligations, runtimeRegistry(), evidenceAuthority(), windowNow()); omissionLedger.obligations = omissionEvaluation.obligations; const omissionClosure = evaluateClosure(omissionLedger); const omissionReasons = [...omissionEvaluation.issues.filter(reason => reason.startsWith(`${omissionTarget.id}:`)), ...omissionClosure.issues.filter(reason => reason.includes(omissionTarget.id))]; const predicateRefused = omissionReasons.some(reason => reason.includes('predicate')); const executorRefused = omissionReasons.some(reason => reason.includes('executor')); const omissionObservedBlock = predicateRefused && executorRefused && !omissionEvaluation.admitted && omissionClosure.state === 'close_blocked'; if (!omissionObservedBlock) return false; const omissionReason = [...new Set(omissionReasons)].join(';');
+    const omissionEvaluation = evaluateFromAuthorities(omissionLedger.obligations, runtimeRegistry(omissionLedger), evidenceAuthority(), windowNow()); omissionLedger.obligations = omissionEvaluation.obligations; const omissionClosure = evaluateClosure(omissionLedger); const omissionReasons = [...omissionEvaluation.issues.filter(reason => reason.startsWith(`${omissionTarget.id}:`)), ...omissionClosure.issues.filter(reason => reason.includes(omissionTarget.id))]; const predicateRefused = omissionReasons.some(reason => reason.includes('predicate')); const executorRefused = omissionReasons.some(reason => reason.includes('executor')); const omissionObservedBlock = predicateRefused && executorRefused && !omissionEvaluation.admitted && omissionClosure.state === 'close_blocked'; if (!omissionObservedBlock) return false; const omissionReason = [...new Set(omissionReasons)].join(';');
     const adjudicatedComparisons = [{ lifecycleRunId: ledger.lifecycleRunId, check: 'closed-clean-positive', expectedBlock: false, observedBlock: closure.state !== 'closed_clean', reasons: closure.issues }, { lifecycleRunId: ledger.lifecycleRunId, check: 'controlled-completion-omission', expectedBlock: true, observedBlock: omissionObservedBlock, reasons: omissionReasons }]; const comparisons = [...runAudits, ...adjudicatedComparisons];
     const typed = [...runAudits, ...adjudicatedComparisons];
     const falsePasses = typed.filter(item => item.expectedBlock === true && item.observedBlock !== true).length; const falseBlocks = typed.filter(item => item.expectedBlock === false && item.observedBlock === true).length;
@@ -3151,7 +3176,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (expireWindowAtCeiling(ledger)) return;
     const enforcement = loadEnforcementState(); if (enforcement.mode === 'off') return;
     const stale = sourceFreshnessIssues(ledger); if (stale.length) { ledger.admission = undefined; ledger.state = ledger.state.startsWith('active') ? 'active_mid_blocked' : ['close_due', 'delivered_pending_post_live', 'close_blocked'].includes(ledger.state) ? 'close_blocked' : 'start_blocked'; ledger.surfacedIssues ??= []; const novelStale = stale.filter(issue => !ledger.surfacedIssues!.includes(issue)); ledger.surfacedIssues.push(...novelStale); windowStore.save(ledger); if (novelStale.length && ctx.telegram) void ctx.telegram.sendToTopic(43003, `Window lifecycle source authority changed:\n${novelStale.map(v => `- ${v}`).join('\n')}`, { provenance: 'automation' }).catch(error => { /* @silent-fallback-ok — delivery failure is logged; the durable block remains authoritative */ console.warn('[window-lifecycle] stale-source escalation failed:', error); }); return; }
-    materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(), evidenceAuthority(), windowNow());
+    materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(ledger), evidenceAuthority(), windowNow());
     result.ledger.surfacedIssues ??= []; const novel = result.issues.filter(issue => !result.ledger.surfacedIssues!.includes(issue)); result.ledger.surfacedIssues.push(...novel); windowStore.save(result.ledger);
     const episodes = readRemediationEpisodes(); const novelRemediations = (enforcement.mode === 'enforced' ? (result.ledger.requiredRemediations ?? []) : []).filter(remediation => { const duty = result.ledger.obligations.find(item => item.id === remediation.obligationId); if (!duty) return false; const digest = remediationEpisodeDigest(duty); return !episodes.some(item => item.episodeDigest === digest); });
     for (const remediation of novelRemediations) {
@@ -3205,10 +3230,10 @@ export function createRoutes(ctx: RouteContext): Router {
     if (terminalLifecycleStates.has(ledger.state)) return res.status(409).json({ admitted: false, state: ledger.state, issues: ['window-lifecycle-terminal'] });
     if (expireWindowAtCeiling(ledger)) return res.status(409).json({ admitted: false, state: 'closed_failed', issues: ['window-ceiling-expired'] });
     const stale = sourceFreshnessIssues(ledger); if (stale.length) return res.status(409).json({ admitted: false, state: 'start_blocked', issues: stale }); const native = ledger.nativeEvaluations.at(-1)?.output as { admitted?: boolean } | undefined; if (native?.admitted !== true) return res.status(409).json({ admitted: false, state: 'start_blocked', issues: ['native-structural-preflight-missing-or-refused'] }); materializeMachineEvidence(ledger);
-    const result = evaluateFromAuthorities(ledger.obligations, runtimeRegistry(), evidenceAuthority(), windowNow()); ledger.obligations = result.obligations; ledger.state = result.admitted ? 'active_start' : 'start_blocked'; ledger.admissionEvaluatedAt = windowNow(); ledger.admission = result.admitted ? { admitted: true, evaluatedAt: ledger.admissionEvaluatedAt, snapshotDigest: admissionSnapshotDigest(ledger) } : undefined; windowStore.save(ledger); if (!result.admitted && loadEnforcementState().mode === 'dry-run') auditWouldBlock('admission', result.issues);
+    const result = evaluateFromAuthorities(ledger.obligations, runtimeRegistry(ledger), evidenceAuthority(), windowNow()); ledger.obligations = result.obligations; ledger.state = result.admitted ? 'active_start' : 'start_blocked'; ledger.admissionEvaluatedAt = windowNow(); ledger.admission = result.admitted ? { admitted: true, evaluatedAt: ledger.admissionEvaluatedAt, snapshotDigest: admissionSnapshotDigest(ledger) } : undefined; windowStore.save(ledger); if (!result.admitted && loadEnforcementState().mode === 'dry-run') auditWouldBlock('admission', result.issues);
     return res.status(result.admitted ? 200 : 409).json({ ...result, state: ledger.state });
   });
-  router.post('/window-lifecycle/tick', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); if (terminalLifecycleStates.has(ledger.state)) { ctx.windowLifecycleTick?.(); return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: ['window-lifecycle-terminal'] }); } if (expireWindowAtCeiling(ledger)) return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: ['window-ceiling-expired'] }); const stale = sourceFreshnessIssues(ledger); if (stale.length) { ctx.windowLifecycleTick?.(); return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: stale }); } materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(), evidenceAuthority(), windowNow()); windowStore.save(result.ledger); if (req.body.actuateRemediations === true) ctx.windowLifecycleTick?.(); return res.status(result.issues.length ? 409 : 200).json(result); });
+  router.post('/window-lifecycle/tick', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); if (terminalLifecycleStates.has(ledger.state)) { ctx.windowLifecycleTick?.(); return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: ['window-lifecycle-terminal'] }); } if (expireWindowAtCeiling(ledger)) return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: ['window-ceiling-expired'] }); const stale = sourceFreshnessIssues(ledger); if (stale.length) { ctx.windowLifecycleTick?.(); return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: stale }); } materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(ledger), evidenceAuthority(), windowNow()); windowStore.save(result.ledger); if (req.body.actuateRemediations === true) ctx.windowLifecycleTick?.(); return res.status(result.issues.length ? 409 : 200).json(result); });
   router.get('/window-lifecycle', (_req, res) => { if (ctx.config.projectName !== 'echo') return res.status(404).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); return ledger ? res.json({ ledger, closure: evaluateClosure(ledger) }) : res.status(404).json({ error: 'ledger-not-found' }); });
   router.post('/window-lifecycle/transition', (req, res) => {
     if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' });
@@ -3223,7 +3248,7 @@ export function createRoutes(ctx: RouteContext): Router {
         return res.status(409).json({ error: 'source-authority-stale', issues: stale });
       }
       materializeMachineEvidence(stored);
-      const checked = evaluateLifecycleTick(stored, runtimeRegistry(), evidenceAuthority(), windowNow()).ledger;
+      const checked = evaluateLifecycleTick(stored, runtimeRegistry(stored), evidenceAuthority(), windowNow()).ledger;
       const closureAuthority = {
         now: windowNow(),
         requeryWaiverApproval: (waiver: Waiver) => {
@@ -5252,6 +5277,9 @@ export function createRoutes(ctx: RouteContext): Router {
         base.version = ctx.config.version || '0.0.0';
       }
       base.sessions = { current: sessionCount, max: maxSessions };
+      // Native hook events (docs/specs/native-hook-events.md FD11): counts are
+      // "received", never "fired" — delivery failures are invisible here.
+      if (ctx.nativeHookIngest) base.hookEvents = ctx.nativeHookIngest.snapshot();
       base.schedulerRunning = ctx.scheduler !== null;
       base.consecutiveJobFailures = totalFailures;
       // What the currency bound excluded, so the information is MOVED rather than
@@ -5377,6 +5405,16 @@ export function createRoutes(ctx: RouteContext): Router {
           return { ...mode, mode: refuseDowngradeModeName(mode), ...refuseDowngradeCounters, refusals: downgradeRefusals.snapshot() };
         })(),
       };
+      // Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D4):
+      // per-machine transport counts + fallbacks. AUTHED only; `null` = unmeasurable.
+      try {
+        base.threadline = {
+          ...(base.threadline as object ?? {}),
+          mcpHttp: ctx.threadlineMcpHttp
+            ? ctx.threadlineMcpHttp.health()
+            : { enabled: ctx.liveConfig?.get<boolean>('threadline.mcpHttp.enabled', false) === true, sessionsOnHttp: null, sessionsOnStdio: null, sessionsOnHttpNeverCalled: null, fallbacks: {}, stuckOperations: null, routeMounted: false },
+        };
+      } catch { /* @silent-fallback-ok — observability only */ }
       // Inbound-id ledger counters (spec "Migration parity" → counters): in
       // memory, surfaced on the AUTHED /health beside the relay verdicts.
       {
@@ -6323,6 +6361,50 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ annotations });
   });
 
+  // Deps for the shared hook-event dispatch (both hook routes).
+  const hookEventDispatchDeps = (): HookEventDispatchDeps => ({
+    receive: (p) => ctx.hookEventReceiver!.receive(p),
+    recordToolCall: () => reflectionMetrics.recordToolCall(),
+    observeToolAction: (i) => getJevCirclesShadow()?.observe(i),
+    recordCommit: () => homeostasisMonitor.recordCommit(),
+    recordAdvisoryArtifact: ({ filePath, toolName, sessionId }) => {
+      const mapped = autonomousRunStore.resolveSession(sessionId);
+      if (mapped) {
+        autonomousRunStore.appendAdvisoryArtifact(mapped.topicId, mapped.runId, { filePath, toolName, sessionId });
+      }
+    },
+    sessionManager: ctx.sessionManager ?? null,
+    subagentTracker: ctx.subagentTracker ?? null,
+  });
+
+  // POST /hooks/native-events — Claude Code native HTTP hooks
+  // (docs/specs/native-hook-events.md D1). Admission (loopback, credential,
+  // size) and the 4 MB parser are mounted AHEAD of the global body parser in
+  // AgentServer; this handler only projects + enqueues and answers 204 at once.
+  // Processing (store + the shared side effects) happens in the ingest's
+  // bounded drain worker.
+  if (ctx.nativeHookIngest) {
+    ctx.nativeHookIngest.setProcessor((event, instarSid) => {
+      if (!ctx.hookEventReceiver) return false;
+      return dispatchHookEvent(hookEventDispatchDeps(), event, instarSid);
+    });
+  }
+  router.post('/hooks/native-events', (req, res) => {
+    const ingest = ctx.nativeHookIngest;
+    if (ingest) {
+      const header = (name: string): string | undefined => {
+        const v = req.headers[name];
+        return Array.isArray(v) ? v[0] : v;
+      };
+      ingest.accept(req.body, {
+        instarSessionId: (header('x-instar-session-id') ?? '').trim(),
+        instarSession: (header('x-instar-session') ?? '').trim(),
+      });
+    }
+    // Empty 2xx = success to Claude Code; a reporter never blocks a session.
+    res.status(204).end();
+  });
+
   router.post('/hooks/events', (req, res) => {
     if (!ctx.hookEventReceiver) {
       res.status(503).json({ error: 'HookEventReceiver not initialized' });
@@ -6355,77 +6437,13 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const stored = ctx.hookEventReceiver.receive(payload);
+    // The ONE shared side-effect function (docs/specs/native-hook-events.md D1):
+    // both this route and /hooks/native-events go through it.
+    const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
+    const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
     if (!stored) {
       res.status(500).json({ error: 'Failed to store event' });
       return;
-    }
-
-    // Track tool calls for reflection metrics
-    if (payload.event === 'PostToolUse') {
-      reflectionMetrics.recordToolCall();
-
-      // jev-circles-shadow: log-only "going in circles" measurement. Synchronous
-      // counter here; every 5th action a detached check runs. Delivers nothing.
-      getJevCirclesShadow()?.observe({ sessionId: payload.session_id, transcriptPath: payload.transcript_path });
-
-      // Track commits for homeostasis (work-velocity awareness).
-      // Detect git commit in Bash tool output — Structure > Willpower.
-      const toolName = payload.tool_name || payload.toolName || '';
-      const toolInput = payload.tool_input || payload.toolInput || '';
-      if (toolName === 'Bash' && typeof toolInput === 'string' && /git\s+commit\b/.test(toolInput)) {
-        homeostasisMonitor.recordCommit();
-      }
-
-      // Scope-accretion ADVISORY tool-event ledger (R18): attribution detail
-      // (which turn, which tool) — never the blocking set (the git sweep is the
-      // load-bearing layer). Resolution miss degrades the advisory layer only (R19).
-      const filePath = typeof payload.file_path === 'string' ? payload.file_path : '';
-      const sid = typeof payload.session_id === 'string' ? payload.session_id : '';
-      if (filePath && sid && (toolName === 'Write' || toolName === 'Edit')) {
-        const mapped = autonomousRunStore.resolveSession(sid);
-        if (mapped) {
-          autonomousRunStore.appendAdvisoryArtifact(mapped.topicId, mapped.runId, {
-            filePath,
-            toolName,
-            sessionId: sid,
-          });
-        }
-      }
-    }
-
-    // Bridge instar session ID ↔ Claude Code session ID.
-    // Hook URLs include ?instar_sid=<INSTAR_SESSION_ID> set via tmux env var.
-    // Populates claudeSessionId on the instar Session record (enabling
-    // SubagentTracker lookups + sentinel jsonl-growth verification) and KEEPS
-    // it current: a respawn/--resume rotates the conversation UUID, and the
-    // first event carrying the new id updates the record (last-writer-wins —
-    // see SessionManager.setClaudeSessionId). The old `!session.claudeSessionId`
-    // guard here made the bridge write-once, leaving records pointing at dead
-    // transcripts after every respawn (2026-06-06 false-escalation incident).
-    const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
-    // Every Claude Code hook event carries the MAIN conversation's session_id
-    // (subagents are identified by separate agent_id/agent_transcript_path
-    // fields). Missing/empty session_id = malformed or custom event — skip.
-    if (instarSid && payload.session_id && ctx.sessionManager) {
-      const session = ctx.sessionManager.getSessionById(instarSid);
-      if (session && session.claudeSessionId !== payload.session_id) {
-        ctx.sessionManager.setClaudeSessionId(instarSid, payload.session_id);
-      }
-    }
-
-    // Dispatch to specialized trackers
-    if (ctx.subagentTracker && payload.session_id) {
-      if (payload.event === 'SubagentStart' && payload.agent_id && payload.agent_type) {
-        ctx.subagentTracker.onStart(payload.agent_id, payload.agent_type, payload.session_id);
-      } else if (payload.event === 'SubagentStop' && payload.agent_id) {
-        ctx.subagentTracker.onStop(
-          payload.agent_id,
-          payload.session_id,
-          payload.last_assistant_message,
-          payload.agent_transcript_path,
-        );
-      }
     }
 
     res.json({ ok: true, event: payload.event });
@@ -11086,15 +11104,18 @@ export function createRoutes(ctx: RouteContext): Router {
 
       // Add hook event telemetry
       if (req.query.enrich !== 'false' && ctx.hookEventReceiver) {
-        const summary = ctx.hookEventReceiver.getSessionSummary(s.tmuxSession);
+        // Tmux-scoped + incarnation-scoped (native-hook-events D1): events are
+        // filed by Claude session id, so the old id-keyed lookup by tmux name
+        // always came back empty.
+        const summary = ctx.hookEventReceiver.getSessionSummaryForTmux(s.tmuxSession);
         if (summary) {
           result.telemetry = {
             eventCount: summary.eventCount,
             toolsUsed: summary.toolsUsed,
             subagentsSpawned: summary.subagentsSpawned,
             lastActivity: summary.lastEvent,
-            taskCompleted: ctx.hookEventReceiver!.hasTaskCompleted(s.tmuxSession),
-            exitReason: ctx.hookEventReceiver!.getExitReason(s.tmuxSession),
+            taskCompleted: ctx.hookEventReceiver!.hasTaskCompletedForTmux(s.tmuxSession),
+            exitReason: ctx.hookEventReceiver!.getExitReasonForTmux(s.tmuxSession),
           };
         }
       }
@@ -14733,6 +14754,21 @@ export function createRoutes(ctx: RouteContext): Router {
     const svc = ctx.dynamicMcpService;
     return !!svc && svc.enabled();
   };
+
+  // ── Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md) ──
+  // Mounted whenever Threadline runs, regardless of threadline.mcpHttp.enabled:
+  // the flag only selects the transport of NEW spawns, so switching it off never
+  // cuts off a session already wired here (D6). Admission (the local secret,
+  // loopback, no Origin / forwarding headers) runs in authMiddleware AND again in
+  // the handler: Express routing is case-insensitive and ignores a trailing slash.
+  router.all('/mcp/threadline', (req, res) => {
+    const svc = ctx.threadlineMcpHttp;
+    if (!svc) {
+      res.status(503).json({ error: 'threadline-mcp-unavailable', reason: 'Threadline is not running in this server' });
+      return;
+    }
+    void svc.handle(req, res);
+  });
 
   router.get('/mcp/session/:topicId', (req, res) => {
     if (!dynMcpEnabled()) { res.status(503).json({ error: 'dynamic-mcp disabled' }); return; }
@@ -19289,7 +19325,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.get('/telegram/topics/:topicId/messages', (req, res) => {
+  router.get('/telegram/topics/:topicId/messages', async (req, res) => {
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -19300,10 +19336,60 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'topicId must be a number' });
       return;
     }
+    if (req.query.scope !== undefined && req.query.scope !== 'pool') {
+      res.status(400).json({ error: 'invalid-scope' });
+      return;
+    }
 
-    const limit = parseInt(req.query.limit as string, 10) || 20;
-    const messages = ctx.telegram.getTopicHistory(topicId, Math.min(limit, 100));
-    res.json({ topicId, messages });
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
+    const local = ctx.telegram.getTopicHistory(topicId, limit);
+    // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
+    const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
+    if (req.query.scope !== 'pool') {
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(local) : local });
+      return;
+    }
+    // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
+    // machine, one row per event (eventId when present, else direction + Telegram message id).
+    const self = ctx.meshSelfId ?? null;
+    const rows: Array<Record<string, unknown>> = local.map(m => ({ ...m, machine: self }));
+    const failed: Array<{ machineId: string; error: string }> = [];
+    const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+    await Promise.all(peers.map(async p => {
+      try {
+        const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+        });
+        if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
+        const payload = await r.text();
+        if (Buffer.byteLength(payload) > 512 * 1024) { failed.push({ machineId: p.machineId, error: 'too-large' }); return; }
+        const body = JSON.parse(payload) as { messages?: unknown };
+        for (const raw of Array.isArray(body.messages) ? body.messages.slice(0, 100) : []) {
+          if (!raw || typeof raw !== 'object') continue;
+          const m = raw as Record<string, unknown>;
+          if (typeof m.text !== 'string' || typeof m.timestamp !== 'string' || Number.isNaN(Date.parse(m.timestamp))) continue;
+          rows.push({ ...m, machine: p.machineId });
+        }
+      } catch (error) {
+        failed.push({ machineId: p.machineId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }));
+    const keyOf = (m: Record<string, unknown>) => typeof m.eventId === 'string' && m.eventId ? `e:${m.eventId}` : `m:${m.fromUser ? 'in' : 'out'}:${m.messageId}`;
+    // This machine's own rows win a key collision; a peer's row is untrusted display data.
+    const seen = new Set<string>(rows.filter(m => m.machine === self).map(keyOf));
+    const merged = rows
+      .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+      .filter(m => {
+        if (m.machine === self) return true;
+        const k = keyOf(m);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(-limit);
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(merged) : merged, pool: { failed } });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -25139,11 +25225,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ autoApply, persisted: true });
   });
 
-  router.post('/updates/apply', async (_req, res) => {
+  router.post('/updates/apply', async (req, res) => {
+    if (refuseUnsupportedFields(res, req.body, ['forceRestart'])) return;
+    const forceRestart = req.body && Object.prototype.hasOwnProperty.call(req.body, 'forceRestart')
+      ? req.body.forceRestart
+      : false;
+    if (typeof forceRestart !== 'boolean') {
+      res.status(400).json({ error: 'forceRestart must be a boolean' });
+      return;
+    }
     // Prefer AutoUpdater path (coalescing + session-aware gating)
     if (ctx.autoUpdater) {
       try {
-        await ctx.autoUpdater.applyPendingUpdate({ bypassWindow: true });
+        await ctx.autoUpdater.applyPendingUpdate({ bypassWindow: true, bypassHolds: forceRestart });
         res.json(ctx.autoUpdater.getStatus());
       } catch (err) {
         // @silent-fallback-ok — returns HTTP 500 with error details to caller; not a silent degradation
@@ -25220,6 +25314,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         lastCheck: auto.lastCheck,
         lastApply: auto.lastApply,
         lastAppliedVersion: auto.lastAppliedVersion,
+        updateActivationPendingSince: auto.updateActivationPendingSince,
         lastError: auto.lastError,
       });
     }
@@ -26575,7 +26670,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     return peerNames.find(candidate => candidate?.serving)?.name ?? localName ?? peerNames.find(candidate => candidate)?.name ?? null;
   };
 
-  router.post('/internal/telegram-forward', async (req, res) => {
+  // Mobile operator chat (docs/specs/mobile-operator-chat.md): the inbound core below is shared.
+  // The lifeline route passes no trust (unchanged behavior); an app message passes
+  // `{ kind: 'mobile-device' }` and the steps that differ are named where they branch.
+  const telegramForwardHandler = async (req: any, res: any, trust?: MobileInboundTrust): Promise<void> => {
     const { topicId, text, messageId, lifelineVersion } = req.body;
     // The sender-identity fields are `let`: a request accepted WITHOUT proof of
     // the lifeline has them removed below, in one place, before any use.
@@ -26592,7 +26690,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     // Lifeline-secret gate — FIRST, before any side effect, so a refused
     // request has had no effect at all and its replay applies exactly once.
-    const ingressDecision = lifelineIngressGuard.evaluate(req.headers, 'telegram-forward', { lifelineVersion });
+    // An app message was already authenticated by its device signature (mobile-operator-chat §2.3).
+    const ingressDecision = trust
+      ? { action: 'accept' as const, senderTrusted: true, verified: false, staleSecretHint: false, reason: 'mobile-device' }
+      : lifelineIngressGuard.evaluate(req.headers, 'telegram-forward', { lifelineVersion });
     if (ingressDecision.action === 'refuse') {
       res.status(401).json({ ok: false, error: 'lifeline-secret-required', refused: true, reason: ingressDecision.reason });
       return;
@@ -26628,6 +26729,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // (handshake-only pings without text are not). Bumps lastInbound so the
     // SleepController never sleeps an agent that's actively being messaged.
     if (text) ctx.agentActivityState?.markInbound(Date.now());
+    // Mobile device keys (§2.2): a live phone-pairing code seen in a conversation voids that
+    // pairing, before the message is logged, forwarded or delivered.
+    if (!trust) for (const t of [text, req.body?.caption]) if (typeof t === 'string' && t) ctx.telegram?.mobileInboundScan?.(t);
 
     // Version-handshake (only when lifelineVersion field is present AND
     // auth is configured — dev-mode with empty authToken skips the handshake
@@ -26714,6 +26818,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // topic-intent extractor. Whether it may open an Approve prompt is decided inside
     // (verified lifeline forward + enforce mode + the owner); `fromUserId` was already
     // removed above when the forward was not verified.
+    if (trust && (PairingInviteTelegram.carriesInvite(text) || (typeof text === 'string' && /^\/desktop(?:\s|$)/i.test(text.trim())))) {
+      res.status(422).json({ ok: false, error: 'not-from-the-app' });
+      return;
+    }
     if (PairingInviteTelegram.carriesInvite(text)) {
       try {
         if (pairingInviteTelegram) {
@@ -26861,7 +26969,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         telegramUserId: fromUserId,
         // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
         // standing-authorization resolver can prove non-forwarded provenance.
-        forwarded: req.body.forwarded === true,
+        // An app message is recorded with forwarded UNKNOWN, so no durable-evidence
+        // reader (standing authorization, verified-operator approvals) counts it.
+        forwarded: trust ? undefined : req.body.forwarded === true,
+        ...(trust ? { via: 'mobile-device' as const, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
       });
     }
 
@@ -26913,7 +27024,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // or it could pre-claim the id of a real message yet to arrive.
     if (ctx.messageLedger && shouldClaimInbound && !senderUntrusted) {
       try {
-        const eventId = req.body.updateId ?? messageId ?? `${topicId}:${req.body.timestamp ?? Date.now()}`;
+        const eventId = trust ? trust.eventId : (req.body.updateId ?? messageId ?? `${topicId}:${req.body.timestamp ?? Date.now()}`);
         const dedupeKey = dedupeKeyFor('telegram', topicId, eventId);
         const epoch = ctx.coordinator?.getLeaseEpoch() ?? 0;
         const decision = decideIngress(ctx.messageLedger, dedupeKey, {
@@ -26946,7 +27057,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // (serveProgressedMonoMs) to tell a serving holder from a fetched-and-dropped
     // zombie. Machine-global monotonic-MAX watermark; boot-epoch-fenced. Best-effort
     // — a write failure must never affect routing.
-    try {
+    if (!trust) try {
       writeServeProgress(ctx.config.stateDir, {
         bootId: getCurrentBootId() ?? `boot-${process.pid}`,
         serverPid: process.pid,
@@ -27001,7 +27112,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     // Lifeline-secret gate: belt and braces. The identity was already removed
     // above for an untrusted request; this bind also checks the flag itself.
-    if (ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined && fromUserId !== null
+    if (!trust && ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined && fromUserId !== null
         && typeof topicId === 'number' && !senderUntrusted) {
       try {
         if (ctx.telegram?.isAuthorizedSender?.(fromUserId)) {
@@ -27036,14 +27147,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           username: fromUsername,
           firstName: fromFirstName,
           messageThreadId: topicId,
-          viaLifeline: true,
+          viaLifeline: !trust,
+          ...(trust ? { viaMobileDevice: true, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
           // Explicit, so the message pipeline can refuse authority by the
           // flag as well as by the missing id.
           ...(senderUntrusted ? { senderUnverified: true } : {}),
           // Preserve the platform message id separately from Message.id. The
           // latter has a Date.now fallback for routing/dedupe compatibility and
           // must NEVER be laundered into operator-establishment evidence.
-          telegramMessageId: messageId !== undefined && messageId !== null
+          // An app message's numeric id is server-minted, never a Telegram id.
+          telegramMessageId: !trust && messageId !== undefined && messageId !== null
             ? String(messageId)
             : '',
           // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
@@ -27059,7 +27172,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
 
       try {
-        ctx.telegram.onTopicMessage(message);
+        const delivered = ctx.telegram.onTopicMessage(message) as unknown;
+        if (trust) await delivered;
         res.json({ ok: true, forwarded: true });
       } catch (err) {
         DegradationReporter.getInstance().report({
@@ -27069,6 +27183,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
           impact: 'User message may not reach session, no system alert',
         });
+        // An app message's delivery started: its outcome is uncertain, never a plain refusal.
+        if (trust) throw err;
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
     } else if (ctx.sessionManager) {
@@ -27285,7 +27401,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } else {
       res.status(503).json({ error: 'No message routing available' });
     }
-  });
+  };
+  router.post('/internal/telegram-forward', (req, res) => telegramForwardHandler(req, res));
+  ctx.mobileInbound = { ingest: (req: any, res: any, trust: MobileInboundTrust) => telegramForwardHandler(req, res, trust) };
 
   // ── Agent-to-agent inbox (same-machine HTTP transport) ────────
   // The Telegram-bridge transport for a2a (mentor bot → mentee bot in shared
@@ -27580,6 +27698,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         deduped: true,
         error: claim === 'duplicate-of-failed' ? 'callback-previously-failed' : 'callback-outcome-unknown',
       });
+      return;
+    }
+
+    // Mobile pairing Decline (mobile-device-keys §2.2): counts only when the lifeline proved the tap.
+    if (ctx.telegram && typeof data === 'string' && data.startsWith('md:d:')) {
+      try {
+        await ctx.telegram.handleMobileDecline({ callbackQueryId, data, fromUserId, chatId, verified: callbackDecision.verified });
+        claimStore.markDone(callbackQueryId);
+        res.json({ ok: true, mobileDecline: true });
+      } catch (err) { // @silent-fallback-ok — not silent: the tap is answered 500 and its claim marked failed
+        claimStore.markFailed(callbackQueryId);
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
       return;
     }
 
@@ -34009,6 +34140,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
       return;
     }
+    if (!CommitmentTracker.supportsVerificationMethod(verificationMethod)) {
+      res.status(400).json({ error: 'verificationMethod must be manual, config-value, file-exists, or threadline-reply' });
+      return;
+    }
     const correctionDerived = origin === 'correction' || typeof correctionId === 'string' || typeof classReviewRef === 'string';
     const classReviewAdmission = evaluateCorrectionInstanceFix({
       originCorrection: correctionDerived,
@@ -34171,7 +34306,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // C1+C2 well-formedness gate failures are client errors (400), not 500;
       // typed conversation-binder refusals are conflicts (409), not 500.
       const msg = err instanceof Error ? err.message : 'Failed to record';
-      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass/.test(msg);
+      const isWellFormedness = /invalid owner|invalid blockedOn|requires a non-empty actionClass|config-change requires configPath|verificationMethod must be/.test(msg);
       const isBinderRefusal = /conversation-recording-disabled|conversation-registration-capacity|conversation-bind-unresolvable|multi-workspace-unsupported/.test(msg);
       res.status(isWellFormedness ? 400 : isBinderRefusal ? 409 : 500).json({ error: msg });
     }
@@ -35085,6 +35220,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...a,
         // The login signal behind the status (spec skill-driven-signin-repair): never silent.
         loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
+        // codex-device-limit-tripwire §8: always present on new code (null = no cause).
+        statusCause: a.statusCause ?? null,
         machineId: selfMachineId,
         machineNickname: selfMachineNickname ?? undefined,
         remote: false,
@@ -35131,6 +35268,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           for (const a of body.accounts ?? []) {
             remote.push({
               ...a,
+              // A peer on older code never reports a cause: unknown, never "clear".
+              statusCause: 'statusCause' in a ? a.statusCause : 'unknown',
               machineId: a.machineId ?? p.machineId,
               machineNickname: a.machineNickname ?? nickname ?? undefined,
               remote: true,
@@ -35189,6 +35328,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           peersOk: peers.length - failed.length,
           failed,
         },
+        // This machine's device-limit counters (machine-local; peers report their own).
+        deviceLimit: getCodexDeviceLimitWiring()?.status() ?? null,
         scope: 'pool',
       });
       return;
@@ -35206,6 +35347,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...a,
       // The login signal behind the status (spec skill-driven-signin-repair): never silent.
       loginCheck: ctx.quotaPoller?.loginCheck?.(a.id) ?? 'unavailable',
+      statusCause: a.statusCause ?? null,
     }));
     const emailGaps = subscriptionEmailGaps();
     res.json({
@@ -35214,6 +35356,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       accounts,
       emailGaps,
       emailReconciliation: subscriptionEmailReconciliation(),
+      // codex-device-limit-tripwire §8: this machine's judge/bench counters (null when not running).
+      deviceLimit: getCodexDeviceLimitWiring()?.status() ?? null,
     });
   });
 
@@ -38905,6 +39049,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.post('/threadline/relay-send', async (req, res) => {
     const relayClient = ctx.threadlineRelayClient;
+    // Cancellation reaches the work (threadline-mcp-local-http "Bounds"): a
+    // PREMATURE close of this request (the caller went away before the answer was
+    // written) cancels the reply wait on whichever branch registered it. A normal
+    // completion also fires 'close', hence `!res.writableFinished`. A waiter that
+    // registers after the client is already gone is cancelled at registration.
+    // A message already sent stays sent.
+    let relaySendClosedEarly = false;
+    const relaySendCloseCancels = new Set<() => void>();
+    res.on('close', () => {
+      if (res.writableFinished) return;
+      relaySendClosedEarly = true;
+      for (const cancel of relaySendCloseCancels) {
+        try { cancel(); } catch { /* @silent-fallback-ok — cancelling a waiter is best-effort */ }
+      }
+      relaySendCloseCancels.clear();
+    });
+    const cancelReplyWaitOnClose = (cancel: () => void): void => {
+      if (relaySendClosedEarly) { cancel(); return; }
+      relaySendCloseCancels.add(cancel);
+    };
     const {
       targetAgent,
       message,
@@ -39705,7 +39869,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                     console.warn(`[relay-send] A2A delivery record failed (non-fatal): ${err instanceof Error ? err.message : err}`);
                   }
                   if (waitForReply) {
-                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds);
+                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose);
                     res.json({
                       success: true,
                       accepted,
@@ -39984,7 +40148,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // budget, and a fast reply can never land in a gap with no listener).
       let cancelReplyWait: (() => void) | undefined;
       const replyPromise = waitForReply
-        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; })
+        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); })
         : null;
 
       // Honest delivery (docs/specs/a2a-honest-delivery-outcomes.md §4). Order:

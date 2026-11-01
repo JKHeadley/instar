@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-dpi-aware",
+  "sessionId": "22931342-0ba2-4551-8807-182c3b8ae255",
+  "timestamp": "2026-11-01T05:46:10.535Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-dpi-aware.md",
+  "artifactSha256": "e2a4314b2195da5b710b9c30e3fb65d44df4bfa6e8f7d93d5e2a85948dd241e2",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-windows-input.eli16.md",
+    "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+    "tests/unit/windows-desktop-companion-dpi.test.ts",
+    "upgrades/next/windows-desktop-dpi-aware.md",
+    "upgrades/side-effects/windows-desktop-dpi-aware.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "13-line companion start-up change, fully reverted by a revert; live-tested on Mama PC",
+  "eli16Path": "docs/specs/native-remote-desktop-windows-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-dpi-aware.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

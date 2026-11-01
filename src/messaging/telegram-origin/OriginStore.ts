@@ -337,6 +337,7 @@ export class OriginStore {
   unresolvedHeldOperationCount(topicId: string): Promise<number> { return this.call('unresolvedHeldOperationCount', topicId); }
   markHoldExpiryReported(input: { operationId: string; now?: number }): Promise<boolean> { return this.call('markHoldExpiryReported', input); }
   recordForwardedAcceptance(input: { operationId: string; deliveryMachineId: string; receiptJson: string; now?: number }): Promise<boolean> { return this.call('recordForwardedAcceptance', input); }
+  recordForwardedOutcomeUnknown(input: { operationId: string; deliveryMachineId: string; now?: number }): Promise<boolean> { return this.call('recordForwardedOutcomeUnknown', input); }
   heldForwardAdmissions(input: { now?: number; limit?: number } = {}): Promise<Array<{ admission: import('./StoreTypes.js').OriginAdmission; row: HeldOperationRow }>> { return this.call('heldForwardAdmissions', input); }
   supersedeOperation(input: { operationId: string; supersededBy: string; now?: number }): Promise<boolean> { return this.call('supersedeOperation', input); }
   supersedeWithAdmission(input: { operationId: string; admission: import('./StoreTypes.js').OriginAdmission; holdReason: string; holdDetail: Record<string, unknown> | null; now?: number }): Promise<boolean> { return this.call('supersedeWithAdmission', input); }

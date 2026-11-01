@@ -46,6 +46,10 @@ export interface SenderEnvelope {
   userId?: string | number;
   username?: string;
   firstName?: string;
+  /** Set when the message was typed in the native app (mobile-operator-chat). */
+  via?: 'mobile-device';
+  deviceId?: string;
+  eventId?: string;
 }
 
 export interface PendingInboundRow {

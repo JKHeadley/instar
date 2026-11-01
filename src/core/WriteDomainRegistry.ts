@@ -347,6 +347,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
+  // POST /hooks/native-events (docs/specs/native-hook-events.md): a Claude Code
+  // process reports to the server on the SAME host over loopback
+  // (machine-local-justification: hardware-bound-resource). The stored events
+  // are per-session telemetry, rebuildable and git-ignored; nothing replicates.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/hooks/native-events',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-session hook telemetry under .instar/hook-events/ + subagent-tracking/, git-ignored by the native-hook-events migration; loopback-only route',
+    },
+  });
+
   // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
   // THIS machine's own identity file, rebuilds THIS process's relay client, appends one row
   // to this machine's key-free audit log. Local effect only; carries no key; installs
@@ -548,6 +565,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       onSharedGitSyncedPath: true,
       fileLevel: 'git-sync-excluded',
       note: 'the guard evidence (armed / graduated / counters) describes this disk\'s lifeline-to-server loopback hop and its own secret; it lives under the key-material prefix state/lifeline-ingress-secret*, which is gitignored, backup-excluded and never served',
+    },
+  });
+  // POST /mcp/threadline — this machine's own sessions calling this machine's
+  // Threadline MCP tools over loopback (docs/specs/threadline-mcp-local-http.md).
+  // A standby's sessions are served by their own server, so it is admitted on
+  // every machine; its credential is this disk's local secret
+  // (state/local-mcp-secret, key material: gitignored, backup-excluded, never served).
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mcp/threadline',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'a loopback call from a session to the server on the same host; the route writes no state of its own (tool calls go through the same loopback routes and admission as the stdio helper), and its secret lives under the key-material prefix state/local-mcp-secret',
     },
   });
   // Promotion writes the coherence-critical, git-synced session-pool stage.

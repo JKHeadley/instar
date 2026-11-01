@@ -55,7 +55,11 @@ export interface ReadLiveCodexRateLimitsOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const UNAVAILABLE = { kind: 'unavailable' } as const;
+/** A fresh `unavailable` result per call, so a `refusal` can never leak between results. */
+const unavailable = (refusal?: CodexReadRefusal): CodexLiveRead =>
+  refusal ? { kind: 'unavailable', refusal } : { kind: 'unavailable' };
+/** Cap on a carried refusal text (spec codex-device-limit-tripwire §1: 2 KiB). */
+export const CODEX_REFUSAL_TEXT_MAX_BYTES = 2048;
 const strictChildren = new Set<ChildProcessWithoutNullStreams>();
 
 /** The subset of the app-server v2 `RateLimitSnapshot` this reader consumes. */
@@ -81,8 +85,42 @@ interface LiveRateWindow {
  */
 export type CodexLiveRead =
   | { kind: 'ok'; snapshot: CodexUsageSnapshot }
-  | { kind: 'auth-failed' }
-  | { kind: 'unavailable' };
+  | { kind: 'auth-failed'; refusal?: CodexReadRefusal }
+  | { kind: 'unavailable'; refusal?: CodexReadRefusal };
+
+/**
+ * The app-server's own JSON-RPC error text for one exchange (spec codex-device-limit-tripwire §2,
+ * sources A and A-init), held in memory only. `stage: 'initialize'` is the id-1 handshake error,
+ * `stage: 'read'` the id-2 `account/rateLimits/read` error. Only `error.message` (plus `error.data`
+ * when it is a string) is carried, capped at {@link CODEX_REFUSAL_TEXT_MAX_BYTES}; stderr is never read.
+ */
+export interface CodexReadRefusal {
+  stage: 'initialize' | 'read';
+  text: string;
+}
+
+/** Truncate to at most `maxBytes` of UTF-8 without splitting a character. Exported for tests. */
+export function capUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let out = '';
+  let bytes = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, 'utf8');
+    if (bytes + n > maxBytes) break;
+    out += ch;
+    bytes += n;
+  }
+  return out;
+}
+
+/** The refusal text of a JSON-RPC error object: its message, plus `data` when that is a string. */
+function refusalText(error: unknown): string {
+  if (!error || typeof error !== 'object') return '';
+  const { message, data } = error as { message?: unknown; data?: unknown };
+  const parts = [typeof message === 'string' ? message : '', typeof data === 'string' ? data : '']
+    .filter((p) => p.length > 0);
+  return capUtf8(parts.join('\n'), CODEX_REFUSAL_TEXT_MAX_BYTES);
+}
 
 /** True when an app-server JSON-RPC error names missing/invalid authentication. Exported for tests. */
 export function isCodexAuthError(error: unknown): boolean {
@@ -112,7 +150,7 @@ export async function readLiveCodexRateLimitsDetailed(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnImpl = opts.spawnImpl ?? ((cmd, args, o) => spawn(cmd, args, { ...o, stdio: 'pipe' }));
 
-  if (opts.signal?.aborted || (opts.subscriptionOnly && strictChildren.size >= 2)) return UNAVAILABLE;
+  if (opts.signal?.aborted || (opts.subscriptionOnly && strictChildren.size >= 2)) return unavailable();
 
   let child: ChildProcessWithoutNullStreams;
   try {
@@ -126,7 +164,7 @@ export async function readLiveCodexRateLimitsDetailed(
         : { ...process.env, ...(opts.codexHome ? { CODEX_HOME: opts.codexHome } : {}) },
     });
   } catch {
-    return UNAVAILABLE;
+    return unavailable();
   }
 
   if (opts.subscriptionOnly) {
@@ -166,7 +204,7 @@ export async function readLiveCodexRateLimitsDetailed(
         force.unref?.();
         const reapDeadline = setTimeout(() => {
           child.removeListener('exit', onExit);
-          resolve(UNAVAILABLE);
+          resolve(unavailable());
         }, 700);
         reapDeadline.unref?.();
         return;
@@ -174,10 +212,10 @@ export async function readLiveCodexRateLimitsDetailed(
       resolve(value);
     };
 
-    const onAbort = () => finish(UNAVAILABLE);
+    const onAbort = () => finish(unavailable());
     opts.signal?.addEventListener('abort', onAbort, { once: true });
 
-    const deadline = setTimeout(() => finish(UNAVAILABLE), timeoutMs);
+    const deadline = setTimeout(() => finish(unavailable()), timeoutMs);
     // The exchange must never outlive its caller because the timer forgot to
     // fire (e.g. a fake timer environment): unref so a leaked child cannot pin
     // the event loop either way.
@@ -189,15 +227,16 @@ export async function readLiveCodexRateLimitsDetailed(
       try {
         child.stdin.write(`${JSON.stringify(payload)}\n`);
       } catch {
-        finish(UNAVAILABLE);
+        finish(unavailable());
       }
     };
 
-    child.on('error', () => finish(UNAVAILABLE));
-    child.on('exit', () => finish(UNAVAILABLE));
+    child.on('error', () => finish(unavailable()));
+    child.on('exit', () => finish(unavailable()));
     child.stderr?.on('data', () => {
       // Drained so the child can never block on a full stderr pipe. Content is
-      // deliberately ignored: any protocol failure surfaces as a null result.
+      // deliberately ignored and never retained (spec codex-device-limit-tripwire §2):
+      // only the JSON-RPC error object on stdout is ever carried as refusal text.
     });
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -215,22 +254,24 @@ export async function readLiveCodexRateLimitsDetailed(
         }
         if (msg.id === 1) {
           if (msg.error) {
-            finish(UNAVAILABLE);
+            // A-init: carried as a trigger only; no new auth detection on the handshake.
+            finish(unavailable({ stage: 'initialize', text: refusalText(msg.error) }));
             return;
           }
           send({ jsonrpc: '2.0', method: 'initialized' });
           send({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} });
         } else if (msg.id === 2) {
           if (msg.error) {
-            finish(isCodexAuthError(msg.error) ? { kind: 'auth-failed' } : UNAVAILABLE);
+            const refusal: CodexReadRefusal = { stage: 'read', text: refusalText(msg.error) };
+            finish(isCodexAuthError(msg.error) ? { kind: 'auth-failed', refusal } : unavailable(refusal));
             return;
           }
           if (!msg.result) {
-            finish(UNAVAILABLE);
+            finish(unavailable());
             return;
           }
           const snapshot = mapLiveResponse(msg.result as Record<string, unknown>, nowMs);
-          finish(snapshot ? { kind: 'ok', snapshot } : UNAVAILABLE);
+          finish(snapshot ? { kind: 'ok', snapshot } : unavailable());
           return;
         }
       }

@@ -12,7 +12,8 @@ import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
 // drives the real TelegramWebKDriver over a private CDP pipe. The "browser" is
 // a node script that speaks CDP and serves whichever Web K build the test
 // names, so a Telegram update is simulated without the network or a login.
-const [b679, b676] = REVIEWED_WEB_K_BUILDS;
+const b679 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-679')!;
+const b676 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-676')!;
 const FAKE_BROWSER = String.raw`#!/usr/bin/env node
 const fs = require('fs'), path = require('path');
 const served = () => JSON.parse(fs.readFileSync(path.join(__dirname, 'served-build.json'), 'utf8'));
@@ -43,14 +44,15 @@ beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); }, 30_000);
 
-async function fixture() {
+async function fixture(browserSendAllowance?: unknown) {
   const root = await mkdtemp('/tmp/origin-webk-drift-');
   cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-webk-drift:cleanup' }); });
   const stateDir = path.join(root, '.instar'); await mkdir(path.join(stateDir, 'state'), { recursive: true });
   await mkdir(path.join(root, '.claude'), { recursive: true });
   await writeFile(path.join(root, '.claude/settings.json'), JSON.stringify({ mcpServers: {} }));
   const config = { projectDir: root, stateDir, projectName: 'echo', port: 0, authToken: 'fixture-auth',
-    messaging: [{ type: 'telegram', enabled: true, config: { token: '123:drift-fixture', chatId: '-100123', lifelineTopicId: 7848 } }] };
+    messaging: [{ type: 'telegram', enabled: true, config: { token: '123:drift-fixture', chatId: '-100123', lifelineTopicId: 7848,
+      messageOrigin: browserSendAllowance === undefined ? {} : { browserSendAllowance } } }] };
   await writeFile(path.join(stateDir, 'config.json'), JSON.stringify(config));
   const browserDir = path.join(root, 'bin'); await mkdir(browserDir);
   const executablePath = path.join(browserDir, 'fake-chromium');
@@ -73,6 +75,28 @@ async function fixture() {
 }
 
 describe('Telegram Web K drift through the production boot', () => {
+  it('the production browser callback admits only the configured profile and exact external destination', { timeout: 60_000 }, async () => {
+    const f = await fixture({ profileId: 'operator-telegram', accountId: '7812716706',
+      chatId: 'channel:4290919884', topicId: null, decisionRef: 'telegram:102965:2026-10-30:07:17' });
+    const authorize = f.boot.runtime.browsers.get('operator-telegram')!.executor.options.authorize;
+    const destination = { version: 1 as const, transport: 'telegram-web' as const, accountId: '7812716706',
+      chatId: 'channel:4290919884', topicId: null, messageId: null, inlineMessageId: null, scheduledMessageId: null };
+    expect(await authorize(destination)).toBe(true);
+    // channel:123 is this agent's existing Bot API chat and remains allowed.
+    expect(await authorize({ ...destination, chatId: 'channel:123' })).toBe(true);
+    expect(await authorize({ ...destination, chatId: 'channel:456' })).toBe(false);
+    expect(await authorize({ ...destination, topicId: '1' })).toBe(false);
+    expect(await authorize({ ...destination, messageId: '42' })).toBe(false);
+    expect(await authorize({ ...destination, accountId: '1' })).toBe(false);
+  });
+
+  it('an absent allowance does not authorize an external browser destination', { timeout: 60_000 }, async () => {
+    const absent = await fixture();
+    const destination = { version: 1 as const, transport: 'telegram-web' as const, accountId: '7812716706',
+      chatId: 'channel:4290919884', topicId: null, messageId: null, inlineMessageId: null, scheduledMessageId: null };
+    expect(await absent.boot.runtime.browsers.get('operator-telegram')!.executor.options.authorize(destination)).toBe(false);
+  });
+
   it('an unreviewed live build raises exactly one attention item and records the failed build', { timeout: 60_000 }, async () => {
     const f = await fixture();
     await f.serve({ criticalAssets: ['apiManagerProxy-NEW.js', 'app-NEW.js', 'index-NEW.js'],

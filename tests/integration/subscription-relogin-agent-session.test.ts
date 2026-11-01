@@ -44,7 +44,11 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
   /** Quiet hours for approval re-offers. Tests default to OFF so they never depend on the wall-clock time of day. */
   quietHours?: { startHour: number; endHour: number } | null;
   /** Spec relogin-last-resort-model: a last-resort model port whose availability the test controls. */
-  lastResort?: { available: boolean } } = {}) {
+  lastResort?: { available: boolean };
+  /** codex-device-limit-tripwire §4: the runtime's device-limit callback. */
+  onDeviceLimitStopped?: (accountId: string) => void;
+  deviceLimitHold?: (accountId: string) => boolean;
+  onTerminal?: (...args: unknown[]) => unknown } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-agent-session-')); dirs.push(stateDir);
   const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
   const accounts = new Map<string, SubscriptionAccount>();
@@ -139,6 +143,9 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
     navigate: async (input) => { navigateCalls.push(input.offered); return input.offered.includes('click:2') ? 'click:2' : (input.offered[0] ?? 'give-up'); },
     ...(opts.lastResort ? { lastResort: lastResortPort } : {}),
     ...(opts.codexLiveReadAvailable !== undefined ? { codexLiveReadAvailable: opts.codexLiveReadAvailable } : {}),
+    ...(opts.onDeviceLimitStopped ? { onDeviceLimitStopped: opts.onDeviceLimitStopped } : {}),
+    ...(opts.deviceLimitHold ? { deviceLimitHold: opts.deviceLimitHold } : {}),
+    ...(opts.onTerminal ? { onTerminal: opts.onTerminal as never } : {}),
     navigation: 'agent-session', seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
     helperSession: { spawn, kill, isAlive: (t) => tmux.get(t) === true, listHelpers: () => [], hasCapacity: () => true, serverPort: 4042,
       codexLoginStatus: async () => opts.codexCli ?? 'signed-in', timing: { pollMs: 10, startGraceMs: 0, exitSettleMs: 0 } },
@@ -280,6 +287,30 @@ describe('agent-session sign-in repair runtime', () => {
     expect(ep).toMatchObject({ state: 'failed', slowRetryCount: 0 });
     expect(Date.parse(ep.nextAttemptAt!)).toBeGreaterThan(due); // pushed one delay later, not a tight loop
     expect(w.spawn).toHaveBeenCalledTimes(1);
+    w.runtime.close();
+  });
+
+  it('a helper that reports a device-limit page ends the repair failed/device-limit: reported, not retried while suspected, no notice, not a hard line', async () => {
+    const clock = { value: 0 };
+    const onDeviceLimitStopped = vi.fn();
+    const onTerminal = vi.fn(async () => undefined);
+    const held = new Set<string>();
+    const w = world({ mode: 'unattended', hardLine: 'device-limit', offsetMs: clock, onDeviceLimitStopped, onTerminal,
+      deviceLimitHold: (accountId) => held.has(accountId) });
+    onDeviceLimitStopped.mockImplementation((accountId: string) => { held.add(accountId); });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    expect(w.runtime.store.get(id)!.failureClass).toBe('device-limit');
+    expect(w.runtime.store.listEvents(id)[0]).toMatchObject({ eventClass: 'device-limit-stopped' });
+    expect(onDeviceLimitStopped).toHaveBeenCalledTimes(1);
+    expect(onDeviceLimitStopped).toHaveBeenCalledWith('acct-broken');
+    for (let i = 0; i < 4; i++) { clock.value += 30 * 60 * 60_000; await w.runtime.service.tick(); }
+    expect(w.runtime.store.get(id)).toMatchObject({ state: 'failed', slowRetryCount: 0, nextAttemptAt: null });
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    expect(onTerminal).not.toHaveBeenCalled();
+    const evidence = w.runtime.store.getUnattendedEvidence('acct-broken', 'machine-1', 'anthropic', 'claude-code', 'password');
+    expect(evidence.helperHardLines).toBe(0);
     w.runtime.close();
   });
 

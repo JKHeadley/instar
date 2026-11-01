@@ -13,6 +13,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { publishDashboardPreview } from '../../src/server/dashboardPreview.js';
 
 async function boot(enabled: boolean, frontConfigured = true) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-boot-'));
@@ -46,6 +47,20 @@ describe('native desktop production boot', () => {
   it('stays dark without explicit opt-in', async () => {
     const { server, dir } = await boot(false);
     try {
+      expect((await request(server.getApp()).get('/dashboard/unlock-check')).body).toEqual({ accepted: true });
+      // The dashboard preview is alive on the production boot path: absent until
+      // published, then served from the state folder without a restart.
+      const before = await request(server.getApp()).get('/dashboard/preview/');
+      expect(before.status).toBe(404);
+      const { stateDir: sd } = { stateDir: path.join(dir, '.instar') };
+      const src = path.join(dir, 'preview-src');
+      fs.mkdirSync(src);
+      fs.writeFileSync(path.join(src, 'index.html'), '<title>Instar console</title>');
+      publishDashboardPreview(sd, src, { branch: 'b', commit: 'c', uncommitted: false, publishedAt: new Date().toISOString() });
+      const after = await request(server.getApp()).get('/dashboard/preview/');
+      expect(after.status).toBe(200);
+      expect(after.text).toContain('Instar console');
+      expect(after.headers['cache-control']).toBe('no-store');
       const response = await request(server.getApp()).get('/desktop/targets')
         .set('Authorization', 'Bearer desktop-e2e-token');
       expect(response.status).toBe(503);
@@ -58,6 +73,11 @@ describe('native desktop production boot', () => {
   it('stays dark when enabled without a designated front machine', async () => {
     const { server, dir } = await boot(true, false);
     try {
+      // The console asks before it shows a PIN box; a local connection may unlock.
+      const check = await request(server.getApp()).get('/dashboard/unlock-check');
+      expect(check.status).toBe(200);
+      expect(check.body).toEqual({ accepted: true });
+      expect(check.headers['cache-control']).toBe('no-store');
       const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
       expect(unlock.status).toBe(200);
       const listed = await request(server.getApp()).get('/desktop/targets')

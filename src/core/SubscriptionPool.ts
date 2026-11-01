@@ -166,8 +166,34 @@ export interface SubscriptionAccount {
     lastConfirmedAt: string;
     repairState: 'planned' | 'dry-run' | 'repairing' | 'owner-relogin-required';
   };
+  /**
+   * Codex device-limit tripwire (spec codex-device-limit-tripwire §4/§6). Machine-local
+   * bookkeeping; never replicated (projectAccountToMeta allowlists it out) and never accepted from
+   * the PATCH route. `statusCause` names WHY the account is `needs-reauth`; see
+   * isDeviceLimitBenched. All six are cleared by the store whenever a write moves `status` to
+   * anything other than `needs-reauth` without setting them itself.
+   */
+  statusCause?: 'codex-device-limit';
+  /** ISO time the account was benched for a suspected device limit. */
+  deviceLimitSince?: string;
+  /** ISO time of the first device-limit judgement (suspected, not yet benched). */
+  deviceLimitSuspectedAt?: string;
+  /** ISO time the next scheduled read for a benched account may run (backoff). */
+  deviceLimitNextReadAt?: string;
+  /** Consecutive refused scheduled reads at the backoff cap (breaker count). */
+  deviceLimitRefusedReads?: number;
+  /** The breaker tripped: scheduled reads for this benched account stopped. */
+  deviceLimitReadsStopped?: boolean;
   /** Monotonic version for optimistic CAS in update(). */
   version: number;
+}
+
+/**
+ * Benched for a suspected Codex device limit (spec codex-device-limit-tripwire §4). Every reader
+ * uses exactly this predicate on the attributed pool record.
+ */
+export function isDeviceLimitBenched(account: Pick<SubscriptionAccount, 'status' | 'statusCause'>): boolean {
+  return account.status === 'needs-reauth' && account.statusCause === 'codex-device-limit';
 }
 
 /** True only for the explicit local-login-loss drift episode. Drift of a
@@ -398,6 +424,29 @@ export interface UpdateAccountInput {
   lastRefreshAt?: string;
   identityDrifted?: boolean;
   identityDrift?: SubscriptionAccount['identityDrift'] | null;
+  /** Device-limit tripwire fields (internal writers only; the PATCH route never forwards them).
+   *  `null` removes the field. */
+  statusCause?: 'codex-device-limit' | null;
+  deviceLimitSince?: string | null;
+  deviceLimitSuspectedAt?: string | null;
+  deviceLimitNextReadAt?: string | null;
+  deviceLimitRefusedReads?: number | null;
+  deviceLimitReadsStopped?: boolean | null;
+}
+
+const DEVICE_LIMIT_FIELDS = [
+  'statusCause',
+  'deviceLimitSince',
+  'deviceLimitSuspectedAt',
+  'deviceLimitNextReadAt',
+  'deviceLimitRefusedReads',
+  'deviceLimitReadsStopped',
+] as const;
+type DeviceLimitField = typeof DEVICE_LIMIT_FIELDS[number];
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function isIsoTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && ISO_TIMESTAMP_RE.test(value) && Number.isFinite(Date.parse(value));
 }
 
 const ID_RE = /^[a-z0-9-]+$/;
@@ -709,7 +758,10 @@ export class SubscriptionPool {
       if (!STATUSES.includes(patch.status)) {
         throw new ValidationError(`status must be one of: ${STATUSES.join(', ')}`);
       }
+      const priorStatus = acct.status;
       acct.status = patch.status;
+      // Enrollment never sets the device-limit fields, so a move off needs-reauth ends any bench.
+      this.clearDeviceLimitOnStatusMove(acct, priorStatus, {});
     }
     acct.version += 1;
     this.persist(next);
@@ -733,6 +785,7 @@ export class SubscriptionPool {
     const next = this.cloneStore();
     const acct = next.accounts.find((a) => a.id === id)!;
     if (!acct) return null;
+    const priorStatus = acct.status;
 
     if (patch.nickname !== undefined) {
       const nn = patch.nickname.trim();
@@ -756,6 +809,8 @@ export class SubscriptionPool {
       }
       acct.status = patch.status;
     }
+    this.applyDeviceLimitPatch(acct, patch);
+    if (patch.status !== undefined) this.clearDeviceLimitOnStatusMove(acct, priorStatus, patch);
     if (patch.lastQuota !== undefined) {
       // ROUND-21: a quota snapshot for a framework that exposes NO usage
       // surface is not a reading — there is nothing that could have produced
@@ -946,6 +1001,54 @@ export class SubscriptionPool {
     fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2) + '\n');
     fs.renameSync(tmpPath, this.storePath);
     this.lastMutationResult = { committed: true, cleanupPending: false };
+  }
+
+  /** Validate + apply the device-limit fields of a patch (`null` removes a field). */
+  private applyDeviceLimitPatch(acct: StoredSubscriptionAccount, patch: UpdateAccountInput): void {
+    if (patch.statusCause !== undefined) {
+      if (patch.statusCause !== null && patch.statusCause !== 'codex-device-limit') {
+        throw new ValidationError("statusCause must be 'codex-device-limit' or null");
+      }
+    }
+    for (const field of ['deviceLimitSince', 'deviceLimitSuspectedAt', 'deviceLimitNextReadAt'] as const) {
+      const value = patch[field];
+      if (value !== undefined && value !== null && !isIsoTimestamp(value)) {
+        throw new ValidationError(`${field} must be an ISO-8601 timestamp or null`);
+      }
+    }
+    const refused = patch.deviceLimitRefusedReads;
+    if (refused !== undefined && refused !== null && !(Number.isSafeInteger(refused) && refused >= 0)) {
+      throw new ValidationError('deviceLimitRefusedReads must be a non-negative integer or null');
+    }
+    const stopped = patch.deviceLimitReadsStopped;
+    if (stopped !== undefined && stopped !== null && typeof stopped !== 'boolean') {
+      throw new ValidationError('deviceLimitReadsStopped must be a boolean or null');
+    }
+    const target = acct as unknown as Record<DeviceLimitField, unknown>;
+    for (const field of DEVICE_LIMIT_FIELDS) {
+      const value = patch[field];
+      if (value === undefined) continue;
+      if (value === null) delete target[field];
+      else target[field] = value;
+    }
+  }
+
+  /**
+   * The one release rule (spec codex-device-limit-tripwire §6): a write that MOVES `status` to
+   * anything other than `needs-reauth` clears every device-limit field the same write did not set
+   * itself. Both status writers (update() and the enrollment commit) call it, so every writer of
+   * `active` ends a bench consistently.
+   */
+  private clearDeviceLimitOnStatusMove(
+    acct: StoredSubscriptionAccount,
+    priorStatus: SubscriptionAccountStatus,
+    patch: Partial<Record<DeviceLimitField, unknown>>,
+  ): void {
+    if (acct.status === 'needs-reauth' || acct.status === priorStatus) return;
+    const target = acct as unknown as Record<DeviceLimitField, unknown>;
+    for (const field of DEVICE_LIMIT_FIELDS) {
+      if (patch[field] === undefined) delete target[field];
+    }
   }
 
   private isStoredAccount(value: unknown): value is StoredSubscriptionAccount {

@@ -101,12 +101,15 @@ export function classifyLeaseRoute(view: ForwardLeaseView): LeaseRoute {
  * holder on another machine is forwarded to at EVERY session-pool stage: a
  * direct send from a non-holder is always held (`authorize` requires the
  * lease), so answering `local` there muted the machine until the lease came
- * back. Only an UNSETTLED lease keeps the dark-stage answer (send direct, no
- * 15 s settle wait on a pool that is not rolled out). */
-export function decideHolderForward(input: { switchOn: boolean; poolStage: string; route: LeaseRoute }): 'forward' | 'local' | 'settling' {
+ * back. An UNSETTLED lease settles first whenever this machine has a paired
+ * peer: a direct send would be refused by `authorize` and held on the direct
+ * path, which only replays when the lease comes HERE — on a standby that is
+ * never, so every boot-time notice expired unsent (the Mama PC backlog). Only
+ * a dark pool with no known peer keeps the direct answer (no 15 s wait). */
+export function decideHolderForward(input: { switchOn: boolean; poolStage: string; route: LeaseRoute; hasPeer?: boolean }): 'forward' | 'local' | 'settling' {
   if (!input.switchOn || input.route.kind === 'self') return 'local';
   if (input.route.kind === 'peer') return 'forward';
-  return input.poolStage === 'dark' ? 'local' : 'settling';
+  return input.poolStage === 'dark' && input.hasPeer !== true ? 'local' : 'settling';
 }
 
 export type SettledRoute = { kind: 'self' } | { kind: 'peer'; holder: string } | { kind: 'unsettled'; reason: LeaseRoute extends { reason: infer R } ? R : never };
@@ -304,8 +307,12 @@ export interface ForwardRecoveryDeps {
   /** The old holder's `receipt` for the operation id: `accepted` resolves the
    * hold; `owned-by-holder` (admitted/held there — its own recovery delivers)
    * and `unreachable` keep it; only a definite non-accepted state (no record,
-   * never admitted, expired, failed) frees a re-forward. */
-  receipt: (machineId: string, operationId: string) => Promise<{ state: 'accepted'; receiptJson: string } | { state: 'not-accepted' } | { state: 'owned-by-holder' } | { state: 'unreachable' }>;
+   * never admitted, expired, failed) frees a re-forward. `outcome-unknown`: the
+   * holder's own send ended unknown and it will never retry or resolve it, so
+   * waiting for it is pointless and re-forwarding could duplicate it. */
+  receipt: (machineId: string, operationId: string) => Promise<{ state: 'accepted'; receiptJson: string } | { state: 'not-accepted' } | { state: 'owned-by-holder' } | { state: 'outcome-unknown' } | { state: 'unreachable' }>;
+  /** Settle a local held row as outcome-unknown at `deliveryMachineId` (never re-sent). */
+  settleUnknown: (operationId: string, deliveryMachineId: string) => Promise<boolean>;
   /** Resolve a local held row (the holder delivered or confirmed it). */
   resolve: (operationId: string, deliveryMachineId: string, receiptJson: string) => Promise<boolean>;
   /** Re-record the hold with an updated detail (same reason). */
@@ -321,7 +328,7 @@ export interface ForwardRecoveryDeps {
   now: () => number;
   ladder?: { delaysMs: readonly number[] };
 }
-export type ForwardRecoveryOutcome = 'resolved' | 'sent' | 'retained' | 'skipped';
+export type ForwardRecoveryOutcome = 'resolved' | 'sent' | 'settled' | 'retained' | 'skipped';
 
 function attemptKind(result: Extract<HolderSubmitResult, { ok: false }>): ForwardLastAttempt {
   return result.outcome === 'outcome-unknown' ? 'outcome-unknown' : result.reason === 'origin-peer-unreachable' ? 'unreachable' : 'refused';
@@ -351,6 +358,13 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
       await deps.resolve(operationId, detail.machineId, answer.receiptJson);
       audit({ outcome: 'resolved-by-receipt', machineId: detail.machineId });
       return 'resolved';
+    }
+    if (answer.state === 'outcome-unknown') {
+      if (await deps.settleUnknown(operationId, detail.machineId)) {
+        audit({ outcome: 'settled-holder-outcome-unknown', machineId: detail.machineId });
+        return 'settled';
+      }
+      await retain({}); audit({ outcome: 'retained-settle-refused', machineId: detail.machineId }); return 'retained';
     }
     if (answer.state === 'unreachable' || answer.state === 'owned-by-holder') {
       await retain({}); audit({ outcome: answer.state === 'unreachable' ? 'retained-outcome-unknown' : 'retained-owned-by-holder', machineId: detail.machineId }); return 'retained';

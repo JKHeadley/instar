@@ -46,7 +46,8 @@ import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotligh
 import { classifyTccProtectedPath, describeTccProtectedPath } from './TccProtectedPathGuard.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
-import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings } from '../data/http-hook-templates.js';
+import { HTTP_HOOK_TEMPLATES, buildHttpHookSettings, isNativeReporterHook, reconcileReporterHooks } from '../data/http-hook-templates.js';
+import { decideNativeReporterFromConfig, readNativeHookConfigFile, type NativeReporterDecision, type NativeHookConfigView } from './nativeHookEventsGate.js';
 // One symbol per line, sorted. This single import is the file's merge hot-spot: every change that
 // adds a CLAUDE.md awareness marker appends to it, so two branches adding different symbols always
 // collided on the same line (resolved by hand five times on 2026-10-21 alone). One line each means
@@ -89,6 +90,8 @@ import {
   STANDING_SESSIONS_MARKER,
   CONSOLE_BULLET,
   CONSOLE_MARKER,
+  DASHBOARD_PREVIEW_BULLET,
+  DASHBOARD_PREVIEW_MARKER,
   remoteDesktopBullet,
   REMOTE_DESKTOP_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
@@ -128,7 +131,7 @@ import { PlaywrightProfileRegistry } from './PlaywrightProfileRegistry.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
 import { installCodexHooks } from './installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from './codexHookArm.js';
-import { detectCodexPath, detectTmuxPath } from './Config.js';
+import { detectCodexPath, detectTmuxPath, standaloneAgentsDir } from './Config.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import {
   MigratorStepEngine,
@@ -354,6 +357,9 @@ export const LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE = '- Local Verify fail-fast: i
 export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; 1..4 each; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
 export const LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE = '- Local Verify focused PR preflight: optional `monitoring.localVerify.preflightMode: off|observe|enforce` (default off) runs bounded changed tests after build/lint and before the full suite; `main` never uses it. Observe records a diagnostic and always continues. Enforce can stop an automatically rediscoverable PR on a repeated assertion failure, then schedules a full-suite replay without preflight; only the complete full-suite record can authorize a green merge. A skipped preflight is not a passed check. `GET /local-verify` → `preflight` shows mode and replay obligations. When a PR is red with `preflight-red` or appears to be waiting on a replay, read this status and its exact-head record before describing the result.';
 export const LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE = '- Local Verify failed-file diagnosis: optional `monitoring.localVerify.failedFileDiagnosis: off|observe|auto` (default off) asks one idle peer to run one to three failed test files on the exact PR merge and base. It is advisory: `GET /local-verify/record?pr=&head=&base=` includes a separate `diagnosis` projection, and `GET /local-verify/diagnosis?pr=&head=&base=` reads it directly. `pr-reproducible`, `machine-or-flake`, `base-or-shared`, and `inconclusive` describe file-level evidence only; no diagnosis changes the red record, merge gate, or main health. When a PR failure has named files and the user asks whether it reproduces elsewhere, read that projection before explaining. A full verify preempts any peer diagnosis.';
+
+/** Shared by fresh agent templates and the existing-agent migration. */
+export const UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE = '- Manual updates: `POST /updates/apply` installs the update but waits to restart while a Local Verify run is active; check `GET /updates/auto` for `restartDeferral`. Only when an immediate restart is explicitly required, send `{"forceRestart":true}` to the same route. That override cancels the active verify, which must run again.';
 
 /**
  * Local Verify merge-throughput label — the awareness line appended to an existing CLAUDE.md's
@@ -796,6 +802,13 @@ Beyond the tone gate, a response-review pipeline (nine specialist reviewers driv
 export const PASSKEY_LOGIN_METHOD_CLAUDEMD_BULLET = `- **Passkey login method (\`google-passkey\`, ⚗️ dark)**: an account may carry \`loginMethod: "google-passkey"\` with a \`vaultBindings.passkey\` entry KEY (a machine-local passkey store key, never material; refused unless that store exists on this machine). The registry records the method it REPLACED as \`priorLoginMethod\`. Rollback lever: \`POST /passkeys/revert-method\` with the dashboard PIN (\`{"pin":"…"}\`, optional \`accounts:[{profileId,service,identity}]\`; default = every passkey account) restores the prior method and lists accounts with none as \`noPriorMethod\` — it never guesses a method. Repair for a passkey account is admitted ONLY when its cell is \`ready\`; on this build the cell always reads unknown, so the path is inert.\n- **Passkey grants + issuers (per account × machine, ⚗️ dark)**: a passkey may be minted/loaded on a machine only under a GRANT written on that machine. Read them: \`GET /passkeys/grants\` (grants, issued peer-grant copies, confirmed issuers, revoke high-water, \`issuerBootstrapRequired\`). PIN levers: \`POST /passkeys/grant\` \`{"pin":"…","email":"…"}\`, \`POST /passkeys/revoke\` \`{"pin":"…","email":"…"}\` (stops THIS agent's passkey path only — live sessions and stored passwords remain), \`POST /passkeys/issuer-add\` / \`issuer-remove\` \`{"pin":"…","machineId":"…"}\`. Add \`targetMachineId\` to act on a PEER: the op is signed with this machine's identity key as a \`passkey-cell\` mandate and delivered to the peer's \`POST /passkeys/cell-action\`, which accepts it only from a machine the operator confirmed as an issuer on THAT machine's own dashboard (no trust-on-first-use), once per nonce, within 15 minutes (revokes never expire). On a multi-machine agent the first grant is refused with \`issuer-bootstrap-required\` until a peer issuer is confirmed. NEVER ask the user to paste the PIN into chat — point them at the dashboard.\n`;
 
 /**
+ * Codex device-limit tripwire (docs/specs/codex-device-limit-tripwire.md §11): the one bullet
+ * under the Subscription Pool section. generateClaudeMd emits it; migrateClaudeMd inserts it into
+ * an existing CLAUDE.md, content-sniffed on the marker "Codex device-limit tripwire".
+ */
+export const CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET = `- **Codex device-limit tripwire (one machine, never a sign-in)** — OpenAI caps how many paid personal Codex accounts one device may hold. A pool account whose \`statusCause\` is \`codex-device-limit\` is a SUSPECTED device limit, not proven provider attribution: it is benched (needs-reauth) on THIS machine only, and stays usable elsewhere. The judge is Jev, with a Luna (Codex fast tier) referee running on a different signed-in account, reading the Codex app-server's own refusal text; benching needs two separate refusals 5–60 min apart, plus another account on this machine reading clean. The prepared refusal text (secrets scrubbed, personal data masked) is sent to TypeSafe and the Codex fast tier. Read it: \`GET /subscription-pool\` → each account's \`statusCause\` and this machine's \`deviceLimit\` block, and \`logs/codex-device-limit.jsonl\`. The fix is a layout decision (which accounts live on which machine), not a sign-in: the dashboard cell says "Suspected device limit: benched on this machine" and offers no Sign in or Repair. To keep using an account here anyway, add its id to \`subscriptionPool.codexDeviceLimit.ignoreAccounts\` in THAT machine's own config when the operator says so (I write it; per machine). Switch: \`subscriptionPool.codexDeviceLimit.enabled\` (read live; omitted ⇒ live on a development agent, off on the fleet until graduation). **Proactive trigger:** "why is this Codex account benched?" / "did we hit the device limit?" → read \`statusCause\` + \`deviceLimit\` and the log, never guess.\n`;
+
+/**
  * The dedicated-profile provisioning bullet inside the Playwright Profile Registry section. The
  * dashboard's "Create a dedicated sign-in profile" form was removed (it only made an empty profile
  * and never signed in); the agent creates and signs in these profiles itself.
@@ -877,6 +890,41 @@ One read-only page joining what already records feature maturation: the \`featur
  * Unique content-sniff marker: `Queue Pace — is every work pile shrinking`.
  * Measure-only ledger + route (dev-gated); the triage tuner has its own explicit flag.
  */
+/**
+ * CLAUDE.md awareness block for mobile pairing links (docs/specs/mobile-pairing-link.md).
+ * Unique content-sniff marker: `Mobile pairing link`.
+ */
+export function MOBILE_PAIRING_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile pairing link — add this agent to the Instar iPhone app (\`POST /mobile/pairing-codes\`)
+
+The operator can add this agent to the Instar iPhone app with a one-time link instead of typing an address and PIN. The link opens the app (a universal link on instar.sh); the phone registers its own Secure Enclave key, and I send the owner a 6-digit code **privately** in Telegram, which the owner types into the app. Only then is the phone active. The phone never receives the API token and never gets an operator session; it can only make a fixed list of read requests (health, attention, sessions, topics, its own status) plus confirm and revoke itself. Development-agent gated (\`mobilePairing.enabled\`; 503 when off).
+- Mint: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/mobile/pairing-codes -d '{"label":"Justin iPhone"}'\` → \`{ code, expiresAt, link }\`. Single use, 10 minutes.
+- **Send only the \`link\`, and only into a topic whose verified operator (\`GET /topic-operator/:topicId\`) is the person asking.** Never send the code alone or the API token. Tell them: open it on the phone, then type the 6-digit code I send privately into the app.
+- **Never ask the operator for the 6-digit confirmation code**, and never repeat it. If they paste it to me, that pairing is cancelled automatically; tell them to ask for a new link.
+- \`409 stable-address-required\`: the phone needs a permanent address (a named tunnel with a hostname, running on this machine); offer to set it up. \`409 approval-unavailable\` at redeem: I could not DM the owner; ask them to send the bot any private message first. \`429 pairing-paused\`: ten wrong codes in 24 hours; an attention item explains it.
+- Which phones are paired: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/devices?scope=pool"\` (status, fingerprint; rows are untrusted text).
+- Revoke one phone (always allowed): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/devices/DEVICE_ID/revoke\`. \`202 pending\` means no machine holding that phone confirmed yet; the phone may keep access until one does.
+- **When to use** (PROACTIVE): "add you to my phone / the Instar app" → mint and send the link; "I lost my phone / revoke my old phone" → list devices and revoke.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for native operator chat (docs/specs/mobile-operator-chat.md).
+ * Unique content-sniff marker: `Mobile operator chat`.
+ */
+export function MOBILE_CHAT_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile operator chat — messages typed in the Instar iPhone app
+
+An active paired phone can send a message into a topic (\`POST /mobile/chat/:topicId\`, device-signed only; a Bearer token gets 403). It reaches me exactly like the owner's Telegram message: same emergency-stop/pause intercepts, same session, the owner's name. A copy is posted into the Telegram topic as "📱 <owner> (from the app): …". The message metadata carries \`viaMobileDevice: true\` and the history row \`via: "mobile-device"\`.
+- An app message never binds the topic operator and never counts as standing-authorization evidence; topic-profile confirmations from the app work only where an operator is already bound.
+- Refused from the app with 422: pairing invites (\`tlinv1:\`), \`/desktop\` codes, and anything credential-shaped (point the operator to a Secret Drop link for secrets).
+- Accepted only on the machine holding the serving lease (\`409 not-serving\` elsewhere). A retried request answers its recorded result; \`409 outcome-unknown\` means the message may or may not have reached me (check the conversation).
+- History for the app across machines: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/topics/TOPIC_ID/messages?scope=pool"\`.
+- Gate: \`mobilePairing.chat.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): the operator asks "can I message you from the app?" → yes, once the phone is paired; "why did a message show up with a 📱 from the app?" → it was typed in the app.
+`;
+}
+
 export function QUEUE_PACE_CLAUDEMD_SECTION(port: number): string {
   return `\n### Queue Pace — is every work pile shrinking or growing? (\`GET /queue-pace\`)
 
@@ -1122,6 +1170,13 @@ export interface MigratorConfig {
   hasTelegram: boolean;
   projectName: string;
   identityMigrationSecretStore?: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'>;
+  /**
+   * The configured claude-code binary (native-hook-events D4 version gate).
+   * Absent ⇒ read from `<stateDir>/config.json` (never PATH).
+   */
+  claudeCodePath?: string | null;
+  /** The server's configured listen host (absent ⇒ read from config.json). */
+  host?: string;
 }
 
 /**
@@ -1997,6 +2052,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninCrossMachine(result);
     this.migrateSubscriptionSigninDropProfileFormPointer(result);
     this.migrateSubscriptionSigninApprovalBoundary(result);
+    this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
@@ -2043,6 +2099,8 @@ export class PostUpdateMigrator {
     this.migrateFractalEightyTwentyTriage(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
+    this.migrateHookTelemetryGitignore(result);
+    this.migrateDeviceLimitProvenanceGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
@@ -2823,6 +2881,108 @@ export class PostUpdateMigrator {
       result.upgraded.push('gitignore: state/judgment-provenance/ (machine-local provenance rows)');
     } catch (err) {
       result.errors.push(`judgment-provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Hook telemetry gitignore (docs/specs/native-hook-events.md D1) ──
+  //
+  // `.instar/hook-events/` and `.instar/subagent-tracking/` hold per-session
+  // hook telemetry (paths, redacted message tails). Git sync commits with
+  // `git add -A`, so without an ignore line they ride to every peer (one agent
+  // repo was found tracking a hook-events file since 2026-10-05). After the
+  // ignore is in place, a copy already tracked is untracked (`git rm --cached`)
+  // ONLY where instar's own git sync makes the commits — a standalone agent
+  // home. In a project-bound agent the project folder is the user's own
+  // repository: there the migration only appends the ignore lines and leaves a
+  // one-line notice, because `git rm --cached` would stage a deletion in the
+  // user's next commit. Idempotent.
+  private static readonly HOOK_TELEMETRY_IGNORES = ['.instar/hook-events/', '.instar/subagent-tracking/'];
+
+  private resolveAgentTypeForGitSync(): 'standalone' | 'project-bound' {
+    // Same distinction Config.ts resolves (and `instar git` enforces): a home
+    // under the standalone agents dir is standalone; otherwise the file's
+    // agentType, defaulting to project-bound.
+    try {
+      const root = path.resolve(this.config.projectDir);
+      const agentsDir = path.resolve(standaloneAgentsDir());
+      if (root === agentsDir || root.startsWith(agentsDir + path.sep)) return 'standalone';
+    } catch { /* fall through to the config file */ }
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(this.config.stateDir, 'config.json'), 'utf-8')) as { agentType?: unknown };
+      if (cfg.agentType === 'standalone') return 'standalone';
+    } catch { /* default below */ }
+    return 'project-bound';
+  }
+
+  private migrateHookTelemetryGitignore(result: MigrationResult): void {
+    const root = this.config.projectDir;
+    const gitignorePath = path.join(root, '.gitignore');
+    const agentType = this.resolveAgentTypeForGitSync();
+    const isRepo = fs.existsSync(path.join(root, '.git'));
+    try {
+      if (!fs.existsSync(gitignorePath) && !(isRepo && agentType === 'standalone')) return; // nothing to protect
+      const content = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
+      const lines = content.split('\n').map((l) => l.trim().replace(/^\//, '').replace(/\/+$/, ''));
+      const has = (entry: string) => lines.includes(entry.replace(/\/+$/, ''));
+      const missing = PostUpdateMigrator.HOOK_TELEMETRY_IGNORES.filter((e) => !has(e));
+      if (missing.length > 0) {
+        const block =
+          (content.length === 0 || content.endsWith('\n') ? '' : '\n') +
+          '\n# Hook telemetry (per-session, machine-local — never commit)\n' +
+          missing.join('\n') + '\n';
+        fs.writeFileSync(gitignorePath, content + block);
+        result.upgraded.push(`gitignore: ${missing.join(', ')} (machine-local hook telemetry)`);
+      }
+    } catch (err) {
+      result.errors.push(`hook telemetry gitignore: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!isRepo) return;
+    let tracked: string[] = [];
+    try {
+      const out = SafeGitExecutor.readSync(['ls-files', '--', '.instar/hook-events', '.instar/subagent-tracking'], {
+        cwd: root,
+        operation: 'src/core/PostUpdateMigrator.ts:migrateHookTelemetryGitignore:ls-files',
+      });
+      tracked = out.split('\n').map((l) => l.trim()).filter(Boolean);
+    } catch {
+      return; // @silent-fallback-ok — not a usable repo; the ignore line above is the protection
+    }
+    if (tracked.length === 0) return;
+    if (agentType !== 'standalone') {
+      result.skipped.push(`gitignore: ${tracked.length} hook telemetry file(s) are tracked in this project's own repository — left tracked (untrack with \`git rm --cached -r .instar/hook-events .instar/subagent-tracking\` if you want them out of your history)`);
+      return;
+    }
+    try {
+      SafeGitExecutor.execSync(['rm', '--cached', '-r', '--quiet', '--ignore-unmatch', '--', '.instar/hook-events', '.instar/subagent-tracking'], {
+        cwd: root,
+        operation: 'src/core/PostUpdateMigrator.ts:migrateHookTelemetryGitignore:untrack',
+      });
+      result.upgraded.push(`git: untracked ${tracked.length} hook telemetry file(s) (machine-local; working copy kept)`);
+    } catch (err) {
+      result.errors.push(`hook telemetry untrack: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Codex device-limit judge provenance gitignore (codex-device-limit-tripwire §1) ──
+  //
+  // The judge keeps its prepared (masked) refusal text machine-local under
+  // `state/codex-device-limit-provenance/`. Fresh installs get the entry via GITIGNORE_ENTRIES;
+  // existing agents get it here (same idempotent pattern as judgment-provenance).
+  private migrateDeviceLimitProvenanceGitignore(result: MigrationResult): void {
+    try {
+      const gitignorePath = path.join(this.config.projectDir, '.gitignore');
+      if (!fs.existsSync(gitignorePath)) return;
+      const content = fs.readFileSync(gitignorePath, 'utf8');
+      if (/^\s*state\/codex-device-limit-provenance\/?\s*$/m.test(content)) return; // idempotent
+      const block =
+        (content.endsWith('\n') ? '' : '\n') +
+        '\n# Codex device-limit judge provenance (machine-local masked provider text — never commit)\n' +
+        'state/codex-device-limit-provenance/\n';
+      fs.writeFileSync(gitignorePath, content + block);
+      result.upgraded.push('gitignore: state/codex-device-limit-provenance/ (machine-local judge provenance)');
+    } catch (err) {
+      result.errors.push(`device-limit provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -5199,6 +5359,53 @@ export class PostUpdateMigrator {
     }
   }
 
+  /**
+   * Codex device-limit tripwire (codex-device-limit-tripwire §11): name the device-limit page in an
+   * installed /subscription-signin skill — a hard rule (by-hand sign-in) and the helper's agent-run
+   * bullet. installBuiltinSkills never overwrites, so this is the only update path. Each line is
+   * inserted after its stock anchor and is idempotent on its own text; local edits are kept; a copy
+   * with neither stock anchor is reported as customised and left untouched.
+   */
+  private migrateSubscriptionSigninDeviceLimit(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const ruleMarker = '- If a page says this device has reached its limit of paid accounts';
+    const ruleAnchor = '- Never use an automated browser for a sign-in page.';
+    const helperMarker = '- **A device-limit page:**';
+    const helperAnchor = '- **At a hard line**';
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      let current = fs.readFileSync(skillFile, 'utf8');
+      if (!current.includes('name: subscription-signin')) return;
+      if (current.includes(ruleMarker) && current.includes(helperMarker)) return;
+      const source = SUBSCRIPTION_SIGNIN_SKILL_CONTENT;
+      const lineOf = (text: string, start: string): string | null => {
+        const i = text.indexOf(start);
+        if (i < 0) return null;
+        const eol = text.indexOf('\n', i);
+        return text.slice(i, eol === -1 ? text.length : eol + 1);
+      };
+      const insertAfterLine = (anchor: string, marker: string): boolean => {
+        const anchorLine = lineOf(current, anchor);
+        const newLine = lineOf(source, marker);
+        if (!anchorLine || !newLine || !anchorLine.endsWith('\n')) return false;
+        const at = current.indexOf(anchorLine) + anchorLine.length;
+        current = current.slice(0, at) + newLine + current.slice(at);
+        return true;
+      };
+      const changes: string[] = [];
+      if (!current.includes(ruleMarker) && insertAfterLine(ruleAnchor, ruleMarker)) changes.push('hard rule');
+      if (!current.includes(helperMarker) && insertAfterLine(helperAnchor, helperMarker)) changes.push('agent-run line');
+      if (changes.length === 0) {
+        result.skipped.push('skills/subscription-signin/SKILL.md: customized — left untouched (no device-limit lines)');
+        return;
+      }
+      fs.writeFileSync(skillFile, current);
+      result.upgraded.push(`skills/subscription-signin/SKILL.md (added the device-limit ${changes.join(' and ')}; local edits kept)`);
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md device-limit migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** Keep installed default sign-in guidance aligned with authenticated operator approval. */
   private migrateSubscriptionSigninApprovalBoundary(result: MigrationResult): void {
     const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
@@ -6829,6 +7036,39 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     return count > 0;
   }
 
+  /** The native-reporter decision for this machine (shared resolver, D4). */
+  nativeReporterDecision(): NativeReporterDecision {
+    const cfg: NativeHookConfigView = readNativeHookConfigFile(this.config.stateDir) ?? {};
+    const view: NativeHookConfigView = this.config.host !== undefined ? { ...cfg, host: this.config.host } : cfg;
+    return decideNativeReporterFromConfig(view, {
+      projectDir: this.config.projectDir,
+      port: this.config.port,
+      claudeCodePath: this.config.claudeCodePath ?? null,
+    });
+  }
+
+  private reconcileNativeReporterHooks(hooks: Record<string, unknown[]>, result: MigrationResult): boolean {
+    let decision: NativeReporterDecision;
+    try {
+      decision = this.nativeReporterDecision();
+    } catch (err) {
+      // @silent-fallback-ok — recorded in the migration result's errors; the reporter entries are left as they are.
+      result.errors.push(`native hook events decision: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+    if (decision.notInEffect) {
+      result.skipped.push(`.claude/settings.json: native hook events flag on but not in effect (${decision.notInEffect.reason}: ${decision.notInEffect.detail}) — command reporter entries kept`);
+    }
+    const changed = reconcileReporterHooks(hooks as Record<string, unknown>, {
+      native: decision.native,
+      baseUrl: decision.baseUrl ?? undefined,
+    });
+    if (changed) {
+      result.upgraded.push(`.claude/settings.json: reporter hooks reconciled to ${decision.native ? 'native http' : 'command'} entries (native-hook-events)`);
+    }
+    return changed;
+  }
+
   /**
    * Migrate HTTP hook URLs to include INSTAR_SESSION_ID query parameter.
    * This enables the server to map Claude Code's session_id to the instar session,
@@ -6859,6 +7099,8 @@ if [[ "$ACTIVE" != "true" ]]; then`;
             const hookObj = hook as Record<string, unknown>;
 
             if (hookObj.type !== 'http' || typeof hookObj.url !== 'string') continue;
+            // Native reporter entries are owned by reconcileReporterHooks.
+            if (isNativeReporterHook(hookObj)) continue;
 
             // Update URL: add ?instar_sid= if the URL hits /hooks/events without it
             if (hookObj.url.includes('/hooks/events') && !hookObj.url.includes('instar_sid')) {
@@ -6881,7 +7123,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         }
 
         // Handle direct hook entries (not nested)
-        if (entryObj.type === 'http' && typeof entryObj.url === 'string') {
+        if (entryObj.type === 'http' && typeof entryObj.url === 'string' && !isNativeReporterHook(entryObj)) {
           if (entryObj.url.includes('/hooks/events') && !entryObj.url.includes('instar_sid')) {
             entryObj.url = (entryObj.url as string).replace(
               '/hooks/events',
@@ -6928,6 +7170,8 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         const e = entry as Record<string, unknown>;
         if (Array.isArray(e.hooks)) {
           return (e.hooks as Array<Record<string, unknown>>).some(h => {
+            // Native reporter entry (native-hook-events D1) — an existing reporter.
+            if (isNativeReporterHook(h)) return true;
             // Check for command hook (new style)
             if (h.type === 'command' && typeof h.command === 'string' && (h.command as string).includes('hook-event-reporter')) return true;
             // Check for HTTP hook (old style, with valid URL)
@@ -7300,7 +7544,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         if (Array.isArray(entryObj.hooks)) {
           const hooksArr = entryObj.hooks as Array<Record<string, unknown>>;
           const hasHttpHook = hooksArr.some(h =>
-            h.type === 'http' && typeof h.url === 'string' && (h.url as string).includes('/hooks/events'),
+            h.type === 'http' && typeof h.url === 'string' && (h.url as string).includes('/hooks/events') && !isNativeReporterHook(h),
           );
           if (hasHttpHook) {
             // Replace the entire entry with a command hook entry
@@ -7313,7 +7557,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         }
 
         // Check direct HTTP hook entries
-        if (entryObj.type === 'http' && typeof entryObj.url === 'string' && (entryObj.url as string).includes('/hooks/events')) {
+        if (entryObj.type === 'http' && typeof entryObj.url === 'string' && (entryObj.url as string).includes('/hooks/events') && !isNativeReporterHook(entryObj)) {
           entries[i] = {
             matcher: '',
             hooks: [commandHook],
@@ -7483,6 +7727,17 @@ setTimeout(() => process.exit(0), 2000);
         : content + '\n' + CONSOLE_BULLET + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added the new console (beside the dashboard) awareness');
+    }
+
+    if (!content.includes(DASHBOARD_PREVIEW_MARKER)) {
+      // Feature previews: directly below the console bullet when it is present.
+      const at = content.indexOf(CONSOLE_MARKER);
+      const eol = at >= 0 ? content.indexOf('\n', at) : -1;
+      content = eol >= 0
+        ? content.slice(0, eol + 1) + DASHBOARD_PREVIEW_BULLET + '\n' + content.slice(eol + 1)
+        : content + '\n' + DASHBOARD_PREVIEW_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the dashboard preview (try features before merge) awareness');
     }
 
     if (!content.includes(REMOTE_DESKTOP_MARKER)) {
@@ -8263,6 +8518,20 @@ setTimeout(() => process.exit(0), 2000);
       content += MATURATION_BOARD_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Maturation Board section');
+    }
+
+    // Mobile pairing links (docs/specs/mobile-pairing-link.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile pairing link')) {
+      content += MOBILE_PAIRING_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile pairing link section');
+    }
+
+    // Mobile operator chat (docs/specs/mobile-operator-chat.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile operator chat')) {
+      content += MOBILE_CHAT_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile operator chat section');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.
@@ -9212,6 +9481,27 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // Codex device-limit tripwire (codex-device-limit-tripwire §11). Existing agents carrying the
+    // Subscription Pool section get the bullet after "Why a sign-in repair did not start" (or, on a
+    // customised section without it, right after the section heading line). Content-sniffed on the
+    // marker phrase, so a re-run is a no-op.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      !content.includes('Codex device-limit tripwire')
+    ) {
+      const blockerIdx = content.indexOf('- **Why a sign-in repair did not start**');
+      const headingIdx = content.indexOf('**Subscription Pool (multi-account quota');
+      const anchorIdx = blockerIdx !== -1 ? blockerIdx : headingIdx;
+      if (anchorIdx !== -1) {
+        const eol = content.indexOf('\n', anchorIdx);
+        const insertAt = eol === -1 ? content.length : eol + 1;
+        const prefix = eol === -1 ? '\n' : '';
+        content = content.slice(0, insertAt) + prefix + CODEX_DEVICE_LIMIT_CLAUDEMD_BULLET + content.slice(insertAt);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added Subscription Pool Codex device-limit tripwire bullet');
+      }
+    }
+
     // Session Boot Self-Knowledge (spec: session-boot-self-knowledge.md).
     // Existing agents need the rule ("a secret named in your boot block is in
     // the vault — retrieve, don't re-ask") + the facts writer + the retrieval
@@ -9593,6 +9883,17 @@ The automatic "Message received. Composing response..." ack I send a peer over t
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added A2A ack waits for a live session section');
+    }
+
+    // Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D6,
+    // Agent awareness). OWN sniff key `Threadline MCP over local HTTP` — content-sniffed.
+    if (!content.includes('Threadline MCP over local HTTP')) {
+      content += '\n\n' + `### Threadline MCP over local HTTP
+
+My \`threadline_*\` tools normally come from one small helper process per session. With \`threadline.mcpHttp.enabled: true\` in \`.instar/config.json\` (default false, read at each spawn) new sessions get the same tools from my server instead, over \`POST /mcp/threadline\` on loopback, authenticated by a per-machine secret in \`.instar/state/local-mcp-secret\` (key material: never synced, served or backed up). Tool names and behaviour are unchanged; on Codex the server is named \`threadline_local\`. Anything doubtful (an older Claude Code or Codex, a failed self-check, a session started without my authority) falls back to the helper and is counted. Switching the flag off only affects new sessions. A \`threadline_send\` with \`waitForReply\` now really gets its full 300 s on both transports, and one that times out is reported as "outcome unknown: the message may already have been sent", never as not sent. **When to use** (PROACTIVE): the user asks "is the Threadline helper per session still running?" or "why did this session fall back?" → read the authed \`GET /health\` → \`threadline.mcpHttp\` (\`sessionsOnHttp\`, \`sessionsOnStdio\`, \`sessionsOnHttpNeverCalled\`, \`fallbacks\` by framework and reason, \`stuckOperations\`); a send that says outcome unknown → check \`threadline_history\` before resending.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Threadline MCP over local HTTP section');
     }
 
     // A2A new thread with a peer (Echo Bugs 10000000781, Agent awareness). OWN
@@ -9986,6 +10287,11 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify failed-file diagnosis awareness');
+    }
+    if (content.includes('/updates/apply') && !content.includes('forceRestart')) {
+      content += '\n' + UPDATE_APPLY_VERIFY_HOLD_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added manual-update verify-hold awareness');
     }
     if (content.includes('/local-verify') && !content.includes('/local-verify/status')) {
       content += '\n- Local Verify merge-status loop: \`GET /local-verify/status\` — floor state (effective / awaiting-edit-a / awaiting-edit-b), main health (healthy / main-suspect / main-red), last pass, stuck heads; dry-run unless \`monitoring.localVerify.postStatuses\` is true.\n';
@@ -12642,6 +12948,25 @@ The worktree monitor announces unmerged, orphan and stale worktree branches only
       result.skipped.push('CLAUDE.md: Worktree Notices section already present');
     }
 
+    // Native Hook Events (docs/specs/native-hook-events.md D4): names the flag
+    // and the injection gate, and that a change reaches new sessions only.
+    // Idempotent via content-sniffing on the heading.
+    if (!content.includes('## Native Hook Events')) {
+      const section = `
+## Native Hook Events
+
+Claude Code can report session events (tool used, subagent started/stopped, stop, task completed, session end, compaction) straight to the server as native HTTP hooks, instead of starting \`hook-event-reporter.js\` for every event. Off by default: \`hooks.nativeEventReporter.enabled\` in \`.instar/config.json\`. It takes effect at the next server restart (or update) and reaches NEW sessions only (Claude Code reads its settings at session start). This machine keeps the command entries when its Claude Code is below 2.1.310, its version cannot be read, or the server does not listen on loopback; a flag that is on but not in effect reports a \`NativeHookEvents.notInEffect\` degradation. Stored events keep only a fixed set of fields (no command text, no tool output; message tails redacted). The HelperWatchdog's warnings are not typed into sessions unless \`monitoring.helperWatchdog.injectAlerts\` is true (default false).
+
+- Counters (received, never "fired"): authenticated \`curl -H "Authorization: Bearer $AUTH" http://localhost:4040/health\` → \`hookEvents\` (\`admitted\`, \`stored\`, \`failedProcessing\`, \`emptyCredential\`, \`queueOverflow\`, \`malformedEvents\`, …).
+- Proactive: user asks "are my hook events arriving?" / "why is the dashboard telemetry empty?" → read \`hookEvents\` and \`GET /hooks/sessions\`; turning the flag off and restarting restores the command entries exactly.
+`;
+      content += '\n' + section;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Native Hook Events section');
+    } else {
+      result.skipped.push('CLAUDE.md: Native Hook Events section already present');
+    }
+
     // W26 item 0(a) — refresh the Worktree Convention's identity paragraph on
     // agents that ALREADY carry the section. The insert above is add-if-absent,
     // so without this those agents would keep reading the old promise: that the
@@ -13275,6 +13600,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // A2A new thread with a peer: a server-side relay-send option,
       // framework-agnostic — a Codex/Gemini agent must know how to open a
       // second thread with a peer and what the 400/502 mean.
+      // Threadline MCP over local HTTP: the transport the threadline_* tools ride,
+      // framework-agnostic — a Codex agent sees them as `threadline_local`.
+      '### Threadline MCP over local HTTP',
       '### A2A new thread with a peer',
       // A2A local-route trust: a server-side check on the same-machine inbound
       // route, framework-agnostic — a Codex/Gemini agent must know the 403 and
@@ -14430,6 +14758,15 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // Must run after the two steps above: migrateHttpHooksToCommandHooks rewrites any
     // reporter HTTP hook on any event, including the worktree events, into a command hook.
     if (this.removeWorktreeReporterHooks(hooks, result)) {
+      patched = true;
+    }
+
+    // Native hook events (docs/specs/native-hook-events.md D4): rewrite the
+    // instar-owned reporter entries on the 7 reporting events to match the
+    // flag + this machine's version/loopback gate — both directions, so
+    // turning the flag off and updating restores today's command entries
+    // exactly. Never touches WorktreeCreate/WorktreeRemove or custom hooks.
+    if (this.reconcileNativeReporterHooks(hooks, result)) {
       patched = true;
     }
 

@@ -13,6 +13,7 @@
  * forces a compile error if a case is missed.
  */
 
+import { CODEX_TOOL_TIMEOUT_SEC } from './threadlineMcpSpawn.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -196,7 +197,22 @@ function codexThreadlineMcpFlags(mcp?: { command: string; args: string[] }): str
     '-c', `mcp_servers.threadline.command=${JSON.stringify(mcp.command)}`,
     '-c', `mcp_servers.threadline.args=${JSON.stringify(mcp.args)}`,
     '-c', `mcp_servers.threadline.kind=${JSON.stringify('stdio')}`,
+    // Long waits (docs/specs/threadline-mcp-local-http.md "Bounds", deadline 5):
+    // threadline_send may wait up to 300 s for a reply; the client must outlast
+    // the server-side deadlines. Ships live for the stdio helper too.
+    '-c', `mcp_servers.threadline.tool_timeout_sec=${CODEX_TOOL_TIMEOUT_SEC}`,
   ];
+}
+
+/**
+ * The threadline MCP wiring for a Codex launch: the HTTP entry (which REPLACES
+ * the stdio override) when the launcher chose HTTP, else today's stdio override.
+ */
+function codexThreadlineWiringFlags(options: { codexThreadlineMcp?: { command: string; args: string[] }; codexThreadlineHttpArgs?: string[] }): string[] {
+  if (Array.isArray(options.codexThreadlineHttpArgs) && options.codexThreadlineHttpArgs.length > 0) {
+    return [...options.codexThreadlineHttpArgs];
+  }
+  return codexThreadlineMcpFlags(options.codexThreadlineMcp);
 }
 
 export interface InteractiveLaunchOptions {
@@ -236,6 +252,13 @@ export interface InteractiveLaunchOptions {
    * resolveThreadlineMcpEntry / CODEX-MULTIAGENT-THREADLINE-SPEC.
    */
   codexThreadlineMcp?: { command: string; args: string[] };
+  /**
+   * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D3):
+   * the `-c` overrides that add the `threadline_local` HTTP server (and disable
+   * the shared stdio entry when one was detected). When set they REPLACE
+   * `codexThreadlineMcp`. Built by the in-server wiring; absent ⇒ stdio.
+   */
+  codexThreadlineHttpArgs?: string[];
   /**
    * Warm-session A2A (claude-code only): when set, the interactive claude
    * session is launched with `--session-id <uuid>` so its transcript is created
@@ -461,7 +484,7 @@ const codexCliBuilder: Builder = (options) => {
     argv.push('--dangerously-bypass-hook-trust');
   }
   argv.push(...CODEX_NO_UPDATE_PROMPT_FLAGS);
-  argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
+  argv.push(...codexThreadlineWiringFlags(options));
   // Topic Profile §6 — thinking mode → codex reasoning effort. `max` → xhigh;
   // `off` → low (codex reasoning models have no off level; the profile write
   // path disclosed the remap once, §4).
@@ -942,6 +965,8 @@ export interface HeadlessLaunchOptions {
    * OWN threadline MCP, not whichever agent last won the shared config.
    */
   codexThreadlineMcp?: { command: string; args: string[] };
+  /** Threadline MCP over local HTTP — see InteractiveLaunchOptions.codexThreadlineHttpArgs. */
+  codexThreadlineHttpArgs?: string[];
   /**
    * When true, a codex-cli headless spawn launches with
    * `--dangerously-bypass-approvals-and-sandbox` so it can make MCP tool calls
@@ -1064,7 +1089,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
     argv.push('--dangerously-bypass-hook-trust');
   }
   // -c overrides must precede the positional prompt in `codex exec`.
-  argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
+  argv.push(...codexThreadlineWiringFlags(options));
   argv.push('-m', model, options.prompt);
   return {
     argv,

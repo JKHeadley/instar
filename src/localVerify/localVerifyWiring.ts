@@ -244,6 +244,8 @@ export interface LocalVerifyAutoUpdaterView {
     pendingUpdate?: string | null;
     coalescingUntil?: string | null;
     pendingUpdateDetectedAt?: string | null;
+    /** This process is installing an update or has installed bytes awaiting its restart. */
+    updateActivationPendingSince?: string | null;
     /** The applied-but-not-restarted state: the restart is waiting (holds, sessions, window). */
     restartDeferral?: { active?: boolean; firstDeferredAt?: string | null } | null;
   };
@@ -256,8 +258,8 @@ export interface LocalVerifyAutoUpdaterView {
 /**
  * Spec §2 Restarts rule (b), read from the AutoUpdater: "update pending" means autoApply is
  * on and `pendingUpdate` is set or `coalescingUntil` holds a time (not the `'notified'`
- * placeholder), OR the update is applied and its restart is deferred (`restartDeferral.active`),
- * timed from the earlier of `pendingUpdateDetectedAt` and `restartDeferral.firstDeferredAt`. `otherBlockers`: anything other than
+ * placeholder), OR the update is installing/awaiting this process's restart, OR its restart
+ * is deferred (`restartDeferral.active`). `otherBlockers`: anything other than
  * this verifier's own hold would delay the restart anyway. Pure.
  */
 export function updatePendingFromAutoUpdater(
@@ -267,30 +269,38 @@ export function updatePendingFromAutoUpdater(
   const coalescingIsTime = typeof status.coalescingUntil === 'string' && status.coalescingUntil !== 'notified'
     && Number.isFinite(Date.parse(status.coalescingUntil));
   const beforeApply = status.config?.autoApply === true && (status.pendingUpdate != null || coalescingIsTime);
-  // After the apply the AutoUpdater clears pendingUpdate and only its durable restart
-  // deferral says an update is waiting. That waiting restart is pending too: without it a
+  // After the apply the AutoUpdater clears pendingUpdate. The process-local marker
+  // spans the request-to-restart gap even when no durable deferral exists; the durable
+  // deferral also says an update is waiting. Without these signals a
   // busy queue starts the next verify seconds after each one ends and the restart, retried
   // every 5 minutes, waits for the queue to drain (2026-10-25: v1.3.1429 held for hours).
   const deferral = status.restartDeferral;
   const restartWaiting = deferral?.active === true;
-  const pending = beforeApply || restartWaiting;
+  const activationSince = status.updateActivationPendingSince ? Date.parse(status.updateActivationPendingSince) : Number.NaN;
+  const activationPending = Number.isFinite(activationSince);
+  const pending = beforeApply || restartWaiting || activationPending;
   const detected = status.pendingUpdateDetectedAt ? Date.parse(status.pendingUpdateDetectedAt) : Number.NaN;
   const deferred = restartWaiting && deferral?.firstDeferredAt ? Date.parse(deferral.firstDeferredAt) : Number.NaN;
-  const candidates = [detected, deferred].filter((x) => Number.isFinite(x));
+  // Installation starts a fresh bounded pause. An old detection must not let a
+  // verifier begin in the narrow interval before the restart request takes effect.
+  const candidates = (activationPending ? [activationSince] : [detected, deferred]).filter((x) => Number.isFinite(x));
   return {
     pending,
-    // The earliest known start, so the 120-minute cap counts the whole wait.
+    // A bounded 120-minute pause, from install start when this process needs activation.
     pendingSinceMs: candidates.length > 0 ? Math.min(...candidates) : null,
-    // Unknown blockers count as "something else is delaying": never pause on a guess.
-    otherBlockers: blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
+    // During the short install/restart decision, the fence wins even if another
+    // blocker is present: that blocker can disappear before the restart request.
+    // Once deferred, the marker clears and the original blocker exception applies.
+    otherBlockers: activationPending ? false : blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
   };
 }
 
 /**
  * Register the local-verify restart hold with the AutoUpdater, and give the service the
  * rule (b) view of it. While a verify runs, an automatic update restart waits for it
- * (bounded by the run's own ceiling and the gate's `maxDeferralHours`); a manual apply is
- * not held. While an update is pending and only this hold delays it, no NEW verify starts,
+ * (bounded by the run's own ceiling and the gate's `maxDeferralHours`); a manual apply
+ * also waits unless it explicitly forces a restart. While an update is pending and
+ * only this hold delays it, no NEW verify starts,
  * so a busy queue cannot hold updates indefinitely. `extraHolds` is the seam for the spec's
  * later "hold heads whose projected status is success" rule (merges, not live yet).
  */

@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "ci-tmux-ensure",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-11-01T04:14:40.707Z",
+  "artifactPath": "upgrades/side-effects/ci-tmux-ensure.md",
+  "artifactSha256": "d6f5a771eb81d79d4a7d7d9d6ed7d33f75810027a26617154b2998073eb2abaa",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/ci-tmux-ensure.eli16.md",
+    "upgrades/next/ci-tmux-ensure.md",
+    "upgrades/side-effects/ci-tmux-ensure.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reversible CI runner setup change skips unnecessary apt work and bounds a hung package install while preserving every required check and test command; one independent review round concurred after a timeout fix.",
+  "eli16Path": "docs/specs/ci-tmux-ensure.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-tmux-ensure.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

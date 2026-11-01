@@ -854,9 +854,11 @@ describe('restart hold', () => {
     let tmp: string;
     const checker = () => ({ getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker);
     const state = () => ({ get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager);
-    const gated = (u: AutoUpdater, bypass: boolean) => (u as unknown as { gatedRestart(v: string, b?: boolean): Promise<void> }).gatedRestart('0.9.9', bypass);
+    const gated = (u: AutoUpdater, bypassWindow: boolean, bypassHolds = false) =>
+      (u as unknown as { gatedRestart(v: string, w?: boolean, h?: boolean): Promise<void> })
+        .gatedRestart('0.9.9', bypassWindow, bypassHolds);
 
-    it('an automatic update waits for a running verify; a manual apply is not held', async () => {
+    it('automatic and manual updates wait for a running verify unless the caller explicitly forces a restart', async () => {
       tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lv-au-')));
       dirs.push(tmp);
       fs.mkdirSync(path.join(tmp, 'state'), { recursive: true });
@@ -876,6 +878,10 @@ describe('restart hold', () => {
         m.setSessionDeps({ listRunningSessions: () => [] });
         registerLocalVerifyRestartHold(m, s.svc);
         await gated(m, true);
+        await new Promise((r) => setTimeout(r, 50));
+        expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(false);
+        expect(m.getStatus().restartDeferral?.currentBlockers).toEqual(['local-verify:pr-1']);
+        await gated(m, true, true);
         await new Promise((r) => setTimeout(r, 50));
         expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
         m.stop();
@@ -1939,6 +1945,19 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
 // ── 2026-10-25: a restart deferred only for this verifier pauses new starts; closed PRs are skipped ──
 
 describe('a deferred restart is a pending update (the applied-but-not-restarted gap)', () => {
+  it('pauses during install and until this process restarts, even for a manual apply with no deferral', () => {
+    const base = { config: { autoApply: false }, pendingUpdate: null, coalescingUntil: null,
+      pendingUpdateDetectedAt: '2026-10-21T08:00:00.000Z', restartDeferral: null };
+    const active = { ...base, updateActivationPendingSince: '2026-10-21T12:00:00.000Z' };
+    expect(updatePendingFromAutoUpdater(active, [])).toEqual({ pending: true, pendingSinceMs: T0, otherBlockers: false });
+    expect(decideUpdatePause(updatePendingFromAutoUpdater(active, []), T0 + UPDATE_PAUSE_MAX_MS)).toBe(true);
+    expect(decideUpdatePause(updatePendingFromAutoUpdater(active, []), T0 + UPDATE_PAUSE_MAX_MS + 1)).toBe(false);
+    expect(updatePendingFromAutoUpdater(active, ['hold:local-verify:pr-1']).otherBlockers).toBe(false);
+    expect(updatePendingFromAutoUpdater(active, ['hold:pairing-invite:one']).otherBlockers).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...active, updateActivationPendingSince: null }, []).pending).toBe(false);
+    expect(updatePendingFromAutoUpdater({ ...active, updateActivationPendingSince: 'invalid' }, []).pending).toBe(false);
+  });
+
   it('updatePendingFromAutoUpdater: an active restartDeferral with pendingUpdate cleared is pending, timed from firstDeferredAt', () => {
     const base = { config: { autoApply: true }, pendingUpdate: null, coalescingUntil: null, pendingUpdateDetectedAt: null };
     const deferral = { active: true, firstDeferredAt: '2026-10-21T12:00:00.000Z' };
@@ -1963,6 +1982,7 @@ describe('a deferred restart is a pending update (the applied-but-not-restarted 
     const checker = { getInstalledVersion: vi.fn().mockReturnValue('0.9.8'), check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null) } as unknown as UpdateChecker;
     const st = { get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager;
     const u = new AutoUpdater(checker, st, tmp, { preRestartDelaySecs: 0 });
+    let restarted: AutoUpdater | null = null;
     try {
       const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
       s.advance(Date.now() - T0); // the AutoUpdater reads the real clock
@@ -1984,10 +2004,18 @@ describe('a deferred restart is a pending update (the applied-but-not-restarted 
       await gated(); // the 5-minute retry: nothing holds it now
       await new Promise((r) => setTimeout(r, 50));
       expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
-      // The deferral is gone (on a real server the process restarts here); the queue resumes.
+      // The old process still runs stale code, so the new marker keeps the queue
+      // paused until a fresh process replaces its updater and restarts admission.
+      await s.svc.tick();
+      expect(s.spawned).toHaveLength(1);
+      u.stop();
+      restarted = new AutoUpdater(checker, st, tmp, { preRestartDelaySecs: 0 });
+      restarted.setSessionDeps({ listRunningSessions: () => [] });
+      registerLocalVerifyRestartHold(restarted, s.svc);
       await s.svc.tick();
       expect(s.spawned).toHaveLength(2);
     } finally {
+      restarted?.stop();
       u.stop();
       log.mockRestore();
     }

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "package-pack-macos-helper-race",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-11-01T01:08:35.138Z",
+  "artifactPath": "upgrades/side-effects/package-pack-macos-helper-race.md",
+  "artifactSha256": "f99683b032285070f27e3f352d2f35833ec0af8d11997f4cbf2c5daa51cce776",
+  "coveredFiles": [
+    "docs/specs/package-pack-macos-helper-race.eli16.md",
+    "tests/unit/package-completeness.test.ts",
+    "upgrades/next/package-pack-macos-helper-race.md",
+    "upgrades/side-effects/package-pack-macos-helper-race.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only bounded retry plus visible npm error details, proven by a concurrent macOS helper/package run; unrelated packaging errors still fail immediately.",
+  "eli16Path": "docs/specs/package-pack-macos-helper-race.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/package-pack-macos-helper-race.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

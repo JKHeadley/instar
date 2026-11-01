@@ -182,6 +182,18 @@ describe('conversations and the merged agent rows', () => {
 });
 
 describe('the page', () => {
+  it('does not turn stale history fingerprints into agent names or a waiting headline', () => {
+    const fp = '8c7928aa9f04fbda947172a2f9b2d81a';
+    for (const label of [fp, fp.slice(0, 8), `${fp.slice(0, 8)}…`]) {
+      const page = buildAgentsPage({ ...quiet(), pairingRes: off('verified pairing not enabled'), invitesRes: invites({ knownPeers: [] }),
+        peersRes: ok({ peers: [peer({ peerFp: fp, peerName: label, stale: true, pendingCount: 1, oldestPendingAgeMs: 28 * 86400_000 })] }),
+        convRes: conv([{ ...ownConv, peerFingerprint: fp }]), threadsRes: ok({ threads: [] }) }, NOW);
+      expect(page.headline).toBe('The agent network is off on this machine.');
+      expect(page.agents[0].main).toBe('Unnamed agent');
+      expect(page.agents[0].tone).toBe('unknown');
+      expect(page.facts).toEqual([]);
+    }
+  });
   it('leads with what waits on the operator, then my own relay, then a peer not answering, then waiting sends, then the calm count', () => {
     const q = quiet();
     expect(buildAgentsPage(q, NOW)).toMatchObject({ mode: 'ok', headline: 'PP is reachable.', tone: 'ok' });
@@ -226,7 +238,7 @@ describe('the page', () => {
     expect(unsure.sub).toContain('the server answered 404');
     // One known agent means the page is NOT the off page, whatever the relay says.
     expect(buildAgentsPage({ ...offAll, peersRes: ok({ peers: [peer()] }) }, NOW).mode).toBe('ok');
-    expect(buildAgentsPage({ ...offAll, peersRes: ok({ peers: [peer()] }) }, NOW).sub).toContain('Pairing is turned off on this agent');
+    expect(buildAgentsPage({ ...offAll, peersRes: ok({ peers: [peer()] }) }, NOW).sub).toContain('No agents are paired here');
   });
 });
 

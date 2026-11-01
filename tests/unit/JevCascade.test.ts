@@ -63,6 +63,26 @@ describe('askReferee', () => {
     expect(seen?.model).toBe('fast');
     expect(seen?.attribution).toMatchObject({ component: 'X', deferrable: true });
   });
+  it('passes an account override and a required route through, pinning the route\'s model', async () => {
+    let seen: IntelligenceOptions | undefined;
+    await askReferee(provider(async (_p, o) => { seen = o; return '{"raw_path": false}'; }), 's', qs, {
+      component: 'X',
+      accountOverride: { accountId: 'acct-b', configHome: '/homes/b' },
+      requiredRoute: { framework: 'codex-cli', modelId: 'gpt-6-luna' },
+    });
+    expect(seen?.accountOverride).toEqual({ accountId: 'acct-b', configHome: '/homes/b' });
+    expect(seen?.requiredRoute).toEqual({ framework: 'codex-cli', modelId: 'gpt-6-luna' });
+    expect(seen?.model).toBe('gpt-6-luna');
+    expect(seen?.strictModelPin).toBe(true);
+  });
+  it('without the new options the call is unchanged (no override, no route, fast tier)', async () => {
+    let seen: IntelligenceOptions | undefined;
+    await askReferee(provider(async (_p, o) => { seen = o; return '{"raw_path": false}'; }), 's', qs, { component: 'X' });
+    expect(seen?.model).toBe('fast');
+    expect(seen && 'accountOverride' in seen).toBe(false);
+    expect(seen && 'requiredRoute' in seen).toBe(false);
+    expect(seen && 'strictModelPin' in seen).toBe(false);
+  });
   it('classifies unparseable, error and timeout outcomes without throwing', async () => {
     expect(await askReferee(provider(async () => 'maybe'), 's', qs, { component: 'X' })).toMatchObject({ ok: false, reason: 'unparseable' });
     expect(await askReferee(provider(async () => { throw new Error('boom'); }), 's', qs, { component: 'X' })).toMatchObject({ ok: false, reason: 'error' });

@@ -177,6 +177,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator } from './mobilePairingRoutes.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -185,13 +186,16 @@ import type { QueueAdapter } from '../monitoring/QueuePaceLedger.js';
 import type { TopicIntentStore } from '../core/TopicIntent.js';
 import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
+import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
+import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
-import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { dashboardUnlockRefused, isLoopbackPeer } from '../core/desktopTransport.js';
+import { mountDashboardPreview } from './dashboardPreview.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
@@ -400,6 +404,8 @@ export class AgentServer {
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
+  /** Mobile pairing links (docs/specs/mobile-pairing-link.md). */
+  mobilePairing: MobilePairingService | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
@@ -423,6 +429,11 @@ export class AgentServer {
   private sessionManager: SessionManager;
   private state: StateManager;
   private hookEventReceiver?: import('../monitoring/HookEventReceiver.js').HookEventReceiver;
+  /** Native hook events ingest (docs/specs/native-hook-events.md D1). Always
+   *  constructed: the route exists regardless of the flag (a settings file
+   *  carrying native entries must never see hook errors), and costs nothing
+   *  when no native hook posts to it. */
+  readonly nativeHookIngest: NativeHookEventIngest;
   private streamTicketStore?: import('./StreamTicketStore.js').StreamTicketStore;
   private poolStreamAllowRemoteInput = false;
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
@@ -469,6 +480,7 @@ export class AgentServer {
   private deliveryStore: PendingRelayStore | null = null;
   private subscriptionLoginLedger: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
+  private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private undatedActionResurfacer: UndatedActionResurfacer | null = null;
@@ -1163,6 +1175,9 @@ export class AgentServer {
      *  Absent ⇒ relay-send behaves exactly as before. */
     a2aRelayForward?: NonNullable<import('./routes.js').RouteContext['a2aRelayForward']>;
     threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+    /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
+     *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
+    threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
     a2aDeliveryTracker?: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker;
     /** Honest-delivery verdict counters (spec §1) for the authed branch of /health. */
@@ -1326,8 +1341,22 @@ export class AgentServer {
     // Middleware
     // Claim observation has a much smaller privacy/cost boundary than the
     // general API. Parse it under 96 KiB before the broad server parser.
-    this.app.use('/completion-claim/observe', express.json({ limit: '96kb' }));
-    this.app.use(express.json({ limit: '12mb' }));
+    // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
+    const keepRawBody = (req: unknown, _res: unknown, buf: Buffer) => { (req as { rawBody?: Buffer }).rawBody = buf; };
+    this.app.use('/completion-claim/observe', express.json({ limit: '96kb', verify: keepRawBody }));
+    // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
+    // small parser, before the broad 12 MB one.
+    this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
+    // Native hook events: admission (loopback, no forwarding headers, bearer,
+    // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
+    // 4 MB parser — both ahead of the global parser, which runs before
+    // authMiddleware and would otherwise parse a large unauthenticated body.
+    // The handler itself stays in the normal routes (after auth/timeout/CORS).
+    this.nativeHookIngest = new NativeHookEventIngest({ getAuthToken: () => this.config.authToken });
+    this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
+    // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
+    this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
 
@@ -1385,6 +1414,9 @@ export class AgentServer {
       res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(dashboardDir, 'desktop.css'), { cacheControl: false });
     });
+    // The preview console (work in progress, published without a merge) mounts
+    // before the packaged dashboard so its fixed address is never shadowed.
+    mountDashboardPreview(this.app, options.config.stateDir);
     this.app.use('/dashboard', express.static(dashboardDir, DASHBOARD_STATIC_OPTIONS));
 
     // PIN-based dashboard unlock — exchanges a short PIN for the auth token.
@@ -1401,8 +1433,24 @@ export class AgentServer {
     let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
 
+    // One rule for whether this connection may unlock, shared by the unlock route
+    // and the check the console makes BEFORE it shows a PIN box (a box the server
+    // will refuse is never shown; the console offers the secure address instead).
+    const unlockRefusedHere = (req: Request): boolean =>
+      dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']);
+    this.app.get('/dashboard/unlock-check', (req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!unlockRefusedHere(req)) { res.json({ accepted: true }); return; }
+      // The tunnel address only gives a way back to this same PIN-gated page.
+      res.json({
+        accepted: false,
+        reason: 'Your PIN can only be typed over a secure connection, and this address is not one.',
+        secureUrl: options.tunnel?.url ?? null,
+      });
+    });
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
-      if (this.directDesktopAccess && !req.secure && !isLoopbackPeer(req.socket.remoteAddress)) {
+      if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
         return;
       }
@@ -1471,6 +1519,46 @@ export class AgentServer {
         operatorSessionExpiresAt: operatorSession.expiresAt,
       });
     });
+
+    // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
+    // registered here, before the bearer gate; mint + devices mount on the authed router below.
+    this.mobilePairing = new MobilePairingService({
+      config: this.config,
+      stateDir: options.config.stateDir,
+      tunnel: () => options.tunnel,
+      selfMachineId: options.coordinator?.identity?.machineId ?? null,
+      siblings: () => {
+        const im = options.coordinator?.managers.identityManager;
+        if (!im) return [];
+        try {
+          return Object.entries(im.loadRegistry().machines ?? {}).map(([machineId, m]) => ({
+            machineId, name: m.name, status: m.status, lastKnownUrl: m.lastKnownUrl,
+          }));
+        } catch { return []; } // @silent-fallback-ok — an unreadable registry falls back to the self-probes
+      },
+      reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+        feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
+        reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
+      }),
+      ownerDM: async (text, declineData) => {
+        if (!options.telegram) return null;
+        return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
+      },
+      holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      raiseAttention: (title, body) => {
+        void options.telegram?.createAttentionItem({
+          id: 'mobile-pairing:paused', title, summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'mobile-pairing',
+        } as Parameters<NonNullable<typeof options.telegram>['createAttentionItem']>[0]).catch(() => {
+          // @silent-fallback-ok — the pause itself is enforced and the app sees 429; the notice is best-effort
+        });
+      },
+    });
+    mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    if (options.telegram) {
+      const mp = this.mobilePairing;
+      options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+      options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+    }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
     // their own machineAuth scheme (Ed25519 signatures, not bearer tokens).
@@ -1651,7 +1739,18 @@ export class AgentServer {
     // spec) takes effect on the running server — rotating authToken
     // immediately invalidates old bearer tokens AND old HMAC-signed view
     // URLs without a restart.
-    this.app.use(authMiddleware(() => this.config.authToken, options.config.projectName));
+    this.threadlineMcpHttp = options.threadlineMcpHttp ?? null;
+    this.app.use(authMiddleware(
+      () => this.config.authToken,
+      options.config.projectName,
+      // /mcp/threadline: the local secret, by one exact-path rule placed first.
+      (req, res) => {
+        if (this.threadlineMcpHttp) return this.threadlineMcpHttp.admit(req, res);
+        res.status(401).json({ error: 'threadline-mcp-local-secret-required' });
+        return false;
+      },
+      this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+    ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
     // matching logic are the single source of truth in middleware.ts so a
@@ -4971,6 +5070,7 @@ export class AgentServer {
       imessage: options.imessage ?? null,
       messageBridge: options.messageBridge ?? null,
       hookEventReceiver: options.hookEventReceiver ?? null,
+      nativeHookIngest: this.nativeHookIngest,
       worktreeMonitor: options.worktreeMonitor ?? null,
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,
@@ -5020,6 +5120,7 @@ export class AgentServer {
       liveTestRunnerCtx: options.liveTestRunnerCtx ?? null,
       unifiedTrust: options.unifiedTrust ?? null,
       threadlineReplyWaiters: options.threadlineReplyWaiters ?? new Map(),
+      threadlineMcpHttp: options.threadlineMcpHttp ?? null,
       proxyCoordinator: options.proxyCoordinator ?? null,
       sharedStateLedger: options.sharedStateLedger ?? null,
       ledgerSessionRegistry: options.ledgerSessionRegistry ?? null,
@@ -5734,6 +5835,7 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    if (this.mobilePairing) this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -7112,6 +7214,15 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
+        // that the listener is up, against the URL built from the ACTUAL address.
+        try {
+          const addr = this.server?.address();
+          const port = addr && typeof addr === 'object' ? addr.port : this.config.port;
+          this.threadlineMcpHttp?.onListening(host, port);
+        } catch (err) {
+          console.warn('[instar] threadline MCP readiness probe failed to start:', err);
+        }
         console.log(`[instar] Dashboard: http://${host}:${this.config.port}/dashboard`);
 
         // Initialize WebSocket manager after server is listening
@@ -7568,6 +7679,7 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.mobilePairing?.stop();
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
@@ -7575,6 +7687,7 @@ export class AgentServer {
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
+    try { this.threadlineMcpHttp?.stop(); } catch { /* @silent-fallback-ok — best-effort teardown of the MCP readiness timers */ }
     if (this.windowLifecycleTimer) {
       clearInterval(this.windowLifecycleTimer);
       this.windowLifecycleTimer = null;
