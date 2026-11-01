@@ -80,3 +80,7 @@ The phone hears exactly what the Attention hub posts, bounded so it can never fl
 ## Follow-up: silent-fallback markers
 
 Four catch blocks that already report their failure (degradation or log) carry the `@silent-fallback-ok` marker so the repository's silent-fallback count stays at its baseline; one of them is an existing Attention-hub catch that the new hook moved into the scanner's window. No behavior change.
+
+## Follow-up: migration sniff collision
+
+The push CLAUDE.md section named the Attention hub's held-post log by its file path, which the older Attention-hub migration uses as its "already present" sniff; on an agent without that section it would have skipped adding it. The push text now describes the log without the path.

@@ -979,7 +979,7 @@ When I post to the Attention topic (an item, or a hub notice such as lost messag
 - Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/push\` → \`{ enabled, keyConfigured, pausedReason, devices: [{ sent24h, throttled, pending, lastSend }], fanout }\`. \`sent\` means Apple accepted it, not that the phone showed it.
 - \`keyConfigured: false\` → the APNs key is not in my vault yet; nothing is sent. \`pausedReason\` → Apple refused the key; it clears by itself when the key, key id or team id changes.
 - Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
-- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the hub filter: \`logs/attention-hub-held.jsonl\`); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
+- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
 `;
 }
 
