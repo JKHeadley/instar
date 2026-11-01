@@ -114,3 +114,7 @@ No agent-authored-artifact defect — not applicable. The probe loop is not a se
 ## Follow-up: silent-fallback ratchet
 
 Local verify flagged one catch over the `tests/unit/no-silent-fallbacks.test.ts` baseline (494). The two catches in `MobileOwnNames.start()` (the boot step and the interval tick) already report through the injected DegradationReporter (`deps.reportDegradation`, wired to `DegradationReporter` in AgentServer), but the heuristic only recognises the literal `DegradationReporter`. Both now carry `@silent-fallback-ok` naming that reporting path. Behaviour is unchanged; the baseline is unchanged (494).
+
+## Addendum: two more single-host test fixtures
+
+Tests only (2 files, 2 config lines); no runtime change, so every review question reads "no issue identified". `tests/integration/mobile-native-conversations.test.ts` and `tests/e2e/mobile-native-conversations-alive.test.ts` came in with #2530 and sign for the single paired host, so they needed the same `multiRoute: { enabled: false }` the other single-host fixtures got. Refusing a request that did not arrive through the local TLS front is the intended behaviour; the code is unchanged. Rollback: revert the commit.
