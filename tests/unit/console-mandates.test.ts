@@ -63,7 +63,9 @@ describe('slip grouping and words', () => {
     expect(agentName('', names)).toBe('an agent');
   });
   it('whenWords: today / tomorrow / a weekday within the week / a date beyond it', () => {
-    const now = Date.now();
+    // A fixed local noon on an ordinary day: Date.now() made this fail on a
+    // daylight-saving change day (a 25-hour day puts now + 24 h on the same date).
+    const now = new Date(2026, 5, 10, 12, 0, 0).getTime();
     expect(whenWords(new Date(now + 60_000).toISOString(), now)).toMatch(/^today /);
     expect(whenWords(new Date(now + 86400_000).toISOString(), now)).toMatch(/^tomorrow /);
     const inThree = new Date(now + 3 * 86400_000);
