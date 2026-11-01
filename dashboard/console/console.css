@@ -998,6 +998,19 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-actions a.btn-quiet { display: inline-flex; align-items: center; text-decoration: none; }
 .sess-default-row { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline; margin-top: var(--s-3); }
 .sess-default-row .card-note { margin: 0; }
+/* Desktop: an open session fills the window beside the list, so the composer is
+   always on screen (no page scroll to reach it) and the terminal takes the rest. */
+@media (min-width: 900px) {
+  .main:has(> .sessions-page.has-open) { max-width: 1680px; padding-top: var(--s-6); padding-bottom: var(--s-6); }
+  .sessions-page.has-open { grid-template-columns: minmax(280px, 340px) 1fr; }
+  .sessions-page.has-open .sess-list .page-title { font-size: 28px; }
+  .sessions-page.has-open .sess-view { top: calc(56px + var(--s-4)); height: calc(100dvh - 56px - var(--preview-h, 0px) - var(--s-6) - var(--s-4)); }
+  .app:has(> .preview-banner) { --preview-h: 37px; }
+  .sessions-page.has-open .sess-open { height: 100%; min-height: 0; }
+  .sessions-page.has-open .sess-term-wrap { min-height: 0; }
+  .sessions-page.has-open .sess-term { height: auto; min-height: 0; }
+  .sessions-page.has-open .sess-composer { position: static; padding-bottom: 0; }
+}
 .sess-default-box:empty { display: none; }
 .sess-default-box { border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); margin: var(--s-2) 0; }
 .skeleton-row { pointer-events: none; }
@@ -1115,7 +1128,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .mb-pace { margin-top: 4px; }
 
 /* Preview address: say plainly that this is work in progress. */
-.preview-banner { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding: 8px 16px; background: #3a2f0b; color: #f6d77a; font-size: 14px; line-height: 1.4; }
+.preview-banner { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding: 8px 16px; background: #3a2f0b; color: #f6d77a; font-size: 14px; line-height: 1.4; }
 .preview-banner a { color: inherit; text-decoration: underline; margin-left: auto; }
 
 /* Home headline as a link to the first thing that needs the operator. */
