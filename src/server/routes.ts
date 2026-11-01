@@ -13054,6 +13054,25 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     res.json(await ctx.desktopLocalDiagnostics());
   });
+  // Shows macOS's own Screen Recording and Accessibility prompts on this Mac
+  // and lists the helper there. Bearer only, and it grants nothing: a person
+  // allows it at the Mac. Call it when someone is at that Mac to answer.
+  let lastDesktopPermissionRequestAt = 0;
+  router.post('/desktop/request-permission', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!desktopIntent(req, res)) return;
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (Date.now() - lastDesktopPermissionRequestAt < 60_000) {
+      res.status(429).json({ error: 'A permission prompt was requested in the last minute' }); return;
+    }
+    lastDesktopPermissionRequestAt = Date.now();
+    try {
+      res.json(await ctx.directDesktopAccess.requestPermission());
+    } catch {
+      // @silent-fallback-ok — the caller gets an explicit failure; no secret or path belongs in this body.
+      res.status(409).json({ error: 'This machine cannot show desktop permission prompts' });
+    }
+  });
   // Config activation is an agent maintenance action. The normal Bearer
   // middleware protects this route; the dashboard PIN never exposes it.
   router.post('/desktop/activate-config', async (req, res) => {
