@@ -61,7 +61,9 @@ on the same machine are told in advance, get ready, and come back afterward.
 ## What is still not solved
 
 The review did not finish clean. It used all six allowed rounds, and the last one still raised safety
-items. Those are fixed in this document, but no reviewer has read the fixes yet.
+items. Those are fixed in this document. One extra outside read then found two more design problems,
+still open: a timeout does not prove a reboot was cancelled, and a time limit can close a browser that
+is still in use.
 
 Instar cannot see unsaved changes in ordinary apps, so an app left open with unsaved work could lose
 it. The enrolment card says so before the owner taps.

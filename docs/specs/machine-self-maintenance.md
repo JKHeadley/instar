@@ -2,7 +2,7 @@
 title: "Machine self-maintenance: scheduled and wedge-triggered restarts, browser and window care, honest lock reading"
 slug: "machine-self-maintenance"
 author: "echo"
-convergence-status: "failed-at-cap: round 6 of 6 raised safety and data-loss design findings; fixes applied after round 6 are unreviewed; see docs/specs/reports/machine-self-maintenance-convergence.md"
+convergence-status: "failed-at-cap: round 6 of 6 raised safety and data-loss design findings; one external round 7, run beyond the cap, raised two more design findings that remain open; see docs/specs/reports/machine-self-maintenance-convergence.md"
 eli16-overview: "docs/specs/machine-self-maintenance.eli16.md"
 parent-principle: "The Agent Is Always Reachable"
 parent-principle-fit: "An agent that cannot be reached because its machine has quietly wedged is unreachable however healthy its server looks. This gives the agent the means to bring its own machine back to a clean state, inside the capacity and principal floors."
@@ -393,7 +393,7 @@ Agent Awareness card (added to `generateClaudeMd`):
 | Should this browser close | `invariant` | Ownership proof plus idle rule. Only instar-opened instances are in range; a wrong close costs a relaunch. |
 | Dismiss this dialog | `invariant` | Positive pattern list, inside a confirmed wedge only, one-button alerts only; never a permission prompt. Everything else is report-only. |
 | `MaintenanceGate` refuses automatic work | `invariant` | Bounded by plan `expiresAt`, checked by every server. |
-| Pool `maintenance-claim` admit | `invariant` | Earliest claim wins, ties to lower machineId; a mechanical mutual exclusion with no competing signals. |
+| Pool `maintenance-claim` admit | `invariant` | Earliest claim wins, ties to lower machineId; a mechanical best-effort stagger with no competing signals. |
 
 ## Verify the State, Not Its Symbol
 
