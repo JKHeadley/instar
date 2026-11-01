@@ -44,6 +44,9 @@ export async function bootTelegramOrigin(options: {
   nativeModelCanary?: OriginNativeCanary;
   token?: string;
   noticeOwner: boolean;
+  /** The server runs store retention; a second process doing it only collides with
+   * sends. This process still expires due operations, so a server outage cannot pin them. */
+  skipRetention?: boolean;
   holdsLease: () => boolean;
   isSessionLive?: (binding: OriginSessionBinding) => boolean;
   attachSessionLifecycle?: (lifecycle: OriginSessionLifecycle) => void;
@@ -131,7 +134,7 @@ export async function bootTelegramOrigin(options: {
     return runCodexNativeModelCanary({ ...input, cliPath, scratchParent: os.tmpdir() });
   } : undefined);
   const nativeCanary = new OriginNativeCanaryLane(canaryIntervalMs, nativeModelCanary);
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: config.stateDir, agentId: config.projectName }, workerUrl: options.workerUrl,
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: config.stateDir, agentId: config.projectName, auditRetentionDays: (originConfig as { auditRetentionDays?: number } | undefined)?.auditRetentionDays }, workerUrl: options.workerUrl,
     identity: { agentId: config.projectName, agentName: config.projectName, originMachineId: identity.machineId, originMachineName: publicMachineName },
     signingKey: { keyId: `${identity.machineId}:${identity.keyEpoch ?? 0}`, keyEpoch: identity.keyEpoch ?? 0, privateKey: identities.loadSigningKey() },
     bot: { token: options.token, accountId: options.token?.split(':')[0] ?? 'unresolved-tokenless-source', chatId: currentChatId() },
@@ -304,7 +307,7 @@ export async function bootTelegramOrigin(options: {
     try { await runtime.confirmRecordingHealthy(); storageHealthy = true; }
     catch { /* Origin health/status remains unavailable; no notice permit is granted. */ }
     await inspectEnrollment(storageHealthy);
-    await runtime.maintainRetention();
+    await runtime.maintainRetention(undefined, options.skipRetention ? 'expiry-only' : 'all');
     // §4.2 — keep `/health → telegramOrigin.heldForward` current and report a
     // held forward's expiry once; bounded to one store read per 30 s.
     if (storageHealthy) { await runtime.runForwardLadder(); await runtime.refreshHeldForward(); }
