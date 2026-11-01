@@ -2,17 +2,17 @@
 
 ## Convergence verdict: CONVERGENCE FAILED AT THE ROUND CAP
 
-Six rounds were used, the Tier 2 cap. Round 6 still raised DESIGN findings, and three concern safety or data loss. Under the skill's rule that exit is `convergence-failed` and the operator is asked. The fixes for every round 6 finding are in the spec. One further external read, round 7, ran beyond the cap on that text and returned SERIOUS ISSUES: the round 6 fixes drew no direct objection, and two new design findings remain open. The spec carries `convergence-status: failed-at-cap` and has no `review-convergence` tag and no `approved: true`. `/instar-dev` will refuse to build from it, which is the correct state.
+Six rounds were used, the Tier 2 cap. Round 6 still raised DESIGN findings, and three concern safety or data loss. Under the skill's rule that exit is `convergence-failed` and the operator is asked. The fixes for every round 6 finding are in the spec. Two further external reads ran beyond the cap. Round 7 returned SERIOUS ISSUES with two design findings and a precision finding, all three now resolved in the spec. Round 8 read those fixes and also returned SERIOUS ISSUES: three design findings and one precision finding. Two design findings and the precision finding were clear and are folded in after the read, so no reviewer has seen those fixes. One design finding, about closing a browser at lease expiry, remains open. The spec carries `convergence-status: failed-at-cap` and has no `review-convergence` tag and no `approved: true`. `/instar-dev` will refuse to build from it, which is the correct state.
 
 The trend was narrowing, not stalled: round 1's findings were structural (a readable password path, resume entries destroyed before the reboot), and round 6's are about the timing of checks at the edges.
 
-**Decision for the operator:** settle the two open round 7 design findings, then allow a further round or accept the spec as it stands. Round 7 did not change the convergence status.
+**Decision for the operator:** settle the open round 8 design finding, then allow a further round or accept the spec as it stands. Rounds 7 and 8 did not change the convergence status.
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-Real external passes ran in all six rounds, each returning a verdict, on a changed body each time, and once more in round 7 beyond the cap. Round 1 first degraded on the agent home's stale module (`gpt-5.5`, `error`); that attempt is not counted, and the worktree was rebuilt with sibling `node_modules` to reach the current reviewer.
+Real external passes ran in all six rounds, each returning a verdict, on a changed body each time, and twice more beyond the cap, in rounds 7 and 8. Round 1 first degraded on the agent home's stale module (`gpt-5.5`, `error`); that attempt is not counted, and the worktree was rebuilt with sibling `node_modules` to reach the current reviewer.
 
-⚠ Gemini did not run (`gemini-not-authed`). Grok did not run (`grok-not-enabled`). The clean-door Anthropic read returned `no-supported-framework` in round 1 and was not retried. Every external round's verdict was SERIOUS ISSUES, including rounds 6 and 7.
+⚠ Gemini did not run (`gemini-not-authed`). Grok did not run (`grok-not-enabled`). The clean-door Anthropic read returned `no-supported-framework` in round 1 and was not retried. Every external round's verdict was SERIOUS ISSUES, including rounds 6, 7 and 8.
 
 ## ELI10 Overview
 
@@ -40,13 +40,14 @@ Nothing restarts until the owner taps once per machine. A machine that would sto
 | 4 | all-lens, Astra | 6 | 4 | ran (2 flags) | Generation on all writes; forced due; binding acks |
 | 5 | all-lens, Astra | 6 | 3 | ran (2 flags) | Subagents unrecoverable; census order; claim best-effort |
 | 6 | all-lens, Astra | 5 | 9 | ran (2 flags) | Fixes applied |
-| 7, beyond the cap | Astra only | 2 | 2 design, 1 precision | ran (1 flag; parent-principle fit weak) | One wording fix, not re-read |
+| 7, beyond the cap | Astra only | 2 | 0 | ran (1 flag; parent-principle fit weak) | Dispatch outcomes, browser close conditions, reservation order |
+| 8, beyond the cap | Astra only | 3 | 1 design | not read from the result | Dispatch and wedge-gap fixes and one wording fix, not re-read |
 
-Internal reviewers ran as Claude subagents on the authoring session's model, Opus 5.5, in every round. Rounds 1–2 used split lens groups; rounds 3–6 used one reviewer holding all six lenses, a reduction from six independent reads that a reader should weigh. Round 7 was one external read and no internal reviewer, so it is not a like-for-like round.
+Internal reviewers ran as Claude subagents on the authoring session's model, Opus 5.5, in every round. Rounds 1–2 used split lens groups; rounds 3–6 used one reviewer holding all six lenses, a reduction from six independent reads that a reader should weigh. Rounds 7 and 8 were one external read each and no internal reviewer, so they are not like-for-like rounds.
 
 ## Proportion
 
-Tier 2, spec 506 lines, 6 of 6 rounds plus 1 external read beyond the cap. ⚠ The spec grew from about 49 KB to about 69 KB across review. It is large for one document, though the build order splits it into five parts and later runs.
+Tier 2, spec 562 lines, 6 of 6 rounds plus 2 external reads beyond the cap. ⚠ The spec grew from about 49 KB to about 79 KB across review. It is large for one document, though the build order splits it into five parts and later runs.
 
 ## Left behind
 
@@ -55,11 +56,13 @@ Gate flags, recurring through round 6, not resolved:
 - *Structure beats Willpower:* a session can run the sudo rule directly. Accepted: same OS user, and a wrapper cannot authenticate its caller either. Detected at the next boot.
 - *Mobile-Complete Operator Actions:* a Mac with no passwordless sudo and no desktop path needs a person at the machine once. Accepted: a macOS system password box needs a screen.
 
-Open from round 7, unresolved:
+Open from round 8, unresolved:
 
-- **Design, Part D:** a timeout after Rung 2 does not prove the reboot was cancelled, but the spec reopens admission and cancels resume entries anyway.
-- **Design, Part B:** the TTL branch can close a browser whose owning session is alive; the "costs a relaunch" claim in the decision table is what this disputes.
-- **Precision, Part D:** `reserve()` is placed after steps that already need its episode id, and whether an aborted pre-dispatch episode consumes restart quota is undefined. This is left open because it sets a brake's semantics.
+- **Design, Part B:** an expired default lease permits a close even with a live owner, so a browser doing background work with no helper calls can be closed. The operator's instruction for round 7 named an expired renewable lease as sufficient, and Astra asks for more, so this is left for the operator. The spec's Honest limits names the gap.
+
+Fixed after round 8 and not re-read: `refused` narrowed to failures shown to be before dispatch; a 6-minute observation gap and fresh evidence added to the wedge window; "automatic deferral is bounded" corrected to recoverable work.
+
+New since round 7, by request, with no design: a short Part C reminder that an unusable macOS privacy state needs a guided repair and that enrolment must verify permissions live.
 
 Precision and long-tail:
 
@@ -92,7 +95,7 @@ Precision and long-tail:
 | Abandoned entries could release on an unrelated reboot | Astra | Work loss | Entries bound to episode and a dispatch record; reconciled at expiry and start |
 | Part B cannot hold on Windows | All-lens | None | `not-covered` in v1 |
 
-**Round 7, run beyond the cap.** External read only, `codex-cli:gpt-6-astra`, verdict SERIOUS ISSUES, on the text after the round 6 fixes. Standards-Conformance Gate: ran (1 flag), Mobile-Complete Operator Actions, `possible-violation`, the same accepted item as above; parent-principle fit `weak`. No `review-convergence` or `approved` tag was added. The one fold-in is the fourth finding: the decision table now says best-effort stagger. That word change came after the read. The others are recorded above as open. Astra's text, verbatim:
+**Round 7, run beyond the cap.** External read only, `codex-cli:gpt-6-astra`, verdict SERIOUS ISSUES, on the text after the round 6 fixes. Standards-Conformance Gate: ran (1 flag), Mobile-Complete Operator Actions, `possible-violation`, the same accepted item as above; parent-principle fit `weak`. No `review-convergence` or `approved` tag was added. All four findings are now resolved in the spec. The decision table says best-effort stagger; Part D separates dispatch failed from outcome unknown and holds recovery and admission through `outcome-unknown`; Part B requires a completion signal, an expired renewable lease or a confirmed absent owner, then checks for unsaved input; `reserve()` is the first write of an episode, and only a dispatched restart spends budget. Astra's text, verbatim:
 
 > **Verdict: SERIOUS ISSUES**
 >
@@ -106,10 +109,24 @@ Precision and long-tail:
 >
 > - **PRECISION — “Decision points touched”: claims are called “mechanical mutual exclusion.”** Part D explicitly accepts concurrent restarts and describes claims as best-effort staggering. **Resolution:** use that description consistently; the design does not provide mutual exclusion.
 
+**Round 8, run beyond the cap.** External read only, `codex-cli:gpt-6-astra`, verdict SERIOUS ISSUES, on the text with the round 7 fixes and the privacy reminder. The first design finding is open. The other three are folded in after the read and were not re-read. No `review-convergence` or `approved` tag was added. Astra's text, verbatim:
+
+> **Verdict: SERIOUS ISSUES**
+>
+> Review is limited to the inlined spec. Referenced implementation files were not supplied, so their behavior is unverified.
+>
+> - **DESIGN — Part B, “Sweep” and “Unsaved input and downloads.”** The spec says “Time never closes anything,” but an expired default lease independently permits closure—even with a live owner. The remaining checks establish only absence of detectable form edits and recent download growth, not completion. A browser performing background work without helper calls can therefore qualify for closure. The acknowledged canvas/in-memory limitation reinforces this gap; it does not resolve it. **Resolution:** require explicit completion for live-owner instances, or an explicitly declared, disposable lifetime. Treat default lease expiry as a reason to investigate or report, not terminate.
+>
+> - **DESIGN — Part D, “Dispatch outcome.”** The spec equates any completed nonzero command exit with “The OS accepted nothing,” then reopens admission and cancels recovery entries. No supplied source establishes that transactional guarantee for every privileged command. A command’s error status alone does not establish that earlier shutdown side effects were reversed. This is an unsupported safety assumption, not a measured command failure. **Resolution:** classify only demonstrably pre-dispatch failures as `refused`; retain `unknown` for other nonzero exits unless an OS-specific contract or independently verified cancellation establishes safety.
+>
+> - **DESIGN — Part E, “Wedge candidate.”** The spec requires a “continuous 20-minute evidence window,” yet missing samples neither reset nor invalidate it, and no maximum observation gap is specified. Thus two positive observations, a long monitoring outage, and another positive observation can satisfy the written rule without demonstrating continuity. That matters when the monitor resumes after a stall or maintainer takeover. **Resolution:** require a bounded gap between observations and fresh evidence before judging and dispatching; restart the evidence window after exceeding that gap.
+>
+> - **PRECISION — Part D, “Hard ceiling.”** “Automatic deferral is bounded” overstates the implemented guarantee. The spec expressly permits persistent unrecoverable work to block indefinitely; sending an attention item does not make silence a “person’s recorded choice.” **Resolution:** say that recoverable-work deferral is bounded, while Absolute blockers can persist indefinitely.
+
 ## Counts
 
 Frontloaded decisions 14, cheap-to-change tags surviving 0, contested-then-cleared 4 (round 6). Open questions 0. No constitution file is touched.
 
 ## Conclusion
 
-Not converged. Round 6 found design issues about safety and data loss, and the round cap stops review there. Round 7, run beyond the cap, found two more design issues about an unverified reboot cancellation and closing a live browser. The spec is not ready for approval until the operator settles those and allows a further round or accepts it as it stands.
+Not converged. Round 6 found design issues about safety and data loss, and the round cap stops review there. Round 7 found an unverified reboot cancellation and closing a live browser, both now fixed. Round 8 found the live-browser fix does not fully close that gap, plus two issues now fixed without a further read. The spec is not ready for approval until the operator settles the open finding and allows a further round or accepts it as it stands.

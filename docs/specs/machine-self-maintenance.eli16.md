@@ -39,7 +39,9 @@ happen, so a machine can never get stuck restarting over and over.
 
 **Tidier browsers.** Agents now record every browser they open and close it when finished. A sweep
 closes any left behind, but only ones Instar opened, and the operator's own Chrome can never match.
-There is a limit on how many can be open.
+Being old is not enough: a browser closes only if its task said it was done, its time limit ran out
+with no renewal, or the session that opened it is confirmed gone. A browser with text typed into a
+form, or one the check cannot read, is kept and reported. There is a limit on how many can be open.
 
 **An honest "locked" answer.** The one flag that misled us becomes one input among several. The answer
 is now locked, screensaver or sleeping display, unlocked, or "unknown" when the evidence disagrees.
@@ -61,12 +63,22 @@ on the same machine are told in advance, get ready, and come back afterward.
 ## What is still not solved
 
 The review did not finish clean. It used all six allowed rounds, and the last one still raised safety
-items. Those are fixed in this document. One extra outside read then found two more design problems,
-still open: a timeout does not prove a reboot was cancelled, and a time limit can close a browser that
-is still in use.
+items. Those are fixed in this document. Two extra outside reads followed. The first found three
+problems, now fixed here. If a restart command was sent and the machine stays up, we no longer assume
+it was cancelled: automatic work stays paused, recovery stays ready, and the owner is asked right away.
+A reservation now comes first in every restart, and only a restart that was really sent uses up the
+weekly limit.
+
+The second read found one design question still open: a browser doing background work for a live
+session could still be closed when its default time limit runs out, unless the session renews it. The
+fixes for its other findings were made after that read, so no reviewer has checked them yet.
 
 Instar cannot see unsaved changes in ordinary apps, so an app left open with unsaved work could lose
 it. The enrolment card says so before the owner taps.
+
+Permissions on a Mac can also go wrong in ways we have not explained. On 1 November the Mac Mini showed
+the system's prompt but never listed our desktop helper, and the M5 Pro listed five entries. Enrolment
+has to check permissions live each time, and a guided repair is still needed. This design only notes that.
 
 A machine frozen so deeply that its own software cannot run cannot restart itself. Another machine
 will say so, but someone still has to press the button. A single-machine setup has nobody to raise
