@@ -94,3 +94,14 @@ describe('machines page in a DOM', () => {
     expect(doc.querySelector('.sheet-body')!.textContent).toContain('All 1 parts working.');
   });
 });
+
+describe('machineCareLine', () => {
+  it('says plainly that nothing restarts, and reports the last practice run', async () => {
+    const { machineCareLine } = await import('../../dashboard/console/machines-model.js');
+    expect(machineCareLine({ ok: false })).toBeNull();
+    expect(machineCareLine({ ok: true, data: { uptimeDays: 3.2, safetyHolds: [], lastRehearsal: null } })).toBe('Restart care is watching only, nothing restarts. · Up 3.2 days · No practice run yet');
+    const line = machineCareLine({ ok: true, data: { uptimeDays: 9, safetyHolds: [{ active: true, label: 'A person using the machine now' }, { active: false, label: 'x' }], lastRehearsal: { outcome: 'would-roll' } } });
+    expect(line).toContain('would have waited a night');
+    expect(line).toContain('Holding now: A person using the machine now');
+  });
+});

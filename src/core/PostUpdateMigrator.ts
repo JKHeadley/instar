@@ -1158,6 +1158,23 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 `;
 }
 
+/**
+ * The machine self-maintenance section, one definition for fresh agents and updated
+ * ones. It describes the watch-only build only, and says so: a card claiming restarts
+ * would be false until the later increments ship. Sniff key: `/machine-maintenance`.
+ * Spec: docs/specs/machine-self-maintenance.md
+ */
+export function MACHINE_MAINTENANCE_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Machine self-maintenance (watch-only)
+
+Long-running machines collect stuck state, and a planned restart with work paused first is how they get a clean start. Instar is building that, and today it only watches: every night, on a development agent, a paper drain records what a scheduled restart would have done, which delays and safety holds would have applied, and how long each kind of work took to reach its own stopping point. **It cannot restart a machine and it cannot stop any work** (\`canRestart: false\`, \`canStopWork: false\`). It sends no notice, and nothing is enrolled.
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/machine-maintenance\` → \`{ mode, uptimeDays, due, finalNight, nextWindow, plan, delays, safetyHolds, declaredKinds, lastRehearsal, evidence }\`. 503 means it is dark on this agent; that says nothing about the machine. In \`delays\`, \`active: null\` means not read, never "clear". Audit: \`logs/machine-drain.jsonl\`.
+- Holds S1 and S2 are unproven readings until a live test shows they tell a real install from none. The status says so with \`provenLive: false\`.
+- **When to use** (PROACTIVE): the operator asks "what would a nightly restart do to this machine?", "is this machine overdue for a restart?" or "what can't be paused here?" → read the status and \`lastRehearsal\`. Never say machines restart themselves: they do not yet. Never run a restart or \`sudo shutdown\` by hand. Spec: \`docs/specs/machine-self-maintenance.md\`.
+`;
+}
+
 export function DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port: number): string {
   return `\n### Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)
 
@@ -11488,6 +11505,16 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
     } else {
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
+    // Machine self-maintenance, watch-only (machine-self-maintenance spec). Idempotent
+    // via content-sniffing on the route path.
+    if (!content.includes('/machine-maintenance')) {
+      content += '\n' + MACHINE_MAINTENANCE_CLAUDEMD_SECTION(4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added machine self-maintenance section');
+    } else {
+      result.skipped.push('CLAUDE.md: machine self-maintenance section already present');
     }
 
     // Mid-Work Resume Queue + per-topic reap notices (reap-notify spec).

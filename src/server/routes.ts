@@ -5,6 +5,7 @@ import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
+import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
@@ -13741,6 +13742,19 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const prio = getActiveSessionPriorityLowerer();
     res.json({ ...wa.status(), ...(prio ? { sessionPriority: prio.status() } : {}) });
+  });
+
+  // ── Machine self-maintenance (docs/specs/machine-self-maintenance.md) ──
+  // Registry First: what a nightly restart would have done on this machine, which
+  // delays and safety holds read true, and the evidence so far. Served from the last
+  // sample, so a read runs no process. 503 when dark here.
+  router.get('/machine-maintenance', (_req, res) => {
+    const r = getActiveDrainRehearsal();
+    if (!r) {
+      res.status(503).json({ enabled: false, error: 'machine maintenance not enabled on this agent (machineMaintenance — dev-agent gated)' });
+      return;
+    }
+    res.json(r.status());
   });
 
   // ── Overload shed status (trustworthy-machine-load Part D) ──

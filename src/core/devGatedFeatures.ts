@@ -56,6 +56,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Advisory only: the deterministic floor (critical anomaly or a second consecutive failure) still starts a session whatever Jev answers, and every Jev failure falls to that floor. Inert without the vault typesafe_api_key; daily call cap; sessions are bounded by the triage caps and cooldown.',
   },
   {
+    name: 'machineMaintenance',
+    configPath: 'machineMaintenance.enabled',
+    description: 'Machine self-maintenance, watch-only (docs/specs/machine-self-maintenance.md): a nightly paper drain records what a scheduled restart would have done and how long work takes to yield.',
+    justification: 'Cannot act: it holds no restart path and no yield method, its OS commands are an allowlist of readers, and a source lint fails the build if that changes. No LLM, no spend, no notice. It writes its own audit log and one host-level rehearsal record.',
+  },
+  {
     name: 'workAdmission',
     configPath: 'monitoring.workAdmission.enabled',
     description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',

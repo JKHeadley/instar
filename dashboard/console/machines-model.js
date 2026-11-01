@@ -133,3 +133,18 @@ export function usageOf(res, sessionNames = {}) {
     ].filter(Boolean),
   };
 }
+
+/** One line for this machine's care status. Watch-only, so it never implies a restart will happen. */
+export function machineCareLine(r) {
+  if (!r || !r.ok || !r.data) return null;
+  const d = r.data;
+  const uptime = typeof d.uptimeDays === 'number' ? `Up ${d.uptimeDays} days` : 'Uptime unread';
+  const held = (Array.isArray(d.safetyHolds) ? d.safetyHolds : []).filter((h) => h.active).map((h) => h.label);
+  const night = d.lastRehearsal;
+  const last = !night ? 'No practice run yet'
+    : night.outcome === 'would-restart' ? 'Last practice run: would have restarted'
+    : night.outcome === 'would-roll' ? 'Last practice run: would have waited a night'
+    : night.outcome === 'would-hold' ? 'Last practice run: would have been held'
+    : 'Last practice run: outcome unknown';
+  return [`Restart care is watching only, nothing restarts.`, uptime, last, held.length ? `Holding now: ${held.join(', ')}` : null].filter(Boolean).join(' · ');
+}

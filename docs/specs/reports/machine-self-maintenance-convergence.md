@@ -1,5 +1,15 @@
 # Convergence Report — Machine self-maintenance
 
+## Accepted by the operator at the cap, 2026-11-01 14:55 PST
+
+**This spec did not converge. The operator accepted it at the cap.** The `review-convergence` tag it now carries records that acceptance and nothing more. Nine rounds ran against a cap of six, every external verdict was SERIOUS ISSUES, and **round 9's three design fixes have been read by no reviewer**.
+
+His acceptance is Telegram topic 134088, message 135179, sender Justin (uid 7812716706), provenance `user`, 22:55:37Z: `"go"`. It answers message 135176, which said: near the 10-day limit he gets one question, and if he does not answer the machine restarts that night even if some work cannot be paused; someone actively using the machine at restart time means it never restarts automatically, even on the last night, and a stuck OS update or disk operation also holds it; "the last outside review found three more problems, which are fixed but unreviewed"; the core is built first, starting watch-only for 14 nights. Both messages were read from the local topic log, not taken from the launching session's summary.
+
+That message is an acceptance of the stated rules and of building the core. It is not a statement that he read this report or the spec text. Under `skills/spec-converge`, a cap exit with safety findings asks the operator, and this is his answer. Increment 1 cannot issue a restart or stop work, so the unread fixes reach no running behaviour in it; they must be read before any later increment makes the drain real.
+
+The sections below are the record as it stood before that message, and are left as written.
+
 ## Convergence verdict: CONVERGENCE FAILED AT THE ROUND CAP
 
 Six rounds were used, the Tier 2 cap. Round 6 still raised DESIGN findings, three about safety or data loss, and under the skill's rule that exit is `convergence-failed`. Three external reads ran beyond the cap. The fixes for rounds 6, 7 and 8 are in the spec.
@@ -160,4 +170,4 @@ Frontloaded decisions 16, cheap-to-change tags surviving 0, contested-then-clear
 
 ## Conclusion
 
-Not formally converged. The operator accepted the design with an amendment, the amended text had one external read, and its three design findings are fixed without a further read. The tag `approved: true` is present and `review-convergence` is not, so the build gate stays closed until someone decides that second tag.
+Not formally converged. The operator accepted the design with an amendment, the amended text had one external read, and its three design findings are fixed without a further read. He then accepted at the cap with `go` (top of this report), so the build gate is open on that acceptance, not on a converged review.

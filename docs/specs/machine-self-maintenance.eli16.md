@@ -84,3 +84,9 @@ that alarm.
 
 We also will not trust any of this on paper. The first restart of every machine is a test, watched by
 the system, and a machine earns unattended restarts only by passing it.
+
+## What is being built first
+
+Justin replied "go" on 2026-11-01 at 14:55 PST, accepting the two rules and the core-first order. Review did not converge: nine rounds ran against a cap of six, and the last round's three fixes have not been read by a reviewer.
+
+The first build only watches. Each night it practises a restart on paper and writes down what it would have done and how long work took to reach a stopping point. It has no way to restart a machine or stop any work, and a test of the source fails the build if that changes. Everything that acts comes later: the real restart, the owner's tap, browser cleanup, wedge restart and the app controls.

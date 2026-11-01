@@ -2,9 +2,9 @@
 title: "Machine self-maintenance: scheduled and wedge-triggered restarts, browser and window care, honest lock reading"
 slug: "machine-self-maintenance"
 author: "echo"
-convergence-status: "failed-at-cap: round 6 of 6 raised safety and data-loss design findings; external rounds 7, 8 and 9, run beyond the cap, did not change that status; round 9's three design findings are fixed and not re-read; see docs/specs/reports/machine-self-maintenance-convergence.md"
+convergence-status: "accepted-at-cap: review did NOT converge. Round 6 of 6 raised safety and data-loss design findings; external rounds 7, 8 and 9 ran beyond the cap (9 rounds in all). The operator accepted at the cap in Telegram topic 134088, message 135179, with round 9's three fixes unread by any reviewer. The review-convergence tag below records that acceptance, not a clean round; see docs/specs/reports/machine-self-maintenance-convergence.md"
 approved: true
-approved-by: "Justin, Telegram topic 134088, 2026-11-01 14:30 PST: 'It looks good, however' with the drain amendment; accepted design, amended text and round 9 fixes not seen by him; see the convergence report"
+approved-by: "Justin, Telegram topic 134088, message 135179, 2026-11-01 14:55 PST: 'go', answering message 135176, which named the two rules (restart on silence at the 10-day limit; a person at the machine never auto-restarts), said the last outside review's three fixes were unreviewed, and proposed building the core first in watch-only mode. Earlier design acceptance: same topic, 14:30 PST, 'It looks good, however' with the drain amendment. He read the overview and the offer; the convergence report does not record that he read this spec text."
 eli16-overview: "docs/specs/machine-self-maintenance.eli16.md"
 parent-principle: "The Agent Is Always Reachable"
 parent-principle-fit: "An agent that cannot be reached because its machine has quietly wedged is unreachable however healthy its server looks. This gives the agent the means to bring its own machine back to a clean state, inside the capacity and principal floors."
@@ -18,6 +18,16 @@ lessons-engaged: >
   Floors (wedge decision); Migration Parity; Agent Awareness; Live-User-Channel Proof; Single-provider
   functional floor (no second model required); test-agent-leak-guard (throwaways and test processes
   must never reach a real restart).
+review-convergence: "2026-11-01T22:57:14.963Z"
+review-iterations: 9
+review-completed-at: "2026-11-01T22:57:14.963Z"
+review-report: "docs/specs/reports/machine-self-maintenance-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+cross-model-review-reason: "Astra ran in every round, including 7, 8 and 9 past the cap, and returned SERIOUS ISSUES each time. Gemini and Grok did not run. Accepted at the cap by the operator; not a clean round."
+single-run-completable: true
+frontloaded-decisions: 16
+cheap-to-change-tags: 0
+contested-then-cleared: 4
 ---
 
 # Machine self-maintenance
@@ -613,7 +623,7 @@ Single machine: claims, handoff and moves are no-ops, the rest of the drain runs
 ## Frontloaded Decisions
 
 1. **On by default, one tap per machine, no silent start.** Reversible, per machine. Why not fully automatic: a reboot is rung-floor 1, and the tap also answers "is this machine really yours".
-2. **Cadence 7 days since last boot, 03:00–06:00 local, T-0 04:00, 120-minute delay ceiling, 10-day maximum interval.** Config. Replaces the 3-day deferral and the unbounded blockers, by the operator's instruction of 2026-11-01.
+2. **Cadence 7 days since last boot, 03:00–06:00 local, T-0 04:00, 120-minute delay ceiling, 10-day maximum interval.** Config. Replaces the 3-day wait and the unbounded blockers, by the operator's instruction of 2026-11-01.
 3. **Lease holder restarts last; no central coordinator; claims over signed mesh.** Matches the decentralized-by-default direction. Unenrolled and unreachable peers do not block.
 4. **Recently active conversations move where possible; the rest stay.** Reversed from the first version by the same instruction. Bounded to 6 moves, no move back, pinned, Slack and autonomous topics stay.
 5. **Co-resident agents take part through a host file, with no shared token.** A silent older agent is D3 for 30 minutes, then rolls, then is named on the final night's question.
@@ -623,7 +633,7 @@ Single machine: claims, handoff and moves are no-ops, the rest of the drain runs
 9. **No wrapper script and no root daemon.** Exact sudoers lines. Fewer root-owned things.
 10. **Scheduled restart starts watch-only and enforces on the drain evidence below; wedge restart starts dry-run on every machine and leaves it only on the graduation evidence in Part E, never on a calendar alone.** Dry-run still sends the operator the real notice with Restart now.
 11. **Browser care starts dry-run for 7 days,** live after a soak with no would-close of something in use. **Dialog action** needs a wedge, so it stays dry-run until wedge restart graduates.
-12. **Linux desktop dialogs and Windows dialogs are out of v1,** reported as `not-covered`. **Windows + WSL is attended-only in v1:** Mama PC can be restarted by tap and reminded, and a WSL boot-autostart installer is a recorded follow-up.
+12. **Linux desktop dialogs and Windows dialogs are out of v1,** reported as `not-covered`. **Windows + WSL is attended-only in v1:** Mama PC can be restarted by tap and reminded, and a WSL boot-autostart installer is not in v1.
 13. **The app gets one fixed machine-care addition.** Reversed by the instruction naming the app. Dashboard on the phone is the surface until its screen ships.
 14. **Graduated rollout:** dev-gated live on Echo first through the phases below; fleet default on once L1–L7 pass. Throwaways excluded forever.
 15. **Unsaved input in an owned browser is delay D7, not a safety hold.** Reasoned in Part D.
@@ -632,6 +642,12 @@ Single machine: claims, handoff and moves are no-ops, the rest of the drain runs
 No choice here is tagged cheap-to-change-after: restarts and notices are durable effects, so each is decided above.
 
 ## Maturation plan
+
+- **test-agent-live:** the integration and E2E tiers run the rehearsal on the production init path against temp homes, with real Local Verify, session and limiter readings faked only at their seams, and assert that it changes no state and that no restart command exists on that path. Throwaway agents never run it.
+- **dev-agent-live:** live on the development agent from the release that carries Increment 1: watch-only on every development host, every night, due or not. Read `GET /machine-maintenance` and `logs/machine-drain.jsonl` each morning for the first week.
+- **graduation criterion:** the per-host evidence gate below (14 rehearsal nights, no undeclared kind in the last 7, each declared kind seen at least 10 times or named as unobserved, 95th percentile of `stop-at-boundary` work under its 15 minutes), and round 9's three fixes read by a reviewer before any increment makes the drain real.
+- **fleet:** dark on the fleet until Phase 5, on L1–L7 passing. No enrolment is offered and nothing restarts before then.
+- **dark-window:** the watch-only rehearsal is bounded by the 14-night gate; if it has not produced evidence 30 days after merge, the review job re-decides it.
 
 Phase 1, no privilege: Part A; browser ledger, helpers, cap; dry-run sweep and dialog probe; readiness probe and status route; WedgeMonitor dry-run. Phase 2: enrolment, rule install, `RestartActuator`, brakes, Part D with the drain in watch-only mode, proof. Phase 3: watch-only soak, then enforcement, then Echo's machines: Studio (proving), then Mini after its readiness is read; Laptop and Mama PC per their readiness, likely attended. Phase 4: wedge restart live on the graduation evidence. Phase 5: fleet default.
 
@@ -642,6 +658,31 @@ Yield time is measured from real work. From the moment a yield would have been a
 Enforcement needs, per host: 14 nights of rehearsal; no undeclared kind seen in the last 7; each declared kind seen at least 10 times, or named as unobserved; the 95th percentile of `stop-at-boundary` work under its 15 minutes, or those slot times changed first. It is a recorded evidence gate, and the flip follows it with no operator step. Restart now uses the real short drain throughout, so the operator can restart a machine before this ends.
 
 **Run boundaries.** The first build run is Phase 1 and Phase 2 code plus L1, L2 and the integration tiers, and it needs no operator input; wedge and enrolment code reach the machines inert, and the drain reaches them watch-only. The next run starts when the operator taps enrolment on the Studio. That single tap is the boundary. L3–L7 and Phases 3–5 are later runs, and each named soak is a timer, not a stop-and-ask. A possible administrator dialog for a Mac without passwordless sudo, and a no-peer proving tap, arise only in those later runs.
+
+**Increment 1 as built.** The core, watch-only: the planner, the host drain record, the yield contract as a declared table, the drain on paper, delay and hold readings, audit log, `GET /machine-maintenance`, one line on the console's Machines page, the awareness section. It has no callable that can stop work or restart a machine, and a source test holds that. These parts of the Phase 1 and 2 scope above are left for later increments:
+
+- Real yields, `MaintenanceGate`, `RestartActuator`, `claimRung`, restart ledger and brakes, `PostRestartProof`, notices, the owner question, the pool claim and advert, `planned-restart` resume entries, `?scope=pool`, and the D4, D5, D6 and D7 readings, which report `active: null` until then. <!-- tracked: CMT-1199 -->
+- Enrolment taps, readiness, the reboot rule. <!-- tracked: CMT-1200 -->
+- Browser cleanup, Part B. <!-- tracked: CMT-1201 -->
+- Wedge restart, Part E. <!-- tracked: CMT-1202 -->
+- App controls, Part F, and the POST routes. <!-- tracked: CMT-1203 -->
+- Honest lock reading, Part A. <!-- tracked: CMT-1204 -->
+
+Frozen carrier text, from `docs/specs/carriers/machine-self-maintenance.json`; each is carried on a date by an evolution action, ACT-173 to ACT-178 in the same order:
+
+> **CMT-1199** — "Build the real drain of machine self-maintenance: the restart path, real work yields, the gate, restart proof, notices, the owner question, the pool claim and advert, resume entries, pool scope, and the D4 to D7 readings."
+
+> **CMT-1200** — "Build machine enrolment for self-maintenance: the owner's tap, readiness, and the reboot rule install."
+
+> **CMT-1201** — "Build browser cleanup for machine self-maintenance: the ledger, close helper, sweep and cap."
+
+> **CMT-1202** — "Build wedge-triggered restart for machine self-maintenance, dry-run first."
+
+> **CMT-1203** — "Build the operator controls for machine self-maintenance: skip, change window, restart now, on the dashboard and app."
+
+> **CMT-1204** — "Build honest lock reading for machine self-maintenance."
+
+Left out as not needed for watch-only evidence, each returning with the increment above that needs it: the `moved conversation target` in the rehearsal, D1's desktop-grant, AnyDesk and recent-message inputs and its discount of Instar's own input, D2's CPU reading of a foreign tmux session, the `maintenanceDue` advert, per-boot fsync of the record, a `machineMaintenance` block written by `migrateConfig` (absent config uses the code defaults), and the `DrainController` name: this build is `DrainRehearsal`, because it does not control anything. Two phases of the evidence differ from a real drain on purpose: phases keep the original T-0 so a rolled night still measures yields, and a dark co-resident agent reads as D3 until it carries this build.
 
 ## Tests
 

@@ -23751,6 +23751,79 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    // ── Machine self-maintenance, watch-only (docs/specs/machine-self-maintenance.md) ──
+    // Every dep below is a read: this build cannot restart a machine or stop work.
+    // A throwaway agent never runs it, whatever the gate says.
+    try {
+      const mmEnabled = () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('machineMaintenance.enabled', undefined), config);
+      const projectDir = path.dirname(config.stateDir);
+      const { classifyLocation, readThrowawayRecord } = await import('../core/ThrowawayAgentGuard.js');
+      const throwaway = classifyLocation({ projectDir, record: readThrowawayRecord(projectDir) }).throwaway;
+      if (mmEnabled() && !throwaway) {
+        const { DrainRehearsal, readHostCensus, setActiveDrainRehearsal } = await import('../monitoring/machineMaintenance/DrainRehearsal.js');
+        const { HostMaintenanceStore } = await import('../monitoring/machineMaintenance/HostMaintenanceStore.js');
+        const { normalizeSettings } = await import('../monitoring/machineMaintenance/planner.js');
+        const { makeReadOnlyRunner, readMachineSignals } = await import('../monitoring/machineMaintenance/readings.js');
+        const { activeAutonomousJobs } = await import('../core/AutonomousSessions.js');
+        const { getHostTestRunnerSemaphore } = await import('../core/hostTestRunnerSemaphore.js');
+        const { IDLE_PROMPT_PATTERNS } = await import('../core/SessionManager.js');
+        const atBoundary = async (tmux: string): Promise<boolean | null> => {
+          // Async, so a slow pane cannot hold the event loop. tmux returns the whole
+          // pane plus history here, and only the bottom says what the session is doing.
+          const output = await sessionManager.captureOutputAsync(tmux, 12);
+          if (output === null) return null;
+          const tail = output.trimEnd().split('\n').slice(-12).join('\n');
+          // Claude Code shows its prompt box while working too, so the working marker decides first.
+          if (/esc to interrupt/i.test(tail)) return false;
+          return IDLE_PROMPT_PATTERNS.some((p) => tail.includes(p));
+        };
+        const rehearsal = new DrainRehearsal({
+          agentName: config.projectName,
+          version: startupVersion,
+          stateDir: config.stateDir,
+          logPath: path.join(config.stateDir, '..', 'logs', 'machine-drain.jsonl'),
+          store: new HostMaintenanceStore(),
+          enabled: mmEnabled,
+          settings: () => normalizeSettings(liveConfig.get<Record<string, never> | undefined>('machineMaintenance', undefined)),
+          readSignals: () => readMachineSignals(makeReadOnlyRunner(config.sessions.tmuxPath)),
+          census: async ({ readBoundaries }) => {
+            const limiter = getHostTestRunnerSemaphore().status();
+            const snapshot = localVerifyService?.snapshot();
+            const sessions = [];
+            for (const s of sessionManager.getCachedRunningSessions().sessions) {
+              sessions.push({
+                name: s.name, tmuxSession: s.tmuxSession, topicId: s.telegramTopicId, jobSlug: s.jobSlug,
+                atBoundary: readBoundaries ? await atBoundary(s.tmuxSession) : null,
+              });
+            }
+            return {
+              sessions,
+              autonomousRuns: activeAutonomousJobs(config.stateDir).map((j) => ({ topic: j.topic ?? 'legacy' })),
+              localVerifyRunning: snapshot?.inFlight ? [snapshot.inFlight] : [],
+              localVerifyQueued: (snapshot?.queue ?? []).map((e) => ({ pr: e.pr, headSha: e.headSha })),
+              testRuns: [
+                ...limiter.liveHolders.map((h) => ({ pid: h.pid, acquiredAt: h.acquiredAt, lane: 'suite' as const })),
+                ...limiter.targetedHolders.map((h) => ({ pid: h.pid, acquiredAt: h.acquiredAt, lane: 'targeted' as const })),
+              ],
+              scriptRuns: scheduler?.getActiveScriptRunIds() ?? [],
+            };
+          },
+          resumeQueue: () => {
+            const q = resumeQueue?.snapshot();
+            return q ? { disabled: q.disabled, paused: q.paused, dryRun: q.dryRun, entries: q.entries.length } : null;
+          },
+          coResidentAgents: () => readHostCensus(path.join(os.homedir(), '.instar', 'registry.json'), Date.now()),
+          holdsLease: () => (coordinator.enabled ? coordinator.holdsLease() : null),
+          ownUser: os.userInfo().username,
+          log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
+        });
+        setActiveDrainRehearsal(rehearsal);
+        rehearsal.start();
+      }
+    } catch (err) {
+      console.warn(`  [machine-maintenance] not started: ${err instanceof Error ? err.message : err}`);
+    }
+
     // ── Overload admission (trustworthy-machine-load Part C) ──
     // Each machine protects its own resources: closed to new AUTOMATIC work while
     // its own load verdict is saturated/impaired, one host-wide recovery slot for an
