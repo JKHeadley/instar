@@ -84,3 +84,18 @@ Four catch blocks that already report their failure (degradation or log) carry t
 ## Follow-up: migration sniff collision
 
 The push CLAUDE.md section named the Attention hub's held-post log by its file path, which the older Attention-hub migration uses as its "already present" sniff; on an agent without that section it would have skipped adding it. The push text now describes the log without the path.
+
+## Addendum: the service is built with or without Telegram
+
+Tier 1. 1 file, 13 lines. No spec review rounds.
+
+`MobilePushService` was built inside `if (options.telegram)`, so an agent with no Telegram reported `reason: not-built` and answered 503 on the peer trigger. The service is now built on every agent. Only the Telegram hooks stay behind that guard.
+
+1. **Over-block:** none; this removes a refusal.
+2. **Under-block:** an agent with no Telegram has no hub post, so it still only notifies on a trigger from a peer. That matches the spec's trigger list.
+3. **Level of abstraction:** the guard was too wide; the hook is the only part that needs Telegram.
+4. **Signal vs authority:** no decision point; `isMobilePushEnabled` still gates every send and every route.
+5. **Interactions:** the timer is unref'd and stopped by `AgentServer.stop()`, and each tick returns early when push is off. `SecretStore` reads only when credentials are asked for, and stays file-key-only under test.
+6. **External surfaces:** `GET /mobile/push` on a Telegram-less agent now answers the real status instead of `not-built`.
+7. **Multi-machine posture:** unchanged (machine-local device records, trigger fan-out through the existing peer route). A Telegram-less machine can now receive that trigger.
+8. **Rollback cost:** revert the commit; no state changes.

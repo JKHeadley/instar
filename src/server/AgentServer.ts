@@ -1582,11 +1582,12 @@ export class AgentServer {
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
     // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
     if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
-    if (options.telegram) {
+    {
       const mp = this.mobilePairing;
-      options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
-      options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
       // Mobile push (docs/specs/mobile-push.md): APNs key from the vault, read before each send.
+      // Built on every agent, Telegram or not: the status route and the machine-to-machine trigger
+      // need it, and an agent with no Telegram can still have a paired phone. Only the hub-post
+      // hook below needs Telegram.
       const pushKeys = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
       const agentId = options.config.projectName;
       mp.push = new MobilePushService({
@@ -1609,7 +1610,11 @@ export class AgentServer {
         }),
       });
       mp.push.start();
-      options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
+      if (options.telegram) {
+        options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+        options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+        options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
+      }
     }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
