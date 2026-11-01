@@ -202,7 +202,8 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
     const rehold = vi.fn(async () => undefined);
     const supersede = vi.fn(async (_old: string, _next: OriginPreparedBotOperation, _detail: HeldForwardDetail) => true);
     const sendLocal = vi.fn(async () => ({ messageId: 3 }));
-    return { prepare, submit, receipt, resolve, rehold, supersede, sendLocal, d: { lease: lease(), prepare, submit, receipt, resolve, rehold, supersede, sendLocal, now: () => 5, ...overrides } };
+    const settleUnknown = vi.fn(async () => true);
+    return { prepare, submit, receipt, resolve, rehold, supersede, sendLocal, settleUnknown, d: { lease: lease(), prepare, submit, receipt, resolve, rehold, supersede, sendLocal, settleUnknown, now: () => 5, ...overrides } };
   }
   it('holder unchanged → re-submits the stored operation as-is and resolves the local row', async () => {
     const h = rdeps();
@@ -256,6 +257,18 @@ describe('recoverForwardedHold — re-forward the SAME operation, supersede on a
     const h = rdeps(); h.receipt.mockResolvedValue({ state: 'accepted', receiptJson: '{"confirmedVia":"receipt"}' } as never);
     expect(await recoverForwardedHold(h.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('resolved');
     expect(h.submit).not.toHaveBeenCalled(); expect(h.resolve).toHaveBeenCalledWith('op-1', 'holder', '{"confirmedVia":"receipt"}');
+  });
+  it('outcome-unknown: the holder OWN send ended unknown → settled as unknown at once, never re-forwarded or held to the deadline', async () => {
+    const h = rdeps(); h.receipt.mockResolvedValue({ state: 'outcome-unknown' } as never);
+    expect(await recoverForwardedHold(h.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('settled');
+    expect(h.settleUnknown).toHaveBeenCalledWith('op-1', 'holder');
+    expect(h.submit).not.toHaveBeenCalled(); expect(h.resolve).not.toHaveBeenCalled(); expect(h.rehold).not.toHaveBeenCalled(); expect(h.supersede).not.toHaveBeenCalled();
+  });
+  it('outcome-unknown at the holder but the local settle is refused (row no longer plainly held) → retained, nothing sent', async () => {
+    const h = rdeps(); h.receipt.mockResolvedValue({ state: 'outcome-unknown' } as never); h.settleUnknown.mockResolvedValue(false);
+    expect(await recoverForwardedHold(h.d, row({ lastAttempt: 'outcome-unknown' }), fakeOperation('holder', 'op-1'))).toBe('retained');
+    expect(h.submit).not.toHaveBeenCalled();
+    expect(h.rehold).toHaveBeenCalledWith('op-1', expect.objectContaining({ lastAttempt: 'outcome-unknown' }));
   });
   it('outcome-unknown: the old holder is unreachable → retained (ladder advanced), nothing sent', async () => {
     const h = rdeps();

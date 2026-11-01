@@ -28223,6 +28223,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                       if (['no-record', 'not-admitted', 'known-failed', 'expired', 'suppressed', 'superseded'].includes(state)) return { state: 'not-accepted' };
                       // The holder has custody (its own recovery delivers it): wait, never re-forward.
                       if (['admitted', 'held', 'partial', 'accepted'].includes(state)) return { state: 'owned-by-holder' };
+                      // The holder's own send ended unknown; it never retries or resolves it.
+                      if (state === 'outcome-unknown') return { state: 'outcome-unknown' };
                       return { state: 'unreachable' };
                     }
                     // `origin-receipt-unavailable` / any refusal is an UNKNOWN (a store outage looks the same as absence to an old holder): keep waiting.
@@ -28230,6 +28232,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   } catch { return { state: 'unreachable' }; }
                 },
                 resolve: (operationId, deliveryMachineId, receiptJson) => runtime.store.recordForwardedAcceptance({ operationId, deliveryMachineId, receiptJson }),
+                settleUnknown: (operationId, deliveryMachineId) => runtime.store.recordForwardedOutcomeUnknown({ operationId, deliveryMachineId }),
                 rehold: async (operationId, detail) => { await runtime.store.recordOperationState({ operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }); },
                 supersede: (operationId, next, detail) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
                   holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
@@ -28239,7 +28242,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
               }, row, operation);
                 // §3.3 — a delivered/resolved forward may have emptied the topic's held set.
-                if (outcome === 'sent' || outcome === 'resolved') await clearHeldItemIfResolved(row.destination.topicId);
+                if (outcome === 'sent' || outcome === 'resolved' || outcome === 'settled') await clearHeldItemIfResolved(row.destination.topicId);
                 return outcome;
               };
               // §4.2 — a DIRECT-path hold (`authorize` refused while not holding the lease:

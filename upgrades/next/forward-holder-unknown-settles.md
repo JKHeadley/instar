@@ -1,0 +1,21 @@
+# A reply the lease holder could not confirm stops sitting "held" on the other machine
+
+<!-- bump: patch -->
+
+## What Changed
+
+When a standby forwards a reply to the serving machine and that machine's own Telegram send ends outcome-unknown, the standby used to keep its copy held until the 6-hour deadline. The holder's receipt state `outcome-unknown` was mapped to "unreachable", and recovery waited for an answer that never comes: the holder never retries or resolves an unknown send. At the deadline the row then expired, and the "did it arrive?" lookup read an expired row as not delivered and safe to resend.
+
+Now the receipt maps the holder's `outcome-unknown` to its own answer, and recovery settles the standby's row at once with a new store call, `recordForwardedOutcomeUnknown`: a dispatched attempt with an unknown outcome, children `outcome-unknown`, the queue entry `delivered-ambiguous`. The row leaves the held count, the held attention item for the topic is cleared when nothing else is held there, and the outcome lookup answers "unknown, do not resend". Nothing is re-forwarded. If the row is no longer plainly held (a part is claimed or already settled), the settle is refused and the row is retained exactly as before.
+
+## What to Tell Your User
+
+Replies I couldn't confirm no longer show as "held" on my other machine for hours. If Telegram may or may not have one of them, I now say exactly that and never send it twice.
+
+## Summary of New Capabilities
+
+None. This is a reliability fix to forwarded-reply recovery.
+
+## Evidence
+
+On 2026-10-31 the Mama PC held 47 forwarded replies (1 session reply, 46 automatic messages) across 14 topics, the oldest about 5 hours old, while the Studio's origin store held 105 operations in `outcome-unknown`. The receipt mapping in `server.ts` returned `unreachable` for that state. A new integration test drives a holder send that ends unknown over the signed mesh pipeline: the standby holds after one attempt, the next ladder step settles it, the held count drops to 0, the bot is called exactly once, and the outcome lookup says unknown with no resend. Unit tests cover the settle and the refused-settle paths.
