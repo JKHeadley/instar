@@ -19,3 +19,5 @@ On Mama, the Instar agent runs inside Linux (WSL), and the helper that touches t
 ## Faster: one relay instead of one per click
 
 On Mama, the Instar agent runs inside Linux (WSL), and the helper that touches the screen runs in Windows. When the agent can't talk to the helper directly, it uses a small PowerShell program to carry each request across. It used to start a fresh PowerShell for every single request: every click, key and screen picture. Starting PowerShell that way takes about a second, so each click waited that long, and two clicks could never arrive close enough together to count as a double click. Now one PowerShell stays running and carries all the requests, with a second one just for screen pictures so they never hold up a click. A machine that still has the older copy of that small program keeps working the old way until its helper is reinstalled.
+
+If a request fails, the relay keeps later requests in order and still reports that request's failure to whoever sent it; nothing is silently dropped.

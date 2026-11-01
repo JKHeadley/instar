@@ -10,6 +10,9 @@ None. Each request is validated exactly as before (allowed operation, size, loca
 
 ## Under-block
 
+The per-lane ordering chain swallows a rejection only to keep the next request in order (marked @silent-fallback-ok); the caller of that request still receives the error.
+
+
 Requests on one lane now run in order rather than in parallel; a slow request delays the next on that lane by up to its 4.5 s timeout, after which the relay is killed and restarted.
 
 ## Level of abstraction

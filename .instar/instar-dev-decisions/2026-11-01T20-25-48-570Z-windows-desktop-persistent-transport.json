@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-01T20:25:48.570Z",
+  "slug": "windows-desktop-persistent-transport",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WindowsDesktopLocalTransport.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a relay process starts only when a caller sends a request and none is alive; at most one per lane (two total), never restarted on its own"
+  },
+  "verdict": "pass"
+}

@@ -41,7 +41,10 @@ class ServeLane {
 
   request(line: string, signal?: AbortSignal | null): Promise<string> {
     const run = this.tail.then(() => this.send(line, signal));
-    this.tail = run.catch(() => undefined);
+    this.tail = run.catch(() => {
+      /* @silent-fallback-ok — ordering chain only; the caller still receives this request's error */
+      return undefined;
+    });
     return run;
   }
 
