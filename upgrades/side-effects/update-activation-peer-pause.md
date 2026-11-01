@@ -66,6 +66,8 @@ The change closes the observed restart admission window while preserving bounded
 
 ## Second-pass review
 
+**Reviewer:** /root/manual_update_restart_review
+
 The independent reviewer identified an exception path that could leave the marker active after a restart gate failed before writing a request. The revised code clears it on both the first decision and deferred retries, and clears it if the restart request file cannot be written. The reviewer concurred with the revised diff and found no further P1/P2 issue. The two exception paths have unit boundary tests; the reviewer did not run tests.
 
 ## M5 tmux fixture repair
@@ -79,4 +81,4 @@ The independent reviewer concurred: the old-pid representation remains tested on
 - Live incident: M5 applied v1.3.1552 at 21:10:36 UTC; PR #2381 was accepted at 21:11:17; after restart, the peer returned `state:unknown` for that attempt.
 - Focused unit tests: 149 passed after updating the old-process/new-process admission expectation. Build and lint passed.
 - Authenticated HTTP integration: 7 passed, including refusal and post-activation acceptance. Production-shaped E2E: 2 passed, including manual apply with auto-apply off. These tiny tests waited 21 and 26 minutes respectively for the shared Studio suite slot.
-- Full-suite result: the first unit run found two scanner-counted catches. Both already logged the errors; explicit `@silent-fallback-ok` annotations restored the 494 baseline in a focused rerun. The complete suite rerun is pending in the Studio suite-slot queue behind active merge checks. Exact-head Local Verify remains the merge authority.
+- Full-suite result: the first unit run found two scanner-counted catches. Both already logged the errors; explicit `@silent-fallback-ok` annotations restored the 494 baseline in a focused rerun. A protected exact-commit M5 full run then passed 53,867 unit, 4,994 integration, and 3,624 E2E tests with exit 0. The first exact-head Local Verify run passed its integration and E2E shards; its unit lane passed on isolation rerun after one unrelated `codex-cli-provider-execjson` failure. Merge remained pending because this artifact omitted the required named reviewer line. A new exact-head run is required after this evidence correction.
