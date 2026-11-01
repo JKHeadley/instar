@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "ci-parallel-tiers",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-11-01T03:47:36.792Z",
+  "artifactPath": "upgrades/side-effects/ci-parallel-tiers.md",
+  "artifactSha256": "2e541dfefa7d99cee73d95fb909937fc2707c176d94894ea64de9a2c5b251205",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/ci-parallel-tiers.eli16.md",
+    "upgrades/next/ci-parallel-tiers.md",
+    "upgrades/side-effects/ci-parallel-tiers.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reversible CI scheduling change removes only two job dependencies while preserving all required check names and test commands; independent review concurred.",
+  "eli16Path": "docs/specs/ci-parallel-tiers.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-parallel-tiers.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
