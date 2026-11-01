@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "console-tests-clock-pin",
+  "sessionId": "b74e8cfc-8f63-46cd-889a-9513f7d64e03",
+  "timestamp": "2026-11-01T22:16:06.742Z",
+  "artifactPath": "upgrades/side-effects/console-tests-clock-pin.md",
+  "artifactSha256": "a42fcab4e8da645dde9c7d4f49ee5ccad5d516aab3ab4876b625a4a59b418685",
+  "coveredFiles": [
+    "tests/unit/console-plans.test.ts",
+    "tests/unit/console-promises.test.ts",
+    "upgrades/next/console-tests-clock-pin.md",
+    "upgrades/side-effects/console-tests-clock-pin.eli16.md",
+    "upgrades/side-effects/console-tests-clock-pin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only: pins Date in two jsdom tests; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-tests-clock-pin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-tests-clock-pin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

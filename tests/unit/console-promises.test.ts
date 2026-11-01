@@ -3,7 +3,7 @@
  * sections, Home agreement, coverage honesty, the story, the actions, and the
  * shipped page in jsdom (sections, detail sheet, conversation link, deliver).
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor, until, nextDue } from '../../dashboard/console/promises-model.js';
 import { buildPromised } from '../../dashboard/console/home-model.js';
@@ -156,7 +156,10 @@ describe('promises page model', () => {
 
 describe('promises page in a DOM', () => {
   let dom: JSDOM;
-  afterEach(() => dom?.window.close());
+  // The page reads Date.now(); pin it to the fixtures' NOW so the rows' ages do not
+  // drift with the day the suite runs. Only Date is faked — timers stay real.
+  beforeEach(() => vi.useFakeTimers({ toFake: ['Date'], now: NOW }));
+  afterEach(() => { vi.useRealTimers(); dom?.window.close(); });
   it('does not ask the operator to complete an internal follow-up', async () => {
     dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'http://localhost:4040/dashboard/console/#/work/promises' });
     Object.assign(globalThis, { window: dom.window, document: dom.window.document, location: dom.window.location,
