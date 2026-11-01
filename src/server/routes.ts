@@ -1,3 +1,4 @@
+import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
@@ -19326,7 +19327,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     const limit = parseInt(req.query.limit as string, 10) || 20;
     const messages = ctx.telegram.getTopicHistory(topicId, Math.min(limit, 100));
-    res.json({ topicId, messages });
+    // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
+    const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(messages) : messages });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -26660,6 +26663,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // (handshake-only pings without text are not). Bumps lastInbound so the
     // SleepController never sleeps an agent that's actively being messaged.
     if (text) ctx.agentActivityState?.markInbound(Date.now());
+    // Mobile device keys (§2.2): a live phone-pairing code seen in a conversation voids that
+    // pairing, before the message is logged, forwarded or delivered.
+    for (const t of [text, req.body?.caption]) if (typeof t === 'string' && t) ctx.telegram?.mobileInboundScan?.(t);
 
     // Version-handshake (only when lifelineVersion field is present AND
     // auth is configured — dev-mode with empty authToken skips the handshake
@@ -27612,6 +27618,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         deduped: true,
         error: claim === 'duplicate-of-failed' ? 'callback-previously-failed' : 'callback-outcome-unknown',
       });
+      return;
+    }
+
+    // Mobile pairing Decline (mobile-device-keys §2.2): counts only when the lifeline proved the tap.
+    if (ctx.telegram && typeof data === 'string' && data.startsWith('md:d:')) {
+      try {
+        await ctx.telegram.handleMobileDecline({ callbackQueryId, data, fromUserId, chatId, verified: callbackDecision.verified });
+        claimStore.markDone(callbackQueryId);
+        res.json({ ok: true, mobileDecline: true });
+      } catch (err) {
+        claimStore.markFailed(callbackQueryId);
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
       return;
     }
 

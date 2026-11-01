@@ -3901,6 +3901,16 @@ export interface InstarConfig {
    * Maturation board (docs/specs/maturation-board.md): a read-only, advisory page of every
    * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
    */
+  /**
+   * Mobile pairing links (docs/specs/mobile-pairing-link.md): one-time links that add this
+   * agent to the Instar iPhone app. `enabled` is omitted by default so the developmentAgent
+   * gate decides; read live by the routes.
+   */
+  mobilePairing?: {
+    enabled?: boolean;
+    /** Code lifetime in minutes, default 10, clamped to 1–60. */
+    codeTtlMinutes?: number;
+  };
   maturationBoard?: {
     enabled?: boolean;
     /** Review files directory, relative to the project dir. Default docs/research/feature-maturation/reviews. */

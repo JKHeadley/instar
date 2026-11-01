@@ -192,6 +192,12 @@ export function authMiddleware(
    * absent the route is refused (401) — fail closed, never the agent token.
    */
   localMcpGate?: (req: Request, res: Response) => boolean,
+  /**
+   * Mobile device keys (docs/specs/mobile-device-keys.md): a request carrying device headers
+   * is judged only by them. Returns 'none' (no device headers / gate off), 'ok' (authenticated,
+   * principal set) or 'refused' (already answered).
+   */
+  deviceAuth?: (req: Request, res: Response) => 'none' | 'ok' | 'refused',
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -240,6 +246,23 @@ export function authMiddleware(
     if (req.path === '/dashboard/unlock' && req.method === 'POST') {
       next();
       return;
+    }
+
+    // Mobile pairing (docs/specs/mobile-pairing-link.md): the redeem and the self-probe
+    // ping are public by exact path+method; mint and devices stay behind the bearer gate.
+    if ((req.path === '/mobile/pairing-codes/redeem' && req.method === 'POST')
+      || (req.path === '/mobile/pairing-codes/ping' && req.method === 'GET')) {
+      next();
+      return;
+    }
+
+    // Mobile device keys: device-signed requests are judged by their signature and an exact
+    // allowlist, never by a bearer token, and never reach /internal/*.
+    if (deviceAuth && req.headers['x-instar-device'] !== undefined) {
+      if (req.path.startsWith('/internal/')) { res.status(403).json({ error: 'device-not-allowed' }); return; }
+      const verdict = deviceAuth(req, res);
+      if (verdict === 'ok') { next(); return; }
+      if (verdict === 'refused') return;
     }
 
     // Whether this connection may unlock: a yes/no the console asks before it

@@ -977,6 +977,19 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /** The owner's Decline tap on a phone-pairing code. Counts only when verified, from the owner, in the owner's private chat. */
+  async handleMobileDecline(t: { callbackQueryId: string | number; data: string; fromUserId: number | undefined; chatId: number | string | undefined; verified: boolean }): Promise<'declined' | 'refused' | 'unknown'> {
+    const owner = this.getOwnerUserId();
+    const m = /^md:d:([0-9a-f]{24})$/.exec(t.data);
+    if (!t.verified || !owner || t.fromUserId !== owner || String(t.chatId) !== String(owner) || !m) {
+      await this.answerCallback(t.callbackQueryId, 'Only the owner can do this.');
+      return 'refused';
+    }
+    const r = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
+    await this.answerCallback(t.callbackQueryId, r === 'declined' ? 'Declined. That phone will not be paired.' : 'This pairing has already ended.');
+    return r;
+  }
+
   /** The small toast answering a button tap. Best-effort. */
   async answerCallback(callbackQueryId: string | number, text: string): Promise<void> {
     await this.apiCall('answerCallbackQuery', { callback_query_id: callbackQueryId, text, show_alert: text.length > 60 }).catch(() => {
@@ -2014,6 +2027,33 @@ export class TelegramAdapter implements MessagingAdapter {
    * etc.). All failure paths are logged-not-thrown to preserve the
    * fire-and-forget contract callers expect for outbound messaging.
    */
+  /**
+   * Mobile device keys (docs/specs/mobile-device-keys.md §2.2): the pairing confirmation code,
+   * sent only to the owner's private chat, with an optional Decline button. Resolves to the
+   * Telegram message id when Telegram accepted it, else null.
+   */
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | null): Promise<number | null> {
+    const owner = this.getOwnerUserId();
+    if (!owner) return null;
+    try {
+      const result = await this.apiCall('sendMessage', {
+        chat_id: owner,
+        text,
+        ...(button ? { reply_markup: { inline_keyboard: [[{ text: button.text, callback_data: button.data }]] } } : {}),
+      }) as { message_id: number };
+      return typeof result?.message_id === 'number' ? result.message_id : null;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409
+      console.warn(`[telegram] sendOwnerDMWithButton failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
+  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
+  /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
+  public mobileInboundScan: ((text: string) => string[]) | null = null;
+
   async sendToOwnerDM(text: string): Promise<SendResult | null> {
     const owner = this.getOwnerUserId();
     if (!owner) {
@@ -5556,6 +5596,8 @@ export class TelegramAdapter implements MessagingAdapter {
     if (!msg) return;
     // Issues-group messages get their internal topic id before anything reads it.
     normalizeInboundThread(msg, this.topicSpace());
+    // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
+    for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
 
     // A pairing invite carries a one-time secret: it never reaches a session, the message log
     // or any classifier (docs/specs/a2a-pairing-invite-link.md §6.1). With a pairing handler
@@ -6221,6 +6263,14 @@ export class TelegramAdapter implements MessagingAdapter {
         callback_query_id: query.id,
         text: 'Approve this on the dashboard (Threadline tab) with your PIN.',
       }).catch(() => {});
+      return;
+    }
+
+    // ── Mobile pairing Decline (docs/specs/mobile-device-keys.md §2.2): owner only, in the
+    // owner's private chat. Read from getUpdates here, so authentic.
+    if (query.data.startsWith('md:d:')) {
+      await this.handleMobileDecline({ callbackQueryId: query.id, data: query.data, fromUserId: query.from.id,
+        chatId: query.message?.chat?.id, verified: true });
       return;
     }
 

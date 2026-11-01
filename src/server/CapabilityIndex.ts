@@ -256,6 +256,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobilePairing',
+    prefixes: ['/mobile'],
+    description: 'Mobile pairing links and device keys (docs/specs/mobile-pairing-link.md, docs/specs/mobile-device-keys.md) — a one-time instar.sh link adds this agent to the Instar iPhone app. The phone registers its own Secure Enclave key; the owner receives a 6-digit code privately in Telegram and types it into the app; only then does the phone become active. Phones never receive the API token or an operator session and may only make a fixed list of signed requests. POST /mobile/pairing-codes (Bearer) mints the link; public POST /mobile/pairing-codes/redeem registers the pending phone over the named tunnel; POST /mobile/device/confirm and GET /mobile/device are device-signed; GET /mobile/devices (?scope=pool) lists phones; POST /mobile/devices/:id/revoke revokes one. Dev-gated (mobilePairing.enabled); 503 when dark.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/pairing-codes', 'POST /mobile/pairing-codes/redeem', 'GET /mobile/pairing-codes/ping', 'GET /mobile/devices', 'GET /mobile/device', 'POST /mobile/device/confirm', 'POST /mobile/devices/:id/revoke'],
+    }),
+  },
+  {
     key: 'overloadShed',
     prefixes: ['/overload-shed'],
     description: 'Overload shed (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part D) — moves EXISTING conversations off a machine that has stayed overloaded: once this machine has refused new work for 3 minutes it proposes moving one Telegram conversation at a time to a healthy machine (live evidence under 2 min, verdict ok, room after reservations), through the ownership reconciler; pinned topics and topics with a live autonomous run stay. Breaker 2 moves/hour, 2 tries per topic per episode. GET /overload-shed reports enabled/dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour and counters (proposed, wouldMove, claimed, expired, breakerHeld). Dev-gated + dry-run first (monitoring.overloadShed); 503 when dark. When asked "why did my conversation move machines / why is this overloaded machine still holding work?" → read this, don\'t guess.',
