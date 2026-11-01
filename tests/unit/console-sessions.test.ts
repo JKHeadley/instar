@@ -16,6 +16,7 @@ import {
   partialWords, titleLine, closeRequest, closeConfirmWords, closeResultWords, doorChoices, modelChoices, doorModelWords,
   regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor,
   KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, HISTORY_MAX,
+  isInternalSession, attachmentMessage, OPERATOR_CREATED,
 } from '../../dashboard/console/sessions-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
 
@@ -127,6 +128,29 @@ describe('the list', () => {
     expect(titleLine({ machineNickname: 'Mac Studio', model: 'claude-opus-5-5' })).toBe('Mac Studio · Opus 5.5');
     expect(titleLine({ machineNickname: 'Mac Studio', model: 'opus', type: 'job' })).toBe('Mac Studio · Opus, version not recorded · scheduled job');
     expect(titleLine({ machineNickname: 'Laptop', model: null })).toBe('Laptop · model not recorded');
+  });
+});
+
+describe('internal sessions and attachments', () => {
+  it('jobs and agent-spawned helpers are internal; conversations and operator-created sessions are not', () => {
+    expect(isInternalSession(sess({ jobSlug: 'health-check' }))).toBe(true);
+    expect(isInternalSession(sess({ platform: 'headless', platformId: null }))).toBe(true);
+    expect(isInternalSession(sess({ platform: 'headless', platformId: null, triggeredBy: OPERATOR_CREATED }))).toBe(false);
+    expect(isInternalSession(sess())).toBe(false);
+    expect(isInternalSession(sess({ platform: 'slack' }))).toBe(false);
+  });
+  it('the list hides internal sessions by default, counts them, and shows them on request; an open internal row is still found', () => {
+    const res = poolOf([sess(), sess({ id: 'j', name: 'job', tmuxSession: 'echo-job', jobSlug: 'reflection' }), sess({ id: 'h', name: 'helper', tmuxSession: 'echo-helper', platform: 'headless', platformId: null })]);
+    const hidden = buildSessions(res, { now: NOW });
+    expect(hidden.ok && hidden.rows.length).toBe(1);
+    expect(hidden.ok && hidden.internalCount).toBe(2);
+    expect(hidden.ok && hidden.allRows.length).toBe(3);
+    const shown = buildSessions(res, { now: NOW, showInternal: true });
+    expect(shown.ok && shown.rows.length).toBe(3);
+  });
+  it('an attachment message keeps the text and names each saved file', () => {
+    expect(attachmentMessage('look at this', ['/a/x.png'])).toBe('look at this\n[Attached file from the dashboard: /a/x.png (read it to see what I sent)]');
+    expect(attachmentMessage('  ', ['/a/x.png', '/a/y.txt']).split('\n')).toHaveLength(2);
   });
 });
 

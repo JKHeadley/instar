@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "console-session-followups",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-11-01T19:59:06.080Z",
+  "artifactPath": "upgrades/side-effects/console-session-followups.md",
+  "artifactSha256": "4e5dc14e177152262201bfee27e5925b58325d019e032da56b9d7cc628c9627c",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/sessions-model.js",
+    "dashboard/console/sessions.js",
+    "src/core/SessionManager.ts",
+    "src/server/routes.ts",
+    "tests/unit/console-sessions.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive console features and one bounded local route; revert undoes",
+  "eli16Path": "upgrades/side-effects/console-session-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-session-followups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

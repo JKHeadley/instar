@@ -11,7 +11,7 @@ import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
   platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
-  canSwitchDoor, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
+  canSwitchDoor, attachmentMessage, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -21,6 +21,20 @@ const XTERM_JS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
 const FIT_JS = 'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js';
 const POOL_TIMEOUT_MS = 8000;
+
+const ATTACH_MAX_BYTES = 8 * 1024 * 1024;
+function toBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^,]*,/, ''));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+const SHOW_INTERNAL_KEY = 'instar_console_show_internal';
+function showInternal() { try { return localStorage.getItem(SHOW_INTERNAL_KEY) === '1'; } catch { return false; } }
+function setShowInternal(on) { try { localStorage.setItem(SHOW_INTERNAL_KEY, on ? '1' : '0'); } catch { /* per-viewer convenience only */ } }
 
 function bearer() { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } }
 
@@ -69,7 +83,7 @@ const onPage = () => Boolean(st.main && st.main.isConnected && st.main.querySele
 function currentModel() {
   const src = st.poolData || (st.lastFailReason ? { ok: false, reason: st.lastFailReason } : null);
   if (!src) return null;
-  return buildSessions(src, { ws: st.wsUp ? st.wsList : null, now: Date.now(), topicNames: st.topicNames || {} });
+  return buildSessions(src, { ws: st.wsUp ? st.wsList : null, now: Date.now(), topicNames: st.topicNames || {}, showInternal: showInternal() });
 }
 
 function paint() {
@@ -83,7 +97,7 @@ function paint() {
   paintList(page.querySelector('.sess-list'), m, key);
   const v = page.querySelector('.sess-view');
   if (!key) { if (st.view) leaveView(); setKids(v, el('p', { class: 'empty-line sess-pick', text: 'Pick a session to watch it and type to it.' })); return; }
-  const row = m.ok ? m.rows.find((r) => r.key === key) : null;
+  const row = m.ok ? m.allRows.find((r) => r.key === key) : null;
   if (st.view && st.view.key === key) { if (row) updateViewTitle(row); else markEnded(); return; }
   if (st.view) leaveView();
   if (!row) {
@@ -118,7 +132,13 @@ function paintList(box, m, openKey) {
         m.idleMachines.map((i) => el('p', { class: `machine-line${i.ok ? '' : ' dashed'}`, text: `${i.name}: ${i.words}` }))));
     }
   }
-  parts.push(el('p', { class: 'foot-note' }, el('a', { href: legacyHref('dropzone'), text: 'Paste long text to a session' }), document.createTextNode(' · '), el('a', { href: legacyHref('sessions'), text: 'Open sessions in the legacy dashboard' })));
+  if (m.ok && m.internalCount) {
+    const on = m.showInternal;
+    parts.push(el('button', { class: 'link-btn sess-internal-toggle', type: 'button', 'aria-pressed': on ? 'true' : 'false',
+      text: on ? `Hide ${m.internalCount} internal session${m.internalCount === 1 ? '' : 's'} (jobs and helpers)` : `Show ${m.internalCount} internal session${m.internalCount === 1 ? '' : 's'} (jobs and helpers)`,
+      onclick: () => { setShowInternal(!on); paint(); } }));
+  }
+  parts.push(el('p', { class: 'foot-note' }, el('a', { href: legacyHref('sessions'), text: 'Open sessions in the legacy dashboard' })));
   setKids(box, parts);
   if (focused) {
     const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focused) : focused.replace(/["\\]/g, '\\$&');
@@ -222,6 +242,29 @@ function openView(box, row) {
   const input = el('textarea', { class: 'reason-input sess-input', rows: '1', placeholder: 'Type a message…', 'aria-label': 'Message to the session' });
   const sendBtn = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send', 'data-send': '1' });
   const keysBtn = el('button', { class: 'btn-quiet', type: 'button', text: 'Keys', 'aria-expanded': 'false', 'data-keys': '1' });
+  // Attach: a screenshot or file, picked, pasted or dropped. Saved on this machine, so a
+  // session on another machine says so instead of offering it.
+  const filePick = el('input', { type: 'file', multiple: true, hidden: true, 'data-file': '1' });
+  const attachBtn = el('button', { class: 'btn-quiet sess-attach', type: 'button', 'aria-label': 'Attach a screenshot or file', text: '📎', 'data-attach': '1',
+    title: s.remote ? `Attaching works for sessions on this machine; open ${s.machineNickname}’s own console to attach there.` : 'Attach a screenshot or file' });
+  if (s.remote) attachBtn.disabled = true;
+  const chips = el('div', { class: 'sess-attachments', hidden: true });
+  const files = [];
+  const paintChips = () => {
+    chips.hidden = !files.length;
+    setKids(chips, files.map((f, i) => el('span', { class: 'chip sess-file' }, el('span', { text: f.name }),
+      el('button', { class: 'link-btn', type: 'button', 'aria-label': `Remove ${f.name}`, text: '✕', onclick: () => { files.splice(i, 1); paintChips(); } }))));
+  };
+  const addFiles = (list) => {
+    if (s.remote) { setStatus(`Attaching works for sessions on this machine; open ${s.machineNickname}’s own console to attach there.`); return; }
+    for (const f of list) {
+      if (f.size > ATTACH_MAX_BYTES) { setStatus(`${f.name} is too big to attach (up to 8 MB).`); continue; }
+      files.push({ name: f.name || `pasted-${Date.now()}.png`, file: f });
+    }
+    paintChips();
+  };
+  attachBtn.addEventListener('click', () => filePick.click());
+  filePick.addEventListener('change', () => { addFiles([...filePick.files]); filePick.value = ''; });
   const tray = el('div', { class: 'keys-tray', hidden: true });
   const view = { key: row.key, s, titleSub, statusLine, termBox, resume, following: true, pending: null, loaded: HISTORY_FIRST, exhausted: false, loading: false, term: null, fit: null, pre: null };
   st.view = view;
@@ -239,12 +282,35 @@ function openView(box, row) {
   tray.append(keyRow, stopBox);
   keysBtn.addEventListener('click', () => { tray.hidden = !tray.hidden; keysBtn.setAttribute('aria-expanded', tray.hidden ? 'false' : 'true'); });
 
-  const sendText = () => {
-    const text = input.value;
-    if (!text.trim()) return;
+  const sendText = async () => {
+    let text = input.value;
+    if (!text.trim() && !files.length) return;
+    if (!st.wsUp) { setStatus('Not sent: live updates are paused. Your text is still here.'); return; }
+    if (files.length) {
+      sendBtn.disabled = true; setStatus(`Attaching ${files.length === 1 ? files[0].name : `${files.length} files`}…`);
+      const paths = [];
+      for (const f of files) {
+        const r = await send('POST', `/sessions/${encodeURIComponent(view.s.tmuxSession)}/attachments`, { filename: f.name, dataBase64: await toBase64(f.file) });
+        if (!r.ok || !r.data.path) { sendBtn.disabled = false; setStatus(`Not sent: ${f.name} could not be attached (${r.data.error || `status ${r.status}`}). Your message is still here.`); return; }
+        paths.push(r.data.path);
+      }
+      sendBtn.disabled = false; setStatus('');
+      text = attachmentMessage(text, paths);
+    }
     if (!wsSend(frame('input', view.s, { text }))) { setStatus('Not sent: live updates are paused. Your text is still here.'); return; }
+    files.length = 0; paintChips();
     input.value = ''; input.rows = 1; input.focus();
   };
+  input.addEventListener('paste', (e) => {
+    const pasted = [...((e.clipboardData && e.clipboardData.files) || [])];
+    if (pasted.length) { e.preventDefault(); addFiles(pasted); }
+  });
+  const composer = el('div', { class: 'sess-composer' }, attachBtn, filePick, input, el('div', { class: 'sess-composer-btns' }, keysBtn, sendBtn));
+  for (const t of [composer, termBox]) {
+    t.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); composer.classList.add('dropping'); } });
+    t.addEventListener('dragleave', () => composer.classList.remove('dropping'));
+    t.addEventListener('drop', (e) => { if (!e.dataTransfer || !e.dataTransfer.files.length) return; e.preventDefault(); composer.classList.remove('dropping'); addFiles([...e.dataTransfer.files]); });
+  }
   sendBtn.addEventListener('click', sendText);
   input.addEventListener('input', () => { input.rows = composerRows(input.value); });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendText(); } });
@@ -258,7 +324,8 @@ function openView(box, row) {
       more),
     statusLine,
     el('div', { class: 'sess-term-wrap' }, termBox, resume),
-    el('div', { class: 'sess-composer' }, input, el('div', { class: 'sess-composer-btns' }, keysBtn, sendBtn)),
+    chips,
+    composer,
     tray));
 
   if (s.remote) setStatus(`Streaming from ${s.machineNickname}…`);
@@ -369,9 +436,6 @@ function moreSheet(view) {
   ])];
   const actions = el('div', { class: 'sheet-actions sess-actions' });
   if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Switch door and model', 'data-door': '1', onclick: () => doorSheet(view) }));
-  actions.append(s.remote
-    ? note(`Long text can only be stored for sessions on this machine; type it into the composer instead, or open ${s.machineNickname}’s own console.`)
-    : el('a', { class: 'btn-quiet', href: legacyHref('dropzone'), text: 'Paste long text' }));
   blocks.push(actions, closeBlock(view));
   const t = s.telemetry || {};
   blocks.push(details({

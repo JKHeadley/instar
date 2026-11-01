@@ -2081,6 +2081,8 @@ export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, Subsc
 
 // Validation patterns for route parameters
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
+/** Largest console attachment (decoded). The JSON body limit is 12 MB, and base64 adds a third. */
+const DASHBOARD_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
 const JOB_SLUG_RE = /^[a-zA-Z0-9_-]{1,100}$/;
 const VALID_SORTS = ['significance', 'recent', 'name'] as const;
 
@@ -11413,6 +11415,42 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ok: true });
   });
 
+  // Console composer attachments: a screenshot or file the operator attaches to a
+  // message for a session on THIS machine. The bytes are saved under
+  // <stateDir>/dashboard-uploads/ and the absolute path is returned; the console
+  // then sends the message with that path so the session can read the file
+  // (the same shape as a Telegram photo). A session on another machine is
+  // refused: the file would land on the wrong disk.
+  router.post('/sessions/:name/attachments', (req, res) => {
+    if (!SESSION_NAME_RE.test(req.params.name)) { res.status(400).json({ error: 'Invalid session name' }); return; }
+    const body = (req.body ?? {}) as { filename?: unknown; dataBase64?: unknown };
+    if (typeof body.dataBase64 !== 'string' || !body.dataBase64) { res.status(400).json({ error: '"dataBase64" must be a non-empty string' }); return; }
+    const bytes = Buffer.from(body.dataBase64, 'base64');
+    if (!bytes.length) { res.status(400).json({ error: 'The file is empty' }); return; }
+    if (bytes.length > DASHBOARD_ATTACHMENT_MAX_BYTES) { res.status(413).json({ error: `Files up to ${DASHBOARD_ATTACHMENT_MAX_BYTES / (1024 * 1024)} MB can be attached` }); return; }
+    const running = ctx.sessionManager.getCachedRunningSessions().sessions.some((x) => x.tmuxSession === req.params.name);
+    if (!running) { res.status(404).json({ error: `Session "${req.params.name}" is not running on this machine` }); return; }
+    const rawName = typeof body.filename === 'string' ? body.filename : 'file';
+    const safeName = path.basename(rawName).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(-100) || 'file';
+    const dir = path.join(ctx.config.stateDir, 'dashboard-uploads');
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      // Bounded retention: attachments older than 30 days go (a few per upload).
+      try {
+        const cutoff = Date.now() - 30 * 24 * 60 * 60_000;
+        for (const f of fs.readdirSync(dir).slice(0, 200)) {
+          const full = path.join(dir, f);
+          try { if (fs.statSync(full).mtimeMs < cutoff) SafeFsExecutor.safeUnlinkSync(full, { operation: 'routes:dashboard-attachment-retention' }); } catch { /* @silent-fallback-ok — retention is best effort */ }
+        }
+      } catch { /* @silent-fallback-ok — retention is best effort */ }
+      const filePath = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(4).toString('hex')}-${safeName}`);
+      fs.writeFileSync(filePath, bytes, { mode: 0o600 });
+      res.status(201).json({ ok: true, path: filePath, bytes: bytes.length });
+    } catch (err) {
+      res.status(500).json({ error: `Could not save the file: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
   // Model-Tier Escalation §5.3 (FABLE-MODEL-ESCALATION-SPEC): the ONE narrow
   // mid-session swap surface. Body carries a TIER only — the model id is
   // derived server-side via the §5.1 resolver and is never accepted from the
@@ -12845,7 +12883,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const tmuxSession = await ctx.sessionManager.spawnInteractiveSession(
         undefined, // no initial message
         topicName,
-        undefined,
+        { triggeredBy: 'dashboard-operator' },
       );
 
       // Update Slack channel-session registry and invite authorized users
