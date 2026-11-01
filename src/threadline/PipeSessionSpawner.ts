@@ -636,7 +636,9 @@ export class PipeSessionSpawner {
         const condition = blankDeadOwned
           ? `#{&&:${nonceCondition},#{==:#{pane_dead},1}}`
           : nonceCondition;
-        execSync(`tmux if-shell -F -t '${session.tmuxId}' '${condition}' "kill-session -t '${session.tmuxId}'" 2>/dev/null`);
+        // tmux IDs contain '$'. Keep the nested command in shell single quotes
+        // so /bin/sh cannot expand '$0' before tmux evaluates it.
+        execSync(`tmux if-shell -F -t '${session.tmuxId}' '${condition}' 'kill-session -t ${session.tmuxId}' 2>/dev/null`);
       } catch { /* ignore */ }
     }
 
