@@ -87,6 +87,8 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 }
 
 import fs from 'node:fs';
+import { readTranscriptPage } from '../core/SessionTranscriptReader.js';
+import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
@@ -2087,6 +2089,29 @@ export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, Subsc
   });
 
 // Validation patterns for route parameters
+/** The transcript file for a session: its own account's config home first, then the
+ *  default home, then every pool account's (a swap can move a session between homes). */
+function findSessionTranscript(session: import('../core/types.js').Session, ctx: RouteContext): string | null {
+  const sessionId = session.claudeSessionId;
+  if (!sessionId) return null;
+  const framework = session.framework ?? 'claude-code';
+  const projectDir = session.cwd ?? ctx.config.projectDir;
+  const homes: Array<string | undefined> = [];
+  const own = session.subscriptionAccountId ? ctx.subscriptionPool?.get(session.subscriptionAccountId)?.configHome : undefined;
+  homes.push(own, session.confinedConfigHome, undefined);
+  for (const a of ctx.subscriptionPool?.list() ?? []) homes.push(a.configHome);
+  const seen = new Set<string>();
+  for (const home of homes) {
+    const candidate = framework === 'codex-cli'
+      ? resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { rootOverride: path.join(home, 'sessions') } : {}) })
+      : resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { configHome: home } : {}) });
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try { if (fs.statSync(candidate).isFile()) return candidate; } catch { /* @silent-fallback-ok — try the next home */ }
+  }
+  return null;
+}
+
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
 /** Largest console attachment (decoded). The JSON body limit is 12 MB, and base64 adds a third. */
 const DASHBOARD_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
@@ -11459,6 +11484,46 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(201).json({ ok: true, path: filePath, bytes: bytes.length });
     } catch (err) {
       res.status(500).json({ error: `Could not save the file: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // Console History: a session's own conversation record, newest page first. tmux keeps
+  // no scrollback for a full-screen (alternate-screen) session, so the transcript is the
+  // only deep history. Read-only; served for sessions recorded on THIS machine.
+  router.get('/sessions/:name/transcript', async (req, res) => {
+    if (!SESSION_NAME_RE.test(req.params.name)) { res.status(400).json({ error: 'Invalid session name' }); return; }
+    // A session on another machine: ask that machine (its disk holds the record).
+    const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
+    if (machineId && machineId !== ctx.meshSelfId) {
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+      if (!peer) { res.status(404).json({ error: 'That machine is not reachable from here', reason: 'peer-unknown' }); return; }
+      const qs = new URLSearchParams();
+      if (req.query.before !== undefined) qs.set('before', String(req.query.before));
+      if (req.query.limit !== undefined) qs.set('limit', String(req.query.limit));
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/transcript?${qs}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(15_000),
+        });
+        const body = await r.json().catch(() => ({ error: `The other machine answered ${r.status}` }));
+        res.status(r.status).json(body);
+      } catch (err) {
+        res.status(502).json({ error: `The other machine did not answer: ${err instanceof Error ? err.message : String(err)}`, reason: 'peer-unreachable' });
+      }
+      return;
+    }
+    const session = ctx.state.listSessions().find((x) => x.tmuxSession === req.params.name);
+    if (!session) { res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return; }
+    const filePath = findSessionTranscript(session, ctx);
+    if (!filePath) { res.status(404).json({ error: 'This session has no conversation record yet', reason: 'no-transcript' }); return; }
+    const before = req.query.before === undefined ? undefined : Number(req.query.before);
+    const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+    if ((before !== undefined && !Number.isSafeInteger(before)) || (limit !== undefined && !Number.isSafeInteger(limit))) {
+      res.status(400).json({ error: '"before" and "limit" must be whole numbers' }); return;
+    }
+    try {
+      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit }) });
+    } catch (err) {
+      res.status(500).json({ error: `Could not read the conversation record: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
 

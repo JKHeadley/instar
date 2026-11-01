@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-01T20:06:31.485Z",
+  "slug": "console-session-history",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 197,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionTranscriptReader.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 197,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
