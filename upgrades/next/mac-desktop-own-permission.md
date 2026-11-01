@@ -1,0 +1,38 @@
+# Mac Desktop Own Permission
+
+<!-- bump: patch -->
+
+## What Changed
+
+macOS checks Screen Recording and Accessibility against the program it holds
+responsible, not the desktop helper. On a Mac with one shared tmux server that
+is whichever Node started tmux, so a reboot could silently remove remote desktop.
+The helper can now run as its own permission client, keeping its process id so
+Stop still ends it at once. Instar probes both identities and uses the helper's
+own grant per capability when present, otherwise the inherited one, so working
+Macs are unaffected. Diagnostics gain `screenGrant` and `inputGrant`, and
+`POST /desktop/request-permission` shows macOS's prompts on the Mac. Release
+builds use a fixed signing identifier, and a real signing identity when
+`INSTAR_MACOS_SIGNING_IDENTITY` is configured.
+
+## What to Tell Your User
+
+If remote desktop to a Mac stops working after a restart, the cause was usually
+which program started first, not anything you changed. You can now allow the
+helper itself once in that Mac's Privacy & Security settings, and that choice
+stays put across restarts. Nothing changes on a Mac that already works.
+
+## Summary of New Capabilities
+
+- `GET /desktop/diagnostics` says whether a Mac permission belongs to the helper
+  (`own`) or only to whatever started the agent (`inherited`).
+- `POST /desktop/request-permission` shows macOS's permission prompts on that Mac.
+
+## Evidence
+
+Laptop permission log, 2026-10-31: `responsible_path` moved from asdf Node 22.18.0
+to Homebrew Node 26.10.0_1 after the 13:44 reboot, and that Node's Screen
+Recording row was denied. A test binary on the Laptop and the Studio changed its
+result under own identity with the same process id. Unit tests cover the choice
+per capability, an integration test covers the route, and an E2E test runs the
+real helper under both identities.

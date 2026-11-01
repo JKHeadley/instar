@@ -159,6 +159,12 @@ export class DirectDesktopAccess {
     return { ...state, ready: state.screenPermission && state.inputPermission && state.displayCount > 0 && state.sessionActive };
   }
 
+  /** Asks macOS to show its own permission prompts on this Mac. */
+  async requestPermission(): Promise<{ screenPermission: boolean; inputPermission: boolean }> {
+    if (this.disabled || !this.host.requestPermission) throw new Error('desktop permission request unavailable');
+    return this.host.requestPermission();
+  }
+
   async begin(input: DirectDesktopRequestInput): Promise<{ requestId: string }> {
     if (this.disabled || input.machineId !== this.machineId
       || !this.isDashboardOperatorSession(input.operatorSessionToken, input.browserPublicKey)

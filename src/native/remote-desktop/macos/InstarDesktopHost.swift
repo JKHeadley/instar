@@ -192,12 +192,47 @@ struct InstarDesktopHost {
         "ArrowDown": 125, "ArrowUp": 126,
         "a": 0, "c": 8, "v": 9, "x": 7, "z": 6,
     ]
+    /// macOS checks Screen Recording and Accessibility against the "responsible"
+    /// process, which a child inherits: on a Mac whose agents share one tmux
+    /// server that is whichever Node started tmux, so a grant depends on boot
+    /// order. Re-executing in place with responsibility disclaimed makes this
+    /// binary its own permission client. The pid is unchanged, so the parent's
+    /// SIGKILL still stops input and capture immediately. Failure exits rather
+    /// than falling through, so the caller can never mistake which identity ran.
+    private static func adoptOwnIdentity() {
+        guard getenv("INSTAR_DESKTOP_OWN_IDENTITY") != nil,
+              getenv("INSTAR_DESKTOP_IDENTITY_ADOPTED") == nil else { return }
+        typealias Disclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { exit(71) }
+        let disclaim = unsafeBitCast(symbol, to: Disclaim.self)
+        var size: UInt32 = 4096
+        var path = [CChar](repeating: 0, count: Int(size))
+        guard _NSGetExecutablePath(&path, &size) == 0 else { exit(71) }
+        var attr: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attr) == 0,
+              posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETEXEC)) == 0,
+              disclaim(&attr, 1) == 0 else { exit(71) }
+        setenv("INSTAR_DESKTOP_IDENTITY_ADOPTED", "1", 1)
+        let argv: [UnsafeMutablePointer<CChar>?] = CommandLine.arguments.map { strdup($0) } + [nil]
+        _ = posix_spawn(nil, path, nil, &attr, argv, environ)
+        exit(71)
+    }
+
     static func main() async {
         guard CommandLine.arguments.count == 2 else {
-            fputs("usage: instar-desktop-host probe|capture|capture-stream|capture-stream-h264|cursor|input|input-stream|release|indicator\n", stderr)
+            fputs("usage: instar-desktop-host probe|request-permission|capture|capture-stream|capture-stream-h264|cursor|input|input-stream|release|indicator\n", stderr)
             exit(64)
         }
+        adoptOwnIdentity()
         switch CommandLine.arguments[1] {
+        case "request-permission":
+            // Registers this binary in Privacy & Security and shows macOS's own
+            // prompts on the Mac. Granting stays a person's action there.
+            guard getenv("INSTAR_DESKTOP_IDENTITY_ADOPTED") != nil else { exit(64) }
+            let screen = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            let input = AXIsProcessTrustedWithOptions(options)
+            print("{\"screenPermission\":\(screen),\"inputPermission\":\(input)}")
         case "probe":
             let screen = CGPreflightScreenCaptureAccess()
             let input = AXIsProcessTrusted()

@@ -22,10 +22,15 @@ export interface DesktopProbe {
   onConsole?: boolean;
   loginDone?: boolean;
   screenLocked?: boolean;
+  /** macOS only: which identity holds the permission. `own` is the helper
+   * itself; `inherited` depends on what started this server's process tree. */
+  screenGrant?: 'own' | 'inherited' | 'none';
+  inputGrant?: 'own' | 'inherited' | 'none';
 }
 
 export interface DesktopHost {
   probe(): Promise<DesktopProbe>;
+  requestPermission?(): Promise<{ screenPermission: boolean; inputPermission: boolean }>;
   capture(): Promise<Buffer>;
   captureH264?(forceKeyframe: boolean): Promise<import('./DesktopVideo.js').DesktopH264Frame | null>;
   cursor?(): Promise<{ x: number; y: number }>;
