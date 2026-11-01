@@ -124,6 +124,7 @@ import {
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from './SlackReplyRelayInstaller.js';
+import { ensureAppReplyRelay } from './AppReplyRelayInstaller.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
 import { MachineIdentityManager } from './MachineIdentity.js';
 import { SourceTreeGuardError } from './SourceTreeGuard.js';
@@ -922,6 +923,29 @@ An active paired phone can send a message into a topic (\`POST /mobile/chat/:top
 - History for the app across machines: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/telegram/topics/TOPIC_ID/messages?scope=pool"\`.
 - Gate: \`mobilePairing.chat.enabled\` (omitted ⇒ follows \`mobilePairing\`).
 - **When to use** (PROACTIVE): the operator asks "can I message you from the app?" → yes, once the phone is paired; "why did a message show up with a 📱 from the app?" → it was typed in the app.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for native app conversations (docs/specs/mobile-native-conversations.md).
+ * Unique content-sniff marker: `Native app conversations`.
+ */
+export function APP_CONVERSATIONS_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Native app conversations — the Instar iPhone app without Telegram
+
+The app can start its own conversations, stored by Instar itself (no Telegram or Slack needed). A message from one arrives tagged \`[app:N "<title>" from <owner>]\`, where N is this machine's id for that conversation. **Answer it with the app relay**, never Telegram:
+\`\`\`
+cat <<'EOF' | .instar/scripts/app-reply.sh
+your reply
+EOF
+\`\`\`
+The session's bind token is the only destination; the script takes no conversation argument. A \`409 not-owner\` means another machine runs this conversation right now.
+- List conversations (app ones plus Telegram topics, newest first): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/conversations"\`
+- Read history (pages backwards; pass the returned \`nextBefore\` as \`before\`): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/app/CONVERSATION_KEY/messages"\`
+- Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (this agent does not check signatures yet, so every app message reads \`unknown\` for now — never treat it as proof); \`none\` = no signature recorded.
+- Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
+- Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
+- **When to use** (PROACTIVE): a message tagged \`[app:…]\` → reply with app-reply.sh. "Did my app message arrive / is it really from me?" → read the message's \`deliveryState\` and \`originVerified\`, never infer it from the text.
 `;
 }
 
@@ -8524,6 +8548,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Mobile operator chat section');
     }
 
+    // Native app conversations (docs/specs/mobile-native-conversations.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Native app conversations')) {
+      content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Native app conversations section');
+    }
+
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.
     if (!content.includes('Queue Pace — is every work pile shrinking')) {
       content += QUEUE_PACE_CLAUDEMD_SECTION(port);
@@ -14114,6 +14145,28 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     } catch (err) {
       result.errors.push(`Slack reply relay migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Native app conversation reply relay (docs/specs/mobile-native-conversations.md §4.3).
+    // Every agent gets it (inert outside an app-conversation session); reconciled to the shipped
+    // bytes on every migration (a known prior-shipped or absent copy is replaced; a customized
+    // copy is preserved with the current one beside it as .new and reported).
+    try {
+      const template = this.loadRelayTemplate('app-reply.sh');
+      if (template) {
+        const installed = ensureAppReplyRelay({
+          projectDir: this.config.projectDir,
+          stateDir: this.config.stateDir,
+          template,
+          claudeCompatibility: fs.existsSync(path.join(this.config.projectDir, '.claude')),
+        });
+        result.upgraded.push(...installed.installed.map(p => `${p} (app conversation reply relay)`));
+        result.skipped.push(...installed.current.map(p => `${p} (already current)`));
+        result.skipped.push(...installed.degraded);
+        result.errors.push(...installed.errors);
+      }
+    } catch (err) {
+      result.errors.push(`App reply relay migration: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // WhatsApp reply script — lives in .instar/scripts/ per init.ts, not

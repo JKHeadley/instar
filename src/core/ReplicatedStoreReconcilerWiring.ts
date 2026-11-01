@@ -57,6 +57,7 @@ export const RECONCILER_ALLOWLIST: Readonly<Record<string, string>> = Object.fre
   topicClaimAnnotations: 'written only by the server claim-annotation route; no CLI path',
   workingSetArtifact: 'written only by the server working-set recorder route; no CLI path',
   classReview: 'written only by the server class-review flow; no CLI path',
+  appConversations: 'written only by the server app-conversation routes (AppConversationStore); no CLI path',
 });
 
 function sourceFp(raw: unknown): string {

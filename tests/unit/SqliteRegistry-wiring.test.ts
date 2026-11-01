@@ -51,6 +51,9 @@ const LONG_LIVED_STORES = [
   'src/messaging/MessageProcessingLedger.ts',
   'src/messaging/OutboundDedupStore.ts',
   'src/messaging/pending-relay-store.ts',
+  // Native app conversation index (mobile-native-conversations §4.5): registers its handle in
+  // the constructor (registerSqliteHandle), process-lifetime; derived from the JSONL files.
+  'src/core/AppConversationStore.ts',
   'src/messaging/imessage/NativeBackend.ts',
   'src/threadline/A2ADeliveryTracker.ts',
   // A2A inbound message-id ledger: registers its handle in the constructor and

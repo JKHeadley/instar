@@ -177,7 +177,12 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled } from './mobilePairingRoutes.js';
+import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { AppConversationService } from '../core/AppConversationService.js';
+import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
+import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
+import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -406,6 +411,8 @@ export class AgentServer {
   private config: InstarConfig;
   /** Mobile pairing links (docs/specs/mobile-pairing-link.md). */
   mobilePairing: MobilePairingService | null = null;
+  /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
+  appConversations: AppConversationService | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
@@ -983,6 +990,8 @@ export class AgentServer {
     duplicateReconciler?: import('../monitoring/DuplicateSessionReconciler.js').DuplicateSessionReconciler;
     ownerDarkLadder?: import('../core/OwnerDarkLadder.js').OwnerDarkLadder;
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
+    /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
+    appConversations?: AppConversationService;
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
     /** U4.4 — the lease hand-back reconciler + the operator-flip latch levers. */
     leaseHandback?: {
@@ -5501,6 +5510,65 @@ export class AgentServer {
         value: this.feedbackDefaultsSelfHealEvidence.successful, samples: this.feedbackDefaultsSelfHealEvidence.samples,
       }));
     }
+    // Native app conversations (docs/specs/mobile-native-conversations.md, increment 1). The gate
+    // is read ONCE here, at boot. The bootstrap-wired service (server.ts) takes precedence; on any
+    // other init path it is default-constructed over the same registry and request store.
+    if (this.mobilePairing && isMobileNativeEnabled(options.config)) {
+      this.mobilePairing.nativeOn = true;
+      try {
+        let svc = options.appConversations ?? null;
+        if (svc) {
+          this.mobilePairing.useChatRequests(svc.deps.requests);
+        } else {
+          const requests = this.mobilePairing.chatRequests();
+          if (!requests) throw new Error('the app request record could not be read');
+          let dispatch: AppInboundDispatch | null = null;
+          const sm = options.sessionManager;
+          // The reply relay must be on disk before any app session spawns (boot-time install).
+          const relayTemplate = packagedAppReplyRelayTemplate();
+          if (relayTemplate) ensureAppReplyRelay({ projectDir: options.config.projectDir, stateDir: options.config.stateDir, template: relayTemplate, claudeCompatibility: fs.existsSync(path.join(options.config.projectDir, '.claude')) });
+          svc = new AppConversationService({
+            stateDir: options.config.stateDir,
+            machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+            registry: routeCtx.conversationRegistry!,
+            requests,
+            holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+            ownerName: () => appOwnerName(options.config),
+            dispatch: () => dispatch,
+            killSession: (name) => sm?.killSessionByTmuxName?.(name) === true,
+            pauseSession: (name) => { sm?.sendKey?.(name, 'Escape'); },
+            onEmergencyStop: (alias) => {
+              try { options.resumeQueue?.pause('message-sentinel emergency stop'); options.resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ }
+              try { stopAutonomousTopic(options.config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
+              try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
+            },
+            reportDegradation: (what, detail) => DegradationReporter.getInstance().report({
+              feature: what, primary: 'record and deliver native app conversations', fallback: 'the request was refused or reported outcome-unknown',
+              reason: detail, impact: 'An app conversation step needs attention.',
+            }),
+          });
+          const created = svc;
+          dispatch = createAppInboundDispatch({
+            sessions: sm as unknown as Parameters<typeof createAppInboundDispatch>[0]['sessions'],
+            channels: created.channels, store: created.store, stateDir: options.config.stateDir,
+            spawnAdmission: () => options.spawnAdmission ?? null,
+            relayReady: () => {
+              const t = packagedAppReplyRelayTemplate();
+              return t ? appReplyRelayReadiness(options.config.stateDir, t) : { ready: false, reason: 'packaged app reply relay template is unavailable' };
+            },
+            log: (line) => console.log(line),
+          });
+        }
+        svc.start();
+        this.appConversations = svc;
+        routeCtx.appConversations = svc;
+      } catch (err) {
+        DegradationReporter.getInstance().report({
+          feature: 'AppConversations', primary: 'native app conversations', fallback: 'the app conversation routes answer 503',
+          reason: err instanceof Error ? err.message : String(err), impact: 'The app cannot start or use its own conversations on this machine.',
+        });
+      }
+    }
     const routes = createRoutes(routeCtx);
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
@@ -5833,7 +5901,18 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
-    if (this.mobilePairing) this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+    if (this.mobilePairing) {
+      this.app.use(createMobileConversationRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        sentinel: options.sentinel ?? null,
+        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
+          const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
+          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? last.text.slice(0, 140) : null };
+        }) : undefined,
+      }));
+      this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+    }
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -7678,6 +7757,7 @@ export class AgentServer {
    */
   async stop(): Promise<void> {
     this.mobilePairing?.stop();
+    this.appConversations?.stop();
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);

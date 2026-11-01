@@ -37,6 +37,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DegradationReporter } from './DegradationReporter.js';
+import { PRIOR_SHIPPED_APP_RELAY_SHA256 } from '../core/AppReplyRelayInstaller.js';
 import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
 
 /**
@@ -88,6 +89,11 @@ const KNOWN_TEMPLATES: readonly TemplateSpec[] = [
     sourceRelPath: 'scripts/slack-reply.sh',
     // No prior-shipped tracking yet for slack — current-only verification.
     priorShas: new Set<string>(),
+  },
+  {
+    deployedBasename: 'app-reply.sh',
+    sourceRelPath: 'scripts/app-reply.sh',
+    priorShas: PRIOR_SHIPPED_APP_RELAY_SHA256,
   },
   {
     deployedBasename: 'whatsapp-reply.sh',

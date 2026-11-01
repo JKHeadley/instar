@@ -1968,6 +1968,61 @@
         "maxRecords": 6,
         "note": "One file per queue (5) plus evaluations.json, each replaced in place; the id set per queue is capped at 20,000 ids (a larger queue records too-large instead)."
       }
+    },
+    {
+      "category": "app-conversations",
+      "description": "Native app conversation store (docs/specs/mobile-native-conversations.md §4.5): one append-only JSONL file per conversation (immutable events keyed by eventId, each with this machine's ingestSeq), the source of truth for a native conversation. Replicated to every machine through the appConversations replicated-store kind whenever native conversations are on. Also holds the per-request dispatch context files under state/app-dispatch/.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "app-conversations/*.jsonl",
+        "app-conversations/deleted/*.jsonl",
+        "state/app-dispatch/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "note": "Reads go through the SQLite index by byte offset, never a whole-file read. Kept until the operator deletes the conversation (a tombstone event); the file then moves to app-conversations/deleted/ and is kept, never destroyed by this feature. Size is reported in the authenticated /health (appConversations.bytes, .count). Dispatch context files are small per-message copies of recent history."
+      }
+    },
+    {
+      "category": "app-conversations-index",
+      "description": "Derived SQLite index over the app conversation JSONL files (WAL + busy_timeout): events, messages, deliveries, conversations. Caught up at boot from each file's last indexed offset; a missing or corrupt index is rebuilt from the files.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "n/a",
+      "transport": "none",
+      "paths": [
+        "app-conversations/index.sqlite"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "note": "Derived from the JSONL files; bounded by them and rebuilt from them, never an independent copy."
+      }
+    },
+    {
+      "category": "app-session-registry",
+      "description": "Which session serves which native app conversation on this machine (local alias → tmux session name). Machine-local: a session runs on one machine.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/app-session-registry.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 5000,
+        "note": "One row per app conversation that has had a session on this machine; replaced in place."
+      }
     }
   ]
 }
