@@ -95,7 +95,7 @@ Tier 1. 1 file, 13 lines. No spec review rounds.
 2. **Under-block:** an agent with no Telegram has no hub post, so it still only notifies on a trigger from a peer. That matches the spec's trigger list.
 3. **Level of abstraction:** the guard was too wide; the hook is the only part that needs Telegram.
 4. **Signal vs authority:** no decision point; `isMobilePushEnabled` still gates every send and every route.
-5. **Interactions:** the timer is unref'd and stopped by `AgentServer.stop()`, and each tick returns early when push is off. `SecretStore` reads only when credentials are asked for, and stays file-key-only under test.
+5. **Interactions:** the timer is unref'd and stopped by `AgentServer.stop()`, and the 15-second tick now also runs on a dark agent: it has no gate of its own, but with no paired phone it reads cached state and loops over nothing, and `send()` rechecks the gate. `SecretStore` reads only when credentials are asked for, and stays file-key-only under test.
 6. **External surfaces:** `GET /mobile/push` on a Telegram-less agent now answers the real status instead of `not-built`.
 7. **Multi-machine posture:** unchanged (machine-local device records, trigger fan-out through the existing peer route). A Telegram-less machine can now receive that trigger.
 8. **Rollback cost:** revert the commit; no state changes.
