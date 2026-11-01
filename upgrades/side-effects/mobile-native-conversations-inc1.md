@@ -123,3 +123,13 @@ tests/unit/app-conversation-store.test.ts, tests/unit/app-conversation-identity.
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. The new `AppConversationService` interval tick is not a self-triggered actuator: it journals bind/unbind only on an observed lease change and recovers each stranded request at most once (a recovered request leaves the `entered` state), so it converges.
+
+---
+
+## Follow-up: unit-gate fixes (local verify)
+
+Local verify on PR #2530 found four unit gates red; fixed in a follow-up commit without changing behaviour:
+- `AppConversationStore` is listed among the long-lived SQLite stores (it already registers its index handle with `registerSqliteHandle`).
+- The lease-binding catch in `AppConversationService.leaseTick` reports through the injected degradation reporter and the next lease change retries; it now carries `@silent-fallback-ok` with that reason (baseline not raised).
+- `POST /app/session-reply` accepts an optional `metadata` object and passes `toneAdvisoryMetadata()` to `checkOutboundMessage`, so the tone gate's advisory comply/override reaction works on the app path as on Slack and Telegram. No other metadata key has any effect. This widens the accepted body by one optional field; destination authority is still the bind token alone.
+- The CLAUDE.md awareness wording no longer contains "is not built yet" (a phrase another section's test requires absent); same meaning.

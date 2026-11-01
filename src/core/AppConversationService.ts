@@ -132,7 +132,7 @@ export class AppConversationService {
       } else {
         for (const id of this.deps.registry.appBoundIds()) this.deps.registry.unbindApp(id);
       }
-    } catch (err) { this.report('lease binding', err); }
+    } catch (err) { this.report('lease binding', err); } // @silent-fallback-ok — reported through the injected DegradationReporter (deps.reportDegradation); the next lease change retries
   }
 
   /** This machine currently owns the conversation behind `alias` (§4.8, pool dark). */

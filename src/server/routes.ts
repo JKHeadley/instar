@@ -20644,8 +20644,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const app = ctx.appConversations;
     if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     const bodyKeys = Object.keys(req.body ?? {});
-    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text')) {
-      res.status(400).json({ error: 'spawned app session body permits only conversationId and text' });
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'metadata')) {
+      res.status(400).json({ error: 'spawned app session body permits only conversationId, text and metadata' });
       return;
     }
     const conversationId = Number(req.body?.conversationId);
@@ -20688,7 +20688,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const dup = app.store.browseMessages(key, null, 20).messages.some(m => m.role === 'agent' && m.text.trim() === trimmed && Date.parse(m.at) >= cutoff);
       if (dup) { res.json({ ok: true, suppressed: true, reason: 'exact-duplicate', conversationKey: key }); return; }
     }
-    if (await checkOutboundMessage(text, 'app', res, {})) return;
+    // The tone-advisory reaction (comply / override-with-reason) rides metadata, as on the
+    // Telegram and Slack reply paths; no other metadata field has any effect here.
+    const replyMetadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
+      ? req.body.metadata as Record<string, unknown> : undefined;
+    if (await checkOutboundMessage(text, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) return;
     const messageId = derivedEventId('am', key, seed);
     try {
       app.store.append({
