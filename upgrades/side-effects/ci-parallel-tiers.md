@@ -50,6 +50,8 @@ A normal revert restores the prior serial CI job graph. There is no state migrat
 
 Validate the workflow parses, and compare the parsed job definitions before and after except for the two intended `needs` edges. A PR run must show integration and E2E scheduled before unit completion, and all required checks green. The observed gain is a CI wall-time measurement, not a promise about every run because runner contention varies.
 
-## Independent review
+## Second-pass review
+
+**Reviewer:** Independent CI scheduling reviewer
 
 Concur with the review. The reviewer confirmed that integration and E2E use separate runners, checkouts, and installs; E2E builds its own artifacts. `scripts/safe-merge.mjs` still inventories both tiers and every unit shard by check name. Runner contention and extra minutes on unit-red PRs remain the measurable costs. Live scheduling and branch-protection behavior require a PR run to verify.
