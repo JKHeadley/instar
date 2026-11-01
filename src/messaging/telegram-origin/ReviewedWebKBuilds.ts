@@ -6,7 +6,7 @@ import type { WebKBuildEnrollment } from './TelegramWebKDriver.js';
  * The trusted enrollment entrypoint admits ONLY a build listed here, and only
  * when the authenticated read-only canary observes exactly these asset names
  * and digests. Adding a build is a reviewed code change, never a runtime input.
- * Newest first.
+ * Newest first. Build 684 is backed by the adjacent dated review report.
  */
 export interface ReviewedWebKBuild extends WebKBuildEnrollment { evidence: string; }
 

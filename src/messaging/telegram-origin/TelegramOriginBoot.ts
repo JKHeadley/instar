@@ -250,6 +250,7 @@ export async function bootTelegramOrigin(options: {
           // Justin's 2026-10-30 user-seat decision is recorded in the local
           // operator config. It grants one enrolled browser profile and exact
           // destination; it cannot widen this agent's Bot API destinations.
+          // The existing origin store still decides receipt and retry outcome.
           const grantedDestination = browserSendAllowanceMatches(grant, profile.id, enrollment.accountId, destination);
           return ownDestination || grantedDestination;
         },

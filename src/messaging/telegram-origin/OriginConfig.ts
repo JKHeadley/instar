@@ -6,7 +6,7 @@ export interface BrowserSendAllowance {
   readonly topicId: string | null; readonly decisionRef: string;
 }
 
-/** A singular, exact destination from operator-owned config. Malformed or broad
+/** A singular, exact destination from operator-owned config, including its decision reference. Malformed or broad
  * grants fail closed for the browser path without disabling ordinary bot sends. */
 export function readBrowserSendAllowance(origin: unknown): BrowserSendAllowance | null {
   if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return null;
