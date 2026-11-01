@@ -63,12 +63,16 @@ describe('slip grouping and words', () => {
     expect(agentName('', names)).toBe('an agent');
   });
   it('whenWords: today / tomorrow / a weekday within the week / a date beyond it', () => {
-    const now = Date.now();
+    // Local noon today, and calendar-day steps: a fixed 24h step is still
+    // "today" on a 25-hour DST-end day, and now+60s can cross midnight.
+    const noon = new Date(); noon.setHours(12, 0, 0, 0);
+    const now = noon.getTime();
+    const daysOut = (n: number) => { const d = new Date(now); d.setDate(d.getDate() + n); return d; };
     expect(whenWords(new Date(now + 60_000).toISOString(), now)).toMatch(/^today /);
-    expect(whenWords(new Date(now + 86400_000).toISOString(), now)).toMatch(/^tomorrow /);
-    const inThree = new Date(now + 3 * 86400_000);
+    expect(whenWords(daysOut(1).toISOString(), now)).toMatch(/^tomorrow /);
+    const inThree = daysOut(3);
     expect(whenWords(inThree.toISOString(), now)).toMatch(new RegExp(`^${inThree.toLocaleDateString([], { weekday: 'long' })} `));
-    expect(whenWords(new Date(now + 20 * 86400_000).toISOString(), now)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, /);
+    expect(whenWords(daysOut(20).toISOString(), now)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, /);
     expect(whenWords('nope', now)).toBe('an unknown time');
   });
   it('grants read as sentences, live or over; a person with a live grant counts once', () => {
