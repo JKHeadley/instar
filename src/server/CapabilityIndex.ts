@@ -256,6 +256,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobilePairing',
+    prefixes: ['/mobile'],
+    description: 'Mobile pairing links (docs/specs/mobile-pairing-link.md) — a one-time link that adds this agent to the Instar iPhone app. POST /mobile/pairing-codes (Bearer) mints a single-use, 10-minute code and returns the instar.sh universal link (send it only to the verified operator); the public POST /mobile/pairing-codes/redeem returns the API token (never an operator session) only over this agent\'s named tunnel; GET /mobile/pairing-codes/ping is the self-probe; GET /mobile/devices (?scope=pool) lists paired phones. Requires a named tunnel with a hostname (409 stable-address-required otherwise). Dev-gated (mobilePairing.enabled); 503 when dark. When the operator asks to add the agent to their phone → mint and send the link.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/pairing-codes', 'POST /mobile/pairing-codes/redeem', 'GET /mobile/pairing-codes/ping', 'GET /mobile/devices'],
+    }),
+  },
+  {
     key: 'overloadShed',
     prefixes: ['/overload-shed'],
     description: 'Overload shed (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part D) — moves EXISTING conversations off a machine that has stayed overloaded: once this machine has refused new work for 3 minutes it proposes moving one Telegram conversation at a time to a healthy machine (live evidence under 2 min, verdict ok, room after reservations), through the ownership reconciler; pinned topics and topics with a live autonomous run stay. Breaker 2 moves/hour, 2 tries per topic per episode. GET /overload-shed reports enabled/dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour and counters (proposed, wouldMove, claimed, expired, breakerHeld). Dev-gated + dry-run first (monitoring.overloadShed); 503 when dark. When asked "why did my conversation move machines / why is this overloaded machine still holding work?" → read this, don\'t guess.',

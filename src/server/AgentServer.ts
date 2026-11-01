@@ -177,6 +177,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter } from './mobilePairingRoutes.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -401,6 +402,8 @@ export class AgentServer {
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
+  /** Mobile pairing links (docs/specs/mobile-pairing-link.md). */
+  mobilePairing: MobilePairingService | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
@@ -1334,6 +1337,8 @@ export class AgentServer {
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
     this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
+    // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
+    this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb' }));
     this.app.use(express.json({ limit: '12mb' }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -1497,6 +1502,29 @@ export class AgentServer {
         operatorSessionExpiresAt: operatorSession.expiresAt,
       });
     });
+
+    // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
+    // registered here, before the bearer gate; mint + devices mount on the authed router below.
+    this.mobilePairing = new MobilePairingService({
+      config: this.config,
+      stateDir: options.config.stateDir,
+      tunnel: () => options.tunnel,
+      selfMachineId: options.coordinator?.identity?.machineId ?? null,
+      siblings: () => {
+        const im = options.coordinator?.managers.identityManager;
+        if (!im) return [];
+        try {
+          return Object.entries(im.loadRegistry().machines ?? {}).map(([machineId, m]) => ({
+            machineId, name: m.name, status: m.status, lastKnownUrl: m.lastKnownUrl,
+          }));
+        } catch { return []; } // @silent-fallback-ok — an unreadable registry falls back to the self-probes
+      },
+      reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+        feature: what, primary: 'record the paired phone', fallback: 'phone paired without a log row',
+        reason: err instanceof Error ? err.message : String(err), impact: 'The paired-phones list misses one phone.',
+      }),
+    });
+    mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
     // their own machineAuth scheme (Ed25519 signatures, not bearer tokens).
@@ -5770,6 +5798,7 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    if (this.mobilePairing) this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });

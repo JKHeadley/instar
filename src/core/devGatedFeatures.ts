@@ -863,6 +863,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Queue pace: an hourly arrivals-vs-completions ledger for every work queue (feedback sorting, feedback fixes, maturation fixes, promises, self-improvement items), with a plain verdict and the reason a queue is behind (GET /queue-pace, the console Pace card).',
     justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
   },
+  {
+    name: 'mobilePairing',
+    configPath: 'mobilePairing.enabled',
+    description: 'Mobile pairing links: a one-time instar.sh link that adds this agent to the Instar iPhone app (POST /mobile/pairing-codes, public redeem over the named tunnel, GET /mobile/devices).',
+    justification: 'Grants nothing beyond what the dashboard PIN already grants (the API token), never an operator session; redeem only over this agent\'s own named tunnel. Stays dark on the fleet until per-device revocable tokens exist (CMT-1179).',
+  },
 ];
 
 /**

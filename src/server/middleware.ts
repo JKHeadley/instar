@@ -242,6 +242,14 @@ export function authMiddleware(
       return;
     }
 
+    // Mobile pairing (docs/specs/mobile-pairing-link.md): the redeem and the self-probe
+    // ping are public by exact path+method; mint and devices stay behind the bearer gate.
+    if ((req.path === '/mobile/pairing-codes/redeem' && req.method === 'POST')
+      || (req.path === '/mobile/pairing-codes/ping' && req.method === 'GET')) {
+      next();
+      return;
+    }
+
     // Whether this connection may unlock: a yes/no the console asks before it
     // shows a PIN box. Carries no credential and changes nothing.
     if (req.path === '/dashboard/unlock-check' && req.method === 'GET') {

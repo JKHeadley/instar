@@ -3,6 +3,7 @@
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
+import { pairedPhonesRotationNote } from '../core/MobilePairing.js';
 import { readPairingOwnerName } from '../threadline/pairingOwnerName.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
@@ -13099,6 +13100,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             `New dashboard PIN: ${newPin}`,
             ``,
             `Heads up: any dashboard tab you had open will need to sign in again with this new PIN, and any private view links you shared earlier no longer work. That's deliberate — it makes sure the backup operator can't reuse anything they may have seen while the backup was running.`,
+            ...pairedPhonesRotationNote(config.stateDir),
           ].join('\n');
           await telegram.sendToOwnerDM(msg).catch(() => { /* best-effort; adapter logs its own failures */ });
         }
@@ -31269,3 +31271,4 @@ export async function restartServer(options: { dir?: string }): Promise<void> {
   await new Promise(r => setTimeout(r, 500));
   await startServer({ dir: options.dir });
 }
+
