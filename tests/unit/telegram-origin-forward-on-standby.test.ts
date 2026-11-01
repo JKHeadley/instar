@@ -27,7 +27,7 @@ import { compileOriginWorker, temporaryState, admission } from '../helpers/teleg
 import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 import { migrateTelegramOriginDisplay, originForwardToHolderEnabled } from '../../src/messaging/telegram-origin/OriginConfig.js';
 import { OriginForwardSettledLocallyError } from '../../src/messaging/telegram-origin/types.js';
-import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import { TelegramAdapter, HOLDER_FORWARD_WIRING_WAIT_MS } from '../../src/messaging/TelegramAdapter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -563,6 +563,28 @@ describe('TelegramAdapter — the send decision with a lease policy', () => {
     const mockFetch = vi.fn(); vi.stubGlobal('fetch', mockFetch);
     expect((await a.sendToTopic(42, 'hello from the standby')).messageId).toBe(99);
     expect(relay).toHaveBeenCalledTimes(1); expect(mockFetch).not.toHaveBeenCalled();
+  });
+  it('a boot-time send waits for the forward wiring instead of taking the direct path', async () => {
+    const a = make(() => 'forward'); a.holderForwardPolicy = null; // not wired yet: the first seconds after a restart
+    let wired!: () => void; a.holderForwardReady = new Promise<void>(r => { wired = r; });
+    const mockFetch = vi.fn(); vi.stubGlobal('fetch', mockFetch);
+    const relay = vi.fn().mockResolvedValue({ messageId: 98, topicId: 42 });
+    const sent = a.sendToTopic(42, 'boot-time notice');
+    await new Promise(r => setTimeout(r, 20));
+    expect(mockFetch).not.toHaveBeenCalled(); expect(relay).not.toHaveBeenCalled();
+    a.holderForwardPolicy = { decide: () => 'forward' }; a.outboundRelay = relay; wired();
+    expect((await sent).messageId).toBe(98);
+    expect(relay).toHaveBeenCalledTimes(1); expect(mockFetch).not.toHaveBeenCalled();
+  });
+  it('the boot wait is bounded: a wiring that never arrives does not stall sends forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const a = make(() => 'local'); a.holderForwardPolicy = null; a.holderForwardReady = new Promise<void>(() => {});
+      const waited = (a as unknown as { awaitHolderForwardWiring(): Promise<void> }).awaitHolderForwardWiring();
+      let done = false; void waited.then(() => { done = true; });
+      await vi.advanceTimersByTimeAsync(HOLDER_FORWARD_WIRING_WAIT_MS - 1); expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); expect(done).toBe(true);
+    } finally { vi.useRealTimers(); }
   });
   it('a settling lease goes down the relay path; when it settles HERE the send proceeds locally', async () => {
     const a = make(() => 'settling');

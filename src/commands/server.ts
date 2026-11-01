@@ -8218,6 +8218,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     const lifelineOwnsPolling = telegramConfig && telegramBotToken
       ? lifelineOwnsTelegramPoll(config.stateDir, telegramBotToken)
       : false;
+    // Boot window: on a machine with a paired peer, sends wait (bounded) until the
+    // forward-to-holder policy and relay are wired far below, so a notice sent in
+    // the first seconds is not held on the direct path a standby never replays.
+    let resolveHolderForwardWiring: () => void = () => {};
+    const holderForwardWiring = new Promise<void>(resolve => { resolveHolderForwardWiring = resolve; });
+    const armHolderForwardWait = (adapter: TelegramAdapter): void => {
+      try {
+        const machines = Object.values(coordinator.managers.identityManager.loadRegistry().machines ?? {});
+        if (machines.filter(m => !m.revokedAt).length >= 2) adapter.holderForwardReady = holderForwardWiring;
+      } catch { /* @silent-fallback-ok — an unreadable registry keeps the old immediate send */ }
+    };
     const telegramTopology = resolveTelegramStartupTopology({
       telegramConfigured: telegramConfig != null,
       skipTelegram,
@@ -8245,6 +8256,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
+      armHolderForwardWait(telegram);
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
       // Send-only still owns the attention store: run its hourly lifecycle
       // pass here too (start() is never called on this path). Idempotent.
@@ -8357,6 +8369,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
+      armHolderForwardWait(telegram);
       telegram.intelligence = sharedIntelligence ?? null;
       await telegram.start();
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
@@ -28436,6 +28449,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (isRelayRefusal(r)) throw new RelayRefusedError(r);
               return r;
             };
+            resolveHolderForwardWiring();
           }
 
           // ── Topic placement pin store (U4.1): the authoritative local record of

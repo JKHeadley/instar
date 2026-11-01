@@ -577,6 +577,9 @@ interface PendingPromise {
   alerted: boolean;
 }
 
+/** Longest a send waits at boot for the forward-to-holder wiring (see holderForwardReady). */
+export const HOLDER_FORWARD_WIRING_WAIT_MS = 30_000;
+
 export class TelegramAdapter implements MessagingAdapter {
   readonly platform = 'telegram';
 
@@ -837,6 +840,21 @@ export class TelegramAdapter implements MessagingAdapter {
    * throw OriginForwardSettledLocallyError, after which the send is local).
    */
   public holderForwardPolicy: { decide(): 'forward' | 'local' | 'settling' } | null = null;
+  /**
+   * Set by the server right after construction on a machine with a paired peer;
+   * resolves once `holderForwardPolicy` and `outboundRelay` are wired. Until then
+   * a send would take the direct path, which `authorize` holds on a standby and
+   * never replays there (the Mama PC boot-time holds, ~12 s after each restart).
+   * Sends wait for it, bounded by HOLDER_FORWARD_WIRING_WAIT_MS.
+   */
+  public holderForwardReady: Promise<void> | null = null;
+
+  private async awaitHolderForwardWiring(): Promise<void> {
+    if (this.holderForwardPolicy || !this.holderForwardReady) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.holderForwardReady, new Promise<void>(resolve => { timer = setTimeout(resolve, HOLDER_FORWARD_WIRING_WAIT_MS); })]);
+    if (timer) clearTimeout(timer);
+  }
 
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
@@ -1658,6 +1676,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // usable token is a non-empty string; anything else (placeholder/null/empty) means
     // "no usable token" → relay through the Telegram-owning router (bug #7).
     const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
+    if (hasUsableBotToken) await this.awaitHolderForwardWiring();
     // a2a-single-agent-identity §4.1 — a token-holding machine that does not hold the
     // serving lease ALSO relays (to the lease holder). 'settling' goes down the relay path
     // too: the relay runs the bounded lease-settling window and, if it settles to THIS
@@ -2895,6 +2914,7 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   async resolveTopicName(topicId: number): Promise<string | null> {
     if (this.notAForum) return null;
+    await this.awaitHolderForwardWiring();
     // The probe is a real message. A machine that would not send locally (it
     // forwards to the lease holder) cannot probe: a direct send is held and its
     // "." replayed into the topic later. Fall back to the stored/default name.
