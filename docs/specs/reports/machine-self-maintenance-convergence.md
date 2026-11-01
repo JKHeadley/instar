@@ -45,7 +45,7 @@ Internal reviewers ran as Claude subagents on the authoring session's model, Opu
 
 ## Proportion
 
-Tier 2, spec about 620 lines, 6 of 6 rounds. ⚠ The spec grew from about 49 KB to about 66 KB across review. It is large for one document, though the build order splits it into five parts and later runs.
+Tier 2, spec 506 lines, 6 of 6 rounds. ⚠ The spec grew from about 49 KB to about 69 KB across review. It is large for one document, though the build order splits it into five parts and later runs.
 
 ## Left behind
 
