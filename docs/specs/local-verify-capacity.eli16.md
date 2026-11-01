@@ -18,6 +18,8 @@ Anything else is thrown away, and the pull request simply stays in the Studio's 
 
 **What happens when things go wrong.** If the Mini goes quiet, restarts, or takes too long, the Studio takes the pull request back after a set time and runs it itself. Each pull request is tried on the Mini at most twice. If the Mini keeps failing, the Studio stops using it for 30 minutes and raises one alert. The Studio never waits for the Mini before starting its own next run.
 
+A pull request that cannot be combined with the current main branch is that pull request's problem. The Studio still records the conflict and keeps the merge blocked, but it no longer treats the conflict as proof that the Mini is broken. This keeps a healthy test machine available for other pull requests.
+
 When an Instar update is waiting for a test run to finish, both machines wait instead of starting another run. This lets the update complete without another test holding it back.
 
 **What this does not do.** It doesn't test several pull requests together in one run ("batching"). The review showed that, done simply, batching could let untested code onto main, and it would only speed things up by about 20% at today's pass rate.

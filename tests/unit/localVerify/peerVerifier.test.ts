@@ -424,6 +424,36 @@ describe('coordinator — results', () => {
     await c.svc.tick();
     expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
     expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
+    expect(c.svc.peersInfo().configured[0].consecutiveFailures).toBe(1);
+  });
+
+  it('a PR merge conflict spends its peer attempts without degrading a healthy peer', async () => {
+    const { c } = await dispatched();
+    c.peer.setResult((attemptId) => {
+      const req = c.peer.runs().find((r) => r.attemptId === attemptId)!;
+      return { state: 'done', record: peerRecord(req, { outcome: 'error', errorStep: 'conflict', mergeTree: '', lanes: [] }) };
+    });
+    for (let i = 0; i < PEER_LIMITS.maxAttemptsPerEntry; i++) {
+      await c.svc.tick();
+      await c.runTimers();
+    }
+    expect(c.peer.runs()).toHaveLength(PEER_LIMITS.maxAttemptsPerEntry);
+    expect(c.svc.peersInfo().configured[0]).toMatchObject({ healthy: true, consecutiveFailures: 0 });
+    expect(c.signals.filter((s) => s.startsWith('local-verify:peer-breaker'))).toEqual([]);
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remoteAttempts).toBe(PEER_LIMITS.maxAttemptsPerEntry);
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+  });
+
+  it('a conflict does not erase an earlier peer execution failure', async () => {
+    const { c, req } = await dispatched();
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req, { outcome: 'error', errorStep: 'npm-ci', mergeTree: '', lanes: [] }) }));
+    await c.svc.tick();
+    expect(c.svc.peersInfo().configured[0].consecutiveFailures).toBe(1);
+    await c.runTimers();
+    const retry = c.peer.runs()[1];
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(retry, { outcome: 'error', errorStep: 'conflict', mergeTree: '', lanes: [] }) }));
+    await c.svc.tick();
+    expect(c.svc.peersInfo().configured[0]).toMatchObject({ healthy: true, consecutiveFailures: 1 });
   });
 
   it('keeps a peer preflight cleanup retry local and bypasses preflight', async () => {
