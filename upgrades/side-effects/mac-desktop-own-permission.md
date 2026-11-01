@@ -71,6 +71,8 @@ ad-hoc on the next release.
 
 ## Second-pass review
 
+**Reviewer:** independent general-purpose subagent, two rounds
+
 Round 1 raised concerns: a transient own-probe failure could revoke a live grant
 and release held keys under the wrong identity, and a certificate with no identity
 name would silently sign ad-hoc. Fixed: a failed own probe keeps the last reading

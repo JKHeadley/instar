@@ -32,3 +32,4 @@ and that is a good thing.
 
 The helper's own permission is checked on every readiness check, so a Mac that
 has allowed it is ready again as soon as Instar next looks.
+The independent reviews of this change are recorded with it.
