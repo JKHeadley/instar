@@ -11437,6 +11437,27 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
     }
 
+    // Reap notices: a background job whose work completed normally no longer
+    // posts to the lifeline (reap-notify spec R1.1, amended 2026-11-01). Patch the
+    // already-installed sentence in place so the agent does not tell the user to
+    // expect a lifeline notice for every finished job. Idempotent: the old
+    // sentence is gone after the first run.
+    {
+      const oldReapSentence = '(bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline)';
+      if (content.includes(oldReapSentence)) {
+        content = content.replace(oldReapSentence, '(bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline — except a background job whose work completed normally, which stays in the reap-log only)');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reap notices — routine job completions stay in the reap-log');
+      }
+      // The Reap-log section (templates.ts) states the same rule in its own words.
+      const oldReapLogSentence = '(bursts coalesce per topic; the lifeline gets unbound sessions + a cross-topic index)';
+      if (content.includes(oldReapLogSentence)) {
+        content = content.replace(oldReapLogSentence, '(bursts coalesce per topic; the lifeline gets unbound sessions + a cross-topic index — except a background job whose work completed normally, which stays in the reap-log only)');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reap-log section — routine job completions stay in the reap-log');
+      }
+    }
+
     // Mid-Work Resume Queue + per-topic reap notices (reap-notify spec).
     // Existing agents only learn the new surfaces through this block — an
     // agent that doesn't know /sessions/resume-queue exists will tell the
@@ -11448,7 +11469,7 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
 
 When sessions are shut down autonomously (resource pressure, quota, age limits), two guarantees now apply:
 
-1. **Every affected conversation is told, durably.** Each topic that lost a session gets ONE plain-English notice in THAT topic (bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline). Delivery is durable — notices queue in a store and an always-on drain retries with backoff; every outcome lands in the reap-log as \`type:'notify'\` records, so "did the user get told?" is auditable.
+1. **Every affected conversation is told, durably.** Each topic that lost a session gets ONE plain-English notice in THAT topic (bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline — except a background job whose work completed normally, which stays in the reap-log only). Delivery is durable — notices queue in a store and an always-on drain retries with backoff; every outcome lands in the reap-log as \`type:'notify'\` records, so "did the user get told?" is auditable.
 2. **Work interrupted mid-flight is queued for revival.** A session killed with strong work evidence (an active build/autonomous run, an open commitment, a live subagent) is tagged \`midWork:true\` and queued in a durable per-machine resume queue. Once the machine has been calm for several minutes AND quota allows, sessions are revived ONE AT A TIME in order (interactive before jobs, then first-in-first-out). Ships observe-only (dry-run) by default; jobs only participate when their definition sets \`resumeOnReap: true\`.
 
 - Queue state: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/resume-queue"\` → entries + paused/breaker/lastTickAt (a wedged drainer is visible here).
