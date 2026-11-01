@@ -2085,6 +2085,9 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /** Mobile push (docs/specs/mobile-push.md): fired after an accepted Attention hub post. Wired by AgentServer. */
+  public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
+
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
   public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
@@ -4907,7 +4910,12 @@ export class TelegramAdapter implements MessagingAdapter {
       });
       return item.topicId ?? null;
     }
-    const markPosted = () => this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+    const markPosted = () => {
+      this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+      // Mobile push (docs/specs/mobile-push.md §2.3): only after Telegram accepted the hub post.
+      try { this.onHubPost?.({ kind: 'item', itemId: item.id, dedupeKey: item.conditionKey ?? item.id, priority: item.priority }); }
+      catch { /* @silent-fallback-ok — push is best-effort and never affects the hub post */ }
+    };
     // Easy to read on a phone: what it is, then what to do. Category, priority
     // labels and internal source names live in the store / dashboard.
     const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;

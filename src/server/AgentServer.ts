@@ -177,7 +177,7 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { AppConversationService } from '../core/AppConversationService.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -186,6 +186,7 @@ import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
 import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
+import { MobilePushService } from '../core/MobilePush.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -1585,6 +1586,30 @@ export class AgentServer {
       const mp = this.mobilePairing;
       options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
       options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+      // Mobile push (docs/specs/mobile-push.md): APNs key from the vault, read before each send.
+      const pushKeys = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
+      const agentId = options.config.projectName;
+      mp.push = new MobilePushService({
+        stateDir: options.config.stateDir,
+        registry: mp.devices,
+        agentId,
+        agentName: agentId.charAt(0).toUpperCase() + agentId.slice(1),
+        machineId: options.coordinator?.identity?.machineId ?? 'local',
+        enabled: () => isMobilePushEnabled(this.config),
+        credentials: () => {
+          const keyPem = pushKeys.get('apns_key_p8');
+          const keyId = pushKeys.get('apns_key_id');
+          const teamId = this.config.mobilePairing?.push?.teamId;
+          return typeof keyPem === 'string' && typeof keyId === 'string' && typeof teamId === 'string' && teamId ? { keyPem, keyId, teamId } : null;
+        },
+        fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
+        reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'send a push notification to a paired phone', fallback: 'no push for this event; the item is still in Telegram and the app',
+          reason: err instanceof Error ? err.message : String(err), impact: 'A phone notification was not sent.',
+        }),
+      });
+      mp.push.start();
+      options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
     }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
@@ -5959,6 +5984,7 @@ export class AgentServer {
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? last.text.slice(0, 140) : null };
         }) : undefined,
       }));
+      this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
     }
 
@@ -7804,6 +7830,7 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
     this.appConversations?.stop();
     this.desktopMeshBroker?.close();
