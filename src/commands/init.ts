@@ -77,6 +77,7 @@ import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
+import { ensureAppReplyRelay } from '../core/AppReplyRelayInstaller.js';
 import { verifyBundledStageBReleaseEvidence } from '../core/StageBActivationGate.js';
 
 /**
@@ -526,6 +527,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/serendipity-capture.sh`);
+  installAppRelay(projectDir);
   installSecretDropRetrieve(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
   installSecretGet(projectDir);
@@ -931,6 +933,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   // Framework-neutral: always install. Lives in .instar/scripts/.
   installSerendipityCapture(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/serendipity-capture.sh');
+  installAppRelay(projectDir);
   installSecretDropRetrieve(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
@@ -4125,6 +4128,7 @@ function refreshScripts(projectDir: string, stateDir: string): void {
   }
 
   refreshSlackRelay(projectDir, stateDir, port, claudeEnabled);
+  installAppRelay(projectDir, stateDir);
 
   // smart-fetch.py + git-sync-gate.sh both target `.claude/scripts/` and
   // are Claude-Code-specific (the agentic-web fetch script and the
@@ -5056,6 +5060,19 @@ if __name__ == '__main__':
  * than embedding it inline (345 lines). Handles JSON construction, HMAC signing,
  * atomic writes, rate limiting, secret scanning, and patch file validation.
  */
+/**
+ * Install the native app conversation reply relay (docs/specs/mobile-native-conversations.md §4.3).
+ * Framework-neutral and inert outside an app-conversation session, so every agent gets it.
+ */
+function installAppRelay(projectDir: string, stateDir: string = path.join(projectDir, '.instar')): void {
+  const outcome = ensureAppReplyRelay({
+    projectDir, stateDir,
+    template: loadRelayTemplate('app-reply.sh', 4040),
+    claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
+  });
+  if (outcome.errors.length > 0) throw new Error(`App reply relay install failed: ${outcome.errors.join('; ')}`);
+}
+
 function installSerendipityCapture(projectDir: string): void {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts');
   fs.mkdirSync(scriptsDir, { recursive: true });

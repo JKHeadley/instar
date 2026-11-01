@@ -56,9 +56,14 @@ const redeem = (app: express.Express, code: string, host = HOST, devicePublicKey
   request(app).post('/mobile/pairing-codes/redeem').set('Host', host).send({ code, deviceName: 'iPhone', devicePublicKey });
 
 /** A device-signed request through supertest, exactly as the app signs it. */
+// Strictly increasing signing times: two identical requests signed in the same millisecond would
+// otherwise be byte-identical and refused by the replay guard (a timing flake, not the behaviour
+// under test — the app retries with a fresh signature and time).
+let lastSignTime = 0;
 function signed(app: express.Express, dev: ReturnType<typeof makeDevice>, deviceId: string, method: 'GET' | 'POST', p: string, body?: unknown) {
   const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-  const time = String(Date.now());
+  lastSignTime = Math.max(Date.now(), lastSignTime + 1);
+  const time = String(lastSignTime);
   const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
   const r = method === 'GET' ? request(app).get(p) : request(app).post(p).set('Content-Type', 'application/json');
   r.set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);

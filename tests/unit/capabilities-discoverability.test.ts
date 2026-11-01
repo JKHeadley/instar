@@ -43,6 +43,7 @@ const ROUTE_SOURCE_FILES = [
   'src/server/usherRoutes.ts',
   'src/server/queuePaceRoutes.ts',
   'src/server/mobilePairingRoutes.ts',
+  'src/server/mobileConversationRoutes.ts',
 ];
 const routesSource = ROUTE_SOURCE_FILES
   .map((rel) => fs.readFileSync(path.join(process.cwd(), rel), 'utf-8'))

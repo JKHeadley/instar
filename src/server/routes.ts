@@ -182,6 +182,7 @@ import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjection, readDoorwaySources, type CapabilityProjection } from '../core/CapabilityRegistry.js';
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
+import { derivedEventId } from '../core/appConversationText.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
@@ -1015,6 +1016,8 @@ export interface RouteContext {
   /** Installed by createRoutes: feeds a device-authenticated app message through
    * the same inbound core the lifeline forward uses (mobile-operator-chat spec). */
   mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
+  /** Native app conversations (docs/specs/mobile-native-conversations.md); absent/null when off. */
+  appConversations?: import('../core/AppConversationService.js').AppConversationService | null;
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
    * this from its owned timer; tests may invoke it deterministically. */
   windowLifecycleTick?: (() => void) | null;
@@ -5277,6 +5280,8 @@ export function createRoutes(ctx: RouteContext): Router {
       // Native hook events (docs/specs/native-hook-events.md FD11): counts are
       // "received", never "fired" — delivery failures are invisible here.
       if (ctx.nativeHookIngest) base.hookEvents = ctx.nativeHookIngest.snapshot();
+      // Native app conversations (mobile-native-conversations §4.5): store size, authed only.
+      if (ctx.appConversations) { try { base.appConversations = ctx.appConversations.store.health(); } catch { /* @silent-fallback-ok — observability */ } }
       base.schedulerRunning = ctx.scheduler !== null;
       base.consecutiveJobFailures = totalFailures;
       // What the currency bound excluded, so the information is MOVED rather than
@@ -20626,6 +20631,78 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // System/legacy sender surface. Spawned session prompts never use this raw
   // destination route; keeping it preserves existing internal callers.
   router.post('/slack/reply/:channelId', handleSlackReply);
+
+  // ── Native app conversations: the agent's reply (mobile-native-conversations §4.3) ──
+  // A spawned app session posts {conversationId, text} with its bind token (app-reply.sh). The
+  // bind token is the only destination authority; the route refuses unless THIS machine currently
+  // owns the conversation and holds its bind-app binding (409 not-owner), then runs the same
+  // outbound pipeline as Slack (credential wall + tone gate with its advisory 422s), suppresses an
+  // exact repeat, and appends the reply to the conversation store.
+  const APP_DUPLICATE_WINDOW_MS = 15 * 60_000;
+  const APP_DUPLICATE_MIN_CHARS = 40;
+  router.post('/app/session-reply', async (req, res) => {
+    const app = ctx.appConversations;
+    if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
+    const bodyKeys = Object.keys(req.body ?? {});
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text')) {
+      res.status(400).json({ error: 'spawned app session body permits only conversationId and text' });
+      return;
+    }
+    const conversationId = Number(req.body?.conversationId);
+    if (!Number.isSafeInteger(conversationId) || conversationId >= 0) {
+      res.status(400).json({ error: 'negative conversationId required' });
+      return;
+    }
+    const text = typeof req.body?.text === 'string' ? req.body.text : '';
+    if (!text.trim() || text.length > 16_000) {
+      res.status(400).json({ error: '"text" must be 1-16000 characters' });
+      return;
+    }
+    const bindHeader = req.headers['x-instar-bind-token'];
+    const rawToken = Array.isArray(bindHeader) ? bindHeader[0] : bindHeader;
+    const verdict = verifyConversationBind({
+      bindAuth: ctx.conversationBindAuth,
+      numericTopicId: conversationId,
+      rawToken: typeof rawToken === 'string' ? rawToken : undefined,
+      attention: ctx.telegram,
+    });
+    if (!verdict.ok) {
+      res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail });
+      return;
+    }
+    const key = ctx.conversationRegistry?.appConversationFor(conversationId) ?? null;
+    if (!key || !app.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    if (!app.ownsAlias(conversationId)) {
+      res.status(409).json({ error: 'not-owner', detail: 'This machine does not currently run this app conversation.' });
+      return;
+    }
+    // X-Instar-DeliveryId idempotency: the reply's event id derives from it, so a resend merges.
+    const deliveryHeader = req.headers['x-instar-deliveryid'];
+    const deliveryId = Array.isArray(deliveryHeader) ? deliveryHeader[0] : deliveryHeader;
+    const seed = typeof deliveryId === 'string' && /^[0-9a-f-]{16,64}$/i.test(deliveryId) ? deliveryId : randomUUID();
+    const eventId = derivedEventId('ag', key, seed);
+    if (app.store.hasEvent(key, eventId)) { res.json({ ok: true, idempotent: true, conversationKey: key, eventId }); return; }
+    const trimmed = text.trim();
+    if (trimmed.length >= APP_DUPLICATE_MIN_CHARS) {
+      const cutoff = Date.now() - APP_DUPLICATE_WINDOW_MS;
+      const dup = app.store.browseMessages(key, null, 20).messages.some(m => m.role === 'agent' && m.text.trim() === trimmed && Date.parse(m.at) >= cutoff);
+      if (dup) { res.json({ ok: true, suppressed: true, reason: 'exact-duplicate', conversationKey: key }); return; }
+    }
+    if (await checkOutboundMessage(text, 'app', res, {})) return;
+    const messageId = derivedEventId('am', key, seed);
+    try {
+      app.store.append({
+        eventId, kind: 'message', conversationKey: key, messageId, role: 'agent', text,
+        at: new Date().toISOString(), machineId: app.deps.machineId(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'reply-not-recorded', detail: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    // Push trigger (§4.7) — the hook point; increment 3 sends the push.
+    app.onAgentReplyAppended(key, messageId);
+    res.json({ ok: true, conversationKey: key, eventId, messageId });
+  });
 
   router.post('/internal/slack-forward', async (req, res) => {
     // ── Typed refusal (spec slack-outbound-robustness §2.7, round-1 M6) ──

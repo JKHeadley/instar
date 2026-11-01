@@ -71,6 +71,11 @@
   ],
   "nonBlocking": [
     {
+      "path": "src/templates/scripts/app-reply.sh",
+      "sha256": "a2070b6941b1eb59111fa44345c5dbaf25ed08bbeaae4f79a22543c9fa8241a0",
+      "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace)."
+    },
+    {
       "path": "src/templates/hooks/compaction-recovery.sh",
       "sha256": "ffbdc114a6845550085e282d2da08dd8790dc584539110f11c4bb2c8365b6e57",
       "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"

@@ -3912,6 +3912,11 @@ export interface InstarConfig {
     codeTtlMinutes?: number;
     /** Native operator chat (docs/specs/mobile-operator-chat.md). `enabled` omitted ⇒ follows mobilePairing. */
     chat?: { enabled?: boolean };
+    /**
+     * Native app conversations (docs/specs/mobile-native-conversations.md). `enabled` omitted ⇒
+     * the developmentAgent gate decides; read at boot.
+     */
+    native?: { enabled?: boolean };
   };
   maturationBoard?: {
     enabled?: boolean;

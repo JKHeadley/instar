@@ -265,6 +265,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'appConversations',
+    prefixes: ['/app'],
+    description: 'Native app conversations (docs/specs/mobile-native-conversations.md) — the Instar iPhone app starts, lists, reads and writes conversations stored by Instar itself, with no messaging service configured. Device-signed: POST/GET /mobile/conversations, PATCH/DELETE /mobile/conversations/:key, POST /mobile/chat/app/:key (idempotent by requestId; persisted with its device-signature fields before dispatch), GET /mobile/chat/app/:key/messages (browse backwards) and /events (sync). A session spawned for an app conversation sees messages tagged [app:<id> "<title>" from <owner>] and answers with app-reply.sh, which posts to POST /app/session-reply (bind-token scoped; 409 not-owner unless this machine owns the conversation). History rows carry originVerified (unknown until signed-record checking lands; never verified without a check). The conversation store replicates to every machine. Dev-gated (mobilePairing.native.enabled); 503 when dark.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/conversations', 'GET /mobile/conversations', 'PATCH /mobile/conversations/:key', 'DELETE /mobile/conversations/:key', 'POST /mobile/chat/app/:key', 'GET /mobile/chat/app/:key/messages', 'GET /mobile/chat/app/:key/events', 'POST /app/session-reply'],
+    }),
+  },
+  {
     key: 'overloadShed',
     prefixes: ['/overload-shed'],
     description: 'Overload shed (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part D) — moves EXISTING conversations off a machine that has stayed overloaded: once this machine has refused new work for 3 minutes it proposes moving one Telegram conversation at a time to a healthy machine (live evidence under 2 min, verdict ok, room after reservations), through the ownership reconciler; pinned topics and topics with a live autonomous run stay. Breaker 2 moves/hour, 2 tries per topic per episode. GET /overload-shed reports enabled/dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour and counters (proposed, wouldMove, claimed, expired, breakerHeld). Dev-gated + dry-run first (monitoring.overloadShed); 503 when dark. When asked "why did my conversation move machines / why is this overloaded machine still holding work?" → read this, don\'t guess.',
