@@ -42,8 +42,10 @@ export function cleanText(v: unknown, max = 60): string | null {
 }
 
 /** The frozen v1 link: https://instar.sh/pair#v=1&o=<origin>&c=<code>. Everything rides in the fragment. */
-export function buildPairLink(origin: string, code: string): string {
-  return `${PAIR_LINK_BASE}#v=1&o=${encodeURIComponent(origin)}&c=${code}`;
+export function buildPairLink(origin: string, code: string, agentName?: string | null): string {
+  // `n` is the agent's own name, shown on the phone before pairing; display-only, untrusted.
+  const n = cleanText(agentName ?? null, 40);
+  return `${PAIR_LINK_BASE}#v=1&o=${encodeURIComponent(origin)}&c=${code}${n ? `&n=${encodeURIComponent(n)}` : ''}`;
 }
 
 /**

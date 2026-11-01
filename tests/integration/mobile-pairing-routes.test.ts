@@ -47,6 +47,7 @@ function setup(opts: { enabled?: boolean; tunnelState?: string; provider?: strin
   app.use(authMiddleware(() => config.authToken, 'echo', undefined, deviceAuthenticator(svc)));
   app.use(createMobilePairingRouter(svc, deps));
   app.get('/sessions', (_req, res) => { res.json([]); });
+  app.get('/topic/list', (_req, res) => { res.json({ topics: [] }); });
   return { app, config, svc, lifecycle, dms, lease };
 }
 
@@ -86,7 +87,7 @@ describe('mobile pairing routes', () => {
     const ctx = setup();
     const m = await mint(ctx.app);
     expect(m.status).toBe(200);
-    expect(m.body.link).toBe(`https://instar.sh/pair#v=1&o=${encodeURIComponent('https://' + HOST)}&c=${m.body.code}`);
+    expect(m.body.link).toBe(`https://instar.sh/pair#v=1&o=${encodeURIComponent('https://' + HOST)}&c=${m.body.code}&n=echo`);
     const dev = makeDevice();
     const r = await redeem(ctx.app, m.body.code, HOST, dev.publicKey);
     expect(r.status).toBe(200);
@@ -121,6 +122,7 @@ describe('mobile pairing routes', () => {
     expect(ok.body.status).toBe('active');
     expect((await signed(ctx.app, dev, deviceId, 'POST', '/mobile/device/confirm', { code: '000000' })).body.status).toBe('active'); // retry is a no-op
     expect((await signed(ctx.app, dev, deviceId, 'GET', '/sessions')).status).toBe(200);
+    expect((await signed(ctx.app, dev, deviceId, 'GET', '/topic/list')).status).toBe(200); // conversation recency for the app
     expect((await signed(ctx.app, dev, deviceId, 'GET', '/mobile/pairing-codes')).status).toBe(403); // not on the allowlist
     expect((await signed(ctx.app, dev, deviceId, 'GET', '/SESSIONS/')).status).toBe(200); // normalized path
   });

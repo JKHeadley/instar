@@ -80,6 +80,9 @@ describe('helpers', () => {
     const link = buildPairLink('https://echo.example.dev', 'A'.repeat(22));
     expect(link).toBe(`https://instar.sh/pair#v=1&o=${encodeURIComponent('https://echo.example.dev')}&c=${'A'.repeat(22)}`);
     expect(new URL(link).search).toBe('');
+    // The agent's name rides in the fragment too, cleaned and encoded.
+    expect(buildPairLink('https://echo.example.dev', 'A'.repeat(22), 'echo')).toBe(`${link}&n=echo`);
+    expect(buildPairLink('https://echo.example.dev', 'A'.repeat(22), 'My Agent\n')).toBe(`${link}&n=My%20Agent`);
   });
 
   it('takes the stable origin only from a named tunnel with a hostname', () => {
