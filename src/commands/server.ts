@@ -12474,7 +12474,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
-              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+              return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
               const entries = telegram.getTopicHistory(topicId, limit);
@@ -12558,7 +12558,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
-              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+              return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
               const entries = telegram.getTopicHistory(topicId, limit);
@@ -13028,7 +13028,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               const msgs = _slackAdapter.getChannelMessages(slackChId, limit);
-              return msgs.map(m => ({ text: m.text, fromUser: true, timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
+              return msgs.map(m => ({ text: m.text, fromUser: _slackAdapter!.isMessageFromUser(m), timestamp: new Date(parseFloat(m.ts) * 1000).toISOString() }));
             }
             if (telegram) {
               const history = telegram.getMessageLog?.();
@@ -13065,6 +13065,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           // (update-train churn) forgot which dead sessions were already
           // announced and re-posted the same death once per boot.
           statePath: path.join(config.stateDir, 'state', 'session-monitor-ctx-notified.json'),
+          // Same for "session has stopped": one notice per death, across restarts.
+          deadNoticeStatePath: path.join(config.stateDir, 'state', 'session-monitor-dead-notified.json'),
           // A topic an ONLINE peer actively owns is not this machine's to monitor:
           // route() forwards its inbound to that owner, so a stale local mapping
           // must never produce a "session has stopped" notice or a local triage

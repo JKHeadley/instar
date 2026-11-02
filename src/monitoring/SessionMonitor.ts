@@ -83,6 +83,22 @@ export interface SessionMonitorDeps {
    *  Studio told the operator to resend a message the Mama PC was already
    *  answering). A throw is treated as not-owned-elsewhere (today's behavior). */
   isTopicOwnedByPeer?: (topicId: number) => boolean;
+  /** Optional path to the persisted "session has stopped" notice ledger. When
+   *  set, the dead-session notice is once per death across server restarts:
+   *  a topic already told about a death is not told again until a newer user
+   *  message arrives. Without it, every boot forgot
+   *  the in-memory guards and re-posted the same death (2026-11-02: a Slack
+   *  agent re-posted the notice in one channel a dozen times in a morning). */
+  deadNoticeStatePath?: string;
+}
+
+interface DeadNoticeEntry {
+  /** The session whose death was announced. */
+  sessionName: string;
+  /** Timestamp (ms) of the newest user message the notice answered. */
+  userMessageAt: number;
+  /** When the notice was sent (ms) — used only for age pruning. */
+  at: number;
 }
 
 const DEFAULT_CONFIG: Required<SessionMonitorConfig> = {
@@ -117,12 +133,69 @@ export class SessionMonitor extends EventEmitter {
   /** Entries older than this are pruned at load — a week-old dead-session
    *  episode is over by any reasonable measure, and pruning bounds the file. */
   private static readonly CTX_NOTIFIED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  /** topicId -> the last "session has stopped" notice. Persisted via
+   *  deps.deadNoticeStatePath so one death is announced once, not once per boot. */
+  private deadNotified = new Map<number, DeadNoticeEntry>();
+  private deadPersistWarned = false;
 
   constructor(deps: SessionMonitorDeps, config?: Partial<SessionMonitorConfig>) {
     super();
     this.deps = deps;
     this.config = mergeDefaults(DEFAULT_CONFIG, config);
     this.loadCtxNotified();
+    this.loadDeadNotified();
+  }
+
+  /** Load the persisted dead-notice ledger (tolerant: missing/corrupt → empty). */
+  private loadDeadNotified(): void {
+    const file = this.deps.deadNoticeStatePath;
+    if (!file) return;
+    try {
+      if (!fs.existsSync(file)) return;
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, Partial<DeadNoticeEntry>>;
+      const cutoff = Date.now() - SessionMonitor.CTX_NOTIFIED_MAX_AGE_MS;
+      for (const [topic, entry] of Object.entries(raw)) {
+        const topicId = Number(topic);
+        if (!Number.isFinite(topicId) || !entry || typeof entry.sessionName !== 'string') continue;
+        if (typeof entry.at !== 'number' || entry.at < cutoff) continue; // pruned
+        if (typeof entry.userMessageAt !== 'number') continue;
+        this.deadNotified.set(topicId, { sessionName: entry.sessionName, userMessageAt: entry.userMessageAt, at: entry.at });
+      }
+    } catch (err) {
+      // A corrupt ledger must never break monitoring — start empty (worst case:
+      // one repeat notice per dead session, the pre-ledger behavior).
+      console.warn('[SessionMonitor] Could not load dead-notice ledger — starting empty:', err);
+    }
+  }
+
+  /** Persist the dead-notice ledger (atomic tmp+rename; failure-tolerant). */
+  private persistDeadNotified(): void {
+    const file = this.deps.deadNoticeStatePath;
+    if (!file) return;
+    try {
+      const obj: Record<string, DeadNoticeEntry> = {};
+      for (const [topicId, entry] of this.deadNotified) obj[String(topicId)] = entry;
+      const tmp = `${file}.tmp`;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      if (!this.deadPersistWarned) {
+        this.deadPersistWarned = true;
+        console.warn('[SessionMonitor] Could not persist dead-notice ledger (will not warn again):', err);
+      }
+    }
+  }
+
+  /** True when the topic was already told about a death and no user message
+   *  has arrived since the one that notice answered — re-announcing would be
+   *  a repeat, not news. Keyed on the user message, not the session name:
+   *  Telegram reuses a topic's session name across respawns, so a later,
+   *  genuinely new death in the same topic must still be announced. */
+  private deadAlreadyAnnounced(topicId: number, lastUserMessageAt: number): boolean {
+    const prior = this.deadNotified.get(topicId);
+    if (!prior) return false;
+    return lastUserMessageAt <= prior.userMessageAt;
   }
 
   /** Load the persisted notify ledger (tolerant: missing/corrupt → empty). */
@@ -409,6 +482,16 @@ export class SessionMonitor extends EventEmitter {
 
     if (!userExpectsResponse) return; // Session idle but no unanswered message — normal state
 
+    // A death already announced (no user message newer than the one the last
+    // notice answered) is not news: no repeat notice, no
+    // repeat triage. The in-memory guards above reset on every server boot;
+    // this ledger is what keeps one death to one notice across restarts.
+    if (snap.status === 'dead' && this.deadAlreadyAnnounced(topicId, snap.lastUserMessageAt)) {
+      snap.notifiedAt = now;
+      this.notificationCooldowns.set(topicId, now);
+      return;
+    }
+
     // Try mechanical recovery first (fast, no LLM) before escalating to triage.
     // Run for ALL unhealthy statuses — context exhaustion can occur in alive sessions
     // that appear "unresponsive" or even "idle" (the session is alive at a prompt
@@ -441,10 +524,17 @@ export class SessionMonitor extends EventEmitter {
         }
         // If triage didn't resolve or isn't available, notify user
         if (userExpectsResponse) {
+          let delivered = true;
           await this.deps.sendToTopic(topicId,
             `The session has stopped. Send a new message to start a fresh session with full conversation context.`
-          ).catch(() => {});
+          ).catch(() => { delivered = false; });
           this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
+          // Record only a notice that went out: a failed send must stay
+          // retryable (after the cooldown or a restart), never marked as told.
+          if (delivered) {
+            this.deadNotified.set(topicId, { sessionName, userMessageAt: snap.lastUserMessageAt, at: now });
+            this.persistDeadNotified();
+          }
         }
         snap.notifiedAt = now;
         this.notificationCooldowns.set(topicId, now);
