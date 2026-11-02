@@ -4241,7 +4241,7 @@ export class TelegramAdapter implements MessagingAdapter {
             if (entryTopicId !== topicId) continue;
             const at = Date.parse(String(entry.timestamp));
             if (Number.isFinite(at) && at < beforeMs) matching.unshift(entry);
-          } catch { /* skip malformed */ }
+          } catch { /* @silent-fallback-ok: a malformed log line is skipped; the page is built from the lines that parse */ }
         }
       }
     } finally {

@@ -34,3 +34,6 @@ Pooled reads forward the cursor; each machine reads its own log. Machines on old
 
 ## 8. Rollback cost
 Revert the commit; no data.
+
+## Follow-up
+The malformed-line catch in `getTopicHistoryBefore` carries a `@silent-fallback-ok` reason (the no-silent-fallbacks ratchet counted it as new).
