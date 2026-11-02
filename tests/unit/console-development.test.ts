@@ -13,7 +13,7 @@ import {
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, developmentHeadline,
   WATCHER_CADENCE_MS, STALL_TICKS, DEV_TOOLS_KEY,
 } from '../../dashboard/console/development-model.js';
-import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
+import { NATIVE_PAGES, tabHref, GROUPS, MERGED } from '../../dashboard/console/nav-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, status: 200, data });
@@ -65,7 +65,7 @@ describe('maintainer mode is visibility only', () => {
     expect(tabHref('throughput')).toBe('#/work/development?s=pace');
     expect(tabHref('feedback-drain')).toBe('#/work/development?s=feedback');
     const hood = GROUPS.find((g) => g.id === 'settings')!.hood!;
-    for (const id of ['pr-pipeline', 'throughput', 'feedback-drain']) expect(hood.find((t) => t.id === id)!.desc).toMatch(/^Now inside Development/);
+    for (const id of ['pr-pipeline', 'throughput', 'feedback-drain']) { expect(hood.find((t) => t.id === id)).toBeUndefined(); expect(MERGED).toContain(id); }
     // The Development tile is NOT a legacy tab: it is added by the page module, so the registry check stays exact.
     expect(GROUPS.flatMap((g) => g.tabs).some((t) => t.id === 'development')).toBe(false);
   });
