@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-02T02:03:40.716Z",
+  "slug": "autonomous-start-admission",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 289,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutonomousRunStore.ts",
+      "src/core/AutonomousStartAdmission.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 286,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as preparing-run-watchdog: under an always-rejecting delivery path the real findStuckPreparingRuns stops selecting a run once its durable preparingNoticeAttempts reaches PREPARING_NOTICE_MAX_ATTEMPTS (3); a delivered notice is marked before sending, so the steady state is at most 3 sends per run, horizon-independent, and the counter lives on the run record so a restart cannot reset it."
+    }
+  },
+  "verdict": "pass"
+}

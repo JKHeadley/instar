@@ -103,6 +103,10 @@ export interface AutonomousRunRecord {
   /** Worktrees first seen at sweep time → their first-sight anchor SHA (R31). */
   worktreeFirstSeen: Record<string, string>;
   status: AutonomousRunStatus;
+  /** When the operator was told this run never left 'preparing' (once per run). */
+  preparingNoticeAt?: string;
+  /** Send attempts for that notice; capped so a dead delivery path cannot loop. */
+  preparingNoticeAttempts?: number;
   endedAt?: string;
   endReason?: string;
   /** Monotone positive corroborations — a merged PR stays merged (R21). */
@@ -295,8 +299,17 @@ export class AutonomousRunStore {
     return !Number.isFinite(end) || now <= end;
   }
 
+  /** Every open (preparing / active / at-risk, unexpired) registered run on this server. */
+  listOpen(now: number = Date.now()): AutonomousRunRecord[] {
+    return this.listCurrentRecords().filter((rec) => this.isOpen(rec, now));
+  }
+
   /** Every currently-active registered run on this server (R35 arming). */
   listActive(now: number = Date.now()): AutonomousRunRecord[] {
+    return this.listCurrentRecords().filter((rec) => this.isActive(rec, now));
+  }
+
+  private listCurrentRecords(): AutonomousRunRecord[] {
     let names: string[] = [];
     try {
       names = fs.readdirSync(this.dir);
@@ -311,7 +324,7 @@ export class AutonomousRunStore {
       if (!n.endsWith('.json') || n.endsWith('.archived.json') || n.includes('.artifacts.')) continue;
       if (n === 'session-map.json' || n === 'conformance-invocations.json' || n === 'index.json') continue;
       const rec = this.readRecordFile(path.join(this.dir, n));
-      if (rec && this.isActive(rec, now)) out.push(rec);
+      if (rec) out.push(rec);
     }
     return out;
   }

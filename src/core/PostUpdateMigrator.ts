@@ -8105,6 +8105,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added pre-admission autonomous continuation carrier awareness');
     }
 
+    if (!content.includes('A run that never starts is reported:')) {
+      content += '\n- **A run that never starts is reported:** `POST /autonomous/register` starts a run `active` (so a dead session is revived) unless an open W32 window can still promote it; then it starts `preparing`. Any run still `preparing` a few minutes after it registered gets ONE plain notice in its topic saying it did not start (`autonomousSessions.preparingWatchdog.enabled: false` silences it). Proactive: user says "the autonomous session never started" → GET /autonomous/sessions and start the run again.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-started autonomous run awareness');
+    }
+
     if (!content.includes('Authoritative Window Run Liveness')) {
       content += WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port);
       patched = true;
@@ -13765,6 +13771,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '## Worktree Notices',
       '**Multi-Session Autonomy**',
       '- **Pre-admission continuation carrier:**',
+      '- **A run that never starts is reported:**',
       '### Authoritative Window Run Liveness',
       '- **W32 cadence executor:**',
       '**Codex quota is first-class in the pool:',
