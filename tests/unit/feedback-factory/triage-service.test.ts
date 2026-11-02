@@ -74,6 +74,24 @@ describe('verified primary account admission', () => {
     expect(h.drain.sharedDatabase().prepare('SELECT state FROM triage_call_reservations').get()).toEqual({ state: 'completed' });
   });
 
+  it('lets a fresh item use verified-account admission after the retry allowance is exhausted', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }), revalidate: () => true } });
+    const old = await h.addItem('old');
+    h.decide.fn = dispositionFor({ old: { disposition: 'hold', reason: 'needs-evidence' } });
+    await h.service.tick();
+    h.store.requeue(1, old, 'evidence-truncated', { truncatedRetry: true });
+    h.store.reserveSubcap(1, 'retriage', 50, 50);
+    const fresh = await h.addItem('fresh');
+    h.decide.fn = dispositionFor({ fresh: { disposition: 'work', reason: 'actionable' } });
+    h.now.value += 31_000;
+    const result = await h.service.tick();
+    expect(result).toMatchObject({ decided: 1, calls: 1 });
+    expect(h.store.get(old)!.state).toBe('queued');
+    expect(h.store.get(fresh)!.state).toBe('work');
+    expect(h.drain.authorityCallsToday(h.service.authority()!)).toBe(2);
+  });
+
   it('marks a credential changed after launch as execution identity unverified without refunding spend', async () => {
     h = await createHarness({ config: { accountSelectionMode: 'on' },
       primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
@@ -315,6 +333,21 @@ describe('stale-write guard (floor 9) and re-queue throttle (floor 10)', () => {
     const result = await h.service.tick();
     expect(result.reason).toBe('call-cap-reached');
     expect(h.store.get(id)!.state).toBe('queued');
+  });
+  it('an exhausted re-triage sub-cap does not starve a fresh item behind a truncated retry', async () => {
+    h = await createHarness();
+    const old = await h.addItem('old');
+    h.decide.fn = dispositionFor({ old: { disposition: 'hold', reason: 'needs-evidence' } });
+    await h.service.tick();
+    h.store.requeue(1, old, 'evidence-truncated', { truncatedRetry: true });
+    h.store.reserveSubcap(1, 'retriage', 50, 50);
+    const fresh = await h.addItem('fresh');
+    h.decide.fn = dispositionFor({ fresh: { disposition: 'work', reason: 'actionable' } });
+    h.now.value += 31_000;
+    const result = await h.service.tick();
+    expect(result.decided).toBe(1);
+    expect(h.store.get(old)!.state).toBe('queued');
+    expect(h.store.get(fresh)!.state).toBe('work');
   });
 });
 
