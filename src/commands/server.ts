@@ -202,6 +202,7 @@ import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
 import {
   resolveMeshPeerUrl,
   resolveMeshPeerPreferredSelection,
+  resolveMeshPeerCandidates,
   type RopeRefusal,
 } from '../core/resolveMeshPeerUrl.js';
 import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
@@ -821,6 +822,8 @@ let _resolvePeerUrls:
       kind: PeerEndpointKind;
       /** Ropes the credential guard skipped before this one was chosen. */
       ropeRefusals: RopeRefusal[];
+      /** Every rope in priority order — the remote-desktop calls fall back across them. */
+      ropes?: Array<{ url: string; kind: PeerEndpointKind }>;
     }>)
   | null = null;
 /** The feedback arm of that same fix: reports each pool dial's outcome into the ONE
@@ -26617,6 +26620,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // Which ropes the guard skipped on the way to this one — so a
                   // caller can report them instead of them vanishing.
                   ropeRefusals: selection?.refusals ?? [],
+                  // Every rope, in order: remote-desktop calls apply their own
+                  // gate and fall back to the next rope that carries traffic.
+                  ropes: resolveMeshPeerCandidates(meshResolver, m.machineId, entry?.endpoints, entry?.lastKnownUrl),
                 };
               })
               .filter(
@@ -26625,6 +26631,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   url: string;
                   kind: PeerEndpointKind;
                   ropeRefusals: RopeRefusal[];
+                  ropes: Array<{ url: string; kind: PeerEndpointKind }>;
                 } => m.url != null && m.kind != null,
               );
           // EVERY registered non-revoked machine — URL or not — so the /guards

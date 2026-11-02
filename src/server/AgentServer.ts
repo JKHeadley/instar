@@ -203,7 +203,6 @@ import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
-import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
@@ -222,7 +221,7 @@ import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
-import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
+import { desktopPeerRopes, fetchDesktopPeerOverRopes } from './desktopPeerRopeFetch.js';
 import { desktopRouteAccess } from './desktopRouteContext.js';
 import { parsePeerDesktopSetup, readBoundedText } from './desktopSetupRoutes.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
@@ -1099,6 +1098,8 @@ export class AgentServer {
       url: string;
       kind: PeerEndpointKind;
       ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind; reason?: string }>;
+      /** Every rope this peer advertises, in priority order (remote-desktop fallback). */
+      ropes?: Array<{ url: string; kind: PeerEndpointKind }>;
     }>;
     /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
@@ -5487,15 +5488,21 @@ export class AgentServer {
       desktopMeshBroker: this.desktopMeshBroker,
       desktopSetupPeerCall: async (machineId, body) => {
         const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
-        if (!peer || !this.meshSelfId || !options.coordinator?.enabled || !await desktopPeerUrlAllowed(peer)) {
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled) {
           throw new Error('desktop-peer-unreachable');
         }
         const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
-        const response = await poolPeerFetch(options.recordRopeResult,
-          { ...peer, url: peer.url.replace(/\/+$/, '') }, '/api/desktop/setup', {
+        // Every rope in order: a dead first rope (e.g. a WSL-internal LAN
+        // address) no longer hides a live Tailscale rope. Signed once — a rope
+        // is only skipped when the request provably never reached a server.
+        const { response } = await fetchDesktopPeerOverRopes({
+          machineId, ropes: desktopPeerRopes(peer), path: '/api/desktop/setup',
+          init: {
             method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
-            body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(8_000),
-          });
+            body: JSON.stringify(body), redirect: 'manual',
+          },
+          budgetMs: 8_000, connectCheckCapMs: 2_000, record: options.recordRopeResult,
+        });
         const raw = await readBoundedText(response, 8_192);
         let parsed: unknown = null;
         try { parsed = JSON.parse(raw); } catch { /* @silent-fallback-ok — handled as an invalid reply just below. */ }
@@ -5517,16 +5524,18 @@ export class AgentServer {
       },
       desktopProbePeer: async machineId => {
         const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
-        if (!peer || !this.meshSelfId || !options.coordinator?.enabled
-          || !await desktopPeerUrlAllowed(peer)) {
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled) {
           throw new Error('desktop-peer-unreachable');
         }
         const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
         const body = {};
-        const response = await poolPeerFetch(options.recordRopeResult,
-          { ...peer, url: peer.url.replace(/\/+$/, '') }, '/api/desktop/availability', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
-          body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(3_000),
+        const { response } = await fetchDesktopPeerOverRopes({
+          machineId, ropes: desktopPeerRopes(peer), path: '/api/desktop/availability',
+          init: {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
+            body: JSON.stringify(body), redirect: 'manual',
+          },
+          budgetMs: 3_000, connectCheckCapMs: 1_000, record: options.recordRopeResult,
         });
         if (!response.ok) throw new Error('desktop-peer-unavailable');
         const reader = response.body?.getReader();

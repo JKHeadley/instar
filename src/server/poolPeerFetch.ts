@@ -61,11 +61,12 @@ export async function poolPeerFetch(
   peer: PoolPeerTarget,
   path: string,
   init?: Parameters<typeof fetch>[1],
+  fetchImpl: typeof fetch = fetch,
 ): Promise<Response> {
   const rope = ropeKindOf(peer.kind);
   const started = Date.now();
   try {
-    const res = await fetch(`${peer.url}${path}`, init);
+    const res = await fetchImpl(`${peer.url}${path}`, init);
     if (rope && record) record(peer.machineId, rope, true, Date.now() - started, peer.url);
     return res;
   } catch (err) {

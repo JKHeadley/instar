@@ -3,10 +3,13 @@ import { mintDesktopLockedAssertion, mintDesktopOperatorAssertion } from '../cor
 import { sign as signMachinePayload } from '../core/MachineIdentity.js';
 import { signRequest } from './machineAuth.js';
 import type { PeerEndpointKind } from './peerUrlGuard.js';
-import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
 import type { RopeResultRecorder } from './poolPeerFetch.js';
+import { desktopPeerRopes, fetchDesktopPeerOverRopes, type DesktopRope } from './desktopPeerRopeFetch.js';
 
-interface DesktopPeer { machineId: string; url: string; kind: PeerEndpointKind }
+interface DesktopPeer {
+  machineId: string; url: string; kind: PeerEndpointKind;
+  ropes?: DesktopRope[]; ropeRefusals?: Array<{ url: string; kind: PeerEndpointKind }>;
+}
 interface RemoteRequest {
   machineId: string;
   frontSessionDigest: string;
@@ -24,11 +27,16 @@ export interface DesktopMeshBrokerDeps {
   now?: () => number;
   fetch?: typeof fetch;
   recordRopeResult?: RopeResultRecorder;
+  /** Test seam for the per-rope TCP reachability check (defaults to a real connect). */
+  ropeConnectCheck?: (url: string, timeoutMs: number) => Promise<boolean>;
   onForget?: (requestId: string) => void;
   /** A new front process waits out target delegated-session liveness from a
    * previous incarnation before admitting fresh pool reservations. */
   startupQuarantineMs?: number;
 }
+
+/** Which rope answered a post — read only for the stream-relay ticket. */
+const ANSWERED_URL = Symbol('desktop-answered-url');
 
 /** Dashboard front for remote desktop. It handles routing and PIN-session
  * attestation, while the target alone mints grants and encrypts the stream. */
@@ -136,7 +144,10 @@ export class DesktopMeshBroker {
         || result.ticket.length < 16 || result.ticket.length > 256) {
         throw new Error('desktop target ticket invalid');
       }
-      this.tickets.set(result.ticket, { requestId, url: peer.url, expiresAtMs: this.now() + 20_000 });
+      // The relay connects to the rope that actually answered, not the first one listed.
+      const answered = (result as Record<symbol, unknown>)[ANSWERED_URL];
+      const answeredUrl = typeof answered === 'string' ? answered : peer.url;
+      this.tickets.set(result.ticket, { requestId, url: answeredUrl, expiresAtMs: this.now() + 20_000 });
     }
     if (operation === 'status' && result.status === 'revoked') this.forget(requestId);
     return result;
@@ -229,28 +240,29 @@ export class DesktopMeshBroker {
 
   private async peer(machineId: string): Promise<DesktopPeer> {
     const peer = this.d.peers().find(candidate => candidate.machineId === machineId);
-    if (!peer || !await desktopPeerUrlAllowed(peer)) {
-      throw new Error('desktop target unavailable');
-    }
+    if (!peer) throw new Error('desktop target unavailable');
     return peer;
   }
 
   private async post(peer: DesktopPeer, endpoint: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    const started = this.now();
+    // Every rope in order, signed once: a rope is skipped only when the request
+    // provably never reached a server; any HTTP reply is the target's answer.
     let response: Response;
+    let rope: DesktopRope;
     try {
-      response = await this.doFetch(new URL(endpoint, peer.url).toString(), {
-        method: 'POST', headers: { 'Content-Type': 'application/json',
-          ...signRequest(this.d.selfMachineId, this.d.signingKeyPem, body) },
-        body: JSON.stringify(body), redirect: 'manual',
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000),
-      });
-      if (peer.kind !== 'last-known-url') {
-        this.d.recordRopeResult?.(peer.machineId, peer.kind, true, this.now() - started, peer.url);
-      }
+      ({ response, rope } = await fetchDesktopPeerOverRopes({
+        machineId: peer.machineId, ropes: desktopPeerRopes(peer), path: endpoint,
+        init: {
+          method: 'POST', headers: { 'Content-Type': 'application/json',
+            ...signRequest(this.d.selfMachineId, this.d.signingKeyPem, body) },
+          body: JSON.stringify(body), redirect: 'manual',
+        },
+        budgetMs: 3_000, connectCheckCapMs: 1_000, signal, record: this.d.recordRopeResult,
+        fetchImpl: this.doFetch, now: this.now, connectCheck: this.d.ropeConnectCheck,
+      }));
     } catch (error) {
-      if (peer.kind !== 'last-known-url') {
-        this.d.recordRopeResult?.(peer.machineId, peer.kind, false, this.now() - started, peer.url);
+      if (error instanceof Error && error.message === 'desktop-peer-unreachable') {
+        throw new Error('desktop target unavailable');
       }
       throw error;
     }
@@ -272,7 +284,10 @@ export class DesktopMeshBroker {
     const raw = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), size).toString('utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('desktop target response invalid');
-    return parsed as Record<string, unknown>;
+    const reply = parsed as Record<string, unknown>;
+    // Non-enumerable, so it never leaks into a caller's JSON reply.
+    Object.defineProperty(reply, ANSWERED_URL, { value: rope.url, enumerable: false });
+    return reply;
   }
 
   private digest(value: string): string { return createHash('sha256').update(value).digest('hex'); }
