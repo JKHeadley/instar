@@ -3597,6 +3597,10 @@ export interface InstarConfig {
   remoteDesktop?: {
     enabled?: boolean;
     frontMachineId?: string;
+    /** Set when Remote Desktop was turned off on this machine itself: a peer cannot turn it back on. */
+    peerClaimRefused?: boolean;
+    /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
+    guidedSetup?: { enabled?: boolean };
     /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
     lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
   };
@@ -3929,6 +3933,8 @@ export interface InstarConfig {
      * Read at boot.
      */
     multiRoute?: { enabled?: boolean };
+    /** Mobile push (docs/specs/mobile-push.md). `enabled` omitted ⇒ follows mobilePairing. */
+    push?: { enabled?: boolean; teamId?: string };
   };
   maturationBoard?: {
     enabled?: boolean;
@@ -5183,6 +5189,12 @@ export interface InstarConfig {
   autonomousSessions?: {
     /** Max concurrent autonomous jobs (default 5). New starts beyond this are refused. */
     maxConcurrent?: number;
+    /**
+     * Tell the operator, once, in the run's own topic when a registered run is
+     * still 'preparing' a few minutes after it started (it is not running and
+     * nothing revives it). Default on; `enabled: false` silences it.
+     */
+    preparingWatchdog?: { enabled?: boolean };
     /**
      * Codex autonomous-loop driver (codex/Claude parity). When enabled, the standing
      * codex Stop hook (`autonomous-stop-hook.sh --codex`, installed by installCodexHooks)

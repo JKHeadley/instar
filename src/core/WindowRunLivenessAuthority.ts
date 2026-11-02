@@ -402,7 +402,13 @@ export class WindowRunLivenessAuthority {
   register(input: WindowRunLivenessRegistration): WindowRunLivenessDocument {
     return this.store.withMutation(() => {
       if (!this.cfg.enabled) throw new Error('window-run-liveness-dark');
-      if (!/^[A-Za-z0-9._:-]{1,200}$/.test(input.windowId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.autonomousRunId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.lifecycleRunId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.executorId)) throw new Error('window-run-liveness-registration-invalid');
+      // RegExp.test() coerces its argument, so a missing field (undefined) used
+      // to pass as the literal text "undefined" and was then projected onto a
+      // run that cannot exist. Require real strings and name the field.
+      for (const field of ['windowId', 'autonomousRunId', 'lifecycleRunId', 'executorId'] as const) {
+        const value: unknown = input[field];
+        if (typeof value !== 'string' || !/^[A-Za-z0-9._:-]{1,200}$/.test(value)) throw new Error(`window-run-liveness-registration-invalid:${field}`);
+      }
       if (!Number.isSafeInteger(input.topicId) || input.topicId < 0) throw new Error('window-run-liveness-topic-invalid');
       const existing = this.store.load();
       if (this.store.hasTerminalWindow(input.windowId)) throw new Error('window-run-liveness-terminal-binding-closed');

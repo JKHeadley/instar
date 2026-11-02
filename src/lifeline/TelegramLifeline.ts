@@ -65,7 +65,7 @@ import {
 } from './forwardErrors.js';
 import { decideReplay, type ForwardOutcome } from './replayPolicy.js';
 import { writeStartupMarker } from './startupMarker.js';
-import { acquireLockFile } from './lifelineLock.js';
+import { acquireLockFile, startLockHeartbeat } from './lifelineLock.js';
 import { shouldOwnTelegramPoll } from './telegramPollOwnership.js';
 import { decidePollAction, type PollOverride } from './pollDecision.js';
 import { readPollIntent, effectivePollIntent, writePollActive, pidAlive } from '../core/pollIntent.js';
@@ -165,6 +165,7 @@ export class TelegramLifeline {
   private pollTimeout: ReturnType<typeof setTimeout> | null = null;
   private offsetPath: string;
   private stopHeartbeat: (() => void) | null = null;
+  private stopLockHeartbeat: (() => void) | null = null;
   private replayInterval: ReturnType<typeof setInterval> | null = null;
   private restartSignalInterval: ReturnType<typeof setInterval> | null = null;
   private sessionRecoveryInterval: ReturnType<typeof setInterval> | null = null;
@@ -362,6 +363,7 @@ export class TelegramLifeline {
       console.error(pc.red('[Lifeline] Another lifeline instance is already running. Exiting.'));
       process.exit(0); // Clean exit — launchd will restart after ThrottleInterval, acting as a watchdog
     }
+    this.stopLockHeartbeat = startLockHeartbeat(this.lockPath);
 
     // Register in agent registry (lifeline entry — uses project dir + "-lifeline" suffix).
     // Registry operations are NON-CRITICAL — the lifeline must survive ELOCKED errors
@@ -609,6 +611,7 @@ export class TelegramLifeline {
     // generation's late shutdown must not delete the successor's fresh entry
     // (registry lost-update race; same shape as the server-side fix).
     try { unregisterAgent(this.projectConfig.projectDir + '-lifeline', { onlyIfPid: process.pid }); } catch { /* non-critical */ }
+    if (this.stopLockHeartbeat) { this.stopLockHeartbeat(); this.stopLockHeartbeat = null; }
     try { releaseLockFile(this.lockPath); } catch { /* non-critical */ }
     const keepServer = opts.keepServer === true;
     if (keepServer) {

@@ -87,6 +87,9 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 }
 
 import fs from 'node:fs';
+import { readTranscriptPage } from '../core/SessionTranscriptReader.js';
+import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
+import { boundedHead } from '../core/boundedInput.js';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
@@ -225,6 +228,7 @@ import {
   type PeerPresenceRead,
 } from '../threadline/peerDark.js';
 import { buildTopicProfileOptions, validateDashboardProfileChoice, seedTopicProfileAtCreation, claimDashboardCreatedTopic, settleDashboardCreatedTopic, frameworkLabel } from '../core/dashboardTopicProfile.js';
+import { createDesktopSetupRoutes } from './desktopSetupRoutes.js';
 import { hasMachinePick, resolveCreateMachineChoice, safeMachineLabel, type CreateMachineChoice, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
@@ -390,6 +394,25 @@ function normalizeFollowThroughOptOutReason(value: unknown): string | null {
  * Returns null on success; failure-detail string on any check that fails.
  * Fail-open path: caller converts a failed verify into `invalidEvidence`.
  */
+/**
+ * notify-on-stop: the stopping session's last message, for the notice text. The
+ * hook appends `last_assistant_message` as the final `source:'agent'` turn; the
+ * stop reason is only a fallback, and only when it reads as a sentence (a bare
+ * harness code such as `end_turn` is not a message).
+ */
+function stopLastAgentMessage(
+  recentTurns: Array<{ source?: string; text?: string }> | undefined,
+  reasonPreview: string,
+): string | null {
+  if (Array.isArray(recentTurns)) {
+    for (let i = recentTurns.length - 1; i >= 0; i--) {
+      const t = recentTurns[i];
+      if (t && t.source === 'agent' && typeof t.text === 'string' && t.text.trim()) return t.text;
+    }
+  }
+  return /\s/.test(reasonPreview.trim()) ? reasonPreview : null;
+}
+
 async function postVerifyEvidence(
   projectDir: string,
   evidence: EvidenceMetadata,
@@ -481,9 +504,11 @@ import {
   stopAllAutonomousJobs,
   suspendAutonomousTopicForMove,
   setAutonomousPreparationState,
+  liveAutonomousRunGoal,
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
+import { decideAutonomousStartStatus } from '../core/AutonomousStartAdmission.js';
 import { PriorityLedger } from '../monitoring/GoalRealignment.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
@@ -1701,6 +1726,9 @@ export interface RouteContext {
   /** Other pool machines a pool status read should ask. */
   desktopTargets?: () => string[];
   desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
+  /** Guided setup: reachable with desktop off, because it is how desktop comes on. */
+  desktopSetupTarget?: import('../core/DesktopSetupTarget.js').DesktopSetupTarget | null;
+  desktopSetupPeerCall?: (machineId: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   /** Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5/§7).
    *  Null/absent when monitoring.blockerLedger.selfUnblockChecklist.enabled is false
    *  (default, ships dark) → GET /blockers/self-unblock-runs 503s (after auth). The
@@ -2096,6 +2124,29 @@ export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, Subsc
   });
 
 // Validation patterns for route parameters
+/** The transcript file for a session: its own account's config home first, then the
+ *  default home, then every pool account's (a swap can move a session between homes). */
+function findSessionTranscript(session: import('../core/types.js').Session, ctx: RouteContext): string | null {
+  const sessionId = session.claudeSessionId;
+  if (!sessionId) return null;
+  const framework = session.framework ?? 'claude-code';
+  const projectDir = session.cwd ?? ctx.config.projectDir;
+  const homes: Array<string | undefined> = [];
+  const own = session.subscriptionAccountId ? ctx.subscriptionPool?.get(session.subscriptionAccountId)?.configHome : undefined;
+  homes.push(own, session.confinedConfigHome, undefined);
+  for (const a of ctx.subscriptionPool?.list() ?? []) homes.push(a.configHome);
+  const seen = new Set<string>();
+  for (const home of homes) {
+    const candidate = framework === 'codex-cli'
+      ? resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { rootOverride: path.join(home, 'sessions') } : {}) })
+      : resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { configHome: home } : {}) });
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try { if (fs.statSync(candidate).isFile()) return candidate; } catch { /* @silent-fallback-ok — try the next home */ }
+  }
+  return null;
+}
+
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
 /** Largest console attachment (decoded). The JSON body limit is 12 MB, and base64 adds a third. */
 const DASHBOARD_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
@@ -3346,10 +3397,28 @@ export function createRoutes(ctx: RouteContext): Router {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+  // A misnamed field (e.g. runId for autonomousRunId) must be refused by name:
+  // silently dropping it once registered a run nothing could ever find.
+  const WINDOW_RUN_FIELD_HINTS: Record<string, string> = { runId: 'autonomousRunId', run_id: 'autonomousRunId', lifecycleId: 'lifecycleRunId', sessionId: 'executorId', session: 'executorId', topic: 'topicId', window: 'windowId', artifactPath: 'artifactRef', artifact: 'artifactRef', path: 'artifactRef' };
+  const windowRunBodyError = (body: Record<string, unknown>, allowed: readonly string[]): { error: string; allowed: readonly string[] } | null => {
+    const unknown = Object.keys(body).filter(key => !allowed.includes(key));
+    if (unknown.length > 0) {
+      const named = unknown.map(key => WINDOW_RUN_FIELD_HINTS[key] && allowed.includes(WINDOW_RUN_FIELD_HINTS[key]) ? `${key} (did you mean ${WINDOW_RUN_FIELD_HINTS[key]}?)` : key);
+      return { error: `window-run-liveness-unknown-field:${named.join(', ')}`, allowed };
+    }
+    const missing = allowed.filter(key => body[key] === undefined || body[key] === null || body[key] === '');
+    if (missing.length > 0) return { error: `window-run-liveness-missing-field:${missing.join(', ')}`, allowed };
+    const topic = body.topicId;
+    if (!(typeof topic === 'number' || (typeof topic === 'string' && /^[0-9]+$/.test(topic)))) return { error: 'window-run-liveness-topic-invalid', allowed };
+    return null;
+  };
+  const WINDOW_RUN_BINDING_FIELDS = ['windowId', 'topicId', 'autonomousRunId', 'lifecycleRunId', 'executorId'] as const;
   router.post('/window-run-liveness/register', async (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
     const body = req.body ?? {};
     if (Object.keys(body).some(key => /predicate|running|heartbeat|reachable|work|admitted|expires/i.test(key))) return res.status(400).json({ error: 'predicate-facts-are-server-owned' });
+    const bodyError = windowRunBodyError(body, WINDOW_RUN_BINDING_FIELDS);
+    if (bodyError) return res.status(400).json(bodyError);
     const authority = ctx.windowRunLivenessAuthority;
     const input = {
       windowId: body.windowId,
@@ -3393,6 +3462,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (Object.keys(body).some(key => forbidden.some(word => key.toLowerCase().includes(word.toLowerCase())))) {
       return res.status(400).json({ error: 'authority-facts-are-server-owned' });
     }
+    const bodyError = windowRunBodyError(body, [...WINDOW_RUN_BINDING_FIELDS, 'artifactRef']);
+    if (bodyError) return res.status(400).json(bodyError);
     try {
       const receipt = await ctx.windowRunLivenessAuthority.recordWorkAdvance({
         windowId: body.windowId,
@@ -5964,9 +6035,10 @@ export function createRoutes(ctx: RouteContext): Router {
     // notify-on-stop Layer B: whether the stopping session is unattended
     // (autonomous). Used only to gate the user-facing notice (StopNotifier);
     // never affects the gate decision itself.
+    const stopTopicId = resolveTopicForStopGate(sessionId);
     const autonomousActive = getHotPathState({
       sessionId: sessionId || undefined,
-      topicId: resolveTopicForStopGate(sessionId),
+      topicId: stopTopicId,
       stateRoot: path.dirname(ctx.config.stateDir),
     }).autonomousActive;
 
@@ -6245,14 +6317,17 @@ export function createRoutes(ctx: RouteContext): Router {
         reminder,
         latencyMs: r.latencyMs,
       });
-      // notify-on-stop Layer B: surface a genuinely-stuck unattended stop to the
-      // user. No-ops for non-worthy decisions, attended sessions, and recent
-      // dups — see StopNotifier. Fire-and-forget; never affects the response.
+      // notify-on-stop Layer B: surface a genuinely-stuck unattended stop in
+      // the run's own topic. Log-only for `escalate`, unnamed runs, attended
+      // sessions, and recent dups — see StopNotifier. Fire-and-forget; never affects the response.
       ctx.stopNotifier?.maybeNotify({
         sessionId,
         mode,
         decision: r.decision,
         autonomousActive,
+        topicId: stopTopicId ?? null,
+        runGoal: stopTopicId ? liveAutonomousRunGoal(ctx.config.stateDir, stopTopicId) : null,
+        lastActivity: stopLastAgentMessage(body.untrustedContent.recentTurns, reasonPreview),
       });
     } else {
       // Fail-open: allow. Log with the failure kind so guardian-pulse
@@ -7828,8 +7903,17 @@ export function createRoutes(ctx: RouteContext): Router {
       enabled: cfg.enabled ?? true,
       breakerK: Math.max(2, typeof cfg.breakerK === 'number' && Number.isFinite(cfg.breakerK) ? Math.floor(cfg.breakerK) : 3),
     };
-    const livenessStatus = ctx.windowRunLivenessAuthority?.status();
-    const initialStatus = ctx.config.projectName === 'echo' && livenessStatus?.enabled === true && livenessStatus.dryRun === false ? 'preparing' : 'active';
+    // 'preparing' only while an open W32 window can actually promote this run;
+    // anything else starts active so the liveness reconciler can revive it.
+    let windowLedger: ReturnType<typeof windowStore.load> = null;
+    try { windowLedger = windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE); } catch { /* @silent-fallback-ok — an unreadable ledger is no open window: the run starts active */ }
+    const { initialStatus } = decideAutonomousStartStatus({
+      projectName: ctx.config.projectName,
+      topicId,
+      liveness: ctx.windowRunLivenessAuthority?.status(),
+      windowLedger,
+      nowMs: Date.parse(windowNow()),
+    });
     const result = autonomousRunStore.register({
       topicId,
       condition,
@@ -11471,6 +11555,46 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // Console History: a session's own conversation record, newest page first. tmux keeps
+  // no scrollback for a full-screen (alternate-screen) session, so the transcript is the
+  // only deep history. Read-only; served for sessions recorded on THIS machine.
+  router.get('/sessions/:name/transcript', async (req, res) => {
+    if (!SESSION_NAME_RE.test(req.params.name)) { res.status(400).json({ error: 'Invalid session name' }); return; }
+    // A session on another machine: ask that machine (its disk holds the record).
+    const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
+    if (machineId && machineId !== ctx.meshSelfId) {
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+      if (!peer) { res.status(404).json({ error: 'That machine is not reachable from here', reason: 'peer-unknown' }); return; }
+      const qs = new URLSearchParams();
+      if (req.query.before !== undefined) qs.set('before', String(req.query.before));
+      if (req.query.limit !== undefined) qs.set('limit', String(req.query.limit));
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/transcript?${qs}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(15_000),
+        });
+        const body = await r.json().catch(() => ({ error: `The other machine answered ${r.status}` }));
+        res.status(r.status).json(body);
+      } catch (err) {
+        res.status(502).json({ error: `The other machine did not answer: ${err instanceof Error ? err.message : String(err)}`, reason: 'peer-unreachable' });
+      }
+      return;
+    }
+    const session = ctx.state.listSessions().find((x) => x.tmuxSession === req.params.name);
+    if (!session) { res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return; }
+    const filePath = findSessionTranscript(session, ctx);
+    if (!filePath) { res.status(404).json({ error: 'This session has no conversation record yet', reason: 'no-transcript' }); return; }
+    const before = req.query.before === undefined ? undefined : Number(req.query.before);
+    const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+    if ((before !== undefined && !Number.isSafeInteger(before)) || (limit !== undefined && !Number.isSafeInteger(limit))) {
+      res.status(400).json({ error: '"before" and "limit" must be whole numbers' }); return;
+    }
+    try {
+      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit }) });
+    } catch (err) {
+      res.status(500).json({ error: `Could not read the conversation record: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
   // Model-Tier Escalation §5.3 (FABLE-MODEL-ESCALATION-SPEC): the ONE narrow
   // mid-session swap surface. Body carries a TIER only — the model id is
   // derived server-side via the §5.1 resolver and is never accepted from the
@@ -13150,6 +13274,23 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'Supervised restart is unavailable' });
     }
   });
+  router.use(createDesktopSetupRoutes({
+    enabled: () => resolveDevAgentGate(ctx.config.remoteDesktop?.guidedSetup?.enabled, ctx.config),
+    selfMachineId: () => ctx.meshSelfId ?? undefined,
+    selfLabel: () => verifiedEntityName(ctx.meshSelfId ?? '', ctx.listPoolMachines?.().find(machine => machine.machineId === ctx.meshSelfId)?.nickname) ?? 'This machine',
+    frontMachineId: () => ctx.config.remoteDesktop?.frontMachineId,
+    target: () => ctx.desktopSetupTarget ?? null,
+    peers: () => (ctx.listPoolMachines?.() ?? []).map(({ machineId, nickname }) =>
+      ({ machineId, nickname: verifiedEntityName(machineId, nickname) ?? undefined })),
+    peerCall: (id, body) => {
+      if (!ctx.desktopSetupPeerCall) throw new Error('desktop-setup-peer-unavailable');
+      return ctx.desktopSetupPeerCall(id, body);
+    },
+    frontActive: () => !!ctx.desktopMeshBroker,
+    targetKey: id => ctx.desktopTargetSigningKey?.(id) ?? null,
+    verifySession: token => ctx.verifyDashboardOperatorSession?.(token) === true,
+    transportAllowed: req => req.secure || isLoopbackPeer(req.socket.remoteAddress),
+  }));
   // ── Locked-screen access. Off everywhere by default. The enable refuses any
   // macOS without recorded P12 and P15 passes; no route originates a password.
   const lockedPatch = (body: Record<string, unknown>): Record<string, boolean> | null => {
@@ -13225,7 +13366,9 @@ export function createRoutes(ctx: RouteContext): Router {
     const peerMachines = await Promise.all(knownPeers.map(async peer => {
       try {
         if (!ctx.desktopMeshBroker || !ctx.desktopProbePeer) throw new Error('desktop-peer-unavailable');
-        return await ctx.desktopProbePeer(peer.machineId);
+        // The pool's name wins: a peer's own copy of the registry can lag a rename.
+        const probed = await ctx.desktopProbePeer(peer.machineId);
+        return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
       } catch {
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
           unavailableReason: 'Remote desktop is not ready on this machine.' };
@@ -13247,7 +13390,7 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   router.post('/desktop/requests', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!ctx.directDesktopAccess || ctx.config.remoteDesktop?.enabled === false) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);
@@ -35258,6 +35401,77 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const code = /not found/.test(msg) ? 404 : /terminal/.test(msg) ? 409 : 400;
       res.status(code).json({ error: msg });
     }
+  });
+
+  /**
+   * POST /commitments/:id/decide — the dashboard's Approve / Decline for a promise
+   * that waits only on the operator (blockedOn user-authorization or user-input).
+   * Approve hands the next step back to the agent (owner agent, blockedOn none);
+   * Decline withdraws it with the operator's reason. Either way the decision is
+   * posted in the promise's own conversation and handed to its session, so the
+   * agent acts on it without the operator re-typing it in chat.
+   */
+  router.post('/commitments/:id/decide', async (req, res) => {
+    if (!ctx.commitmentTracker) { res.status(404).json({ error: 'CommitmentTracker not configured' }); return; }
+    const body = (req.body ?? {}) as { decision?: unknown; note?: unknown };
+    const decision = body.decision === 'approve' || body.decision === 'decline' ? body.decision : null;
+    if (!decision) { res.status(400).json({ error: '"decision" must be "approve" or "decline"' }); return; }
+    // 500: a decision decisionNote is a sentence or two; the head carries it.
+    const decisionNote = typeof body.note === 'string' ? boundedHead(body.note.trim(), 500) : '';
+    const origin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const route = await resolveCommitmentRoute(req.params.id, origin);
+    if (route === 'ambiguous') { res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` }); return; }
+    const local = typeof route === 'object' ? null : ctx.commitmentTracker.get(req.params.id);
+    if (typeof route !== 'object') {
+      if (!local) { res.status(404).json({ error: `Commitment ${req.params.id} not found` }); return; }
+      if (local.status !== 'pending') { res.status(409).json({ error: `This promise is already ${local.status}` }); return; }
+      if (local.blockedOn !== 'user-authorization' && local.blockedOn !== 'user-input') {
+        res.status(409).json({ error: 'This promise is not waiting on you' }); return;
+      }
+    }
+    const reason = `Declined by the operator in the dashboard${decisionNote ? `: ${decisionNote}` : ''}`;
+    if (typeof route === 'object') {
+      await forwardMutation(res, route.forward.owner, decision === 'approve'
+        ? mutatePayload(req, route.forward.owner, 'transition', { owner: 'agent', blockedOn: 'none' })
+        : mutatePayload(req, route.forward.owner, 'withdraw', { reason }));
+      return;
+    }
+    try {
+      if (decision === 'approve') ctx.commitmentTracker.transitionState(req.params.id, { owner: 'agent', blockedOn: 'none' });
+      else if (!ctx.commitmentTracker.withdraw(req.params.id, reason)) { res.status(409).json({ error: 'This promise could not be closed' }); return; }
+    } catch (err) {
+      if (err instanceof CommitmentPersistenceError) { res.status(503).json({ error: 'commitment-persistence-unavailable' }); return; }
+      res.status(400).json({ error: (err as Error).message }); return;
+    }
+    const c = local!;
+    // 400: the promise's own words open with what was promised (its identity), so
+    // the head is kept; it is shown to the operator and the session as context.
+    const what = boundedHead(String(c.agentResponse || c.userRequest || c.id), 400);
+    const headline = decision === 'approve'
+      ? `✅ Approved in the dashboard (${c.id}): ${what}${decisionNote ? `\nNote: ${decisionNote}` : ''}`
+      : `❌ Declined in the dashboard (${c.id}): ${what}${decisionNote ? `\nReason: ${decisionNote}` : ''}`;
+    let told = false;
+    const topicId = typeof c.topicId === 'number' ? c.topicId : null;
+    if (topicId !== null && ctx.telegram) {
+      try { await ctx.telegram.sendToTopic(topicId, headline, { provenance: 'automation' }); told = true; }
+      catch (err) { console.warn(`[commitments/decide] could not post the decision in topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+      // Hand the decision to the conversation's session so the agent acts on it.
+      // It carries no sender identity: it is a record of a dashboard tap, never
+      // an operator binding or command authority.
+      try {
+        void ctx.telegram.onTopicMessage?.({
+          id: `dash-decide-${c.id}-${Date.now()}`,
+          userId: 'dashboard',
+          content: `[dashboard decision] ${decision === 'approve'
+            ? `The operator approved promise ${c.id} in the dashboard. Go ahead with: ${what}${decisionNote ? `\nTheir decisionNote: ${decisionNote}` : ''}`
+            : `The operator declined promise ${c.id} in the dashboard, so it is withdrawn. Do not do: ${what}${decisionNote ? `\nTheir reason: ${decisionNote}` : ''}`}`,
+          channel: { type: 'telegram', identifier: String(topicId) },
+          receivedAt: new Date().toISOString(),
+          metadata: { messageThreadId: topicId, senderUnverified: true, viaDashboardDecision: true, telegramMessageId: '' },
+        } as never);
+      } catch (err) { console.warn(`[commitments/decide] could not hand the decision to topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+    res.json({ ok: true, id: c.id, decision, postedInConversation: told });
   });
 
   router.post('/commitments/:id/withdraw', async (req, res) => {

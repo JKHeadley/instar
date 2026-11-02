@@ -265,6 +265,7 @@ export function WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port: number): string {
 An autonomous window is active only while FIVE independently observed predicates are green: its bound executor process is running; its bound framework transcript has a fresh heartbeat; Telegram delivery is reachable; a fresh monotone durable-work receipt exists; and the exact lifecycle/run binding is admitted and unexpired. Any missing predicate revokes active to at-risk. The authority durably permits exactly one bounded recovery; a verified green re-sample restores active, otherwise it settles loudly to stalled or failed within 15 minutes.
 - **Registry First:** GET http://localhost:${port}/window-run-liveness returns the durable state, predicate verdicts, recovery receipt, hash-chained sample/work audit, transitions, and frozen exit proof. A 503 means it is dark on this agent; never infer health from that.
 - **Durable work receipts:** POST /window-run-liveness/work-advance accepts only the immutable run binding plus a relative artifact path. The server selects the first open/unreceipted task from the run-bound autonomous checklist, resolves and hashes the artifact, rejects unchanged bytes, and mints task/sequence/time/digest; callers never submit task refs, predicate booleans, timestamps, sequences, or digests. Pane narration and spinner changes are not work evidence.
+- **Registering a window:** POST /window-run-liveness/register takes exactly five fields: \`{"windowId":"<unique per window>","topicId":<topic>,"autonomousRunId":"<runId from POST /autonomous/register>","lifecycleRunId":"<same runId for an ordinary run>","executorId":"<this session's tmux name>"}\`. Any other key (e.g. \`runId\`) or a missing field is refused with a 400 that names it; never guess a field name. A finished (failed/stalled/closed) window does not block a new one; a different window that is still live does (\`window-run-liveness-active-binding-exists\`).
 - **Preparation composition:** before lifecycle admission, the state remains preparing and does not consume the sole recovery. The separate between-window preparation carrier owns that interval.
 - **W32 cadence executor:** when explicitly enabled, GET /window-run-liveness/cadence exposes durable, distinct 30-minute interval receipts and 3-hour synthesis delivery receipts. It prompts the bound executor near a due interval but only a server-minted work receipt can pass it; narration never counts. POST /window-run-liveness/cadence/tick is the authenticated deterministic tick surface. A recovered/rebound executor continues the same cadence record instead of resetting the clock.
 - Ships on Echo development agents with dryRun:true unless explicitly enabled/actuated via monitoring.windowRunLiveness. Proactive trigger: when asked whether a window run is actually alive, stalled, or recovered, read this registry instead of trusting an “active” label.
@@ -965,6 +966,21 @@ A paired phone's signed request is accepted on any of this machine's own names: 
 - The app reads its route list from \`GET /mobile/routes\` (device-signed only; a Bearer token gets 403): \`{ machineId, version, routes: [{ kind, origin, firstVerifiedAt, lastProbeOk, lastProbeAt }] }\`, Tailscale first.
 - A probe that fails 8 times in a row pauses for that name and raises one \`MobileRoutes.probe\` degradation; the name stays listed and still works for requests that reach me.
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md).
+ * Unique content-sniff marker: `Mobile push notifications`.
+ */
+export function MOBILE_PUSH_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile push notifications — the Instar iPhone app buzzes when something needs the operator
+
+When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push, sent straight from me to Apple with the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). Apple only sees "Something needs you"; the phone fetches the title from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/push\` → \`{ enabled, keyConfigured, pausedReason, devices: [{ sent24h, throttled, pending, lastSend }], fanout }\`. \`sent\` means Apple accepted it, not that the phone showed it.
+- \`keyConfigured: false\` → the APNs key is not in my vault yet; nothing is sent. \`pausedReason\` → Apple refused the key; it clears by itself when the key, key id or team id changes.
+- Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
 `;
 }
 
@@ -8105,6 +8121,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added pre-admission autonomous continuation carrier awareness');
     }
 
+    if (!content.includes('A run that never starts is reported:')) {
+      content += '\n- **A run that never starts is reported:** `POST /autonomous/register` starts a run `active` (so a dead session is revived) unless an open W32 window can still promote it; then it starts `preparing`. Any run still `preparing` a few minutes after it registered gets ONE plain notice in its topic saying it did not start (`autonomousSessions.preparingWatchdog.enabled: false` silences it). Proactive: user says "the autonomous session never started" → GET /autonomous/sessions and start the run again.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-started autonomous run awareness');
+    }
+
     if (!content.includes('Authoritative Window Run Liveness')) {
       content += WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port);
       patched = true;
@@ -8142,6 +8164,15 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(oldTriageLine, currentTriageLine);
       patched = true;
       result.upgraded.push('CLAUDE.md: corrected script result supervision wording');
+    }
+
+    if (content.includes('Authoritative Window Run Liveness') && !content.includes('**Registering a window:**')) {
+      const line = WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port).split('\n').find(entry => entry.startsWith('- **Registering a window:**'));
+      if (line) {
+        content += `\n${line}\n`;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added window-run-liveness register body awareness');
+      }
     }
 
     if (!content.includes('W32 cadence executor:')) {
@@ -8606,6 +8637,13 @@ setTimeout(() => process.exit(0), 2000);
       content += MOBILE_ROUTES_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Mobile app routes section');
+    }
+
+    // Mobile push (docs/specs/mobile-push.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile push notifications')) {
+      content += MOBILE_PUSH_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile push notifications section');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.
@@ -11490,6 +11528,27 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
     }
 
+    // Reap notices: a background job whose work completed normally no longer
+    // posts to the lifeline (reap-notify spec R1.1, amended 2026-11-01). Patch the
+    // already-installed sentence in place so the agent does not tell the user to
+    // expect a lifeline notice for every finished job. Idempotent: the old
+    // sentence is gone after the first run.
+    {
+      const oldReapSentence = '(bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline)';
+      if (content.includes(oldReapSentence)) {
+        content = content.replace(oldReapSentence, '(bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline — except a background job whose work completed normally, which stays in the reap-log only)');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reap notices — routine job completions stay in the reap-log');
+      }
+      // The Reap-log section (templates.ts) states the same rule in its own words.
+      const oldReapLogSentence = '(bursts coalesce per topic; the lifeline gets unbound sessions + a cross-topic index)';
+      if (content.includes(oldReapLogSentence)) {
+        content = content.replace(oldReapLogSentence, '(bursts coalesce per topic; the lifeline gets unbound sessions + a cross-topic index — except a background job whose work completed normally, which stays in the reap-log only)');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reap-log section — routine job completions stay in the reap-log');
+      }
+    }
+
     // Mid-Work Resume Queue + per-topic reap notices (reap-notify spec).
     // Existing agents only learn the new surfaces through this block — an
     // agent that doesn't know /sessions/resume-queue exists will tell the
@@ -11501,7 +11560,7 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
 
 When sessions are shut down autonomously (resource pressure, quota, age limits), two guarantees now apply:
 
-1. **Every affected conversation is told, durably.** Each topic that lost a session gets ONE plain-English notice in THAT topic (bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline). Delivery is durable — notices queue in a store and an always-on drain retries with backoff; every outcome lands in the reap-log as \`type:'notify'\` records, so "did the user get told?" is auditable.
+1. **Every affected conversation is told, durably.** Each topic that lost a session gets ONE plain-English notice in THAT topic (bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline — except a background job whose work completed normally, which stays in the reap-log only). Delivery is durable — notices queue in a store and an always-on drain retries with backoff; every outcome lands in the reap-log as \`type:'notify'\` records, so "did the user get told?" is auditable.
 2. **Work interrupted mid-flight is queued for revival.** A session killed with strong work evidence (an active build/autonomous run, an open commitment, a live subagent) is tagged \`midWork:true\` and queued in a durable per-machine resume queue. Once the machine has been calm for several minutes AND quota allows, sessions are revived ONE AT A TIME in order (interactive before jobs, then first-in-first-out). Ships observe-only (dry-run) by default; jobs only participate when their definition sets \`resumeOnReap: true\`.
 
 - Queue state: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/resume-queue"\` → entries + paused/breaker/lastTickAt (a wedged drainer is visible here).
@@ -13765,6 +13824,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '## Worktree Notices',
       '**Multi-Session Autonomy**',
       '- **Pre-admission continuation carrier:**',
+      '- **A run that never starts is reported:**',
       '### Authoritative Window Run Liveness',
       '- **W32 cadence executor:**',
       '**Codex quota is first-class in the pool:',

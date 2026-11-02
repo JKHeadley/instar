@@ -17,6 +17,7 @@ import {
   regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor,
   KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, HISTORY_MAX,
   isInternalSession, attachmentMessage, OPERATOR_CREATED,
+  historyUrl, historyErrorWords, historyText,
 } from '../../dashboard/console/sessions-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
 
@@ -151,6 +152,20 @@ describe('internal sessions and attachments', () => {
   it('an attachment message keeps the text and names each saved file', () => {
     expect(attachmentMessage('look at this', ['/a/x.png'])).toBe('look at this\n[Attached file from the dashboard: /a/x.png (read it to see what I sent)]');
     expect(attachmentMessage('  ', ['/a/x.png', '/a/y.txt']).split('\n')).toHaveLength(2);
+  });
+});
+
+describe('history', () => {
+  it('reads this machine directly and another machine through it, a page at a time', () => {
+    expect(historyUrl({ tmuxSession: 'echo-fix' })).toBe('/sessions/echo-fix/transcript?limit=150');
+    expect(historyUrl({ tmuxSession: 'echo-fix', remote: true, machineId: 'm-mama' }, 1234)).toBe('/sessions/echo-fix/transcript?limit=150&before=1234&machineId=m-mama');
+  });
+  it('a failed read is never "no history", and a chat prefix is dropped from what was said', () => {
+    expect(historyErrorWords({ ok: false, status: 404, data: { reason: 'no-transcript' } })).toBe('This session has no conversation record yet.');
+    expect(historyErrorWords({ ok: false, status: 500, data: {} })).toBe('Can’t tell: the server answered 500.');
+    expect(historyErrorWords({ ok: false, status: 0, data: {} })).toBe('Can’t tell: the server could not be reached.');
+    expect(historyText({ role: 'user', text: '[telegram:127504 "x" from Justin (uid:1)] hello' })).toBe('hello');
+    expect(historyText({ role: 'assistant', text: '[telegram:1] kept' })).toBe('[telegram:1] kept');
   });
 });
 

@@ -11,7 +11,7 @@ import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
   platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
-  canSwitchDoor, attachmentMessage, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
+  canSwitchDoor, attachmentMessage, historyUrl, historyErrorWords, historyText, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -266,7 +266,13 @@ function openView(box, row) {
   attachBtn.addEventListener('click', () => filePick.click());
   filePick.addEventListener('change', () => { addFiles([...filePick.files]); filePick.value = ''; });
   const tray = el('div', { class: 'keys-tray', hidden: true });
-  const view = { key: row.key, s, titleSub, statusLine, termBox, resume, following: true, pending: null, loaded: HISTORY_FIRST, exhausted: false, loading: false, term: null, fit: null, pre: null };
+  // Live (the terminal) or History (the conversation record, which goes back to the start:
+  // a full-screen session keeps no terminal scrollback).
+  const historyBox = el('div', { class: 'sess-history', hidden: true, 'aria-label': 'Conversation history' });
+  const liveTab = el('button', { class: 'chip sess-tab', type: 'button', text: 'Live', 'aria-pressed': 'true', 'data-tab': 'live' });
+  const historyTab = el('button', { class: 'chip sess-tab', type: 'button', text: 'History', 'aria-pressed': 'false', 'data-tab': 'history' });
+  const tabs = el('div', { class: 'sess-tabs', role: 'group', 'aria-label': 'View' }, liveTab, historyTab);
+  const view = { key: row.key, s, titleSub, statusLine, termBox, historyBox, history: null, resume, following: true, pending: null, loaded: HISTORY_FIRST, exhausted: false, loading: false, term: null, fit: null, pre: null };
   st.view = view;
 
   // Keys: the ordinary ones, then Stop separated, red, and asked once.
@@ -316,14 +322,24 @@ function openView(box, row) {
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendText(); } });
   more.addEventListener('click', () => moreSheet(view));
   resume.addEventListener('click', () => backToLive());
+  const showTab = (which) => {
+    const hist = which === 'history';
+    liveTab.setAttribute('aria-pressed', hist ? 'false' : 'true'); historyTab.setAttribute('aria-pressed', hist ? 'true' : 'false');
+    termBox.hidden = hist; historyBox.hidden = !hist; if (hist) resume.hidden = true;
+    if (hist && !view.history) openHistory(view);
+    if (!hist && view.fit) requestAnimationFrame(() => { try { view.fit.fit(); } catch { /* not visible yet */ } });
+  };
+  liveTab.addEventListener('click', () => showTab('live'));
+  historyTab.addEventListener('click', () => showTab('history'));
 
   setKids(box, el('div', { class: 'sess-open', 'data-open': row.key },
     el('div', { class: 'sess-bar' },
       el('a', { class: 'chip icon-btn sess-back', href: listHref, 'aria-label': 'All sessions', text: '‹' }),
       el('div', { class: 'sess-titles' }, el('h1', { class: 'sess-title', text: row.title }), titleSub),
       more),
+    tabs,
     statusLine,
-    el('div', { class: 'sess-term-wrap' }, termBox, resume),
+    el('div', { class: 'sess-term-wrap' }, termBox, historyBox, resume),
     chips,
     composer,
     tray));
@@ -414,6 +430,50 @@ function writeHistory(msg) {
 function sendKey(key) {
   if (!st.view) return;
   if (!wsSend(frame('key', st.view.s, { key }))) setStatus('Not sent: live updates are paused.');
+}
+
+// ── History: the conversation record, newest at the bottom, older on scroll-up ──
+async function openHistory(view) {
+  view.history = { before: null, done: false, loading: false, count: 0 };
+  view.historyBox.addEventListener('scroll', () => { if (view.historyBox.scrollTop < 200) loadHistory(view); });
+  await loadHistory(view);
+}
+
+async function loadHistory(view) {
+  const h = view.history;
+  if (!h || h.loading || h.done || st.view !== view) return;
+  h.loading = true;
+  const box = view.historyBox;
+  const marker = el('p', { class: 'sess-history-note', text: h.count ? 'Loading earlier messages…' : 'Loading the conversation…' });
+  box.prepend(marker);
+  const res = await send('GET', historyUrl(view.s, h.before));
+  marker.remove();
+  h.loading = false;
+  if (st.view !== view) return;
+  if (!res.ok || !res.data || !Array.isArray(res.data.entries)) {
+    h.done = true;
+    box.prepend(el('p', { class: 'sess-history-note', text: historyErrorWords(res) }));
+    return;
+  }
+  const first = !h.count;
+  const prevHeight = box.scrollHeight, prevTop = box.scrollTop;
+  const frag = document.createDocumentFragment();
+  for (const e of res.data.entries) {
+    const text = historyText(e);
+    if (!text) continue;
+    const when = e.at ? new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+    frag.append(e.role === 'tool'
+      ? el('p', { class: 'sess-h sess-h-tool', text: `→ ${text}` })
+      : el('div', { class: `sess-h sess-h-${e.role}` }, el('div', { class: 'sess-h-who', text: [e.role === 'user' ? 'Message in' : 'Session', when].filter(Boolean).join(' · ') }), el('div', { class: 'sess-h-text', text })));
+  }
+  h.count += res.data.entries.length;
+  h.before = res.data.nextBefore;
+  if (h.before == null) { h.done = true; frag.prepend(el('p', { class: 'sess-history-note', text: h.count ? 'The start of this conversation.' : 'Nothing has been said in this session yet.' })); }
+  box.prepend(frag);
+  if (first) box.scrollTop = box.scrollHeight;
+  else box.scrollTop = prevTop + (box.scrollHeight - prevHeight);
+  // A short first page may not fill the box: keep loading until it scrolls.
+  if (!h.done && box.scrollHeight <= box.clientHeight + 200) loadHistory(view);
 }
 
 function leaveView() {

@@ -121,6 +121,32 @@ export function isInternalSession(s) {
   return (s.platform || 'headless') === 'headless' && s.triggeredBy !== OPERATOR_CREATED;
 }
 
+/** The History read for a session: its conversation record, a page at a time. A session
+ *  on another machine is read through this machine, which asks the owner. */
+export const HISTORY_PAGE = 150;
+export function historyUrl(s, before = null) {
+  const q = new URLSearchParams({ limit: String(HISTORY_PAGE) });
+  if (before != null) q.set('before', String(before));
+  if (s.remote && s.machineId) q.set('machineId', s.machineId);
+  return `/sessions/${encodeURIComponent(s.tmuxSession)}/transcript?${q}`;
+}
+
+/** Words for a failed History read: never "no history" when the read failed. */
+export function historyErrorWords(res) {
+  const d = (res && res.data) || {};
+  if (d.reason === 'no-transcript') return 'This session has no conversation record yet.';
+  if (d.reason === 'peer-unreachable' || d.reason === 'peer-unknown') return `Can’t tell: ${d.error || 'the session’s machine did not answer'}.`;
+  const why = d.error || (res && res.reason) || (res && res.status ? `the server answered ${res.status}` : 'the server could not be reached');
+  return `Can’t tell: ${String(why).replace(/\.$/, '')}.`;
+}
+
+/** A user line from a chat bridge carries a routing prefix; show only what was said. */
+export function historyText(e) {
+  let t = String((e && e.text) || '');
+  if (e && e.role === 'user') t = t.replace(/^\[(telegram|slack|whatsapp):[^\]]*\]\s*/, '');
+  return t;
+}
+
 export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicNames = {}, showInternal = false } = {}) {
   if (!sessionsRes || !sessionsRes.ok) return { ok: false, reason: `Couldn’t list sessions: ${(sessionsRes && sessionsRes.reason) || 'no answer'}.` };
   const data = sessionsRes.data || {};
