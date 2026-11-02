@@ -38,6 +38,8 @@ const PENDING_BASELINE = [
   // feedback-triage-and-execution Phase 1 (2026-10-08): operator-approved per-deployment triage authority and its
   // cross-family second opinion; graded triage-side (weekly cross-family sample + recurrence) until a bench task lands.
   'FeedbackTriageArbiter', 'FeedbackTriageSecondOpinion',
+  // ecosystem-idea-pipeline (2026-11-01): advisory review graded by its monthly audit and adoption predictions.
+  'EcosystemIdeaReview',
   // job-cost-reduction §5.6.5 (2026-10-26): the daily script-job review; graded by its must-flag canary until a bench task lands.
   'ScriptJobSupervisor',
   'JobTriageBackupCheck', // outage-only sampled classifier pending a dedicated bench task

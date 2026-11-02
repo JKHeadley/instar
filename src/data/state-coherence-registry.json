@@ -2040,6 +2040,24 @@
         "complianceHold": true,
         "note": "Never pruned by design: a message signed by a key must stay checkable after the key is revoked. One activation and at most one revocation row per paired phone key per writing machine, so it grows only with pairings."
       }
+    },
+    {
+      "category": "ecosystem-ideas",
+      "description": "The ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md): an append-only event ledger that replicates as the ecosystemIdeas store, a per-machine framework admission record and notice dedupe. Source mirrors and index.db in the same directory are a rebuildable cache.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "state/ecosystem/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "note": "Never pruned by design: keeping declined and stopped ideas stops the same idea being argued twice, and adoption predictions are graded against the record. Volume is small: one row per idea revision, stage change and weekly run."
+      }
     }
   ]
 }

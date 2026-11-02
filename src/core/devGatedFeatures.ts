@@ -864,6 +864,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Measure-only: reads existing owner stores (never writes to them), appends its own bounded ledger and tick rows, no LLM spend, no outbound messages while notices.dryRun holds (the default). The only acting part, the triage pace tuner, has its OWN explicit flag queuePace.tuner.enabled (default false, never dev-gated, dry-run by default), so this gate cannot start extra ticks.',
   },
   {
+    name: 'ecosystemIdeas',
+    configPath: 'ecosystemIdeas.enabled',
+    description: 'Ecosystem idea pipeline: a weekly review of similar projects that checks each idea against our own source and goals and ranks it. Advice only; it builds nothing and contacts no one. Reads outside text only through frameworks that pass a must-fail file-read probe.',
+    justification: 'Signal only: it gates no running agent and writes only its own ledger. Spend is capped per run and paused at the quota threshold. The one blocking piece, the adoption lint, runs on a development step.',
+  },
+  {
     name: 'mobilePairing',
     configPath: 'mobilePairing.enabled',
     description: 'Mobile pairing links and device keys: a one-time instar.sh link adds this agent to the Instar iPhone app; each phone gets its own owner-confirmed, individually revocable key (POST /mobile/pairing-codes, public redeem over the named tunnel, device-signed confirm/status, GET /mobile/devices, revoke), and operator chat from the app (POST /mobile/chat/:topicId).',

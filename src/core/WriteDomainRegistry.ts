@@ -604,6 +604,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route',
     method: 'POST',
+    pathPrefix: '/ecosystem-ideas/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the routes answer 409 naming the holder on any machine not holding the serving lease, and ledger writes are epoch-fenced; events then replicate as the ecosystemIdeas store (docs/specs/ecosystem-idea-pipeline.md)',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
     pathPrefix: '/app/session-reply',
     domain: 'machine-local',
     story: {

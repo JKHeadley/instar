@@ -149,3 +149,11 @@ describe('inbound-safety live-coverage note', () => {
     expect(typeof LIVE).toBe('boolean');
   });
 });
+
+describe('no-tools form (docs/specs/ecosystem-idea-pipeline.md §1)', () => {
+  it('offers the model no tools only when asked', () => {
+    const on = buildClaudeReviewerArgs('m', undefined, true);
+    expect(on[on.indexOf('--tools') + 1]).toBe('');
+    expect(buildClaudeReviewerArgs('m')).not.toContain('--tools');
+  });
+});

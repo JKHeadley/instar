@@ -27,6 +27,7 @@ import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
+import { renderIdeas, ideasTile } from './ideas.js';
 import { paceCard } from './pace.js';
 import { sheetIsOpen, closeSheet, unlockCheck } from './ui.js';
 
@@ -538,6 +539,7 @@ function renderGroup(main, g) {
     el('div', { class: 'tiles' }, g.tabs.map((t) => tile(t))),
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
     ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
+    ...(g.id === 'work' ? [ideasTile(get)] : []), // shown only when /ecosystem-ideas answers
     ...(g.id === 'work' ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
   ];
   if (g.hood && g.hood.length) {
@@ -567,6 +569,7 @@ const NATIVE = {
   'work/schedule': renderSchedule,
   'work/development': renderDevelopment,
   'work/maturation': renderMaturation,
+  'work/ideas': renderIdeas,
   'work/sessions': renderSessions,
   'capacity/machines': renderMachines,
   'capacity/accounts': renderAccounts,

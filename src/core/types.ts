@@ -1140,7 +1140,9 @@ export interface IntelligenceOptions {
    * word resolves to opus, the penalized pair). Other providers ignore this
    * field (they are already hardened by their own scratch/stdin/env allowlist).
    */
-  reviewerHardening?: { model: string; jsonSchema?: string };
+  reviewerHardening?: { model: string; jsonSchema?: string; noTools?: boolean };
+  /** Codex: run with its local tools disabled, for a call whose prompt holds outside text. */
+  noLocalTools?: boolean;
   /** Audited decisions require one CLI model attempt per durable call row. */
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
@@ -3936,6 +3938,15 @@ export interface InstarConfig {
    * developmentAgent gate decides (measure-only). The tuner has its OWN explicit flag, never
    * dev-gated, because extra ticks spend real quota.
    */
+  /** docs/specs/ecosystem-idea-pipeline.md. Omitted `enabled` resolves through the dev gate. */
+  ecosystemIdeas?: {
+    enabled?: boolean;
+    sourceRoots?: Array<{ repo: string; ref?: string; docGlobs?: string[] }>;
+    purposeDoc?: { repo: string; file: string } | null;
+    cadenceHours?: number;
+    limits?: Partial<{ tokensPerProject: number; tokensPerRun: number; candidatesPerProject: number; charsPerPacket: number; charsPerFile: number; filesPerRun: number }>;
+    agentStartsSpecs?: boolean;
+  };
   queuePace?: {
     enabled?: boolean;
     tuner?: {

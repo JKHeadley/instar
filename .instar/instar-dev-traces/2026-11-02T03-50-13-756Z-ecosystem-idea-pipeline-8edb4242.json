@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "ecosystem-idea-pipeline",
+  "sessionId": "18604a86-3b10-4658-ba57-581bcce3d6ca",
+  "timestamp": "2026-11-02T03:50:13.756Z",
+  "artifactPath": "upgrades/side-effects/ecosystem-idea-pipeline.md",
+  "artifactSha256": "6416c5fea44ad774f13be19711b19ae1d0396848980b8bd2455130109254d78e",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/ideas.js"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Page styling only, a revert fully undoes it",
+  "eli16Path": "docs/specs/ecosystem-idea-pipeline.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ecosystem-idea-pipeline.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

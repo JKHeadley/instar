@@ -1029,6 +1029,53 @@ const feedbackTriageTick: SelfActionController = {
 };
 
 /**
+ * ecosystem-idea-review — retrying a failed project review (docs/specs/ecosystem-idea-pipeline.md, Failure handling).
+ *
+ * Convergence argument: under sustained pressure (the project never reviews cleanly) the service
+ * makes at most 3 attempts in a cycle with backoff, waits out the week through the durable
+ * cycleExhaustedUntil, and opens a breaker after 3 failed cycles, after which it stops until the
+ * operator retries or a review succeeds. The counters live in the replicated ledger, so a restart
+ * buys no fresh attempts. Nine attempts in total, then silence.
+ */
+const ecosystemIdeaReview: SelfActionController = {
+  id: 'ecosystem-idea-review',
+  actionVerb: 'retry-project-review',
+  models: 'src/ecosystem/EcosystemIdeaService.ts (3 attempts per cycle with backoff, durable cycleExhaustedUntil, breaker after 3 failed cycles)',
+  modelsPath: 'src/ecosystem/EcosystemIdeaService.ts',
+  boundK: 9,
+  perTargetBoundK: 9,
+  ticks: 24 * 7 * 8,
+  tickMs: 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return ecosystemIdeaReview.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WEEK = 7 * 24 * 60 * 60_000;
+    const BACKOFF = [30 * 60_000, 2 * 60 * 60_000];
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const failedCycles = (f.durableState.get('ecosystem-failed-cycles') as number | undefined) ?? 0;
+      if (failedCycles >= 3) return;
+      const notBefore = (f.durableState.get('ecosystem-not-before') as number | undefined) ?? 0;
+      if (now < notBefore) return;
+      const attempt = ((f.durableState.get('ecosystem-attempt') as number | undefined) ?? 0) + 1;
+      sink.emit({ verb: 'retry-project-review', target: 'failing-project' });
+      sink.emitTimesMs.push(now);
+      if (attempt >= 3) {
+        f.durableState.set('ecosystem-attempt', 0);
+        f.durableState.set('ecosystem-failed-cycles', failedCycles + 1);
+        f.durableState.set('ecosystem-not-before', now + WEEK);
+      } else {
+        f.durableState.set('ecosystem-attempt', attempt);
+        f.durableState.set('ecosystem-not-before', now + BACKOFF[attempt - 1]);
+      }
+    } };
+  },
+};
+
+/**
  * queue-pace-extra-run — the queue-pace tuner's extra feedback-triage ticks (docs/specs/queue-pace.md §3).
  *
  * Convergence argument: under sustained pressure (the triage queue keeps falling behind with a
@@ -3368,6 +3415,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   overloadAdmissionSelfHelp,
   overloadShed,
   feedbackTriageTick,
+  ecosystemIdeaReview,
   queuePaceExtraRun,
   jobScriptTriageEpisode,
   jobScriptTriageBackup,
