@@ -114,7 +114,9 @@ The review kept the feature's refusals to fixed invariants plus the existing cre
 ## Second-pass review (if required)
 
 **Reviewer:** independent subagent, second pass, 2026-11-01
-**Independent read of the artifact: concern** (a confirming pass is still to be run; the findings below were each checked against the code and fixed in this change).
+**Confirming pass, 2026-11-02 00:33: concur.** The same reviewer re-read fixes 1-4 in commit 3da3c3eae and agreed; finding 5 and item 6 stay declared. The piped-caption follow-up (dd2cb9d75) answers its one suggestion.
+
+**Independent read of the artifact: concern** (the first pass; the findings below were each checked against the code and fixed in this change).
 
 - **Data loss: a purge in the send gap could delete a deduplicated blob.** `applyReferences` removed a blob once every reference was purged, without checking uploads still in flight, while the send path awaited a re-hash between claiming and publishing. Fixed: a hash named by an upload that is open, assembling, complete or claimed is never removed, and the send now hashes first (`verifyClaimed`, async) and then publishes and appends with no await between them (`publishVerified` then `append`). Test: a purge pass run between verify and publish leaves the blob in place, and it survives the event landing.
 - **An upload expired during assembly could come back as complete.** The finish update is now conditional on `state = 'assembling'`; an upload expired meanwhile stays expired and cannot be claimed. Test with the expiry landing while the worker hashes.
