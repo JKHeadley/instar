@@ -12,7 +12,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { MacDesktopHost, macDesktopHelperPath } from '../../src/core/MacDesktopHost.js';
 import { publishDashboardPreview } from '../../src/server/dashboardPreview.js';
 
 async function boot(enabled: boolean, frontConfigured = true) {
@@ -136,6 +136,28 @@ describe('native desktop production boot', () => {
     } finally {
       await server.stop();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop-boot-lifecycle cleanup' });
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')('reports which helper copy is live on the production diagnostics route', async () => {
+    const { server, dir, config } = await boot(true);
+    try {
+      const response = await request(server.getApp()).get('/desktop/diagnostics')
+        .set('Authorization', `Bearer ${config.authToken}`);
+      expect(response.status).toBe(200);
+      expect(response.body.targetConstructed).toBe(true);
+      // Under a test runner the kept copy stays off by default, so a test can
+      // never touch this Mac's real one. Asserting the fallback proves the
+      // retention object reached the host through the production constructor.
+      expect(response.body.helperSource).toBe('packaged');
+      expect(response.body.helperFallback).toBe('disabled');
+      // Guided setup names what the production host serves, not what retention would pick.
+      const served = server['macDesktopHost']!.servedHelperPath();
+      expect(served).toBe(macDesktopHelperPath());
+      expect((await server['desktopSetupTarget']!.status()).helperPath).toBe(served);
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/desktop-boot-lifecycle.test.ts:helper-diagnostics' });
     }
   });
 

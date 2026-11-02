@@ -221,7 +221,7 @@ describe('window run liveness production wiring', () => {
     expect(atRiskLocal).toContain('active: false');
     expect(atRiskLocal).toContain('status: at-risk');
     expect(atRiskLocal).toContain('Do not replace this body.');
-    const durable = JSON.parse(fs.readFileSync(path.join(project.stateDir, 'window-run-liveness', 'state.json'), 'utf8'));
+    const durable = JSON.parse(fs.readFileSync(path.join(project.stateDir, 'window-run-liveness', 'topics', '36966', 'state.json'), 'utf8'));
     expect(durable.recoveryAttempt.attemptId).toBe(atRisk.body.recoveryAttempt.attemptId);
   });
 
@@ -269,7 +269,7 @@ describe('window run liveness observe-only production boundary', () => {
         getStatus: () => ({ started: true, fatalReason: null, lastError: null, consecutivePollErrors: 0 }),
       } as never,
       windowLifecycleNow: () => new Date(baseMs + 1).toISOString(),
-      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness }), tick: async () => liveness } as never,
+      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness, states: [liveness] }), tick: async () => liveness } as never,
     });
     await server.start();
     try {

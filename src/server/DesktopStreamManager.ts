@@ -95,6 +95,11 @@ export class DesktopStreamManager {
     let heldButton: DesktopButton | null = null;
     const heldKeys = new Set<string>();
     let holdTimer: ReturnType<typeof setTimeout> | undefined;
+    // Counts only (no screen content, grant or operator): where did the
+    // pictures go? Logged once when the stream closes.
+    const stats = { startedAt: Date.now(), ticks: 0, backpressure: 0, captures: 0, unchanged: 0,
+      captureMsTotal: 0, captureMsMax: 0, captureFailed: 0, sent: 0, sentBytes: 0,
+      droppedBudget: 0, droppedBuffer: 0, droppedSize: 0 };
     const refreshHoldLease = () => {
       if (!heldButton && heldKeys.size === 0) return;
       if (holdTimer) clearTimeout(holdTimer);
@@ -110,6 +115,7 @@ export class DesktopStreamManager {
       closed = true;
       // Reason code only: never log the grant, operator, screen, or input.
       console.warn(`[DesktopStream] closed: ${reason}`);
+      console.warn(`[DesktopStream] frames: ${JSON.stringify(desktopStreamFrameSummary(stats, Date.now()))}`);
       if (timer) clearTimeout(timer);
       if (holdTimer) clearTimeout(holdTimer);
       if (this.sockets.get(session.grantId) === ws) this.sockets.delete(session.grantId);
@@ -123,13 +129,22 @@ export class DesktopStreamManager {
       try {
         await session.assertActive();
         if (closed) return;
+        stats.ticks++;
         // A slow browser never causes a queue of screen images to accumulate.
+        if (ws.bufferedAmount >= MAX_VIDEO_BUFFERED_BYTES) stats.backpressure++;
         if (ws.bufferedAmount < MAX_VIDEO_BUFFERED_BYTES) {
           let frame: Buffer | null;
+          const captureStarted = Date.now();
           try {
             frame = await session.captureEncrypted();
             captureFailures = 0;
+            const captureMs = Date.now() - captureStarted;
+            stats.captures++;
+            stats.captureMsTotal += captureMs;
+            stats.captureMsMax = Math.max(stats.captureMsMax, captureMs);
+            if (!frame) stats.unchanged++;
           } catch {
+            stats.captureFailed++;
             // A single ScreenCaptureKit timeout is a lost frame. Admission and
             // OS readiness are checked again on the next tick; revocation
             // itself closes this socket through closeGrant immediately.
@@ -149,8 +164,15 @@ export class DesktopStreamManager {
             && ws.bufferedAmount + frame.length <= MAX_BUFFERED_BYTES) {
             videoBudget -= frame.length;
             ws.send(frame, { binary: true }, error => { if (error) close('transport-lost'); });
+            stats.sent++;
+            stats.sentBytes += frame.length;
             session.frameQueued?.();
-          } else if (frame) session.frameDropped?.();
+          } else if (frame) {
+            if (frame.length < 28 || frame.length > MAX_FRAME_BYTES) stats.droppedSize++;
+            else if (frame.length > videoBudget) stats.droppedBudget++;
+            else stats.droppedBuffer++;
+            session.frameDropped?.();
+          }
         }
       } catch { /* @silent-fallback-ok — close records the reason and revokes access. */ close('authority-failed'); return; }
       if (!closed) {
@@ -244,4 +266,21 @@ export class DesktopStreamManager {
     ws.on('error', () => close('socket-error'));
     void nextFrame();
   }
+}
+
+/** Per-stream picture counts for the close log: rates, not content. */
+export function desktopStreamFrameSummary(stats: {
+  startedAt: number; ticks: number; backpressure: number; captures: number; unchanged: number;
+  captureMsTotal: number; captureMsMax: number; captureFailed: number; sent: number; sentBytes: number;
+  droppedBudget: number; droppedBuffer: number; droppedSize: number;
+}, now: number): Record<string, number> {
+  const seconds = Math.max(0.001, (now - stats.startedAt) / 1000);
+  const { startedAt: _startedAt, captureMsTotal, ...counts } = stats;
+  return {
+    ...counts,
+    seconds: Math.round(seconds),
+    sentPerSecond: Math.round((stats.sent / seconds) * 10) / 10,
+    captureMsAvg: stats.captures ? Math.round(captureMsTotal / stats.captures) : 0,
+    kbitPerSecond: Math.round((stats.sentBytes * 8) / 1000 / seconds),
+  };
 }

@@ -265,7 +265,7 @@ export function WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port: number): string {
 An autonomous window is active only while FIVE independently observed predicates are green: its bound executor process is running; its bound framework transcript has a fresh heartbeat; Telegram delivery is reachable; a fresh monotone durable-work receipt exists; and the exact lifecycle/run binding is admitted and unexpired. Any missing predicate revokes active to at-risk. The authority durably permits exactly one bounded recovery; a verified green re-sample restores active, otherwise it settles loudly to stalled or failed within 15 minutes.
 - **Registry First:** GET http://localhost:${port}/window-run-liveness returns the durable state, predicate verdicts, recovery receipt, hash-chained sample/work audit, transitions, and frozen exit proof. A 503 means it is dark on this agent; never infer health from that.
 - **Durable work receipts:** POST /window-run-liveness/work-advance accepts only the immutable run binding plus a relative artifact path. The server selects the first open/unreceipted task from the run-bound autonomous checklist, resolves and hashes the artifact, rejects unchanged bytes, and mints task/sequence/time/digest; callers never submit task refs, predicate booleans, timestamps, sequences, or digests. Pane narration and spinner changes are not work evidence.
-- **Registering a window:** POST /window-run-liveness/register takes exactly five fields: \`{"windowId":"<unique per window>","topicId":<topic>,"autonomousRunId":"<runId from POST /autonomous/register>","lifecycleRunId":"<same runId for an ordinary run>","executorId":"<this session's tmux name>"}\`. Any other key (e.g. \`runId\`) or a missing field is refused with a 400 that names it; never guess a field name. A finished (failed/stalled/closed) window does not block a new one; a different window that is still live does (\`window-run-liveness-active-binding-exists\`).
+- **Registering a window:** POST /window-run-liveness/register takes exactly five fields: \`{"windowId":"<unique per window>","topicId":<topic>,"autonomousRunId":"<runId from POST /autonomous/register>","lifecycleRunId":"<same runId for an ordinary run>","executorId":"<this session's tmux name>"}\`. Any other key (e.g. \`runId\`) or a missing field is refused with a 400 that names it; never guess a field name. Each topic keeps its own binding, so a run in one topic never blocks a run in another. Within a topic, a finished (failed/stalled/closed) window does not block a new one; a different window still live in that topic does (\`window-run-liveness-active-binding-exists\`), and one window cannot be live in two topics (\`window-run-liveness-window-bound-elsewhere\`). Add \`?topicId=N\` to GET /window-run-liveness or the cadence routes to read one topic's binding.
 - **Preparation composition:** before lifecycle admission, the state remains preparing and does not consume the sole recovery. The separate between-window preparation carrier owns that interval.
 - **W32 cadence executor:** when explicitly enabled, GET /window-run-liveness/cadence exposes durable, distinct 30-minute interval receipts and 3-hour synthesis delivery receipts. It prompts the bound executor near a due interval but only a server-minted work receipt can pass it; narration never counts. POST /window-run-liveness/cadence/tick is the authenticated deterministic tick surface. A recovered/rebound executor continues the same cadence record instead of resetting the clock.
 - Ships on Echo development agents with dryRun:true unless explicitly enabled/actuated via monitoring.windowRunLiveness. Proactive trigger: when asked whether a window run is actually alive, stalled, or recovered, read this registry instead of trusting an “active” label.
@@ -951,6 +951,24 @@ The session's bind token is the only destination; the script takes no conversati
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
 - **When to use** (PROACTIVE): a message tagged \`[app:…]\` → reply with app-reply.sh. "Did my app message arrive / is it really from me?" → read the message's \`deliveryState\` and \`originVerified\`, never infer it from the text.
+`;
+}
+
+export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
+
+/**
+ * CLAUDE.md awareness block for media in app conversations (docs/specs/mobile-native-chat-media.md).
+ * Its own section, sniffed by its exact heading.
+ */
+export function APP_MEDIA_CLAUDEMD_SECTION(): string {
+  return `\n${APP_MEDIA_CLAUDEMD_MARKER}
+
+App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, \`[voice:<path>] <transcript>\`. Read the file at that path; the copy is mine and a change to it never touches the stored file.
+- **Earlier files** are listed in the context file by name with an attachment id. Open one with \`.instar/scripts/app-media-path <attachment id>\`, which prints a path.
+- **Reply with files**: \`.instar/scripts/app-reply.sh --file <path> "Here it is"\` (up to 10 \`--file\`, before the text; the caption is the text argument or piped in, read with a bounded wait; 50 MiB each, 64 MiB per reply). Put a generated file in \`.instar/app-media/outbox/\`, the project or the temporary directory.
+- **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
+- Sizes and counts are in the authenticated \`/health\` → \`appMedia\`; a count reading null has not been measured yet. Gate: \`mobilePairing.native.media.enabled\` (omitted ⇒ the development-agent gate; needs \`mobilePairing.native.enabled\`); \`mobilePairing.native.media.maxStoreBytes\` caps the store (default 20 GiB).
+- **When to use** (PROACTIVE): the operator asks for a file, a document or an image in an app conversation → send it with \`--file\` rather than describing it. "Is my file intact?" → history shows each file's \`bytes\` (\`verified\`, \`not-here\`, \`mismatch\`, \`removed\`). A file on another of my machines reads \`not-here\` until copies between machines ship.
 `;
 }
 
@@ -8193,6 +8211,18 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
+    // Liveness became one binding per topic: the old sentence said a live window blocks every other.
+    const singleSlotSentence = 'A finished (failed/stalled/closed) window does not block a new one; a different window that is still live does (`window-run-liveness-active-binding-exists`).';
+    if (content.includes(singleSlotSentence)) {
+      const line = WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port).split('\n').find(entry => entry.startsWith('- **Registering a window:**'));
+      const current = line?.slice(line.indexOf('Each topic keeps its own binding'));
+      if (current) {
+        content = content.replace(singleSlotSentence, current);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: window-run-liveness holds one binding per topic');
+      }
+    }
+
     if (!content.includes('W32 cadence executor:')) {
       content += '\n- **W32 cadence executor:** `GET /window-run-liveness/cadence` exposes durable 30-minute receipt intervals and 3-hour Telegram synthesis receipts. It consumes only server-minted advancing work receipts, continues across executor recovery/rebind, and never treats narration as progress. `POST /window-run-liveness/cadence/tick` is the authenticated deterministic tick. Enable explicitly with `monitoring.windowRunLiveness.cadenceExecutor.enabled`; ship dry-run first.\n';
       patched = true;
@@ -8637,6 +8667,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Native app conversations (docs/specs/mobile-native-conversations.md) — Agent Awareness + Migration Parity.
+    // Media in app conversations (docs/specs/mobile-native-chat-media.md): its own section, by exact heading.
+    if (!content.includes(APP_MEDIA_CLAUDEMD_MARKER)) {
+      content += APP_MEDIA_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added App conversation media section');
+    }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
       patched = true;

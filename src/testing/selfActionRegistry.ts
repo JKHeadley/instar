@@ -760,6 +760,39 @@ const spendReconSweep: SelfActionController = {
   },
 };
 
+/**
+ * app-media-capacity-notice — the app media store's capacity notice (mobile-native-chat-media
+ * §4.7, AppConversationService.updateMediaNotices after each hourly sweep). Under the pinned
+ * worst case (the store full and every admission refused, forever) the notice is raised ONCE per
+ * episode: the raised-set latch refuses every later raise, and only the condition clearing
+ * re-arms it. Horizon-independent: one notice, however many sweeps run.
+ */
+const appMediaCapacityNotice: SelfActionController = {
+  id: 'app-media-capacity-notice',
+  actionVerb: 'capacity-notify',
+  models: 'src/core/AppConversationService.ts (updateMediaNotices: raisedNotices latch; cleared only when usage drops under 90% of the cap)',
+  modelsPath: 'src/core/AppConversationService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the latch is empty, so a still-full store raises at most one notice; the attention item is deduplicated by its condition key.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const raised = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const key = 'app-media:store-full';
+        const stillFull = true; // the pinned pressure: never clears
+        if (stillFull && !raised.has(key)) {
+          raised.add(key);
+          sink.emit({ verb: 'capacity-notify', target: key });
+        }
+      },
+    };
+  },
+};
+
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
   actionVerb: 'reap-expired-actions',
@@ -3481,6 +3514,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
+  appMediaCapacityNotice,
   spendReconSweep,
   spendDoorDarkBrakes,
   spendFallbackSpike,

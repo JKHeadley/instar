@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
-import type { WindowRunLivenessDocument, WindowRunWorkReceipt } from './WindowRunLivenessAuthority.js';
+import { primaryWindowRunBinding, type WindowRunLivenessDocument, type WindowRunWorkReceipt } from './WindowRunLivenessAuthority.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { TickSerializer } from './TickSerializer.js';
 import { sign as signEd25519, verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
@@ -101,6 +101,8 @@ export interface WindowRunCadenceDocument {
 
 export interface WindowRunCadenceDeps {
   getLiveness: () => WindowRunLivenessDocument | null;
+  /** Every topic's liveness binding. Each gets its own cadence clock. Absent: only `getLiveness()`. */
+  getLivenessAll?: () => WindowRunLivenessDocument[];
   /** Cross-machine actuation authority. Single-machine deployments return true. */
   canAct?: (state: Readonly<WindowRunLivenessDocument>) => boolean;
   resolveFirstUnreceiptedTask: (state: Readonly<WindowRunLivenessDocument>) => string | null;
@@ -181,19 +183,52 @@ function livenessTerminal(status: WindowRunLivenessDocument['status']): boolean 
   return status === 'failed' || status === 'stalled' || status === 'closed';
 }
 
+/**
+ * One cadence clock per topic, under `topics/<topicId>/`, matching the
+ * per-topic liveness bindings. The pre-split single `state.json` is moved
+ * into its topic's directory on first read.
+ */
 export class WindowRunCadenceStore {
   readonly file: string;
+  private readonly root: string;
   private readonly mutationTarget: string;
+  private readonly topicId: number | undefined;
+  private readonly stateDir: string;
 
-  constructor(stateDir: string) {
-    this.file = path.join(stateDir, 'window-run-cadence', 'state.json');
-    this.mutationTarget = path.join(stateDir, 'window-run-cadence', 'mutation-target');
+  constructor(stateDir: string, topicId?: number) {
+    this.stateDir = stateDir;
+    this.topicId = topicId;
+    this.root = path.join(stateDir, 'window-run-cadence');
+    const dir = topicId === undefined ? this.root : path.join(this.root, 'topics', String(topicId));
+    this.file = path.join(dir, 'state.json');
+    this.mutationTarget = path.join(dir, 'mutation-target');
+  }
+
+  forTopic(topicId: number): WindowRunCadenceStore {
+    if (!Number.isSafeInteger(topicId) || topicId < 0) throw new Error('window-run-cadence-topic-invalid');
+    if (this.topicId === topicId) return this;
+    this.migrateLegacy();
+    return new WindowRunCadenceStore(this.stateDir, topicId);
+  }
+
+  loadAll(): WindowRunCadenceDocument[] {
+    if (this.topicId !== undefined) { const one = this.load(); return one ? [one] : []; }
+    this.migrateLegacy();
+    let names: string[] = [];
+    try { names = fs.readdirSync(path.join(this.root, 'topics')); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    return names.filter(name => /^[0-9]+$/.test(name)).sort((a, b) => Number(a) - Number(b))
+      .map(name => this.forTopic(Number(name)).load()).filter((doc): doc is WindowRunCadenceDocument => !!doc);
   }
 
   load(): WindowRunCadenceDocument | null {
+    // The root store answers single-clock readers with the primary clock.
+    if (this.topicId === undefined) return primaryWindowRunBinding(this.loadAll());
     try {
       const value = JSON.parse(fs.readFileSync(this.file, 'utf8')) as WindowRunCadenceDocument;
       this.validate(value);
+      if (value.topicId !== this.topicId) throw new Error('window-run-cadence-topic-file-mismatch');
       return value;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -202,6 +237,8 @@ export class WindowRunCadenceStore {
   }
 
   save(value: WindowRunCadenceDocument): void {
+    if (this.topicId === undefined) { this.forTopic(value.topicId).save(value); return; }
+    if (value.topicId !== this.topicId) throw new Error('window-run-cadence-topic-file-mismatch');
     this.validate(value);
     fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const tmp = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
@@ -211,6 +248,33 @@ export class WindowRunCadenceStore {
       fs.renameSync(tmp, this.file);
     } finally {
       try { if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'WindowRunCadenceStore.save.cleanup' }); } catch { /* best-effort temp cleanup */ }
+    }
+  }
+
+  private migrateLegacy(): void {
+    const legacy = path.join(this.root, 'state.json');
+    let value: WindowRunCadenceDocument;
+    try {
+      value = JSON.parse(fs.readFileSync(legacy, 'utf8')) as WindowRunCadenceDocument;
+      this.validate(value);
+    } catch (error) {
+      // Absent (or another process moved it first): nothing to do.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      // An unreadable pre-split file has no topic to move to. Set it aside so it
+      // cannot block every topic's reads and registrations, and say so loudly.
+      const aside = `${legacy}.unreadable-${Date.now()}`;
+      try { fs.renameSync(legacy, aside); } catch { /* @silent-fallback-ok — a concurrent mover already took it */ }
+      console.warn(`[window-run-cadence] pre-split state.json was unreadable and was set aside at ${aside}: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    // A readable file is moved, never set aside: a failure here is rethrown.
+    const target = path.join(this.root, 'topics', String(value.topicId), 'state.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    try {
+      if (fs.existsSync(target)) fs.renameSync(legacy, `${legacy}.pre-split-${Date.now()}`);
+      else fs.renameSync(legacy, target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
 
@@ -235,7 +299,7 @@ export class WindowRunCadenceStore {
 /* @self-action-controller: window-run-cadence-delivery-redrive */
 export class WindowRunCadenceExecutor {
   private readonly cfg: Required<WindowRunCadenceConfig>;
-  private readonly ticks = new TickSerializer<WindowRunCadenceDocument | null>();
+  private readonly ticks = new Map<number, TickSerializer<WindowRunCadenceDocument | null>>();
 
   constructor(
     private readonly store: WindowRunCadenceStore,
@@ -258,7 +322,8 @@ export class WindowRunCadenceExecutor {
     this.cfg.receiptGraceMs = Math.min(this.cfg.receiptGraceMs, this.cfg.receiptIntervalMs);
   }
 
-  status(): { enabled: boolean; dryRun: boolean; config: Omit<Required<WindowRunCadenceConfig>, 'enabled' | 'dryRun'>; state: WindowRunCadenceDocument | null } {
+  status(topicId?: number): { enabled: boolean; dryRun: boolean; config: Omit<Required<WindowRunCadenceConfig>, 'enabled' | 'dryRun'>; state: WindowRunCadenceDocument | null; states: WindowRunCadenceDocument[] } {
+    const states = this.store.loadAll();
     return {
       enabled: this.cfg.enabled,
       dryRun: this.cfg.dryRun,
@@ -272,25 +337,53 @@ export class WindowRunCadenceExecutor {
         reportRetryMaxAttempts: this.cfg.reportRetryMaxAttempts,
         reportRetryBackoffMs: this.cfg.reportRetryBackoffMs,
       },
-      state: this.store.load(),
+      state: topicId === undefined ? primaryWindowRunBinding(states) : states.find(doc => doc.topicId === topicId) ?? null,
+      states,
     };
   }
 
-  async tick(): Promise<WindowRunCadenceDocument | null> {
-    if (!this.cfg.enabled) return this.store.load();
-    // A tick requested while another is in flight (e.g. the HTTP tick racing the
-    // server's initial background tick) waits for a fresh evaluation instead of
-    // returning a mid-flight snapshot — which, before the first save, is null
-    // and surfaced as a false "not registered" 404.
-    return this.ticks.run(() => this.tickOnce());
+  /**
+   * Advance every topic's cadence clock (or one topic's). Returns that topic's
+   * clock, or (no topic) the primary clock. A failure in one topic does not
+   * stop the others; the first failure is rethrown after all have run.
+   */
+  async tick(topicId?: number): Promise<WindowRunCadenceDocument | null> {
+    if (!this.cfg.enabled) return topicId === undefined ? this.store.load() : this.store.forTopic(topicId).load();
+    const ids = topicId === undefined ? [...new Set(this.livenessAll().map(doc => doc.topicId))] : [topicId];
+    const results: WindowRunCadenceDocument[] = [];
+    let firstError: unknown;
+    for (const id of ids) {
+      let serializer = this.ticks.get(id);
+      if (!serializer) { serializer = new TickSerializer<WindowRunCadenceDocument | null>(); this.ticks.set(id, serializer); }
+      // A tick requested while another is in flight (e.g. the HTTP tick racing the
+      // server's initial background tick) waits for a fresh evaluation instead of
+      // returning a mid-flight snapshot — which, before the first save, is null
+      // and surfaced as a false "not registered" 404.
+      try {
+        const state = await serializer.run(() => this.tickOnce(id));
+        if (state) results.push(state);
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (firstError !== undefined) throw firstError;
+    if (topicId !== undefined) return results[0] ?? null;
+    return primaryWindowRunBinding(results) ?? (ids.length === 0 ? this.store.load() : null);
   }
 
-  private tickOnce(): Promise<WindowRunCadenceDocument | null> {
-    return this.store.withMutation(async () => {
-      const liveness = this.deps.getLiveness();
-      if (!liveness) return this.store.load();
+  private livenessAll(): WindowRunLivenessDocument[] {
+    if (this.deps.getLivenessAll) return this.deps.getLivenessAll();
+    const one = this.deps.getLiveness();
+    return one ? [one] : [];
+  }
+
+  private tickOnce(topicId: number): Promise<WindowRunCadenceDocument | null> {
+    const store = this.store.forTopic(topicId);
+    return store.withMutation(async () => {
+      const liveness = this.livenessAll().find(doc => doc.topicId === topicId) ?? null;
+      if (!liveness) return store.load();
       const now = this.now();
-      let state = this.store.load();
+      let state = store.load();
       // Registration/preparation is not window execution. Do not start a
       // clock, prompt, miss an interval, or report until the five-predicate
       // authority has actually promoted the run and stamped activation.

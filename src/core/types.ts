@@ -3607,6 +3607,8 @@ export interface InstarConfig {
   remoteDesktop?: {
     enabled?: boolean;
     frontMachineId?: string;
+    /** macOS: keep one helper copy per Mac so an update with unchanged helper source keeps its grant. Default true. */
+    retainedHelper?: boolean;
     /** Set when Remote Desktop was turned off on this machine itself: a peer cannot turn it back on. */
     peerClaimRefused?: boolean;
     /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
@@ -3935,7 +3937,15 @@ export interface InstarConfig {
      * Native app conversations (docs/specs/mobile-native-conversations.md). `enabled` omitted ⇒
      * the developmentAgent gate decides; read at boot.
      */
-    native?: { enabled?: boolean };
+    native?: {
+      enabled?: boolean;
+      /**
+       * Media in app conversations (docs/specs/mobile-native-chat-media.md). `enabled` omitted ⇒
+       * the developmentAgent gate decides, read at boot; needs `native.enabled`.
+       * `maxStoreBytes` (default 20 GiB, read live) is the agent-wide admission cap.
+       */
+      media?: { enabled?: boolean; maxStoreBytes?: number };
+    };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve

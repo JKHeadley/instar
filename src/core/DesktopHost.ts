@@ -1,3 +1,4 @@
+import type { DesktopHelperPermissionChange } from './DesktopHelperRetention.js';
 /** Machine-local capture and input boundary. A Windows or Linux companion
  * implements this contract only after its own permission and live-session proof. */
 export type DesktopButton = 'left' | 'right' | 'middle';
@@ -82,8 +83,10 @@ export interface DesktopProbe {
    * itself; `inherited` depends on what started this server's process tree. */
   screenGrant?: 'own' | 'inherited' | 'none';
   inputGrant?: 'own' | 'inherited' | 'none';
-  /** macOS only: which copy of the helper ran. */
+  /** macOS only: which copy of the helper ran, and why a person is needed. */
   helperSource?: 'retained' | 'packaged';
+  helperFallback?: string;
+  helperChange?: DesktopHelperPermissionChange;
   /** macOS only, while the locked-screen feature is on. */
   lockInputs?: import('./DesktopLockState.js').DesktopLockInputs;
 }

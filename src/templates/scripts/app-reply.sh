@@ -7,11 +7,14 @@
 #   Your reply text here
 #   EOF
 #   .instar/scripts/app-reply.sh "short reply"
+#   .instar/scripts/app-reply.sh --file /path/to/report.pdf "Here it is"    (up to 10 --file, before the text;
+#   a piped caption also works: it is read with a bounded wait, 2 s per line and 10 s in all)
 #
 # The session's bind token is the only destination authority: the script never names a
 # conversation itself. Spec: docs/specs/mobile-native-conversations.md §4.3.
 # app-reply-feature: session-bound-v1
 # app-reply-feature: delivery-id
+# app-reply-feature: file-attachments
 
 set -euo pipefail
 
@@ -20,12 +23,56 @@ set -euo pipefail
 CONVERSATION_ID="${INSTAR_CONVERSATION_ID:-0}"
 [[ "$CONVERSATION_ID" =~ ^-?[0-9]+$ ]] || CONVERSATION_ID=0
 
+# Flags go before the text: parsing stops at the first argument that is not a flag.
+FILES=()
+while [ $# -gt 0 ] && [ "$1" = "--file" ]; do
+  if [ -z "${2:-}" ]; then
+    echo "Error: --file needs a path" >&2
+    exit 1
+  fi
+  FILES+=("$2")
+  shift 2
+done
+
 if [ $# -gt 0 ]; then
   MESSAGE="$*"
+elif [ ${#FILES[@]} -gt 0 ]; then
+  # Files with no text argument: a piped caption (a heredoc) is read with a bounded wait, so a
+  # stdin that never closes cannot block the send: 2 s for each line, 10 s in all. A terminal is
+  # never read.
+  MESSAGE=""
+  if [ ! -t 0 ]; then
+    START=$SECONDS
+    LINES_READ=0
+    STATUS=0
+    while :; do
+      LINE=""
+      T0=$SECONDS
+      if IFS= read -r -t 2 LINE; then STATUS=0; else STATUS=$?; fi
+      # A timeout returns above 128 on bash 4+ but 1 on macOS's bash 3.2; a failed read that
+      # took the full 2 s is a timeout either way (end of input returns at once).
+      if [ "$STATUS" -gt 128 ] || { [ "$STATUS" -ne 0 ] && [ $((SECONDS - T0)) -ge 2 ]; }; then
+        # Timed out: whatever arrived so far is the caption.
+        [ "$LINES_READ" -gt 0 ] && echo "Warning: stopped waiting for more piped caption text after 2 s; sending what arrived." >&2
+        break
+      fi
+      if [ "$STATUS" -ne 0 ]; then
+        # End of input; a last line with no newline still counts.
+        [ -n "$LINE" ] && MESSAGE="${MESSAGE}${LINE}"
+        break
+      fi
+      if [ "$LINES_READ" -gt 0 ]; then MESSAGE="${MESSAGE}"$'\n'"${LINE}"; else MESSAGE="${LINE}"; fi
+      LINES_READ=$((LINES_READ + 1))
+      if [ $((SECONDS - START)) -ge 10 ]; then
+        echo "Warning: piped caption text took over 10 s; sending what arrived, the rest was ignored." >&2
+        break
+      fi
+    done
+  fi
 else
   MESSAGE="$(cat)"
 fi
-if [ -z "$MESSAGE" ]; then
+if [ -z "$MESSAGE" ] && [ ${#FILES[@]} -eq 0 ]; then
   echo "Error: no message text provided" >&2
   exit 1
 fi
@@ -60,7 +107,18 @@ ESCAPED=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" <<< 
 if [ -z "$ESCAPED" ]; then
   ESCAPED="\"$(echo "$MESSAGE" | sed 's/\\/\\\\/g; s/"/\\"/g')\""
 fi
-BODY_JSON="{\"text\": ${ESCAPED}, \"conversationId\": ${CONVERSATION_ID}}"
+FILES_JSON=""
+MAX_TIME=35
+if [ ${#FILES[@]} -gt 0 ]; then
+  # The server checks each file (and scans it), so a large reply takes longer than text.
+  MAX_TIME=180
+  FILES_JSON=$(python3 -c 'import json,os,sys; print(json.dumps([{"path": os.path.abspath(p)} for p in sys.argv[1:]]))' "${FILES[@]}")
+  if [ -z "$FILES_JSON" ]; then
+    echo "Error: could not read the --file paths" >&2
+    exit 1
+  fi
+fi
+BODY_JSON="{\"text\": ${ESCAPED}, \"conversationId\": ${CONVERSATION_ID}${FILES_JSON:+, \"files\": ${FILES_JSON}}}"
 
 # A delivery id minted BEFORE the POST: the server derives the reply's event id from it, so a
 # resend of the same attempt is answered idempotent instead of appending a second copy.
@@ -69,7 +127,7 @@ DELIVERY_ID="${INSTAR_DELIVERY_ID:-}"
 [ -n "$DELIVERY_ID" ] || DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
 
 set +e
-RESPONSE=$(curl -sS --connect-timeout 3 --max-time 35 -w "\n%{http_code}" -X POST \
+RESPONSE=$(curl -sS --connect-timeout 3 --max-time "$MAX_TIME" -w "\n%{http_code}" -X POST \
   "http://localhost:${PORT}/app/session-reply" \
   -H "Content-Type: application/json" \
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
@@ -90,9 +148,12 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
-  echo "Sent ${#MESSAGE} chars to the app conversation"
+  echo "Sent ${#MESSAGE} chars and ${#FILES[@]} file(s) to the app conversation"
 elif [ "$HTTP_CODE" = "409" ]; then
   echo "NOT SENT (HTTP 409): this machine does not run this app conversation right now: ${BODY}" >&2
+  exit 1
+elif [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "413" ] || [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "507" ]; then
+  echo "NOT SENT (HTTP ${HTTP_CODE}): ${BODY}" >&2
   exit 1
 elif [ "$HTTP_CODE" = "422" ]; then
   ISSUE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("issue","unknown"))' 2>/dev/null || echo "unknown")

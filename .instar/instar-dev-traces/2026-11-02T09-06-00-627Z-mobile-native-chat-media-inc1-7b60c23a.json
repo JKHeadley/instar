@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "mobile-native-chat-media-inc1",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T09:06:00.627Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-chat-media-inc1.md",
+  "artifactSha256": "e2d466ddac88f476fd95ec9aa9b2bab67b65a2a675e67be23abd505da87edd85",
+  "specPath": "docs/specs/mobile-native-chat-media.md",
+  "coveredFiles": [
+    "src/core/AppConversationService.ts",
+    "src/core/appMediaWorker.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/mobile-native-media.test.ts",
+    "tests/unit/PostUpdateMigrator-appMedia.test.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/app-media-reply-files.test.ts",
+    "tests/unit/app-media-store.test.ts",
+    "tests/unit/app-media-types.test.ts",
+    "tests/unit/app-reply-script-files.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/mobile-native-chat-media-inc1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Suite-ratchet fixes for the media increment (allowlist entry, catch annotations): no reviewed logic changes.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

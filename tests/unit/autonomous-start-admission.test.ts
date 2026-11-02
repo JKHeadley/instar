@@ -87,6 +87,16 @@ describe('preparing-run watchdog', () => {
     expect(findStuckPreparingRuns(store.listOpen(lateBound), { nowMs: lateBound, boundRun: { topicId: '4', runId: bound, boundAt } }).map(run => run.topicId).sort()).toEqual(['1', '2', '4']);
   });
 
+  it('gives every topic-bound run its first-receipt allowance, not just one', () => {
+    const a = register('4', NOW - 10 * 60_000);
+    const b = register('5', NOW - 10 * 60_000);
+    const boundAt = new Date(NOW - 10 * 60_000).toISOString();
+    const bounds = [{ topicId: '4', runId: a, boundAt }, { topicId: '5', runId: b, boundAt }];
+    expect(findStuckPreparingRuns(store.listOpen(NOW), { nowMs: NOW, boundRun: bounds })).toEqual([]);
+    // With only one of them bound, the other is reported after the short threshold.
+    expect(findStuckPreparingRuns(store.listOpen(NOW), { nowMs: NOW, boundRun: bounds[0] }).map(run => run.topicId)).toEqual(['5']);
+  });
+
   it('tells the run topic once, in plain words, and retries a failed send', async () => {
     const runId = register('9210', NOW - 20 * 60_000);
     const sent: Array<{ topicId: string; text: string }> = [];

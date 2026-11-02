@@ -178,8 +178,9 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { AppConversationService } from '../core/AppConversationService.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
@@ -204,10 +205,13 @@ import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
+import { getInstarVersion } from '../core/Config.js';
+import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
 import { execFile } from 'node:child_process';
-import { MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
+import { DEFAULT_MAC_DESKTOP_HELPER, MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
 import { DesktopLockedController, type DesktopLockedSettings } from '../core/DesktopLockedController.js';
 import { parseScreenLockPolicy } from '../core/DesktopLockState.js';
 import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../core/DesktopOperatorAssertion.js';
@@ -462,6 +466,8 @@ export class AgentServer {
   private directDesktopAccess: DirectDesktopAccess | null = null;
   private desktopLockedController: DesktopLockedController | null = null;
   private desktopLockedOsMajor: number | undefined;
+  private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
+  private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
   private desktopSetupTarget: DesktopSetupTarget | null = null;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
@@ -1418,6 +1424,8 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
+    this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -2888,7 +2896,16 @@ export class AgentServer {
           if (!publicKeyPem || !verifyMachinePayload(proof, signMachinePayload(proof, privateKey), publicKeyPem)) {
             throw new Error('machine signing key mismatch');
           }
-          const macHost = process.platform === 'darwin' ? new MacDesktopHost() : null;
+          const helperRetention = process.platform === 'darwin'
+            ? new DesktopHelperRetention({
+              packagedBinary: DEFAULT_MAC_DESKTOP_HELPER, packageVersion: getInstarVersion(),
+              // Only a real install takes the Mac's one kept copy by default: a
+              // source checkout or a test must never replace what is granted.
+              enabled: options.config.remoteDesktop?.retainedHelper
+                ?? (!process.env.VITEST && DEFAULT_MAC_DESKTOP_HELPER.includes(`${path.sep}node_modules${path.sep}instar${path.sep}`)),
+            }) : null;
+          this.macDesktopHost = process.platform === 'darwin' ? new MacDesktopHost(undefined, helperRetention) : null;
+          const macHost = this.macDesktopHost;
           const lockedSettings = (): DesktopLockedSettings => {
             const stored = (typeof options.liveConfig?.get === 'function'
               ? options.liveConfig.get<DesktopLockedSettings | undefined>('remoteDesktop.lockedScreen', undefined)
@@ -2964,6 +2981,24 @@ export class AgentServer {
         );
         void this.desktopLockedController?.sweep(true).catch(() => { console.warn('[instar] locked-screen boot sweep failed'); });
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
+        if (helperRetention) {
+          const access = this.directDesktopAccess;
+          const telegram = options.telegram;
+          this.desktopHelperNotice = new DesktopHelperPermissionNotice({
+            machineLabel: label, machineId: this.meshSelfId,
+            probe: () => access.probe(),
+            sourceHash: () => helperRetention.currentSourceHash(),
+            // An agent that cannot post must leave the notice for one that can.
+            claim: () => !!telegram && helperRetention.claimNotice(),
+            release: () => helperRetention.releaseNotice(),
+            raise: item => telegram!.createAttentionItem({
+              id: item.id, conditionKey: item.conditionKey, title: item.title, summary: item.body, description: item.body,
+              priority: 'HIGH', category: 'desktop', source: 'agent', needsUser: true, sourceContext: 'desktop-helper-permission',
+            } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]),
+            clear: (conditionKey, resolution) => { telegram?.clearAttentionCondition({ conditionKey }, resolution); },
+          });
+          if (!process.env.VITEST) this.desktopHelperNotice.start();
+        }
         } catch (error) {
           // @silent-fallback-ok — warn and leave desktop admission dark when target identity cannot be proven.
           console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
@@ -5097,6 +5132,7 @@ export class AgentServer {
         {
           now: () => options.windowLifecycleNow?.() ?? new Date().toISOString(),
           getLiveness: () => windowRunLivenessAuthority.status().state,
+          getLivenessAll: () => windowRunLivenessAuthority.status().states,
           canAct: (state) => {
             const registry = options.sessionOwnershipRegistry;
             if (!registry) return options.coordinator?.enabled !== true;
@@ -5119,7 +5155,7 @@ export class AgentServer {
             }), Buffer.from(identity.privateKey, 'base64'), Buffer.from(identity.publicKey, 'base64'));
           },
           findDeliveredSynthesis: ({ topicId, report, expectedText }) => {
-            const state = windowRunLivenessAuthority.status().state;
+            const state = windowRunLivenessAuthority.status(topicId).state;
             if (!state || !report.bodyHash || !report.producerSignature) return null;
             let publicKey: Buffer;
             try {
@@ -5417,6 +5453,10 @@ export class AgentServer {
             screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
             displayCount: probe.displayCount, sessionActive: probe.sessionActive,
             ...(probe.screenGrant ? { screenGrant: probe.screenGrant, inputGrant: probe.inputGrant } : {}),
+            ...(probe.helperSource ? { helperSource: probe.helperSource } : {}),
+            ...(probe.helperFallback ? { helperFallback: probe.helperFallback } : {}),
+            ...(probe.helperChange ? { helperChange: probe.helperChange,
+              permissionStep: desktopProbeUnavailableReason(probe) } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];
@@ -5746,6 +5786,9 @@ export class AgentServer {
               try { stopAutonomousTopic(options.config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },
+            mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
+            raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
+            clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({
               feature: what, primary: 'record and deliver native app conversations', fallback: 'the request was refused or reported outcome-unknown',
               reason: detail, impact: 'An app conversation step needs attention.',
@@ -5802,7 +5845,9 @@ export class AgentServer {
       diagnostics: () => routeCtx.desktopLocalDiagnostics!(),
       requestPermission: routeCtx.desktopRequestPermission ?? null,
       requestRestart: () => this.requestSupervisedRestart('remote desktop guided setup', 'remote-desktop-setup'),
-      helperPath: () => (process.platform === 'darwin' ? macDesktopHelperPath() : null),
+      // The setup fallback must name the copy a permission request targets, which
+      // is the one this host serves right now, kept or installed.
+      helperPath: () => (process.platform === 'darwin' ? this.macDesktopHost?.servedHelperPath() ?? macDesktopHelperPath() : null),
       endLiveAccess: () => this.directDesktopAccess?.killSwitch(),
       onPeerEnable: async senderId => {
         const name = verifiedEntityName(senderId, options.listPoolMachines?.().find(peer => peer.machineId === senderId)?.nickname) ?? 'Another paired machine';
@@ -6147,12 +6192,9 @@ export class AgentServer {
       const watchdog = new PreparingRunWatchdog({
         store: new AutonomousRunStore(options.config.stateDir),
         notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
-        boundRun: () => {
-          const state = windowRunLivenessAuthority?.status().state;
-          return state && !['stalled', 'failed', 'closed'].includes(state.status)
-            ? { topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt }
-            : null;
-        },
+        boundRuns: () => (windowRunLivenessAuthority?.status().states ?? [])
+          .filter(state => !['stalled', 'failed', 'closed'].includes(state.status))
+          .map(state => ({ topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt })),
       });
       this.preparingRunWatchdog = watchdog;
       this.preparingRunWatchdogTimer = setInterval(() => {
@@ -6170,6 +6212,7 @@ export class AgentServer {
     if (this.mobilePairing) {
       this.app.use(createMobileConversationRouter({
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,
         telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
@@ -6177,6 +6220,7 @@ export class AgentServer {
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? last.text.slice(0, 140) : null };
         }) : undefined,
       }));
+      this.app.use(createMobileMediaRouter({ pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config) }));
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
     }
@@ -8030,6 +8074,7 @@ export class AgentServer {
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
+    this.desktopHelperNotice?.stop();
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }

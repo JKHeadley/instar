@@ -188,6 +188,10 @@ import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjectio
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { derivedEventId } from '../core/appConversationText.js';
+import { attachmentIdFor, kindFromBytes, sniffMediaType } from '../core/appMediaTypes.js';
+import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.js';
+import { isNeverServed } from './fileRoutes.js';
+import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import { joinTelegramHistory } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
@@ -2878,9 +2882,8 @@ export function createRoutes(ctx: RouteContext): Router {
   const enforcingLivenessFor = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument) => {
     const authority = ctx.windowRunLivenessAuthority;
     const snapshot = authority?.status();
-    const state = snapshot?.state;
+    const state = snapshot?.states.find(doc => doc.windowId === ledger.windowId && doc.lifecycleRunId === ledger.lifecycleRunId);
     return authority && snapshot?.enabled === true && snapshot.dryRun === false && state
-      && state.windowId === ledger.windowId && state.lifecycleRunId === ledger.lifecycleRunId
       ? { authority, state }
       : null;
   };
@@ -2892,7 +2895,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (ledger.catalogProfile !== 'w32-approved-a204c07d') return false;
     const match = enforcingLivenessFor(ledger);
     if (!match) return false;
-    const frozen = match.authority.freeze(reason, terminalStatus);
+    const frozen = match.authority.freeze(reason, terminalStatus, match.state.topicId);
     return frozen.status === terminalStatus && frozen.finalSnapshot !== undefined;
   };
   const expireWindowAtCeiling = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument): boolean => {
@@ -3040,8 +3043,25 @@ export function createRoutes(ctx: RouteContext): Router {
     return Number.isFinite(reportDueMs) && Number.isFinite(dutyDueMs)
       && Math.abs(reportDueMs - dutyDueMs) <= obligation.deadline.graceMs;
   };
-  const runLivenessPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
+  // Liveness and cadence hold one binding per topic. W32 proofs read ONLY the
+  // binding matching this ledger's window, in the pre-split snapshot shape
+  // ({enabled, dryRun, config, state}, no `states`): another topic's run must
+  // neither hide this window's binding nor change a proof payload's hash.
+  type LedgerDoc = import('../core/WindowLifecycleObligationLedger.js').LedgerDocument;
+  const windowLivenessStatus = (ledger: Pick<LedgerDoc, 'windowId' | 'lifecycleRunId'> | null | undefined) => {
     const snapshot = ctx.windowRunLivenessAuthority?.status();
+    if (!snapshot) return undefined;
+    const state = ledger ? snapshot.states.find(doc => doc.windowId === ledger.windowId && doc.lifecycleRunId === ledger.lifecycleRunId) ?? null : null;
+    return { enabled: snapshot.enabled, dryRun: snapshot.dryRun, config: snapshot.config, state };
+  };
+  const windowCadenceStatus = (ledger: Pick<LedgerDoc, 'windowId' | 'lifecycleRunId'> | null | undefined) => {
+    const topicId = windowLivenessStatus(ledger)?.state?.topicId;
+    const snapshot = ctx.windowRunCadenceExecutor?.status(topicId);
+    if (!snapshot) return undefined;
+    return { enabled: snapshot.enabled, dryRun: snapshot.dryRun, config: snapshot.config, state: topicId === undefined ? null : snapshot.state };
+  };
+  const runLivenessPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
+    const snapshot = windowLivenessStatus(ledger);
     const state = snapshot?.state;
     const nowMs = Date.parse(windowNow());
     const evaluatedMs = Date.parse(state?.lastEvaluatedAt ?? '');
@@ -3074,10 +3094,10 @@ export function createRoutes(ctx: RouteContext): Router {
   const deterministicPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
     if (sourceFreshnessIssues(ledger).length) return null;
     if (obligation.id === 'w32.close.expiry-freeze') return w32ExpiryFreezeProof(ledger, obligation);
-    const liveness = ctx.windowRunLivenessAuthority?.status().state ?? null;
-    const cadenceStatus = ctx.windowRunCadenceExecutor?.status() ?? null;
+    const livenessStatus = windowLivenessStatus(ledger) ?? null;
+    const liveness = livenessStatus?.state ?? null;
+    const cadenceStatus = windowCadenceStatus(ledger) ?? null;
     const cadence = cadenceStatus?.state ?? null;
-    const livenessStatus = ctx.windowRunLivenessAuthority?.status() ?? null;
     const exactW32Binding = livenessStatus?.enabled === true && livenessStatus.dryRun === false
       && cadenceStatus?.enabled === true && cadenceStatus.dryRun === false
       && !!liveness && !!cadence
@@ -3145,7 +3165,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const obligation = ledger?.obligations.find(o => o.id === record.obligationId);
     if (record.producer === 'server:window-run-cadence-executor' && obligation && /^cadence\.report\.3h@/.test(obligation.id)) {
       const verified = messageEvidenceAuthority().requery(record);
-      const cadence = ctx.windowRunCadenceExecutor?.status(); const liveness = ctx.windowRunLivenessAuthority?.status();
+      const cadence = windowCadenceStatus(ledger); const liveness = windowLivenessStatus(ledger);
       const report = cadence?.state?.reports.find(item => cadenceReportMatchesDuty(item.dueAt, obligation) && item.messageId === record.nativeCoordinates?.messageId);
       const row = record.nativeCoordinates?.topicId !== undefined && record.nativeCoordinates.messageId !== undefined
         ? ctx.telegram?.getTopicHistory(record.nativeCoordinates.topicId, 1_000).find(item => item.messageId === record.nativeCoordinates!.messageId)
@@ -3176,7 +3196,7 @@ export function createRoutes(ctx: RouteContext): Router {
       else if (obligation.evidencePolicy.requiredAuthority === 'run-liveness-authority') { payload = runLivenessPayload(ledger, obligation); producer = 'server:window-run-liveness-authority'; }
       else if (obligation.evidencePolicy.requiredAuthority === 'deterministic-replay') { payload = deterministicPayload(ledger, obligation); producer = 'server:window-deterministic-replay'; }
       else if (obligation.evidencePolicy.requiredAuthority === 'live-requeried-message' && /^cadence\.report\.3h@/.test(obligation.id)) {
-        const cadence = ctx.windowRunCadenceExecutor?.status(); const liveness = ctx.windowRunLivenessAuthority?.status();
+        const cadence = windowCadenceStatus(ledger); const liveness = windowLivenessStatus(ledger);
         const report = cadence?.state?.reports.find(item => cadenceReportMatchesDuty(item.dueAt, obligation) && item.status === 'delivered' && Number.isSafeInteger(item.messageId));
         const row = report?.messageId !== undefined ? ctx.telegram?.getTopicHistory(cadence!.state!.topicId, 1_000).find(item => item.messageId === report.messageId) : null;
         const bound = cadence?.enabled === true && cadence.dryRun === false && liveness?.enabled === true && liveness.dryRun === false
@@ -3189,7 +3209,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       else if (obligation.evidencePolicy.requiredAuthority === 'content-bound-store-row' && (/^start\.(?:source-ingestion|window-expiry)/.test(obligation.id) || /^source\./.test(obligation.id)) && sourceFreshnessIssues(ledger).length === 0) { storePath = obligation.sourceSpans[0]?.source; payload = proofPayload(obligation, { charterExpiry: obligation.predicate.expected?.charterExpiry, sourceByteRange: obligation.sourceSpans.map(span => ({ source: span.source, byteStart: span.byteStart, byteEnd: span.byteEnd, hash: span.hash })) }); producer = 'server:source-authority'; }
       if (!payload) continue; const digest = createHash('sha256').update(payload).digest('hex'); const nonce = `${obligation.evidencePolicy.requiredAuthority}:${digest}`; const w32CadenceDerived = producer === 'server:window-run-cadence-executor' || producer === 'server:window-deterministic-replay' && /^w32\./.test(obligation.id); if (obligation.evidence.some(e => e.nonce === nonce) || ledger.usedNonces.includes(nonce) && !w32CadenceDerived) continue; if (!ledger.usedNonces.includes(nonce)) ledger.usedNonces.push(nonce);
-      const cadenceMessageId = producer === 'server:window-run-cadence-executor' ? ctx.windowRunCadenceExecutor?.status().state?.reports.find(report => cadenceReportMatchesDuty(report.dueAt, obligation))?.messageId : undefined;
+      const cadenceMessageId = producer === 'server:window-run-cadence-executor' ? windowCadenceStatus(ledger)?.state?.reports.find(report => cadenceReportMatchesDuty(report.dueAt, obligation))?.messageId : undefined;
       obligation.evidence.push({ authority: obligation.evidencePolicy.requiredAuthority, agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: obligation.id, sourceHashes: obligation.sourceSpans.map(s => s.hash), producer, timestamp: windowNow(), nonce, canonicalPayloadHash: digest, verifierPassed: true, verifiedPayload: payload, nativeCoordinates: storePath ? { storePath } : cadenceMessageId !== undefined ? { topicId: 36966, messageId: cadenceMessageId } : undefined });
     }
   };
@@ -3371,8 +3391,8 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   router.post('/window-lifecycle/native-admission', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const current = windowStore.load('echo', 'echo-window-lifecycle'); if (!current) return res.status(404).json({ error: 'ledger-not-found' }); if (req.body.windowId !== current.windowId) return res.status(409).json({ error: 'wrong-window' }); const record = runNativeAdmissionAdapter({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: current.windowId, stateDir: ctx.config.stateDir, package: req.body.package, nonce: req.body.nonce }); const ledger = windowStore.appendNativeEvaluation('echo', 'echo-window-lifecycle', record); const admitted = (record.output as { admitted?: boolean }).admitted === true; if (admitted) { const duty = ledger.obligations.find(o => o.id === 'preground.native-structural-preflight'); if (!duty) throw new Error('native-preflight-obligation-missing'); duty.evidence.push({ authority: 'native-local-store-presence', agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: duty.id, sourceHashes: duty.sourceSpans.map(s => s.hash), producer: `native:${record.evaluatorVersion}`, timestamp: record.evaluatedAt, nonce: record.nonce, canonicalPayloadHash: record.inputHash, verifierPassed: true, verifiedPayload: JSON.stringify(record.output), nativeCoordinates: { storePath: record.storePath } }); duty.status = 'satisfied'; windowStore.save(ledger); } ctx.windowLifecycleTick?.(); return res.status(admitted ? 200 : 409).json({ record, state: ledger.state }); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
   router.post('/window-lifecycle/waiver', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const waiver = req.body.waiver as Waiver; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === waiver?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === waiver?.approvalCoordinates?.messageId); const verified = approval ? evidenceAuthority().requery(approval) : null; if (!verified || verified.verifiedPayload?.trim() !== `approve waiver ${waiver.digest}`) return res.status(403).json({ error: 'verified-exact-digest-operator-approval-required' }); try { const next = applyWaiver(ledger, waiver, verified.producer); next.admission = undefined; windowStore.save(next); ctx.windowLifecycleTick?.(); return res.json(next); } catch (error) { /* @silent-fallback-ok — invalid waiver refusal is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
-  router.post('/window-lifecycle/rollback', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const request = req.body.rollback as RollbackRequest; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === request?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === request?.approvalCoordinates?.messageId); if (!approval) return res.status(403).json({ error: 'verified-exact-digest-operator-rollback-required' }); try { return res.json(windowStore.rollback('echo', 'echo-window-lifecycle', request, approval, evidenceAuthority(), windowNow(), candidate => { freezeMatchingWindowLiveness(candidate, 'lifecycle-rolled-back', 'failed'); })); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
-  router.post('/window-lifecycle/reenable', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const inventory = [...WINDOW_DRY_RUN_INVENTORY]; return res.json(windowStore.reenable('echo', 'echo-window-lifecycle', path.join(ctx.config.stateDir, 'window-lifecycle', 'fault-fixed-evidence.json'), () => { const runner = path.join(ctx.config.projectDir, 'node_modules', '.bin', 'vitest'); const output = withSyncOp(() => execFileSync(runner, ['run', ...inventory], { cwd: ctx.config.projectDir, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })); return { passed: true, command: `${runner} run ${inventory.join(' ')}`, completedAt: windowNow(), outputHash: createHash('sha256').update(output).digest('hex'), testInventory: inventory }; }, windowNow())); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
+  router.post('/window-lifecycle/rollback', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const request = req.body.rollback as RollbackRequest; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === request?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === request?.approvalCoordinates?.messageId); if (!approval) return res.status(403).json({ error: 'verified-exact-digest-operator-rollback-required' }); try { return res.json(windowStore.rollback('echo', 'echo-window-lifecycle', request, approval, evidenceAuthority(), windowNow(), candidate => { freezeMatchingWindowLiveness(candidate, 'lifecycle-rolled-back', 'failed'); })); } catch (error) { /* @silent-fallback-ok — refused rollback is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
+  router.post('/window-lifecycle/reenable', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const inventory = [...WINDOW_DRY_RUN_INVENTORY]; return res.json(windowStore.reenable('echo', 'echo-window-lifecycle', path.join(ctx.config.stateDir, 'window-lifecycle', 'fault-fixed-evidence.json'), () => { const runner = path.join(ctx.config.projectDir, 'node_modules', '.bin', 'vitest'); const output = withSyncOp(() => execFileSync(runner, ['run', ...inventory], { cwd: ctx.config.projectDir, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })); return { passed: true, command: `${runner} run ${inventory.join(' ')}`, completedAt: windowNow(), outputHash: createHash('sha256').update(output).digest('hex'), testInventory: inventory }; }, windowNow())); } catch (error) { /* @silent-fallback-ok — refused re-enable is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
   router.get('/window-lifecycle/enforcement', (_req, res) => ctx.config.projectName === 'echo' ? res.json(loadEnforcementState()) : res.status(404).json({ error: 'echo-scope-required' }));
   router.post('/window-lifecycle/enforcement/record-shadow', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); if (loadEnforcementState().mode !== 'dry-run') return res.status(409).json({ error: 'shadow-recording-requires-dry-run' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); return produceGraduationReports(ledger) ? res.status(201).json({ recorded: true, reports: readGraduationReports() }) : res.status(409).json({ error: 'shadow-lifecycle-incomplete-or-criteria-failed', closure: evaluateClosure(ledger), postLive: runWindowLifecyclePostLiveCheck(ledger) }); });
   router.post('/window-lifecycle/enforcement/graduate', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const state = loadEnforcementState(); if (state.mode !== 'dry-run') return res.status(409).json({ error: 'graduation-requires-dry-run' }); const reports = readGraduationReports(); if (!reports) return res.status(409).json({ error: 'graduation-authority-evidence-missing-or-invalid' }); const next: WindowEnforcementState = { ...state, mode: 'enforced', graduatedAt: windowNow(), evidenceDigests: [reports.synthetic.signature, reports.real.signature] }; saveEnforcementState(next); return res.json(next); });
@@ -3381,18 +3401,32 @@ export function createRoutes(ctx: RouteContext): Router {
   // The caller may bind immutable identities or request an evaluation; it can
   // never submit predicate booleans. All five facts are re-read by the
   // authority's server-owned production probe.
-  router.get('/window-run-liveness', (_req, res) => {
+  // Liveness keeps one binding per topic. `?topicId=N` scopes a read or tick
+  // to that topic; without it, `state` is the primary binding and `states`
+  // lists every topic's.
+  const windowRunTopicQuery = (req: { query: Record<string, unknown> }): number | undefined | null => {
+    const raw = req.query.topicId;
+    if (raw === undefined) return undefined;
+    return typeof raw === 'string' && /^[0-9]+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : null;
+  };
+  router.get('/window-run-liveness', (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
-    return res.json(ctx.windowRunLivenessAuthority.status());
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
+    return res.json(ctx.windowRunLivenessAuthority.status(topicId));
   });
-  router.get('/window-run-liveness/cadence', (_req, res) => {
+  router.get('/window-run-liveness/cadence', (req, res) => {
     if (!ctx.windowRunCadenceExecutor) return res.status(503).json({ error: 'window run cadence executor is dark on this agent' });
-    return res.json(ctx.windowRunCadenceExecutor.status());
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
+    return res.json(ctx.windowRunCadenceExecutor.status(topicId));
   });
-  router.post('/window-run-liveness/cadence/tick', async (_req, res) => {
+  router.post('/window-run-liveness/cadence/tick', async (req, res) => {
     if (!ctx.windowRunCadenceExecutor) return res.status(503).json({ error: 'window run cadence executor is dark on this agent' });
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
     try {
-      const state = await ctx.windowRunCadenceExecutor.tick();
+      const state = await ctx.windowRunCadenceExecutor.tick(topicId);
       return state ? res.json(state) : res.status(404).json({ error: 'window run cadence is not registered' });
     } catch (error) {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3447,10 +3481,12 @@ export function createRoutes(ctx: RouteContext): Router {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
-  router.post('/window-run-liveness/tick', async (_req, res) => {
+  router.post('/window-run-liveness/tick', async (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
     try {
-      const state = await ctx.windowRunLivenessAuthority.tick();
+      const state = await ctx.windowRunLivenessAuthority.tick(topicId);
       return state ? res.json(state) : res.status(404).json({ error: 'window run liveness is not registered' });
     } catch (error) {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
@@ -5373,6 +5409,8 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.nativeHookIngest) base.hookEvents = ctx.nativeHookIngest.snapshot();
       // Native app conversations (mobile-native-conversations §4.5): store size, authed only.
       if (ctx.appConversations) { try { base.appConversations = ctx.appConversations.store.health(); } catch { /* @silent-fallback-ok — observability */ } }
+      // Media (mobile-native-chat-media §4.7): this machine's numbers; a count the sweep has not taken reads null.
+      if (ctx.appConversations) { try { base.appMedia = ctx.appConversations.media.health(); } catch { /* @silent-fallback-ok — observability */ } }
       // Multi-route (mobile-multi-route §4.1): own names + health, never-proven candidates with
       // their last failure, and the tailscale-serve state. Bearer only; device principals keep
       // the basic health and read their routes from GET /mobile/routes.
@@ -7911,7 +7949,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const { initialStatus } = decideAutonomousStartStatus({
       projectName: ctx.config.projectName,
       topicId,
-      liveness: ctx.windowRunLivenessAuthority?.status(),
+      liveness: ctx.windowRunLivenessAuthority?.status(Number(topicId)),
       windowLedger,
       nowMs: Date.parse(windowNow()),
     });
@@ -20964,9 +21002,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const app = ctx.appConversations;
     if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     const bodyKeys = Object.keys(req.body ?? {});
-    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'metadata')) {
-      res.status(400).json({ error: 'spawned app session body permits only conversationId, text and metadata' });
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'metadata' && key !== 'files')) {
+      res.status(400).json({ error: 'spawned app session body permits only conversationId, text, files and metadata' });
       return;
+    }
+    // Files (mobile-native-chat-media §4.6): up to 10 `{path}` entries; empty text is then allowed.
+    const replyFiles = req.body?.files;
+    const filePaths: string[] = [];
+    if (replyFiles !== undefined) {
+      if (!Array.isArray(replyFiles) || !replyFiles.every((f: unknown) => !!f && typeof (f as { path?: unknown }).path === 'string')) {
+        res.status(400).json({ error: '"files" must be a list of {path}' });
+        return;
+      }
+      for (const f of replyFiles as Array<{ path: string }>) filePaths.push(f.path);
+      if (filePaths.length > 0 && !isMobileMediaEnabled(ctx.config)) {
+        res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' });
+        return;
+      }
     }
     const conversationId = Number(req.body?.conversationId);
     if (!Number.isSafeInteger(conversationId) || conversationId >= 0) {
@@ -20974,7 +21026,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const text = typeof req.body?.text === 'string' ? req.body.text : '';
-    if (!text.trim() || text.length > 16_000) {
+    if ((!text.trim() && filePaths.length === 0) || text.length > 16_000) {
       res.status(400).json({ error: '"text" must be 1-16000 characters' });
       return;
     }
@@ -21003,29 +21055,96 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const eventId = derivedEventId('ag', key, seed);
     if (app.store.hasEvent(key, eventId)) { res.json({ ok: true, idempotent: true, conversationKey: key, eventId }); return; }
     const trimmed = text.trim();
-    if (trimmed.length >= APP_DUPLICATE_MIN_CHARS) {
+    // Files are checked and copied first: the duplicate key includes their hashes, and the
+    // credential wall must see them before anything is published (§4.6).
+    let prepared: Awaited<ReturnType<typeof prepareReplyFiles>> | null = null;
+    if (filePaths.length > 0) {
+      try {
+        prepared = await prepareReplyFiles(app.media, filePaths, { projectDir: ctx.config.projectDir, outboxDir: app.media.outboxDir }, isNeverServed, detectOutboundCredential);
+      } catch (err) {
+        res.status(500).json({ error: 'reply-not-recorded', detail: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      if ('status' in prepared) {
+        if (prepared.error === 'credential-exposure-guard') res.status(422).json({ error: prepared.error, blockedBy: 'credential-exposure-guard', overridable: false, notSent: true, issue: prepared.detail });
+        else res.status(prepared.status).json({ error: prepared.error, detail: prepared.detail });
+        return;
+      }
+    }
+    const preparedFiles = prepared && !('status' in prepared) ? prepared : null;
+    const fileHashes = (preparedFiles?.snapshots ?? []).map(s => s.hashed.sha256).join(',');
+    if (trimmed.length >= APP_DUPLICATE_MIN_CHARS || fileHashes) {
       const cutoff = Date.now() - APP_DUPLICATE_WINDOW_MS;
-      const dup = app.store.browseMessages(key, null, 20).messages.some(m => m.role === 'agent' && m.text.trim() === trimmed && Date.parse(m.at) >= cutoff);
-      if (dup) { res.json({ ok: true, suppressed: true, reason: 'exact-duplicate', conversationKey: key }); return; }
+      const dup = app.store.browseMessages(key, null, 20).messages.some(m => m.role === 'agent' && m.text.trim() === trimmed
+        && (m.attachments ?? []).map(a => a.sha256).join(',') === fileHashes && Date.parse(m.at) >= cutoff);
+      if (dup) {
+        if (preparedFiles) discardPrepared(app.media, preparedFiles);
+        res.json({ ok: true, suppressed: true, reason: 'exact-duplicate', conversationKey: key });
+        return;
+      }
     }
     // The tone-advisory reaction (comply / override-with-reason) rides metadata, as on the
     // Telegram and Slack reply paths; no other metadata field has any effect here.
     const replyMetadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
       ? req.body.metadata as Record<string, unknown> : undefined;
-    if (await checkOutboundMessage(text, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) return;
+    // With no caption, the file names are what the operator reads: they go through the same check.
+    const outboundText = text.trim() ? text : (preparedFiles?.snapshots ?? []).map(s => s.filename).join('\n');
+    if (outboundText.trim() && await checkOutboundMessage(outboundText, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) {
+      if (preparedFiles) discardPrepared(app.media, preparedFiles);
+      return;
+    }
     const messageId = derivedEventId('am', key, seed);
     try {
-      app.store.append({
-        eventId, kind: 'message', conversationKey: key, messageId, role: 'agent', text,
-        at: new Date().toISOString(), machineId: app.deps.machineId(),
-      });
+      const common = { eventId, conversationKey: key, messageId, role: 'agent' as const, text, at: new Date().toISOString(), machineId: app.deps.machineId() };
+      if (preparedFiles) {
+        // Publish the snapshots that were scanned, then the event: never an event without its blobs.
+        const attachments = preparedFiles.snapshots.map((snap, index) => {
+          const mediaType = sniffMediaType(Buffer.from(snap.hashed.headB64, 'base64'));
+          const kind = kindFromBytes(mediaType);
+          app.media.publishSnapshot(snap.snapshotPath, snap.hashed.sha256);
+          return {
+            attachmentId: attachmentIdFor(messageId, index), index, sha256: snap.hashed.sha256, size: snap.hashed.size,
+            declaredKind: kind, kind, mediaType, declaredType: mediaType, filename: snap.filename,
+          };
+        });
+        app.store.append({ ...common, kind: 'media-message', attachments });
+        for (const id of preparedFiles.reservationIds) app.media.releaseReply(id);
+      } else {
+        app.store.append({ ...common, kind: 'message' });
+      }
     } catch (err) {
+      if (preparedFiles) discardPrepared(app.media, preparedFiles);
       res.status(500).json({ error: 'reply-not-recorded', detail: err instanceof Error ? err.message : String(err) });
       return;
     }
     // Push trigger (§4.7) — the hook point; increment 3 sends the push.
     app.onAgentReplyAppended(key, messageId);
     res.json({ ok: true, conversationKey: key, eventId, messageId });
+  });
+
+  // The session's lazy way to an earlier file (mobile-native-chat-media §4.5): Bearer plus the
+  // bind token of the conversation that holds it; makes the session copy and returns its path.
+  router.get('/app/media-path/:attachmentId', async (req, res) => {
+    const app = ctx.appConversations;
+    if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
+    const conversationId = Number(req.query.conversationId);
+    if (!Number.isSafeInteger(conversationId) || conversationId >= 0) { res.status(400).json({ error: 'negative conversationId required' }); return; }
+    const bindHeader = req.headers['x-instar-bind-token'];
+    const rawToken = Array.isArray(bindHeader) ? bindHeader[0] : bindHeader;
+    const verdict = verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: conversationId, rawToken: typeof rawToken === 'string' ? rawToken : undefined, attention: ctx.telegram });
+    if (!verdict.ok) { res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail }); return; }
+    const key = ctx.conversationRegistry?.appConversationFor(conversationId) ?? null;
+    if (!key || !app.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    if (!app.ownsAlias(conversationId)) { res.status(409).json({ error: 'not-owner', detail: 'This machine does not currently run this app conversation.' }); return; }
+    const ref = app.store.mediaRef(String(req.params.attachmentId));
+    if (!ref || ref.canonicalKey !== `app:${key}`) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
+    if (ref.purged) { res.status(404).json({ error: 'file-removed', detail: 'This file was permanently removed.' }); return; }
+    const ev = app.store.getMessageEvent(key, ref.messageId);
+    const attachment = ev && ev.kind === 'media-message' ? ev.attachments[ref.idx] : undefined;
+    if (!attachment) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
+    const copied = await app.media.sessionCopy(ref.messageId, attachment);
+    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: 'this file is not on this machine yet' }); return; }
+    res.json({ path: copied });
   });
 
   router.post('/internal/slack-forward', async (req, res) => {

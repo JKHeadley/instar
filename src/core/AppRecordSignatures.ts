@@ -21,6 +21,7 @@ import { MachineIdentityManager, pemToBase64, sign as edSign, verify as edVerify
 import { IdentityStore } from './IdentityStore.js';
 import { DEVICE_SIG_VERSION, DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
 import { isAppConversationKey } from './appConversationText.js';
+import { attachmentProjection, canonicalJson, type AttachmentProjection } from './appMediaTypes.js';
 
 export type OriginVerdict = 'none' | 'unknown' | 'failed' | 'verified' | 'redacted';
 
@@ -72,6 +73,11 @@ export function receiptPayload(canonicalSha256: string, receivedAt: string, mach
 
 export function redactionPayload(bodySha256: string, storedTextSha256: string, kinds: ReadonlyArray<string>): string {
   return `instar-app-redaction-v1\n${bodySha256}\n${storedTextSha256}\n${[...kinds].sort().join(',')}`;
+}
+
+/** The media form (media spec §4.13): also vouches for the kept attachment fields. */
+export function redactionPayloadV2(bodySha256: string, storedTextSha256: string, kinds: ReadonlyArray<string>, projection: ReadonlyArray<AttachmentProjection>): string {
+  return `instar-app-redaction-v2\n${bodySha256}\n${storedTextSha256}\n${[...kinds].sort().join(',')}\n${sha256Hex(canonicalJson(projection))}`;
 }
 
 /** A device-key ledger row's signed bytes: every field but the signature, keys sorted. */
@@ -153,7 +159,7 @@ export interface StoredDeviceOrigin {
   bodyB64?: string;
   bodySha256: string;
   sig: string;
-  redaction?: { kinds: string[] } & Partial<MachineSignature>;
+  redaction?: { v?: 1 | 2; kinds: string[] } & Partial<MachineSignature>;
 }
 
 export interface VerifiableRecord {
@@ -162,6 +168,8 @@ export interface VerifiableRecord {
   origin?: StoredDeviceOrigin;
   receivedAt?: string;
   receipt?: MachineSignature;
+  /** A `media-message`: the stored attachments (absent on a plain message). */
+  attachments?: ReadonlyArray<AttachmentProjection>;
 }
 
 /** One key's ledger state, merged across rows. */
@@ -201,6 +209,22 @@ export function signRedaction(signer: MachineSigner, bodySha256: string, storedT
   return { kinds: [...kinds], ...signer.sign(redactionPayload(bodySha256, sha256Hex(storedText), kinds)) };
 }
 
+/** Redaction attestation for a media message (payload v2): the file list is vouched for here. */
+export function signRedactionV2(signer: MachineSigner, bodySha256: string, storedText: string, kinds: string[], attachments: ReadonlyArray<AttachmentProjection>): { v: 2; kinds: string[] } & MachineSignature {
+  return { v: 2, kinds: [...kinds], ...signer.sign(redactionPayloadV2(bodySha256, sha256Hex(storedText), kinds, attachments.map(attachmentProjection))) };
+}
+
+/** Whether the signed body's attachments equal the stored ones on the signed fields, in order (§4.13). */
+function signedAttachmentsMatch(signed: unknown, stored: ReadonlyArray<AttachmentProjection>): boolean {
+  if (!Array.isArray(signed) || signed.length !== stored.length) return false;
+  return signed.every((raw, i) => {
+    const s = raw as Record<string, unknown> | null;
+    const t = stored[i];
+    return !!s && !!t && s.sha256 === t.sha256 && s.size === t.size && s.declaredKind === t.declaredKind
+      && s.declaredType === t.declaredType && s.filename === t.filename && (s.transcript ?? null) === (t.transcript ?? null);
+  });
+}
+
 /**
  * The five-verdict check of §4.6. Device-side checks are decisive (`failed`); a machine
  * signature whose key cannot be found in the history makes the verdict `unknown`.
@@ -238,14 +262,19 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
   if (typeof o.bodyB64 === 'string') {
     const body = Buffer.from(o.bodyB64, 'base64');
     if (sha256Hex(body) !== o.bodySha256) return 'failed';
-    let text: unknown;
-    try { text = (JSON.parse(body.toString('utf8')) as { text?: unknown }).text; } catch { return 'failed'; } // @silent-fallback-ok — an unparseable signed body is a failed check
+    let parsed: { text?: unknown; attachments?: unknown };
+    try { parsed = JSON.parse(body.toString('utf8')) as typeof parsed; } catch { return 'failed'; } // @silent-fallback-ok — an unparseable signed body is a failed check
+    // A media message's caption may be absent; a plain message always has text.
+    const text = parsed.text === undefined && record.attachments ? '' : parsed.text;
     // The send routes trim the signed text before storing it (1-4000 characters after trimming).
     if (typeof text !== 'string' || text.trim() !== record.text) return 'failed';
+    if (record.attachments && !signedAttachmentsMatch(parsed.attachments, record.attachments)) return 'failed';
     mode = 'exact';
   } else if (o.redaction) {
     // A redaction with no machine attestation (a machine with no identity key) cannot be checked.
     if (typeof o.redaction.sig !== 'string' || typeof o.redaction.machineId !== 'string' || typeof o.redaction.signerKeyHash !== 'string') return 'unknown';
+    // A media message's file list needs the v2 payload; a v1 attestation never covered it.
+    if (record.attachments && o.redaction.v !== 2) return 'failed';
     mode = 'redacted';
   } else {
     return 'failed';
@@ -258,7 +287,10 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
   let redaction: 'ok' | 'bad' | 'unknown' = 'ok';
   if (mode === 'redacted') {
     const r = o.redaction!;
-    redaction = verifyMachineSignature(machineKey, { machineId: r.machineId!, signerKeyHash: r.signerKeyHash!, sig: r.sig! }, redactionPayload(o.bodySha256, sha256Hex(record.text), r.kinds), receivedMs);
+    const payload = r.v === 2
+      ? redactionPayloadV2(o.bodySha256, sha256Hex(record.text), r.kinds, (record.attachments ?? []).map(attachmentProjection))
+      : redactionPayload(o.bodySha256, sha256Hex(record.text), r.kinds);
+    redaction = verifyMachineSignature(machineKey, { machineId: r.machineId!, signerKeyHash: r.signerKeyHash!, sig: r.sig! }, payload, receivedMs);
     if (redaction === 'bad') return 'failed';
   }
   if (receipt === 'unknown' || redaction === 'unknown') return 'unknown';

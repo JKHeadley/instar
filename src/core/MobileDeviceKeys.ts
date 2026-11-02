@@ -15,6 +15,8 @@ export const DEVICE_SIG_VERSION = 'instar-device-v1';
 export const DEVICE_TIME_WINDOW_MS = 60_000;
 export const REPLAY_TTL_MS = 3 * 60_000;
 export const MAX_REPLAY_PER_DEVICE = 2_000;
+/** Entries only a send route may use (media spec §4.10). */
+export const REPLAY_SEND_RESERVE = 100;
 
 export type DeviceStatus = 'pending' | 'active' | 'declined' | 'expired' | 'revoked';
 
@@ -116,14 +118,18 @@ export class ReplayGuard {
   private seen = new Map<string, Map<string, number>>();
   constructor(private readonly now: () => number = Date.now) {}
 
-  admit(deviceId: string, canonical: string): 'ok' | 'replay' | 'full' {
+  /**
+   * `sendRoute`: the last entries are kept for send routes (media spec §4.10), so an emergency
+   * stop is never refused because a large upload filled the guard. The bound stays 2,000.
+   */
+  admit(deviceId: string, canonical: string, sendRoute = false): 'ok' | 'replay' | 'full' {
     const t = this.now();
     let m = this.seen.get(deviceId);
     if (!m) { m = new Map(); this.seen.set(deviceId, m); }
     for (const [k, at] of m) { if (t - at > REPLAY_TTL_MS) m.delete(k); else break; }
     const key = crypto.createHash('sha256').update(canonical).digest('hex');
     if (m.has(key)) return 'replay';
-    if (m.size >= MAX_REPLAY_PER_DEVICE) return 'full';
+    if (m.size >= (sendRoute ? MAX_REPLAY_PER_DEVICE : MAX_REPLAY_PER_DEVICE - REPLAY_SEND_RESERVE)) return 'full';
     m.set(key, t);
     return 'ok';
   }
@@ -140,6 +146,7 @@ export function verifyDeviceRequest(
   allowStatuses: ReadonlySet<DeviceStatus>,
   replay: ReplayGuard,
   now: number = Date.now(),
+  sendRoute = false,
 ): VerifyResult {
   const { deviceId, time, sig } = parts;
   if (typeof deviceId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(deviceId) || typeof time !== 'string' || !/^\d{10,16}$/.test(time) || typeof sig !== 'string') {
@@ -158,7 +165,7 @@ export function verifyDeviceRequest(
   let valid = false;
   try { valid = crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sigBytes); } catch { valid = false; } // @silent-fallback-ok — a malformed DER signature is simply invalid
   if (!valid) return { ok: false, reason: 'bad-signature' };
-  const r = replay.admit(deviceId, message);
+  const r = replay.admit(deviceId, message, sendRoute);
   if (r === 'replay') return { ok: false, reason: 'replay' };
   if (r === 'full') return { ok: false, reason: 'rate-limited' };
   return { ok: true, deviceId };
