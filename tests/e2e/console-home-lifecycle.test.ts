@@ -125,7 +125,7 @@ describe('Console Home E2E (feature is alive)', () => {
     };
     const cards = {
       reach: buildReach(await read('/health')),
-      needs: buildNeeds(await read('/attention?scope=pool')),
+      needs: buildNeeds(await read('/attention?scope=pool&status=OPEN')),
       doing: buildDoing(await read('/sessions?scope=pool')),
       promised: buildPromised(await read('/commitments?scope=mesh')),
       running: buildRunning(await read('/pool')),

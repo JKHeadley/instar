@@ -12,6 +12,7 @@ import {
   machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
   combineNeeds, machineNames, machineLabel,
   needAction,
+  fillPartial, PARTIAL_GRACE_MS,
 } from '../../dashboard/console/home-model.js';
 import { topicNameMap } from '../../dashboard/console/topic-names.js';
 
@@ -386,5 +387,27 @@ describe('every "needs you" row has somewhere to act', () => {
     const items = [open({ category: 'desktop', machineId: 'm1', title: 'A' }), open({ category: 'general', title: 'B' }), open({ topicId: 5, title: 'C' })];
     const card = buildNeeds({ ok: true, data: { items } }, Date.now());
     expect(card.all.every((r: { action: unknown }) => r.action)).toBe(true);
+  });
+});
+
+describe('a machine that misses one pooled read', () => {
+  const T = 1_000_000;
+  const prev = { ok: true, data: { items: [{ id: 'a1', machineId: 'A' }, { id: 'b1', machineId: 'B' }], pool: { failed: [] } } };
+  const fresh = { ok: true, data: { items: [{ id: 'a2', machineId: 'A' }], pool: { failed: [{ machineId: 'B', reason: 'peer-unreachable' }] } } };
+  it('keeps fresh rows from machines that answered and the missing machine\'s last rows, and stays retrying', () => {
+    const r = fillPartial(fresh, prev, 'items', T + 30_000, T)!;
+    expect(r.data.items.map((i: { id: string }) => i.id)).toEqual(['a2', 'b1']);
+    expect(r.data.pool.failed).toEqual([]);
+    expect(r.retrying).toBe(true);
+    // The merged answer is a full view: Home does not say part could not be checked.
+    expect(buildNeeds(r, T).state).not.toBe('partial');
+  });
+  it('shows the partial answer once the last complete one is older than the grace period', () => {
+    expect(fillPartial(fresh, prev, 'items', T + PARTIAL_GRACE_MS + 1, T)).toBeNull();
+  });
+  it('shows the partial answer when there is no earlier complete one, or a failure names no machine', () => {
+    expect(fillPartial(fresh, null, 'items', T, T)).toBeNull();
+    const anon = { ok: true, data: { items: [], pool: { failed: [{ reason: 'deadline' }] } } };
+    expect(fillPartial(anon, prev, 'items', T, T)).toBeNull();
   });
 });

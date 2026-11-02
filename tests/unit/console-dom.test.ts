@@ -13,7 +13,7 @@ const NOW = new Date().toISOString();
 const ROUTES: Record<string, unknown> = {
   '/sessions': { sessions: [] },
   '/health': { project: { name: 'echo' }, telegramOrigin: { heldForward: { count: 0, observedAt: Date.now(), expiredUnreported: 0 } } },
-  '/attention?scope=pool': { items: [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, title: `Item ${n}`, status: 'OPEN', priority: 'URGENT', createdAt: NOW, description: `Detail ${n}` })), pool: { failed: [] } },
+  '/attention?scope=pool&status=OPEN': { items: [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, title: `Item ${n}`, status: 'OPEN', priority: 'URGENT', createdAt: NOW, description: `Detail ${n}` })), pool: { failed: [] } },
   '/commitments?scope=mesh': { enabled: true, scope: 'mesh', commitments: [] },
   '/sessions?scope=pool': { sessions: [{ name: 'Fix it', status: 'running', startedAt: NOW, machineNickname: 'Mac Studio' }], pool: { failed: [] } },
   '/telegram/topics?scope=pool': { topics: [], pool: { failed: [], unresolved: [] } },
@@ -71,8 +71,8 @@ describe('console shell (jsdom)', () => {
   });
 
   it('links the one request directly and keeps a missing machine under status', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool'];
-    ROUTES['/attention?scope=pool'] = { items: [{ id: 'approve-1', title: 'Approve the schedule change',
+    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
+    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [{ id: 'approve-1', title: 'Approve the schedule change',
       status: 'OPEN', priority: 'URGENT', topicId: 127504, createdAt: NOW }],
       pool: { failed: [{ nickname: 'Laptop' }] } };
     try {
@@ -84,13 +84,13 @@ describe('console shell (jsdom)', () => {
       expect(doc.querySelector('#card-needs')!.textContent).not.toContain('Laptop');
       expect(doc.querySelector('.home-details summary')!.textContent).toContain('some checks incomplete');
       expect(doc.querySelector('#homeStatusNote')!.textContent).toContain("Couldn't reach Laptop");
-    } finally { ROUTES['/attention?scope=pool'] = oldAttention; }
+    } finally { ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention; }
   });
 
   it('one tap on the named Home request opens its action sheet', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool'];
+    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
     const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool'] = { items: [], pool: { failed: [] } };
+    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
       id: 'CMT-1043', status: 'pending', owner: 'user', blockedOn: 'user-authorization',
       createdAt: NOW, originMachineId: 'm1', userRequest: 'Approve rulebook changes',
@@ -108,15 +108,15 @@ describe('console shell (jsdom)', () => {
       expect(doc.querySelector('.sheet[role="dialog"]')?.textContent).toContain('Approve rulebook changes');
       expect(doc.querySelector('.sheet-actions a')?.textContent).toBe('Reply in the conversation');
     } finally {
-      ROUTES['/attention?scope=pool'] = oldAttention;
+      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
       ROUTES['/commitments?scope=mesh'] = oldCommitments;
     }
   });
 
   it('keeps an Echo-owned missed promise out of the default headline', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool'];
+    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
     const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool'] = { items: [], pool: { failed: [] } };
+    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
       id: 'CMT-MISS', status: 'violated', owner: 'agent', blockedOn: 'none', hardDeadlineAt: new Date(Date.parse(NOW) - 60_000).toISOString(),
       createdAt: NOW, originMachineId: 'm1', userRequest: 'Please change the schedule',
@@ -128,15 +128,15 @@ describe('console shell (jsdom)', () => {
       expect(doc.querySelector('#heroTitle a.hero-action')).toBeNull();
       expect((doc.querySelector('#heroIssueLink') as HTMLAnchorElement).hidden).toBe(true);
     } finally {
-      ROUTES['/attention?scope=pool'] = oldAttention;
+      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
       ROUTES['/commitments?scope=mesh'] = oldCommitments;
     }
   });
 
   it('retries a failed promise read before declaring the action queue unknown', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool'];
+    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
     const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool'] = { items: [], pool: { failed: [] } };
+    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     let reads = 0;
     Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, get: () => ++reads === 1 ? null : {
       enabled: true, scope: 'mesh', commitments: [{ id: 'CMT-RETRY', status: 'pending', owner: 'user',
@@ -148,15 +148,15 @@ describe('console shell (jsdom)', () => {
       expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
       expect(doc.querySelector('#card-needs')?.textContent).not.toContain("Couldn't check for promises");
     } finally {
-      ROUTES['/attention?scope=pool'] = oldAttention;
+      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
       Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, writable: true, value: oldCommitments });
     }
   });
 
   it('keeps retrying a promise read after several failures until the action arrives', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool'];
+    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
     const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool'] = { items: [], pool: { failed: [] } };
+    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     let reads = 0;
     Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, get: () => ++reads < 4 ? null : {
       enabled: true, scope: 'mesh', commitments: [{ id: 'CMT-LATE-ANSWER', status: 'pending', owner: 'user',
@@ -171,15 +171,15 @@ describe('console shell (jsdom)', () => {
       expect(reads).toBe(4);
       expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
     } finally {
-      ROUTES['/attention?scope=pool'] = oldAttention;
+      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
       Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, writable: true, value: oldCommitments });
     }
   });
 
   it('retries a partial attention answer when a machine did not answer', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool'];
+    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
     let reads = 0;
-    Object.defineProperty(ROUTES, '/attention?scope=pool', { configurable: true, get: () => ({
+    Object.defineProperty(ROUTES, '/attention?scope=pool&status=OPEN', { configurable: true, get: () => ({
       items: [], pool: { failed: ++reads === 1 ? [{ machineId: 'm2' }] : [] },
     }) });
     try {
@@ -188,14 +188,14 @@ describe('console shell (jsdom)', () => {
       expect(reads).toBe(2);
       expect(doc.querySelector('#card-needs')?.textContent).not.toContain('Checking again automatically');
     } finally {
-      Object.defineProperty(ROUTES, '/attention?scope=pool', { configurable: true, writable: true, value: oldAttention });
+      Object.defineProperty(ROUTES, '/attention?scope=pool&status=OPEN', { configurable: true, writable: true, value: oldAttention });
     }
   });
 
   it('keeps the last promise result in the action queue after two failed refresh reads', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool'];
+    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
     const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool'] = { items: [], pool: { failed: [] } };
+    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
     ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
       id: 'CMT-LAST', status: 'pending', owner: 'user', blockedOn: 'user-input',
       createdAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time',
@@ -211,7 +211,7 @@ describe('console shell (jsdom)', () => {
       expect(doc.querySelector('#homeStatusNote')?.textContent).toContain('last successful check');
       expect(doc.querySelector('#card-promised')?.textContent).toContain('Showing what I saw');
     } finally {
-      ROUTES['/attention?scope=pool'] = oldAttention;
+      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
       ROUTES['/commitments?scope=mesh'] = oldCommitments;
     }
   });
