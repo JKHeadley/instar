@@ -30,3 +30,5 @@ The app only knows something needs you while it is open. Telegram already pings 
 Nothing new. One setup step remains on my side: creating the push key in your Apple developer account, which needs a normal browser sign-in.
 
 **Agents with no Telegram:** the notification service is built on every agent, because a phone can be paired to an agent that has no Telegram. Such an agent has no Attention hub post of its own, so it buzzes the phone only when another of its machines passes on a notice.
+
+A config with no project name no longer stops the server starting.

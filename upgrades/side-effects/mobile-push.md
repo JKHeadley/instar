@@ -99,3 +99,11 @@ Tier 1. 1 file, 13 lines. No spec review rounds.
 6. **External surfaces:** `GET /mobile/push` on a Telegram-less agent now answers the real status instead of `not-built`.
 7. **Multi-machine posture:** unchanged (machine-local device records, trigger fan-out through the existing peer route). A Telegram-less machine can now receive that trigger.
 8. **Rollback cost:** revert the commit; no state changes.
+
+---
+
+## Addendum: a config with no project name
+
+Tier 1, one line of source. Building the push service on every agent also ran it for any config with no `projectName`, and `agentId.charAt` then threw inside the `AgentServer` constructor. Seven e2e failures across four files came from this one line, on both verify machines: six tests in `machine-load-report-lifecycle`, `overload-shed-lifecycle` and `work-admission-lifecycle`, and the setup of `hybrid-search-lifecycle`. A real install always has a project name, so this reached tests only, but a phone feature must not be able to stop the server starting. The name now falls back to `agent`, used only as the label in a push.
+
+Over-block, under-block: none; this removes a crash. Level: the constructor, where the assumption lived. Signal vs authority: no decision involved. Interactions, external surfaces, multi-machine: unchanged. Rollback: revert the line.

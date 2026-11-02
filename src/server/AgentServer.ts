@@ -1589,7 +1589,8 @@ export class AgentServer {
       // need it, and an agent with no Telegram can still have a paired phone. Only the hub-post
       // hook below needs Telegram.
       const pushKeys = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
-      const agentId = options.config.projectName;
+      // Runs on every agent now, so a config with no project name must not stop the server starting.
+      const agentId = options.config.projectName ?? 'agent';
       mp.push = new MobilePushService({
         stateDir: options.config.stateDir,
         registry: mp.devices,
