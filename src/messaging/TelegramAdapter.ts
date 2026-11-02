@@ -2956,6 +2956,8 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch (err) {
       const errStr = String(err);
       console.log(`[telegram] Could not resolve topic name for ${topicId}: ${err}`);
+      // A definite refusal by Telegram (HTTP 400), not a transient failure.
+      if (/telegram-400|Bad Request|message thread not found|TOPIC_DELETED/i.test(errStr)) this.lastProbeRefused = topicId;
       // If the topic was deleted, mark it so we don't retry resolution on every startup
       if (errStr.includes('message thread not found') || errStr.includes('TOPIC_DELETED')) {
         this.topicToName.set(topicId, `[deleted] topic-${topicId}`);
@@ -2969,15 +2971,38 @@ export class TelegramAdapter implements MessagingAdapter {
    * Resolve all topic names that are still using the fallback "topic-NNNN" pattern.
    * Called on startup to backfill names for topics created before name tracking.
    */
+  private static readonly PROBE_REFUSAL_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
+  private lastProbeRefused: number | null = null;
+  private probeRefusalsPath(): string { return path.join(this.stateDir, 'topic-name-probe-refusals.json'); }
+  private readProbeRefusals(): Record<number, number> {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.probeRefusalsPath(), 'utf-8')) as Record<string, unknown>;
+      const out: Record<number, number> = {};
+      for (const [k, v] of Object.entries(raw)) if (Number.isSafeInteger(Number(k)) && typeof v === 'number') out[Number(k)] = v;
+      return out;
+    } catch { return {}; } // @silent-fallback-ok: no record yet means every topic may be probed
+  }
+  private writeProbeRefusals(r: Record<number, number>): void {
+    try { fs.writeFileSync(this.probeRefusalsPath(), JSON.stringify(r)); } catch { /* @silent-fallback-ok: worst case the topic is probed again next start */ }
+  }
+
   async resolveUnknownTopicNames(): Promise<void> {
     const unknowns: number[] = [];
     for (const topicId of this.topicToSession.keys()) {
       if (!this.getTopicName(topicId)) unknowns.push(topicId);
     }
-    if (unknowns.length === 0) return;
-    console.log(`[telegram] Resolving ${unknowns.length} unknown topic names...`);
-    for (const topicId of unknowns) {
-      await this.resolveTopicName(topicId);
+    // General (1) has no creation message to reply to, and a topic Telegram
+    // refused recently (deleted, or not in this chat) is not asked again every
+    // start: each refused probe is a real refused send (2026-11-02: ~190 a week).
+    const refused = this.readProbeRefusals();
+    const now = Date.now();
+    const toProbe = unknowns.filter((id) => id > 1 && !(now - (refused[id] ?? 0) < TelegramAdapter.PROBE_REFUSAL_BACKOFF_MS));
+    if (toProbe.length === 0) return;
+    console.log(`[telegram] Resolving ${toProbe.length} unknown topic names...`);
+    for (const topicId of toProbe) {
+      this.lastProbeRefused = null;
+      const ok = await this.resolveTopicName(topicId);
+      if (ok === null && this.lastProbeRefused === topicId) { refused[topicId] = Date.now(); this.writeProbeRefusals(refused); }
       // Small delay to avoid hitting rate limits
       await new Promise(r => setTimeout(r, 200));
     }
