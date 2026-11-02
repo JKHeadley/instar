@@ -98,7 +98,7 @@ export class DesktopMeshBroker {
   }
 
   async control(frontSessionToken: string, requestId: string,
-    operation: 'status' | 'cursor' | 'ticket' | 'resume' | 'revoke',
+    operation: 'status' | 'cursor' | 'displays' | 'ticket' | 'resume' | 'revoke',
     payload?: Record<string, unknown>): Promise<Record<string, unknown>> {
     const row = this.request(frontSessionToken, requestId);
     if (operation === 'revoke') {

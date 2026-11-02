@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -91,6 +93,14 @@ describe('Windows-local desktop transport', () => {
     const send = windowsDesktopLocalSend(endpoint, script);
     await expect(send(`${foreign}/input`, { method: 'POST', body: '{}' })).rejects.toThrow('request-invalid');
     await expect(send(endpoint + 'capture', { method: 'POST', body: '{}' })).rejects.toThrow(/reply/);
+  });
+
+  it('lets the relay script carry every operation the transport allows', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'scripts/windows-desktop-local-transport.ps1'), 'utf8');
+    const allowed = fs.readFileSync(path.join(process.cwd(), 'src/core/WindowsDesktopLocalTransport.ts'), 'utf8').match(/ALLOWED = new Set\(\[([^\]]*)\]/)![1].match(/'[a-z]+'/g)!;
+    const lists = source.match(/'probe'[^)\]]*/g)!;
+    expect(lists).toHaveLength(2);
+    for (const list of lists) for (const op of allowed) expect(list).toContain(op);
   });
 
   it('refuses a nonlocal companion address or untrusted script path', () => {

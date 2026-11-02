@@ -162,7 +162,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       configured: !!ctx.directDesktopAccess,
       endpoints: ['GET /desktop/setup', 'GET /desktop/setup/:machineId', 'POST /desktop/setup/:machineId',
         'GET /desktop/diagnostics', 'POST /desktop/request-permission', 'GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
-        'GET /desktop/requests/:id', 'POST /desktop/requests/:id/ticket',
+        'GET /desktop/requests/:id', 'GET /desktop/requests/:id/displays', 'POST /desktop/requests/:id/ticket',
         'POST /desktop/requests/:id/revoke', 'WebSocket /desktop-stream'],
     }),
   },
@@ -281,6 +281,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /overload-shed'],
+    }),
+  },
+  {
+    key: 'machineMaintenance',
+    prefixes: ['/machine-maintenance'],
+    description: 'Machine self-maintenance (docs/specs/machine-self-maintenance.md), WATCH-ONLY: every night a paper drain records what a scheduled restart would have done on this machine, which of the closed delays and safety holds read true, and how long each kind of work took to reach its own yield point. It cannot restart anything or stop any work (canRestart:false, canStopWork:false). GET /machine-maintenance reports uptime, due, the next window, the host drain record, delays, safety holds, declared work kinds, lastRehearsal and the evidence gate. 503 when dark (machineMaintenance, dev-agent gated). When asked "what would a nightly restart do here?" or "is this machine due?" read this, never guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /machine-maintenance'],
     }),
   },
   {

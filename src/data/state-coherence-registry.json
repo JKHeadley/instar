@@ -932,6 +932,25 @@
       }
     },
     {
+      "category": "audit-machine-drain",
+      "description": "Watch-only drain audit (docs/specs/machine-self-maintenance.md): what each nightly rehearsal would have done, phase by phase, with delays, holds and yield times. Machine-local observability of this machine; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/machine-drain.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "DrainRehearsal.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending."
+      }
+    },
+    {
       "category": "audit-work-admission",
       "description": "Overload-admission audit stream (trustworthy-machine-load-and-mesh-floor Part C): one JSON line per admission transition (closed/reopened), refusal or would-refuse (dry-run), and recovery-slot grant. Machine-local observability of this machine's own decisions; never authority, never replicated.",
       "scope": "machine-local",
