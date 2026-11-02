@@ -20,13 +20,13 @@ A stranger with an iPhone needs an address that works away from home, a way for 
 Open source and self-hostable by changing one address.
 
 1. **Addresses:** a stable, relay-assigned random name routed to the agent by **TLS passthrough**. The relay reads only the server name.
-   - **Connection:** the serving machine keeps an outbound connection that carries multiplexed inbound streams, authenticated by a key bound when the name is issued, and reconnects with backoff. This works behind NAT. Build or reuse is chosen at build time; the behavior is the contract.
-   - **Certificate:** the agent obtains its own through ACME TLS-ALPN-01 over that path. HTTP-01 and DNS-01 are ruled out, since DNS-01 would have the relay handle validation. The agent's key stays stable across renewals so the app's pin survives. Rotating it needs an owner-record entry.
-   - **Domain:** the relay zone goes on the Public Suffix List before first deploy, for per-name certificate limits and cookie isolation.
+   - **Connection:** the serving machine keeps an outbound connection that carries multiplexed inbound streams, authenticated by the agent's identity key, to which the name is bound, and reconnects with backoff. **One connection per name:** a connection with a higher lease epoch displaces the older one, and the loser gets a typed `displaced` signal, so a machine that has lost serving is fenced. This works behind NAT. Build or reuse is chosen at build time; the behavior is the contract.
+   - **Certificate:** the agent obtains its own through ACME TLS-ALPN-01 over that path. HTTP-01 and DNS-01 are ruled out, since DNS-01 would have the relay handle validation. The agent's key stays stable across renewals so the app's pin survives. A rotation or a machine takeover uses a signed owner-record entry, and the app verifies that entry against its existing trust before sending anything to the new key.
+   - **Domain:** the relay zone goes on the Public Suffix List before first deploy, for per-name certificate limits and cookie isolation. Listing takes weeks, so a CA rate-limit exemption or an issuance cap is the fallback at first deploy.
 2. **Rendezvous:** one-time codes so a phone and computer can find each other. High-entropy, ten-minute life, nothing kept after use, with per-address limits on redemption. **A rendezvous code is never ownership proof.** Ownership uses the key-derived code in `owner-authentication.md` section 4.
 3. **Push:** forwarding content-free alerts through the App Store key the relay holds.
-   - **Identity:** the phone registers its token with the relay under a relay-issued device credential, and tells its agent that credential's id. An agent is enrolled with a signed key and can only send a signed trigger naming a device that has authorized it. The relay refuses others, so one agent can't target another's phones or spend its allowance.
-   - **Revocation:** a phone's or owner's removal reaches the relay as a signed request.
+   - **Identity:** the phone registers its token with the relay under a relay-issued device credential, and tells its agent that credential's id. An agent is enrolled with its identity key, shared across its machines, and can only send a signed trigger naming a device that has authorized it. The relay refuses others, so one agent can't target another's phones or spend its allowance. Triggers carry a short validity window and an idempotency id, so a replay can't spend the allowance.
+   - **Revocation:** a phone's or owner's removal reaches the relay as a signed, versioned request. Authorization and token updates carry revisions, and revocation takes precedence over a reordered older grant.
    - **Content:** the relay sets the title from the registered agent name. The phone fetches details directly from the agent.
    - **Admission:** the trigger moves from "after the Telegram hub post" to a channel-independent hook after the Attention hub filter admits an event. This amends frontloaded decision 2 of `mobile-push.md`. Held items still don't notify, hub notices keep working, and cross-machine dedupe stays.
 
@@ -41,7 +41,7 @@ The app offers "Create my agent". It gives the person the command to run on thei
 A relay controlling a name's DNS could obtain a certificate for it, so:
 
 - **The app pins the agent's certificate key at pairing.** A substituted one fails loudly.
-- **The browser dashboard on a relay address is view-only.** Enrollment, passphrases, passkeys and recovery keys are all refused there (`owner-authentication.md` 3.1). Risky actions go to the phone.
+- **The browser dashboard on a relay address is view-only, and no browser page on a relay is trusted.** The legitimate server refuses all proof entry there (`owner-authentication.md` 3.1). A malicious relay could serve its own convincing page without contacting that server, so the product teaches one rule: on a relay address, secrets and approvals happen only in the app.
 - **No content promise.** Passthrough forwards any TLS server, so the view-only rule is enforced by the Instar server, not the relay.
 - **Certificate monitoring.** Agents compare newly logged certificates for their name against their own key. Their own renewals stay silent. Checks are deduped per certificate, and a breaker stops retries during log outages. A key mismatch is a security event and raises one item immediately.
 
@@ -64,7 +64,7 @@ Apple accepts alerts for the App Store app only when signed with the key of the 
 ## 8. Testing and proof
 
 - **Unit and integration:** passthrough reads no content; reconnect; code expiry and single use; one agent refused for another's device; push ceilings and durable quota; held items don't notify; certificate comparison on both sides.
-- **E2E:** a substituted certificate fails at the app; the browser refuses proof entry on a relay origin.
+- **E2E:** a substituted certificate fails at the app; the browser refuses proof entry on a relay origin; machine takeover with the old machine unavailable, and with both reconnecting.
 - **Independence:** relay blocked; a self-hosted relay at a changed address.
 - **Live-user-channel proof:** a stranger-shaped phone-first run.
 
@@ -92,7 +92,7 @@ Apple accepts alerts for the App Store app only when signed with the key of the 
 | Surface | Posture |
 |---|---|
 | Relay name | Unified: one name per agent. Only the serving machine holds the connection. Handing over needs three amendments to `mobile-multi-route.md`: a relay-name candidate source, an arrival class for the reverse connection, and an app rule accepting a name that moved between machines of the same owner. Device authorization carries over through the owner record |
-| Agent TLS key for the relay name | machine-local-justification: physical-credential-locality (a machine that takes over the name gets its own certificate; the app learns it through the owner record's signed entry) |
+| Agent TLS key for the relay name | machine-local-justification: physical-credential-locality (a machine that takes over the name gets its own key and certificate; the app learns it through the owner record's signed entry) |
 | Push tokens | Unified with the existing push fan-out across machines |
 
 ## Open questions

@@ -31,15 +31,24 @@ The owner record holds public keys. Every proof produces a signature over a serv
 | Proof | Key lives | Default when | Accepted from |
 |---|---|---|---|
 | Phone app, with Face ID | Secure Enclave | The person has the app | Any route. The app pins the agent's certificate key |
-| Passkey: Touch ID, Windows Hello, security key, QR from a phone | Authenticator | An authenticator exists, on any install | Dashboard at a registered private address or loopback |
-| Passphrase | Derived in the browser (Argon2id, stored salt, parameters measured on target browsers, minimum length enforced) | No authenticator exists | Same as passkey |
+| Passkey: Touch ID, Windows Hello, security key, QR from a phone | Authenticator | An authenticator exists, on any install | See 3.1 |
+| Passphrase | Derived in the browser (Argon2id, stored salt, parameters measured on target browsers, minimum length enforced) | No authenticator exists | See 3.1 |
 | Recovery key | Generated client-side, shown once | Offered at the second device or the first risky action | Recovery only |
 
 The common case is **one tap**: a passkey at setup, with no passphrase and no recovery step during install.
 
-### 3.1 Where proof can't happen
+### 3.1 Where proof can happen
 
-Relay addresses and Cloudflare quick tunnels never accept proof entry. Their operator could serve altered pages, and a captured passphrase is permanently replayable. On those origins, risky actions go to the phone or wait for a private address. This also covers Telegram-only people, as in 3.2.
+The rule depends on who could serve altered pages.
+
+| Origin | Passphrase | Passkey | Phone app |
+|---|---|---|---|
+| The agent terminates TLS: loopback, same network, Tailscale | Yes | Yes | Yes |
+| Person's own third-party front, such as their own Cloudflare tunnel | No | Yes: non-replayable, and they chose this provider | Yes |
+| Instar relay | No | No | Yes |
+| Quick tunnel | No | No | Yes |
+
+A captured passphrase is permanently replayable, so it's only accepted where no third party can serve pages. **The app is the only trusted path over a relay,** because it pins the agent's key. A page from a malicious relay could show a false action, so no browser page on a relay is trusted even when HTTPS succeeds. A relay-only person with no phone adds a private address for risky actions.
 
 ### 3.2 Telegram is not proof
 
@@ -53,11 +62,11 @@ A bot token is readable by the agent, so a button tap can't prove a human. A Tel
 
 **Headless machine:** enrollment over same-network or a private address, using the phone flow or a browser on another computer with the same key-derived code. Never through a quick tunnel.
 
-**Limit and recovery.** A local program could race the person to enrollment. So the agent's first message states when the owner was set and the key's fingerprint, and a **provisional** proof can't veto a reset (section 7). A stolen first-owner slot is therefore recoverable.
+**Limit and recovery.** A local program could race the person to enrollment. So the agent's first message states when the owner was set and the key's fingerprint, and a **provisional** proof can't veto a reset (section 7). That makes an ordinary stolen slot recoverable. A determined local program that fakes everything falls under section 11, and the person's remaining remedy is installing a new agent.
 
 ## 5. Approval requests
 
-Prompts render server-canonical structured fields. The agent cannot author the wording. Every approval signs a versioned envelope binding owner, target machine and agent, exact action parameters, a unique nonce, an expiry and the record head. Consuming the nonce is atomic with running the action, and durable across restarts, so an approval can't run twice or on another machine. At most three may be pending per agent per machine, and three declines in a row pause requests and alert the owner.
+Prompts render server-canonical structured fields. The agent cannot author the wording. Every approval signs a versioned envelope binding owner, target machine and agent, exact action parameters, a unique nonce, an expiry and the record head. The nonce is consumed durably before the action starts, so an approval can't run twice or on another machine. Each action moves through durable states (approved, started, done or uncertain). After a crash mid-action the state is `uncertain`. It is never re-run automatically; the owner is told and decides. External actions pass an idempotency key where the provider supports one. This prevents replay of the approval; it doesn't make external effects transactional. At most three may be pending per agent per machine, and three declines in a row pause requests and alert the owner.
 
 **Risky actions:** approvals, money, arming, remote desktop, revoking, creating an agent, and changing the owner record. Viewing only needs a PIN session or any proof.
 
@@ -67,14 +76,17 @@ Prompts render server-canonical structured fields. The agent cannot author the w
 
 - **The owner record is a trust anchor beside `identity.json`.** It never travels through ordinary state sync.
 - **Structure:** signed entries (add key, revoke key, new epoch), each citing its signing key and the causal heads it saw. Disconnected machines merge deterministically, with no central authority.
-- **Authorization rules, checked on every merge:**
+- **Authorization rules, recomputed from the full entry set in causal order, so every merge order gives the same result:**
   - An add stands if its signer was valid at that causal point.
   - Revoking key A voids what A signed concurrently with or after the revocation. What A signed causally before it stands. So B added by A while disconnected, concurrent with A's revocation, is void and must be added again.
+  - **Invalidity is recursive.** If B is void, everything B signed is void unless independently signed by a key still valid. A revocation signed by a void key has no effect.
   - If A and B revoke each other concurrently, both are revoked. If that leaves no key, the owner uses the reset, and every proof holder is alerted.
 - **Each signed action carries the record head the signer holds.** A machine accepts when the signature verifies against the merged record and adopts newer entries from it. No peer is needed, so a sole surviving machine keeps working.
 - **Already-paired machines at first enrollment:** a machine whose identity is already verified accepts the owner-signed record root over the mesh once. Its first-seen record is pinned.
 - **New machine or agent:** an enrolled machine gives a one-time code. The approval prompt shows the new machine's key fingerprint, and the new machine's terminal shows the same words to compare. Only then is the record sent.
-- **Phones across machines:** the record lists device keys, so a paired phone is accepted by all of the owner's machines. This closes the `401` on a tunnel move. After first enrollment the record is authoritative for phones. The existing replicated device ledger becomes a projection of it, and a revocation writes both.
+- **Phones across machines:** the record lists device keys, so a paired phone is accepted by all of the owner's machines. This closes the `401` on a tunnel move. Today, device records are machine-local and a key ledger replicates. At first enrollment, the devices from every reachable machine are gathered and the owner approves the list once; a machine offline then contributes its list on return, with the same approval. After that, the record is authoritative, the ledger is a projection of it, and a revocation writes both.
+- **The agent's TLS key is an owner-record entry.** The app re-pins only on a verified entry, so a key change no longer means pairing again.
+- **Owner and operator.** The owner approves risky actions. The topic's verified operator remains the conversational principal. Where both exist, the owner record wins.
 - **Honest limit on revocation:** a machine that hasn't seen a revocation would still accept that key until it syncs. Revocations are pushed to all peers with retries, and the owner sees which machines have confirmed.
 
 ## 7. Recovery
@@ -83,7 +95,7 @@ Prompts render server-canonical structured fields. The agent cannot author the w
 - **Lost device, with recovery key:** replaces the lost entry. This supersedes the recovery key in `MULTI-USER-SETUP-SPEC` (stored hashed, displayed by the agent, 24-hour hold), because this key is a signing key that never touched the machine.
 - **Lost everything:** "Start over" on a loopback or same-network dashboard page, or a local command. SSH counts as local. Rules:
   - **One pending reset at a time, with a 72-hour wait.** Notices go to every channel at the start, at 24 hours and at 1 hour.
-  - **Veto eligibility freezes when the reset starts.** A key may cancel only if it existed at least 24 hours before the request and isn't provisional. A key is provisional from local-page enrollment until it has approved a risky action or admitted a second device.
+  - **Veto eligibility freezes when the reset starts.** A key may cancel only if it existed at least 24 hours before the request and isn't provisional. A key is provisional from local-page enrollment until a device on a separate authenticator (a phone, or a passkey from another computer) has joined.
   - **A veto locks local resets for 7 days,** so a misbehaving agent can't keep starting them.
   - **Completing it takes a second local act after the wait.** A missed notice alone can't hand over ownership.
   - **Effect: a new epoch entry.** It voids every earlier key, however late earlier entries merge, and re-enrollment opens. A peer machine applies it only after its own 72-hour wait from receiving it, under the same veto rule. With two epochs on disconnected machines, the higher number wins. A tie voids both and requires fresh enrollment.
@@ -122,7 +134,7 @@ The agent runs as the same operating-system user as the code that checks signatu
 
 ## 12. Testing and proof
 
-- **Unit and integration:** `ownerProof` per proof type; merge rules with the adversarial examples in section 6, including cross-revocation and an add concurrent with its signer's revocation; epoch merge; approval envelope replay under concurrency and restart, and on another machine; approval text binding, pending cap and decline pause; origin refusal for proof entry on relay and quick-tunnel addresses; enrollment theft followed by a reset and an attempted veto after 24 hours; repeated resets; first-seen root on paired machines; unlock v2; PIN migration with no re-mint.
+- **Unit and integration:** `ownerProof` per proof type; merge rules with the adversarial examples in section 6, including cross-revocation and an add concurrent with its signer's revocation; epoch merge; approval envelope replay under concurrency and restart, and on another machine; approval text binding, pending cap and decline pause; origin refusal for proof entry on relay and quick-tunnel addresses; enrollment theft followed by a reset and an attempted veto after 24 hours; same-result merges across orders, with recursive invalidation; an action crash leaving `uncertain` with no re-run; repeated resets; first-seen root on paired machines; unlock v2; PIN migration with no re-mint.
 - **Wiring integrity:** every migrated consumer reaches `ownerProof`; the lint fails a new direct comparison.
 - **E2E:** feature-alive for each proof; sole surviving machine still accepts owner actions; phone accepted after a machine move.
 - **Live-user-channel proof:** enrollment and a risky action on phone, passkey and passphrase, with no hosted service. A Telegram-only migration path.

@@ -84,6 +84,7 @@ Windows runs through the same installer inside WSL. Enabling WSL needs an admini
 - **Plain consent.** It says what it will install and that this creates a new agent ("to put an existing agent here, ask that agent"), and asks once. `--yes` is explicit. It never runs `sudo` without saying so. This follows `GUIDED-SETUP-SPEC` principle 7: stated consent counts, and silent installs stay forbidden.
 - **Checks first.** Disk space with a plain refusal, supported platform, and existing tools, including common version-manager locations, because `curl | sh` runs without the person's shell profile. It asks before installing a second copy of anything.
 - **Installs the chosen AI door.** No agent exists yet, so the deterministic installer does this. When it can't, it stops with a plain next step and a resume point.
+- **It keeps running.** With consent, the installer sets up supervision and automatic start through the existing `instar autostart`, including WSL's start path. The explanation says plainly that the agent works while its computer is on and awake.
 - **Default home.** `~/.instar/agents/<name>`, never the current directory, so the macOS protected-folder refusal can't surprise anyone.
 - **Deterministic before sign-in.** Until an AI door is signed in, no model may be available. These steps are fixed text.
 - **Order.** Explain, ask name and purpose, install and sign in to the AI door, start the local server, fill the owner slot (4.5), then reach the first result. Addresses and channels come when wanted. Browser download and secret storage happen only when something needs them; the Telegram setup is one such trigger.
@@ -153,11 +154,15 @@ The agent sets up the chosen option. The person only signs in where needed, thro
 
 **Pairing change.** All three gates (mint, redeem, `stableOrigin()`) accept any proven own name, with the stored device origin following. The proof that this process answers on the name stays. Quick tunnels remain refused for phones.
 
-**Same network.** The agent terminates TLS itself with its own certificate. A new version of the pairing link carries the certificate's public-key hash in the QR code on the computer's screen, and the phone checks it before redeeming and pins it. A replaced certificate means pairing again. Older links stay valid for addresses with a public certificate.
+**Same network.** The agent terminates TLS itself with its own certificate. A new version of the pairing link carries the certificate's public-key hash in the QR code on the computer's screen, and the phone checks it before redeeming and pins it. Until `owner-authentication.md` ships, a replaced certificate means pairing again. Older links stay valid for addresses with a public certificate.
+
+**A local name that survives address changes.** The agent advertises `<agent>.local` over mDNS and that name is the stored device origin, so a changed DHCP address doesn't break the phone. Device signatures bind to the name. Reconnection is tested after an address change and a restart.
 
 ## 7. Reachability without messaging
 
 Messaging can't become optional until the floor has another carrier. The protected lifeline gains a dashboard and native-app conversation carrier, keyed the same way on a minted conversation id, and the cold-start fallback gains that delivery path. The first session and conversation are created by the installer. **Phase 1 cannot ship "messaging optional" without this.** Graduating `mobilePairing.native.enabled` to the fleet, including a live-channel proof, is a phase-1 exit criterion owned by the instar-developing agent. A no-channel install on phase 1 is reachable through the local dashboard, and through a phone once a private address exists.
+
+**Browser conversation routes.** The native routes are device-signed today. Phase 1 adds PIN-session routes for creating a conversation, sending and reading history, plus a display acknowledgment tied to a specific reply, re-sent on reconnect. A lost acknowledgment leaves the state `stored, not yet seen`, never failed.
 
 **Who the dashboard speaks for.** Today the only conversation send route is device-signed. Phase 1 adds a browser send path behind a PIN session, and the PIN is readable by the agent. So dashboard messages are origin-tagged and never bind a verified operator. A no-channel, no-phone install has no verified operator until a channel or `owner-authentication.md` arrives, and operator-only conversational flows honestly wait.
 
@@ -201,7 +206,7 @@ Then a guided second level: a scheduled email report, calendar, another computer
 
 1. **Install address:** `instar.sh/install` and `install.ps1`. A published address is never deleted; if it moves, a permanent redirect stays.
 2. **API and local doors:** the rule and Pi fallback in section 5. Both branches are buildable.
-3. **Same network:** agent-held certificate pinned at pairing (section 6).
+3. **Same network:** agent-held certificate pinned at pairing, with an mDNS name as the stable origin (section 6).
 4. **Default jobs:** the 15% rule (section 8).
 5. **First-result limit:** 5 minutes, with the fixed-line fallback (section 8).
 6. **Phone without a private address:** same network only until `hosted-relay.md` ships. Stated plainly in setup.
@@ -233,7 +238,7 @@ Then a guided second level: a scheduled email report, calendar, another computer
 
 Each ships on its own, and each has a complete fresh-install acceptance scenario.
 
-1. **Install basics:** installer, reorder, plain output, one state machine, consent, disk checks, lazy browser download, door install, reachability without messaging, new first tasks, live reminders, delivery-checked first result. **Accept:** clean machine, one-liner, Claude Code or Codex, viewing PIN shown, first result delivered in the dashboard.
+1. **Install basics:** installer, reorder, plain output, one state machine, consent, disk checks, lazy browser download, door install, reachability without messaging, new first tasks, live reminders, delivery-checked first result. **Accept:** clean machine, one-liner, Claude Code or Codex. The installer-opened page is already unlocked by its token, and the PIN is shown there for later use. First result displayed in the dashboard, and a reminder fires after the terminal closes and after a reboot.
 2. **Addresses without Cloudflare:** pairing on any proven name, agent-run setup, same-network option. **Accept:** phone paired over Tailscale and over same-network, using today's dashboard PIN session for redeem.
 3. **All AI doors:** contracts, shipped door list, Pi proof, local checks. API doors wait on the money layer. **Accept:** each proven door installs and delivers a first result; an unproven door says "not yet".
 

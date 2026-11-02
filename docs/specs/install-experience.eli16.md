@@ -18,6 +18,7 @@ We ran the command in an empty home folder on a computer that already had the to
 - **It installs what's missing.** It says what it will install and asks once, then handles Node and your chosen AI tool. If it gets interrupted, it picks up where it stopped.
 - **Any AI.** Subscriptions first. API keys and local models come once they're proven, and API keys also need a spending limit.
 - **Several ways to reach your agent, without Cloudflare.** Tailscale, your own domain, your local network, or no address at all through Telegram or Slack. The agent does the setup. You only sign in when needed.
+- **It keeps running.** With your okay, it starts itself after a reboot. It works while your computer is on and awake, and it says so.
 - **Messaging becomes optional.** You can talk to your agent in its dashboard, and it keeps a protected way to reach you.
 - **First tasks that need no new accounts.** A morning briefing, a memory check and a reminder. A scheduled email report comes next.
 
