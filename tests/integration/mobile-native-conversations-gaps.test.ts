@@ -109,11 +109,11 @@ async function setup(opts: Opts = {}) {
 
 type Env = Awaited<ReturnType<typeof setup>>;
 let tick = 0;
-function signed(e: Pick<Env, 'app' | 'dev' | 'deviceId'>, method: 'GET' | 'POST', p: string, body?: unknown) {
+function signed(e: Pick<Env, 'app' | 'dev' | 'deviceId'>, method: 'GET' | 'POST' | 'DELETE', p: string, body?: unknown) {
   const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
   const time = String(Date.now() + (tick++ % 1000));
   const sig = e.dev.sign(canonicalString(e.deviceId, HOST, method, p, time, raw));
-  const base = method === 'GET' ? request(e.app).get(p) : request(e.app).post(p);
+  const base = method === 'GET' ? request(e.app).get(p) : method === 'POST' ? request(e.app).post(p) : request(e.app).delete(p);
   const q = base.set('X-Instar-Device', e.deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
   return raw ? q.set('Content-Type', 'application/json').send(raw.toString()) : q;
 }
@@ -317,5 +317,119 @@ describe('gap 5 — history says how the signing phone was approved', () => {
     const hist = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
     expect(hist.body.messages[0].originVerified).toBe('failed');
     expect(hist.body.messages[0].originApprovedVia).toBeUndefined();
+  });
+});
+
+describe('review follow-ups — peer rows are re-validated, and pool browse covers unreplicated conversations', () => {
+  /** A router over an env's store whose pool points at the given peers, read with the Bearer principal. */
+  function poolApp(e: Env, peers: Array<{ machineId: string; url: string }>) {
+    const app2 = express();
+    app2.use(express.json());
+    app2.use((req, _res, next) => { (req as unknown as { instarPrincipal: unknown }).instarPrincipal = { kind: 'token' }; next(); });
+    app2.use(createMobileConversationRouter({
+      config: { authToken: 'tok-1' } as never, pairing: e.pairing, service: e.svc, machineId: () => 'm1',
+      pool: { config: { authToken: 'tok-1' }, resolvePeerUrls: () => peers.map((p) => ({ ...p, kind: 'lan' })) } as never,
+    }));
+    return app2;
+  }
+
+  it('a peer row\'s odd lastActivity ("0") is dropped, so it cannot become a cursor that ends paging early', async () => {
+    const e = await setup({ topics: [] });
+    const keys: string[] = [];
+    for (let i = 0; i < 4; i++) keys.push((await signed(e, 'POST', '/mobile/conversations', { title: `App ${i}`, requestId: rid() })).body.conversationKey);
+    const peer = express();
+    peer.get('/mobile/conversations', (_req, res) => {
+      res.json({ conversations: [
+        { id: crypto.randomUUID(), platform: 'app', title: 'offset', lastActivity: '2035-01-01T02:00:00+02:00', lastPreview: null },
+        { id: crypto.randomUUID(), platform: 'app', title: 'odd', lastActivity: '0', lastPreview: null },
+        { id: crypto.randomUUID(), platform: 'app', title: 'loose date', lastActivity: 'Mon, 01 Jan 2035 00:00:00 GMT', lastPreview: null },
+      ], nextCursor: null });
+    });
+    const server = await listen(peer);
+    try {
+      const app2 = poolApp(e, [{ machineId: 'm_peer0', url: urlOf(server) }]);
+      const seen: Array<{ id: string; title: string; lastActivity: string | null }> = [];
+      let cursor: string | null = null;
+      do {
+        const r = await request(app2).get(`/mobile/conversations?scope=pool&limit=3${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+        seen.push(...r.body.conversations);
+        cursor = r.body.nextCursor;
+        if (cursor) expect(cursor).toMatch(/^\d{4}-\d{2}-\d{2}T[^|]*Z\|/);
+      } while (cursor);
+      expect(seen.map((x) => x.title)).not.toContain('odd');
+      expect(seen.map((x) => x.title)).not.toContain('loose date');
+      expect(seen.find((x) => x.title === 'offset')!.lastActivity).toBe('2035-01-01T00:00:00.000Z');
+      for (const k of keys) expect(seen.map((x) => x.id)).toContain(k); // every local conversation reached
+    } finally { server.close(); }
+  });
+
+  it('a peer-only browse row carries no peer attachment data and a strict ISO time', async () => {
+    const e = await setup();
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Plans', requestId: rid() })).body.conversationKey as string;
+    const peer = express();
+    peer.get('/mobile/chat/app/:key/messages', (_req, res) => {
+      res.json({ messages: [
+        { eventId: 'agent-ev-1', messageId: 'agent-msg-1', role: 'agent', text: 'here is the file', at: '2099-01-01T01:00:00+01:00', machineId: 'm_peer0', deliveryState: 'delivered',
+          attachments: [{ attachmentId: '../../etc/passwd', sha256: 'x', size: -1, filename: '<script>', url: 'http://evil.example/' }, { junk: true }] },
+        { eventId: 'agent-ev-2', messageId: 'agent-msg-2', role: 'agent', text: 'bad time', at: '0', machineId: 'm_peer0', deliveryState: 'delivered' },
+        { eventId: 'agent-ev-3', messageId: 'agent-msg-3', role: 'agent', text: 'odd state', at: '2099-01-02T00:00:00.000Z', machineId: 'm_peer0', deliveryState: '<b>' },
+      ], nextBefore: null });
+    });
+    const server = await listen(peer);
+    try {
+      const r = await request(poolApp(e, [{ machineId: 'm_peer0', url: urlOf(server) }])).get(`/mobile/chat/app/${key}/messages?scope=pool`);
+      expect(r.status).toBe(200);
+      const byText = Object.fromEntries(r.body.messages.map((m: Record<string, unknown>) => [m.text, m]));
+      expect(byText['bad time']).toBeUndefined();
+      expect(byText['here is the file'].at).toBe('2099-01-01T00:00:00.000Z');
+      expect(byText['here is the file'].attachments).toBeUndefined();
+      expect(byText['here is the file'].filesOnOtherMachine).toBe(2);
+      expect(JSON.stringify(r.body)).not.toContain('passwd');
+      expect(byText['odd state'].deliveryState).toBe('unknown');
+    } finally { server.close(); }
+  });
+
+  it('pool browse reads a conversation this machine has not seen yet from the peers; a deleted one stays 404', async () => {
+    const e = await setup();
+    const unseen = crypto.randomUUID();
+    const peer = express();
+    peer.get('/mobile/chat/app/:key/messages', (req, res) => {
+      if (req.params.key !== unseen) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+      res.json({ messages: [{ eventId: 'ev-x', messageId: 'msg-x', role: 'operator', text: 'made on the laptop', at: '2030-01-01T00:00:00.000Z', machineId: 'm_peer0', deliveryState: 'delivered' }], nextBefore: null });
+    });
+    const server = await listen(peer);
+    try {
+      const app2 = poolApp(e, [{ machineId: 'm_peer0', url: urlOf(server) }]);
+      const r = await request(app2).get(`/mobile/chat/app/${unseen}/messages?scope=pool`);
+      expect(r.status).toBe(200);
+      expect(r.body.messages).toEqual([expect.objectContaining({ text: 'made on the laptop', originVerified: 'unknown', machine: 'm_peer0' })]);
+      // Without scope=pool it is still unknown here.
+      expect((await request(app2).get(`/mobile/chat/app/${unseen}/messages`)).status).toBe(404);
+      // Nobody has it: 404.
+      expect((await request(app2).get(`/mobile/chat/app/${crypto.randomUUID()}/messages?scope=pool`)).status).toBe(404);
+      // A machine did not answer: not a 404, the gap is named.
+      const dark = poolApp(e, [{ machineId: 'm_dark', url: 'http://127.0.0.1:1' }]);
+      const d = await request(dark).get(`/mobile/chat/app/${crypto.randomUUID()}/messages?scope=pool`);
+      expect(d.status).toBe(200);
+      expect(d.body.pool.failed.map((f: { machineId: string }) => f.machineId)).toEqual(['m_dark']);
+      // A conversation this machine knows is deleted stays 404 even in a pool read.
+      const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Gone', requestId: rid() })).body.conversationKey as string;
+      expect((await signed(e, 'DELETE', `/mobile/conversations/${key}`, { requestId: rid() })).status).toBe(200);
+      expect((await request(app2).get(`/mobile/chat/app/${key}/messages?scope=pool`)).status).toBe(404);
+      // A key that is not an app conversation key is never forwarded.
+      expect((await request(app2).get('/mobile/chat/app/..%2F..%2Fhealth/messages?scope=pool')).status).toBe(404);
+    } finally { server.close(); }
+  });
+
+  it('the Telegram route: a key with a zero-width space is flagged and the mirror shows none of it; a later-line desktop code is removed', async () => {
+    const e = await setup();
+    const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH';
+    const split = `${key.slice(0, 20)}\u200B${key.slice(20)}`;
+    const r = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: `use ${split} for now`, requestId: rid() });
+    expect(r.body).toMatchObject({ ok: true, credentialShaped: true });
+    expect(e.mirrors[0]).toBe('📱 Justin (from the app): [credential hidden]');
+    const d = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: 'approve this one\n/desktop\u00A0abc 123456', requestId: rid() });
+    expect(d.body).toMatchObject({ ok: true, redacted: true, removed: ['desktop-code'] });
+    expect(e.ingested[1]).toBe('approve this one\n[desktop code removed]');
   });
 });

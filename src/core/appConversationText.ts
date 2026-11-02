@@ -9,6 +9,7 @@
  */
 import crypto from 'node:crypto';
 import { scrubForStore } from './durableSecretScrub.js';
+import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 
 /** The strict lowercase RFC 4122 v4 pattern of spec 4.1 (no anchors; compose with them). */
 export const APP_CONVERSATION_KEY_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -59,8 +60,10 @@ export function cleanConversationTitle(raw: unknown): string | null {
 export type RemovedTokenKind = 'pairing-invite' | 'desktop-code';
 const INVITE_RE = /tlinv1:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 // A remote-desktop approval is a whole line `/desktop <id> <code>` (the Telegram path consumes
-// any line that starts with /desktop, malformed included, so a typo cannot leak).
-const DESKTOP_LINE_RE = /^[ \t]*\/desktop(?:[ \t][^\n]*)?$/gim;
+// any line that starts with /desktop, malformed included, so a typo cannot leak). Leading space
+// and the separator are any whitespace but a newline (`[^\S\n]`), the class the inbound core's
+// own `/^\/desktop(?:\s|$)/` check uses, so a non-breaking space or a tab cannot slip one through.
+const DESKTOP_LINE_RE = /^[^\S\n]*\/desktop(?:[^\S\n][^\n]*)?$/gim;
 
 /**
  * Replace each exact-format authority token with a fixed placeholder; return the remaining text
@@ -83,5 +86,9 @@ export function derivedEventId(prefix: string, ...parts: string[]): string {
  * "[credential hidden]". Used only for the platform mirror, never for what the session receives.
  */
 export function hideCredentialSpans(text: string): string {
-  return scrubForStore(text).text.replace(/\[REDACTED:[A-Za-z0-9_-]+\]/g, '[credential hidden]');
+  const out = scrubForStore(text).text.replace(/\[REDACTED:[A-Za-z0-9_-]+\]/g, '[credential hidden]');
+  // The span scrub reads the raw text; the credential wall also reads it with invisible characters
+  // removed. Whatever the wall still sees after the scrub (a key with a zero-width space inside it)
+  // cannot be located as a span, so the whole copy is hidden rather than shown.
+  return detectOutboundCredential(out).detected ? '[credential hidden]' : out;
 }

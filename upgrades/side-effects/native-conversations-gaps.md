@@ -112,6 +112,16 @@ Not run: the brief for this change declared `--second-pass false`.
 
 ---
 
+## Review follow-ups (independent review: CONCERN, all five addressed)
+
+1. **Mirror leak through invisible characters.** `hideCredentialSpans` scrubbed the raw text only, while `detectOutboundCredential` also reads it with invisible characters removed, so a key split by a zero-width space was flagged but shown in the 📱 copy. Now the scrubbed copy is re-checked with the same wall; if the wall still sees a credential the whole copy is hidden as `[credential hidden]`. Tested for nine invisible characters (U+200B/C/D, U+2060, U+FEFF, U+00AD, U+034F, U+FE0F, U+202E) and end to end through the Telegram route.
+2. **Desktop codes on a later line.** `DESKTOP_LINE_RE` allowed only space or tab before and after `/desktop`, so `/desktop\u00A0abc 123456` (and other non-ASCII whitespace) on a later line reached the session. Leading space and separator are now `[^\S\n]`, the core check's whitespace class minus newline. This function is shared with the app-conversation send route, so it removes more there too (only exact `/desktop` lines; `/desktops` and mid-line mentions are untouched, tested).
+3. **Peer attachments.** Peer-only browse rows no longer carry the peer's attachment rows at all (their files live on that machine, which this machine cannot serve, and their fields were unchecked); the row says `filesOnOtherMachine: <count>`. `deliveryState` from a peer is restricted to the known values, else `unknown`.
+4. **Peer times.** A peer's `lastActivity` (list) and `at` (browse) must be a strict ISO-8601 instant and are normalised with `toISOString()`; anything else drops the row, so a value like `"0"` can no longer become the cursor that ends paging early. A note: a peer row is sliced to `limit` before validation, so a peer returning invalid rows wastes its own slots, never another source's.
+5. **Pool browse of a conversation not replicated here yet.** Spec 4.8 says the live pool read covers events not yet replicated, so `?scope=pool` now reads a conversation this machine has never seen from the peers (all rows `originVerified: "unknown"`). A conversation this machine knows is deleted stays 404; if no peer has it, 404; if a machine did not answer, 200 with `pool.failed`. Only a valid app conversation key is forwarded, and it is URL-encoded.
+
+---
+
 ## Class-Closure Declaration (display-only mirror)
 
 - **Defect class:** `unbounded-self-action`

@@ -114,8 +114,9 @@ function sanitizePeerConversation(raw: unknown, machine: string): ConversationLi
   const r = raw as Record<string, unknown> | null;
   if (!r || typeof r !== 'object') return null;
   const s = (v: unknown, max: number): string | null => (typeof v === 'string' ? v.slice(0, max) : null);
-  const lastActivity = s(r.lastActivity, 40);
-  if (lastActivity !== null && Number.isNaN(Date.parse(lastActivity))) return null;
+  // Normalised to strict ISO: a peer's odd value (e.g. "0") must never become the cursor that ends paging.
+  const lastActivity = r.lastActivity === null || r.lastActivity === undefined ? null : strictIso(r.lastActivity);
+  if (lastActivity === undefined) return null;
   if (r.platform === 'app' && isAppConversationKey(r.id)) {
     return { id: r.id, platform: 'app', title: s(r.title, 80), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
   }
@@ -131,14 +132,25 @@ function sanitizePeerMessage(raw: unknown, machine: string): Record<string, unkn
   if (!m || typeof m !== 'object') return null;
   if (typeof m.eventId !== 'string' || !m.eventId || m.eventId.length > 80 || typeof m.messageId !== 'string' || m.messageId.length > 80) return null;
   if (m.role !== 'operator' && m.role !== 'agent') return null;
-  if (typeof m.text !== 'string' || m.text.length > 8000 || typeof m.at !== 'string' || Number.isNaN(Date.parse(m.at))) return null;
+  const at = strictIso(m.at);
+  if (typeof m.text !== 'string' || m.text.length > 8000 || at === undefined) return null;
+  // A peer's attachment rows are never passed through: their files live on that machine (this
+  // machine cannot serve them) and their fields are unchecked. The row says how many it had.
+  const files = Array.isArray(m.attachments) ? Math.min(m.attachments.length, MAX_ATTACHMENTS) : 0;
   return {
-    eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at,
+    eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at,
     machineId: typeof m.machineId === 'string' ? m.machineId.slice(0, 80) : null,
-    deliveryState: typeof m.deliveryState === 'string' ? m.deliveryState.slice(0, 20) : 'pending',
+    deliveryState: typeof m.deliveryState === 'string' && /^(pending|delivered|refused|intercepted|unknown)$/.test(m.deliveryState) ? m.deliveryState : 'unknown',
     originVerified: 'unknown', machine,
-    ...(Array.isArray(m.attachments) ? { attachments: m.attachments.slice(0, MAX_ATTACHMENTS) } : {}),
+    ...(files > 0 ? { filesOnOtherMachine: files } : {}),
   };
+}
+
+/** A strict ISO-8601 instant (`Date#toISOString`) from a string, or undefined when it is not one. */
+function strictIso(v: unknown): string | undefined {
+  if (typeof v !== 'string' || v.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(v)) return undefined;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? undefined : new Date(t).toISOString();
 }
 
 const POOL_TIMEOUT_MS = 5000;
@@ -644,12 +656,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!readGate(req, res)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
-    if (!svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    const pool = req.query.scope === 'pool';
+    const live = svc!.liveConversation(key);
+    // §4.8: a pool read also covers what has not replicated here yet, so a conversation this
+    // machine has never seen is read from the peers. One it knows is deleted stays a 404.
+    const unseenHere = isAppConversationKey(key) && !svc!.store.getConversation(key);
+    if (!live && !(pool && unseenHere)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const before = typeof req.query.before === 'string' ? req.query.before : null;
-    const page = svc!.store.browseMessages(key, before, limit);
+    const page = live ? svc!.store.browseMessages(key, before, limit) : { messages: [], nextBefore: null };
     const rows = page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!));
-    if (req.query.scope !== 'pool') { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore }); return; }
+    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
     // machine cannot check it: `originVerified: "unknown"`, never the peer's verdict. Never
@@ -657,7 +674,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const self = deps.machineId();
     const b = before ? before.split(',') : null;
     const isBefore = (at: string, eventId: string) => !b || b.length !== 2 || at < b[0]! || (at === b[0] && eventId < b[1]!);
-    const q = `/mobile/chat/app/${key}/messages?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    const q = `/mobile/chat/app/${encodeURIComponent(key)}/messages?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
     const peers = deps.pool
       ? await fetchPeers(deps.pool, q, MAX_POOL_BROWSE_BYTES, (body, machineId) => ({
         rows: (Array.isArray(body.messages) ? body.messages.slice(0, limit) : [])
@@ -669,6 +686,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const byId = new Map<string, Record<string, unknown>>();
     for (const r of rows) byId.set(String(r.eventId), { ...r, machine: self });
     for (const p of peers.results) for (const r of p.rows) if (!byId.has(String(r.eventId))) byId.set(String(r.eventId), r);
+    // Not on this machine and no peer has it either: still unknown (unless a machine did not answer).
+    if (!live && peers.results.length === 0 && peers.failed.length === 0) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const desc = [...byId.values()].sort((x, y) => strCmp(String(y.at), String(x.at)) || strCmp(String(y.eventId), String(x.eventId)));
     const pageRows = desc.slice(0, limit);
     const more = desc.length > limit || page.nextBefore !== null || peers.results.some((p) => p.more);

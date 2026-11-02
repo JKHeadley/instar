@@ -7,7 +7,8 @@ import { describe, it, expect } from 'vitest';
 import {
   compareConversationRows, isAfterListCursor, listCursorFor, mergeConversationPages, parseListCursor, type ConversationListRow,
 } from '../../src/server/mobileConversationRoutes.js';
-import { hideCredentialSpans } from '../../src/core/appConversationText.js';
+import { hideCredentialSpans, removeAuthorityTokens } from '../../src/core/appConversationText.js';
+import { detectOutboundCredential } from '../../src/messaging/outbound-credential-guard.js';
 
 const app = (id: string, at: string | null): ConversationListRow => ({ id, platform: 'app', title: id, lastActivity: at, lastPreview: null });
 const tg = (id: number, at: string | null): ConversationListRow => ({ id, platform: 'telegram', title: String(id), lastActivity: at, lastPreview: null });
@@ -79,5 +80,50 @@ describe('hideCredentialSpans (the mirror copy)', () => {
     expect(out).toContain('[credential hidden]');
     expect(out).not.toContain(secret);
     expect(hideCredentialSpans('see you at 5pm')).toBe('see you at 5pm');
+  });
+});
+
+describe('hideCredentialSpans — invisible characters inside a key', () => {
+  const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH';
+  const invisibles = ['\u200B', '\u200C', '\u200D', '\u2060', '\uFEFF', '\u00AD', '\u034F', '\uFE0F', '\u202E'];
+  for (const ch of invisibles) {
+    it(`a key split by U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')} is flagged and never shown`, () => {
+      const split = `${key.slice(0, 20)}${ch}${key.slice(20)}`;
+      const text = `my key is ${split} ok`;
+      expect(detectOutboundCredential(text).detected).toBe(true);
+      const out = hideCredentialSpans(text);
+      expect(detectOutboundCredential(out).detected).toBe(false);
+      expect(out).not.toContain(key.slice(20));
+      expect(out).toContain('[credential hidden]');
+    });
+  }
+});
+
+describe('removeAuthorityTokens — desktop codes on any line, any non-newline whitespace', () => {
+  const cases: Array<[string, string]> = [
+    ['/desktop abc 123456', '[desktop code removed]'],
+    ['hello\n/desktop abc 123456', 'hello\n[desktop code removed]'],
+    ['hello\n  /desktop abc 123456\nbye', 'hello\n[desktop code removed]\nbye'],
+    ['/desktop\tabc 123456', '[desktop code removed]'],
+    ['/desktop\u00A0abc 123456', '[desktop code removed]'],
+    ['\u00A0/desktop abc 123456', '[desktop code removed]'],
+    ['hi\n\t/desktop\u2003abc 123456', 'hi\n[desktop code removed]'],
+    ['hi\r\n/desktop abc 123456\r\nbye', 'hi\r\n[desktop code removed]\nbye'],
+    ['/DESKTOP abc 123456', '[desktop code removed]'],
+    ['/desktop', '[desktop code removed]'],
+  ];
+  for (const [input, expected] of cases) {
+    it(JSON.stringify(input), () => {
+      const r = removeAuthorityTokens(input);
+      expect(r.text).toBe(expected);
+      expect(r.kinds).toEqual(['desktop-code']);
+      // Nothing that still starts a line with /desktop reaches the session.
+      for (const line of r.text.split('\n')) expect(/^\s*\/desktop(?:\s|$)/i.test(line)).toBe(false);
+    });
+  }
+  it('leaves ordinary mentions alone', () => {
+    for (const t of ['see /desktop docs', 'use /desktops later', 'the /desktop route']) {
+      expect(removeAuthorityTokens(t)).toEqual({ text: t, kinds: [] });
+    }
   });
 });
