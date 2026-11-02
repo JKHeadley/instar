@@ -7,3 +7,5 @@ On the home screen, each item in "What needs you" said the machine's name twice:
 On the Work page, the Pace card listed each queue with its coloured dot on a line of its own above the text, which looked broken on a phone; the dot now sits beside its text. It also listed queues on machines where nothing is happening at all ("0 a day in, 0 done"); those with nothing open at all are left out. Where nothing is moving but items are still open, the line now says exactly that ("nothing came in or got done this week; 1271 still open") instead of calling it "holding steady", which hid a large stalled pile.
 
 Finally, the menus said "each of these opens in the dashboard, where everything works exactly as before" and "everything is still in the legacy dashboard". Neither is true any more, because most pages now open inside the new console. The first sentence is gone, and the second now simply says the older dashboard is still available, with a link.
+
+On the Promises page, "Nothing is waiting on you" appeared twice, once as the big headline and again as an empty card right underneath. The empty card is gone; it comes back as soon as something is actually waiting on you.
