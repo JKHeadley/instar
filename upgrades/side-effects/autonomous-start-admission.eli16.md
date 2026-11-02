@@ -21,3 +21,7 @@ Runs on other agents, and Echo when the checker is off or only watching, already
 ## How to turn it off
 
 If the message ever gets annoying, set `autonomousSessions.preparingWatchdog.enabled` to `false` in `.instar/config.json`. The start rule is a code change; undoing it means reverting this change.
+
+## Later tidy-up
+
+A test that looks for error handling which quietly hides failures flagged a line near the new message code. The line was fine: it only means "this is not a Telegram topic, so nothing was sent". That small piece now lives in its own named helper with its own tests. What the watchdog does is unchanged.

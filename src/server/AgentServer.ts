@@ -49,7 +49,7 @@ import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
-import { PreparingRunWatchdog } from '../core/AutonomousStartAdmission.js';
+import { PreparingRunWatchdog, telegramTopicNotifier } from '../core/AutonomousStartAdmission.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle, windowRunRecoveryResultFromRefresh } from '../core/WindowRunLivenessAuthority.js';
@@ -5950,12 +5950,7 @@ export class AgentServer {
       const telegram = options.telegram;
       const watchdog = new PreparingRunWatchdog({
         store: new AutonomousRunStore(options.config.stateDir),
-        notify: async (topicId, text) => {
-          const topic = Number(topicId);
-          if (!Number.isSafeInteger(topic)) return false;
-          await telegram.sendToTopic(topic, text, { provenance: 'automation' });
-          return true;
-        },
+        notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
         boundRun: () => {
           const state = windowRunLivenessAuthority?.status().state;
           return state && !['stalled', 'failed', 'closed'].includes(state.status)

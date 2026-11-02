@@ -31,6 +31,22 @@ export const OPEN_WINDOW_LIFECYCLE_STATES: readonly string[] = [
 ];
 const TERMINAL_LIVENESS_STATES = ['stalled', 'failed', 'closed'];
 
+/**
+ * Adapt a Telegram topic sender to PreparingRunWatchdog's `notify` contract:
+ * resolves false (nothing sent, a permanent condition) for a topic id that is
+ * not a Telegram topic number, true once the send resolved.
+ */
+export function telegramTopicNotifier(
+  send: (topic: number, text: string) => Promise<unknown>,
+): (topicId: string, text: string) => Promise<boolean> {
+  return async (topicId, text) => {
+    const topic = Number(topicId);
+    if (!Number.isSafeInteger(topic)) return false;
+    await send(topic, text);
+    return true;
+  };
+}
+
 export interface StartAdmissionInput {
   projectName: string;
   topicId: string;

@@ -120,6 +120,12 @@ The review led to design changes before commit. My own pass added the attempt ca
 
 ---
 
+## Follow-up: Telegram notify adapter moved to a named helper
+
+Local Verify failed `tests/unit/no-silent-fallbacks.test.ts` (496 > 494). That lint scans 20 lines after every catch; two existing window-run catches in `AgentServer.ts` reached the inline notify's `return false`, which means "not a Telegram topic number, nothing sent" and swallows no error. The adapter is now `telegramTopicNotifier` in `src/core/AutonomousStartAdmission.ts`, with unit tests for the sent, not-a-topic and send-failure cases. Behaviour is unchanged: a send error still propagates so the watchdog counts the attempt.
+
+---
+
 ## Evidence pointers
 
 - Live reproduction on Echo, 2026-11-02 01:45Z: this fix's own run registered with `{"initialStatus":"preparing","preparationRequired":true}` while the W32 ledger was `closed_failed`.

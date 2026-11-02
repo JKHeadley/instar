@@ -13,6 +13,7 @@ import {
   PREPARING_NOTICE_AFTER_MS,
   PREPARING_NOTICE_MAX_ATTEMPTS,
   renderPreparingNotice,
+  telegramTopicNotifier,
 } from '../../src/core/AutonomousStartAdmission.js';
 
 const NOW = Date.parse('2026-11-02T02:00:00.000Z');
@@ -161,5 +162,26 @@ describe('preparing-run watchdog', () => {
     const text = renderPreparingNotice(store.getByPair('6', runId)!, NOW);
     expect(text).toContain('1 minute ago');
     expect(text).toContain(runId);
+  });
+});
+
+describe('telegramTopicNotifier', () => {
+  it('sends to a numeric topic and reports sent', async () => {
+    const sent: Array<[number, string]> = [];
+    const notify = telegramTopicNotifier(async (topic, text) => { sent.push([topic, text]); });
+    expect(await notify('42', 'hi')).toBe(true);
+    expect(sent).toEqual([[42, 'hi']]);
+  });
+
+  it('reports not sent for a non-numeric topic and never calls send', async () => {
+    let calls = 0;
+    const notify = telegramTopicNotifier(async () => { calls++; });
+    expect(await notify('slack:abc', 'hi')).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  it('propagates a send failure so the watchdog counts the attempt', async () => {
+    const notify = telegramTopicNotifier(async () => { throw new Error('telegram down'); });
+    await expect(notify('42', 'hi')).rejects.toThrow('telegram down');
   });
 });
