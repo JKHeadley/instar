@@ -4,7 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { DesktopHost, DesktopInput, DesktopProbe } from './DesktopHost.js';
+import { validDesktopInput, type DesktopButton, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 
 export type MacDesktopInput = DesktopInput;
@@ -18,29 +18,12 @@ const HELPER_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 const OWN_PROBE_GRACE_MS = 30_000;
 
 const FRAME_LIMIT = 1_250_000;
-const DESKTOP_KEYS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
-  'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
-  'ArrowUp', 'ArrowDown', 'a', 'c', 'v', 'x', 'z']);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_HOST = path.basename(path.dirname(MODULE_DIR)) === 'src'
   ? path.resolve(MODULE_DIR, '..', '..', 'dist', 'native', 'instar-desktop-host')
   : path.resolve(MODULE_DIR, '..', 'native', 'instar-desktop-host');
 
-function validInput(action: MacDesktopInput): boolean {
-  if (!action || typeof action !== 'object') return false;
-  if (action.kind === 'move' || action.kind === 'click' || action.kind === 'buttonDown' || action.kind === 'buttonUp') {
-    if (!Number.isFinite(action.x) || !Number.isFinite(action.y)
-      || action.x < 0 || action.x > 1 || action.y < 0 || action.y > 1) return false;
-    return action.kind === 'move' || action.button === 'left' || action.button === 'right';
-  }
-  if (action.kind === 'scroll') {
-    return Number.isFinite(action.dx) && Number.isFinite(action.dy)
-      && Math.abs(action.dx) <= 1_000 && Math.abs(action.dy) <= 1_000;
-  }
-  if (action.kind === 'keyDown' || action.kind === 'keyUp') return DESKTOP_KEYS.has(action.key);
-  return action.kind === 'type' && typeof action.text === 'string'
-    && action.text.length > 0 && action.text.length <= 1_024 && !action.text.includes('\0');
-}
+const validInput = validDesktopInput;
 
 export class MacDesktopHost implements DesktopHost {
   private readonly inputChildren = new Set<{ kill(signal?: NodeJS.Signals): boolean }>();
@@ -55,7 +38,7 @@ export class MacDesktopHost implements DesktopHost {
   private pendingCapture: { resolve(frame: Buffer): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   private inputReply = '';
   private pendingInput: { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
-  private heldRemoteButton: 'left' | 'right' | null = null;
+  private heldRemoteButton: DesktopButton | null = null;
   private readonly heldRemoteKeys = new Set<string>();
   private pendingControlAction: DesktopInput | null = null;
   private inputHelperLost = false;

@@ -75,10 +75,28 @@ const keyOperationIds = new Map();
 const keyReleaseRequested = new Set();
 const keyReleaseQueue = [];
 const pendingKeyTaps = new Set();
+// Same names the host helpers map (src/core/DesktopHost.ts DESKTOP_KEYS).
 const remoteKeys = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
   'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
-  'ArrowUp', 'ArrowDown', 'a', 'c', 'v', 'x', 'z']);
+  'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'Insert',
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
+  ...'abcdefghijklmnopqrstuvwxyz0123456789'.split('')]);
+const modifierKeys = ['Meta', 'Control', 'Alt'];
+// A press shorter than this, with no drag, goes out as one click so the host
+// never sees a press and release a network round trip apart.
+const MOUSE_CLICK_MS = 250;
+const LONG_PRESS_MS = 550;
+const DOUBLE_TAP_MS = 300;
+let mousePress = null;
+let lastTap = null;
+let dragPointerId = null;
+let multiTap = null;
 
+// Watching counts as using the session: while the viewer is visible a light
+// ping keeps the two-minute idle limit from ending it.
+setInterval(() => {
+  if (inputEnabled && !document.hidden && !heldButton && !heldKeys.size) void sendCommand({ type: 'ping' });
+}, 30_000);
 function syncHoldHeartbeat() {
   if (holdHeartbeat) { clearInterval(holdHeartbeat); holdHeartbeat = 0; }
   if (heldButton || heldKeys.size) {
@@ -891,11 +909,12 @@ function followCursor() {
   const surface = $('surface').getBoundingClientRect();
   const area = imageArea();
   if (!area) return;
-  const margin = Math.min(48, surface.width / 4, surface.height / 4);
+  // RustDesk's rule: the view pans to keep the cursor at the centre until
+  // the desktop edge is reached, then the cursor moves on to the edge.
   const x = area.left + cursor.x * area.width;
   const y = area.top + cursor.y * area.height;
-  panX += Math.max(0, surface.left + margin - x) - Math.max(0, x - (surface.right - margin));
-  panY += Math.max(0, surface.top + margin - y) - Math.max(0, y - (surface.bottom - margin));
+  panX += surface.left + surface.width / 2 - x;
+  panY += surface.top + surface.height / 2 - y;
   applyZoom();
 }
 function stopEdgePan() {
@@ -925,7 +944,10 @@ function edgePanTick() {
     edgePanFrame = requestAnimationFrame(edgePanTick);
   }
 }
-function clickCursor(button = 'left') { if (!heldButton) send({ kind: 'click', ...cursor, button }); }
+function clickCursor(button = 'left', count = 1) {
+  if (!heldButton) send(count > 1 ? { kind: 'click', ...cursor, button, count } : { kind: 'click', ...cursor, button });
+}
+function heldModifiers() { return modifierKeys.filter(key => heldKeys.has(key)); }
 function syncTouchModeButton() {
   $('modeButton').hidden = !touchCapable;
   $('modeButton').textContent = trackpad ? 'Trackpad · swipe to move' : 'Direct · touch position';
@@ -978,10 +1000,11 @@ function moveTwoFingers() {
   const scaleChange = Math.abs(now.distance - twoFinger.distance);
   const travel = Math.hypot(now.x - twoFinger.x, now.y - twoFinger.y);
   if (twoFinger.mode === 'pending' && (now.bothMoved || (scaleChange > 24 && scaleChange > travel * 1.4))) {
-    twoFinger.mode = zoom > 1.01 || scaleChange > Math.max(8, travel * .45) ? 'zoom' : 'scroll';
+    twoFinger.mode = scaleChange > Math.max(8, travel * .45) ? 'zoom' : 'scroll';
   }
+  if (twoFinger.mode !== 'pending' && multiTap) multiTap.moved = true;
   if (twoFinger.mode === 'zoom') {
-    const nextZoom = Math.max(1, Math.min(4, twoFinger.zoom * now.distance / Math.max(1, twoFinger.distance)));
+    const nextZoom = Math.max(1, Math.min(5, twoFinger.zoom * now.distance / Math.max(1, twoFinger.distance)));
     const rect = $('surface').getBoundingClientRect();
     const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
     panX = now.x - centerX - (nextZoom / twoFinger.zoom) * (twoFinger.x - centerX - twoFinger.panX);
@@ -990,8 +1013,9 @@ function moveTwoFingers() {
     applyZoom();
   } else if (twoFinger.mode === 'scroll') {
     const dx = now.x - twoFinger.lastX, dy = now.y - twoFinger.lastY;
-    if (dx || dy) send({ kind: 'scroll', dx: Math.max(-200, Math.min(200, dx * 1.5)),
-      dy: Math.max(-200, Math.min(200, dy * 1.5)) });
+    // Natural direction: the content follows the fingers, as on the phone itself.
+    if (dx || dy) send({ kind: 'scroll', dx: Math.max(-200, Math.min(200, -dx * 1.5)),
+      dy: Math.max(-200, Math.min(200, -dy * 1.5)) });
   }
   twoFinger.lastX = now.x; twoFinger.lastY = now.y;
 }
@@ -1090,6 +1114,26 @@ $('surface').addEventListener('pointerdown', event => {
     startX: event.clientX, startY: event.clientY, maxDistance: 0,
     at: Date.now(), multi: pointers.size > 0 });
   if (pointers.size > 1) for (const state of pointers.values()) state.multi = true;
+  if (event.pointerType !== 'mouse' && pointers.size >= 2) {
+    clearTimeout(pointers.get(event.pointerId)?.longPress);
+    for (const state of pointers.values()) clearTimeout(state.longPress);
+    multiTap = { count: Math.max(multiTap?.count ?? 0, pointers.size), at: multiTap?.at ?? Date.now(), moved: multiTap?.moved ?? false };
+  }
+  if (pointers.size === 1 && event.pointerType !== 'mouse') {
+    multiTap = null;
+    const state = pointers.get(event.pointerId);
+    const now = Date.now();
+    state.secondTap = !!lastTap && now - lastTap.at < DOUBLE_TAP_MS
+      && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40;
+    // Hold still to right-click, as on AnyDesk and most phone remote desktops.
+    state.longPress = setTimeout(() => {
+      if (pointers.get(event.pointerId) !== state || state.maxDistance >= 10 || state.multi || state.secondTap) return;
+      state.longPressed = true;
+      if (!trackpad) { const at = position({ clientX: state.x, clientY: state.y }); if (at) { cursor = at; updateCursor(); } }
+      flushPendingMove();
+      clickCursor('right');
+    }, LONG_PRESS_MS);
+  }
   if (pointers.size === 2 && event.pointerType !== 'mouse') {
     stopEdgePan();
     const pair = pairMetrics();
@@ -1098,7 +1142,13 @@ $('surface').addEventListener('pointerdown', event => {
   if (!trackpad || event.pointerType === 'mouse') {
     const at = position(event);
     if (at) { cursor = at; updateCursor(); queueMove(at); }
-    if (event.pointerType === 'mouse' && at && !heldButton) beginHold(event.button === 2 ? 'right' : 'left');
+    if (event.pointerType === 'mouse' && at && !heldButton) {
+      mousePress = { pointerId: event.pointerId, at: Date.now(), x: event.clientX, y: event.clientY,
+        button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left', detail: event.detail };
+      const press = mousePress;
+      // Only a press that lasts or drags becomes a held button.
+      setTimeout(() => { if (mousePress === press) { mousePress = null; beginHold(press.button); } }, MOUSE_CLICK_MS);
+    }
   }
 });
 $('surface').addEventListener('pointermove', event => {
@@ -1108,6 +1158,19 @@ $('surface').addEventListener('pointermove', event => {
     return;
   }
   event.preventDefault();
+  if (mousePress && mousePress.pointerId === event.pointerId
+    && Math.hypot(event.clientX - mousePress.x, event.clientY - mousePress.y) >= 4) {
+    const press = mousePress; mousePress = null; beginHold(press.button);
+  }
+  if (multiTap && Math.hypot(event.clientX - state.startX, event.clientY - state.startY) >= 12) multiTap.moved = true;
+  if (state.secondTap && !state.multi && dragPointerId === null && event.pointerType !== 'mouse'
+    && Math.hypot(event.clientX - state.startX, event.clientY - state.startY) >= 10) {
+    // Double-tap and hold, then move: drag with the left button down.
+    clearTimeout(state.longPress);
+    dragPointerId = event.pointerId;
+    if (!trackpad) { const at = position({ clientX: state.startX, clientY: state.startY }); if (at) { cursor = at; updateCursor(); queueMove(at); } }
+    beginHold('left');
+  }
   const dx = event.clientX - state.x, dy = event.clientY - state.y;
   state.x = event.clientX; state.y = event.clientY;
   state.maxDistance = Math.max(state.maxDistance,
@@ -1131,8 +1194,36 @@ $('surface').addEventListener('pointerup', event => {
   if (!state) return;
   event.preventDefault();
   if (edgePointerId === event.pointerId) stopEdgePan();
+  clearTimeout(state.longPress);
   pointers.delete(event.pointerId);
   if (pointers.size < 2) twoFinger = null;
+  if (event.pointerType === 'mouse' && mousePress?.pointerId === event.pointerId) {
+    const press = mousePress; mousePress = null;
+    const at = position(event);
+    if (at) cursor = at;
+    flushPendingMove();
+    clickCursor(press.button);
+    return;
+  }
+  if (dragPointerId === event.pointerId) {
+    dragPointerId = null;
+    if (!trackpad) { const at = position(event); if (at) { cursor = at; queueMove(at); } }
+    releaseButton();
+    lastTap = null;
+    return;
+  }
+  if (multiTap && event.pointerType !== 'mouse') {
+    if (pointers.size === 0) {
+      const tap = multiTap; multiTap = null;
+      // Two fingers tapped together = right click; three = middle click.
+      if (!tap.moved && Date.now() - tap.at < 400 && !twoFingerUsed(tap)) {
+        flushPendingMove();
+        clickCursor(tap.count >= 3 ? 'middle' : 'right');
+      }
+    }
+    return;
+  }
+  if (state.longPressed) { lastTap = null; return; }
   if (event.pointerType === 'mouse' && heldButton) {
     const at = position(event);
     if (at) { cursor = at; queueMove(at); }
@@ -1144,9 +1235,16 @@ $('surface').addEventListener('pointerup', event => {
   if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
     if (!trackpad || event.pointerType === 'mouse') { const at = position(event); if (at) cursor = at; }
     clickCursor(event.button === 2 ? 'right' : 'left');
+    lastTap = event.pointerType === 'mouse' ? null : { at: Date.now(), x: event.clientX, y: event.clientY };
   }
 });
-function cancelGestures() { stopEdgePan(); pointers.clear(); twoFinger = null; releaseControls(); }
+function twoFingerUsed(tap) { return tap.zoomed === true; }
+function cancelGestures() {
+  stopEdgePan();
+  for (const state of pointers.values()) clearTimeout(state.longPress);
+  pointers.clear(); twoFinger = null; multiTap = null; mousePress = null; dragPointerId = null; lastTap = null;
+  releaseControls();
+}
 $('surface').addEventListener('pointercancel', cancelGestures);
 window.addEventListener('blur', cancelGestures);
 document.addEventListener('visibilitychange', () => { if (document.hidden) cancelGestures(); });
@@ -1181,6 +1279,8 @@ $('typeText').addEventListener('input', event => {
     return;
   }
   $('typeText').value = '';
+  // With Ctrl, Cmd or Alt latched, a letter or digit is a shortcut, not text.
+  if (heldModifiers().length && /^[a-z0-9]$/i.test(text)) { void tapKey(text.toLowerCase()); return; }
   for (let i = 0; i < text.length; i += 64) void send({ kind: 'type', text: text.slice(i, i + 64) });
 });
 $('typeText').addEventListener('compositionend', () => {
