@@ -9,7 +9,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
  * the relock verb and the guard are never started here, because on a real Mac
  * they would lock the screen. P12 and P15 cover those on proof hardware. */
 const helper = path.resolve('dist/native/instar-desktop-host');
-const usable = process.platform === 'darwin' && fs.existsSync(helper)
+// Opt-in only: a real-helper run can add a privacy-list entry on this Mac.
+const usable = process.platform === 'darwin' && process.env.INSTAR_REAL_DESKTOP_HELPER_TESTS === '1' && fs.existsSync(helper)
   && spawnSync(helper, ['state-op'], { input: '{}', encoding: 'utf8' }).status === 69;
 
 describe.skipIf(!usable)('helper state-op', () => {

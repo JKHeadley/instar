@@ -32,6 +32,13 @@ export function macDesktopHelperPath(): string { return fs.realpathSync(DEFAULT_
 
 const validInput = validDesktopInput;
 
+/** True when a test run would start the real packaged helper without opting in.
+ * Fake helpers in tests use other names, so they still run. */
+export function realHelperBlockedUnderTest(resolved: string, realHelper: string,
+  env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.VITEST) && env.INSTAR_REAL_DESKTOP_HELPER_TESTS !== '1' && resolved === realHelper;
+}
+
 export class MacDesktopHost implements DesktopHost {
   readonly platform = 'macos' as const;
   /** null is the main display, resolved by the helper at each start. */
@@ -204,6 +211,11 @@ export class MacDesktopHost implements DesktopHost {
     const resolved = fs.realpathSync(this.binary);
     if (path.dirname(resolved) !== expectedDir || !fs.statSync(resolved).isFile()) {
       throw new Error('mac-desktop-host-binary-untrusted');
+    }
+    // macOS adds a privacy-list entry for every path that runs the real helper,
+    // so a test run from a checkout or verify clone would leave one on this Mac.
+    if (realHelperBlockedUnderTest(resolved, path.join(expectedDir, path.basename(DEFAULT_MAC_DESKTOP_HELPER)))) {
+      throw new Error('mac-desktop-host-test-guard');
     }
     return resolved;
   }
