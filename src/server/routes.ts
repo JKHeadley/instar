@@ -184,6 +184,7 @@ import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjectio
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { derivedEventId } from '../core/appConversationText.js';
+import { joinTelegramHistory } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
@@ -19378,8 +19379,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const local = ctx.telegram.getTopicHistory(topicId, limit);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
+    // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
+    // conversation store by eventId and returns `originVerified` computed there.
+    const joinForDevice = (rows: ReadonlyArray<Record<string, unknown>>) =>
+      (isDevice && ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit) : rows);
     if (req.query.scope !== 'pool') {
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(local) : local });
+      const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(joined) : joined });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -19422,7 +19428,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return true;
       })
       .slice(-limit);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(merged) : merged, pool: { failed } });
+    const joinedPool = joinForDevice(merged);
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed } });
   });
 
   // ── Message Log Search ──────────────────────────────────────────

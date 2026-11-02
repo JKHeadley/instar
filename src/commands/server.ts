@@ -5129,6 +5129,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // are on (no separate switch: for a native conversation the store is the only copy).
     const { APP_CONVERSATIONS_KIND_REGISTRATION } = await import('../core/AppConversationsReplicatedStore.js');
     replicatedKindRegistry.register(APP_CONVERSATIONS_KIND_REGISTRATION);
+    // mobile-native-conversations §4.8 — the `mobileDeviceKeyLedger` kind (inert registration; on
+    // whenever native app conversations are on, so a signed record can be checked on any machine).
+    const { DEVICE_KEY_LEDGER_KIND_REGISTRATION } = await import('../core/MobileDeviceKeyLedgerReplicatedStore.js');
+    replicatedKindRegistry.register(DEVICE_KEY_LEDGER_KIND_REGISTRATION);
 
     // WS2.3 (ws23-relationships-userregistry-security) — register the SECOND concrete
     // replicated kind, `relationship-record`, onto the registry: the FIRST PII kind.
@@ -5323,6 +5327,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               _appConversationService?.ingestReplicated(entries.map((e) => appEventFromReplicatedData(e.data)));
             }).catch(() => { /* @silent-fallback-ok — a missed batch is re-read from the peer streams at the next boot */ });
           }
+          // Device-key ledger rows: each lands only when it verifies under the pinned key of the machine it names.
+          if (kind === 'mobile-device-key-ledger-row' && _appConversationService?.deps.keyLedger) {
+            const ledger = _appConversationService.deps.keyLedger;
+            for (const e of entries) {
+              const r = ledger.ingestReplicated(e.data);
+              if (r === 'bad-signature' || r === 'unverifiable') console.warn(`  [device-key-ledger] a replicated row was not accepted (${r})`);
+            }
+          }
         });
 
         // Author-side HLC clock — persisted under the journal dir (atomic temp+rename)
@@ -5438,7 +5450,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
-      if (_appNativeOn) s = { ...s, appConversations: { enabled: true } };
+      if (_appNativeOn) s = { ...s, appConversations: { enabled: true }, mobileDeviceKeyLedger: { enabled: true } };
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
       if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
@@ -9135,7 +9147,23 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (r.errors.length || r.degraded.length) console.warn(`  [app-conversations] reply relay: ${[...r.errors, ...r.degraded].join('; ')}`);
         }
         let appDispatch: import('../core/appInboundDispatch.js').AppInboundDispatch | null = null;
+        // Signed records (§4.6): this machine's identity signer, the signing-key history lookup and
+        // the device-key ledger. No identity ⇒ messages are still stored and delivered, read `unknown`.
+        const [sigMod, ledgerMod, ledgerReplMod] = await Promise.all([
+          import('../core/AppRecordSignatures.js'), import('../core/MobileDeviceKeyLedger.js'), import('../core/MobileDeviceKeyLedgerReplicatedStore.js'),
+        ]);
+        const appSigner = sigMod.loadMachineSigner(config.stateDir);
+        const appKeyLookup = sigMod.identityKeyLookup(config.stateDir);
+        if (!appSigner) console.warn('  [app-conversations] this machine has no identity key: app messages will read "couldn\'t check"');
+        const appKeyLedger = appSigner ? new ledgerMod.MobileDeviceKeyLedger({
+          stateDir: config.stateDir, signer: appSigner, keyLookup: appKeyLookup,
+          reportDegradation: (what, detail) => degradationReporter.report({
+            feature: what, primary: 'check signed app messages against the device-key ledger', fallback: 'messages read "couldn\'t check"',
+            reason: detail, impact: 'Signed app messages cannot be checked on this machine.',
+          }),
+        }) : null;
         const appSvc = new AppConversationService({
+          signer: appSigner, keyLookup: appKeyLookup, keyLedger: appKeyLedger,
           stateDir: config.stateDir,
           machineId: () => _meshSelfId ?? os.hostname(),
           registry: conversationRegistry,
@@ -9175,6 +9203,26 @@ export async function startServer(options: StartOptions): Promise<void> {
             replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
             replMod.buildAppConversationRecordData(ev),
           ));
+        }
+        if (replicatedRecordEmitter && appKeyLedger) {
+          const emitter = replicatedRecordEmitter;
+          appKeyLedger.setReplicationHook((row) => emitter.emit(
+            ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY,
+            ledgerReplMod.deriveDeviceKeyLedgerRecordKey(row),
+            ledgerReplMod.buildDeviceKeyLedgerRecordData(row),
+          ));
+        }
+        if (replicatedPeerStreamReader && cjOwnMachineId && appKeyLedger) {
+          try {
+            const reader = replicatedPeerStreamReader;
+            let landed = 0;
+            for (const rk of reader.listRecordKeys(ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY)) {
+              for (const r of reader.loadOriginRecords(ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY, rk)) {
+                if (r.origin !== cjOwnMachineId && appKeyLedger.ingestReplicated(r.data) === 'accepted') landed++;
+              }
+            }
+            if (landed > 0) console.log(pc.dim(`  [device-key-ledger] landed ${landed} replicated row(s) at boot`));
+          } catch (err) { console.warn(`  [device-key-ledger] boot replication read failed: ${err instanceof Error ? err.message : String(err)}`); }
         }
         if (replicatedPeerStreamReader && cjOwnMachineId) {
           try {

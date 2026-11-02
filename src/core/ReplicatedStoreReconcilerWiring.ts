@@ -58,6 +58,7 @@ export const RECONCILER_ALLOWLIST: Readonly<Record<string, string>> = Object.fre
   workingSetArtifact: 'written only by the server working-set recorder route; no CLI path',
   classReview: 'written only by the server class-review flow; no CLI path',
   appConversations: 'written only by the server app-conversation routes (AppConversationStore); no CLI path',
+  mobileDeviceKeyLedger: 'written only by the server device activation/revocation paths and boot reconciliation (MobileDeviceKeyLedger); no CLI path',
 });
 
 function sourceFp(raw: unknown): string {

@@ -185,6 +185,8 @@ export interface DeviceRecord {
   host?: string;
   expiresAt?: string;
   approvedAt?: string;
+  /** How the owner approved this key (mobile-native-conversations §4.4); absent ⇒ telegram-dm. */
+  approvedVia?: 'telegram-dm' | 'dashboard-pin';
   declinedAt?: string;
   revokedAt?: string;
   /** HMACs of distinct wrong codes already tried (per-process key; cleared on activation). */
@@ -271,12 +273,13 @@ export class DeviceRegistry {
   }
 
   /** Records the outcome of a confirmation attempt. `wrongHmac` is set for a wrong code. */
-  applyConfirm(id: string, outcome: { ok: true } | { ok: false; wrongHmac: string }): DeviceRecord | null {
+  applyConfirm(id: string, outcome: { ok: true; approvedVia?: 'telegram-dm' | 'dashboard-pin'; approvedAt?: string } | { ok: false; wrongHmac: string }): DeviceRecord | null {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status !== 'pending') return d ?? null;
     if (outcome.ok) {
-      d.status = 'active'; d.approvedAt = new Date(this.now()).toISOString(); delete d.wrongCodes; delete d.expiresAt;
+      d.status = 'active'; d.approvedAt = outcome.approvedAt ?? new Date(this.now()).toISOString(); d.approvedVia = outcome.approvedVia ?? 'telegram-dm';
+      delete d.wrongCodes; delete d.expiresAt;
     } else {
       d.wrongCodes = d.wrongCodes ?? [];
       if (!d.wrongCodes.includes(outcome.wrongHmac)) {
@@ -303,12 +306,15 @@ export class DeviceRegistry {
     if (d && d.status === 'pending') { d.status = 'declined'; d.declinedAt = new Date(this.now()).toISOString(); this.write(f); }
   }
 
-  /** Terminal; always allowed. Returns false when this machine holds no such device. */
-  revoke(id: string): boolean {
+  /**
+   * Terminal; always allowed. Returns false when this machine holds no such device. `at` is the
+   * revocation time already recorded in the device-key ledger (written first), when there is one.
+   */
+  revoke(id: string, at?: string): boolean {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d) return false;
-    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = new Date(this.now()).toISOString(); this.write(f); }
+    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = at ?? new Date(this.now()).toISOString(); this.write(f); }
     return true;
   }
 }
