@@ -10,7 +10,7 @@
 import {
   buildSchedulePage, buildHistory, markText, storySentence, storyLines, jobActions, toggleConfirm, runStartWords, runFollowWords, saveRefusalWords, originWords, scheduleWords, ago, HISTORY_LIMIT, STRIP_LIMIT,
 } from './schedule-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, noteLinked, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 
@@ -73,7 +73,7 @@ function paint() {
   setKids(main, el('div', { class: 'schedule-page' },
     pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     liveNote(),
-    page.notes.map((t) => note(t)),
+    page.notes.map((t) => noteLinked(t)),
     el('div', { class: 'page-sections' }, needs, coming, every, setupSection(page.setup, refresh)),
     legacyLink(),
   ));
@@ -150,7 +150,7 @@ function setupSection(setup, refresh) {
     }
     body.append(row);
   }
-  for (const t of setup.notes) body.append(note(t));
+  for (const t of setup.notes) body.append(noteLinked(t));
   wrap.append(head, body);
   return wrap;
 }
@@ -215,7 +215,7 @@ function historyView(h) {
     strip.append(b);
   }
   const wrap = el('div', { class: 'history' }, strip, detail);
-  for (const t of h.notes) wrap.append(note(t));
+  for (const t of h.notes) wrap.append(noteLinked(t));
   {
     const list = el('ol', { class: 'run-list', hidden: true });
     let day = null;

@@ -30,7 +30,7 @@ import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
 import { paceCard } from './pace.js';
-import { sheetIsOpen, closeSheet, unlockCheck } from './ui.js';
+import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -420,8 +420,11 @@ function paintHeadline(models) {
   }
   const statusNote = $('#homeStatusNote');
   if (statusNote) {
-    statusNote.textContent = models.needs?.statusNote || '';
-    statusNote.hidden = !statusNote.textContent;
+    const noteText = models.needs?.statusNote || '';
+    statusNote.replaceChildren(document.createTextNode(noteText));
+    // A machine that did not answer: link to where its state is shown.
+    if (noteText && machineIssue(noteText)) statusNote.append(' ', el('a', { href: MACHINES_PAGE, text: 'See machines' }));
+    statusNote.hidden = !noteText;
   }
   const issueLink = $('#heroIssueLink');
   if (issueLink) {

@@ -980,6 +980,8 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .stale-banner { margin: var(--s-2) 0; padding: var(--s-2) var(--s-3); border: 1px dashed var(--unknown-line); border-radius: var(--r-md); color: var(--text-muted); font-size: 14px; }
 .machine-line { margin: var(--s-1) 0; padding: var(--s-2) var(--s-3); border: 1px solid var(--hairline); border-radius: var(--r-md); font-size: 14.5px; color: var(--text); overflow-wrap: anywhere; }
 .machine-line.dashed { border-style: dashed; border-color: var(--unknown-line); color: var(--text-muted); }
+a.machine-line-link { display: block; text-decoration: none; }
+a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .sess-pick { margin-top: var(--s-10); text-align: center; }
 .sess-open { display: flex; flex-direction: column; gap: var(--s-2); min-height: calc(100dvh - 140px); }
 .sess-bar { display: flex; align-items: center; gap: var(--s-2); }

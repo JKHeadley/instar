@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "console-failures-link-to-problem",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T21:23:32.407Z",
+  "artifactPath": "upgrades/side-effects/console-failures-link-to-problem.md",
+  "artifactSha256": "62fecbe96db20aff823f9f287433132e57233f64e4696fb86dc564954f80d050",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/schedule.js",
+    "dashboard/console/sessions.js",
+    "dashboard/console/ui.js",
+    "tests/unit/console-failure-links.test.ts",
+    "upgrades/next/console-failures-link-to-problem.md",
+    "upgrades/side-effects/console-failures-link-to-problem.eli16.md",
+    "upgrades/side-effects/console-failures-link-to-problem.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "console links only; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-failures-link-to-problem.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-failures-link-to-problem.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

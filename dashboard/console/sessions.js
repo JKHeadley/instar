@@ -13,7 +13,7 @@ import {
   platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
   canSwitchDoor, attachmentMessage, historyUrl, historyErrorWords, historyText, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
-import { el, setKids, pageHead, sheet, closeSheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
 
@@ -122,13 +122,14 @@ function paintList(box, m, openKey) {
     parts.push(cantTell(m.reason));
   } else {
     const pw = partialWords(m);
-    if (pw) parts.push(el('p', { class: 'card-note', text: pw }));
+    // A machine that did not answer links to the Machines page, where its state and reachability are shown.
+    if (pw) parts.push(noteLinked(pw));
     if (!m.rows.length) parts.push(el('p', { class: 'empty-line', text: m.multi ? 'Nothing is running on any machine.' : 'Nothing is running on this machine.' }));
     if (m.needsLook.length) parts.push(group('Needs a look', 'look', m.needsLook, openKey));
     if (m.working.length) parts.push(group('Working', 'working', m.working, openKey));
     if (m.unanswered.length || m.idleMachines.length) {
       parts.push(el('section', { class: 'list-section', id: 'sec-idle' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Other machines' })),
-        m.unanswered.map((u) => el('p', { class: 'machine-line dashed', text: `${u.name}: ${u.words}` })),
+        m.unanswered.map((u) => el('a', { class: 'machine-line dashed machine-line-link', href: MACHINES_PAGE, text: `${u.name}: ${u.words} ›` })),
         m.idleMachines.map((i) => el('p', { class: `machine-line${i.ok ? '' : ' dashed'}`, text: `${i.name}: ${i.words}` }))));
     }
   }
