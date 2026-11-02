@@ -5179,6 +5179,12 @@ export interface InstarConfig {
     /** Max concurrent autonomous jobs (default 5). New starts beyond this are refused. */
     maxConcurrent?: number;
     /**
+     * Tell the operator, once, in the run's own topic when a registered run is
+     * still 'preparing' a few minutes after it started (it is not running and
+     * nothing revives it). Default on; `enabled: false` silences it.
+     */
+    preparingWatchdog?: { enabled?: boolean };
+    /**
      * Codex autonomous-loop driver (codex/Claude parity). When enabled, the standing
      * codex Stop hook (`autonomous-stop-hook.sh --codex`, installed by installCodexHooks)
      * feeds the task list back so a `codex exec` session sustains a multi-turn autonomous

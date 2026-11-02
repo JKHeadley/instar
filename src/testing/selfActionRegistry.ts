@@ -45,6 +45,8 @@ import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMain
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
+import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
+import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -3345,6 +3347,41 @@ function sessionPoolStagePromotionModel(f: PressureFixture, sink: ActionSink): {
   };
 }
 
+/**
+ * Preparing-run watchdog (topic 10000001225): a run stuck in 'preparing' gets
+ * one notice in its topic. Under a delivery path that always rejects, each
+ * failed send bumps the run record's durable attempt counter and the REAL
+ * findStuckPreparingRuns stops selecting the run at PREPARING_NOTICE_MAX_ATTEMPTS,
+ * so the count settles at the cap and stays there across a restart.
+ */
+const preparingRunWatchdog: SelfActionController = {
+  id: 'preparing-run-watchdog',
+  actionVerb: 'notify',
+  models: 'src/core/AutonomousStartAdmission.ts (PreparingRunWatchdog — claim-before-send once per run, durable preparingNoticeAttempts cap)',
+  modelsPath: 'src/core/AutonomousStartAdmission.ts',
+  boundK: PREPARING_NOTICE_MAX_ATTEMPTS, perTargetBoundK: PREPARING_NOTICE_MAX_ATTEMPTS, ticks: 120, tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => preparingRunWatchdogModel(f, sink) },
+  makeUnderPressure: (f, sink) => preparingRunWatchdogModel(f, sink),
+};
+
+function preparingRunWatchdogModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    const nowMs = f.clock.nowMs();
+    const run = {
+      topicId: '9210', runId: 'run-stuck', status: 'preparing', registeredAt: new Date(nowMs - 60 * 60_000).toISOString(),
+      preparingNoticeAttempts: (f.durableState.get('preparing-notice-attempts') as number | undefined) ?? 0,
+      preparingNoticeAt: f.durableState.get('preparing-notice-at') as string | undefined,
+    } as AutonomousRunRecord;
+    if (findStuckPreparingRuns([run], { nowMs }).length === 0) return;
+    // Claim: count the attempt and mark it sent before sending; a rejected send releases the mark.
+    f.durableState.set('preparing-notice-attempts', run.preparingNoticeAttempts! + 1);
+    f.durableState.set('preparing-notice-at', new Date(nowMs).toISOString());
+    sink.emit({ verb: 'notify', target: run.runId });
+    if (f.targetAlwaysRejects()) f.durableState.delete('preparing-notice-at');
+  } };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   sessionPoolStagePromotion,
   jobSupervisionProviderRetry,
@@ -3418,4 +3455,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   interactiveLoginExpiredSwap,
   deviceLimitSessionMove,
   replicatedStoreReconcilerRetry,
+  preparingRunWatchdog,
 ];

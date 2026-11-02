@@ -486,6 +486,7 @@ import {
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
+import { decideAutonomousStartStatus } from '../core/AutonomousStartAdmission.js';
 import { PriorityLedger } from '../monitoring/GoalRealignment.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
@@ -7844,8 +7845,17 @@ export function createRoutes(ctx: RouteContext): Router {
       enabled: cfg.enabled ?? true,
       breakerK: Math.max(2, typeof cfg.breakerK === 'number' && Number.isFinite(cfg.breakerK) ? Math.floor(cfg.breakerK) : 3),
     };
-    const livenessStatus = ctx.windowRunLivenessAuthority?.status();
-    const initialStatus = ctx.config.projectName === 'echo' && livenessStatus?.enabled === true && livenessStatus.dryRun === false ? 'preparing' : 'active';
+    // 'preparing' only while an open W32 window can actually promote this run;
+    // anything else starts active so the liveness reconciler can revive it.
+    let windowLedger: ReturnType<typeof windowStore.load> = null;
+    try { windowLedger = windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE); } catch { /* @silent-fallback-ok — an unreadable ledger is no open window: the run starts active */ }
+    const { initialStatus } = decideAutonomousStartStatus({
+      projectName: ctx.config.projectName,
+      topicId,
+      liveness: ctx.windowRunLivenessAuthority?.status(),
+      windowLedger,
+      nowMs: Date.parse(windowNow()),
+    });
     const result = autonomousRunStore.register({
       topicId,
       condition,

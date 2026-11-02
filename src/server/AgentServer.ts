@@ -49,6 +49,7 @@ import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
+import { PreparingRunWatchdog, telegramTopicNotifier } from '../core/AutonomousStartAdmission.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle, windowRunRecoveryResultFromRefresh } from '../core/WindowRunLivenessAuthority.js';
@@ -544,6 +545,9 @@ export class AgentServer {
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
+  private preparingRunWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Exposed for wiring-integrity tests. */
+  preparingRunWatchdog: PreparingRunWatchdog | null = null;
   private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
   private checkInReminderTimer: ReturnType<typeof setInterval> | null = null;
@@ -5942,6 +5946,24 @@ export class AgentServer {
       }, 60_000);
       this.windowRunLivenessTimer.unref?.();
     }
+    if (options.telegram && options.config.autonomousSessions?.preparingWatchdog?.enabled !== false) {
+      const telegram = options.telegram;
+      const watchdog = new PreparingRunWatchdog({
+        store: new AutonomousRunStore(options.config.stateDir),
+        notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
+        boundRun: () => {
+          const state = windowRunLivenessAuthority?.status().state;
+          return state && !['stalled', 'failed', 'closed'].includes(state.status)
+            ? { topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt }
+            : null;
+        },
+      });
+      this.preparingRunWatchdog = watchdog;
+      this.preparingRunWatchdogTimer = setInterval(() => {
+        void watchdog.tick().catch((error) => console.warn('[preparing-run-watchdog] tick failed:', error));
+      }, 60_000);
+      this.preparingRunWatchdogTimer.unref?.();
+    }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry }));
@@ -7821,6 +7843,10 @@ export class AgentServer {
     if (this.windowRunLivenessTimer) {
       clearInterval(this.windowRunLivenessTimer);
       this.windowRunLivenessTimer = null;
+    }
+    if (this.preparingRunWatchdogTimer) {
+      clearInterval(this.preparingRunWatchdogTimer);
+      this.preparingRunWatchdogTimer = null;
     }
     if (this.jobTriageBackupTimer) {
       clearInterval(this.jobTriageBackupTimer);
