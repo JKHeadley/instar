@@ -20,6 +20,7 @@ body.desktop-live #keyboardBar input{-webkit-touch-callout:default;-webkit-user-
 .desktop-dock button{min-width:2.9rem;min-height:2.9rem;padding:.35rem;background:#111827e8;color:#f8fafc;border:1px solid #64748b;box-shadow:0 2px 12px #0009}
 .desktop-tools{position:absolute;z-index:6;right:4rem;bottom:max(.7rem,env(safe-area-inset-bottom));width:min(19rem,calc(100vw - 5rem));max-height:min(60dvh,32rem);overflow:auto;display:flex;flex-wrap:wrap;gap:.4rem;padding:.55rem;background:#111827f2;border:1px solid #64748b;border-radius:10px;box-shadow:0 4px 18px #0009}
 .desktop-tools[hidden],#keyboardBar[hidden],.desktop-dock button[hidden],.desktop-tools button[hidden]{display:none}
+.display-note{flex:1 0 100%;margin:0;font-size:.8rem;color:#f8fafc}.display-note[hidden]{display:none}#displayMenu button{flex:1 0 100%;text-align:left}
 .desktop-tools button{flex:1 0 auto;padding:.5rem .65rem}.type-label{display:block;margin:0;font-size:.8rem}
 .desktop-tools button[aria-pressed="true"]{background:#fbbf24;color:#422006}
 #keyboardBar{position:absolute;z-index:7;left:max(.5rem,env(safe-area-inset-left));right:max(.5rem,env(safe-area-inset-right));bottom:max(.5rem,env(safe-area-inset-bottom));display:flex;align-items:center;gap:.4rem;padding:.4rem;background:#111827f2;border:1px solid #64748b;border-radius:10px}

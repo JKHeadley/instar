@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 
 const MAX_REPLY_CHARS = 1_800_000;
-const ALLOWED = new Set(['probe', 'capture', 'cursor', 'input', 'start', 'heartbeat', 'stop', 'release']);
+const ALLOWED = new Set(['probe', 'displays', 'capture', 'cursor', 'input', 'start', 'heartbeat', 'stop', 'release']);
 
 type LocalReply = { status?: unknown; type?: unknown; body?: unknown };
 

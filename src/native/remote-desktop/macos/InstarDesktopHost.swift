@@ -237,9 +237,41 @@ struct InstarDesktopHost {
     private static func validButton(_ name: String) -> Bool {
         name == "left" || name == "right" || name == "middle"
     }
+
+    /// The screen a command acts on: the optional second argument, else the main display.
+    private static func selectedDisplay() -> CGDirectDisplayID {
+        CommandLine.arguments.count == 3 ? (UInt32(CommandLine.arguments[2]) ?? 0) : CGMainDisplayID()
+    }
+
+    /// Every screen a viewer can pick. A mirror shows another screen's picture.
+    private static func displayList() -> [[String: Any]] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        var names: [CGDirectDisplayID: String] = [:]
+        for screen in NSScreen.screens {
+            if let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+                names[number.uint32Value] = screen.localizedName
+            }
+        }
+        return ids.prefix(Int(count)).compactMap { id -> [String: Any]? in
+            guard CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay else { return nil }
+            let mode = CGDisplayCopyDisplayMode(id)
+            return ["id": String(id), "name": names[id] ?? "",
+                    "width": mode?.pixelWidth ?? CGDisplayPixelsWide(id),
+                    "height": mode?.pixelHeight ?? CGDisplayPixelsHigh(id),
+                    "main": id == CGMainDisplayID()]
+        }
+    }
+
     static func main() async {
-        guard CommandLine.arguments.count == 2 else {
-            fputs("usage: instar-desktop-host probe|request-permission|capture|capture-stream|capture-stream-h264|cursor|input|input-stream|release|indicator\n", stderr)
+        let arguments = CommandLine.arguments
+        let takesDisplay = arguments.count == 3
+            && ["capture-stream", "capture-stream-h264", "cursor"].contains(arguments[1])
+            && UInt32(arguments[2]) != nil
+        guard arguments.count == 2 || takesDisplay else {
+            fputs("usage: instar-desktop-host probe|request-permission|displays|capture|capture-stream [display]|capture-stream-h264 [display]|cursor [display]|input|input-stream|release|indicator\n", stderr)
             exit(64)
         }
         adoptOwnIdentity()
@@ -262,6 +294,10 @@ struct InstarDesktopHost {
             let screenLocked = state?["CGSSessionScreenIsLocked"] as? Bool ?? false
             let session = state != nil && onConsole && loginDone && !screenLocked
             print("{\"screenPermission\":\(screen),\"inputPermission\":\(input),\"displayCount\":\(displays),\"sessionActive\":\(session),\"consoleSessionPresent\":\(state != nil),\"onConsole\":\(onConsole),\"loginDone\":\(loginDone),\"screenLocked\":\(screenLocked)}")
+        case "displays":
+            guard activeSession(),
+                  let json = try? JSONSerialization.data(withJSONObject: ["displays": displayList()]) else { exit(69) }
+            FileHandle.standardOutput.write(json)
         case "indicator":
             guard activeSession() else { exit(69) }
             // The indicator owns the physical host's controller lock for its
@@ -332,7 +368,7 @@ struct InstarDesktopHost {
             }
         case "cursor":
             guard activeSession(), let point = CGEvent(source: nil)?.location else { exit(69) }
-            let bounds = CGDisplayBounds(CGMainDisplayID())
+            let bounds = CGDisplayBounds(selectedDisplay())
             guard bounds.width > 0, bounds.height > 0 else { exit(69) }
             let x = (point.x - bounds.minX) / (bounds.width - 1)
             let y = (point.y - bounds.minY) / (bounds.height - 1)
@@ -443,7 +479,11 @@ struct InstarDesktopHost {
             guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code,
                                       keyDown: kind == "keyDown") else { throw HostError.inputUnavailable }
             if ["Meta", "Control", "Alt", "Shift"].contains(key) { event.type = .flagsChanged }
-            event.flags = modifierFlags(next)
+            var flags = modifierFlags(next)
+            // A physical arrow key carries these two. macOS registers its Mission
+            // Control and Spaces hotkeys with Fn set, so without it they may not match.
+            if key.hasPrefix("Arrow") { flags.insert([.maskSecondaryFn, .maskNumericPad]) }
+            event.flags = flags
             event.post(tap: .cghidEventTap)
             heldKeys = next
         case "scroll":
@@ -461,7 +501,10 @@ struct InstarDesktopHost {
                   x.isFinite, y.isFinite, x >= 0, x <= 1, y >= 0, y <= 1 else {
                 throw HostError.invalidInput
             }
-            let bounds = CGDisplayBounds(CGMainDisplayID())
+            // A chosen screen is named on every pointer action, so a click can
+            // never land on a different screen than the viewer is showing.
+            let display = (raw["displayId"] as? String).map { UInt32($0) ?? 0 } ?? CGMainDisplayID()
+            let bounds = CGDisplayBounds(display)
             guard bounds.width > 0, bounds.height > 0 else { throw HostError.noMainDisplay }
             // CGEvent expects desktop points, not backing pixels. Pixel
             // coordinates overshoot on Retina displays and displays whose
@@ -539,7 +582,7 @@ struct InstarDesktopHost {
     private static func captureStream() async throws {
         guard activeSession() else { throw HostError.sessionUnavailable }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
+        guard let display = content.displays.first(where: { $0.displayID == selectedDisplay() }) else {
             throw HostError.noMainDisplay
         }
         let scale = min(1.0, min(1920.0 / Double(display.width), 1080.0 / Double(display.height)))
@@ -600,7 +643,7 @@ struct InstarDesktopHost {
     private static func captureH264Stream() async throws {
         guard activeSession() else { throw HostError.sessionUnavailable }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
+        guard let display = content.displays.first(where: { $0.displayID == selectedDisplay() }) else {
             throw HostError.noMainDisplay
         }
         let scale = min(1.0, min(1920.0 / Double(display.width), 1080.0 / Double(display.height)))

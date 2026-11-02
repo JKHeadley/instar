@@ -89,8 +89,38 @@ const LONG_PRESS_MS = 550;
 const DOUBLE_TAP_MS = 300;
 let mousePress = null;
 let lastTap = null;
+// A lone tap's click waits this long. A click followed at once by a press reads on
+// the host as a double-click, which maximizes a window being dragged by its title.
+let pendingTapClick = 0;
 let dragPointerId = null;
 let multiTap = null;
+// What the connected machine says about its screens. Until it answers
+// supported, selectDisplay is never sent: an older host ends the session on a
+// command it does not know.
+let displayInfo = null;
+let overviewOpen = null;
+let threeFinger = null;
+const THREE_FINGER_TRAVEL = 60;
+// While a switch settles the picture still shows the old screen, and a tap would
+// land on the new one at the wrong place. Hold pointer presses until a new frame.
+let screenSwitch = null;
+const SCREEN_SWITCH_SETTLE_MS = 400;
+const SCREEN_SWITCH_LIMIT_MS = 3_000;
+// Standard shortcuts, sent as ordinary keys. Spaces follow the fingers as on a
+// Mac trackpad: swiping left brings in the Space on the right.
+const DESKTOP_SHORTCUTS = {
+  macos: {
+    overview: { label: 'Mission Control', hint: 'Control+Up', modifiers: ['Control'], key: 'ArrowUp' },
+    appWindows: { label: 'App windows', hint: 'Control+Down', modifiers: ['Control'], key: 'ArrowDown' },
+    nextSpace: { label: 'Next Space', hint: 'Control+Right', modifiers: ['Control'], key: 'ArrowRight' },
+    previousSpace: { label: 'Previous Space', hint: 'Control+Left', modifiers: ['Control'], key: 'ArrowLeft' },
+  },
+  windows: {
+    overview: { label: 'Task View', hint: 'Win+Tab', modifiers: ['Meta'], key: 'Tab' },
+    nextSpace: { label: 'Next desktop', hint: 'Ctrl+Win+Right', modifiers: ['Control', 'Meta'], key: 'ArrowRight' },
+    previousSpace: { label: 'Previous desktop', hint: 'Ctrl+Win+Left', modifiers: ['Control', 'Meta'], key: 'ArrowLeft' },
+  },
+};
 
 // Watching counts as using the session: while the viewer is visible a light
 // ping keeps the two-minute idle limit from ending it.
@@ -134,6 +164,7 @@ function releaseButton() {
 }
 function beginHold(button) {
   if (heldButton) return;
+  overviewOpen = null; // This press may close it.
   flushPendingMove();
   buttonReleaseRequested = false;
   const epoch = streamEpoch;
@@ -393,6 +424,7 @@ async function receiveFrame(recordBuffer, epoch) {
     additionalData: recordAad('frame') }, aesKey, record.subarray(8));
   if (!inputEnabled || epoch !== streamEpoch) return;
   frameSequence = sequence;
+  if (screenSwitch && Date.now() - screenSwitch.at >= SCREEN_SWITCH_SETTLE_MS) screenSwitch = null;
   const bytes = new Uint8Array(frame);
   if (bytes[0] !== 0xff || bytes[1] !== 0xd8) {
     try { receiveH264(bytes, epoch); }
@@ -428,6 +460,11 @@ function leave(message) {
   pendingWheel = null;
   stopEdgePan();
   pointers.clear();
+  displayInfo = null;
+  overviewOpen = null;
+  threeFinger = null;
+  screenSwitch = null;
+  renderDisplays();
   setHeldButton(null);
   for (const key of heldKeys.keys()) { heldKeys.delete(key); keyOperationIds.delete(key); updateKeyButton(key); }
   keyReleaseRequested.clear();
@@ -832,10 +869,12 @@ async function openStream(result, resume = null) {
     updateCursor();
     $('machineName').textContent = ticket.label;
     status('Remote desktop is live.');
+    void refreshDisplays(epoch);
     if (resume !== null) resumeAttempt = null;
     resumeTransportFailures = 0;
     heartbeat = setInterval(() => {
       sendCommand({ type: 'ping' });
+      void refreshDisplays(epoch); // Picks up a screen plugged in, unplugged, or a read that failed.
     }, 30_000);
     resolve();
   });
@@ -857,6 +896,8 @@ async function openStream(result, resume = null) {
 
 function send(action) {
   if (!inputEnabled) return Promise.resolve(false);
+  if (screenSwitch && Date.now() - screenSwitch.at >= SCREEN_SWITCH_LIMIT_MS) screenSwitch = null;
+  if (screenSwitch && ['click', 'buttonDown', 'move'].includes(action.kind)) return Promise.resolve(false);
   return sendCommand({ type: 'input', action });
 }
 function imageArea() {
@@ -945,9 +986,127 @@ function edgePanTick() {
   }
 }
 function clickCursor(button = 'left', count = 1) {
+  overviewOpen = null; // A click may have closed it.
   if (!heldButton) send(count > 1 ? { kind: 'click', ...cursor, button, count } : { kind: 'click', ...cursor, button });
 }
 function heldModifiers() { return modifierKeys.filter(key => heldKeys.has(key)); }
+/** Resolves to the new list, or null when this read told us nothing new. */
+async function refreshDisplays(epoch = streamEpoch) {
+  let info;
+  try { info = await api(`/desktop/requests/${encodeURIComponent(requestId)}/displays`); }
+  catch { info = { supported: false, platform: null, displays: [], currentDisplayId: null, canShowAll: false }; }
+  if (epoch !== streamEpoch) return null;
+  // One failed read must not take working controls away; the next one retries.
+  if (displayInfo?.supported && !info.supported) return null;
+  displayInfo = info;
+  renderDisplays();
+  return info;
+}
+function displayChoices() {
+  const info = displayInfo;
+  if (!info?.supported) return [];
+  const rows = info.displays.map(display => ({ id: display.id,
+    label: `${display.name} · ${display.width}×${display.height}${display.main ? ' · Main' : ''}` }));
+  return info.canShowAll ? [{ id: null, label: 'All screens' }, ...rows] : rows;
+}
+function renderDisplays() {
+  const menu = $('displayMenu');
+  const button = $('displaysButton');
+  if (!menu || !button) return;
+  const info = displayInfo;
+  const choices = displayChoices();
+  button.hidden = !info?.supported || info.displays.length < 2;
+  if (button.hidden) { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); }
+  menu.replaceChildren(...choices.map(choice => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.textContent = choice.label; // Host text: never markup.
+    item.setAttribute('aria-pressed', String(choice.id === info.currentDisplayId));
+    item.addEventListener('click', () => { void chooseDisplay(choice.id); });
+    return item;
+  }));
+  const shortcuts = DESKTOP_SHORTCUTS[info?.platform] ?? null;
+  for (const node of document.querySelectorAll('[data-shortcut]')) {
+    const action = shortcuts?.[node.dataset.shortcut];
+    node.hidden = !action;
+    if (action) node.textContent = action.label;
+  }
+  const note = $('displayNote');
+  if (note) {
+    note.hidden = !info || info.supported;
+    if (!note.hidden) note.textContent = 'This machine needs an update before you can switch screens.';
+  }
+}
+async function chooseDisplay(displayId) {
+  if (!displayInfo?.supported || !inputEnabled) return;
+  const epoch = streamEpoch;
+  const chosen = displayChoices().find(choice => choice.id === displayId);
+  $('displayMenu').hidden = true;
+  $('displaysButton').setAttribute('aria-expanded', 'false');
+  overviewOpen = null;
+  flushPendingMove();
+  resetZoom();
+  releaseButton();
+  if (!await send({ kind: 'selectDisplay', displayId })) return;
+  // macOS applies Spaces to the screen under the pointer, so the gestures
+  // follow the picture only if the pointer does.
+  cursor = { x: 0.5, y: 0.5 };
+  void send({ kind: 'move', ...cursor });
+  screenSwitch = { at: Date.now() };
+  updateCursor();
+  status(`Showing ${chosen?.label.split(' · ')[0] ?? 'the chosen screen'}.`);
+  await new Promise(resolve => setTimeout(resolve, 1_200));
+  const info = await refreshDisplays(epoch);
+  if (info?.supported && info.currentDisplayId !== displayId) {
+    status('That screen is not available any more.');
+  }
+}
+async function sendChord(modifiers, key) {
+  const epoch = streamEpoch;
+  const pressed = [];
+  let allDown = true;
+  for (const modifier of modifiers) {
+    if (heldKeys.has(modifier)) continue; // A key the operator latched stays latched.
+    if (!await beginKey(modifier)) { allDown = false; break; }
+    pressed.push(modifier);
+  }
+  if (allDown && epoch === streamEpoch) await tapKey(key);
+  for (const modifier of pressed.reverse()) if (epoch === streamEpoch) await releaseKey(modifier);
+}
+function runShortcut(name) {
+  const shortcuts = DESKTOP_SHORTCUTS[displayInfo?.platform];
+  const action = shortcuts?.[name];
+  if (!action || !inputEnabled) return;
+  // Named beside the action: this Mac may have the shortcut turned off, and
+  // the viewer cannot see that.
+  status(`${action.label} (${action.hint})`);
+  overviewOpen = name === 'overview' || name === 'appWindows' ? name : null;
+  void sendChord(action.modifiers, action.key);
+}
+function closeOverview() {
+  overviewOpen = null;
+  status('Back');
+  void tapKey('Escape');
+}
+function swipeThreeFingers(direction) {
+  if (direction === 'left') runShortcut('nextSpace');
+  else if (direction === 'right') runShortcut('previousSpace');
+  else if (direction === 'up') {
+    if (overviewOpen === 'appWindows') closeOverview();
+    else if (!overviewOpen) runShortcut('overview');
+  } else if (overviewOpen) closeOverview();
+  else runShortcut('appWindows');
+}
+function moveThreeFingers() {
+  if (!threeFinger || threeFinger.fired || pointers.size < 3 || heldButton) return;
+  const fingers = [...pointers.values()];
+  const dx = fingers.reduce((sum, state) => sum + state.x - state.startX, 0) / fingers.length;
+  const dy = fingers.reduce((sum, state) => sum + state.y - state.startY, 0) / fingers.length;
+  const major = Math.max(Math.abs(dx), Math.abs(dy));
+  if (major < THREE_FINGER_TRAVEL || major < 1.5 * Math.min(Math.abs(dx), Math.abs(dy))) return;
+  threeFinger.fired = true; // One swipe, one action.
+  swipeThreeFingers(Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down'));
+}
 function syncTouchModeButton() {
   $('modeButton').hidden = !touchCapable;
   $('modeButton').textContent = trackpad ? 'Trackpad · swipe to move' : 'Direct · touch position';
@@ -1040,6 +1199,18 @@ $('keyboardButton').addEventListener('click', () => {
   syncVisualViewport();
 });
 $('hideKeyboardButton').addEventListener('click', closeKeyboard);
+$('displaysButton')?.addEventListener('click', () => {
+  const open = $('displayMenu').hidden;
+  $('displayMenu').hidden = !open;
+  $('displaysButton').setAttribute('aria-expanded', String(open));
+  if (open) void refreshDisplays(); // A screen may have been plugged in since.
+});
+for (const button of document.querySelectorAll('[data-shortcut]')) {
+  button.addEventListener('click', () => {
+    if (overviewOpen && button.dataset.shortcut === overviewOpen) closeOverview();
+    else runShortcut(button.dataset.shortcut);
+  });
+}
 $('zoomResetButton').addEventListener('click', resetZoom);
 $('fullscreenButton').hidden = !document.fullscreenEnabled || !$('control').requestFullscreen;
 $('fullscreenButton').addEventListener('click', () => {
@@ -1123,8 +1294,10 @@ $('surface').addEventListener('pointerdown', event => {
     multiTap = null;
     const state = pointers.get(event.pointerId);
     const now = Date.now();
-    state.secondTap = !!lastTap && now - lastTap.at < DOUBLE_TAP_MS
+    state.secondTap = !!pendingTapClick && !!lastTap && now - lastTap.at < DOUBLE_TAP_MS
       && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40;
+    if (state.secondTap) { clearTimeout(pendingTapClick); pendingTapClick = 0; }
+    else flushTapClick();
     // Hold still to right-click, as on AnyDesk and most phone remote desktops.
     state.longPress = setTimeout(() => {
       if (pointers.get(event.pointerId) !== state || state.maxDistance >= 10 || state.multi || state.secondTap) return;
@@ -1138,6 +1311,12 @@ $('surface').addEventListener('pointerdown', event => {
     stopEdgePan();
     const pair = pairMetrics();
     twoFinger = { ...pair, zoom, panX, panY, lastX: pair.x, lastY: pair.y, mode: 'pending' };
+  }
+  if (pointers.size === 3 && event.pointerType !== 'mouse') {
+    stopEdgePan();
+    twoFinger = null;
+    for (const state of pointers.values()) { state.startX = state.x; state.startY = state.y; }
+    threeFinger = { fired: false };
   }
   if (!trackpad || event.pointerType === 'mouse') {
     const at = position(event);
@@ -1175,7 +1354,9 @@ $('surface').addEventListener('pointermove', event => {
   state.x = event.clientX; state.y = event.clientY;
   state.maxDistance = Math.max(state.maxDistance,
     Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
-  if (pointers.size > 1 && event.pointerType !== 'mouse') {
+  if (threeFinger && event.pointerType !== 'mouse') {
+    moveThreeFingers();
+  } else if (pointers.size > 1 && event.pointerType !== 'mouse') {
     moveTwoFingers();
   } else if (state.multi && event.pointerType !== 'mouse') {
     // Do not turn the trailing finger of a scroll gesture into pointer motion.
@@ -1197,6 +1378,7 @@ $('surface').addEventListener('pointerup', event => {
   clearTimeout(state.longPress);
   pointers.delete(event.pointerId);
   if (pointers.size < 2) twoFinger = null;
+  if (pointers.size === 0) threeFinger = null;
   if (event.pointerType === 'mouse' && mousePress?.pointerId === event.pointerId) {
     const press = mousePress; mousePress = null;
     const at = position(event);
@@ -1232,17 +1414,34 @@ $('surface').addEventListener('pointerup', event => {
   }
   const distance = Math.max(state.maxDistance,
     Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
-  if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
+  if (!state.multi && distance < 10 && state.secondTap) {
+    // The first tap's click is still unsent: a real double tap goes out as one
+    // double-click, and a second press held without moving as one click.
+    if (!trackpad) { const at = position(event); if (at) cursor = at; }
+    flushPendingMove();
+    clickCursor('left', Date.now() - state.at < 500 ? 2 : 1);
+    lastTap = null;
+  } else if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
     if (!trackpad || event.pointerType === 'mouse') { const at = position(event); if (at) cursor = at; }
-    clickCursor(event.button === 2 ? 'right' : 'left');
-    lastTap = event.pointerType === 'mouse' ? null : { at: Date.now(), x: event.clientX, y: event.clientY };
+    if (event.pointerType === 'mouse') { clickCursor(event.button === 2 ? 'right' : 'left'); lastTap = null; }
+    else {
+      lastTap = { at: Date.now(), x: event.clientX, y: event.clientY };
+      pendingTapClick = setTimeout(flushTapClick, DOUBLE_TAP_MS);
+    }
   }
 });
 function twoFingerUsed(tap) { return tap.zoomed === true; }
+function flushTapClick() {
+  if (!pendingTapClick) return;
+  clearTimeout(pendingTapClick);
+  pendingTapClick = 0;
+  clickCursor('left');
+}
 function cancelGestures() {
   stopEdgePan();
+  clearTimeout(pendingTapClick); pendingTapClick = 0;
   for (const state of pointers.values()) clearTimeout(state.longPress);
-  pointers.clear(); twoFinger = null; multiTap = null; mousePress = null; dragPointerId = null; lastTap = null;
+  pointers.clear(); twoFinger = null; threeFinger = null; multiTap = null; mousePress = null; dragPointerId = null; lastTap = null;
   releaseControls();
 }
 $('surface').addEventListener('pointercancel', cancelGestures);

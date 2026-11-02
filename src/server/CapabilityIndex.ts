@@ -161,7 +161,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: ({ ctx }) => ({
       configured: !!ctx.directDesktopAccess,
       endpoints: ['GET /desktop/diagnostics', 'POST /desktop/request-permission', 'GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
-        'GET /desktop/requests/:id', 'POST /desktop/requests/:id/ticket',
+        'GET /desktop/requests/:id', 'GET /desktop/requests/:id/displays', 'POST /desktop/requests/:id/ticket',
         'POST /desktop/requests/:id/revoke', 'WebSocket /desktop-stream'],
     }),
   },
