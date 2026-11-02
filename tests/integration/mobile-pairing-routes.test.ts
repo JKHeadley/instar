@@ -23,7 +23,8 @@ function setup(opts: { enabled?: boolean; tunnelState?: string; provider?: strin
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1',
     developmentAgent: true,
     tunnel: { enabled: true, type: 'named', token: 'x', ...(opts.hostname === null ? {} : { hostname: opts.hostname ?? HOST }) },
-    mobilePairing: opts.enabled === undefined ? undefined : { enabled: opts.enabled },
+    // Multi-route off here: these tests cover the single paired host (mobile-multi-route.md, flag off).
+    mobilePairing: { ...(opts.enabled === undefined ? {} : { enabled: opts.enabled }), multiRoute: { enabled: false } },
   } as unknown as InstarConfig;
   const lifecycle = { lastState: opts.tunnelState ?? 'active', activeProvider: opts.provider ?? 'cloudflare-named' };
   const app = express();

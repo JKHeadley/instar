@@ -49,6 +49,7 @@ import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
+import { PreparingRunWatchdog, telegramTopicNotifier } from '../core/AutonomousStartAdmission.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle, windowRunRecoveryResultFromRefresh } from '../core/WindowRunLivenessAuthority.js';
@@ -180,9 +181,12 @@ import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { AppConversationService } from '../core/AppConversationService.js';
+import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
+import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -199,7 +203,7 @@ import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
-import { dashboardUnlockRefused, isLoopbackPeer } from '../core/desktopTransport.js';
+import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
@@ -207,6 +211,7 @@ import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
 import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
+import { desktopRouteAccess } from './desktopRouteContext.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
 import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
 import { DesktopAccessAudit } from '../core/DesktopAccessAudit.js';
@@ -540,6 +545,9 @@ export class AgentServer {
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
+  private preparingRunWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Exposed for wiring-integrity tests. */
+  preparingRunWatchdog: PreparingRunWatchdog | null = null;
   private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
   private checkInReminderTimer: ReturnType<typeof setInterval> | null = null;
@@ -813,6 +821,12 @@ export class AgentServer {
     viewer?: PrivateViewer;
     jobAnomalySendAutomationReply?: JobAnomalyPusherDeps['sendAutomationReply'];
     tunnel?: TunnelManager;
+    /**
+     * Multi-route own names (docs/specs/mobile-multi-route.md): inject the Tailscale CLI and the
+     * self-probe fetch, and whether to start the probe loop. Under a test run the real CLI is
+     * never used and the loop is not started unless a test injects these.
+     */
+    mobileRoutes?: { tailscaleExec?: import('../core/MobileOwnNames.js').TailscaleExec | null; fetchFn?: typeof fetch; start?: boolean };
     evolution?: EvolutionManager;
     watchdog?: SessionWatchdog;
     triageNurse?: StallTriageNurse;
@@ -1165,6 +1179,7 @@ export class AgentServer {
     threadMessageRecorder?: import('../threadline/recordThreadMessage.js').ThreadMessageRecorder;
     warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
     collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer; // CMT-509
+    peerHomebaseRelay?: import('../threadline/peerHomebaseRelay.js').PeerHomebaseRelay; // peer-homebase §2.6
     /** ThreadResumeMap — for topic-linkage outbound capture on /threadline/relay-send.
      *  Per THREAD-TOPIC-LINKAGE-SPEC.md. */
     threadResumeMap?: import('../threadline/ThreadResumeMap.js').ThreadResumeMap;
@@ -1553,6 +1568,12 @@ export class AgentServer {
         return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
       },
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
+      tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
+        ? options.mobileRoutes.tailscaleExec ?? null
+        : (process.env.VITEST ? null : defaultTailscaleExec(wslWindowsHostAddress() !== null)),
+      isWsl: wslWindowsHostAddress() !== null,
+      ...(options.mobileRoutes?.fetchFn ? { fetchFn: options.mobileRoutes.fetchFn } : {}),
       raiseAttention: (title, body) => {
         void options.telegram?.createAttentionItem({
           id: 'mobile-pairing:paused', title, summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'mobile-pairing',
@@ -1562,6 +1583,8 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
+    if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
     if (options.telegram) {
       const mp = this.mobilePairing;
       options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
@@ -5079,6 +5102,7 @@ export class AgentServer {
       messageBridge: options.messageBridge ?? null,
       hookEventReceiver: options.hookEventReceiver ?? null,
       nativeHookIngest: this.nativeHookIngest,
+      mobileOwnNames: this.mobilePairing?.ownNames ?? null,
       worktreeMonitor: options.worktreeMonitor ?? null,
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,
@@ -5088,6 +5112,7 @@ export class AgentServer {
       threadMessageRecorder: options.threadMessageRecorder,
       warrantsReplyGate: options.warrantsReplyGate,
       collaborationSurfacer: options.collaborationSurfacer,
+      peerHomebaseRelay: options.peerHomebaseRelay,
       threadResumeMap: options.threadResumeMap ?? null,
       topicLinkageHandler: options.topicLinkageHandler ?? null,
       handshakeManager: options.handshakeManager ?? null,
@@ -5222,8 +5247,7 @@ export class AgentServer {
       correctionClassReview: this.correctionClassReview,
       completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
-      directDesktopAccess: options.config.remoteDesktop?.frontMachineId === this.meshSelfId
-        ? this.directDesktopAccess : null,
+      ...desktopRouteAccess(this.directDesktopAccess, options.config.remoteDesktop?.frontMachineId, this.meshSelfId),
       desktopLocalDiagnostics: async () => {
         const configured = options.config.remoteDesktop?.enabled === true;
         if (!configured || !this.directDesktopAccess) {
@@ -5528,7 +5552,12 @@ export class AgentServer {
           // The reply relay must be on disk before any app session spawns (boot-time install).
           const relayTemplate = packagedAppReplyRelayTemplate();
           if (relayTemplate) ensureAppReplyRelay({ projectDir: options.config.projectDir, stateDir: options.config.stateDir, template: relayTemplate, claudeCompatibility: fs.existsSync(path.join(options.config.projectDir, '.claude')) });
+          // Signed records (§4.6): identity signer, signing-key history lookup, device-key ledger.
+          const signer = loadMachineSigner(options.config.stateDir);
+          const keyLookup = identityKeyLookup(options.config.stateDir);
+          const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
+            signer, keyLookup, keyLedger,
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
             registry: routeCtx.conversationRegistry!,
@@ -5558,6 +5587,28 @@ export class AgentServer {
               return t ? appReplyRelayReadiness(options.config.stateDir, t) : { ready: false, reason: 'packaged app reply relay template is unavailable' };
             },
             log: (line) => console.log(line),
+          });
+        }
+        // The device-key ledger (§4.6): activation/revocation write it first; at every boot it is
+        // reconciled against the device registry in both directions (a crash between the writes).
+        const keyLedger = svc.deps.keyLedger ?? null;
+        this.mobilePairing.keyLedger = keyLedger;
+        if (keyLedger) {
+          try {
+            const rec = keyLedger.reconcile(this.mobilePairing.devices);
+            if (rec.backfilledActivations + rec.backfilledRevocations + rec.completedRevocations > 0) {
+              console.log(`  [device-key-ledger] reconciled: ${rec.backfilledActivations} activation(s), ${rec.backfilledRevocations} revocation(s) backfilled; ${rec.completedRevocations} revocation(s) completed`);
+            }
+          } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'MobileDeviceKeyLedger', primary: 'reconcile the device-key ledger with the device registry at boot', fallback: 'the next boot retries',
+              reason: err instanceof Error ? err.message : String(err), impact: 'Some signed app messages may read "couldn\'t check" until it is repaired.',
+            });
+          }
+        } else {
+          DegradationReporter.getInstance().report({
+            feature: 'MobileDeviceKeyLedger', primary: 'sign app message receipts and keep the device-key ledger', fallback: 'messages are stored and delivered without a machine receipt',
+            reason: 'this machine has no identity key', impact: 'Signed app messages read "couldn\'t check" on this machine.',
           });
         }
         svc.start();
@@ -5894,6 +5945,24 @@ export class AgentServer {
         void tickWindowRun('periodic');
       }, 60_000);
       this.windowRunLivenessTimer.unref?.();
+    }
+    if (options.telegram && options.config.autonomousSessions?.preparingWatchdog?.enabled !== false) {
+      const telegram = options.telegram;
+      const watchdog = new PreparingRunWatchdog({
+        store: new AutonomousRunStore(options.config.stateDir),
+        notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
+        boundRun: () => {
+          const state = windowRunLivenessAuthority?.status().state;
+          return state && !['stalled', 'failed', 'closed'].includes(state.status)
+            ? { topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt }
+            : null;
+        },
+      });
+      this.preparingRunWatchdog = watchdog;
+      this.preparingRunWatchdogTimer = setInterval(() => {
+        void watchdog.tick().catch((error) => console.warn('[preparing-run-watchdog] tick failed:', error));
+      }, 60_000);
+      this.preparingRunWatchdogTimer.unref?.();
     }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
@@ -7774,6 +7843,10 @@ export class AgentServer {
     if (this.windowRunLivenessTimer) {
       clearInterval(this.windowRunLivenessTimer);
       this.windowRunLivenessTimer = null;
+    }
+    if (this.preparingRunWatchdogTimer) {
+      clearInterval(this.preparingRunWatchdogTimer);
+      this.preparingRunWatchdogTimer = null;
     }
     if (this.jobTriageBackupTimer) {
       clearInterval(this.jobTriageBackupTimer);

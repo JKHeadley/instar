@@ -56,6 +56,8 @@ export interface OriginStoreOptions {
   restart?: { baseDelayMs?: number; maxDelayMs?: number; maxAttempts?: number; healthyWindowMs?: number };
   /** Conservative aggregate structured-clone budget before worker enqueue. */
   maxPendingBytes?: number;
+  /** Audit horizon for origin stubs and their archives. An explicit operator policy. */
+  auditRetentionDays?: number;
   maxOperations?: number;
   maxPayloadBytes?: number;
   maxChildren?: number;
@@ -163,6 +165,8 @@ export interface OriginListPage {
   cursor: string | null;
   upperSequence: number;
   coverage: 'complete';
+  /** Set once the audit horizon has removed records created before this time. */
+  historyExpiredBefore?: number;
 }
 export interface OriginMetrics {
   sampledAt: number;

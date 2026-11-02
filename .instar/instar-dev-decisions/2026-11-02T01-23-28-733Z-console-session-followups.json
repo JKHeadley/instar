@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-02T01:23:28.733Z",
+  "slug": "console-session-followups",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

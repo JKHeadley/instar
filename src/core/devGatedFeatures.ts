@@ -872,8 +872,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'mobilePairingNative',
     configPath: 'mobilePairing.native.enabled',
-    description: 'Native app conversations (docs/specs/mobile-native-conversations.md): the iPhone app starts, lists, reads and writes conversations stored by Instar itself (POST/GET /mobile/conversations, POST /mobile/chat/app/:key, its messages/events reads), the agent answers through app-reply.sh (POST /app/session-reply), and every app message is stored with its device-signature fields. The store replicates to every machine whenever this is on.',
+    description: 'Native app conversations (docs/specs/mobile-native-conversations.md): the iPhone app starts, lists, reads and writes conversations stored by Instar itself (POST/GET /mobile/conversations, POST /mobile/chat/app/:key, its messages/events reads), the agent answers through app-reply.sh (POST /app/session-reply), and every app message is stored with its device signature and this machine\'s signed receipt, checked against a replicated, machine-signed device-key ledger (originVerified in history). The store and the ledger replicate to every machine whenever this is on.',
     justification: 'Device-signed only, behind the existing device allowlist; every mutation is idempotent by requestId; messages are persisted before dispatch and delivery is never claimed without a recorded outcome. Off ⇒ the new routes answer 503 and the Telegram chat route is unchanged. Dark on the fleet until the development-agent live proof passes.',
+  },
+  {
+    name: 'mobilePairingMultiRoute',
+    configPath: 'mobilePairing.multiRoute.enabled',
+    description: 'Several routes per agent for the Instar iPhone app (docs/specs/mobile-multi-route.md): a paired phone\'s signature is accepted on any of this machine\'s proven own names (Cloudflare tunnel hostname, Tailscale HTTPS name), GET /mobile/routes lists them, and a boot step maps tailscale serve HTTPS 443 to the agent port when 443 has no serve config.',
+    justification: 'Own names come only from local configuration and are proven by the per-process pairing ping (echoed Host, local-TLS arrival, no sibling claim); a request is accepted only on a still-configured own name that arrived through this machine\'s own TLS front, and a captured signature names its exact host. Probes are bounded (one in flight, 3 s, backoff to 15 min, breaker after 8). The serve step never overwrites an existing 443 config. Switching it off restores the single paired host exactly.',
   },
 ];
 

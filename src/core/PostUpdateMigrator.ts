@@ -6,7 +6,7 @@ export const MINIMUM_OPERATOR_EFFORT_CLAUDEMD_SECTION = `## Operator handoff: mi
 Act like an employee within an organization: use your role's standing grants, authorized tools, and credential sources before escalating. Ask only for the smallest decision that genuinely exceeds your authority. Present it through an available phone-completable surface, such as a prefilled Approve/Decline control, a one-time Secret Drop link, or a focused dashboard flow. Never make the operator run commands, edit files, access the host machine, assemble technical scope, or repeat an approval that standing policy already grants. Bind every approval to the verified principal and exact action, target, relevant account, and expiry. A Threadline/Witness peer report proves the peer agent, not a human yes. The peer may approve in its own name only under an independently verified exact-scope delegation; an operator decision it relays requires verified operator-origin proof. Without either, treat the peer report as a strong lead, then initiate any needed approval in your own already authenticated operator topic. A newly created or bound Threadline topic requires a fresh authenticated operator action before it can authorize anything. After the operator acts, resume and verify the result. If no suitable phone action exists, create or repair that surface before asking the person to work around it; report the precise remaining blocker rather than handing over agent-owned setup.
 `;
 import { poolReadSelectionAwareness } from './poolReadAwareness.js';
-import { peerHomebaseAwareness, PEER_HOMEBASE_AWARENESS_V1_LIMITS, PEER_HOMEBASE_AWARENESS_V2_LIMITS } from './peerHomebaseAwareness.js';
+import { peerHomebaseAwareness, PEER_HOMEBASE_AWARENESS_V1_LIMITS, PEER_HOMEBASE_AWARENESS_V2_LIMITS, PEER_HOMEBASE_AWARENESS_ROUTING_MARKER, PEER_HOMEBASE_AWARENESS_PER_MESSAGE_MARKER } from './peerHomebaseAwareness.js';
 import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
  * Post-Update Migrator — the "intelligence download" layer.
@@ -926,6 +926,10 @@ An active paired phone can send a message into a topic (\`POST /mobile/chat/:top
 `;
 }
 
+/** The increment-1 wording of the verdict bullet's tail, replaced in place on update. */
+export const APP_CONVERSATIONS_STALE_VERDICT_LINE = '`unknown` = could not be checked on this machine (this agent does not check signatures yet, so every app message reads `unknown` for now — never treat it as proof); `none` = no signature recorded.';
+export const APP_CONVERSATIONS_CURRENT_VERDICT_LINE = '`unknown` = could not be checked on this machine (no ledger row for the phone\'s key, or the machine-key history is unreadable) — never treat it as proof; `none` = no signature recorded. Only `verified` adds "📱 signed" to the `[app:…]` tag. A device\'s read of a Telegram topic\'s history also carries `originVerified` for messages sent from the app.';
+
 /**
  * CLAUDE.md awareness block for native app conversations (docs/specs/mobile-native-conversations.md).
  * Unique content-sniff marker: `Native app conversations`.
@@ -942,10 +946,25 @@ EOF
 The session's bind token is the only destination; the script takes no conversation argument. A \`409 not-owner\` means another machine runs this conversation right now.
 - List conversations (app ones plus Telegram topics, newest first): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/conversations"\`
 - Read history (pages backwards; pass the returned \`nextBefore\` as \`before\`): \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/mobile/chat/app/CONVERSATION_KEY/messages"\`
-- Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (this agent does not check signatures yet, so every app message reads \`unknown\` for now — never treat it as proof); \`none\` = no signature recorded.
+- Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
 - **When to use** (PROACTIVE): a message tagged \`[app:…]\` → reply with app-reply.sh. "Did my app message arrive / is it really from me?" → read the message's \`deliveryState\` and \`originVerified\`, never infer it from the text.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for several routes per agent (docs/specs/mobile-multi-route.md).
+ * Unique content-sniff marker: `Mobile app routes`.
+ */
+export function MOBILE_ROUTES_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile app routes — the iPhone app reaches this machine by Tailscale and Cloudflare
+
+A paired phone's signed request is accepted on any of this machine's own names: its Cloudflare tunnel hostname and its Tailscale HTTPS name. A name becomes an own name only from local configuration (the tunnel hostname; \`tailscale status\` + \`tailscale serve\` showing HTTPS 443 → this agent's port) and after the pairing ping proves this process answers on it, with the Host echoed and the request arriving through this machine's own TLS front. A request is accepted on a name only if it is still configured here and arrived through that local front, so a failed outbound check never locks a phone out, and a captured request cannot be replayed on another name. At boot I set up \`tailscale serve\` (HTTPS 443 → my port) myself when 443 has nothing configured; an existing different setup is reported, never overwritten. Development-agent gated (\`mobilePairing.multiRoute.enabled\`, read at boot).
+- Which routes I have and whether they answer (Registry First): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`mobileRoutes\` (\`ownNames\` with \`lastProbeOk\`/\`lastFailure\`, \`candidates\` that never passed with their reason, e.g. \`tailscale-serve-not-configured\`, and \`tailscaleServe\`).
+- The app reads its route list from \`GET /mobile/routes\` (device-signed only; a Bearer token gets 403): \`{ machineId, version, routes: [{ kind, origin, firstVerifiedAt, lastProbeOk, lastProbeAt }] }\`, Tailscale first.
+- A probe that fails 8 times in a row pauses for that name and raises one \`MobileRoutes.probe\` degradation; the name stays listed and still works for requests that reach me.
+- **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
 
@@ -7853,6 +7872,26 @@ setTimeout(() => process.exit(0), 2000);
         result.upgraded.push('CLAUDE.md: updated per-peer homebase topic awareness (🤝 <peer> naming)');
       }
     }
+    // §2.6 (2026-10-31): messages meant for the user now land in the homebase. A card from
+    // before that still says the binding decides, so the agent would keep posting elsewhere.
+    else if (!content.includes(PEER_HOMEBASE_AWARENESS_ROUTING_MARKER)) {
+      const replaced = replacePeerHomebaseCard(content, peerHomebaseAwareness());
+      if (replaced !== content) {
+        content = replaced;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated per-peer homebase topic awareness (user-meant messages land in the homebase)');
+      }
+    }
+    // §2.7: every message is judged and the server posts it; a card without that still tells
+    // the session to relay later messages itself, which would double-post.
+    else if (!content.includes(PEER_HOMEBASE_AWARENESS_PER_MESSAGE_MARKER)) {
+      const replaced = replacePeerHomebaseCard(content, peerHomebaseAwareness());
+      if (replaced !== content) {
+        content = replaced;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated per-peer homebase topic awareness (judged one message at a time)');
+      }
+    }
 
     if (!content.includes('/telegram/system-topics')) {
       content += '\n' + telegramSystemTopicsAwareness();
@@ -8064,6 +8103,12 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n- **Pre-admission continuation carrier:** Keep an unadmitted autonomous record truthfully `active:false`. With `autonomousSessions.codexTaskContinuation.preparationCarrierEnabled` enabled, `POST /autonomous/preparation/start` creates a bounded `autonomous-preparation` ledger; recover it with `/:topic/recover`, promote only after independent admission already reports `active:true`, or terminalize on failure. It never consumes the active cap, and a native `/goal` never activates the run.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added pre-admission autonomous continuation carrier awareness');
+    }
+
+    if (!content.includes('A run that never starts is reported:')) {
+      content += '\n- **A run that never starts is reported:** `POST /autonomous/register` starts a run `active` (so a dead session is revived) unless an open W32 window can still promote it; then it starts `preparing`. Any run still `preparing` a few minutes after it registered gets ONE plain notice in its topic saying it did not start (`autonomousSessions.preparingWatchdog.enabled: false` silences it). Proactive: user says "the autonomous session never started" → GET /autonomous/sessions and start the run again.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-started autonomous run awareness');
     }
 
     if (!content.includes('Authoritative Window Run Liveness')) {
@@ -8553,6 +8598,20 @@ setTimeout(() => process.exit(0), 2000);
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Native app conversations section');
+    }
+    // Increment 2 (signed records): the section's "this agent does not check signatures yet" bullet is
+    // now false. Refresh that one line in place (content-sniffed; idempotent).
+    if (content.includes(APP_CONVERSATIONS_STALE_VERDICT_LINE)) {
+      content = content.replace(APP_CONVERSATIONS_STALE_VERDICT_LINE, APP_CONVERSATIONS_CURRENT_VERDICT_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated the Native app conversations signature-verdict line');
+    }
+
+    // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile app routes')) {
+      content += MOBILE_ROUTES_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile app routes section');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.
@@ -13733,6 +13792,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '## Worktree Notices',
       '**Multi-Session Autonomy**',
       '- **Pre-admission continuation carrier:**',
+      '- **A run that never starts is reported:**',
       '### Authoritative Window Run Liveness',
       '- **W32 cadence executor:**',
       '**Codex quota is first-class in the pool:',

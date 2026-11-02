@@ -51,8 +51,8 @@ export class OriginUnrecordedReceipts {
   }
 
   /** Acceptances the store does not hold yet, oldest first. */
-  pending(): UnrecordedReceiptEntry[] {
-    const rows = this.#rows();
+  pending(input: { requireReadable?: boolean } = {}): UnrecordedReceiptEntry[] {
+    const rows = this.#rows(input.requireReadable);
     const done = new Set(rows.filter(row => row.kind === 'reconciled').map(row => `${row.operationId}:${row.childId}`));
     return this.#receiptsFrom(rows).filter(row => !done.has(`${row.operationId}:${row.childId}`));
   }
@@ -64,9 +64,13 @@ export class OriginUnrecordedReceipts {
     return out;
   }
 
-  #rows(): Row[] {
+  #rows(requireReadable = false): Row[] {
     let text: string;
-    try { text = fs.readFileSync(this.file, 'utf8'); } catch { return []; }
+    try { text = fs.readFileSync(this.file, 'utf8'); }
+    catch (error) {
+      if (requireReadable && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return [];
+    }
     const rows: Row[] = [];
     for (const line of text.split('\n')) {
       if (!line) continue;

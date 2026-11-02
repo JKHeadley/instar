@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { AutoUpdater } from '../../src/core/AutoUpdater.js';
@@ -13,6 +14,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import { registerLocalVerifyRestartHold } from '../../src/localVerify/localVerifyWiring.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
 import type { LocalVerifyService } from '../../src/localVerify/LocalVerifyService.js';
 import type { RestartHold } from '../../src/core/UpdateGate.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -49,6 +51,15 @@ describe('manual update preserves Local Verify E2E lifecycle', () => {
       config, sessionManager: createMockSessionManager() as never,
       state, updateChecker: checker, autoUpdater: updater,
     }).getApp();
+    // A restart flag can be published while a full verify child is alive.
+    // The production watcher must leave that flag for later.
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const markerPath = path.join(statePath, 'local-verify', 'inflight.json');
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerPath, JSON.stringify({ attemptToken: 'e2e-active-child', startedAt: Date.now(), pid: child.pid, pgid: child.pid }));
+    const watcher = new ForegroundRestartWatcher({ stateDir, exitOnRestart: false });
+    let detected = 0;
+    watcher.on('restartDetected', () => { detected++; });
 
     try {
       const applied = await request(app).post('/updates/apply')
@@ -61,7 +72,17 @@ describe('manual update preserves Local Verify E2E lifecycle', () => {
       expect(status.body.updateActivationPendingSince).toBeTypeOf('string');
       expect(updatePending).toBeTypeOf('function');
       expect(updatePending!().pending).toBe(true);
+      await (watcher as unknown as { check(): Promise<void> }).check();
+      expect(fs.existsSync(path.join(statePath, 'restart-requested.json'))).toBe(true);
+      expect(detected).toBe(0);
+      child.kill('SIGTERM');
+      await new Promise((resolve) => child.once('exit', resolve));
+      SafeFsExecutor.safeUnlinkSync(markerPath, { operation: 'tests/e2e/update-apply-verification-hold-lifecycle.test.ts:completed-marker' });
+      await (watcher as unknown as { check(): Promise<void> }).check();
+      expect(detected).toBe(1);
+      expect(fs.existsSync(path.join(statePath, 'restart-requested.json'))).toBe(false);
     } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       updater.stop();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/update-apply-verification-hold-lifecycle.test.ts' });
     }
@@ -121,6 +142,7 @@ describe('manual update preserves Local Verify E2E lifecycle', () => {
         .set('Authorization', 'Bearer update-verify-test').send({ forceRestart: true });
       expect(forced.status).toBe(200);
       expect(fs.existsSync(path.join(statePath, 'restart-requested.json'))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(statePath, 'restart-requested.json'), 'utf8')).bypassHolds).toBe(true);
       expect(forced.body.restartDeferral).toBeNull();
       holds = [];
     } finally {

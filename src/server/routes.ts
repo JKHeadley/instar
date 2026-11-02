@@ -87,6 +87,8 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 }
 
 import fs from 'node:fs';
+import { readTranscriptPage } from '../core/SessionTranscriptReader.js';
+import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
@@ -184,6 +186,7 @@ import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjectio
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { derivedEventId } from '../core/appConversationText.js';
+import { joinTelegramHistory } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
 import { PROPOSABLE_FLOOR_ACTIONS, renderAuthorizationCard } from '../core/AuthorizationRequestStore.js';
@@ -503,6 +506,7 @@ import {
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
+import { decideAutonomousStartStatus } from '../core/AutonomousStartAdmission.js';
 import { PriorityLedger } from '../monitoring/GoalRealignment.js';
 import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
@@ -548,6 +552,7 @@ import type { QuotaManager } from '../monitoring/QuotaManager.js';
 import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { isAutoAckBody, autoAckBodyRecognition, looksLikeAutoAckText } from '../threadline/autoAck.js';
+import { wireTypeOf } from '../threadline/PeerUserMeantJudge.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import { resolveChannels } from '../core/channelRegistry.js';
@@ -1331,6 +1336,8 @@ export interface RouteContext {
   hookEventReceiver: HookEventReceiver | null;
   /** Native hook events ingest (docs/specs/native-hook-events.md); null when not constructed. */
   nativeHookIngest?: NativeHookEventIngest | null;
+  /** Multi-route own names (docs/specs/mobile-multi-route.md); null when the flag is off. */
+  mobileOwnNames?: import('../core/MobileOwnNames.js').MobileOwnNames | null;
   worktreeMonitor: WorktreeMonitor | null;
   subagentTracker: SubagentTracker | null;
   instructionsVerifier: InstructionsVerifier | null;
@@ -1350,6 +1357,8 @@ export interface RouteContext {
   warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
   /** CMT-509: surface parentless Threadline conversations to a dedicated topic. */
   collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer;
+  /** peer-conversation-homebase-topic §2.6: posts a peer's user-meant message into the peer's own topic. */
+  peerHomebaseRelay?: import('../threadline/peerHomebaseRelay.js').PeerHomebaseRelay;
   /** ThreadResumeMap — exposed on ctx so /threadline/relay-send can stamp
    *  originTopicId on outbound sends. Per THREAD-TOPIC-LINKAGE-SPEC.md. */
   threadResumeMap: import('../threadline/ThreadResumeMap.js').ThreadResumeMap | null;
@@ -1701,6 +1710,7 @@ export interface RouteContext {
    *  blocks a message; the true-blocker settle routes through the B17 authority. */
   blockerLedger?: import('../monitoring/BlockerLedger.js').BlockerLedger | null;
   directDesktopAccess?: import('../core/DirectDesktopAccess.js').DirectDesktopAccess | null;
+  desktopRequestPermission?: import('./desktopRouteContext.js').DesktopRouteAccess['desktopRequestPermission'];
   desktopLocalDiagnostics?: () => Promise<Record<string, unknown>>;
   desktopMeshBroker?: import('./DesktopMeshBroker.js').DesktopMeshBroker | null;
   desktopTargetSigningKey?: (machineId: string) => string | null;
@@ -2100,7 +2110,32 @@ export const SUBSCRIPTION_POOL_WRITE_CAPABILITIES: Readonly<Record<string, Subsc
   });
 
 // Validation patterns for route parameters
+/** The transcript file for a session: its own account's config home first, then the
+ *  default home, then every pool account's (a swap can move a session between homes). */
+function findSessionTranscript(session: import('../core/types.js').Session, ctx: RouteContext): string | null {
+  const sessionId = session.claudeSessionId;
+  if (!sessionId) return null;
+  const framework = session.framework ?? 'claude-code';
+  const projectDir = session.cwd ?? ctx.config.projectDir;
+  const homes: Array<string | undefined> = [];
+  const own = session.subscriptionAccountId ? ctx.subscriptionPool?.get(session.subscriptionAccountId)?.configHome : undefined;
+  homes.push(own, session.confinedConfigHome, undefined);
+  for (const a of ctx.subscriptionPool?.list() ?? []) homes.push(a.configHome);
+  const seen = new Set<string>();
+  for (const home of homes) {
+    const candidate = framework === 'codex-cli'
+      ? resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { rootOverride: path.join(home, 'sessions') } : {}) })
+      : resolveFrameworkTranscriptPath({ framework, sessionId, projectDir, ...(home ? { configHome: home } : {}) });
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try { if (fs.statSync(candidate).isFile()) return candidate; } catch { /* @silent-fallback-ok — try the next home */ }
+  }
+  return null;
+}
+
 const SESSION_NAME_RE = /^[a-zA-Z0-9_-]{1,200}$/;
+/** Largest console attachment (decoded). The JSON body limit is 12 MB, and base64 adds a third. */
+const DASHBOARD_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
 const JOB_SLUG_RE = /^[a-zA-Z0-9_-]{1,100}$/;
 const VALID_SORTS = ['significance', 'recent', 'name'] as const;
 
@@ -5303,6 +5338,10 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.nativeHookIngest) base.hookEvents = ctx.nativeHookIngest.snapshot();
       // Native app conversations (mobile-native-conversations §4.5): store size, authed only.
       if (ctx.appConversations) { try { base.appConversations = ctx.appConversations.store.health(); } catch { /* @silent-fallback-ok — observability */ } }
+      // Multi-route (mobile-multi-route §4.1): own names + health, never-proven candidates with
+      // their last failure, and the tailscale-serve state. Bearer only; device principals keep
+      // the basic health and read their routes from GET /mobile/routes.
+      base.mobileRoutes = ctx.mobileOwnNames ? ctx.mobileOwnNames.healthSnapshot() : { enabled: false };
       base.schedulerRunning = ctx.scheduler !== null;
       base.consecutiveJobFailures = totalFailures;
       // What the currency bound excluded, so the information is MOVED rather than
@@ -7830,8 +7869,17 @@ export function createRoutes(ctx: RouteContext): Router {
       enabled: cfg.enabled ?? true,
       breakerK: Math.max(2, typeof cfg.breakerK === 'number' && Number.isFinite(cfg.breakerK) ? Math.floor(cfg.breakerK) : 3),
     };
-    const livenessStatus = ctx.windowRunLivenessAuthority?.status();
-    const initialStatus = ctx.config.projectName === 'echo' && livenessStatus?.enabled === true && livenessStatus.dryRun === false ? 'preparing' : 'active';
+    // 'preparing' only while an open W32 window can actually promote this run;
+    // anything else starts active so the liveness reconciler can revive it.
+    let windowLedger: ReturnType<typeof windowStore.load> = null;
+    try { windowLedger = windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE); } catch { /* @silent-fallback-ok — an unreadable ledger is no open window: the run starts active */ }
+    const { initialStatus } = decideAutonomousStartStatus({
+      projectName: ctx.config.projectName,
+      topicId,
+      liveness: ctx.windowRunLivenessAuthority?.status(),
+      windowLedger,
+      nowMs: Date.parse(windowNow()),
+    });
     const result = autonomousRunStore.register({
       topicId,
       condition,
@@ -11437,6 +11485,82 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ok: true });
   });
 
+  // Console composer attachments: a screenshot or file the operator attaches to a
+  // message for a session on THIS machine. The bytes are saved under
+  // <stateDir>/state/dashboard-uploads/ and the absolute path is returned; the console
+  // then sends the message with that path so the session can read the file
+  // (the same shape as a Telegram photo). A session on another machine is
+  // refused: the file would land on the wrong disk.
+  router.post('/sessions/:name/attachments', (req, res) => {
+    if (!SESSION_NAME_RE.test(req.params.name)) { res.status(400).json({ error: 'Invalid session name' }); return; }
+    const body = (req.body ?? {}) as { filename?: unknown; dataBase64?: unknown };
+    if (typeof body.dataBase64 !== 'string' || !body.dataBase64) { res.status(400).json({ error: '"dataBase64" must be a non-empty string' }); return; }
+    const bytes = Buffer.from(body.dataBase64, 'base64');
+    if (!bytes.length) { res.status(400).json({ error: 'The file is empty' }); return; }
+    if (bytes.length > DASHBOARD_ATTACHMENT_MAX_BYTES) { res.status(413).json({ error: `Files up to ${DASHBOARD_ATTACHMENT_MAX_BYTES / (1024 * 1024)} MB can be attached` }); return; }
+    const running = ctx.sessionManager.getCachedRunningSessions().sessions.some((x) => x.tmuxSession === req.params.name);
+    if (!running) { res.status(404).json({ error: `Session "${req.params.name}" is not running on this machine` }); return; }
+    const rawName = typeof body.filename === 'string' ? body.filename : 'file';
+    const safeName = path.basename(rawName).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(-100) || 'file';
+    const dir = path.join(ctx.config.stateDir, 'state', 'dashboard-uploads');
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      // Bounded retention: attachments older than 30 days go (a few per upload).
+      try {
+        const cutoff = Date.now() - 30 * 24 * 60 * 60_000;
+        for (const f of fs.readdirSync(dir).slice(0, 200)) {
+          const full = path.join(dir, f);
+          try { if (fs.statSync(full).mtimeMs < cutoff) SafeFsExecutor.safeUnlinkSync(full, { operation: 'routes:dashboard-attachment-retention' }); } catch { /* @silent-fallback-ok — retention is best effort */ }
+        }
+      } catch { /* @silent-fallback-ok — retention is best effort */ }
+      const filePath = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(4).toString('hex')}-${safeName}`);
+      fs.writeFileSync(filePath, bytes, { mode: 0o600 });
+      res.status(201).json({ ok: true, path: filePath, bytes: bytes.length });
+    } catch (err) {
+      res.status(500).json({ error: `Could not save the file: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
+  // Console History: a session's own conversation record, newest page first. tmux keeps
+  // no scrollback for a full-screen (alternate-screen) session, so the transcript is the
+  // only deep history. Read-only; served for sessions recorded on THIS machine.
+  router.get('/sessions/:name/transcript', async (req, res) => {
+    if (!SESSION_NAME_RE.test(req.params.name)) { res.status(400).json({ error: 'Invalid session name' }); return; }
+    // A session on another machine: ask that machine (its disk holds the record).
+    const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
+    if (machineId && machineId !== ctx.meshSelfId) {
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+      if (!peer) { res.status(404).json({ error: 'That machine is not reachable from here', reason: 'peer-unknown' }); return; }
+      const qs = new URLSearchParams();
+      if (req.query.before !== undefined) qs.set('before', String(req.query.before));
+      if (req.query.limit !== undefined) qs.set('limit', String(req.query.limit));
+      try {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/sessions/${encodeURIComponent(req.params.name)}/transcript?${qs}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(15_000),
+        });
+        const body = await r.json().catch(() => ({ error: `The other machine answered ${r.status}` }));
+        res.status(r.status).json(body);
+      } catch (err) {
+        res.status(502).json({ error: `The other machine did not answer: ${err instanceof Error ? err.message : String(err)}`, reason: 'peer-unreachable' });
+      }
+      return;
+    }
+    const session = ctx.state.listSessions().find((x) => x.tmuxSession === req.params.name);
+    if (!session) { res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return; }
+    const filePath = findSessionTranscript(session, ctx);
+    if (!filePath) { res.status(404).json({ error: 'This session has no conversation record yet', reason: 'no-transcript' }); return; }
+    const before = req.query.before === undefined ? undefined : Number(req.query.before);
+    const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+    if ((before !== undefined && !Number.isSafeInteger(before)) || (limit !== undefined && !Number.isSafeInteger(limit))) {
+      res.status(400).json({ error: '"before" and "limit" must be whole numbers' }); return;
+    }
+    try {
+      res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit }) });
+    } catch (err) {
+      res.status(500).json({ error: `Could not read the conversation record: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
+
   // Model-Tier Escalation §5.3 (FABLE-MODEL-ESCALATION-SPEC): the ONE narrow
   // mid-session swap surface. Body carries a TIER only — the model id is
   // derived server-side via the §5.1 resolver and is never accepted from the
@@ -12869,7 +12993,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const tmuxSession = await ctx.sessionManager.spawnInteractiveSession(
         undefined, // no initial message
         topicName,
-        undefined,
+        { triggeredBy: 'dashboard-operator' },
       );
 
       // Update Slack channel-session registry and invite authorized users
@@ -13080,19 +13204,20 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   // Shows macOS's own Screen Recording and Accessibility prompts on this Mac
   // and lists the helper there. Bearer only, and it grants nothing: a person
-  // allows it at the Mac. Call it when someone is at that Mac to answer.
+  // allows it at the Mac. Call it when someone is at that Mac to answer. Every
+  // target serves this, not only the designated front.
   // @write-domain:none — machine-local OS prompt; writes no agent state.
   let lastDesktopPermissionRequestAt = 0;
   router.post('/desktop/request-permission', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!desktopIntent(req, res)) return;
-    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!ctx.desktopRequestPermission) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (Date.now() - lastDesktopPermissionRequestAt < 60_000) {
       res.status(429).json({ error: 'A permission prompt was requested in the last minute' }); return;
     }
     lastDesktopPermissionRequestAt = Date.now();
     try {
-      res.json(await ctx.directDesktopAccess.requestPermission());
+      res.json(await ctx.desktopRequestPermission());
     } catch {
       // @silent-fallback-ok — the caller gets an explicit failure; no secret or path belongs in this body.
       res.status(409).json({ error: 'This machine cannot show desktop permission prompts' });
@@ -19392,8 +19517,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const local = ctx.telegram.getTopicHistory(topicId, limit);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
+    // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
+    // conversation store by eventId and returns `originVerified` computed there.
+    const joinForDevice = (rows: ReadonlyArray<Record<string, unknown>>) =>
+      (isDevice && ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit) : rows);
     if (req.query.scope !== 'pool') {
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(local) : local });
+      const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(joined) : joined });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -19436,7 +19566,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return true;
       })
       .slice(-limit);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(merged) : merged, pool: { failed } });
+    const joinedPool = joinForDevice(merged);
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed } });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -38085,8 +38216,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               // the dedicated Threadline topic (the incident was a co-located peer
               // delivering here). Topic-bound conversations surface via
               // TopicLinkageHandler. Best-effort, non-blocking.
-              if (ctx.collaborationSurfacer) {
-                const hasParentTopic = ctx.conversationStore.get(gThreadId)?.boundTopicId != null;
+              const hasParentTopic = ctx.conversationStore.get(gThreadId)?.boundTopicId != null;
+              // §2.6: a peer with its own topic gets its user-meant messages posted there by the
+              // server (same rule as the relay inbound path in commands/server.ts).
+              // The sender is identified by a FINGERPRINT only: the one its signature proved,
+              // else the one the local registry holds for that name (the identity this route
+              // already trusts). When the relay does not post, the hub surface still runs.
+              const hbFp = provenSenderFp ?? resolvePeerFingerprintByName(ctx.config.stateDir, senderAgentName) ?? null;
+              const hubSurface = () => {
+                if (!ctx.collaborationSurfacer) return;
                 void ctx.collaborationSurfacer.surface({
                   threadId: gThreadId,
                   senderName: senderAgentName,
@@ -38094,6 +38232,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   hasParentTopic,
                   warrants: !decision.suppress,
                 });
+              };
+              if (ctx.peerHomebaseRelay && !hasParentTopic) {
+                void ctx.peerHomebaseRelay.relayInbound({
+                  threadId: gThreadId,
+                  peers: [hbFp],
+                  senderName: senderAgentName,
+                  text: gText,
+                  messageType: wireTypeOf(body),
+                }).then((r) => { if (!r.posted) hubSurface(); }, () => hubSurface());
+              } else {
+                hubSurface();
               }
             }
           } catch (gateErr) {
@@ -38749,6 +38898,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         localAgent: ctx.config.projectName,
         version: '1.0',
         stateDir: ctx.config.stateDir,
+        // peer-conversation-homebase-topic §2.6 — user-meant messages land in the peer's topic.
+        peerHomebaseRelay: ctx.peerHomebaseRelay,
+        conversationBound: (threadId: string) => ctx.conversationStore?.get(threadId)?.boundTopicId != null,
         // Signed envelope §8: advertise the live mode on /threadline/health.
         localEnvelopeSignatureMode: localRouteSignatureMode,
         // Secure A2A Verified Pairing (§3.6): surface mutualVerifiedCount on

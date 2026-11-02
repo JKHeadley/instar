@@ -45,4 +45,19 @@ describe('PostUpdateMigrator preparation-carrier awareness', () => {
     expect(second.upgraded).not.toContain('CLAUDE.md: added pre-admission autonomous continuation carrier awareness');
     expect(second.errors).toEqual([]);
   });
+
+  it('teaches existing agents that a never-started run is reported, once', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'never-started-awareness-'));
+    dirs.push(projectDir);
+    fs.mkdirSync(path.join(projectDir, '.instar'));
+    const file = path.join(projectDir, 'CLAUDE.md');
+    fs.writeFileSync(file, '# Existing agent\n');
+    const first = run(projectDir);
+    const afterFirst = fs.readFileSync(file, 'utf8');
+    expect(afterFirst).toContain('A run that never starts is reported:');
+    expect(afterFirst).toContain('preparingWatchdog');
+    expect(first.upgraded).toContain('CLAUDE.md: added never-started autonomous run awareness');
+    run(projectDir);
+    expect(fs.readFileSync(file, 'utf8')).toBe(afterFirst);
+  });
 });

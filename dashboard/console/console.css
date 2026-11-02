@@ -985,11 +985,28 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-term-wrap { position: relative; flex: 1; min-height: 320px; display: flex; }
 .sess-term { flex: 1; min-width: 0; min-height: 320px; height: 52dvh; background: #0a0e17; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: 6px; overflow: hidden; }
 .sess-term.plain { overflow: auto; }
+.sess-tabs { display: flex; gap: var(--s-2); }
+.sess-tab[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+.sess-history { flex: 1; min-width: 0; min-height: 320px; height: 52dvh; overflow-y: auto; padding: var(--s-3); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); display: flex; flex-direction: column; gap: var(--s-3); }
+.sess-history[hidden], .sess-term[hidden] { display: none; }
+.sess-history-note { margin: 0; text-align: center; font-size: 13px; color: var(--text-muted); }
+.sess-h { max-width: 92%; }
+.sess-h-user { align-self: flex-end; background: var(--accent-wash); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-2) var(--s-3); }
+.sess-h-assistant { align-self: flex-start; }
+.sess-h-who { font-size: 12px; color: var(--text-faint); margin-bottom: 2px; }
+.sess-h-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.5; color: var(--text); }
+.sess-h-tool { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .sess-pre { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; color: #d6dbe4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sess-resume { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; }
 .sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: 0; padding: var(--s-2) 0; background: var(--bg); }
 .sess-input { flex: 1; min-height: 44px; font-size: 16px; resize: none; }
 .sess-composer-btns { display: flex; gap: var(--s-2); }
+.sess-attach { min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; }
+.sess-attach:disabled { opacity: .45; cursor: not-allowed; }
+.sess-attachments { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.sess-file { gap: 8px; max-width: 100%; overflow: hidden; }
+.sess-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.sess-composer.dropping { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--r-md); }
 .keys-tray { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--hairline); border-radius: var(--r-md); }
 .keys-row { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .key-chip { min-width: 44px; min-height: 44px; justify-content: center; font-family: var(--font-mono); }
@@ -998,6 +1015,19 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-actions a.btn-quiet { display: inline-flex; align-items: center; text-decoration: none; }
 .sess-default-row { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline; margin-top: var(--s-3); }
 .sess-default-row .card-note { margin: 0; }
+/* Desktop: an open session fills the window beside the list, so the composer is
+   always on screen (no page scroll to reach it) and the terminal takes the rest. */
+@media (min-width: 900px) {
+  .main:has(> .sessions-page.has-open) { max-width: 1680px; padding-top: var(--s-6); padding-bottom: var(--s-6); }
+  .sessions-page.has-open { grid-template-columns: minmax(280px, 340px) 1fr; }
+  .sessions-page.has-open .sess-list .page-title { font-size: 28px; }
+  .sessions-page.has-open .sess-view { top: calc(56px + var(--s-4)); height: calc(100dvh - 56px - var(--preview-h, 0px) - var(--s-6) - var(--s-4)); }
+  .app:has(> .preview-banner) { --preview-h: 37px; }
+  .sessions-page.has-open .sess-open { height: 100%; min-height: 0; }
+  .sessions-page.has-open .sess-term-wrap { min-height: 0; }
+  .sessions-page.has-open .sess-term { height: auto; min-height: 0; }
+  .sessions-page.has-open .sess-composer { position: static; padding-bottom: 0; }
+}
 .sess-default-box:empty { display: none; }
 .sess-default-box { border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); margin: var(--s-2) 0; }
 .skeleton-row { pointer-events: none; }
@@ -1115,7 +1145,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .mb-pace { margin-top: 4px; }
 
 /* Preview address: say plainly that this is work in progress. */
-.preview-banner { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding: 8px 16px; background: #3a2f0b; color: #f6d77a; font-size: 14px; line-height: 1.4; }
+.preview-banner { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding: 8px 16px; background: #3a2f0b; color: #f6d77a; font-size: 14px; line-height: 1.4; }
 .preview-banner a { color: inherit; text-decoration: underline; margin-left: auto; }
 
 /* Home headline as a link to the first thing that needs the operator. */

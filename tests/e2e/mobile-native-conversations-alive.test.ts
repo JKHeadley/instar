@@ -5,7 +5,11 @@
  * redeem/confirm path creates a conversation, sends a signed message, the session manager
  * receives the `[app:…]`-tagged bootstrap with a bind token scoped to the conversation, the
  * session's reply through POST /app/session-reply is accepted, and history shows both.
- * Wiring integrity: the service, its store, the dispatch and the request store are real.
+ * Increment 2: the operator message reads `originVerified: "verified"` on a real boot (the
+ * machine identity signer, the signing-key history and the device-key ledger are wired), and the
+ * session tag carries "📱 signed".
+ * Wiring integrity: the service, its store, the dispatch, the request store, the signer and the
+ * ledger are real.
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import crypto from 'node:crypto';
@@ -22,6 +26,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 
 const HOST = 'echo-native-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -38,8 +43,11 @@ async function boot(developmentAgent: boolean) {
   const stateDir = path.join(dir, '.instar');
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+  // Every agent gets a machine identity at `instar init`; the receipt signer reads it.
+  await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
+    mobilePairing: { multiRoute: { enabled: false } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -72,6 +80,12 @@ describe('native app conversations — production wiring', () => {
     expect(server.appConversations!.deps.requests).toBe(server.mobilePairing!.chatRequests());
     expect(server.appConversations!.deps.onEmergencyStop).toBeTypeOf('function'); // the Telegram path's stop side effects
     expect(fs.existsSync(path.join(stateDir, 'scripts', 'app-reply.sh'))).toBe(true); // boot-time relay install
+    // Signed records (increment 2): the signer, the key history and the ledger are wired, and the
+    // pairing service writes activations to the same ledger.
+    expect(server.appConversations!.deps.signer).toBeTruthy();
+    expect(server.appConversations!.deps.keyLookup).toBeTypeOf('function');
+    expect(server.appConversations!.deps.keyLedger).toBeTruthy();
+    expect(server.mobilePairing!.keyLedger).toBe(server.appConversations!.deps.keyLedger);
 
     // Pair through the existing path (mint → redeem → owner code → confirm), owner DM stubbed.
     server.mobilePairing!.deps.fetchFn = (async (url: string) => {
@@ -111,7 +125,9 @@ describe('native app conversations — production wiring', () => {
     expect(spawned).toHaveLength(1);
     const alias = spawned[0]!.options.bootstrapConversationIds![0]!;
     expect(alias).toBeLessThan(0);
-    expect(spawned[0]!.message).toContain(`[app:${alias} "Plans" from Justin] What is on for Saturday?`);
+    expect(spawned[0]!.message).toContain(`[app:${alias} "Plans" from Justin (📱 signed)] What is on for Saturday?`);
+    // The confirm path wrote the activation to the ledger first.
+    expect(server.mobilePairing!.keyLedger!.rows().map((r) => r.type)).toEqual(['activation']);
 
     // The session answers through app-reply.sh's route with its bind token.
     const token = createConversationBindAuth(stateDir).mint('app-session-1', [alias]);
@@ -119,16 +135,24 @@ describe('native app conversations — production wiring', () => {
       .send({ conversationId: alias, text: 'Saturday is the farmers market at nine.' });
     expect(reply.status).toBe(200);
 
-    // History shows both, the operator message with its (unchecked, never "verified") verdict.
+    // History shows both, the operator message verified against the ledger and the machine receipt.
     const hist = await send('GET', `/mobile/chat/app/${key}/messages`);
     expect(hist.status).toBe(200);
     expect(hist.body.messages.map((x: { role: string; text: string }) => [x.role, x.text])).toEqual([
       ['operator', 'What is on for Saturday?'],
       ['agent', 'Saturday is the farmers market at nine.'],
     ]);
-    expect(hist.body.messages[0].originVerified).toBe('unknown');
+    expect(hist.body.messages[0].originVerified).toBe('verified');
+    expect(hist.body.messages[1].originVerified).toBe('none');
     const health = await auth(request(app).get('/health'));
     expect(health.body.appConversations).toMatchObject({ count: 1 });
+
+    // A ledger revocation alone refuses the phone at once on the production auth path, even if
+    // the registry write after it failed (the registry still says active here).
+    server.mobilePairing!.keyLedger!.recordRevocation(server.mobilePairing!.devices.get(deviceId)!, new Date().toISOString());
+    expect(server.mobilePairing!.devices.get(deviceId)!.status).toBe('active');
+    const refused = await send('GET', `/mobile/chat/app/${key}/messages`);
+    expect(refused.status).toBe(401);
   });
 
   it('is off on a fleet agent: the routes answer 503', async () => {

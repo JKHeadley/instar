@@ -300,8 +300,23 @@ namespace InstarDesktop {
         case "Enter": return 0x0D; case "Tab": return 0x09; case "Escape": return 0x1B;
         case "Backspace": return 0x08; case "Delete": return 0x2E; case "Space": return 0x20;
         case "ArrowLeft": return 0x25; case "ArrowUp": return 0x26; case "ArrowRight": return 0x27; case "ArrowDown": return 0x28;
-        case "a": return 0x41; case "c": return 0x43; case "v": return 0x56; case "x": return 0x58; case "z": return 0x5A;
-        default: throw new InvalidDataException();
+        case "Home": return 0x24; case "End": return 0x23; case "PageUp": return 0x21; case "PageDown": return 0x22;
+        case "Insert": return 0x2D;
+      }
+      if (key.Length == 1 && key[0] >= 'a' && key[0] <= 'z') return (byte)(0x41 + (key[0] - 'a'));
+      if (key.Length == 1 && key[0] >= '0' && key[0] <= '9') return (byte)(0x30 + (key[0] - '0'));
+      int f;
+      if (key.Length >= 2 && key.Length <= 3 && key[0] == 'F' && Int32.TryParse(key.Substring(1), out f) && f >= 1 && f <= 12)
+        return (byte)(0x6F + f);
+      throw new InvalidDataException();
+    }
+    // Navigation keys share scan codes with the number pad; without the
+    // extended flag Windows can read them as keypad keys.
+    static uint KeyFlags(string key) {
+      switch (key) {
+        case "Delete": case "Insert": case "Home": case "End": case "PageUp": case "PageDown":
+        case "ArrowLeft": case "ArrowUp": case "ArrowRight": case "ArrowDown": case "Meta": return 0x0001u;
+        default: return 0u;
       }
     }
     // Mouse input goes through SendInput, the same queue a physical mouse uses,
@@ -321,8 +336,11 @@ namespace InstarDesktop {
       SendMouse(0x0001u | 0x4000u | 0x8000u, ax, ay, 0);
     }
     static void Mouse(string button, bool down) {
-      if (button != "left" && button != "right") throw new InvalidDataException();
-      uint flag = button == "left" ? (down ? 0x0002u : 0x0004u) : (down ? 0x0008u : 0x0010u);
+      uint flag;
+      if (button == "left") flag = down ? 0x0002u : 0x0004u;
+      else if (button == "right") flag = down ? 0x0008u : 0x0010u;
+      else if (button == "middle") flag = down ? 0x0020u : 0x0040u;
+      else throw new InvalidDataException();
       SendMouse(flag, 0, 0, 0);
       if (down) HeldButtons.Add(button); else HeldButtons.Remove(button);
     }
@@ -330,9 +348,21 @@ namespace InstarDesktop {
       string kind = Text(action, "kind");
       if (kind == "move" || kind == "click" || kind == "buttonDown" || kind == "buttonUp") {
         string button = kind == "move" ? null : Text(action,"button");
-        if (button != null && button != "left" && button != "right") throw new InvalidDataException();
+        if (button != null && button != "left" && button != "right" && button != "middle") throw new InvalidDataException();
+        int count = 1;
+        if (kind == "click" && action.ContainsKey("count")) {
+          double c = Number(action,"count");
+          if (c != 1 && c != 2 && c != 3) throw new InvalidDataException();
+          count = (int)c;
+        }
         MoveTo(Number(action,"x"), Number(action,"y"));
-        if (kind == "click") { Thread.Sleep(15); Mouse(button,true); Thread.Sleep(30); Mouse(button,false); }
+        if (kind == "click") {
+          // Repeated press/release at one point inside the double-click time is
+          // what Windows itself turns into a double or triple click.
+          for (int i = 0; i < count; i++) {
+            Thread.Sleep(i == 0 ? 15 : 40); Mouse(button,true); Thread.Sleep(30); Mouse(button,false);
+          }
+        }
         else if (kind != "move") { Thread.Sleep(15); Mouse(button,kind == "buttonDown"); }
       } else if (kind == "scroll") {
         double dx = Number(action,"dx"), dy = Number(action,"dy");
@@ -341,7 +371,7 @@ namespace InstarDesktop {
         if (dx != 0) SendMouse(0x01000u, 0, 0, unchecked((uint)(int)Math.Round(dx * 1.2)));
       } else if (kind == "keyDown" || kind == "keyUp") {
         string key = Text(action,"key"); byte vk = Key(key);
-        keybd_event(vk, 0, kind == "keyUp" ? 0x0002u : 0u, UIntPtr.Zero);
+        keybd_event(vk, 0, (kind == "keyUp" ? 0x0002u : 0u) | KeyFlags(key), UIntPtr.Zero);
         if (kind == "keyDown") HeldKeys.Add(key); else HeldKeys.Remove(key);
       } else if (kind == "type") {
         string text = Text(action,"text");
@@ -356,7 +386,7 @@ namespace InstarDesktop {
     static void ReleaseHeld() {
       foreach (string button in new List<string>(HeldButtons)) Mouse(button,false);
       foreach (string key in new List<string>(HeldKeys)) {
-        keybd_event(Key(key), 0, 0x0002u, UIntPtr.Zero); HeldKeys.Remove(key);
+        keybd_event(Key(key), 0, 0x0002u | KeyFlags(key), UIntPtr.Zero); HeldKeys.Remove(key);
       }
     }
     static void StartBanner(string ownerLease) {

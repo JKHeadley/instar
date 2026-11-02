@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "test-loopback-bind",
+  "sessionId": "7f9694e9-83ff-403e-a47d-6f987af8b140",
+  "timestamp": "2026-11-02T00:36:11.721Z",
+  "artifactPath": "upgrades/side-effects/test-loopback-bind.md",
+  "artifactSha256": "e6a79d0d61e5c2506779e00f579977b2b809b17c426bb796e732ae629a8c5cc0",
+  "specPath": null,
+  "coveredFiles": [
+    "tests/unit/secret-externalization-hook-injection.test.ts",
+    "tests/unit/test-setup-loopback-bind.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/side-effects/test-loopback-bind.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test harness only, one setup file, revert-safe; nothing under src/ changes.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -15,6 +15,11 @@
  *
  * Every route answers 503 while the feature gate (mobilePairing.enabled, dev-agent gated)
  * resolves off; the gate is read live from config.
+ *
+ * Multi-route (docs/specs/mobile-multi-route.md, mobilePairing.multiRoute.enabled, dev-agent
+ * gated, read at boot): a device signature is accepted on any of this machine's proven own
+ * names (src/core/MobileOwnNames.ts) when the request arrived through its local TLS front, and
+ * GET /mobile/routes (device-signed) lists those names for the app.
  */
 import crypto from 'node:crypto';
 import { Router, type Request, type Response, type Application } from 'express';
@@ -32,10 +37,14 @@ import {
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import type { RouteContext } from './routes.js';
+import { MobileOwnNames, normalizeRequestHost, type TailscaleExec } from '../core/MobileOwnNames.js';
 import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
-import { APP_CONVERSATION_KEY_PATTERN } from '../core/appConversationText.js';
+import { APP_CONVERSATION_KEY_PATTERN, derivedEventId } from '../core/appConversationText.js';
+import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
+import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
+import { buildSignedOrigin } from './mobileConversationRoutes.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -67,9 +76,13 @@ export interface MobilePairingDeps {
   /** Raise one attention item (pairing paused by wrong codes). */
   raiseAttention?: (title: string, body: string) => void;
   reportDegradation?: (what: string, err: unknown) => void;
+  /** Multi-route: runs the Tailscale CLI; null/absent ⇒ no Tailscale candidate is read. */
+  tailscaleExec?: TailscaleExec | null;
+  /** Multi-route: this process runs under WSL (Tailscale is the Windows side, tailscale.exe). */
+  isWsl?: boolean;
 }
 
-type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram'>>;
+type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram' | 'appConversations'>>;
 const PEER_TIMEOUT_MS = 5000;
 const MAX_PEER_BYTES = 128 * 1024;
 
@@ -111,6 +124,15 @@ export function isMobilePairingEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.enabled, config);
 }
 
+/**
+ * `mobilePairing.multiRoute.enabled`, omitted ⇒ live on a development agent. Read at boot.
+ * Multi-route is part of phone pairing: it is on only while pairing is on at boot (so the
+ * tailscale-serve step and the probes never run for a feature that is off).
+ */
+export function isMobileMultiRouteEnabled(config: InstarConfig): boolean {
+  return isMobilePairingEnabled(config) && resolveDevAgentGate(config.mobilePairing?.multiRoute?.enabled, config);
+}
+
 /** `mobilePairing.chat.enabled`, omitted ⇒ follows mobilePairing. Read live. */
 export function isMobileChatEnabled(config: InstarConfig): boolean {
   if (!isMobilePairingEnabled(config)) return false;
@@ -129,6 +151,12 @@ export function isMobileNativeEnabled(config: InstarConfig): boolean {
 export class MobilePairingService {
   /** Native app conversations resolved on at boot (set by AgentServer). Gates the send-route rate move. */
   nativeOn = false;
+  /**
+   * The device-key ledger (mobile-native-conversations §4.6), set by AgentServer when native
+   * conversations are on. Activation and revocation write their ledger row FIRST, then the
+   * registry; boot reconciliation repairs a crash between the two in either direction.
+   */
+  keyLedger: MobileDeviceKeyLedger | null = null;
   readonly codes: PairingCodeStore;
   readonly devices: DeviceRegistry;
   readonly confirm: ConfirmationCodes;
@@ -138,6 +166,8 @@ export class MobilePairingService {
   private selfNonces = new Map<string, number>();
   private pingTimes: number[] = [];
   private deviceRate = new Map<string, number[]>();
+  /** This machine's own names; null when multi-route is off (read at boot). */
+  readonly ownNames: MobileOwnNames | null;
 
   constructor(readonly deps: MobilePairingDeps, now: () => number = Date.now) {
     this.codes = new PairingCodeStore(now);
@@ -145,6 +175,22 @@ export class MobilePairingService {
     this.confirm = new ConfirmationCodes(now);
     this.replay = new ReplayGuard(now);
     this.now = now;
+    this.ownNames = isMobileMultiRouteEnabled(deps.config) ? new MobileOwnNames({
+      stateDir: deps.stateDir,
+      port: deps.config.port,
+      tunnelHost: () => { const o = this.origin(); return o ? new URL(o).host : null; },
+      activeDeviceHosts: () => { try { return this.devices.list().filter((d) => d.status === 'active' && d.host).map((d) => d.host!); } catch { return []; } }, // @silent-fallback-ok — an unreadable registry seeds nothing; the probe loop proves the name instead
+      issueNonce: () => this.issueSelfNonce(),
+      expectedAnswer: pingAnswer,
+      siblingClaims: (host) => this.siblingClaiming(host) !== null,
+      pingPath: MOBILE_PING_PATH,
+      active: () => this.enabled(),
+      exec: deps.tailscaleExec ?? null,
+      isWsl: deps.isWsl,
+      fetchFn: deps.fetchFn,
+      reportDegradation: deps.reportDegradation,
+      now,
+    }) : null;
     // The confirmation-code key is per process: any device still pending from before
     // this boot can never be confirmed, so it is expired now (spec 2.2, Restarts).
     try { this.devices.expireAllPending(); } catch (err) { deps.reportDegradation?.('MobilePairing.bootExpiry', err); } // @silent-fallback-ok — reported through DegradationReporter
@@ -165,7 +211,7 @@ export class MobilePairingService {
     try { this.devices.expireAllPending(); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leaseExpiry', err); } // @silent-fallback-ok — reported through DegradationReporter
   }
 
-  stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; }
+  stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; this.ownNames?.stop(); }
 
   holdsLease(): boolean { return this.deps.holdsLease?.() ?? true; }
 
@@ -232,6 +278,24 @@ export class MobilePairingService {
     return l.lastState === 'active' && l.activeProvider === 'cloudflare-named';
   }
 
+  /** A self-issued ping nonce: it bypasses the public ping budget (60 s). */
+  issueSelfNonce(): string {
+    const nonce = crypto.randomBytes(18).toString('base64url');
+    this.selfNonces.set(nonce, this.now());
+    return nonce;
+  }
+
+  /** The sibling-registry check: the name of another active machine of this agent claiming `host`. */
+  siblingClaiming(host: string): string | null {
+    for (const m of this.deps.siblings?.() ?? []) {
+      if (m.machineId === this.deps.selfMachineId || (m.status && m.status !== 'active') || !m.lastKnownUrl) continue;
+      try {
+        if (new URL(m.lastKnownUrl).host.toLowerCase() === host.toLowerCase()) return m.name ?? 'unnamed';
+      } catch { /* @silent-fallback-ok — an unparseable registry URL cannot match our host */ }
+    }
+    return null;
+  }
+
   /** Answer a ping. Self-issued nonces bypass the public budget. */
   ping(nonce: unknown): { status: number; body: Record<string, unknown> } {
     if (typeof nonce !== 'string' || !NONCE_PATTERN.test(nonce)) return { status: 400, body: { error: 'bad nonce' } };
@@ -250,18 +314,13 @@ export class MobilePairingService {
   /** The deterministic registry check, then eight self-probes. */
   async verifySoleServer(origin: string): Promise<{ ok: true } | { ok: false; error: string; detail: string }> {
     const host = new URL(origin).host;
-    for (const m of this.deps.siblings?.() ?? []) {
-      if (m.machineId === this.deps.selfMachineId || (m.status && m.status !== 'active') || !m.lastKnownUrl) continue;
-      try {
-        if (new URL(m.lastKnownUrl).host === host) {
-          return { ok: false, error: 'not-the-tunnel-machine', detail: `Another of this agent's machines (${m.name ?? 'unnamed'}) also uses ${host}. Pairing needs that address served by one machine.` };
-        }
-      } catch { /* @silent-fallback-ok — an unparseable registry URL cannot match our host */ }
+    const sibling = this.siblingClaiming(host);
+    if (sibling !== null) {
+      return { ok: false, error: 'not-the-tunnel-machine', detail: `Another of this agent's machines (${sibling}) also uses ${host}. Pairing needs that address served by one machine.` };
     }
     const f = this.deps.fetchFn ?? fetch;
     for (let i = 0; i < PROBES; i++) {
-      const nonce = crypto.randomBytes(18).toString('base64url');
-      this.selfNonces.set(nonce, this.now());
+      const nonce = this.issueSelfNonce();
       let answer: unknown;
       try {
         const r = await f(`${origin}${MOBILE_PING_PATH}?n=${nonce}`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), cache: 'no-store' } as RequestInit);
@@ -284,9 +343,17 @@ const json503 = (res: Response) => res.status(503).json({ error: 'Mobile pairing
 export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePairingService): void {
   app.get(MOBILE_PING_PATH, (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!svc.enabled()) { json503(res); return; }
+    // Multi-route proves own names with this same ping, so it answers whenever multi-route is on.
+    if (!svc.enabled() && !svc.ownNames) { json503(res); return; }
     const r = svc.ping(req.query.n);
-    res.status(r.status).json(r.body);
+    // Extended answer (mobile-multi-route §4.1): the Host this server saw, echoed back, and
+    // whether the request arrived through this machine's own local TLS front.
+    const body = r.status === 200 && svc.ownNames ? {
+      ...r.body,
+      host: normalizeRequestHost(req.headers.host),
+      arrival: arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']) ? 'local-tls' : 'other',
+    } : r.body;
+    res.status(r.status).json(body);
   });
 
   app.post(MOBILE_REDEEM_PATH, async (req: Request, res: Response) => {
@@ -375,6 +442,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     }
     const sole = await svc.verifySoleServer(origin);
     if (!sole.ok) { res.status(409).json({ error: sole.error, detail: sole.detail }); return; }
+    // Multi-route: prove the tunnel name as an own name now, so the phone paired on it is
+    // accepted at once (bounded: one probe, 3 s). A failure only leaves it to the probe loop.
+    if (svc.ownNames) {
+      try { await svc.ownNames.proveNow(new URL(origin).host); } catch (err) { deps.reportDegradation?.('MobileRoutes.probe', err); }
+    }
     const label = cleanText((req.body as Record<string, unknown> | undefined)?.label);
     const m = svc.codes.mint(codeTtlMs(deps.config.mobilePairing), label, deps.config.authToken ?? '');
     if (!m.ok) { res.status(429).json({ error: m.reason }); return; }
@@ -389,6 +461,20 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const pool = await fetchPoolDevices(poolCtx);
     const devices = [...local, ...pool.rows].sort((a, b) => String(b.pairedAt).localeCompare(String(a.pairedAt)));
     res.json({ devices, pool: { failed: pool.failed } });
+  });
+
+  // Routes to this machine (mobile-multi-route §4.3; device-signed, active only).
+  router.get('/mobile/routes', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
+    const machineId = deps.selfMachineId ?? null;
+    if (svc.ownNames) { res.json({ machineId, version: svc.ownNames.version, routes: svc.ownNames.routes() }); return; }
+    // Multi-route off: only the host this phone paired with.
+    const d = svc.devices.get(p.deviceId);
+    const routes = d?.host ? [{ kind: 'cloudflare', origin: `https://${d.host}`, firstVerifiedAt: d.approvedAt ?? d.pairedAt, lastProbeOk: null, lastProbeAt: null }] : [];
+    res.json({ machineId, version: 0, routes });
   });
 
   // Device's own status (device-signed; any non-revoked status).
@@ -419,8 +505,17 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const check = svc.confirm.check(d.id, (req.body as Record<string, unknown> | undefined)?.code);
     if (check.result === 'none') { res.status(409).json({ error: 'expired' }); return; }
     let after: DeviceRecord | null;
+    const approvedAt = new Date().toISOString();
+    if (check.result === 'ok' && svc.keyLedger) {
+      // Ledger row first (the durable intent), registry second; reconciliation repairs a crash between.
+      try { svc.keyLedger.recordActivation(d, 'telegram-dm', approvedAt); } catch (err) {
+        deps.reportDegradation?.('MobilePairing.keyLedger', err);
+        res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
+        return;
+      }
+    }
     try {
-      after = svc.devices.applyConfirm(d.id, check.result === 'ok' ? { ok: true } : { ok: false, wrongHmac: check.hmac });
+      after = svc.devices.applyConfirm(d.id, check.result === 'ok' ? { ok: true, approvedVia: 'telegram-dm', approvedAt } : { ok: false, wrongHmac: check.hmac });
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
       res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
@@ -451,7 +546,18 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const p = principalOf(req);
     if (p.kind === 'device' && p.deviceId !== id) { res.status(403).json({ error: 'a device may only revoke itself' }); return; }
     let held: boolean;
-    try { held = svc.devices.revoke(id); } catch (err) {
+    const revokedAt = new Date().toISOString();
+    const existing = svc.keyLedger ? svc.devices.get(id) : null;
+    if (existing && existing.status !== 'revoked' && svc.keyLedger) {
+      // Ledger row first. A failed ledger write never blocks a revocation: the registry still
+      // revokes, and boot reconciliation backfills the missing revocation row.
+      try { svc.keyLedger.recordRevocation(existing, revokedAt); } catch (err) { deps.reportDegradation?.('MobilePairing.keyLedger', err); }
+    }
+    try {
+      // The ledger row (if written) already records this revocation; one retry keeps the registry
+      // from lagging it, so the device stops being accepted now rather than at the next boot.
+      try { held = svc.devices.revoke(id, revokedAt); } catch { held = svc.devices.revoke(id, revokedAt); } // @silent-fallback-ok — a second failure is reported below
+    } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
       res.status(500).json({ error: 'Could not record the revocation. Try again.' });
       return;
@@ -512,9 +618,23 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       return;
     }
 
+    // Signed records (mobile-native-conversations §4.9): with native conversations on, the message
+    // is ALSO kept in the app conversation store under `telegram:<topicId>` with its signed origin
+    // and this machine's receipt, persisted BEFORE dispatch; the Telegram history row carries the
+    // same eventId, so a device's history read can join to it and return `originVerified`.
+    const app = svc.nativeOn ? poolCtx?.appConversations ?? null : null;
+    // The signed path must name the stored conversation exactly (`/mobile/chat/7`, never `/007`).
+    if (app && String(req.params.topicId) !== String(topicId)) { res.status(400).json({ error: 'bad-topic' }); return; }
+    const storeKey = `telegram:${topicId}`;
+    // The payload hash is part of the seed: an early refusal releases the request id, and a retry
+    // with the same id but different text must be a different stored message, never the old one.
+    const seed = `${p.deviceId}\u0000${requestId}\u0000${hash}`;
+    const storeMessageId = derivedEventId('msg', seed);
+    const storeEventId = derivedEventId('op', seed);
+
     // Reserve (synchronous with the decisive lookup).
     let r: ReturnType<MobileChatRequestStore['reserve']>;
-    try { r = store.reserve(p.deviceId, requestId, hash, topicId); } catch (err) {
+    try { r = store.reserve(p.deviceId, requestId, hash, topicId, app ? { op: 'send', conversationKey: storeKey, messageId: storeMessageId } : undefined); } catch (err) {
       deps.reportDegradation?.('MobileChat.requestStore', err);
       res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
       return;
@@ -522,8 +642,30 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
     if (r.kind !== 'reserved') { answer(r); return; }
 
+    if (app) {
+      const receivedAt = new Date(deviceAdmittedAt(req) ?? Date.now()).toISOString();
+      const signed = buildSignedOrigin(req, svc, p.deviceId, text, [], app.deps.signer ?? null, receivedAt,
+        (detail) => app.deps.reportDegradation?.('MobileChat.sign', detail));
+      try {
+        app.store.append({
+          eventId: storeEventId, kind: 'message', conversationKey: storeKey, messageId: storeMessageId, role: 'operator', text,
+          at: receivedAt, machineId: app.deps.machineId(), receivedAt,
+          ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
+        });
+      } catch (err) {
+        store.release(p.deviceId, requestId);
+        deps.reportDegradation?.('MobileChat.persist', err);
+        res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
+        return;
+      }
+    }
+    const delivery = (state: 'delivered' | 'refused' | 'intercepted' | 'unknown'): void => {
+      if (!app) return;
+      try { app.appendDelivery(storeKey, storeMessageId, state, seed); } catch (err) { deps.reportDegradation?.('MobileChat.delivery', err); }
+    };
+
     // Core: the same inbound steps a Telegram message takes.
-    const eventId = `mobile:${p.deviceId}:${requestId}`;
+    const eventId = app ? storeEventId : `mobile:${p.deviceId}:${requestId}`;
     const ownerName = cleanText(deps.config.threadline?.ownerName) || 'Operator';
     const captured: { status: number; body: Record<string, unknown> } = { status: 200, body: {} };
     const fakeRes = {
@@ -541,6 +683,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     try {
       await ingest(fakeReq, fakeRes, { deviceId: p.deviceId, eventId });
     } catch (err) {
+      delivery('unknown');
       store.markUnknown(p.deviceId, requestId);
       deps.reportDegradation?.('MobileChat.deliver', err);
       res.status(409).json({ error: 'outcome-unknown', eventId, detail: 'This message may or may not have reached the agent. Check the conversation.' });
@@ -551,11 +694,13 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     // any effect; those release the id. Any other failure answer is uncertain, never a refusal.
     const earlyRefusal = captured.status === 400 || captured.status === 422 || (captured.status === 503 && b.reason === 'server-boot-incomplete');
     if (earlyRefusal) {
+      delivery('refused');
       store.release(p.deviceId, requestId);
       res.status(captured.status).json(b);
       return;
     }
     if (captured.status >= 400 || b.ok === false) {
+      delivery('unknown');
       store.markUnknown(p.deviceId, requestId);
       deps.reportDegradation?.('MobileChat.deliver', new Error(`inbound core answered ${captured.status} ${String(b.error ?? b.reason ?? '')}`));
       res.status(409).json({ error: 'outcome-unknown', eventId, detail: 'This message may or may not have reached the agent. Check the conversation.' });
@@ -566,6 +711,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       : b.deduped ? 'deduped'
       : b.agentMessage ? 'a2a-handled'
       : 'delivered';
+    delivery(outcome === 'sentinel-kill' || outcome === 'sentinel-pause' ? 'intercepted' : 'delivered');
 
     // Mirror: best-effort, never decides delivery.
     let mirrored = false;
@@ -639,6 +785,7 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     { method: 'GET', re: /^\/topic\/list$/, statuses: active },
     { method: 'GET', re: /^\/telegram\/topics\/[^/]+\/messages$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/devices$/, statuses: active },
+    { method: 'GET', re: /^\/mobile\/routes$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
     { method: 'POST', re: /^\/mobile\/device\/confirm$/, statuses: new Set(['pending', 'active']) },
     // Every POST, PATCH and DELETE below is idempotent through MobileChatRequestStore (requestId).
@@ -672,19 +819,43 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
     const contentLength = Number(req.headers['content-length'] ?? 0);
     if ((contentLength > 0 || req.headers['transfer-encoding'] !== undefined) && !raw) return refuse(415, 'device requests must send JSON');
+    // Multi-route (spec 4.2): the signature names the Host it was sent to. That Host counts only
+    // if it is a listed own name still named by local configuration AND this request itself
+    // arrived through this machine's own local TLS front. Flag off: the stored paired host.
+    let host: string | undefined;
+    if (svc.ownNames) {
+      const h = normalizeRequestHost(req.headers.host);
+      if (!h || !svc.ownNames.accepts(h) || !arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto'])) {
+        return refuse(401, 'device-unauthorized');
+      }
+      host = h;
+    }
     const v = verifyDeviceRequest(
-      { deviceId: id, time: req.headers['x-instar-device-time'], sig: req.headers['x-instar-device-sig'], method: req.method, pathWithQuery: req.originalUrl, rawBody: raw },
+      { deviceId: id, time: req.headers['x-instar-device-time'], sig: req.headers['x-instar-device-sig'], method: req.method, pathWithQuery: req.originalUrl, rawBody: raw, host },
       (deviceId) => {
         const d = svc.devices.get(deviceId);
-        return d && d.publicKey && d.host && d.status !== 'legacy-token' ? { publicKey: d.publicKey, host: d.host, status: d.status as DeviceStatus } : null;
+        if (!d || !d.publicKey || !d.host || d.status === 'legacy-token') return null;
+        // A revocation row in the device-key ledger takes effect at once, even when the registry
+        // write after it failed (mobile-native-conversations §4.6: the ledger row is the recorded
+        // intent). In-memory index, no file read per request.
+        const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id);
+        return { publicKey: d.publicKey, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
       },
       rule.statuses, svc.replay,
     );
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
     if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
+    // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
+    (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
     return 'ok';
   };
+}
+
+/** When the device authenticator accepted this request's signature (ms), or null. */
+export function deviceAdmittedAt(req: Request): number | null {
+  const t = (req as unknown as { instarDeviceAdmittedAt?: unknown }).instarDeviceAdmittedAt;
+  return typeof t === 'number' && Number.isFinite(t) ? t : null;
 }
 
 /** Private-view links carry a token-derived signature; a device never receives one. */

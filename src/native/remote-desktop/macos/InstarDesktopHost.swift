@@ -190,7 +190,14 @@ struct InstarDesktopHost {
         "Enter": 36, "Tab": 48, "Escape": 53, "Backspace": 51,
         "Delete": 117, "Space": 49, "ArrowLeft": 123, "ArrowRight": 124,
         "ArrowDown": 125, "ArrowUp": 126,
-        "a": 0, "c": 8, "v": 9, "x": 7, "z": 6,
+        // Mac keyboards have no Insert key; Help sits in its place on extended keyboards.
+        "Home": 115, "End": 119, "PageUp": 116, "PageDown": 121, "Insert": 114,
+        "F1": 122, "F2": 120, "F3": 99, "F4": 118, "F5": 96, "F6": 97,
+        "F7": 98, "F8": 100, "F9": 101, "F10": 109, "F11": 103, "F12": 111,
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
+        "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
+        "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
+        "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46,
     ]
     /// macOS checks Screen Recording and Accessibility against the "responsible"
     /// process, which a child inherits: on a Mac whose agents share one tmux
@@ -217,7 +224,19 @@ struct InstarDesktopHost {
         _ = posix_spawn(nil, path, nil, &attr, argv, environ)
         exit(71)
     }
-
+    private static func mouseButton(_ name: String) -> CGMouseButton {
+        name == "right" ? .right : name == "middle" ? .center : .left
+    }
+    private static func mouseType(_ name: String, down: Bool) -> CGEventType {
+        switch name {
+        case "right": return down ? .rightMouseDown : .rightMouseUp
+        case "middle": return down ? .otherMouseDown : .otherMouseUp
+        default: return down ? .leftMouseDown : .leftMouseUp
+        }
+    }
+    private static func validButton(_ name: String) -> Bool {
+        name == "left" || name == "right" || name == "middle"
+    }
     static func main() async {
         guard CommandLine.arguments.count == 2 else {
             fputs("usage: instar-desktop-host probe|request-permission|capture|capture-stream|capture-stream-h264|cursor|input|input-stream|release|indicator\n", stderr)
@@ -324,8 +343,8 @@ struct InstarDesktopHost {
                   let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let buttons = raw["buttons"] as? [String],
                   let keys = raw["keys"] as? [String],
-                  buttons.count <= 2, keys.count <= keyCodes.count,
-                  buttons.allSatisfy({ $0 == "left" || $0 == "right" }),
+                  buttons.count <= 3, keys.count <= keyCodes.count,
+                  buttons.allSatisfy({ validButton($0) }),
                   keys.allSatisfy({ keyCodes[$0] != nil }) else { exit(69) }
             if !buttons.isEmpty || !keys.isEmpty {
                 // A failed OS preflight is not proof that a held remote
@@ -333,10 +352,8 @@ struct InstarDesktopHost {
                 guard activeSession(), AXIsProcessTrusted() else { exit(69) }
                 let point = CGEvent(source: nil)?.location ?? CGPoint.zero
                 for button in buttons {
-                    let mouseButton: CGMouseButton = button == "left" ? .left : .right
-                    let kind: CGEventType = button == "left" ? .leftMouseUp : .rightMouseUp
-                    guard let event = CGEvent(mouseEventSource: nil, mouseType: kind,
-                                              mouseCursorPosition: point, mouseButton: mouseButton) else { exit(69) }
+                    guard let event = CGEvent(mouseEventSource: nil, mouseType: mouseType(button, down: false),
+                                              mouseCursorPosition: point, mouseButton: mouseButton(button)) else { exit(69) }
                     event.post(tap: .cghidEventTap)
                 }
                 for key in keys {
@@ -380,10 +397,8 @@ struct InstarDesktopHost {
         guard activeSession(), AXIsProcessTrusted() else { return }
         if let button = heldButton {
             let point = CGEvent(source: nil)?.location ?? CGPoint.zero
-            let mouseButton: CGMouseButton = button == "right" ? .right : .left
-            let type: CGEventType = button == "right" ? .rightMouseUp : .leftMouseUp
-            CGEvent(mouseEventSource: nil, mouseType: type,
-                    mouseCursorPosition: point, mouseButton: mouseButton)?.post(tap: .cghidEventTap)
+            CGEvent(mouseEventSource: nil, mouseType: mouseType(button, down: false),
+                    mouseCursorPosition: point, mouseButton: mouseButton(button))?.post(tap: .cghidEventTap)
         }
         heldButton = nil
         for key in heldKeys {
@@ -455,8 +470,9 @@ struct InstarDesktopHost {
                                 y: bounds.minY + y * (bounds.height - 1))
             if kind == "move" {
                 let dragType: CGEventType = heldButton == "left" ? .leftMouseDragged
-                    : heldButton == "right" ? .rightMouseDragged : .mouseMoved
-                let dragButton: CGMouseButton = heldButton == "right" ? .right : .left
+                    : heldButton == "right" ? .rightMouseDragged
+                    : heldButton == "middle" ? .otherMouseDragged : .mouseMoved
+                let dragButton = mouseButton(heldButton ?? "left")
                 guard let event = CGEvent(mouseEventSource: nil, mouseType: dragType,
                                           mouseCursorPosition: point, mouseButton: dragButton) else {
                     throw HostError.inputUnavailable
@@ -465,31 +481,37 @@ struct InstarDesktopHost {
                 event.post(tap: .cghidEventTap)
             } else {
                 let button = raw["button"] as? String ?? "left"
-                guard button == "left" || button == "right" else { throw HostError.invalidInput }
+                guard validButton(button) else { throw HostError.invalidInput }
                 // Refuse a second down or an unmatched up. A malformed command
                 // must not silently change the host's held-button state.
                 if kind == "buttonDown" && heldButton != nil { throw HostError.invalidInput }
                 if kind == "buttonUp" && heldButton != button { throw HostError.invalidInput }
-                let mouseButton: CGMouseButton = button == "left" ? .left : .right
-                let downType: CGEventType = button == "left" ? .leftMouseDown : .rightMouseDown
-                let upType: CGEventType = button == "left" ? .leftMouseUp : .rightMouseUp
                 if kind == "click" && heldButton != nil { throw HostError.invalidInput }
-                let up = kind == "buttonDown" ? nil : CGEvent(mouseEventSource: nil, mouseType: upType,
-                    mouseCursorPosition: point, mouseButton: mouseButton)
-                if kind != "buttonDown" && up == nil { throw HostError.inputUnavailable }
-                if kind != "buttonUp" {
-                    guard let down = CGEvent(mouseEventSource: nil, mouseType: downType,
-                                             mouseCursorPosition: point, mouseButton: mouseButton) else {
-                        throw HostError.inputUnavailable
+                let count = kind == "click" ? (raw["count"] as? Int ?? 1) : 1
+                guard count >= 1, count <= 3 else { throw HostError.invalidInput }
+                // A double click is press/release pairs whose click state counts
+                // up, which is how macOS tells apps the clicks belong together.
+                for state in 1...count {
+                    if kind != "buttonUp" {
+                        guard let down = CGEvent(mouseEventSource: nil, mouseType: mouseType(button, down: true),
+                                                 mouseCursorPosition: point, mouseButton: mouseButton(button)) else {
+                            throw HostError.inputUnavailable
+                        }
+                        down.setIntegerValueField(.mouseEventClickState, value: Int64(state))
+                        down.flags = modifierFlags(heldKeys)
+                        down.post(tap: .cghidEventTap)
+                        if kind == "buttonDown" { heldButton = button }
                     }
-                    down.flags = modifierFlags(heldKeys)
-                    down.post(tap: .cghidEventTap)
-                    if kind == "buttonDown" { heldButton = button }
-                }
-                if let up {
-                    up.flags = modifierFlags(heldKeys)
-                    up.post(tap: .cghidEventTap)
-                    heldButton = nil
+                    if kind != "buttonDown" {
+                        guard let up = CGEvent(mouseEventSource: nil, mouseType: mouseType(button, down: false),
+                                               mouseCursorPosition: point, mouseButton: mouseButton(button)) else {
+                            throw HostError.inputUnavailable
+                        }
+                        up.setIntegerValueField(.mouseEventClickState, value: Int64(state))
+                        up.flags = modifierFlags(heldKeys)
+                        up.post(tap: .cghidEventTap)
+                        heldButton = nil
+                    }
                 }
             }
         case "type":
