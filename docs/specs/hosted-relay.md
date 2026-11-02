@@ -7,6 +7,15 @@ eli16-overview: "hosted-relay.eli16.md"
 status: "draft"
 lessons-engaged: "Bounded Blast Radius; Know Your Principal; a dark guard is worse than no guard"
 related-specs: "install-experience.md, owner-authentication.md"
+review-convergence: "2026-11-02T18:36:18.506Z"
+review-iterations: 6
+review-completed-at: "2026-11-02T18:36:18.506Z"
+review-report: "docs/specs/reports/hosted-relay-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 3
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 **Part 3 of 3.** Requires both other parts. Standing rules from `install-experience.md` apply, especially R2 (always an independent path) and R3 (optional and open source where at all possible).
@@ -98,6 +107,14 @@ Reachability uses the existing proof that this process answers on the name. A ce
 | Relay name | Unified: one name per agent. Only the serving machine holds the connection. Handing over needs three amendments to `mobile-multi-route.md`: a relay-name candidate source, an arrival class for the reverse connection, and an app rule accepting a name that moved between machines of the same owner. Device authorization carries over through the owner record |
 | Agent TLS key for the relay name | machine-local-justification: physical-credential-locality (a machine that takes over the name gets its own key and certificate; the app learns it through the owner record's signed entry) |
 | Push tokens | Unified with the existing push fan-out across machines |
+
+## Maturation plan
+
+- **test-agent-live:** a throwaway relay and test agent prove address, rendezvous, push, displacement and a substituted certificate.
+- **dev-agent-live:** the development agent uses a relay name alongside its existing routes, and the operator completes a phone-first run.
+- **fleet:** offered as an option in setup after the operator's deployment decision. Never a default that excludes other options.
+- **graduation criterion:** 30 days of operation within the cost ceiling, with the relay-blocked independence test passing.
+- **dark-window:** no code ships before the operator's deployment decision. After it, off for the fleet for at most 30 days, then a maturation item is raised.
 
 ## Open questions
 

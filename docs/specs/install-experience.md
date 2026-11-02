@@ -7,6 +7,15 @@ parent-principle: "The User Experience Is the Product — Reachability, Responsi
 eli16-overview: "install-experience.eli16.md"
 status: "draft"
 lessons-engaged: "Migration Parity; The Agent Is Always Reachable; a send result is not a delivery; Mobile-Complete Operator Actions; never probe with a mutating call"
+review-convergence: "2026-11-02T18:36:18.256Z"
+review-iterations: 6
+review-completed-at: "2026-11-02T18:36:18.256Z"
+review-report: "docs/specs/reports/install-experience-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 6
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 **Part 1 of 3.** This spec covers the installer, AI doors, addresses, reachability and first tasks. It ships without the other two. [`owner-authentication.md`](owner-authentication.md) replaces the PIN for risky actions and adds creating the next agent. [`hosted-relay.md`](hosted-relay.md) adds the optional relay and phone-first install.
@@ -269,6 +278,14 @@ Instar 2 has its own fresh-install design in open pull requests (instar-2 #178 t
 | Native-conversation lifeline | Unified: one conversation identity, owned by the serving machine, using the existing pool routing |
 
 Single-machine agents are a no-op.
+
+## Maturation plan
+
+- **test-agent-live:** a throwaway test agent installs on a clean machine for each door and address option, with the delivery and resume checks passing.
+- **dev-agent-live:** the operator runs the one-liner and the AI-tool path on a clean machine and phone, reaching a displayed first result. Actions, minutes and disk are recorded against the baseline.
+- **fleet:** the new installer becomes the published `instar.sh/install` and the default of `npx instar`.
+- **graduation criterion:** a stranger-shaped run per way in reaches a first result with no operator help, in fewer human actions than the baseline, and 14 days pass on the development agent with no install-related attention item left open.
+- **dark-window:** the installer has no dark form, because it reaches only new installs. Pairing and browser routes are development-gated for at most 30 days, with the go-live condition above, and then raise a maturation item.
 
 ## Open questions
 

@@ -7,6 +7,15 @@ eli16-overview: "owner-authentication.eli16.md"
 status: "draft"
 lessons-engaged: "Know Your Principal; Signal vs Authority; chat approval is not PIN authorization; Bounded Blast Radius; Migration-Consumer Completeness"
 related-specs: "install-experience.md, hosted-relay.md"
+review-convergence: "2026-11-02T18:36:18.393Z"
+review-iterations: 6
+review-completed-at: "2026-11-02T18:36:18.393Z"
+review-report: "docs/specs/reports/owner-authentication-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 6
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 **Part 2 of 3.** Builds on the owner slot in `install-experience.md`. Standing rules R1 to R7 from that spec apply, especially R2 (always an independent path) and R4 (a phone tap replaces the PIN for risky actions, and the phone is not required).
@@ -181,6 +190,14 @@ No operator boundary. The `a2a-pairing-invite-link.md` amendment is a spec chang
 | Dashboard sessions | machine-local-justification: physical-credential-locality (session secrets bound to the issuing machine; existing pool-link assertions cover cross-machine views) |
 
 Single-machine agents have no replication.
+
+## Maturation plan
+
+- **test-agent-live:** a throwaway test agent enrolls each proof type, then runs an approval, a replay attempt, a fork and both reset types.
+- **dev-agent-live:** the operator enrolls on the development agent across machines and approves real risky actions by phone and by passkey. The PIN stops working for those actions.
+- **fleet:** prompts reach existing owners, and enrollment stays per owner, so nobody's authority changes until they enroll.
+- **graduation criterion:** every PIN and operator-session consumer reaches `ownerProof`, the lint is on, and 14 days pass with no lockout and no bypass on the development agent.
+- **dark-window:** development-gated for at most 45 days from first merge, then a maturation item is raised rather than the feature staying dark.
 
 ## Open questions
 
