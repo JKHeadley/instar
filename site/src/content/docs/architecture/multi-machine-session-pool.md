@@ -17,6 +17,8 @@ Machines talk over a thin, signed request/response layer. `MeshRpc` carries a sm
 
 Exactly one machine holds the **router** role at a time, decided by a fenced lease (the same monotonic-self-fence discipline the cross-machine lease already uses). The router is the single writer of placement decisions in steady state; if it goes silent, another machine re-elects and resumes.
 
+`LocalLeaseStore` provides the local lease record when git-backed lease storage is unavailable. A local record alone cannot prove a peer has yielded, so the coordinator treats contested ownership as a conflict instead of using the local tie-break as permission to run two routers.
+
 ### L2 — Machine pool registry (`MachinePoolRegistry`, `NicknameAssigner`)
 
 The `MachinePoolRegistry` tracks every machine's live capacity — load average, active session count, memory pressure, capabilities, hardware — plus a clock-skew quarantine state machine that pulls a machine with a bad clock out of placement. Each machine gets a friendly, editable nickname (auto-assigned by `NicknameAssigner`, deduplicated against the pool) so you never have to type a raw machine id. The registry and `NicknameAssigner` together back the dashboard's **Machines** tab and the nickname you use in a transfer command.

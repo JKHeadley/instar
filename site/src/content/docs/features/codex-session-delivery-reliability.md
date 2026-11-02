@@ -12,6 +12,10 @@ If a rollout event or composer view is clipped, malformed, resized, or
 ambiguous, the result is `unknown`. Instar does not turn absence into success
 and does not blindly replay uncertain work.
 
+A separate recovery path handles a Codex session wedged at its prompt: `SessionRecoveryChannel` durably passes a restart request from the server to the lifeline, and `SessionRecoveryConsumer` checks its cooldown and attempt identity before acting. A pending message remains queued for replay across that restart.
+
+`PresenceProxy` can send a standby heartbeat when a user's message remains unanswered past its threshold. `HelperWatchdog` separately signals a stalled or failed helper; its consumer decides whether to retry or tell the user. These signals are visible progress checks, not proof that Codex consumed an inbound message.
+
 Inspect the privacy-safe status with:
 
 ```bash
