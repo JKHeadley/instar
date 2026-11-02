@@ -4,7 +4,15 @@ slug: "ecosystem-idea-pipeline"
 author: "echo"
 parent-principle: "Close the Loop"
 eli16-overview: "docs/specs/ecosystem-idea-pipeline.eli16.md"
+review-convergence: "2026-11-02T01:47:33.648Z"
+review-iterations: 3
+review-completed-at: "2026-11-02T01:47:33.648Z"
+review-report: "docs/specs/reports/ecosystem-idea-pipeline-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
 single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 2
+contested-then-cleared: 2
 ---
 
 # Ecosystem idea pipeline
@@ -247,10 +255,11 @@ Per run: at most 300k input tokens per project and 600k in total, at most 8 cand
 
 ## Maturation plan
 
-- `test-agent-live`: the E2E fixture run on a throwaway agent, on the built package.
-- `dev-agent-live`: omitted `ecosystemIdeas.enabled` resolves through `DEV_GATED_FEATURES`, live on Echo with its limits, because a recurring feature nobody runs teaches nothing.
-- `dark-window`: four weekly runs on the development agent before any wider step.
-- `graduation criterion`: those four runs inside the limits, the funnel and stopped-idea audit read by the operator, and no overturned `have-it` left unexplained. It then stays off by default for other agents, opt-in, because it needs configured source roots and costs tokens, and goes wider only on the operator's decision.
+- **test-agent-live:** the E2E fixture run on a throwaway agent, on the built package.
+- **dev-agent-live:** omitted `ecosystemIdeas.enabled` resolves through `DEV_GATED_FEATURES`, live on Echo with its limits, because a recurring feature nobody runs teaches nothing.
+- **fleet:** off by default for every other agent, opt-in, because it needs configured source roots and costs tokens. It goes wider only on the operator's decision.
+- **graduation criterion:** four weekly runs inside the limits, the funnel and stopped-idea audit read by the operator, and no overturned `have-it` left unexplained.
+- **dark-window:** four weekly runs on the development agent before any wider step.
 
 ## Frontloaded Decisions
 
