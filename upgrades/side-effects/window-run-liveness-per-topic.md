@@ -71,3 +71,7 @@ First pass (independent subagent): **Concern raised**, four items: (1) W32 proof
 Resolution: (1)+(2) fixed with `windowLivenessStatus`/`windowCadenceStatus`, which select by window and keep the pre-split shape; (3) kept on purpose and documented under Under-block; (4) fixed, with a unit test.
 
 Second pass on the fixes: **Concur.** One minor note, also fixed: the set-aside applies only when the legacy file fails to parse or validate. A failure while moving a readable file is rethrown, so a valid live binding is never set aside because of EACCES or ENOSPC.
+
+## Follow-up: fallback-ratchet tags
+
+Local Verify failed `tests/unit/no-silent-fallbacks.test.ts` (496 over the 494 baseline). No new catch was counted. The new `windowRunTopicQuery` helper's `return undefined;` fell inside the scanner's 20-line window for two existing catches (`/window-lifecycle/rollback` and `/window-lifecycle/reenable`). Both return the error as HTTP 409, so they now carry `@silent-fallback-ok` like the waiver route next to them. Comment-only change; behaviour unchanged. The scanner reports 494 again.

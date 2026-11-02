@@ -22,3 +22,5 @@ Inside one topic nothing changes: a second run still waits for the first to fini
 ## What you need to decide
 
 Nothing. This only affects Echo (the feature is off for everyone else). Undoing it is a revert plus moving the record file back, which is written down in the review notes.
+
+Follow-up: an automatic check that counts "error swallowed quietly" spots flagged two old error handlers next to the new code. Both already send the error back to the caller, so they were labelled as fine. Nothing about how the agent behaves changed.
