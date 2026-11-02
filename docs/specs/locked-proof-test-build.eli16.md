@@ -15,6 +15,7 @@ The script takes the code exactly as committed, copies it into a scratch folder 
 - A new automatic test fails if the real table ever gets a row that does not point to a recorded proof file, or that carries the "in progress" marker. So the test build's line can never sneak into a real release.
 - The script refuses to write its output inside the project folder, and checks afterwards that the real table did not change.
 - It only uses committed code, so half-finished local edits cannot end up in the test build.
+- It builds with the release signing key removed, so a test build can never carry the signature real releases have.
 
 ## What you need to decide
 

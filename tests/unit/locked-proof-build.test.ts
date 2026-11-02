@@ -67,6 +67,12 @@ describe('locked-proof test build helpers', () => {
     expect(crypto.createHash('sha256').update(fs.readFileSync(TABLE)).digest('hex')).toBe(before);
   });
 
+  it('builds with the release signing key removed from the environment', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'scripts/build-locked-proof.mjs'), 'utf8');
+    for (const key of ['INSTAR_RELEASE_PRIVATE_KEY_PEM', 'INSTAR_RELEASE_PRIVATE_KEY_PEM_PATH']) expect(src).toContain(`delete buildEnv.${key};`);
+    expect(src).toMatch(/execFileSync\('npm', \['run', 'build'\], \{[^}]*env: buildEnv/);
+  });
+
   it('the script refuses an output directory inside the checkout', () => {
     let failed = false;
     try {

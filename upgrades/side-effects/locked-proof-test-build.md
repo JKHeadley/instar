@@ -35,7 +35,7 @@ No decision logic added. The unit guard is a CI check on committed data.
 
 ## 5. Interactions
 
-- `npm run build` in the scratch copy runs the normal build chain, including the lock-file signer, which degrades to unsigned without the release key (documented behaviour).
+- `npm run build` in the scratch copy runs the normal build chain with `INSTAR_RELEASE_PRIVATE_KEY_PEM`, `INSTAR_RELEASE_PRIVATE_KEY_PEM_PATH` and `INSTAR_RELEASE_BUILD` removed from its environment, so the lock-file signer writes an unsigned lock-file (the scratch tree, a fresh `git archive`, has no `.instar-release-keys/`). A test build is never release-signed.
 - The scratch copy symlinks this checkout's `node_modules` for the build and removes the link before packing.
 - `tests/e2e/desktop-locked-lifecycle.test.ts` still asserts the shipped table is empty; unchanged.
 

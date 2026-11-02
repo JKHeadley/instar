@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-02T21:21:59.371Z",
+  "slug": "locked-proof-test-build",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-locked-proof.mjs"
+    ],
+    "addedLines": 7,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

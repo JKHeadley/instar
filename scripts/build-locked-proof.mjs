@@ -88,7 +88,13 @@ function main() {
   fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'));
 
   console.log(`[locked-proof] building ${version} (macOS ${osMajor}) in ${scratch}`);
-  execFileSync('npm', ['run', 'build'], { cwd: scratch, stdio: 'inherit' });
+  // Never release-signed: the lock-file signer reads these env keys (and a local .instar-release-keys/, which a
+  // fresh git archive never contains), and a test build must not carry a release signature.
+  const buildEnv = { ...process.env };
+  delete buildEnv.INSTAR_RELEASE_PRIVATE_KEY_PEM;
+  delete buildEnv.INSTAR_RELEASE_PRIVATE_KEY_PEM_PATH;
+  delete buildEnv.INSTAR_RELEASE_BUILD;
+  execFileSync('npm', ['run', 'build'], { cwd: scratch, stdio: 'inherit', env: buildEnv });
   // The symlink must not be packed; npm pack ignores node_modules, but drop it to be sure.
   fs.unlinkSync(path.join(scratch, 'node_modules'));
   const packed = execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', out], { cwd: scratch, encoding: 'utf8' })
