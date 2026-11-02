@@ -12,13 +12,17 @@
  *
  * THE FIX:
  *  1. `decideAutonomousStartStatus` — 'preparing' only while a W32 window
- *     lifecycle is genuinely open AND its single liveness slot can take this
- *     run. Every other run starts 'active', so the reconciler revives it if its
+ *     lifecycle is genuinely open AND this topic's liveness binding can take
+ *     this run. Every other run starts 'active', so the reconciler revives it if its
  *     session dies.
  *  2. `PreparingRunWatchdog` — any open run still 'preparing' past a few
  *     minutes gets ONE plain notice in its own topic. A run that cannot start
  *     is never silent. At most PREPARING_NOTICE_MAX_ATTEMPTS sends per run,
  *     counted on the durable run record, so a dead delivery path cannot loop.
+ *
+ * Liveness holds one binding PER TOPIC (2026-11-01, topic 10000001256): it
+ * used to hold one binding for the whole agent, so a run in one topic left a
+ * run in another 'preparing' with nothing able to promote it.
  *
  * @self-action-controller: preparing-run-watchdog
  */
@@ -50,7 +54,7 @@ export function telegramTopicNotifier(
 export interface StartAdmissionInput {
   projectName: string;
   topicId: string;
-  /** WindowRunLivenessAuthority.status(), or null/undefined when the authority is dark. */
+  /** WindowRunLivenessAuthority.status(topicId) for THIS run's topic, or null/undefined when the authority is dark. */
   liveness: { enabled: boolean; dryRun: boolean; state: { topicId: number; windowId: string; status: string } | null } | null | undefined;
   /** The Echo W32 window lifecycle ledger, or null when none exists. */
   windowLedger: { windowId: string; state: string; windowCeilingAt?: string; recurrenceFrozenAt?: string } | null | undefined;
@@ -73,10 +77,10 @@ export function decideAutonomousStartStatus(input: StartAdmissionInput): StartAd
     && !windowLedger.recurrenceFrozenAt
     && (!Number.isFinite(ceilingMs) || input.nowMs < ceilingMs);
   if (!windowOpen) return { initialStatus: 'active', reason: 'no-open-window' };
-  // The authority holds ONE binding, and only a NEW run can bind it: a live
-  // binding (even this topic's, which belongs to an earlier run) refuses it, and
-  // a finished binding for this same window closes the window to rebinding. A
-  // run that cannot take the slot could never be promoted, so it must not wait.
+  // The authority holds one binding per topic, and only a NEW run can bind it: a
+  // live binding in this topic (an earlier run's) refuses it, and a finished
+  // binding for this same window closes the window to rebinding. A run that
+  // cannot take its topic's binding could never be promoted, so it must not wait.
   const bound = liveness.state;
   if (bound && !TERMINAL_LIVENESS_STATES.includes(bound.status)) {
     return { initialStatus: 'active', reason: 'liveness-slot-held' };
@@ -98,19 +102,20 @@ export interface BoundRun { topicId: string; runId: string; boundAt: string }
 /** Open runs that have sat in 'preparing' too long and have not been reported yet. */
 export function findStuckPreparingRuns(
   runs: readonly AutonomousRunRecord[],
-  opts: { nowMs: number; boundRun?: BoundRun | null; afterMs?: number; afterBoundMs?: number },
+  opts: { nowMs: number; boundRun?: BoundRun | readonly BoundRun[] | null; afterMs?: number; afterBoundMs?: number },
 ): AutonomousRunRecord[] {
   const afterMs = opts.afterMs ?? PREPARING_NOTICE_AFTER_MS;
   const afterBoundMs = opts.afterBoundMs ?? PREPARING_NOTICE_AFTER_BOUND_MS;
+  const bounds: readonly BoundRun[] = !opts.boundRun ? [] : Array.isArray(opts.boundRun) ? opts.boundRun : [opts.boundRun as BoundRun];
   return runs.filter((run) => {
     if (run.status !== 'preparing' || run.preparingNoticeAt) return false;
     if ((run.preparingNoticeAttempts ?? 0) >= PREPARING_NOTICE_MAX_ATTEMPTS) return false;
     const registeredMs = Date.parse(run.registeredAt);
     if (!Number.isFinite(registeredMs)) return true;
-    const bound = opts.boundRun?.topicId === run.topicId && opts.boundRun.runId === run.runId;
+    const bound = bounds.find(entry => entry.topicId === run.topicId && entry.runId === run.runId);
     if (!bound) return opts.nowMs - registeredMs >= afterMs;
     // The allowance for a first work receipt runs from when the authority took the run.
-    const boundMs = Date.parse(opts.boundRun!.boundAt);
+    const boundMs = Date.parse(bound.boundAt);
     return opts.nowMs - Math.max(registeredMs, Number.isFinite(boundMs) ? boundMs : registeredMs) >= afterBoundMs;
   });
 }
@@ -130,6 +135,8 @@ export interface PreparingRunWatchdogDeps {
   notify: (topicId: string, text: string) => Promise<boolean>;
   /** The run the liveness authority currently evaluates (non-terminal), if any. */
   boundRun?: () => BoundRun | null;
+  /** Every run the liveness authority currently evaluates (one per topic). Wins over `boundRun`. */
+  boundRuns?: () => readonly BoundRun[];
   now?: () => number;
 }
 
@@ -143,7 +150,7 @@ export class PreparingRunWatchdog {
     this.running = true;
     try {
       const nowMs = this.deps.now?.() ?? Date.now();
-      const stuck = findStuckPreparingRuns(this.deps.store.listOpen(nowMs), { nowMs, boundRun: this.deps.boundRun?.() ?? null });
+      const stuck = findStuckPreparingRuns(this.deps.store.listOpen(nowMs), { nowMs, boundRun: this.deps.boundRuns?.() ?? this.deps.boundRun?.() ?? null });
       const reported: string[] = [];
       for (const run of stuck) {
         // Claim under the run lock, re-checking the live record: a run promoted

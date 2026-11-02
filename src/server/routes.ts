@@ -2868,9 +2868,8 @@ export function createRoutes(ctx: RouteContext): Router {
   const enforcingLivenessFor = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument) => {
     const authority = ctx.windowRunLivenessAuthority;
     const snapshot = authority?.status();
-    const state = snapshot?.state;
+    const state = snapshot?.states.find(doc => doc.windowId === ledger.windowId && doc.lifecycleRunId === ledger.lifecycleRunId);
     return authority && snapshot?.enabled === true && snapshot.dryRun === false && state
-      && state.windowId === ledger.windowId && state.lifecycleRunId === ledger.lifecycleRunId
       ? { authority, state }
       : null;
   };
@@ -2882,7 +2881,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (ledger.catalogProfile !== 'w32-approved-a204c07d') return false;
     const match = enforcingLivenessFor(ledger);
     if (!match) return false;
-    const frozen = match.authority.freeze(reason, terminalStatus);
+    const frozen = match.authority.freeze(reason, terminalStatus, match.state.topicId);
     return frozen.status === terminalStatus && frozen.finalSnapshot !== undefined;
   };
   const expireWindowAtCeiling = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument): boolean => {
@@ -3030,8 +3029,25 @@ export function createRoutes(ctx: RouteContext): Router {
     return Number.isFinite(reportDueMs) && Number.isFinite(dutyDueMs)
       && Math.abs(reportDueMs - dutyDueMs) <= obligation.deadline.graceMs;
   };
-  const runLivenessPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
+  // Liveness and cadence hold one binding per topic. W32 proofs read ONLY the
+  // binding matching this ledger's window, in the pre-split snapshot shape
+  // ({enabled, dryRun, config, state}, no `states`): another topic's run must
+  // neither hide this window's binding nor change a proof payload's hash.
+  type LedgerDoc = import('../core/WindowLifecycleObligationLedger.js').LedgerDocument;
+  const windowLivenessStatus = (ledger: Pick<LedgerDoc, 'windowId' | 'lifecycleRunId'> | null | undefined) => {
     const snapshot = ctx.windowRunLivenessAuthority?.status();
+    if (!snapshot) return undefined;
+    const state = ledger ? snapshot.states.find(doc => doc.windowId === ledger.windowId && doc.lifecycleRunId === ledger.lifecycleRunId) ?? null : null;
+    return { enabled: snapshot.enabled, dryRun: snapshot.dryRun, config: snapshot.config, state };
+  };
+  const windowCadenceStatus = (ledger: Pick<LedgerDoc, 'windowId' | 'lifecycleRunId'> | null | undefined) => {
+    const topicId = windowLivenessStatus(ledger)?.state?.topicId;
+    const snapshot = ctx.windowRunCadenceExecutor?.status(topicId);
+    if (!snapshot) return undefined;
+    return { enabled: snapshot.enabled, dryRun: snapshot.dryRun, config: snapshot.config, state: topicId === undefined ? null : snapshot.state };
+  };
+  const runLivenessPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
+    const snapshot = windowLivenessStatus(ledger);
     const state = snapshot?.state;
     const nowMs = Date.parse(windowNow());
     const evaluatedMs = Date.parse(state?.lastEvaluatedAt ?? '');
@@ -3064,10 +3080,10 @@ export function createRoutes(ctx: RouteContext): Router {
   const deterministicPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
     if (sourceFreshnessIssues(ledger).length) return null;
     if (obligation.id === 'w32.close.expiry-freeze') return w32ExpiryFreezeProof(ledger, obligation);
-    const liveness = ctx.windowRunLivenessAuthority?.status().state ?? null;
-    const cadenceStatus = ctx.windowRunCadenceExecutor?.status() ?? null;
+    const livenessStatus = windowLivenessStatus(ledger) ?? null;
+    const liveness = livenessStatus?.state ?? null;
+    const cadenceStatus = windowCadenceStatus(ledger) ?? null;
     const cadence = cadenceStatus?.state ?? null;
-    const livenessStatus = ctx.windowRunLivenessAuthority?.status() ?? null;
     const exactW32Binding = livenessStatus?.enabled === true && livenessStatus.dryRun === false
       && cadenceStatus?.enabled === true && cadenceStatus.dryRun === false
       && !!liveness && !!cadence
@@ -3135,7 +3151,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const obligation = ledger?.obligations.find(o => o.id === record.obligationId);
     if (record.producer === 'server:window-run-cadence-executor' && obligation && /^cadence\.report\.3h@/.test(obligation.id)) {
       const verified = messageEvidenceAuthority().requery(record);
-      const cadence = ctx.windowRunCadenceExecutor?.status(); const liveness = ctx.windowRunLivenessAuthority?.status();
+      const cadence = windowCadenceStatus(ledger); const liveness = windowLivenessStatus(ledger);
       const report = cadence?.state?.reports.find(item => cadenceReportMatchesDuty(item.dueAt, obligation) && item.messageId === record.nativeCoordinates?.messageId);
       const row = record.nativeCoordinates?.topicId !== undefined && record.nativeCoordinates.messageId !== undefined
         ? ctx.telegram?.getTopicHistory(record.nativeCoordinates.topicId, 1_000).find(item => item.messageId === record.nativeCoordinates!.messageId)
@@ -3166,7 +3182,7 @@ export function createRoutes(ctx: RouteContext): Router {
       else if (obligation.evidencePolicy.requiredAuthority === 'run-liveness-authority') { payload = runLivenessPayload(ledger, obligation); producer = 'server:window-run-liveness-authority'; }
       else if (obligation.evidencePolicy.requiredAuthority === 'deterministic-replay') { payload = deterministicPayload(ledger, obligation); producer = 'server:window-deterministic-replay'; }
       else if (obligation.evidencePolicy.requiredAuthority === 'live-requeried-message' && /^cadence\.report\.3h@/.test(obligation.id)) {
-        const cadence = ctx.windowRunCadenceExecutor?.status(); const liveness = ctx.windowRunLivenessAuthority?.status();
+        const cadence = windowCadenceStatus(ledger); const liveness = windowLivenessStatus(ledger);
         const report = cadence?.state?.reports.find(item => cadenceReportMatchesDuty(item.dueAt, obligation) && item.status === 'delivered' && Number.isSafeInteger(item.messageId));
         const row = report?.messageId !== undefined ? ctx.telegram?.getTopicHistory(cadence!.state!.topicId, 1_000).find(item => item.messageId === report.messageId) : null;
         const bound = cadence?.enabled === true && cadence.dryRun === false && liveness?.enabled === true && liveness.dryRun === false
@@ -3179,7 +3195,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       else if (obligation.evidencePolicy.requiredAuthority === 'content-bound-store-row' && (/^start\.(?:source-ingestion|window-expiry)/.test(obligation.id) || /^source\./.test(obligation.id)) && sourceFreshnessIssues(ledger).length === 0) { storePath = obligation.sourceSpans[0]?.source; payload = proofPayload(obligation, { charterExpiry: obligation.predicate.expected?.charterExpiry, sourceByteRange: obligation.sourceSpans.map(span => ({ source: span.source, byteStart: span.byteStart, byteEnd: span.byteEnd, hash: span.hash })) }); producer = 'server:source-authority'; }
       if (!payload) continue; const digest = createHash('sha256').update(payload).digest('hex'); const nonce = `${obligation.evidencePolicy.requiredAuthority}:${digest}`; const w32CadenceDerived = producer === 'server:window-run-cadence-executor' || producer === 'server:window-deterministic-replay' && /^w32\./.test(obligation.id); if (obligation.evidence.some(e => e.nonce === nonce) || ledger.usedNonces.includes(nonce) && !w32CadenceDerived) continue; if (!ledger.usedNonces.includes(nonce)) ledger.usedNonces.push(nonce);
-      const cadenceMessageId = producer === 'server:window-run-cadence-executor' ? ctx.windowRunCadenceExecutor?.status().state?.reports.find(report => cadenceReportMatchesDuty(report.dueAt, obligation))?.messageId : undefined;
+      const cadenceMessageId = producer === 'server:window-run-cadence-executor' ? windowCadenceStatus(ledger)?.state?.reports.find(report => cadenceReportMatchesDuty(report.dueAt, obligation))?.messageId : undefined;
       obligation.evidence.push({ authority: obligation.evidencePolicy.requiredAuthority, agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: obligation.id, sourceHashes: obligation.sourceSpans.map(s => s.hash), producer, timestamp: windowNow(), nonce, canonicalPayloadHash: digest, verifierPassed: true, verifiedPayload: payload, nativeCoordinates: storePath ? { storePath } : cadenceMessageId !== undefined ? { topicId: 36966, messageId: cadenceMessageId } : undefined });
     }
   };
@@ -3371,18 +3387,32 @@ export function createRoutes(ctx: RouteContext): Router {
   // The caller may bind immutable identities or request an evaluation; it can
   // never submit predicate booleans. All five facts are re-read by the
   // authority's server-owned production probe.
-  router.get('/window-run-liveness', (_req, res) => {
+  // Liveness keeps one binding per topic. `?topicId=N` scopes a read or tick
+  // to that topic; without it, `state` is the primary binding and `states`
+  // lists every topic's.
+  const windowRunTopicQuery = (req: { query: Record<string, unknown> }): number | undefined | null => {
+    const raw = req.query.topicId;
+    if (raw === undefined) return undefined;
+    return typeof raw === 'string' && /^[0-9]+$/.test(raw) && Number.isSafeInteger(Number(raw)) ? Number(raw) : null;
+  };
+  router.get('/window-run-liveness', (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
-    return res.json(ctx.windowRunLivenessAuthority.status());
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
+    return res.json(ctx.windowRunLivenessAuthority.status(topicId));
   });
-  router.get('/window-run-liveness/cadence', (_req, res) => {
+  router.get('/window-run-liveness/cadence', (req, res) => {
     if (!ctx.windowRunCadenceExecutor) return res.status(503).json({ error: 'window run cadence executor is dark on this agent' });
-    return res.json(ctx.windowRunCadenceExecutor.status());
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
+    return res.json(ctx.windowRunCadenceExecutor.status(topicId));
   });
-  router.post('/window-run-liveness/cadence/tick', async (_req, res) => {
+  router.post('/window-run-liveness/cadence/tick', async (req, res) => {
     if (!ctx.windowRunCadenceExecutor) return res.status(503).json({ error: 'window run cadence executor is dark on this agent' });
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
     try {
-      const state = await ctx.windowRunCadenceExecutor.tick();
+      const state = await ctx.windowRunCadenceExecutor.tick(topicId);
       return state ? res.json(state) : res.status(404).json({ error: 'window run cadence is not registered' });
     } catch (error) {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3437,10 +3467,12 @@ export function createRoutes(ctx: RouteContext): Router {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
-  router.post('/window-run-liveness/tick', async (_req, res) => {
+  router.post('/window-run-liveness/tick', async (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
+    const topicId = windowRunTopicQuery(req);
+    if (topicId === null) return res.status(400).json({ error: 'window-run-liveness-topic-invalid' });
     try {
-      const state = await ctx.windowRunLivenessAuthority.tick();
+      const state = await ctx.windowRunLivenessAuthority.tick(topicId);
       return state ? res.json(state) : res.status(404).json({ error: 'window run liveness is not registered' });
     } catch (error) {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
@@ -7901,7 +7933,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const { initialStatus } = decideAutonomousStartStatus({
       projectName: ctx.config.projectName,
       topicId,
-      liveness: ctx.windowRunLivenessAuthority?.status(),
+      liveness: ctx.windowRunLivenessAuthority?.status(Number(topicId)),
       windowLedger,
       nowMs: Date.parse(windowNow()),
     });

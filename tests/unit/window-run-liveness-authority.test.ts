@@ -539,23 +539,88 @@ describe('WindowRunLivenessAuthority', () => {
       .toThrow('window-run-liveness-registration-invalid:autonomousRunId');
   });
 
-  it("admits a different topic's window once the previous topic's window is terminal", () => {
+  // 2026-11-01 (topic 10000001256): the authority held ONE binding for the
+  // whole agent, so a live run in one topic left another topic's run in
+  // 'preparing' with nothing able to promote it.
+  it('holds one binding per topic, so two topics run at once', async () => {
     const projected: Array<{ topicId: number; autonomousRunId: string; status: string }> = [];
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-other-'));
+    const now = new Date(BASE).toISOString();
     const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(dir), {
-      now: () => new Date(BASE).toISOString(),
-      sample: async () => { throw new Error('not sampled'); },
+      now: () => now,
+      sample: (state) => ({
+        sampledAt: now,
+        executor: { id: state.executorId, running: true, heartbeatAt: now },
+        deliveryReachable: true,
+        work: { receiptId: `work-${state.topicId}`, sequence: 1, digest: 'a'.repeat(64), observedAt: now, artifact: 'src/a.ts', taskRef: 'task-1' },
+        lifecycle: { lifecycleRunId: state.lifecycleRunId, state: 'autonomous-run-registered', admitted: true, expiresAt: new Date(BASE + 60 * 60_000).toISOString() },
+      }),
       projectStatus: (state, status) => { projected.push({ topicId: state.topicId, autonomousRunId: state.autonomousRunId, status }); return `projected:${status}`; },
     }, { enabled: true, dryRun: false });
     authority.register({ windowId: 'instar-app-134088', topicId: 134088, autonomousRunId: 'run-a', lifecycleRunId: 'run-a', executorId: 'echo-instar-app' });
-    expect(() => authority.register({ windowId: 'desktop-131439', topicId: 131439, autonomousRunId: 'run-b', lifecycleRunId: 'run-b', executorId: 'echo-desktop' }))
+    const second = authority.register({ windowId: 'desktop-131439', topicId: 131439, autonomousRunId: 'run-b', lifecycleRunId: 'run-b', executorId: 'echo-desktop' });
+    expect(second).toMatchObject({ status: 'preparing', topicId: 131439, autonomousRunId: 'run-b' });
+    // Each binding is projected onto ITS OWN run.
+    expect(projected).toEqual([
+      { topicId: 134088, autonomousRunId: 'run-a', status: 'preparing' },
+      { topicId: 131439, autonomousRunId: 'run-b', status: 'preparing' },
+    ]);
+    await authority.tick();
+    const status = authority.status();
+    expect(status.states.map(state => [state.topicId, state.status])).toEqual([[131439, 'active'], [134088, 'active']]);
+    expect(authority.status(134088).state?.autonomousRunId).toBe('run-a');
+    expect(authority.status(131439).state?.autonomousRunId).toBe('run-b');
+    // Freezing one topic leaves the other running.
+    authority.freeze('done', 'closed', 134088);
+    expect(authority.status(134088).state?.status).toBe('closed');
+    expect(authority.status(131439).state?.status).toBe('active');
+    // Within a topic a live binding still refuses a second window.
+    expect(() => authority.register({ windowId: 'desktop-2', topicId: 131439, autonomousRunId: 'run-c', lifecycleRunId: 'run-c', executorId: 'echo-desktop' }))
       .toThrow('window-run-liveness-active-binding-exists');
-    authority.freeze('recovery-ceiling-exceeded', 'failed');
-    const next = authority.register({ windowId: 'desktop-131439', topicId: 131439, autonomousRunId: 'run-b', lifecycleRunId: 'run-b', executorId: 'echo-desktop' });
-    expect(next).toMatchObject({ status: 'preparing', topicId: 131439, autonomousRunId: 'run-b' });
-    // The new binding is projected onto ITS OWN run, never the finished topic's run.
-    expect(projected.at(-1)).toEqual({ topicId: 131439, autonomousRunId: 'run-b', status: 'preparing' });
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:other-topic-cleanup' });
+  });
+
+  it('refuses one window live in two topics', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-same-'));
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(dir), {
+      now: () => new Date(BASE).toISOString(),
+      sample: async () => { throw new Error('not sampled'); },
+    }, { enabled: true, dryRun: false });
+    authority.register({ windowId: 'w32', topicId: 1, autonomousRunId: 'run-a', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-a' });
+    expect(() => authority.register({ windowId: 'w32', topicId: 2, autonomousRunId: 'run-b', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-b' }))
+      .toThrow('window-run-liveness-window-bound-elsewhere');
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:same-window-cleanup' });
+  });
+
+  it('sets an unreadable pre-split file aside instead of blocking every topic', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-corrupt-'));
+    const legacy = path.join(dir, 'window-run-liveness', 'state.json');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, '{not json');
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(dir), {
+      now: () => new Date(BASE).toISOString(),
+      sample: async () => { throw new Error('not sampled'); },
+    }, { enabled: true, dryRun: false });
+    const registered = authority.register({ windowId: 'w-new', topicId: 5, autonomousRunId: 'run-5', lifecycleRunId: 'run-5', executorId: 'echo-5' });
+    expect(registered.status).toBe('preparing');
+    expect(fs.existsSync(legacy)).toBe(false);
+    expect(fs.readdirSync(path.dirname(legacy)).some(name => name.startsWith('state.json.unreadable-'))).toBe(true);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:corrupt-cleanup' });
+  });
+
+  it('moves the pre-split single binding into its topic and keeps it working', async () => {
+    const h = harness();
+    const doc = h.store.load()!;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-legacy-'));
+    const legacy = path.join(dir, 'window-run-liveness', 'state.json');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, JSON.stringify(doc));
+    const store = new WindowRunLivenessStore(dir);
+    expect(store.topicIds()).toEqual([36966]);
+    expect(fs.existsSync(legacy)).toBe(false);
+    expect(store.forTopic(36966).load()).toEqual(doc);
+    expect(store.load()).toEqual(doc);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:legacy-cleanup' });
   });
 });
 
