@@ -18597,6 +18597,17 @@ echo "=== END IDENTITY RECOVERY ==="
 // detected. Wrapped so a failure (e.g. 503 when the ledger ships dark, no auth, no
 // server) can NEVER alter the hook's existing stdout checklist behavior. Auth
 // mirrors hook-event-reporter.js (INSTAR_AUTH_TOKEN / INSTAR_SERVER_URL env).
+// The ledger entry is the MESSAGE, not the shell command that sent it: a reply is sent
+// as \`cat <<'EOF' | <reply script> N\` + text + \`EOF\`, and recording the whole command
+// put shell wrapping and signed links on the dashboard (2026-11-02). Take the heredoc
+// body when there is one and mask credential-looking query values.
+function blockerTextOf(command) {
+  const s = String(command || '');
+  const doc = /<<-?\\s*['"]?(\\w+)['"]?[^\\n]*\\n([\\s\\S]*?)(?:\\n[ \\t]*\\1[ \\t]*(?:\\n|$)|$)/.exec(s);
+  const body = doc ? doc[2] : s;
+  return body.replace(/([?&](?:sig|signature|token|key|auth|access_token)[^=&\\s]*=)[^&\\s]+/gi, '$1…').trim();
+}
+
 function autoOpenBlocker(detectedText, origin) {
   try {
     const authToken = process.env.INSTAR_AUTH_TOKEN || '';
@@ -18829,7 +18840,7 @@ process.stdin.on('end', () => {
     // already been written. We hold the process open just long enough to flush the
     // fire-and-forget POST, then exit. A failure (503 dark / no server) is silent.
     if (inabilityMatches.length > 0) {
-      autoOpenBlocker(command, 'deferral-detector');
+      autoOpenBlocker(blockerTextOf(command), 'deferral-detector');
       setTimeout(() => process.exit(0), 200);
       return;
     }
