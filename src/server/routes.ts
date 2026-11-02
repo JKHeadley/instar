@@ -20944,6 +20944,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         deliveryLruRecord(slackDeliveryId as string);
       }
 
+      // Keep the agent's reply in slack-messages.jsonl (Slack never echoes the bot's own messages
+      // back), so the Instar app's Slack history shows both sides (mobile-native-conversations §4.9).
+      try {
+        ctx.slack.logMessage?.({ messageId: String(ts), channelId, threadTs: typeof thread_ts === 'string' ? thread_ts : null, text, fromUser: false });
+      } catch { /* @silent-fallback-ok — the reply was sent; only its log copy is missing */ }
+
       // Notify onMessageLogged that the agent responded (so PresenceProxy cancels standby)
       if (ctx.slack.onMessageLogged) {
         ctx.slack.onMessageLogged({

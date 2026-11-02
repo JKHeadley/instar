@@ -6,7 +6,7 @@
  * the Telegram chat route is unchanged).
  *
  *   POST   /mobile/conversations                     create   {title, requestId}
- *   GET    /mobile/conversations?cursor=&limit=      list (app conversations + Telegram topics)
+ *   GET    /mobile/conversations?cursor=&limit=      list (app conversations + Telegram topics + Slack conversations)
  *   PATCH  /mobile/conversations/:key                rename   {title, requestId}
  *   DELETE /mobile/conversations/:key                delete   {requestId}
  *   POST   /mobile/chat/app/:key                     send     {text, requestId}
@@ -51,12 +51,12 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 /**
  * One row of the unified conversation list. The list order is total and the same on every
  * machine: newest `lastActivity` first (a missing one sorts last as ''), ties broken by the
- * row's sort key (`app:<uuid>` or `telegram:<topicId>`), both compared as plain strings —
+ * row's sort key (`app:<uuid>`, `telegram:<topicId>` or `slack:<negative id>`), both compared as plain strings —
  * the order the store's SQLite keyset query uses — so one cursor can page every kind losslessly.
  */
 export interface ConversationListRow {
   id: string | number;
-  platform: 'app' | 'telegram';
+  platform: 'app' | 'telegram' | 'slack';
   title: string | null;
   lastActivity: string | null;
   lastPreview: string | null;
@@ -122,6 +122,10 @@ function sanitizePeerConversation(raw: unknown, machine: string): ConversationLi
   }
   if (r.platform === 'telegram' && typeof r.id === 'number' && Number.isSafeInteger(r.id) && r.id > 0) {
     return { id: r.id, platform: 'telegram', title: s(r.title, 128), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
+  }
+  // A Slack conversation's id is the peer's local durable id (mobile-native-conversations §4.9).
+  if (r.platform === 'slack' && typeof r.id === 'number' && Number.isSafeInteger(r.id) && r.id < 0) {
+    return { id: r.id, platform: 'slack', title: s(r.title, 96), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
   }
   return null;
 }
@@ -194,6 +198,12 @@ export interface MobileConversationRouteDeps {
   machineId: () => string;
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
+  /**
+   * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
+   * null when Slack is configured but the operator's Slack user id is unset (rows withheld, and
+   * the list says so with `slackOwnerUnset: true`).
+   */
+  slackConversations?: () => Array<{ id: number; title: string | null; lastActivity: string | null; lastPreview: string | null }> | null;
   /** The inbound classifier (pause / stop decisions after persist). */
   sentinel?: { decideInboundDisposition(message: string, topicId?: number): Promise<{ disposition: string }> } | null;
   /** The pool fan-out (`?scope=pool`, §4.8). Absent ⇒ a pool read is this machine alone. */
@@ -348,7 +358,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
    * cursor has the same shape and order) and every Telegram topic, merged on ONE cursor so paging
    * never drops a row of either kind.
    */
-  const localListPage = (limit: number, cursor: string | null): { rows: ConversationListRow[]; more: boolean } => {
+  const localListPage = (limit: number, cursor: string | null): { rows: ConversationListRow[]; more: boolean; slackOwnerUnset: boolean } => {
     const c = parseListCursor(cursor);
     const page = svc!.store.listConversations({ limit, cursor: c ? cursor : null });
     const appRows: ConversationListRow[] = page.conversations.map((x) => ({
@@ -362,8 +372,19 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
           .filter((r) => isAfterListCursor(r, c));
       } catch { /* @silent-fallback-ok — a Telegram read failure leaves only the app rows; never an error for the app list */ }
     }
-    const merged = mergeConversationPages([{ rows: appRows, more: page.nextCursor !== null }, { rows: tgRows, more: false }], limit);
-    return { rows: merged.rows, more: merged.nextCursor !== null };
+    let slackRows: ConversationListRow[] = [];
+    let slackOwnerUnset = false;
+    if (deps.slackConversations) {
+      try {
+        const list = deps.slackConversations();
+        if (list === null) slackOwnerUnset = true;
+        else slackRows = list
+          .map((c): ConversationListRow => ({ id: c.id, platform: 'slack', title: c.title, lastActivity: c.lastActivity, lastPreview: c.lastPreview }))
+          .filter((r) => isAfterListCursor(r, c));
+      } catch { /* @silent-fallback-ok — a Slack read failure leaves the other rows; never an error for the app list */ }
+    }
+    const merged = mergeConversationPages([{ rows: appRows, more: page.nextCursor !== null }, { rows: tgRows, more: false }, { rows: slackRows, more: false }], limit);
+    return { rows: merged.rows, more: merged.nextCursor !== null, slackOwnerUnset };
   };
 
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
@@ -372,9 +393,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
     const local = localListPage(limit, cursor);
+    const ownerNote = local.slackOwnerUnset ? { slackOwnerUnset: true } : {};
     if (req.query.scope !== 'pool') {
       const m = mergeConversationPages([local], limit);
-      res.json({ conversations: m.rows, nextCursor: m.nextCursor });
+      res.json({ conversations: m.rows, nextCursor: m.nextCursor, ...ownerNote });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -389,8 +411,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         more: typeof body.nextCursor === 'string' && body.nextCursor.length > 0,
       }))
       : { results: [], failed: [] };
-    const m = mergeConversationPages([{ rows: local.rows.map((r) => ({ ...r, machine: self })), more: local.more }, ...peers.results], limit);
-    res.json({ conversations: m.rows, nextCursor: m.nextCursor, pool: { failed: peers.failed } });
+    // A peer's Slack rows are withheld when this machine's owner id is unset (the app cannot send to them here).
+    const peerPages = local.slackOwnerUnset ? peers.results.map((p) => ({ ...p, rows: p.rows.filter((r) => r.platform !== 'slack') })) : peers.results;
+    const m = mergeConversationPages([{ rows: local.rows.map((r) => ({ ...r, machine: self })), more: local.more }, ...peerPages], limit);
+    res.json({ conversations: m.rows, nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed } });
   });
 
   // ── Rename ──
@@ -735,6 +759,8 @@ export function buildSignedOrigin(
   req: Request, pairing: MobilePairingService, deviceId: string, storedText: string, removedKinds: ReadonlyArray<string>,
   signer: MachineSigner | null, receivedAt: string, report?: (detail: string) => void,
   attachments?: ReadonlyArray<AppAttachment>,
+  /** Slack (§4.9): the canonical key the message is stored under, signed into a v2 receipt. */
+  receiptConversationKey?: string,
 ): { origin?: DeviceSignedOrigin; receipt?: MachineReceipt } {
   const dev = pairing.devices.get(deviceId);
   const raw = (req as unknown as { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
@@ -757,7 +783,7 @@ export function buildSignedOrigin(
         ? (attachments ? signRedactionV2(signer, bodySha256, storedText, [...removedKinds], attachments) : signRedaction(signer, bodySha256, storedText, [...removedKinds]))
         : { ...(attachments ? { v: 2 as const } : {}), kinds: [...removedKinds], machineId: 'unsigned' } }
       : { ...base, bodyB64: raw.toString('base64') };
-    if (signer) receipt = signReceipt(signer, base, receivedAt);
+    if (signer) receipt = signReceipt(signer, base, receivedAt, receiptConversationKey);
   } catch (err) {
     // @silent-fallback-ok — reported; the message is still stored and delivered, and reads `unknown`
     report?.(`this machine could not sign the receipt (${err instanceof Error ? err.message : String(err)}); the message reads "couldn't check"`);

@@ -181,6 +181,7 @@ import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, reso
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { AppConversationService } from '../core/AppConversationService.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -1215,6 +1216,12 @@ export class AgentServer {
     ) => { applied: boolean; reason: string } | void;
     whatsapp?: import('../messaging/WhatsAppAdapter.js').WhatsAppAdapter;
     slack?: import('../messaging/slack/SlackAdapter.js').SlackAdapter;
+    /**
+     * The Slack inbound dispatch (set when Slack starts), so a message sent from the Instar app
+     * into a Slack conversation takes the same path a Slack message does
+     * (mobile-native-conversations §4.9). A getter: it is assigned after the server is built.
+     */
+    slackInboundDispatch?: () => import('./mobileSlackRoutes.js').SlackInboundDispatchFn | null;
     imessage?: import('../messaging/imessage/IMessageAdapter.js').IMessageAdapter;
     whatsappBusinessBackend?: import('../messaging/backends/BusinessApiBackend.js').BusinessApiBackend;
     messageBridge?: import('../messaging/shared/MessageBridge.js').MessageBridge;
@@ -6228,8 +6235,28 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
+    const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
+      ? buildMobileSlackBridge({
+        adapter: options.slack,
+        registry: routeCtx.conversationRegistry,
+        dispatch: () => options.slackInboundDispatch?.() ?? null,
+        killAllSessions: () => {
+          let any = false;
+          for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
+          return any;
+        },
+        sendEscape: (session) => { options.sessionManager.sendKey(session, 'Escape'); },
+        holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      })
+      : null;
     if (this.mobilePairing) {
+      this.app.use(createMobileSlackRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        slack: slackBridge ? () => slackBridge : null, sentinel: options.sentinel ?? null,
+      }));
       this.app.use(createMobileConversationRouter({
+        slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',

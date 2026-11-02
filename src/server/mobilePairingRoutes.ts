@@ -1043,7 +1043,7 @@ async function forwardRevoke(ctx: PoolCtx, id: string): Promise<{ confirmedBy: s
 // ── Device authentication (wired into authMiddleware) ───────────────────────────────
 
 /** Exact routes a device principal may use (spec 2.3); path lowercased, trailing slash removed. */
-// `sendRoute`: a send route (Telegram, app). Its authentication-time device rate limit is skipped
+// `sendRoute`: a send route (Telegram, app, Slack). Its authentication-time device rate limit is skipped
 // when native conversations are on: sends have their own limit in preflight, so the app's read
 // polling can never use up the allowance an emergency stop needs (mobile-native-conversations §4.2).
 const UUID = APP_CONVERSATION_KEY_PATTERN;
@@ -1074,6 +1074,9 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active },
+    // Slack conversations from the app (§4.9): the machine-local negative durable id.
+    { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true },
+    { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active },
     { method: 'POST', re: /^\/mobile\/device\/push$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/attention\/[^/]+$/, statuses: active },
     // Media in app conversations (mobile-native-chat-media §4.10).

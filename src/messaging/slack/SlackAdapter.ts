@@ -1414,6 +1414,7 @@ export class SlackAdapter implements MessagingAdapter {
       senderName: sanitizeDisplayName(senderName),
       platformUserId: userId,
       platform: 'slack',
+      ...(threadTs && threadTs !== ts ? { threadTs } : {}),
     };
     this.logger.append(logEntry);
     this.onMessageLogged?.(logEntry);
@@ -1696,6 +1697,28 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   // ── Message Search ──
+
+  /**
+   * Append a row to slack-messages.jsonl that did not arrive from Slack's event stream: the
+   * agent's own reply (Slack never echoes the bot's messages back), or a message the operator
+   * sent from the Instar app (mobile-native-conversations §4.9; it carries the app store's
+   * `eventId`). Without these rows the app's Slack history would show only one side.
+   */
+  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }): void {
+    const row: LogEntry = {
+      messageId: entry.messageId, channelId: entry.channelId, text: entry.text, fromUser: entry.fromUser,
+      timestamp: new Date().toISOString(), sessionName: null, platform: 'slack',
+      ...(entry.senderName ? { senderName: sanitizeDisplayName(entry.senderName) } : {}),
+      ...(entry.platformUserId ? { platformUserId: entry.platformUserId } : {}),
+      ...(entry.threadTs ? { threadTs: entry.threadTs } : {}),
+      ...(entry.eventId ? { eventId: entry.eventId, via: 'mobile-device' as const } : {}),
+      ...(entry.deviceId ? { deviceId: entry.deviceId } : {}),
+    };
+    this.logger.append(row);
+  }
+
+  /** The path of slack-messages.jsonl (bounded tail reads by the app's history route). */
+  getLogPath(): string { return path.join(this.stateDir, 'slack-messages.jsonl'); }
 
   /** Search the JSONL message log. */
   searchLog(params: { query?: string; channelId?: string; since?: Date; limit?: number }): LogEntry[] {
