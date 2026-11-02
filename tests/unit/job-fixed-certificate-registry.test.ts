@@ -36,13 +36,31 @@ const verify = (snapshot: FixedCertificateRegistrySnapshot, minimumEpoch = 2, at
 
 describe('signed fixed-certificate registry snapshot', () => {
   it('accepts only a machine-signed independently graded false-routine proof', () => {
-    const proof = signFixedRevocationProof({ version: 1, sourceMachineId: 'm_authority',
+    const proof = signFixedRevocationProof({ version: 2, sourceMachineId: 'm_authority',
       attemptId: 'attempt-1', certificateId: 'certificate-1', evidenceId: 'independent-grade',
-      gradedAt: new Date(now).toISOString(), grade: 'incorrect', provider: 'fixed',
+      gradedAt: new Date(now).toISOString(), signedAt: new Date(now + 1000).toISOString(),
+      grade: 'incorrect', provider: 'fixed',
       verdict: 'routine' }, signer);
     expect(verifyFixedRevocationProof(proof, lookup, now + 1000)).toBe(true);
     expect(verifyFixedRevocationProof({ ...proof, certificateId: 'other' }, lookup, now + 1000)).toBe(false);
     expect(verifyFixedRevocationProof({ ...proof, sourceMachineId: 'm_other' }, lookup, now + 1000)).toBe(false);
+    expect(verifyFixedRevocationProof({ ...proof, signedAt: new Date(now).toISOString() }, lookup, now + 1000)).toBe(false);
+    expect(verifyFixedRevocationProof({ ...proof, version: 1 } as unknown as typeof proof,
+      lookup, now + 1000)).toBe(false);
+  });
+  it('checks a delayed proof against the signing key epoch, not its older grade time', () => {
+    const gradeAt = now;
+    const signedAt = now + 2 * 60 * 60_000;
+    const proof = signFixedRevocationProof({ version: 2, sourceMachineId: 'm_authority',
+      attemptId: 'rotated-attempt', certificateId: 'rotated-certificate', evidenceId: 'late-grade',
+      gradedAt: new Date(gradeAt).toISOString(), signedAt: new Date(signedAt).toISOString(),
+      grade: 'incorrect', provider: 'fixed', verdict: 'routine' }, signer);
+    const rotatedLookup = (machineId: string, hash: string, at: number) =>
+      machineId === 'm_authority' && hash === 'key-hash' && at >= signedAt
+        ? { status: 'ok' as const, publicKeyPem: pem } : { status: 'unknown' as const };
+    expect(verifyFixedRevocationProof(proof, rotatedLookup, signedAt + 1000)).toBe(true);
+    expect(verifyFixedRevocationProof({ ...proof, signedAt: new Date(gradeAt).toISOString() },
+      rotatedLookup, signedAt + 1000)).toBe(false);
   });
   it('accepts only a fresh pinned authority snapshot with monotonic epoch', () => {
     const signed = signFixedRegistrySnapshot(base, signer);

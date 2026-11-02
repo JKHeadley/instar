@@ -25,10 +25,11 @@ export class JobFixedRegistryRevocationDispatcher {
     try {
       for (const pending of this.input.store.pendingFixedRevocations(100, (this.input.now ?? Date.now)())) {
         try {
-          const proof = signFixedRevocationProof({ version: 1,
+          const proof = signFixedRevocationProof({ version: 2,
             sourceMachineId: this.input.signer.machineId(), attemptId: pending.attemptId,
             certificateId: pending.certificateId, evidenceId: pending.evidenceId,
-            gradedAt: pending.gradedAt, grade: 'incorrect', provider: 'fixed', verdict: 'routine',
+            gradedAt: pending.gradedAt, signedAt: new Date((this.input.now ?? Date.now)()).toISOString(),
+            grade: 'incorrect', provider: 'fixed', verdict: 'routine',
           }, this.input.signer);
           await this.input.submit(proof);
           const fresh = await this.input.reader.read();

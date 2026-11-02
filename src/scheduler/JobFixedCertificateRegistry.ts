@@ -91,7 +91,8 @@ export function verifyFixedRegistrySnapshot(snapshot: FixedCertificateRegistrySn
   }
   if ([...active, ...revoked].some(id => !certificates.has(id))) return null;
   let payload: string;
-  try { payload = fixedRegistryPayload(snapshot); } catch { return null; }
+  try { payload = fixedRegistryPayload(snapshot); }
+  catch { return null; /* @silent-fallback-ok — malformed signed state cannot grant fixed closure. */ }
   if (verifyMachineSignature(input.keyLookup, snapshot.signature, payload, issuedAt) !== 'ok') return null;
   return { authority: { epoch: snapshot.epoch, ownerPublicKeys: snapshot.ownerPublicKeys,
     reviewerPublicKeys: snapshot.reviewerPublicKeys, activeIds: active, revokedIds: revoked,

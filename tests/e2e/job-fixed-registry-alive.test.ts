@@ -127,6 +127,7 @@ describe('fixed certificate authority production boot', () => {
         ignoredAnomalies: 0, anomalies: [], droppedFields: 0 }, certificate: cert, authority })).toBe(true);
       expect(store.gradeOutcome({ attemptId, evidenceId: 'false-routine-proof', ruleId: 'review',
         gradedBy: 'independent-reviewer', grade: 'incorrect', now: Date.now() })).toBe(true);
+      expect(store.slugHoldReason(slug)).toBe('confirmed-false-routine');
       const dispatchDeadline = Date.now() + 8000;
       let revokedSnapshot: any;
       while (Date.now() < dispatchDeadline) {
@@ -147,7 +148,9 @@ describe('fixed certificate authority production boot', () => {
       }
       expect(sessions._spawnCount).toBe(1);
       expect(fs.existsSync(ranFlag)).toBe(false);
-      expect(scheduler.getJobSupervisionStore().slugHoldReason(slug)).toBe('certificate-revoked');
+      // The source already holds on its independent false-routine grade; a
+      // later pool revocation must not weaken that stronger local reason.
+      expect(scheduler.getJobSupervisionStore().slugHoldReason(slug)).toBe('confirmed-false-routine');
 
       // A second machine state must make the same decision from a freshly
       // fetched, signed writer snapshot instead of the writer's local store.
@@ -157,6 +160,12 @@ describe('fixed certificate authority production boot', () => {
       const peerIdentityManager = new MachineIdentityManager(peerStateDir);
       const peerIdentity = await peerIdentityManager.generateIdentity({ name: 'registry-peer' });
       peerIdentityManager.registerMachine(identity, 'primary');
+      peerIdentityManager.storeRemoteIdentity(identity);
+      const pairedSnapshot = (await request(server.getApp()).get('/jobs/fixed-registry').set(auth)).body;
+      expect(verifyFixedRegistrySnapshot(pairedSnapshot, {
+        pinnedAuthorityMachineId: identity.machineId, keyLookup: identityKeyLookup(peerStateDir),
+        now: Date.now(), minimumEpoch: 2,
+      })?.authority.revokedIds.has(cert.id)).toBe(true);
       fs.cpSync(jobsDir, path.join(peerStateDir, 'jobs'), { recursive: true });
       const peerJobsFile = path.join(peerStateDir, 'jobs.json');
       fs.writeFileSync(peerJobsFile, '[]\n');

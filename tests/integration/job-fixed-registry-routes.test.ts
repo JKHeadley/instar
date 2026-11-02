@@ -88,9 +88,10 @@ describe('fixed registry authenticated HTTP read', () => {
       expect(renewedResponse.status).toBe(200);
       expect(renewedResponse.body).toMatchObject({ certificateId: renewed.id,
         retiredCertificateId: cert.id, epoch: 2 });
-      const proof = signFixedRevocationProof({ version: 1, sourceMachineId: 'm_authority',
+      const proof = signFixedRevocationProof({ version: 2, sourceMachineId: 'm_authority',
         attemptId: 'graded-attempt', certificateId: cert.id, evidenceId: 'independent-miss',
-        gradedAt: new Date(now).toISOString(), grade: 'incorrect', provider: 'fixed', verdict: 'routine' }, signer);
+        gradedAt: new Date(now).toISOString(), signedAt: new Date(now + 1000).toISOString(),
+        grade: 'incorrect', provider: 'fixed', verdict: 'routine' }, signer);
       const unpaired = express();
       unpaired.use(express.json());
       unpaired.use(authMiddleware(() => 'secret', 'test'));
@@ -124,9 +125,10 @@ describe('fixed registry authenticated HTTP read', () => {
         .send(recovery)).status).toBe(200);
       expect((await request(app).post('/jobs/fixed-registry/revoke').set('Authorization', 'Bearer secret')
         .send(proof)).body.epoch).toBe(4); // replay does not revoke reviewed recovery
-      const secondMiss = signFixedRevocationProof({ version: 1, sourceMachineId: 'm_authority',
+      const secondMiss = signFixedRevocationProof({ version: 2, sourceMachineId: 'm_authority',
         attemptId: 'other-graded-attempt', certificateId: cert.id, evidenceId: 'other-independent-miss',
-        gradedAt: new Date(now).toISOString(), grade: 'incorrect', provider: 'fixed', verdict: 'routine' }, signer);
+        gradedAt: new Date(now).toISOString(), signedAt: new Date(now + 1000).toISOString(),
+        grade: 'incorrect', provider: 'fixed', verdict: 'routine' }, signer);
       expect((await request(app).post('/jobs/fixed-registry/revoke').set('Authorization', 'Bearer secret')
         .send(secondMiss)).body.epoch).toBe(5);
       const afterSecondMiss = await request(app).get('/jobs/fixed-registry').set('Authorization', 'Bearer secret');
