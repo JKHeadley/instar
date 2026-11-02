@@ -7051,6 +7051,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     /** Warm-session A2A (claude-code only): pin a deterministic --session-id so an
      *  eviction mid-thread can --resume losslessly (#746). Ignored when resuming. */
     sessionId?: string;
+    /** Who started it (recorded on the session). The dashboard's New session box
+     *  passes 'dashboard-operator' so the console never files it under internal. */
+    triggeredBy?: string;
     /** Subscription & Auth Standard P1.3 (claude-code only): launch this session
      *  under the given account's config home (CLAUDE_CONFIG_DIR) — the account-swap
      *  mechanism. Additive; an explicit value always wins. When unset AND the
@@ -7481,6 +7484,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
       // §2.10 credential provenance — derived from the SAME predicate as the env block.
       ...(interactiveCredentialSource ? { credentialSource: interactiveCredentialSource } : {}),
+      ...(options?.triggeredBy ? { triggeredBy: options.triggeredBy } : {}),
       prompt: effectiveInitialMessage,
       maxDurationMinutes: this.effectiveMaxDurationMinutes,
       // R2.8/L13: record the spawn cwd so a resume-queue entry can revive

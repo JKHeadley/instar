@@ -990,6 +990,12 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: 0; padding: var(--s-2) 0; background: var(--bg); }
 .sess-input { flex: 1; min-height: 44px; font-size: 16px; resize: none; }
 .sess-composer-btns { display: flex; gap: var(--s-2); }
+.sess-attach { min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; }
+.sess-attach:disabled { opacity: .45; cursor: not-allowed; }
+.sess-attachments { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.sess-file { gap: 8px; max-width: 100%; overflow: hidden; }
+.sess-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.sess-composer.dropping { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--r-md); }
 .keys-tray { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--hairline); border-radius: var(--r-md); }
 .keys-row { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .key-chip { min-width: 44px; min-height: 44px; justify-content: center; font-family: var(--font-mono); }

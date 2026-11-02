@@ -671,11 +671,17 @@ describe('Console Home E2E (feature is alive)', () => {
 
     // A real running session record: listed, named, its model in words, protected flag present.
     const startedAt = new Date(Date.now() - 30 * 60_000).toISOString();
-    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'running', startedAt, model: 'claude-opus-5-5' } as never);
+    // Created from the dashboard (triggeredBy), so it is listed by default; an agent-spawned
+    // headless helper with no chat is internal and hidden behind the toggle.
+    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'running', startedAt, model: 'claude-opus-5-5', triggeredBy: 'dashboard-operator' } as never);
+    state.saveSession({ id: 'e2e-helper-1', name: 'e2e-helper', tmuxSession: 'e2e-helper', status: 'running', startedAt, model: 'claude-opus-5-5' } as never);
     const one = buildSessions(await read('/sessions?scope=pool'), { now: Date.now() });
+    expect(one.ok && one.internalCount).toBe(1);
+    expect((buildSessions(await read('/sessions?scope=pool'), { now: Date.now(), showInternal: true }) as { rows: unknown[] }).rows).toHaveLength(2);
+    state.saveSession({ id: 'e2e-helper-1', name: 'e2e-helper', tmuxSession: 'e2e-helper', status: 'completed', startedAt, model: 'claude-opus-5-5' } as never);
     expect(one.ok && one.rows.map((r) => [r.title, r.model, r.session.protected])).toEqual([['e2e-sess', 'Opus 5.5', false]]);
     expect(one.ok && one.rows[0].sub.startsWith('This machine · 30 min')).toBe(true);
-    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'completed', startedAt, model: 'claude-opus-5-5' } as never);
+    state.saveSession({ id: 'e2e-sess-1', name: 'e2e-sess', tmuxSession: 'e2e-sess', status: 'completed', startedAt, model: 'claude-opus-5-5', triggeredBy: 'dashboard-operator' } as never);
     expect((buildSessions(await read('/sessions?scope=pool'), { now: Date.now() }) as { rows: unknown[] }).rows).toEqual([]);
 
     // Close a session that is not running: the page's own request, read as already closed.
