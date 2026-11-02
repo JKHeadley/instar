@@ -276,7 +276,7 @@ export class DesktopHelperRetention {
       this.writeRecord({ ...record, grantedSourceHash: record.sourceHash });
       this.releaseNotice();
       this.grantNoteFailed = false;
-    } catch (error) {
+    } catch (error) { // @silent-fallback-ok — logged once below; the next probe writes the grant again.
       if (!this.grantNoteFailed) {
         this.log(`[instar] could not record the Mac desktop helper grant: ${error instanceof Error ? error.message : String(error)}`);
       }
