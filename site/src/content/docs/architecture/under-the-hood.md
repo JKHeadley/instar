@@ -312,6 +312,8 @@ Sends the running session list to all connected clients every 5 seconds. Include
 
 </details>
 
+Remote Desktop setup has three separate responsibilities. `DesktopSetupGuide` turns a machine's reported state into the next step shown in the dashboard; it does not grant access. `DesktopSetupTarget` handles a requested setup action on that machine and refuses unsupported platforms, including native Linux. `DesktopProbeReadiness` explains why a Mac helper cannot capture or control its screen, such as a missing local permission or signed-in console session. The [Remote Desktop guide](/guides/remote-desktop/) describes the operator steps.
+
 ---
 
 ## Housekeeping
