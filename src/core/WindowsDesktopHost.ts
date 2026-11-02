@@ -2,13 +2,16 @@
  * It never captures WSL's own display. The companion must authenticate every
  * local request and revoke on a lost heartbeat independently of this process. */
 import { createHmac, createHash, randomBytes } from 'node:crypto';
-import { validDesktopInput, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
+import { parseDesktopDisplays, validDesktopInput, validDisplayId, type DesktopDisplayList, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 
 const FRAME_LIMIT = 1_250_000;
 const JSON_LIMIT = 4_096;
 const REQUEST_TIMEOUT_MS = 2_000;
 
 export class WindowsDesktopHost implements DesktopHost {
+  readonly platform = 'windows' as const;
+  /** null keeps the original behaviour: every screen in one picture. */
+  private selectedDisplayId: string | null = null;
   private indicatorActive = false;
   private indicatorLost: (() => void) | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -38,8 +41,43 @@ export class WindowsDesktopHost implements DesktopHost {
       sessionActive: data.sessionActive, displayCount: data.displayCount } as DesktopProbe;
   }
 
+  /** An older companion drops the unknown request, so this rejects and the
+   * viewer shows no picker. */
+  async listDisplays(): Promise<DesktopDisplayList> {
+    return { displays: parseDesktopDisplays(await this.json('displays', {})),
+      currentDisplayId: this.selectedDisplayId, canShowAll: true };
+  }
+
+  async selectDisplay(displayId: string | null): Promise<boolean> {
+    if (displayId !== null) {
+      if (!validDisplayId(displayId)) return false;
+      if (!(await this.listDisplays()).displays.some(display => display.id === displayId)) return false;
+    }
+    this.selectedDisplayId = displayId;
+    return true;
+  }
+
+  private onDisplay(payload: Record<string, unknown>): Record<string, unknown> {
+    return this.selectedDisplayId === null ? payload : { ...payload, displayId: this.selectedDisplayId };
+  }
+
   async capture(): Promise<Buffer> {
-    const frame = await this.call('capture', { leaseId: this.requireLease() }, FRAME_LIMIT, 'image/jpeg');
+    let frame: Buffer;
+    const displayId = this.selectedDisplayId;
+    try {
+      frame = await this.call('capture', this.onDisplay({ leaseId: this.requireLease() }), FRAME_LIMIT, 'image/jpeg');
+    } catch (error) {
+      // A screen can be unplugged mid-session. Only a confirmed absence goes
+      // back to all screens; a failed read leaves the choice alone.
+      if (displayId !== null && this.selectedDisplayId === displayId) {
+        const list = await this.listDisplays().catch(() => null); // @silent-fallback-ok — the next capture failure asks again.
+        // An empty list means the desktop could not be read (a UAC prompt, the
+        // lock screen), not that the screen left.
+        if (list?.displays.length && this.selectedDisplayId === displayId
+          && !list.displays.some(display => display.id === displayId)) this.selectedDisplayId = null;
+      }
+      throw error;
+    }
     if (frame.length < 4 || frame[0] !== 0xff || frame[1] !== 0xd8
       || frame[frame.length - 2] !== 0xff || frame[frame.length - 1] !== 0xd9) {
       throw new Error('windows-desktop-frame-invalid');
@@ -48,7 +86,7 @@ export class WindowsDesktopHost implements DesktopHost {
   }
 
   async cursor(): Promise<{ x: number; y: number }> {
-    const point = await this.json('cursor', { leaseId: this.requireLease() });
+    const point = await this.json('cursor', this.onDisplay({ leaseId: this.requireLease() }));
     if (typeof point.x !== 'number' || typeof point.y !== 'number'
       || !Number.isFinite(point.x) || !Number.isFinite(point.y)
       || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) {
@@ -60,7 +98,7 @@ export class WindowsDesktopHost implements DesktopHost {
   async input(action: DesktopInput): Promise<void> {
     if (!validDesktopInput(action)) throw new Error('windows-desktop-input-invalid');
     const generation = this.generation;
-    const reply = await this.json('input', { leaseId: this.requireLease(), action });
+    const reply = await this.json('input', this.onDisplay({ leaseId: this.requireLease(), action }));
     if (generation !== this.generation || reply.ok !== true) throw new Error('windows-desktop-input-unconfirmed');
   }
 
