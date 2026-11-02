@@ -82,3 +82,4 @@ The reviewer was a different model family and saw the code, not this author's co
 3. The adoption lint on tagged specs.
 4. The Ideas console page.
 5. Agent awareness, new and existing agents.
+6. The config type sits in core types, so the Stage-B certified closure does not take in the pipeline.

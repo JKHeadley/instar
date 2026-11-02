@@ -3939,7 +3939,14 @@ export interface InstarConfig {
    * dev-gated, because extra ticks spend real quota.
    */
   /** docs/specs/ecosystem-idea-pipeline.md. Omitted `enabled` resolves through the dev gate. */
-  ecosystemIdeas?: import('../ecosystem/buildEcosystemIdeas.js').EcosystemIdeasConfig;
+  ecosystemIdeas?: {
+    enabled?: boolean;
+    sourceRoots?: Array<{ repo: string; ref?: string; docGlobs?: string[] }>;
+    purposeDoc?: { repo: string; file: string } | null;
+    cadenceHours?: number;
+    limits?: Partial<{ tokensPerProject: number; tokensPerRun: number; candidatesPerProject: number; charsPerPacket: number; charsPerFile: number; filesPerRun: number }>;
+    agentStartsSpecs?: boolean;
+  };
   queuePace?: {
     enabled?: boolean;
     tuner?: {

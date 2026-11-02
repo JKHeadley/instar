@@ -12,27 +12,20 @@ import { claudeSupportsReviewerHardening, detectClaudeReviewer, detectCodexRevie
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import { maxUsedPercent } from '../feedback-factory/triage/buildFeedbackTriage.js';
 import { EcosystemLedger } from './EcosystemLedger.js';
-import { EcosystemIdeaService, type AttentionNotice, type EcosystemIdeaServiceOptions, type EcosystemLimits } from './EcosystemIdeaService.js';
+import { EcosystemIdeaService, type AttentionNotice, type EcosystemIdeaServiceOptions } from './EcosystemIdeaService.js';
 import { GitSourceSearch, type SourceRootSpec, type SourceSearch } from './sourceSearch.js';
 import type { FetchOptions } from './projectFetch.js';
 import type { ModelCaller } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
-export interface EcosystemIdeasConfig {
-  enabled?: boolean;
-  sourceRoots?: SourceRootSpec[];
-  purposeDoc?: { repo: string; file: string } | null;
-  cadenceHours?: number;
-  limits?: Partial<EcosystemLimits>;
-  agentStartsSpecs?: boolean;
-}
+export type EcosystemIdeasConfig = NonNullable<InstarConfig['ecosystemIdeas']>;
 
 export const INSTAR_DEFAULT_ROOTS: SourceRootSpec[] = [{ repo: 'JKHeadley/instar' }, { repo: 'JKHeadley/instar-2', docGlobs: ['docs'] }];
 const INSTAR_PURPOSE = { repo: 'JKHeadley/instar-2', file: 'docs/00-the-purpose.md' };
 
 /** The configured roots; an Instar maintainer agent defaults to Instar's own. Empty means 503 no-source. */
-export function resolveSourceRoots(config: Pick<InstarConfig, 'developmentAgent'> & { ecosystemIdeas?: EcosystemIdeasConfig }): SourceRootSpec[] {
+export function resolveSourceRoots(config: Pick<InstarConfig, 'developmentAgent' | 'ecosystemIdeas'>): SourceRootSpec[] {
   return config.ecosystemIdeas?.sourceRoots ?? (config.developmentAgent === true ? INSTAR_DEFAULT_ROOTS : []);
 }
 
@@ -77,7 +70,7 @@ export interface EcosystemRouteContext {
 }
 
 export interface BuildEcosystemInput {
-  config: InstarConfig & { ecosystemIdeas?: EcosystemIdeasConfig };
+  config: InstarConfig;
   ledger?: EcosystemLedger;
   machineId: () => string;
   isHolder: () => boolean;
