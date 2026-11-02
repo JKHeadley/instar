@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-session-followups",
+  "sessionId": "916956a4-f1bf-4a3b-89db-40a4ec492e50",
+  "timestamp": "2026-11-02T02:08:04.574Z",
+  "artifactPath": "upgrades/side-effects/console-session-followups.md",
+  "artifactSha256": "51b3c53d6d14c524b7bc96e6dfbcf022d8adb0ebbd052d47088792714f7c5b9e",
+  "coveredFiles": [
+    "tests/e2e/console-home-lifecycle.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test follows the internal-session rule",
+  "eli16Path": "upgrades/side-effects/console-session-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-session-followups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

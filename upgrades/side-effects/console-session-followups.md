@@ -40,3 +40,5 @@
    attachment is a small ✕ that only drops it from the unsent message.
 4. **Plain language at phone width** — chips wrap, the paper-clip is a 44 px target, and the
    disabled state on another machine's session explains why in one sentence.
+
+9. **Test update** — the console sessions e2e case now marks its listed session as dashboard-created and adds an agent-spawned helper that is hidden by default and shown with the toggle.
