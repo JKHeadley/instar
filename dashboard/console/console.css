@@ -992,6 +992,12 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 /* A column flex box squeezes its children to fit; history items must keep their own height
    and let the box scroll (tool lines clip their overflow, so without this they shrink to 0). */
 .sess-history > * { flex-shrink: 0; }
+/* Long tool lines never wrap, so their min-content width is the whole line: without these
+   the open session (and the page's grid column) grew to fit it, wider than a phone. */
+.main, .sess-view, .sess-open, .sess-term-wrap, .sess-composer { min-width: 0; }
+.sess-input { min-width: 0; width: 100%; }
+/* History has no live stream to return to: never float "Back to live" over it. */
+.sess-history:not([hidden]) ~ .sess-resume { display: none; }
 .sess-history-note { margin: 0; text-align: center; font-size: 13px; color: var(--text-muted); }
 .sess-h { max-width: 92%; }
 .sess-h-user { align-self: flex-end; background: var(--accent-wash); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-2) var(--s-3); }
