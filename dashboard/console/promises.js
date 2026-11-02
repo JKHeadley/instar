@@ -143,7 +143,9 @@ function openPromise(r, { post, chatId, names, refresh }) {
         else if (fallback) fallback.querySelector('p').textContent = 'Copying is unavailable here. Select this question and paste it in the conversation:';
       } : undefined }));
   }
-  const q = r.replica && r.origin ? `?origin=${encodeURIComponent(r.origin)}` : '';
+  // Always name the machine that holds it: the same promise id can exist on several
+  // machines (ids are per machine), and a bare id is refused as ambiguous.
+  const q = r.origin ? `?origin=${encodeURIComponent(r.origin)}` : '';
   const id = encodeURIComponent(c.id);
   const result = async (path, body) => {
     const x = await post(`/commitments/${id}/${path}${q}`, body);

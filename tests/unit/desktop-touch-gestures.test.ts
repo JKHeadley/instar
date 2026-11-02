@@ -245,8 +245,7 @@ describe('desktop touch gestures', () => {
     touch(window, surface, 'pointerdown', 11, 80, 90);
     touch(window, surface, 'pointerup', 11, 80, 90);
     expect(gestureActions.filter(action => action.kind === 'click'))
-      .toEqual([{ kind: 'click', x: 0.2, y: 0.3, button: 'left' },
-        { kind: 'click', x: 0.2, y: 0.3, button: 'left' }]);
+      .toEqual([{ kind: 'click', x: 0.2, y: 0.3, button: 'left', count: 2 }]);
     gestureActions.length = 0;
     viewer.setZoomAndCursor(2, 0.9, 0.5);
     expect(viewer.viewState().panX).toBeLessThan(0);
