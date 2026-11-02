@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-decide-origin",
+  "sessionId": "916956a4-f1bf-4a3b-89db-40a4ec492e50",
+  "timestamp": "2026-11-02T07:08:33.884Z",
+  "artifactPath": "upgrades/side-effects/console-decide-origin.md",
+  "artifactSha256": "477ec21f0677663c5b05914ddf71433dee29bc94afbbfd3ef28d5ecc577208d1",
+  "coveredFiles": [
+    "dashboard/console/console.css"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CSS-only phone layout fix",
+  "eli16Path": "upgrades/side-effects/console-decide-origin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-decide-origin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -14,6 +14,12 @@ A built-in update engine that runs inside the server process -- no Claude sessio
 
 Since v0.17.3, updates use a **shadow install** pattern rather than global `npm install`. The new version is installed into a local shadow directory, and the server restarts using the shadow binary. This avoids permission issues, keeps updates isolated, and works whether Instar was installed globally or via `npx`.
 
+## Restart safeguards
+
+`RestartCascadeDampener` batches update-driven restart requests that arrive too close together. `PlannedRestartVerifyGuard` holds an ordinary planned restart while a local verification child is running, and pauses new verification starts until the request is consumed. `ServerSupervisor` consumes the request after that hold clears. A forced restart can still bypass the hold.
+
+`UpdateRestartHandshake` records the version expected after a restart and delays the success notice until the new process proves it is running that version. `StaleProcessGuard` separately detects when a long-running process has older code or configuration than the files on disk. Lifeline restarts caused by health or version skew use `RestartOrchestrator`; they have different rules from an update-driven server restart.
+
 ## Status
 
 ```bash

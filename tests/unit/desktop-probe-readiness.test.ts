@@ -49,4 +49,13 @@ describe('desktop probe explanation', () => {
     expect(desktopProbeUnavailableReason({ ...permitted, sessionActive: true, inputPermission: false }))
       .toContain('Accessibility → instar-desktop-host, then tap Retry');
   });
+
+  it('asks the kept copy for every permission it lacks, not only the one missing overall', () => {
+    const reason = desktopProbeUnavailableReason({ sessionActive: true, displayCount: 1,
+      screenPermission: true, inputPermission: false,
+      helperChange: { kind: 'source-changed', version: '1.3.1580', helperPath: '/k/instar-desktop-host',
+        keptMissing: 'Screen Recording and Accessibility' } });
+    expect(reason).toContain('Privacy & Security → Screen Recording and Accessibility');
+    expect(reason).toContain('/k/instar-desktop-host');
+  });
 });

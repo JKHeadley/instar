@@ -22,6 +22,7 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
@@ -45,6 +46,8 @@ import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMain
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
+import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
+import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -281,6 +284,61 @@ const codexArmSessionSweep: SelfActionController = {
           if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
           else failures.delete(name);
         }
+      },
+    };
+  },
+};
+
+/** desktop-relock-guard-replacement: the sweep replaces a dead relock guard for
+ * one duty, then fails that duty loudly. The count lives on the durable marker. */
+const desktopRelockGuardReplacement: SelfActionController = {
+  id: 'desktop-relock-guard-replacement',
+  actionVerb: 'respawn',
+  models: 'src/core/DesktopLockedController.ts (replaceGuard — decideGuardReplacement cap per duty)',
+  modelsPath: 'src/core/DesktopLockedController.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The count is on the durable marker, so a restart cannot reset it, and a marker from another boot closes.' },
+  boundK: MAX_GUARD_REPLACEMENTS,
+  perTargetBoundK: MAX_GUARD_REPLACEMENTS,
+  ticks: 40,
+  tickMs: 10_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(_f, sink) {
+    let replacements = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideGuardReplacement(replacements) === 'give-up') return;
+        replacements += 1;
+        sink.emit({ verb: 'respawn', target: 'relock-guard' });
+      },
+    };
+  },
+};
+
+/** desktop-locked-helper-respawn: a lock ends the helper; Node respawns it a
+ * bounded number of times per request, however often the state flaps. */
+const desktopLockedHelperRespawn: SelfActionController = {
+  id: 'desktop-locked-helper-respawn',
+  actionVerb: 'respawn',
+  models: 'src/core/DirectDesktopAccess.ts (spendRespawn — decideLockedRespawn, per change and per request)',
+  modelsPath: 'src/core/DirectDesktopAccess.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart revokes every grant, so no request survives to respawn for.' },
+  boundK: RESPAWNS_PER_REQUEST,
+  perTargetBoundK: RESPAWNS_PER_REQUEST,
+  ticks: 40,
+  tickMs: 1_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(_f, sink) {
+    let thisChange = 0;
+    let total = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        thisChange = 0; // Worst case: the state flaps on every tick.
+        if (!decideLockedRespawn(thisChange, total)) return;
+        thisChange += 1;
+        total += 1;
+        sink.emit({ verb: 'respawn', target: 'desktop-helper' });
       },
     };
   },
@@ -697,6 +755,39 @@ const spendReconSweep: SelfActionController = {
         if (f.clock.nowMs() - lastEmitAtMs < REARM_MS) return; // the dispatcher latch
         lastEmitAtMs = f.clock.nowMs();
         sink.emit({ verb: 'recon-drift-notify', target: 'metered_openrouter_bench:openrouter-api' });
+      },
+    };
+  },
+};
+
+/**
+ * app-media-capacity-notice — the app media store's capacity notice (mobile-native-chat-media
+ * §4.7, AppConversationService.updateMediaNotices after each hourly sweep). Under the pinned
+ * worst case (the store full and every admission refused, forever) the notice is raised ONCE per
+ * episode: the raised-set latch refuses every later raise, and only the condition clearing
+ * re-arms it. Horizon-independent: one notice, however many sweeps run.
+ */
+const appMediaCapacityNotice: SelfActionController = {
+  id: 'app-media-capacity-notice',
+  actionVerb: 'capacity-notify',
+  models: 'src/core/AppConversationService.ts (updateMediaNotices: raisedNotices latch; cleared only when usage drops under 90% of the cap)',
+  modelsPath: 'src/core/AppConversationService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the latch is empty, so a still-full store raises at most one notice; the attention item is deduplicated by its condition key.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const raised = new Set<string>();
+    return {
+      tick() {
+        sink.considered += 1;
+        const key = 'app-media:store-full';
+        const stillFull = true; // the pinned pressure: never clears
+        if (stillFull && !raised.has(key)) {
+          raised.add(key);
+          sink.emit({ verb: 'capacity-notify', target: key });
+        }
       },
     };
   },
@@ -3392,7 +3483,44 @@ function sessionPoolStagePromotionModel(f: PressureFixture, sink: ActionSink): {
   };
 }
 
+/**
+ * Preparing-run watchdog (topic 10000001225): a run stuck in 'preparing' gets
+ * one notice in its topic. Under a delivery path that always rejects, each
+ * failed send bumps the run record's durable attempt counter and the REAL
+ * findStuckPreparingRuns stops selecting the run at PREPARING_NOTICE_MAX_ATTEMPTS,
+ * so the count settles at the cap and stays there across a restart.
+ */
+const preparingRunWatchdog: SelfActionController = {
+  id: 'preparing-run-watchdog',
+  actionVerb: 'notify',
+  models: 'src/core/AutonomousStartAdmission.ts (PreparingRunWatchdog — claim-before-send once per run, durable preparingNoticeAttempts cap)',
+  modelsPath: 'src/core/AutonomousStartAdmission.ts',
+  boundK: PREPARING_NOTICE_MAX_ATTEMPTS, perTargetBoundK: PREPARING_NOTICE_MAX_ATTEMPTS, ticks: 120, tickMs: 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => preparingRunWatchdogModel(f, sink) },
+  makeUnderPressure: (f, sink) => preparingRunWatchdogModel(f, sink),
+};
+
+function preparingRunWatchdogModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    const nowMs = f.clock.nowMs();
+    const run = {
+      topicId: '9210', runId: 'run-stuck', status: 'preparing', registeredAt: new Date(nowMs - 60 * 60_000).toISOString(),
+      preparingNoticeAttempts: (f.durableState.get('preparing-notice-attempts') as number | undefined) ?? 0,
+      preparingNoticeAt: f.durableState.get('preparing-notice-at') as string | undefined,
+    } as AutonomousRunRecord;
+    if (findStuckPreparingRuns([run], { nowMs }).length === 0) return;
+    // Claim: count the attempt and mark it sent before sending; a rejected send releases the mark.
+    f.durableState.set('preparing-notice-attempts', run.preparingNoticeAttempts! + 1);
+    f.durableState.set('preparing-notice-at', new Date(nowMs).toISOString());
+    sink.emit({ verb: 'notify', target: run.runId });
+    if (f.targetAlwaysRejects()) f.durableState.delete('preparing-notice-at');
+  } };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  desktopRelockGuardReplacement,
+  desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
   jobSupervisionProviderRetry,
   jobSupervisionCensusRepair,
@@ -3434,6 +3562,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
+  appMediaCapacityNotice,
   spendReconSweep,
   spendDoorDarkBrakes,
   spendFallbackSpike,
@@ -3466,4 +3595,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   interactiveLoginExpiredSwap,
   deviceLimitSessionMove,
   replicatedStoreReconcilerRetry,
+  preparingRunWatchdog,
 ];

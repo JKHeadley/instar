@@ -15,6 +15,8 @@ export const DEVICE_SIG_VERSION = 'instar-device-v1';
 export const DEVICE_TIME_WINDOW_MS = 60_000;
 export const REPLAY_TTL_MS = 3 * 60_000;
 export const MAX_REPLAY_PER_DEVICE = 2_000;
+/** Entries only a send route may use (media spec §4.10). */
+export const REPLAY_SEND_RESERVE = 100;
 
 export type DeviceStatus = 'pending' | 'active' | 'declined' | 'expired' | 'revoked';
 
@@ -116,14 +118,18 @@ export class ReplayGuard {
   private seen = new Map<string, Map<string, number>>();
   constructor(private readonly now: () => number = Date.now) {}
 
-  admit(deviceId: string, canonical: string): 'ok' | 'replay' | 'full' {
+  /**
+   * `sendRoute`: the last entries are kept for send routes (media spec §4.10), so an emergency
+   * stop is never refused because a large upload filled the guard. The bound stays 2,000.
+   */
+  admit(deviceId: string, canonical: string, sendRoute = false): 'ok' | 'replay' | 'full' {
     const t = this.now();
     let m = this.seen.get(deviceId);
     if (!m) { m = new Map(); this.seen.set(deviceId, m); }
     for (const [k, at] of m) { if (t - at > REPLAY_TTL_MS) m.delete(k); else break; }
     const key = crypto.createHash('sha256').update(canonical).digest('hex');
     if (m.has(key)) return 'replay';
-    if (m.size >= MAX_REPLAY_PER_DEVICE) return 'full';
+    if (m.size >= (sendRoute ? MAX_REPLAY_PER_DEVICE : MAX_REPLAY_PER_DEVICE - REPLAY_SEND_RESERVE)) return 'full';
     m.set(key, t);
     return 'ok';
   }
@@ -140,6 +146,7 @@ export function verifyDeviceRequest(
   allowStatuses: ReadonlySet<DeviceStatus>,
   replay: ReplayGuard,
   now: number = Date.now(),
+  sendRoute = false,
 ): VerifyResult {
   const { deviceId, time, sig } = parts;
   if (typeof deviceId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(deviceId) || typeof time !== 'string' || !/^\d{10,16}$/.test(time) || typeof sig !== 'string') {
@@ -158,7 +165,7 @@ export function verifyDeviceRequest(
   let valid = false;
   try { valid = crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sigBytes); } catch { valid = false; } // @silent-fallback-ok — a malformed DER signature is simply invalid
   if (!valid) return { ok: false, reason: 'bad-signature' };
-  const r = replay.admit(deviceId, message);
+  const r = replay.admit(deviceId, message, sendRoute);
   if (r === 'replay') return { ok: false, reason: 'replay' };
   if (r === 'full') return { ok: false, reason: 'rate-limited' };
   return { ok: true, deviceId };
@@ -191,6 +198,30 @@ export interface DeviceRecord {
   revokedAt?: string;
   /** HMACs of distinct wrong codes already tried (per-process key; cleared on activation). */
   wrongCodes?: string[];
+  /** Mobile push (docs/specs/mobile-push.md): APNs token, its environment, the notification
+   *  read token's SHA-256, the highest registration revision applied, and the stored version. */
+  pushToken?: string;
+  pushEnvironment?: 'sandbox' | 'production';
+  notifyTokenHash?: string;
+  pushRevision?: number;
+  pushVersion?: number;
+  pushUpdatedAt?: string;
+}
+
+export interface PushRegistration {
+  token: string | null;
+  environment?: 'sandbox' | 'production';
+  notifyTokenHash?: string;
+  revision: number;
+}
+
+export type PushRegisterResult =
+  | { ok: true; revision: number; version: number }
+  | { ok: false; reason: 'not-active' | 'stale-revision' | 'revision-conflict' };
+
+function samePush(d: DeviceRecord, r: PushRegistration): boolean {
+  if (r.token === null) return !d.pushToken;
+  return d.pushToken === r.token && d.pushEnvironment === r.environment && d.notifyTokenHash === r.notifyTokenHash;
 }
 
 interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[] }
@@ -314,9 +345,54 @@ export class DeviceRegistry {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d) return false;
-    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = at ?? new Date(this.now()).toISOString(); this.write(f); }
+    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = at ?? new Date(this.now()).toISOString(); clearPush(d); this.write(f); }
     return true;
   }
+
+  /**
+   * Register or clear this device's push token (mobile-push §2.2). A lower revision is refused;
+   * the same revision is accepted only with the same body (a retry). A token is held by at most
+   * one record on this machine.
+   */
+  setPush(id: string, r: PushRegistration): PushRegisterResult {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return { ok: false, reason: 'not-active' };
+    const prev = d.pushRevision ?? 0;
+    if (r.revision < prev) return { ok: false, reason: 'stale-revision' };
+    if (r.revision === prev) {
+      return samePush(d, r) ? { ok: true, revision: prev, version: d.pushVersion ?? 0 } : { ok: false, reason: 'revision-conflict' };
+    }
+    const changed = !samePush(d, r);
+    d.pushRevision = r.revision;
+    if (changed) {
+      if (r.token === null) clearPush(d);
+      else {
+        for (const other of f.devices) if (other.id !== d.id && other.pushToken === r.token) { clearPush(other); other.pushVersion = (other.pushVersion ?? 0) + 1; }
+        d.pushToken = r.token; d.pushEnvironment = r.environment; d.notifyTokenHash = r.notifyTokenHash;
+        d.pushUpdatedAt = new Date(this.now()).toISOString();
+      }
+      d.pushVersion = (d.pushVersion ?? 0) + 1;
+    }
+    this.write(f);
+    return { ok: true, revision: r.revision, version: d.pushVersion ?? 0 };
+  }
+
+  /** An APNs answer that retires a token clears it only if the record still holds that version. */
+  clearPushIfVersion(id: string, version: number): boolean {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || !d.pushToken || (d.pushVersion ?? 0) !== version) return false;
+    clearPush(d);
+    d.pushVersion = version + 1;
+    this.write(f);
+    return true;
+  }
+}
+
+function clearPush(d: DeviceRecord): void {
+  delete d.pushToken; delete d.pushEnvironment; delete d.notifyTokenHash;
+  d.pushUpdatedAt = new Date().toISOString();
 }
 
 // ── Confirmation codes (process memory only) ────────────────────────────────────────

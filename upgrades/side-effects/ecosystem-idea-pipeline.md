@@ -71,6 +71,8 @@ Independent reviewer: Codex (`gpt-6-astra`), through the spec-converge reviewer 
 
 The reviewer was a different model family and saw the code, not this author's conclusions. It was a cross-model script rather than a same-model subagent, so that the author's context could not lead it.
 
+Merge of main (93e634028) plus registration fixes: the same reviewer, `gpt-6-astra`, read that delta and the new docs page. It concurred with no design defect. Its one precise finding, that the docs page overstated what the file-read probe proves, was fixed. It could not establish from excerpts that both sides of each conflict survived, so the author checked that mechanically: compared with main the two big resolved files have additions only, and the templates import keeps every name from both sides.
+
 ## Class-Closure Declaration
 
 `unbounded-self-action`: closure `guard`, citing `tests/unit/self-action-convergence.test.ts` (ratchet). Retrying a failed project review is registered as `ecosystem-idea-review`: at most 3 attempts per cycle with backoff, a durable week, then a breaker after 3 cycles. Nine attempts in total, then silence until a person retries. The durable counters live in the replicated ledger, so a restart buys none back.

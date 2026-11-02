@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# app-media-path — Print a local path to an earlier file of this app conversation.
+#
+# Usage (inside a session spawned for an app conversation):
+#   .instar/scripts/app-media-path <attachment id>
+#
+# The session's bind token decides which conversation this reads. The file is a private copy.
+# Spec: docs/specs/mobile-native-chat-media.md §4.5.
+
+set -euo pipefail
+
+ATTACHMENT="${1:-}"
+if [[ ! "$ATTACHMENT" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Usage: app-media-path <attachment id>" >&2
+  exit 1
+fi
+CONVERSATION_ID="${INSTAR_CONVERSATION_ID:-0}"
+[[ "$CONVERSATION_ID" =~ ^-?[0-9]+$ ]] || CONVERSATION_ID=0
+
+PORT="${INSTAR_PORT:-}"
+AUTH="${INSTAR_AUTH_TOKEN:-}"
+AGENT_ID="${INSTAR_AGENT_ID:-}"
+if [ -f ".instar/config.json" ]; then
+  if [ -z "$PORT" ]; then
+    CONFIG_PORT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('port',''))" 2>/dev/null)
+    [ -n "$CONFIG_PORT" ] && PORT="$CONFIG_PORT"
+  fi
+  if [ -z "$AUTH" ]; then
+    AUTH=$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -z "$AGENT_ID" ]; then
+    AGENT_ID=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)
+  fi
+fi
+PORT="${PORT:-4042}"
+
+set +e
+RESPONSE=$(curl -sS --connect-timeout 3 --max-time 30 -w "\n%{http_code}" \
+  "http://localhost:${PORT}/app/media-path/${ATTACHMENT}?conversationId=${CONVERSATION_ID}" \
+  ${AUTH:+-H "Authorization: Bearer $AUTH"} \
+  ${AGENT_ID:+-H "X-Instar-AgentId: $AGENT_ID"} \
+  ${INSTAR_BIND_TOKEN:+-H "X-Instar-Bind-Token: $INSTAR_BIND_TOKEN"})
+CURL_STATUS=$?
+set -e
+if [ "$CURL_STATUS" -ne 0 ]; then
+  echo "Could not reach the server, so the file was not fetched." >&2
+  exit 1
+fi
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin)["path"])'
+else
+  DETAIL=$(echo "$BODY" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("detail") or d.get("error") or "unknown")' 2>/dev/null || echo "$BODY")
+  echo "${DETAIL}" >&2
+  exit 1
+fi

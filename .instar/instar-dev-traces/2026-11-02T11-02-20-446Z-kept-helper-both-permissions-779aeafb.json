@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "kept-helper-both-permissions",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T11:02:20.446Z",
+  "artifactPath": "upgrades/side-effects/kept-helper-both-permissions.md",
+  "artifactSha256": "79e35b627b204b4b3c13bbf616c43b3e03b385a5045a68017b323e3a10d3d27a",
+  "coveredFiles": [
+    "src/core/DesktopHelperRetention.ts",
+    "src/core/DesktopProbeReadiness.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/MacDesktopHostIdentity.test.ts",
+    "tests/unit/desktop-probe-readiness.test.ts",
+    "upgrades/side-effects/kept-helper-both-permissions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Operator-facing wording and displayed path only; serving choice untouched; a revert fully undoes it",
+  "eli16Path": "upgrades/eli16/kept-helper-both-permissions.md",
+  "sideEffectsPath": "upgrades/side-effects/kept-helper-both-permissions.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

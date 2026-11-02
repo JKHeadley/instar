@@ -1,3 +1,4 @@
+import type { DesktopHelperPermissionChange } from './DesktopHelperRetention.js';
 /** Machine-local capture and input boundary. A Windows or Linux companion
  * implements this contract only after its own permission and live-session proof. */
 export type DesktopButton = 'left' | 'right' | 'middle';
@@ -9,7 +10,9 @@ export type DesktopInput =
   | { kind: 'buttonDown' | 'buttonUp'; x: number; y: number; button: DesktopButton }
   | { kind: 'scroll'; dx: number; dy: number }
   | { kind: 'type'; text: string }
-  | { kind: 'keyDown' | 'keyUp'; key: DesktopKey };
+  | { kind: 'keyDown' | 'keyUp'; key: DesktopKey }
+  /** Handled by the grant authority, never by host.input. null = host default. */
+  | { kind: 'selectDisplay'; displayId: string | null };
 
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz'.split('');
 const DIGITS = '0123456789'.split('');
@@ -55,6 +58,14 @@ export function validDesktopInput(action: DesktopInput): boolean {
     && action.text.length > 0 && action.text.length <= 1_024 && !action.text.includes('\0');
 }
 
+/** Sealed to the input-stream helper's key. Node carries bytes it cannot read. */
+export interface DesktopSealedSecret {
+  ephemeral: string;
+  iv: string;
+  ct: string;
+  seq: number;
+}
+
 export interface DesktopProbe {
   screenPermission: boolean;
   inputPermission: boolean;
@@ -65,19 +76,86 @@ export interface DesktopProbe {
   onConsole?: boolean;
   loginDone?: boolean;
   screenLocked?: boolean;
+  osMajor?: number;
+  /** The classified lock reading, when the locked-screen controller exists. */
+  lockState?: import('./DesktopLockState.js').DesktopLockState;
   /** macOS only: which identity holds the permission. `own` is the helper
    * itself; `inherited` depends on what started this server's process tree. */
   screenGrant?: 'own' | 'inherited' | 'none';
   inputGrant?: 'own' | 'inherited' | 'none';
+  /** macOS only: which copy of the helper ran, and why a person is needed. */
+  helperSource?: 'retained' | 'packaged';
+  helperFallback?: string;
+  helperChange?: DesktopHelperPermissionChange;
+  /** macOS only, while the locked-screen feature is on. */
+  lockInputs?: import('./DesktopLockState.js').DesktopLockInputs;
+}
+
+export type DesktopPlatform = 'macos' | 'windows';
+
+export interface DesktopDisplay {
+  /** Opaque to viewers; the host resolves it. */
+  id: string;
+  name: string;
+  /** Real pixels. */
+  width: number;
+  height: number;
+  main: boolean;
+}
+
+export interface DesktopDisplayList {
+  displays: DesktopDisplay[];
+  /** null only where canShowAll is true: every screen in one picture. */
+  currentDisplayId: string | null;
+  canShowAll: boolean;
+}
+
+const DISPLAY_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const MAX_DISPLAYS = 16;
+
+export function validDisplayId(value: unknown): value is string {
+  return typeof value === 'string' && DISPLAY_ID.test(value);
+}
+
+/** Host helpers report untrusted text. Bound it before any viewer sees it. */
+export function parseDesktopDisplays(raw: unknown): DesktopDisplay[] {
+  const rows = (raw as { displays?: unknown } | null)?.displays;
+  if (!Array.isArray(rows) || rows.length > MAX_DISPLAYS) throw new Error('desktop-displays-invalid');
+  const seen = new Set<string>();
+  return rows.map((row, index) => {
+    const { id, name, width, height, main } = (row ?? {}) as Record<string, unknown>;
+    if (!validDisplayId(id) || seen.has(id) || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+      || (width as number) < 1 || (width as number) > 65_535
+      || (height as number) < 1 || (height as number) > 65_535 || typeof main !== 'boolean') {
+      throw new Error('desktop-displays-invalid');
+    }
+    seen.add(id);
+    const label = typeof name === 'string'
+      ? [...name].map(c => (c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 ? ' ' : c)).join('').trim().slice(0, 64) : '';
+    return { id, name: label || `Display ${index + 1}`, width: width as number, height: height as number, main };
+  });
 }
 
 export interface DesktopHost {
+  /** Absent on a host that cannot tell a viewer which shortcuts apply. */
+  readonly platform?: DesktopPlatform;
+  /** Absent, or rejecting, means this host cannot switch screens. */
+  listDisplays?(): Promise<DesktopDisplayList>;
+  /** False when the display is not on this machine; the current one stays. */
+  selectDisplay?(displayId: string | null): Promise<boolean>;
   probe(): Promise<DesktopProbe>;
   requestPermission?(): Promise<{ screenPermission: boolean; inputPermission: boolean }>;
   capture(): Promise<Buffer>;
+  /** Optional: running totals of capture time spent inside the host OS. */
+  captureTiming?(): { count: number; totalMs: number; maxMs: number };
   captureH264?(forceKeyframe: boolean): Promise<import('./DesktopVideo.js').DesktopH264Frame | null>;
   cursor?(): Promise<{ x: number; y: number }>;
-  input(action: DesktopInput): Promise<void>;
+  /** A `refused` reply is not a failure: the helper did nothing and lives on. */
+  input(action: DesktopInput): Promise<void | { refused: string }>;
+  secretType?(input: { requestId: string; key: string; secret: DesktopSealedSecret }): Promise<void | { refused: string }>;
+  abortInput?(): void;
+  ensureInputStream?(): void;
+  setSealKeyHandler?(handler: (key: string) => void): void;
   cancelInput(): void;
   setInputFailureHandler?(handler: () => void): void;
   startIndicator(onUnexpectedExit: () => void): Promise<void>;

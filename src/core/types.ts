@@ -3594,9 +3594,30 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
+  machineMaintenance?: {
+    enabled?: boolean;
+    cadenceDays?: number;
+    window?: { start: string; end: string };
+    maxIntervalDays?: number;
+    maxEpisodeDelayMinutes?: number;
+    /** tmux sessions that are not agent work: exact name, or a prefix ending in `*`. Default empty. */
+    nonAgentTmuxSessions?: string[];
+  };
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */
-  remoteDesktop?: { enabled?: boolean; frontMachineId?: string };
+  remoteDesktop?: {
+    enabled?: boolean;
+    frontMachineId?: string;
+    /** macOS: keep one helper copy per Mac so an update with unchanged helper source keeps its grant. Default true. */
+    retainedHelper?: boolean;
+    /** Set when Remote Desktop was turned off on this machine itself: a peer cannot turn it back on. */
+    peerClaimRefused?: boolean;
+    /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
+    guidedSetup?: { enabled?: boolean };
+    /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
+    lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
+  };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;
   /** Project root directory */
@@ -3918,7 +3939,15 @@ export interface InstarConfig {
      * Native app conversations (docs/specs/mobile-native-conversations.md). `enabled` omitted ⇒
      * the developmentAgent gate decides; read at boot.
      */
-    native?: { enabled?: boolean };
+    native?: {
+      enabled?: boolean;
+      /**
+       * Media in app conversations (docs/specs/mobile-native-chat-media.md). `enabled` omitted ⇒
+       * the developmentAgent gate decides, read at boot; needs `native.enabled`.
+       * `maxStoreBytes` (default 20 GiB, read live) is the agent-wide admission cap.
+       */
+      media?: { enabled?: boolean; maxStoreBytes?: number };
+    };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
@@ -3926,6 +3955,8 @@ export interface InstarConfig {
      * Read at boot.
      */
     multiRoute?: { enabled?: boolean };
+    /** Mobile push (docs/specs/mobile-push.md). `enabled` omitted ⇒ follows mobilePairing. */
+    push?: { enabled?: boolean; teamId?: string };
   };
   maturationBoard?: {
     enabled?: boolean;
@@ -5189,6 +5220,12 @@ export interface InstarConfig {
   autonomousSessions?: {
     /** Max concurrent autonomous jobs (default 5). New starts beyond this are refused. */
     maxConcurrent?: number;
+    /**
+     * Tell the operator, once, in the run's own topic when a registered run is
+     * still 'preparing' a few minutes after it started (it is not running and
+     * nothing revives it). Default on; `enabled: false` silences it.
+     */
+    preparingWatchdog?: { enabled?: boolean };
     /**
      * Codex autonomous-loop driver (codex/Claude parity). When enabled, the standing
      * codex Stop hook (`autonomous-stop-hook.sh --codex`, installed by installCodexHooks)

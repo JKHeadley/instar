@@ -18,6 +18,7 @@ import path from 'node:path';
 import type { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import type { AppConversationStore } from './AppConversationStore.js';
 import { cleanConversationTitle } from './appConversationText.js';
+import { historyLine } from './appMediaTypes.js';
 
 export interface AppDispatchInput {
   conversationKey: string;
@@ -85,9 +86,13 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
       lines.push(`--- Conversation History (last ${history.length} messages) ---`);
       for (const m of history) {
         const time = new Date(m.at).toISOString().slice(11, 19);
-        lines.push(`[${time}] ${m.role === 'agent' ? 'Agent' : (cleanConversationTitle(input.ownerName) ?? 'Operator')}: ${m.text}`);
+        const who = m.role === 'agent' ? 'Agent' : (cleanConversationTitle(input.ownerName) ?? 'Operator');
+        // Lazy on purpose (media spec §4.5): earlier files are named, never copied or pulled here.
+        for (const a of m.attachments ?? []) lines.push(`[${time}] ${who}: ${historyLine(a)}`);
+        if (m.text || !m.attachments) lines.push(`[${time}] ${who}: ${m.text}`);
       }
       lines.push('--- End Conversation History ---');
+      if (history.some((m) => m.attachments)) lines.push('To open an earlier file, run: .instar/scripts/app-media-path <attachment id>');
       lines.push('');
     }
     lines.push('CRITICAL: You MUST relay your response back to the app after responding.');
@@ -98,7 +103,8 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     lines.push('EOF');
     lines.push('');
     lines.push('Strip the [app:] prefix before interpreting the message.');
-    lines.push('Only relay conversational text — not tool output, file contents, or internal reasoning.');
+    lines.push('To send files, add --file <path> before the text (repeat it for several); the text can be an argument or piped in as usual.');
+    lines.push('Only relay conversational text and the files you mean to send — not tool output or internal reasoning.');
     lines.push(`Conversation id: ${input.alias} — the durable identity of THIS app conversation on this machine. Use it as the topicId when opening durable state (e.g. POST /commitments).`);
     const contextData = lines.join('\n');
     const tmpDir = path.join(deps.stateDir, 'state', 'app-dispatch');

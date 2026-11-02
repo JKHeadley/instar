@@ -686,8 +686,19 @@ export class MultiMachineCoordinator extends EventEmitter {
    * dependency when its flag is omitted. Explicit false remains authoritative;
    * this never grants a lease or enables the other B3 rollout mechanisms. */
   enrollOriginWriterLeaseRenewal(): () => void {
-    if (this.leaseRenewStopped) throw new Error('origin-lease-renewal-coordinator-stopped');
-    const owner = Symbol('telegram-origin-writer');
+    return this.enrollLeaseRenewalDependency('telegram-origin-writer');
+  }
+
+  /** Any conversation surface that admits work only while this machine holds the
+   * lease (the Telegram origin writer, native app conversations) enrolls the same
+   * holder-only renewal carrier. Without it a non-development agent's lease lapses
+   * at TTL and is re-acquired only at the next 2-minute heartbeat tick, so the
+   * surface refuses work for the gap and the epoch climbs every tick. Same rules
+   * as the origin writer: explicit false wins; renewal never acquires and stops
+   * the moment a higher epoch is seen. Returns an idempotent release. */
+  enrollLeaseRenewalDependency(name: string): () => void {
+    if (this.leaseRenewStopped) throw new Error('lease-renewal-coordinator-stopped');
+    const owner = Symbol(name);
     this.originLeaseRenewalOwners.add(owner);
     if (!this.leaseRenewTimer) this.startLeaseRenewTimer();
     return () => {
@@ -965,8 +976,9 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
-   * B3 keeps its standalone dev gate. An enrolled origin writer requires this
-   * existing renewal carrier when the flag is omitted; explicit booleans win.
+   * B3 keeps its standalone dev gate. An enrolled lease-dependent surface (origin
+   * writer, app conversations) requires this existing renewal carrier when the
+   * flag is omitted; explicit booleans win.
    * Read live so disabling it takes effect on the next renew tick.
    */
   private resilientRenewEnabled(): boolean {

@@ -32,7 +32,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -265,6 +265,7 @@ export function WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port: number): string {
 An autonomous window is active only while FIVE independently observed predicates are green: its bound executor process is running; its bound framework transcript has a fresh heartbeat; Telegram delivery is reachable; a fresh monotone durable-work receipt exists; and the exact lifecycle/run binding is admitted and unexpired. Any missing predicate revokes active to at-risk. The authority durably permits exactly one bounded recovery; a verified green re-sample restores active, otherwise it settles loudly to stalled or failed within 15 minutes.
 - **Registry First:** GET http://localhost:${port}/window-run-liveness returns the durable state, predicate verdicts, recovery receipt, hash-chained sample/work audit, transitions, and frozen exit proof. A 503 means it is dark on this agent; never infer health from that.
 - **Durable work receipts:** POST /window-run-liveness/work-advance accepts only the immutable run binding plus a relative artifact path. The server selects the first open/unreceipted task from the run-bound autonomous checklist, resolves and hashes the artifact, rejects unchanged bytes, and mints task/sequence/time/digest; callers never submit task refs, predicate booleans, timestamps, sequences, or digests. Pane narration and spinner changes are not work evidence.
+- **Registering a window:** POST /window-run-liveness/register takes exactly five fields: \`{"windowId":"<unique per window>","topicId":<topic>,"autonomousRunId":"<runId from POST /autonomous/register>","lifecycleRunId":"<same runId for an ordinary run>","executorId":"<this session's tmux name>"}\`. Any other key (e.g. \`runId\`) or a missing field is refused with a 400 that names it; never guess a field name. Each topic keeps its own binding, so a run in one topic never blocks a run in another. Within a topic, a finished (failed/stalled/closed) window does not block a new one; a different window still live in that topic does (\`window-run-liveness-active-binding-exists\`), and one window cannot be live in two topics (\`window-run-liveness-window-bound-elsewhere\`). Add \`?topicId=N\` to GET /window-run-liveness or the cadence routes to read one topic's binding.
 - **Preparation composition:** before lifecycle admission, the state remains preparing and does not consume the sole recovery. The separate between-window preparation carrier owns that interval.
 - **W32 cadence executor:** when explicitly enabled, GET /window-run-liveness/cadence exposes durable, distinct 30-minute interval receipts and 3-hour synthesis delivery receipts. It prompts the bound executor near a due interval but only a server-minted work receipt can pass it; narration never counts. POST /window-run-liveness/cadence/tick is the authenticated deterministic tick surface. A recovered/rebound executor continues the same cadence record instead of resetting the clock.
 - Ships on Echo development agents with dryRun:true unless explicitly enabled/actuated via monitoring.windowRunLiveness. Proactive trigger: when asked whether a window run is actually alive, stalled, or recovered, read this registry instead of trusting an “active” label.
@@ -953,6 +954,24 @@ The session's bind token is the only destination; the script takes no conversati
 `;
 }
 
+export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
+
+/**
+ * CLAUDE.md awareness block for media in app conversations (docs/specs/mobile-native-chat-media.md).
+ * Its own section, sniffed by its exact heading.
+ */
+export function APP_MEDIA_CLAUDEMD_SECTION(): string {
+  return `\n${APP_MEDIA_CLAUDEMD_MARKER}
+
+App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, \`[voice:<path>] <transcript>\`. Read the file at that path; the copy is mine and a change to it never touches the stored file.
+- **Earlier files** are listed in the context file by name with an attachment id. Open one with \`.instar/scripts/app-media-path <attachment id>\`, which prints a path.
+- **Reply with files**: \`.instar/scripts/app-reply.sh --file <path> "Here it is"\` (up to 10 \`--file\`, before the text; the caption is the text argument or piped in, read with a bounded wait; 50 MiB each, 64 MiB per reply). Put a generated file in \`.instar/app-media/outbox/\`, the project or the temporary directory.
+- **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
+- Sizes and counts are in the authenticated \`/health\` → \`appMedia\`; a count reading null has not been measured yet. Gate: \`mobilePairing.native.media.enabled\` (omitted ⇒ the development-agent gate; needs \`mobilePairing.native.enabled\`); \`mobilePairing.native.media.maxStoreBytes\` caps the store (default 20 GiB).
+- **When to use** (PROACTIVE): the operator asks for a file, a document or an image in an app conversation → send it with \`--file\` rather than describing it. "Is my file intact?" → history shows each file's \`bytes\` (\`verified\`, \`not-here\`, \`mismatch\`, \`removed\`). A file on another of my machines reads \`not-here\` until copies between machines ship.
+`;
+}
+
 /**
  * CLAUDE.md awareness block for several routes per agent (docs/specs/mobile-multi-route.md).
  * Unique content-sniff marker: `Mobile app routes`.
@@ -980,6 +999,21 @@ A weekly review of a watchlist of similar projects, each idea checked against ou
 - **Default outcome: no change.** A reduction needs a pre-planned blind trial before its default changes beyond one development agent (\`docs/proofs/<idea>.json\`, enforced by \`scripts/lint-ecosystem-adoption.mjs\` on tagged specs). Find earlier research before proposing a reduction.
 - Declines, exceptions and watchlist additions are the operator's, by PIN on the dashboard Ideas page. When an adopted idea ships, record its prediction: \`POST /ecosystem-ideas/IDEA_ID/adoption\`.
 - **When to use** (PROACTIVE): "what could we learn from other projects?" / "why was this idea stopped?" → read the route and quote the band and its reason.
+`;
+}
+
+/**
+ * CLAUDE.md awareness block for mobile push (docs/specs/mobile-push.md).
+ * Unique content-sniff marker: `Mobile push notifications`.
+ */
+export function MOBILE_PUSH_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile push notifications — the Instar iPhone app buzzes when something needs the operator
+
+When I post to the Attention topic (an item, or a hub notice such as lost messages), every paired phone that turned notifications on gets a push, sent straight from me to Apple with the operator's APNs key (vault \`apns_key_p8\`, \`apns_key_id\`; team id in \`mobilePairing.push.teamId\`). Apple only sees "Something needs you"; the phone fetches the title from me with a read-only token. A phone gets at most one notification every 2 minutes (the rest fold into one), hourly after 40 in a day, urgent items sooner; nothing is dropped. Other machines of this agent are told too, and the same condition does not buzz twice.
+- Status: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/push\` → \`{ enabled, keyConfigured, pausedReason, devices: [{ sent24h, throttled, pending, lastSend }], fanout }\`. \`sent\` means Apple accepted it, not that the phone showed it.
+- \`keyConfigured: false\` → the APNs key is not in my vault yet; nothing is sent. \`pausedReason\` → Apple refused the key; it clears by itself when the key, key id or team id changes.
+- Gate: \`mobilePairing.push.enabled\` (omitted ⇒ follows \`mobilePairing\`).
+- **When to use** (PROACTIVE): "why didn't my phone buzz?" → read the status (no key, paused, throttled, or the item was held by the Attention hub filter, which logs every held post); "turn off phone notifications" → \`mobilePairing.push.enabled: false\`.
 `;
 }
 
@@ -1170,6 +1204,24 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 - **Ships enabled in DRY-RUN**: it reports what it WOULD close and kills nothing. Read \`wouldKillDistinct\` for the backlog (\`wouldKill\` re-counts the same orphan every pass). Arm it with \`monitoring.codexArmSessionSweeper.dryRun: false\` — read live at each pass, no restart. \`enabled: false\` turns it off (next restart; it then grades \`diverged-from-default\` on \`/guards\`, deliberately).
 - Safety: a session is a candidate only if its name's embedded birth time agrees with tmux's own creation record; the age threshold is clamped to a 5-minute floor (~2x the ~150 s modeled arming budget); an attached or recently-active session is kept whatever its age; a future-dated session is kept; an unreadable session list, or an unreadable protected-name list, ends the pass with zero kills; a pass is capped at 50 attempts and ~3 s of wall clock.
 - Proactive: user asks "why is this machine so full / what are all these terminal sessions?" → read this status AND run a real \`tmux ls\` count; the two together are the honest answer. Spec: \`docs/specs/codex-arm-session-leak-and-sweeper.md\`.
+`;
+}
+
+/**
+ * The machine self-maintenance section, one definition for fresh agents and updated
+ * ones. It describes the watch-only build only, and says so: a card claiming restarts
+ * would be false until the later increments ship. Sniff key: `/machine-maintenance`.
+ * Spec: docs/specs/machine-self-maintenance.md
+ */
+export function MACHINE_MAINTENANCE_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Machine self-maintenance (watch-only)
+
+Long-running machines collect stuck state, and a planned restart with work paused first is how they get a clean start. Instar is building that, and today it only watches: every night, on a development agent, a paper drain records what a scheduled restart would have done, which delays and safety holds would have applied, and how long each kind of work took to reach its own stopping point. **It cannot restart a machine and it cannot stop any work** (\`canRestart: false\`, \`canStopWork: false\`). It sends no notice, and nothing is enrolled.
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/machine-maintenance\` → \`{ mode, uptimeDays, due, finalNight, nextWindow, plan, delays, safetyHolds, declaredKinds, lastRehearsal, evidence }\`. 503 means it is dark on this agent; that says nothing about the machine. In \`delays\`, \`active: null\` means not read, never "clear". Audit: \`logs/machine-drain.jsonl\`.
+- D2 counts tmux sessions that belong to no agent. List known non-agent ones in \`machineMaintenance.nonAgentTmuxSessions\` (an exact name, or a prefix ending in \`*\`; default empty; read live); anything unlisted still counts. A Slack session is not D2: it is the \`slack-session\` kind and returns on the next message in its channel or thread, from a saved resume that lasts 24 hours.
+- Holds S1 and S2 are unproven readings until a live test shows they tell a real install from none. The status says so with \`provenLive: false\`.
+- **When to use** (PROACTIVE): the operator asks "what would a nightly restart do to this machine?", "is this machine overdue for a restart?" or "what can't be paused here?" → read the status and \`lastRehearsal\`. Never say machines restart themselves: they do not yet. Never run a restart or \`sudo shutdown\` by hand. Spec: \`docs/specs/machine-self-maintenance.md\`.
 `;
 }
 
@@ -8059,6 +8111,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: corrected local refusal transport budget awareness');
     }
 
+    const refreshedLease = refreshOriginLeaseAwareness(content);
+    if (refreshedLease !== content) {
+      content = refreshedLease;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: app conversations keep the lease renewed');
+    }
+
     if (!content.includes('Telegram capacity checks:')) {
       content += '\n' + telegramOriginCapacityAwareness();
       patched = true;
@@ -8120,6 +8179,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added pre-admission autonomous continuation carrier awareness');
     }
 
+    if (!content.includes('A run that never starts is reported:')) {
+      content += '\n- **A run that never starts is reported:** `POST /autonomous/register` starts a run `active` (so a dead session is revived) unless an open W32 window can still promote it; then it starts `preparing`. Any run still `preparing` a few minutes after it registered gets ONE plain notice in its topic saying it did not start (`autonomousSessions.preparingWatchdog.enabled: false` silences it). Proactive: user says "the autonomous session never started" → GET /autonomous/sessions and start the run again.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added never-started autonomous run awareness');
+    }
+
     if (!content.includes('Authoritative Window Run Liveness')) {
       content += WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port);
       patched = true;
@@ -8157,6 +8222,27 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(oldTriageLine, currentTriageLine);
       patched = true;
       result.upgraded.push('CLAUDE.md: corrected script result supervision wording');
+    }
+
+    if (content.includes('Authoritative Window Run Liveness') && !content.includes('**Registering a window:**')) {
+      const line = WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port).split('\n').find(entry => entry.startsWith('- **Registering a window:**'));
+      if (line) {
+        content += `\n${line}\n`;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added window-run-liveness register body awareness');
+      }
+    }
+
+    // Liveness became one binding per topic: the old sentence said a live window blocks every other.
+    const singleSlotSentence = 'A finished (failed/stalled/closed) window does not block a new one; a different window that is still live does (`window-run-liveness-active-binding-exists`).';
+    if (content.includes(singleSlotSentence)) {
+      const line = WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port).split('\n').find(entry => entry.startsWith('- **Registering a window:**'));
+      const current = line?.slice(line.indexOf('Each topic keeps its own binding'));
+      if (current) {
+        content = content.replace(singleSlotSentence, current);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: window-run-liveness holds one binding per topic');
+      }
     }
 
     if (!content.includes('W32 cadence executor:')) {
@@ -8603,6 +8689,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Native app conversations (docs/specs/mobile-native-conversations.md) — Agent Awareness + Migration Parity.
+    // Media in app conversations (docs/specs/mobile-native-chat-media.md): its own section, by exact heading.
+    if (!content.includes(APP_MEDIA_CLAUDEMD_MARKER)) {
+      content += APP_MEDIA_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added App conversation media section');
+    }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
       patched = true;
@@ -8628,6 +8720,13 @@ setTimeout(() => process.exit(0), 2000);
       content += ECOSYSTEM_IDEAS_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Ideas from similar projects section');
+    }
+
+    // Mobile push (docs/specs/mobile-push.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile push notifications')) {
+      content += MOBILE_PUSH_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile push notifications section');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.
@@ -11512,6 +11611,37 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
     }
 
+    // Machine self-maintenance, watch-only (machine-self-maintenance spec). Idempotent
+    // via content-sniffing on the route path.
+    if (!content.includes('/machine-maintenance')) {
+      content += '\n' + MACHINE_MAINTENANCE_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added machine self-maintenance section');
+    } else {
+      result.skipped.push('CLAUDE.md: machine self-maintenance section already present');
+    }
+
+    // Reap notices: a background job whose work completed normally no longer
+    // posts to the lifeline (reap-notify spec R1.1, amended 2026-11-01). Patch the
+    // already-installed sentence in place so the agent does not tell the user to
+    // expect a lifeline notice for every finished job. Idempotent: the old
+    // sentence is gone after the first run.
+    {
+      const oldReapSentence = '(bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline)';
+      if (content.includes(oldReapSentence)) {
+        content = content.replace(oldReapSentence, '(bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline — except a background job whose work completed normally, which stays in the reap-log only)');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reap notices — routine job completions stay in the reap-log');
+      }
+      // The Reap-log section (templates.ts) states the same rule in its own words.
+      const oldReapLogSentence = '(bursts coalesce per topic; the lifeline gets unbound sessions + a cross-topic index)';
+      if (content.includes(oldReapLogSentence)) {
+        content = content.replace(oldReapLogSentence, '(bursts coalesce per topic; the lifeline gets unbound sessions + a cross-topic index — except a background job whose work completed normally, which stays in the reap-log only)');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reap-log section — routine job completions stay in the reap-log');
+      }
+    }
+
     // Mid-Work Resume Queue + per-topic reap notices (reap-notify spec).
     // Existing agents only learn the new surfaces through this block — an
     // agent that doesn't know /sessions/resume-queue exists will tell the
@@ -11523,7 +11653,7 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
 
 When sessions are shut down autonomously (resource pressure, quota, age limits), two guarantees now apply:
 
-1. **Every affected conversation is told, durably.** Each topic that lost a session gets ONE plain-English notice in THAT topic (bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline). Delivery is durable — notices queue in a store and an always-on drain retries with backoff; every outcome lands in the reap-log as \`type:'notify'\` records, so "did the user get told?" is auditable.
+1. **Every affected conversation is told, durably.** Each topic that lost a session gets ONE plain-English notice in THAT topic (bursts coalesce per topic; unbound sessions + a cross-topic index go to the lifeline — except a background job whose work completed normally, which stays in the reap-log only). Delivery is durable — notices queue in a store and an always-on drain retries with backoff; every outcome lands in the reap-log as \`type:'notify'\` records, so "did the user get told?" is auditable.
 2. **Work interrupted mid-flight is queued for revival.** A session killed with strong work evidence (an active build/autonomous run, an open commitment, a live subagent) is tagged \`midWork:true\` and queued in a durable per-machine resume queue. Once the machine has been calm for several minutes AND quota allows, sessions are revived ONE AT A TIME in order (interactive before jobs, then first-in-first-out). Ships observe-only (dry-run) by default; jobs only participate when their definition sets \`resumeOnReap: true\`.
 
 - Queue state: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/sessions/resume-queue"\` → entries + paused/breaker/lastTickAt (a wedged drainer is visible here).
@@ -13787,6 +13917,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '## Worktree Notices',
       '**Multi-Session Autonomy**',
       '- **Pre-admission continuation carrier:**',
+      '- **A run that never starts is reported:**',
       '### Authoritative Window Run Liveness',
       '- **W32 cadence executor:**',
       '**Codex quota is first-class in the pool:',
@@ -14100,6 +14231,12 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       const refreshedCapacityShadow = refreshOriginCapacityAwareness(appended);
       if (refreshedCapacityShadow !== appended) {
         appended = refreshedCapacityShadow;
+        mirrored++;
+      }
+
+      const refreshedLeaseShadow = refreshOriginLeaseAwareness(appended);
+      if (refreshedLeaseShadow !== appended) {
+        appended = refreshedLeaseShadow;
         mirrored++;
       }
 

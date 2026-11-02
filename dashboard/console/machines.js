@@ -2,7 +2,7 @@
 // Reads only; the one frequent write is Rename (bearer). Identity reviews stay in
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
-import { buildMachinesPage, ropesFor, healthOf, usageOf } from './machines-model.js';
+import { buildMachinesPage, ropesFor, healthOf, usageOf, machineCareLine } from './machines-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
@@ -11,7 +11,7 @@ const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'do
 export async function renderMachines(main, ctx) {
   const { get } = ctx;
   if (!main.querySelector('.machine-cards')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
-  const [pool, health, guards, sessions] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000)]);
+  const [pool, health, guards, sessions, care] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance')]);
   const live = sessions.ok && Array.isArray(sessions.data && sessions.data.sessions) ? sessions.data.sessions.filter((s) => s.status === 'running' || s.status === 'starting') : [];
   const byMachine = {};
   const names = {};
@@ -38,6 +38,7 @@ export async function renderMachines(main, ctx) {
   setKids(main, 
     pageHead({ eyebrow: 'Capacity · Machines', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     !sessions.ok ? note(`Couldn't count sessions: ${sessions.reason}.`) : null,
+    machineCareLine(care) ? note(machineCareLine(care)) : null,
     cards,
     legacyLink(),
   );

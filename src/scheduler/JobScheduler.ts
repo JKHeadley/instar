@@ -1330,6 +1330,11 @@ export class JobScheduler {
   /**
    * Get scheduler status for the /status endpoint.
    */
+  /** Ids of script runs in progress. A read for the machine-maintenance work census. */
+  getActiveScriptRunIds(): string[] {
+    return [...this.activeScriptRunIds];
+  }
+
   getStatus(): SchedulerStatus {
     const runningSessions = this.sessionManager.listRunningSessions();
     return {

@@ -346,6 +346,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'saved under the gitignored per-agent <stateDir>/state/dashboard-uploads/ for a session running on this machine; 30-day retention; another machine\'s session is refused',
   } });
+  // Locked-screen setting and Disable: each Mac owns its own setting and helper
+  // marker; the front relays the change to the target over the mesh, never replicates it.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/locked/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes this Mac\'s own locked-screen settings and helper marker; a peer\'s setting is changed by relaying to that Mac, never by syncing files',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/activate-config', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
@@ -621,6 +629,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       logical: 'per-machine-path',
       onSharedGitSyncedPath: false,
       note: 'the route accepts only a conversation THIS machine owns and holds a bind-app binding for (409 not-owner otherwise), then appends the agent reply to the machine-local app conversation store, which replicates through the appConversations kind; no git-synced store is mutated',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mobile/media/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'a phone uploads to the machine holding its device record (mobile-device-keys §4); staged chunks and blobs live under this machine\'s state dir, and only the resulting events replicate, through the appConversations kind; no git-synced store is mutated',
     },
   });
   reg.add({
@@ -1080,6 +1099,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // even if that rule were violated: the CAS stamp makes a second writer a
   // no-op, so a duplicate reminder is impossible, only duplicated work.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/check-in-reminder/pass', domain: 'cluster-shared' });
+  // The dashboard's Approve / Decline on a promise waiting on the operator: the same
+  // owner-routed commitment mutation as /transition and /withdraw (a replica forwards
+  // to the machine that holds the promise).
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/decide', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });

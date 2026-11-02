@@ -39,6 +39,7 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import type { RouteContext } from './routes.js';
 import { MobileOwnNames, normalizeRequestHost, type TailscaleExec } from '../core/MobileOwnNames.js';
 import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
+import type { MobilePushService, PushTrigger } from '../core/MobilePush.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 import { APP_CONVERSATION_KEY_PATTERN, derivedEventId } from '../core/appConversationText.js';
@@ -133,6 +134,12 @@ export function isMobileMultiRouteEnabled(config: InstarConfig): boolean {
   return isMobilePairingEnabled(config) && resolveDevAgentGate(config.mobilePairing?.multiRoute?.enabled, config);
 }
 
+/** `mobilePairing.push.enabled`, omitted ⇒ follows mobilePairing. Read live. */
+export function isMobilePushEnabled(config: InstarConfig): boolean {
+  if (!isMobilePairingEnabled(config)) return false;
+  return config.mobilePairing?.push?.enabled !== false;
+}
+
 /** `mobilePairing.chat.enabled`, omitted ⇒ follows mobilePairing. Read live. */
 export function isMobileChatEnabled(config: InstarConfig): boolean {
   if (!isMobilePairingEnabled(config)) return false;
@@ -143,6 +150,11 @@ export function isMobileChatEnabled(config: InstarConfig): boolean {
  * `mobilePairing.native.enabled` (docs/specs/mobile-native-conversations.md): omitted ⇒ the
  * development-agent gate; requires mobilePairing itself. Read ONCE at boot by AgentServer.
  */
+/** Media in app conversations (mobile-native-chat-media): dev-gated, needs native conversations. */
+export function isMobileMediaEnabled(config: InstarConfig): boolean {
+  return isMobileNativeEnabled(config) && resolveDevAgentGate(config.mobilePairing?.native?.media?.enabled, config);
+}
+
 export function isMobileNativeEnabled(config: InstarConfig): boolean {
   if (!isMobilePairingEnabled(config)) return false;
   return resolveDevAgentGate(config.mobilePairing?.native?.enabled, config);
@@ -166,8 +178,13 @@ export class MobilePairingService {
   private selfNonces = new Map<string, number>();
   private pingTimes: number[] = [];
   private deviceRate = new Map<string, number[]>();
+  private deviceBucket = new Map<string, number[]>();
   /** This machine's own names; null when multi-route is off (read at boot). */
   readonly ownNames: MobileOwnNames | null;
+  /** Mobile push (docs/specs/mobile-push.md), wired by AgentServer; null when not built. */
+  push: MobilePushService | null = null;
+  /** Peer resolution for the push fan-out, set once the route context exists. */
+  pushPoolCtx: PoolCtx | null = null;
 
   constructor(readonly deps: MobilePairingDeps, now: () => number = Date.now) {
     this.codes = new PairingCodeStore(now);
@@ -238,6 +255,15 @@ export class MobilePairingService {
     const arr = (this.deviceRate.get(deviceId) ?? []).filter((x) => t - x < 60_000);
     if (arr.length >= 120) { this.deviceRate.set(deviceId, arr); return false; }
     arr.push(t); this.deviceRate.set(deviceId, arr);
+    return true;
+  }
+
+  /** A rule's own per-minute bucket (media chunks), independent of the read allowance. */
+  deviceBucketOk(deviceId: string, perMinute: number): boolean {
+    const t = this.now();
+    const arr = (this.deviceBucket.get(deviceId) ?? []).filter((x) => t - x < 60_000);
+    if (arr.length >= perMinute) { this.deviceBucket.set(deviceId, arr); return false; }
+    arr.push(t); this.deviceBucket.set(deviceId, arr);
     return true;
   }
 
@@ -334,6 +360,19 @@ export class MobilePairingService {
       }
     }
     return { ok: true };
+  }
+}
+
+/** Send a push trigger to every other online machine (mobile-push §2.3): 5 s, no retry. */
+export function fanOutPushTrigger(ctx: PoolCtx | null, t: PushTrigger, onResult?: (machineId: string, ok: boolean) => void): void {
+  if (!ctx) return;
+  const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+  for (const p of (ctx.resolvePeerUrls?.() ?? []).slice(0, 16)) {
+    if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { onResult?.(p.machineId, false); continue; }
+    void poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/mobile/push/notify', {
+      method: 'POST', headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(t), signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+    }).then((r) => onResult?.(p.machineId, r.ok)).catch(() => onResult?.(p.machineId, false)); // @silent-fallback-ok — an offline machine misses this notification (spec 4)
   }
 }
 
@@ -569,6 +608,91 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.status(202).json({ pending: true, detail: 'No machine holding this phone confirmed yet. Until one does, the phone may still have access. Revoke it on the machine that serves its address for an immediate effect.' });
   });
 
+  // ── Mobile push (docs/specs/mobile-push.md) ──
+  router.post('/mobile/device/push', (req: Request, res: Response) => {
+    if (!svc.enabled()) { json503(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const revision = b.revision;
+    if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) { res.status(400).json({ error: 'bad-revision' }); return; }
+    let reg: Parameters<typeof svc.devices.setPush>[1];
+    if (b.token === null) reg = { token: null, revision };
+    else {
+      if (typeof b.token !== 'string' || !/^[0-9a-f]{64,200}$/.test(b.token)) { res.status(400).json({ error: 'bad-token' }); return; }
+      if (b.environment !== 'sandbox' && b.environment !== 'production') { res.status(400).json({ error: 'bad-environment' }); return; }
+      if (typeof b.notifyTokenHash !== 'string' || !/^[0-9a-f]{64}$/.test(b.notifyTokenHash)) { res.status(400).json({ error: 'bad-notify-token-hash' }); return; }
+      reg = { token: b.token, environment: b.environment, notifyTokenHash: b.notifyTokenHash, revision };
+    }
+    let r: ReturnType<typeof svc.devices.setPush>;
+    try { r = svc.devices.setPush(p.deviceId, reg); } catch (err) {
+      deps.reportDegradation?.('MobilePush.registryWrite', err);
+      res.status(500).json({ error: 'Could not record the registration. Try again.' });
+      return;
+    }
+    if (!r.ok) { res.status(r.reason === 'not-active' ? 403 : 409).json({ error: r.reason }); return; }
+    res.json({ ok: true, revision: r.revision });
+  });
+
+  router.get('/mobile/attention/:id', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device' && p.kind !== 'device-notify') { res.status(403).json({ error: 'device-required' }); return; }
+    const id = String(req.params.id);
+    const machine = typeof req.query.machine === 'string' ? req.query.machine : deps.selfMachineId ?? null;
+    const view = (item: unknown) => {
+      const it = (item ?? {}) as { title?: unknown; priority?: unknown };
+      return { title: cleanText(it.title, 160) ?? '', priority: typeof it.priority === 'string' ? it.priority : null };
+    };
+    if (!machine || machine === deps.selfMachineId) {
+      const item = poolCtx?.telegram?.getAttentionItem?.(id);
+      if (!item) { res.status(404).json({ error: 'not-found' }); return; }
+      res.json(view(item));
+      return;
+    }
+    const peer = (poolCtx?.resolvePeerUrls?.() ?? []).find((x) => x.machineId === machine);
+    const allow = (deps.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    if (!peer || !poolCtx || !isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allow).ok) { res.status(404).json({ error: 'not-found' }); return; }
+    try {
+      const r = await poolPeerFetch(poolCtx.recordRopeResult ?? undefined, peer, `/attention/${encodeURIComponent(id)}`, {
+        headers: { Authorization: `Bearer ${deps.config.authToken}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+      });
+      if (!r.ok) { res.status(404).json({ error: 'not-found' }); return; }
+      const text = await r.text();
+      if (Buffer.byteLength(text) > MAX_PEER_BYTES) { res.status(404).json({ error: 'not-found' }); return; }
+      res.json(view(JSON.parse(text)));
+    } catch { res.status(404).json({ error: 'not-found' }); } // @silent-fallback-ok — the phone keeps the generic text
+  });
+
+  const notifyTimes: number[] = [];
+  router.post('/mobile/push/notify', (req: Request, res: Response) => {
+    if (!svc.enabled() || !svc.push || !isMobilePushEnabled(deps.config)) { json503(res); return; }
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'token-required' }); return; }
+    const t = Date.now();
+    while (notifyTimes.length && t - notifyTimes[0]! > 60 * 60_000) notifyTimes.shift();
+    if (notifyTimes.length >= 120) { svc.push.noteRefused(); res.status(429).json({ error: 'too-many-requests' }); return; }
+    notifyTimes.push(t);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const kind = b.kind === 'notice' ? 'notice' : b.kind === 'item' ? 'item' : null;
+    const dedupeKey = typeof b.dedupeKey === 'string' ? b.dedupeKey.slice(0, 200) : '';
+    const sourceMachine = typeof b.sourceMachine === 'string' ? b.sourceMachine.slice(0, 80) : '';
+    if (!kind || !dedupeKey || !sourceMachine) { res.status(400).json({ error: 'bad-trigger' }); return; }
+    const trig: PushTrigger = {
+      kind, dedupeKey, sourceMachine,
+      ...(kind === 'item' && typeof b.itemId === 'string' ? { itemId: b.itemId.slice(0, 120) } : {}),
+      ...(typeof b.priority === 'string' ? { priority: b.priority.slice(0, 20) } : {}),
+    };
+    res.status(202).json({ accepted: true });
+    void svc.push.receive(trig, true).catch((err) => deps.reportDegradation?.('MobilePush.receive', err)); // @silent-fallback-ok — reported through DegradationReporter
+  });
+
+  router.get('/mobile/push', (_req: Request, res: Response) => {
+    if (!svc.enabled()) { json503(res); return; }
+    if (!svc.push) { res.json({ enabled: false, keyConfigured: false, devices: [], reason: 'not-built' }); return; }
+    res.json(svc.push.status());
+  });
+
   // ── Native operator chat (docs/specs/mobile-operator-chat.md) ──
   // Order: authenticate → look up → preflight → reserve → core → mirror.
   const chatRate = new Map<string, number[]>();
@@ -583,6 +707,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     const requestId = body.requestId;
     if (!Number.isSafeInteger(topicId) || topicId <= 0) { res.status(400).json({ error: 'bad-topic' }); return; }
+    // A message with files needs the media path (increment 3); never store it without them.
+    if (body.attachments !== undefined) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into a Telegram topic is not available yet.' }); return; }
     if (text.length < 1 || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
     const store = chatStoreOf();
@@ -735,7 +861,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   return router;
 }
 
-type Principal = { kind: 'device'; deviceId: string } | { kind: 'token' };
+type Principal = { kind: 'device'; deviceId: string } | { kind: 'device-notify'; deviceId: string } | { kind: 'token' };
 function principalOf(req: Request): Principal {
   return ((req as unknown as { instarPrincipal?: Principal }).instarPrincipal) ?? { kind: 'token' };
 }
@@ -774,7 +900,10 @@ async function forwardRevoke(ctx: PoolCtx, id: string): Promise<{ confirmedBy: s
 // when native conversations are on: sends have their own limit in preflight, so the app's read
 // polling can never use up the allowance an emergency stop needs (mobile-native-conversations §4.2).
 const UUID = APP_CONVERSATION_KEY_PATTERN;
-const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean }> = (() => {
+// `body`: the request body this rule accepts ('json' when absent, as for every older rule, which
+// also allows no body). `ownBucket`: requests per minute in the rule's own bucket instead of the
+// shared read allowance (media chunks, mobile-native-chat-media §4.10).
+const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number }> = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   return [
     { method: 'GET', re: /^\/health$/, statuses: active },
@@ -798,6 +927,14 @@ const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: ReadonlySe
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active },
+    { method: 'POST', re: /^\/mobile\/device\/push$/, statuses: active },
+    { method: 'GET', re: /^\/mobile\/attention\/[^/]+$/, statuses: active },
+    // Media in app conversations (mobile-native-chat-media §4.10).
+    { method: 'POST', re: /^\/mobile\/media\/uploads$/, statuses: active, body: 'json' },
+    { method: 'PUT', re: new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), statuses: active, body: 'octet', ownBucket: 240 },
+    { method: 'GET', re: new RegExp(`^/mobile/media/uploads/${UUID}$`), statuses: active, body: 'none' },
+    { method: 'GET', re: /^\/mobile\/media\/[0-9a-f]{64}$/, statuses: active, body: 'none' },
+    { method: 'POST', re: /^\/mobile\/media\/purge$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/devices\/[^/]+\/revoke$/, statuses: new Set(['pending', 'active', 'declined', 'expired']) },
   ];
 })();
@@ -814,11 +951,27 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!svc.enabled()) return 'none'; // gate off: device headers authenticate nothing
     const refuse = (status: number, error: string): 'refused' => { res.status(status).json({ error }); return 'refused'; };
     const pathNorm = req.path.toLowerCase().replace(/\/+$/, '') || '/';
+    // Notification read token (mobile-push §2.2): exactly GET /mobile/attention/<id>, no signature.
+    const notifyToken = req.headers['x-instar-notify-token'];
+    if (notifyToken !== undefined) {
+      if (req.method !== 'GET' || !/^\/mobile\/attention\/[^/]+$/.test(pathNorm) || req.headers['x-instar-device-sig'] !== undefined || typeof notifyToken !== 'string' || typeof id !== 'string') return refuse(403, 'notify-token-not-allowed');
+      const d = svc.devices.get(id);
+      const h = crypto.createHash('sha256').update(notifyToken).digest();
+      const stored = d?.notifyTokenHash ? Buffer.from(d.notifyTokenHash, 'hex') : null;
+      if (!d || d.status !== 'active' || !stored || stored.length !== h.length || !crypto.timingSafeEqual(stored, h)) return refuse(401, 'device-unauthorized');
+      if (!svc.deviceRateOk(d.id)) return refuse(429, 'too-many-requests');
+      (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device-notify', deviceId: d.id };
+      return 'ok';
+    }
     const rule = DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm));
     if (!rule) return refuse(403, 'device-not-allowed');
     const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
     const contentLength = Number(req.headers['content-length'] ?? 0);
     if ((contentLength > 0 || req.headers['transfer-encoding'] !== undefined) && !raw) return refuse(415, 'device requests must send JSON');
+    // Each rule names its body type; a body of another type is refused before the signature check.
+    const octet = /^application\/octet-stream\b/i.test(String(req.headers['content-type'] ?? ''));
+    if (rule.body === 'octet' ? !(octet && raw) : octet) return refuse(415, rule.body === 'octet' ? 'this route takes application/octet-stream' : 'device requests must send JSON');
+    if (rule.body === 'none' && contentLength > 0) return refuse(415, 'this route takes no body');
     // Multi-route (spec 4.2): the signature names the Host it was sent to. That Host counts only
     // if it is a listed own name still named by local configuration AND this request itself
     // arrived through this machine's own local TLS front. Flag off: the stored paired host.
@@ -841,10 +994,12 @@ export function deviceAuthenticator(svc: MobilePairingService) {
         const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id);
         return { publicKey: d.publicKey, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
       },
-      rule.statuses, svc.replay,
+      rule.statuses, svc.replay, Date.now(), rule.sendRoute === true,
     );
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
-    if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
+    if (rule.ownBucket !== undefined) {
+      if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket)) return refuse(429, 'too-many-requests');
+    } else if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();

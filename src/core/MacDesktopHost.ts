@@ -4,8 +4,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validDesktopInput, type DesktopButton, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
+import { parseDesktopDisplays, validDesktopInput, validDisplayId, type DesktopButton, type DesktopDisplayList, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
+import type { DesktopSealedSecret } from './DesktopHost.js';
+import { DesktopHelperRetention } from './DesktopHelperRetention.js';
 
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
@@ -16,16 +18,27 @@ export type MacDesktopProbe = DesktopProbe;
 type HelperIdentity = 'inherited' | 'own';
 const HELPER_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 const OWN_PROBE_GRACE_MS = 30_000;
+const PACKAGED_PROBE_RETRY_MS = 5_000;
+const KEPT_PROBE_FAILURE_LIMIT = 3;
 
 const FRAME_LIMIT = 1_250_000;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_HOST = path.basename(path.dirname(MODULE_DIR)) === 'src'
+export const DEFAULT_MAC_DESKTOP_HELPER = path.basename(path.dirname(MODULE_DIR)) === 'src'
   ? path.resolve(MODULE_DIR, '..', '..', 'dist', 'native', 'instar-desktop-host')
   : path.resolve(MODULE_DIR, '..', 'native', 'instar-desktop-host');
+
+/** The helper's real path on this Mac, for the setup fallback's + step. */
+export function macDesktopHelperPath(): string { return fs.realpathSync(DEFAULT_MAC_DESKTOP_HELPER); }
 
 const validInput = validDesktopInput;
 
 export class MacDesktopHost implements DesktopHost {
+  readonly platform = 'macos' as const;
+  /** null is the main display, resolved by the helper at each start. */
+  private selectedDisplayId: string | null = null;
+  private displayCheckPending = false;
+  /** Bumped by every cancel, so a capture that yielded cannot start a helper afterwards. */
+  private captureGeneration = 0;
   private readonly inputChildren = new Set<{ kill(signal?: NodeJS.Signals): boolean }>();
   private indicatorChild: ChildProcessWithoutNullStreams | null = null;
   private inputStream: ChildProcessWithoutNullStreams | null = null;
@@ -37,7 +50,9 @@ export class MacDesktopHost implements DesktopHost {
   private captureLastFrame: Buffer | null = null;
   private pendingCapture: { resolve(frame: Buffer): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   private inputReply = '';
-  private pendingInput: { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private pendingInput: { resolve(reply: void | { refused: string }): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private lockedMode: { root: string; refuse: string[]; chime?: boolean } | null = null;
+  private sealKeyHandler: ((key: string) => void) | null = null;
   private heldRemoteButton: DesktopButton | null = null;
   private readonly heldRemoteKeys = new Set<string>();
   private pendingControlAction: DesktopInput | null = null;
@@ -48,9 +63,49 @@ export class MacDesktopHost implements DesktopHost {
   private screenIdentity: HelperIdentity = 'inherited';
   private inputIdentity: HelperIdentity = 'inherited';
   private lastOwnProbe: { value: MacDesktopProbe; at: number } | null = null;
-  constructor(private readonly binary = DEFAULT_HOST) {}
+  private lastPackagedOwnProbe: { value: MacDesktopProbe; at: number } | null = null;
+  private lastPackagedProbeFailureAt = 0;
+  /** Set while the installed copy still holds a grant the kept copy lacks. */
+  private servingPackaged = false;
+  private keptProbeFailures = 0;
+  constructor(
+    private readonly binary = DEFAULT_MAC_DESKTOP_HELPER,
+    private readonly retention: DesktopHelperRetention | null = null,
+  ) {}
 
   setInputFailureHandler(handler: () => void): void { this.inputFailureHandler = handler; }
+  setSealKeyHandler(handler: (key: string) => void): void { this.sealKeyHandler = handler; }
+
+  /** Off means no helper is ever told, so every verb refuses at the shield. */
+  setLockedMode(mode: { root: string; refuse: string[]; chime?: boolean } | null): void { this.lockedMode = mode; }
+
+  /** Stop reaches a password send between characters. */
+  abortInput(): void { this.inputStream?.stdin.write('{"kind":"abort"}\n'); }
+
+  /** The seal key must exist before a sheet can open. */
+  ensureInputStream(): void { if (!this.inputStream) this.startInputStream(); }
+
+  /** One short-lived helper per change, so Node never holds the kernel lock. */
+  async lockedOp(op: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.lockedRoot) throw new Error('mac-desktop-host-locked-unavailable');
+    const raw = await this.run('state-op', Buffer.from(JSON.stringify({ root: this.lockedRoot, ...op })));
+    try { return JSON.parse(raw.toString('utf8')) as Record<string, unknown>; }
+    catch { throw new Error('mac-desktop-host-locked-invalid'); }
+  }
+
+  private lockedRoot: string | null = null;
+  setLockedRoot(root: string): void { this.lockedRoot = root; }
+
+  /** Detached into its own session, so nothing that kills Node reaches it. */
+  async startRelockGuard(key: string): Promise<void> {
+    if (!this.lockedRoot || !/^[a-f0-9-]{36}\.\d+$/.test(key)) throw new Error('mac-desktop-host-guard-invalid');
+    const child = spawn(this.trustedBinary(), ['relock-guard', this.lockedRoot, key], {
+      stdio: 'ignore', detached: true,
+      env: { ...this.helperEnv('own'), INSTAR_DESKTOP_LOCKED_ROOT: this.lockedRoot },
+    });
+    child.on('error', () => { /* @silent-fallback-ok — no heartbeat follows, so typing stays refused and the sweep replaces it. */ });
+    child.unref();
+  }
 
   /** Local kill switch: stop any native input still running when a grant ends. */
   cancelInput(): Promise<void> {
@@ -125,14 +180,27 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private helperEnv(identity: HelperIdentity): NodeJS.ProcessEnv {
+    const locked = this.lockedMode
+      ? { INSTAR_DESKTOP_LOCKED: '1', INSTAR_DESKTOP_LOCKED_ROOT: this.lockedMode.root,
+        INSTAR_DESKTOP_LOCKED_REFUSE: this.lockedMode.refuse.join(','),
+        ...(this.lockedMode.chime ? { INSTAR_DESKTOP_LOCKED_CHIME: '1' } : {}) }
+      : {};
     return identity === 'own'
-      ? { PATH: HELPER_PATH, INSTAR_DESKTOP_OWN_IDENTITY: '1' }
-      : { PATH: HELPER_PATH };
+      ? { PATH: HELPER_PATH, INSTAR_DESKTOP_OWN_IDENTITY: '1', ...locked }
+      : { PATH: HELPER_PATH, ...locked };
   }
 
   private trustedBinary(): string {
+    if (this.retention && !this.servingPackaged) {
+      const resolution = this.retention.resolve();
+      if (resolution.source === 'retained') return resolution.path;
+    }
+    return this.packagedBinary();
+  }
+
+  private packagedBinary(): string {
     if (process.platform !== 'darwin') throw new Error('mac-desktop-host-platform-unavailable');
-    const expectedDir = fs.realpathSync(path.dirname(DEFAULT_HOST));
+    const expectedDir = fs.realpathSync(path.dirname(DEFAULT_MAC_DESKTOP_HELPER));
     const resolved = fs.realpathSync(this.binary);
     if (path.dirname(resolved) !== expectedDir || !fs.statSync(resolved).isFile()) {
       throw new Error('mac-desktop-host-binary-untrusted');
@@ -194,17 +262,18 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private async run(
-    command: 'probe' | 'capture' | 'cursor' | 'input' | 'release' | 'request-permission',
+    command: 'probe' | 'capture' | 'cursor' | 'displays' | 'input' | 'release' | 'request-permission' | 'state-op',
     input?: Buffer,
     identity: HelperIdentity = command === 'capture' ? this.screenIdentity
       : command === 'input' || command === 'release' ? this.inputIdentity : 'inherited',
+    extraArgs: string[] = [],
+    resolved: string = this.trustedBinary(),
   ): Promise<Buffer> {
-    const resolved = this.trustedBinary();
     return new Promise<Buffer>((resolve, reject) => {
-      const child = spawn(resolved, [command], { stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(identity) });
+      const child = spawn(resolved, [command, ...extraArgs], { stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(identity) });
       if (command === 'input') this.inputChildren.add(child);
       const chunks: Buffer[] = [];
-      const limit = command === 'capture' ? FRAME_LIMIT : 4_096;
+      const limit = command === 'capture' ? FRAME_LIMIT : command === 'state-op' ? 64_000 : 4_096;
       let size = 0;
       let settled = false;
       const fail = (reason: string) => {
@@ -214,7 +283,8 @@ export class MacDesktopHost implements DesktopHost {
         reject(new Error(reason));
       };
       const timer = setTimeout(() => fail('mac-desktop-host-timeout'),
-        command === 'request-permission' ? 15_000 : command === 'capture' ? 4_000 : 2_000);
+        command === 'request-permission' ? 15_000 : command === 'capture' ? 4_000
+          : command === 'state-op' ? 10_000 : 2_000);
       timer.unref?.();
       child.stdout.on('data', (chunk: Buffer) => {
         size += chunk.length;
@@ -242,28 +312,113 @@ export class MacDesktopHost implements DesktopHost {
    * capability: an existing inherited grant keeps working until this Mac grants
    * the helper directly, and the helper's own grant wins from then on. */
   async probe(): Promise<MacDesktopProbe> {
-    const inherited = await this.probeAs('inherited');
+    const inputLive = !!(this.inputStream || this.retiringInputStreams.size
+      || this.heldRemoteButton || this.heldRemoteKeys.size);
+    // A live stream stays with the program that started it, and held controls
+    // must be released by the program that pressed them.
+    const live = inputLive || !!this.captureStream;
+    let resolution = this.retention?.resolve() ?? null;
+    let kept = resolution?.source === 'retained' ? resolution.path : undefined;
+    let inherited: MacDesktopProbe;
+    // Set when this probe's readings came from the installed copy, so its
+    // grants are never reported as the kept copy's.
+    let readPackaged = false;
+    try {
+      inherited = await this.probeAs('inherited', kept);
+      this.keptProbeFailures = 0;
+    } catch (error) {
+      if (!kept) throw error;
+      // One slow start under load is not a broken helper: use the installed
+      // copy for this check, and give up on the kept copy only if it keeps failing.
+      inherited = await this.probeAs('inherited', this.packagedBinary());
+      if (++this.keptProbeFailures >= KEPT_PROBE_FAILURE_LIMIT) this.retention!.markBroken();
+      resolution = this.retention!.resolve();
+      kept = undefined;
+      readPackaged = true;
+      if (!live) this.servingPackaged = true;
+    }
     // Grants are rechecked every 500 ms, so one slow helper start must not read
     // as a lost grant and revoke a live session.
-    const own = await this.probeAs('own').then(value => {
+    let own = await this.probeAs('own', kept ?? (this.retention ? this.packagedBinary() : undefined)).then(value => {
       this.lastOwnProbe = { value, at: Date.now() };
       return value;
     }).catch(() => { // @silent-fallback-ok — own-identity trouble leaves the inherited reading intact.
       const recent = this.lastOwnProbe && Date.now() - this.lastOwnProbe.at < OWN_PROBE_GRACE_MS;
       return recent ? this.lastOwnProbe!.value : null;
     });
+    let keptOwn: MacDesktopProbe | null = null;
+    if (kept) {
+      keptOwn = own;
+      const keptHoldsBoth = !!own?.screenPermission && !!own.inputPermission;
+      if (keptHoldsBoth) this.retention!.noteGranted();
+      if (!keptHoldsBoth || this.servingPackaged) {
+        // Never take away a grant that still works: a Mac whose installed copy
+        // is granted keeps using it until the kept copy has its own. The serving
+        // choice changes only here, so nothing spawned during a probe sees it flip.
+        const packaged = await this.packagedOwnProbe();
+        const better = !!packaged && Number(packaged.screenPermission) + Number(packaged.inputPermission)
+          > Number(!!own?.screenPermission) + Number(!!own?.inputPermission);
+        if (!live) this.servingPackaged = better;
+        if (this.servingPackaged && packaged) own = packaged;
+      }
+    }
     this.screenIdentity = own?.screenPermission ? 'own' : 'inherited';
     // Held controls must be released under the identity that pressed them.
-    const inputLive = this.inputStream || this.retiringInputStreams.size
-      || this.heldRemoteButton || this.heldRemoteKeys.size;
     if (!inputLive) this.inputIdentity = own?.inputPermission ? 'own' : 'inherited';
+    const screenPermission = inherited.screenPermission || !!own?.screenPermission;
+    const inputPermission = inherited.inputPermission || !!own?.inputPermission;
+    // The kept copy's story applies only when the kept copy is what this agent runs.
+    const change = screenPermission && inputPermission || resolution?.source !== 'retained'
+      ? null : this.retention?.permissionChange() ?? null;
+    // While the installed copy serves on a grant the kept copy lacks, the kept
+    // copy needs every permission it is missing, not only the one missing overall.
+    const keptMissing = this.servingPackaged && kept
+      ? [!keptOwn?.screenPermission && 'Screen Recording', !keptOwn?.inputPermission && 'Accessibility']
+        .filter(Boolean).join(' and ')
+      : '';
+    const helperChange = change && keptMissing ? { ...change, keptMissing } : change;
     return {
       ...inherited,
-      screenPermission: inherited.screenPermission || !!own?.screenPermission,
-      inputPermission: inherited.inputPermission || !!own?.inputPermission,
+      screenPermission,
+      inputPermission,
       screenGrant: own?.screenPermission ? 'own' : inherited.screenPermission ? 'inherited' : 'none',
       inputGrant: own?.inputPermission ? 'own' : inherited.inputPermission ? 'inherited' : 'none',
+      ...(resolution ? { helperSource: this.servingPackaged || readPackaged ? 'packaged' as const : resolution.source } : {}),
+      ...(resolution?.reason ? { helperFallback: resolution.reason } : {}),
+      ...(helperChange ? { helperChange } : {}),
     };
+  }
+
+  /** Probed only while the kept copy lacks a grant. A good reading is reused for
+   * one grace window, so that is one more helper start in that window on top of
+   * the 500 ms recheck. A failed refresh keeps it for one window more, retrying
+   * every few seconds: one slow start must not read as a lost grant and revoke a
+   * live session, and a failure never replaces a good reading. */
+  private async packagedOwnProbe(): Promise<MacDesktopProbe | null> {
+    const good = this.lastPackagedOwnProbe;
+    const age = good ? Date.now() - good.at : Infinity;
+    if (age < OWN_PROBE_GRACE_MS) return good!.value;
+    const held = age < 2 * OWN_PROBE_GRACE_MS ? good!.value : null;
+    if (Date.now() - this.lastPackagedProbeFailureAt < (held ? PACKAGED_PROBE_RETRY_MS : OWN_PROBE_GRACE_MS)) return held;
+    try {
+      const value = await this.probeAs('own', this.packagedBinary());
+      this.lastPackagedOwnProbe = { value, at: Date.now() };
+      return value;
+    } catch { // @silent-fallback-ok — the last good reading stands; with none, the kept copy's reading stands.
+      this.lastPackagedProbeFailureAt = Date.now();
+      return held;
+    }
+  }
+
+  /** The copy a permission request or a capture would run right now. */
+  servedHelperPath(): string { return this.trustedBinary(); }
+
+  /** The copy guided setup should name: the kept copy whenever this agent keeps
+   * one, even while the installed copy serves on a grant the kept copy lacks,
+   * so setup and the permission notice give the same instruction. */
+  setupHelperPath(): string {
+    const resolution = this.retention?.resolve();
+    return resolution?.source === 'retained' ? resolution.path : this.trustedBinary();
   }
 
   /** Shows macOS's own prompts on the Mac and lists the helper in Privacy &
@@ -279,8 +434,8 @@ export class MacDesktopHost implements DesktopHost {
     return { screenPermission: value.screenPermission, inputPermission: value.inputPermission };
   }
 
-  private async probeAs(identity: HelperIdentity): Promise<MacDesktopProbe> {
-    const raw = await this.run('probe', undefined, identity);
+  private async probeAs(identity: HelperIdentity, binary?: string): Promise<MacDesktopProbe> {
+    const raw = await this.run('probe', undefined, identity, [], binary);
     let value: Partial<MacDesktopProbe>;
     try { value = JSON.parse(raw.toString('utf8')) as Partial<MacDesktopProbe>; }
     catch { throw new Error('mac-desktop-host-probe-invalid'); }
@@ -295,7 +450,51 @@ export class MacDesktopHost implements DesktopHost {
     return value as MacDesktopProbe;
   }
 
+  async listDisplays(): Promise<DesktopDisplayList> {
+    let value: unknown;
+    try { value = JSON.parse((await this.run('displays')).toString('utf8')); }
+    catch (error) {
+      if (error instanceof SyntaxError) throw new Error('mac-desktop-host-displays-invalid');
+      throw error;
+    }
+    const displays = parseDesktopDisplays(value);
+    return { displays, canShowAll: false,
+      currentDisplayId: this.selectedDisplayId ?? displays.find(display => display.main)?.id ?? null };
+  }
+
+  async selectDisplay(displayId: string | null): Promise<boolean> {
+    if (displayId !== null) {
+      if (!validDisplayId(displayId)) return false;
+      if (!(await this.listDisplays()).displays.some(display => display.id === displayId)) return false;
+    }
+    this.displayCheckPending = false;
+    if (displayId === this.selectedDisplayId) return true;
+    this.selectedDisplayId = displayId;
+    // The next frame starts a fresh helper on the new display, with a keyframe.
+    this.cancelCapture();
+    return true;
+  }
+
+  /** A screen can be unplugged mid-session. Only a confirmed absence moves the
+   * viewer off it; an unreadable list leaves the choice alone. */
+  private async recheckSelectedDisplay(): Promise<void> {
+    this.displayCheckPending = false;
+    const displayId = this.selectedDisplayId;
+    if (displayId === null) return;
+    const list = await this.listDisplays().catch(() => null); // @silent-fallback-ok — the next capture failure asks again.
+    // An empty list means the desktop could not be read, not that the screen left.
+    if (list?.displays.length && this.selectedDisplayId === displayId
+      && !list.displays.some(display => display.id === displayId)) this.selectedDisplayId = null;
+  }
+
   private async capturePacket(mode: 'jpeg' | 'h264', forceKeyframe = false): Promise<Buffer> {
+    if (this.displayCheckPending && !this.captureStream) {
+      const generation = this.captureGeneration;
+      await this.recheckSelectedDisplay();
+      // A Stop during that read has already cancelled capture. Never start a
+      // helper that would outlive the grant.
+      if (generation !== this.captureGeneration) throw new Error('mac-desktop-host-capture-cancelled');
+    }
     if (this.captureMode !== mode) this.cancelCapture();
     const fresh = !this.captureStream;
     if (fresh) this.startCaptureStream(mode);
@@ -306,6 +505,7 @@ export class MacDesktopHost implements DesktopHost {
         if (this.pendingCapture?.timer !== timer) return;
         this.pendingCapture = null;
         if (this.captureStream === child) this.captureStream = null;
+        this.displayCheckPending = true;
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-host-capture-timeout'));
       }, 4_000);
@@ -339,6 +539,7 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private cancelCapture(): void {
+    this.captureGeneration++;
     const child = this.captureStream;
     this.captureStream = null;
     if (this.pendingCapture) {
@@ -354,7 +555,8 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private startCaptureStream(mode: 'jpeg' | 'h264'): void {
-    const child = spawn(this.trustedBinary(), [mode === 'h264' ? 'capture-stream-h264' : 'capture-stream'], {
+    const child = spawn(this.trustedBinary(), [mode === 'h264' ? 'capture-stream-h264' : 'capture-stream',
+      ...(this.selectedDisplayId === null ? [] : [this.selectedDisplayId])], {
       stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(this.screenIdentity),
     });
     this.captureStream = child;
@@ -365,6 +567,7 @@ export class MacDesktopHost implements DesktopHost {
       if (this.captureStream !== child) return;
       this.captureStream = null;
       this.captureLastFrame = null;
+      this.displayCheckPending = true;
       const pending = this.pendingCapture;
       this.pendingCapture = null;
       if (pending) {
@@ -401,7 +604,8 @@ export class MacDesktopHost implements DesktopHost {
 
   /** Local-only readback for the live input acceptance check. */
   async cursor(): Promise<{ x: number; y: number }> {
-    const raw = await this.run('cursor');
+    const raw = await this.run('cursor', undefined, undefined,
+      this.selectedDisplayId === null ? [] : [this.selectedDisplayId]);
     let value: { x?: unknown; y?: unknown };
     try { value = JSON.parse(raw.toString('utf8')) as { x?: unknown; y?: unknown }; }
     catch { throw new Error('mac-desktop-host-cursor-invalid'); }
@@ -412,8 +616,14 @@ export class MacDesktopHost implements DesktopHost {
     return { x: value.x, y: value.y };
   }
 
-  async input(action: MacDesktopInput): Promise<void> {
+  async input(action: MacDesktopInput): Promise<void | { refused: string }> {
     if (!validInput(action)) throw new Error('mac-desktop-host-input-invalid');
+    // A press refused at the shield leaves no held state, so its release has
+    // nothing to pair with. Under the flag that is a refused no-op, not a fault.
+    if (this.lockedMode && ((action.kind === 'keyUp' && !this.heldRemoteKeys.has(action.key))
+      || (action.kind === 'buttonUp' && this.heldRemoteButton !== action.button))) {
+      return { refused: 'nothing-held' };
+    }
     const generation = this.inputGeneration;
     try { await this.releaseBarrier; }
     catch { throw new Error('mac-desktop-host-release-unconfirmed'); }
@@ -432,7 +642,31 @@ export class MacDesktopHost implements DesktopHost {
     const child = this.inputStream!;
     if (this.pendingInput) throw new Error('mac-desktop-host-input-busy');
     this.pendingControlAction = action;
-    await new Promise<void>((resolve, reject) => {
+    // Pointer fractions are relative to the shown screen. The default keeps
+    // the original wire form, and the helper resolves the main display itself.
+    const onDisplay = this.selectedDisplayId !== null && 'x' in action
+      ? { ...action, displayId: this.selectedDisplayId } : action;
+    const reply = await this.sendInputLine(child, JSON.stringify(onDisplay), 2_000);
+    if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
+    this.pendingControlAction = null;
+    if (reply) return reply;
+    if (action.kind === 'buttonDown') this.heldRemoteButton = action.button;
+    if (action.kind === 'buttonUp') this.heldRemoteButton = null;
+    if (action.kind === 'keyDown') this.heldRemoteKeys.add(action.key);
+    if (action.kind === 'keyUp') this.heldRemoteKeys.delete(action.key);
+  }
+
+  /** Twenty seconds: it types one character at a time. Only sealed bytes pass. */
+  async secretType(input: { requestId: string; key: string; secret: DesktopSealedSecret }): Promise<void | { refused: string }> {
+    if (!this.lockedMode) throw new Error('mac-desktop-host-input-invalid');
+    if (!this.inputStream) this.startInputStream();
+    if (this.pendingInput) throw new Error('mac-desktop-host-input-busy');
+    return this.sendInputLine(this.inputStream!, JSON.stringify({ kind: 'secretType', requestId: input.requestId,
+      key: input.key, ...input.secret }), 20_000);
+  }
+
+  private sendInputLine(child: ChildProcessWithoutNullStreams, line: string, timeoutMs: number): Promise<void | { refused: string }> {
+    return new Promise<void | { refused: string }>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pendingInput?.timer !== timer) return;
         this.pendingInput = null;
@@ -440,10 +674,10 @@ export class MacDesktopHost implements DesktopHost {
         this.retireInputStream(child);
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-host-input-timeout'));
-      }, 2_000);
+      }, timeoutMs);
       timer.unref?.();
       this.pendingInput = { resolve, reject, timer };
-      child.stdin.write(JSON.stringify(action) + '\n', error => {
+      child.stdin.write(line + '\n', error => {
         if (error && this.pendingInput?.timer === timer) {
           clearTimeout(timer);
           this.pendingInput = null;
@@ -454,12 +688,6 @@ export class MacDesktopHost implements DesktopHost {
         }
       });
     });
-    if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
-    if (action.kind === 'buttonDown') this.heldRemoteButton = action.button;
-    if (action.kind === 'buttonUp') this.heldRemoteButton = null;
-    if (action.kind === 'keyDown') this.heldRemoteKeys.add(action.key);
-    if (action.kind === 'keyUp') this.heldRemoteKeys.delete(action.key);
-    this.pendingControlAction = null;
   }
 
   private startInputStream(): void {
@@ -496,18 +724,26 @@ export class MacDesktopHost implements DesktopHost {
     child.stdout.on('data', (chunk: Buffer) => {
       if (this.inputStream !== child) return;
       this.inputReply += chunk.toString('utf8');
-      if (this.inputReply.length > 128) { child.kill('SIGKILL'); fail(); return; }
-      const newline = this.inputReply.indexOf('\n');
-      if (newline < 0) return;
-      const reply = this.inputReply.slice(0, newline).trim();
-      this.inputReply = this.inputReply.slice(newline + 1);
-      const pending = this.pendingInput;
-      if (!pending || reply !== '{"ok":true}' || this.inputReply.length > 0) {
-        child.kill('SIGKILL'); fail(); return;
+      if (this.inputReply.length > (this.lockedMode ? 512 : 128)) { child.kill('SIGKILL'); fail(); return; }
+      for (;;) {
+        const newline = this.inputReply.indexOf('\n');
+        if (newline < 0) return;
+        const reply = this.inputReply.slice(0, newline).trim();
+        this.inputReply = this.inputReply.slice(newline + 1);
+        if (this.lockedMode) {
+          const seal = /^\{"sealKey":"([A-Za-z0-9+/=]{80,120})"\}$/.exec(reply);
+          if (seal) { this.sealKeyHandler?.(seal[1]); continue; }
+        }
+        const refused = this.lockedMode ? /^\{"refused":"([a-z-]{1,40})"\}$/.exec(reply) : null;
+        const pending = this.pendingInput;
+        // Off keeps today's strict parse: exactly one reply, nothing after it.
+        if (!pending || (reply !== '{"ok":true}' && !refused) || (!this.lockedMode && this.inputReply.length > 0)) {
+          child.kill('SIGKILL'); fail(); return;
+        }
+        this.pendingInput = null;
+        clearTimeout(pending.timer);
+        pending.resolve(refused ? { refused: refused[1] } : undefined);
       }
-      this.pendingInput = null;
-      clearTimeout(pending.timer);
-      pending.resolve();
     });
     child.on('error', fail);
     child.stdin.on('error', fail);

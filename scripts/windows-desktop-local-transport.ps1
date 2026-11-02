@@ -3,7 +3,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$Address,
   [int]$Port = 44818,
-  [ValidateSet('probe','capture','cursor','input','start','heartbeat','stop','release')][string]$Operation,
+  [ValidateSet('probe','displays','capture','cursor','input','start','heartbeat','stop','release')][string]$Operation,
   # Relay mode: stay up, read one request per line, answer one line each.
   # Starting PowerShell from WSL costs about a second per process.
   [switch]$Serve
@@ -17,12 +17,13 @@ function Invoke-Relay([string]$line) {
   $op = $Operation
   if ($Serve) {
     $op = [string]$command.operation
-    if (@('probe','capture','cursor','input','start','heartbeat','stop','release') -notcontains $op) { throw 'request' }
+    if (@('probe','displays','capture','cursor','input','start','heartbeat','stop','release') -notcontains $op) { throw 'request' }
   }
   $script:phase = 'input-body'
   $body = [System.Text.Encoding]::UTF8.GetBytes([string]$command.body)
   if ($body.Length -gt 4096) { throw 'request' }
   $script:phase = 'request'
+  $clock = [System.Diagnostics.Stopwatch]::StartNew()
   $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create("http://${Address}:$Port/$op")
   $request.Proxy = $null
   $request.ServicePoint.Expect100Continue = $false
@@ -57,8 +58,8 @@ function Invoke-Relay([string]$line) {
     if ($count -gt 1250000) { throw 'reply' }
     $bytes = New-Object byte[] $count
     [Array]::Copy($buffer, $bytes, $count)
-    @{ status = [int]$response.StatusCode; type = $response.ContentType.Split(';')[0]; body = [Convert]::ToBase64String($bytes) } |
-      ConvertTo-Json -Compress
+    @{ status = [int]$response.StatusCode; type = $response.ContentType.Split(';')[0]; body = [Convert]::ToBase64String($bytes);
+      ms = [int]$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
   } finally { $response.Dispose() }
 }
 function Write-Failure {

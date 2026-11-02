@@ -49,6 +49,7 @@ import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
 import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
+import { PreparingRunWatchdog, telegramTopicNotifier } from '../core/AutonomousStartAdmission.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore, resolveWindowRunSampleLifecycle, windowRunRecoveryResultFromRefresh } from '../core/WindowRunLivenessAuthority.js';
@@ -178,8 +179,9 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { AppConversationService } from '../core/AppConversationService.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
@@ -187,6 +189,7 @@ import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
 import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
+import { MobilePushService } from '../core/MobilePush.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -203,15 +206,25 @@ import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
+import { getInstarVersion } from '../core/Config.js';
+import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
-import { MacDesktopHost } from '../core/MacDesktopHost.js';
+import { execFile } from 'node:child_process';
+import { DEFAULT_MAC_DESKTOP_HELPER, MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
+import { DesktopLockedController, type DesktopLockedSettings } from '../core/DesktopLockedController.js';
+import { parseScreenLockPolicy } from '../core/DesktopLockState.js';
+import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../core/DesktopOperatorAssertion.js';
+import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
+import { isWslHost } from '../core/wslPlatform.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
 import { desktopPeerUrlAllowed } from './DesktopPeerUrlGate.js';
 import { desktopRouteAccess } from './desktopRouteContext.js';
+import { parsePeerDesktopSetup, readBoundedText } from './desktopSetupRoutes.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
 import { FileRemoteStepUpLockouts } from '../core/RemoteStepUpLockouts.js';
 import { DesktopAccessAudit } from '../core/DesktopAccessAudit.js';
@@ -260,6 +273,7 @@ import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionSto
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
 import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
 import { signRequest } from './machineAuth.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
@@ -451,7 +465,12 @@ export class AgentServer {
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
   private desktopStreamManager: DesktopStreamManager | null = null;
   private directDesktopAccess: DirectDesktopAccess | null = null;
+  private desktopLockedController: DesktopLockedController | null = null;
+  private desktopLockedOsMajor: number | undefined;
+  private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
+  private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
+  private desktopSetupTarget: DesktopSetupTarget | null = null;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
@@ -547,6 +566,9 @@ export class AgentServer {
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
+  private preparingRunWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** Exposed for wiring-integrity tests. */
+  preparingRunWatchdog: PreparingRunWatchdog | null = null;
   private jobTriageBackupTimer: ReturnType<typeof setInterval> | null = null;
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
   private checkInReminderTimer: ReturnType<typeof setInterval> | null = null;
@@ -797,6 +819,33 @@ export class AgentServer {
       this.machineRouteContext.authDeps.onSignatureInvalid = runtime.onMachineAuthSignatureInvalid;
       this.machineRouteContext.authDeps.onVerified = runtime.onMachineAuthVerified;
     }
+  }
+
+
+  /** The target's three levers. Null where the feature cannot exist. */
+  private desktopLockedLevers(): NonNullable<import('./routes.js').RouteContext['desktopLocked']> | null {
+    const controller = this.desktopLockedController;
+    const access = this.directDesktopAccess;
+    const machineId = this.meshSelfId;
+    if (!controller || !access || !machineId) return null;
+    const osMajor = async () => {
+      this.desktopLockedOsMajor ??= (await access.probe()).osMajor;
+      return this.desktopLockedOsMajor;
+    };
+    return {
+      machineId,
+      status: async () => controller.status(await osMajor()),
+      settings: async patch => {
+        if (patch.enabled === true) {
+          const refusal = controller.enableRefusal(await osMajor());
+          if (refusal) throw new Error(refusal);
+        }
+        return { ...await controller.applySettings(patch) };
+      },
+      disable: async () => {
+        await controller.disable(() => access.endLockedGrants());
+      },
+    };
   }
 
   constructor(options: {
@@ -1382,6 +1431,8 @@ export class AgentServer {
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
     this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
+    this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
@@ -1427,6 +1478,7 @@ export class AgentServer {
         .replaceAll('__INSTAR_DESKTOP_ASSET_VERSION__',
           createHash('sha256')
             .update(fs.readFileSync(path.join(dashboardDir, 'desktop.js')))
+            .update(fs.readFileSync(path.join(dashboardDir, 'desktop-setup.js')))
             .update(fs.readFileSync(path.join(dashboardDir, 'desktop.css')))
             .digest('hex').slice(0, 16));
       res.setHeader('Cache-Control', 'no-store');
@@ -1435,6 +1487,10 @@ export class AgentServer {
     this.app.get('/dashboard/desktop.js', (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(dashboardDir, 'desktop.js'), { cacheControl: false });
+    });
+    this.app.get('/dashboard/desktop-setup.js', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(path.join(dashboardDir, 'desktop-setup.js'), { cacheControl: false });
     });
     this.app.get('/dashboard/desktop.css', (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
@@ -1588,10 +1644,40 @@ export class AgentServer {
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
     // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
     if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
-    if (options.telegram) {
+    {
       const mp = this.mobilePairing;
-      options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
-      options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+      // Mobile push (docs/specs/mobile-push.md): APNs key from the vault, read before each send.
+      // Built on every agent, Telegram or not: the status route and the machine-to-machine trigger
+      // need it, and an agent with no Telegram can still have a paired phone. Only the hub-post
+      // hook below needs Telegram.
+      const pushKeys = new SecretStore({ stateDir: options.config.stateDir, forceFileKey: options.config.secrets?.forceFileKey });
+      // Runs on every agent now, so a config with no project name must not stop the server starting.
+      const agentId = options.config.projectName ?? 'agent';
+      mp.push = new MobilePushService({
+        stateDir: options.config.stateDir,
+        registry: mp.devices,
+        agentId,
+        agentName: agentId.charAt(0).toUpperCase() + agentId.slice(1),
+        machineId: options.coordinator?.identity?.machineId ?? 'local',
+        enabled: () => isMobilePushEnabled(this.config),
+        credentials: () => {
+          const keyPem = pushKeys.get('apns_key_p8');
+          const keyId = pushKeys.get('apns_key_id');
+          const teamId = this.config.mobilePairing?.push?.teamId;
+          return typeof keyPem === 'string' && typeof keyId === 'string' && typeof teamId === 'string' && teamId ? { keyPem, keyId, teamId } : null;
+        },
+        fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
+        reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'send a push notification to a paired phone', fallback: 'no push for this event; the item is still in Telegram and the app',
+          reason: err instanceof Error ? err.message : String(err), impact: 'A phone notification was not sent.',
+        }),
+      });
+      mp.push.start();
+      if (options.telegram) {
+        options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+        options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
+        options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
+      }
     }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
@@ -1624,7 +1710,15 @@ export class AgentServer {
           return { ...target, ready: probe.ready,
             ...(!probe.ready ? { unavailableReason: reason } : {}) };
         },
+        onDesktopSetup: async (untrustedBody, senderId) => {
+          if (!this.desktopSetupTarget) throw new Error('desktop-setup-unavailable');
+          const request = parsePeerDesktopSetup(untrustedBody, senderId);
+          if (!request) throw Object.assign(new Error('desktop-setup-invalid'), { httpStatus: 400 });
+          return this.desktopSetupTarget.run(request, senderId);
+        },
         onDesktopOperatorBegin: async (untrustedBody, frontId) => {
+          // Turn off takes effect here at once; the restart may be deferred.
+          if (options.config.remoteDesktop?.enabled !== true) throw new Error('desktop access unavailable');
           if (!this.directDesktopAccess || !this.meshSelfId) throw new Error('desktop-target-unavailable');
           const body = untrustedBody as Record<string, unknown> | null;
           const assertion = body?.assertion as DesktopOperatorAssertion | undefined;
@@ -1652,13 +1746,37 @@ export class AgentServer {
               operatorSessionToken: delegated.token, browserPublicKey,
               browserEcdhPublicKey: typeof body?.browserEcdhPublicKey === 'string' ? body.browserEcdhPublicKey : '',
               browserNonce, videoCodec: body?.videoCodec === 'h264' ? 'h264' : 'jpeg',
-              scopeConfirmed: true,
+              scopeConfirmed: true, client: body?.client === 'app' ? 'app' : 'browser',
+              controlRecords: body?.controlRecords === true,
             });
             return { ...result, targetSessionToken: delegated.token };
           } catch (error) {
             this.desktopDelegatedSessions.revoke(delegated.token);
             throw error;
           }
+        },
+        onDesktopOperatorLocked: async (untrustedBody, frontId) => {
+          const levers = this.desktopLockedLevers();
+          if (!levers || !this.meshSelfId || options.config.remoteDesktop?.frontMachineId !== frontId) {
+            throw new Error('desktop pool front not authorized');
+          }
+          const body = untrustedBody as Record<string, unknown> | null;
+          if (body?.status === true) return levers.status();
+          const assertion = body?.assertion as DesktopLockedAssertion | undefined;
+          const settings = (body?.settings ?? {}) as Record<string, unknown>;
+          this.desktopAssertionReplay ??= new DesktopAssertionReplayStore(
+            path.join(options.config.stateDir, 'state', 'desktop-operator-replay.json'));
+          const verdict = verifyDesktopLockedAssertion({
+            assertion: assertion!, expectedTargetMachineId: this.meshSelfId, expectedIssuerMachineId: frontId,
+            settings, nowMs: Date.now(),
+            resolveIssuerKey: machineId => coord.managers.identityManager.getSigningPublicKeyPem(machineId),
+            verifySignature: (canonical, signature, publicKey) => verifyMachinePayload(canonical, signature, publicKey),
+            seenJti: jti => this.desktopAssertionReplay!.seen(jti),
+          });
+          if (!verdict.ok) throw new Error(`desktop-operator-${verdict.reason}`);
+          this.desktopAssertionReplay.record(verdict.jti, assertion!.expiresAtMs);
+          if (assertion!.operation === 'locked-disable') { await levers.disable(); return { disabled: true }; }
+          return levers.settings(settings);
         },
         onDesktopOperatorKeepAlive: (untrustedBody, frontId) => {
           const body = untrustedBody as Record<string, unknown> | null;
@@ -1676,6 +1794,7 @@ export class AgentServer {
           switch (body?.operation) {
             case 'status': return this.directDesktopAccess.status(requestId, token);
             case 'cursor': return this.directDesktopAccess.cursor(requestId, token);
+            case 'displays': return this.directDesktopAccess.displays(requestId, token) as unknown as Promise<Record<string, unknown>>;
             case 'ticket': return { ...this.directDesktopAccess.targetInfo(),
               ticket: this.directDesktopAccess.ticket(requestId, token,
                 typeof payload?.connectionNonce === 'string' ? payload.connectionNonce : '',
@@ -2764,6 +2883,8 @@ export class AgentServer {
       this.topicOperatorStore = null;
     }
 
+    // Guided setup exists while desktop is off: it is how desktop comes on.
+    const desktopConfiguredAtBoot = options.config.remoteDesktop?.enabled === true;
     // Every host remains dark without explicit opt-in. WSL delegates to the
     // separately installed interactive Windows companion; it never captures
     // the Linux guest display as a substitute for the Windows desktop.
@@ -2782,9 +2903,58 @@ export class AgentServer {
           if (!publicKeyPem || !verifyMachinePayload(proof, signMachinePayload(proof, privateKey), publicKeyPem)) {
             throw new Error('machine signing key mismatch');
           }
-          const host: DesktopHost = process.platform === 'darwin'
-            ? new MacDesktopHost()
-            : (() => {
+          const helperRetention = process.platform === 'darwin'
+            ? new DesktopHelperRetention({
+              packagedBinary: DEFAULT_MAC_DESKTOP_HELPER, packageVersion: getInstarVersion(),
+              // Only a real install takes the Mac's one kept copy by default: a
+              // source checkout or a test must never replace what is granted.
+              enabled: options.config.remoteDesktop?.retainedHelper
+                ?? (!process.env.VITEST && DEFAULT_MAC_DESKTOP_HELPER.includes(`${path.sep}node_modules${path.sep}instar${path.sep}`)),
+            }) : null;
+          this.macDesktopHost = process.platform === 'darwin' ? new MacDesktopHost(undefined, helperRetention) : null;
+          const macHost = this.macDesktopHost;
+          const lockedSettings = (): DesktopLockedSettings => {
+            const stored = (typeof options.liveConfig?.get === 'function'
+              ? options.liveConfig.get<DesktopLockedSettings | undefined>('remoteDesktop.lockedScreen', undefined)
+              : undefined) ?? options.config.remoteDesktop?.lockedScreen;
+            return { enabled: stored?.enabled === true, browserBox: stored?.browserBox === true, chime: stored?.chime !== false };
+          };
+          this.desktopLockedController = macHost ? new DesktopLockedController({
+            host: macHost, agentId: options.config.projectName ?? 'agent', settings: lockedSettings,
+            saveSettings: next => {
+              options.liveConfig?.set('remoteDesktop.lockedScreen', next);
+              if (options.config.remoteDesktop) options.config.remoteDesktop.lockedScreen = next;
+            },
+            readPolicy: () => new Promise((resolve, reject) => {
+              execFile('/usr/sbin/sysadminctl', ['-screenLock', 'status'], { timeout: 3_000 }, (error: Error | null, stdout: string, stderr: string) => {
+                if (error) reject(error);
+                else resolve(parseScreenLockPolicy(`${stdout}${stderr}`));
+              });
+            }),
+            tunnelFirstTierActive: () => {
+              const lifecycle = options.tunnel?.lifecycleState;
+              return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
+            },
+            raiseSecurity: async item => {
+              if (!this.telegramAdapter) { console.warn('[instar] locked-screen security item has no attention surface'); return false; }
+              try {
+                await this.telegramAdapter.createAttentionItem({ id: `agent:${item.key}`, conditionKey: item.key,
+                  title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
+                  category: 'security', sourceContext: 'desktop-locked' } as never);
+                return true;
+              } catch (error) {
+                console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
+                DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+                  primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
+                  reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
+                  impact: 'The owner is not yet told about a locked-screen security event.' });
+                return false;
+              }
+            },
+          }) : null;
+          if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
+          const host: DesktopHost = macHost
+            ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
                 // PowerShell interop can reach the Windows-local companion even
                 // when WSL's TCP path to the host is filtered by Windows.
@@ -2814,8 +2984,28 @@ export class AgentServer {
           new DesktopAccessAudit(options.config.stateDir),
           'pin',
           (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
+          this.desktopLockedController,
         );
+        void this.desktopLockedController?.sweep(true).catch(() => { console.warn('[instar] locked-screen boot sweep failed'); });
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
+        if (helperRetention) {
+          const access = this.directDesktopAccess;
+          const telegram = options.telegram;
+          this.desktopHelperNotice = new DesktopHelperPermissionNotice({
+            machineLabel: label, machineId: this.meshSelfId,
+            probe: () => access.probe(),
+            sourceHash: () => helperRetention.currentSourceHash(),
+            // An agent that cannot post must leave the notice for one that can.
+            claim: () => !!telegram && helperRetention.claimNotice(),
+            release: () => helperRetention.releaseNotice(),
+            raise: item => telegram!.createAttentionItem({
+              id: item.id, conditionKey: item.conditionKey, title: item.title, summary: item.body, description: item.body,
+              priority: 'HIGH', category: 'desktop', source: 'agent', needsUser: true, sourceContext: 'desktop-helper-permission',
+            } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]),
+            clear: (conditionKey, resolution) => { telegram?.clearAttentionCondition({ conditionKey }, resolution); },
+          });
+          if (!process.env.VITEST) this.desktopHelperNotice.start();
+        }
         } catch (error) {
           // @silent-fallback-ok — warn and leave desktop admission dark when target identity cannot be proven.
           console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
@@ -4949,6 +5139,7 @@ export class AgentServer {
         {
           now: () => options.windowLifecycleNow?.() ?? new Date().toISOString(),
           getLiveness: () => windowRunLivenessAuthority.status().state,
+          getLivenessAll: () => windowRunLivenessAuthority.status().states,
           canAct: (state) => {
             const registry = options.sessionOwnershipRegistry;
             if (!registry) return options.coordinator?.enabled !== true;
@@ -4971,7 +5162,7 @@ export class AgentServer {
             }), Buffer.from(identity.privateKey, 'base64'), Buffer.from(identity.publicKey, 'base64'));
           },
           findDeliveredSynthesis: ({ topicId, report, expectedText }) => {
-            const state = windowRunLivenessAuthority.status().state;
+            const state = windowRunLivenessAuthority.status(topicId).state;
             if (!state || !report.bodyHash || !report.producerSignature) return null;
             let publicKey: Buffer;
             try {
@@ -5251,6 +5442,8 @@ export class AgentServer {
       completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
       ...desktopRouteAccess(this.directDesktopAccess, options.config.remoteDesktop?.frontMachineId, this.meshSelfId),
+      desktopLocked: this.desktopLockedLevers(),
+      desktopTargets: () => (options.resolvePeerUrls?.() ?? []).map(peer => peer.machineId),
       desktopLocalDiagnostics: async () => {
         const configured = options.config.remoteDesktop?.enabled === true;
         if (!configured || !this.directDesktopAccess) {
@@ -5267,6 +5460,10 @@ export class AgentServer {
             screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
             displayCount: probe.displayCount, sessionActive: probe.sessionActive,
             ...(probe.screenGrant ? { screenGrant: probe.screenGrant, inputGrant: probe.inputGrant } : {}),
+            ...(probe.helperSource ? { helperSource: probe.helperSource } : {}),
+            ...(probe.helperFallback ? { helperFallback: probe.helperFallback } : {}),
+            ...(probe.helperChange ? { helperChange: probe.helperChange,
+              permissionStep: desktopProbeUnavailableReason(probe) } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];
@@ -5286,6 +5483,27 @@ export class AgentServer {
         }
       },
       desktopMeshBroker: this.desktopMeshBroker,
+      desktopSetupPeerCall: async (machineId, body) => {
+        const peer = options.resolvePeerUrls?.().find(candidate => candidate.machineId === machineId);
+        if (!peer || !this.meshSelfId || !options.coordinator?.enabled || !await desktopPeerUrlAllowed(peer)) {
+          throw new Error('desktop-peer-unreachable');
+        }
+        const key = options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey();
+        const response = await poolPeerFetch(options.recordRopeResult,
+          { ...peer, url: peer.url.replace(/\/+$/, '') }, '/api/desktop/setup', {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(this.meshSelfId, key, body) },
+            body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(8_000),
+          });
+        const raw = await readBoundedText(response, 8_192);
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(raw); } catch { /* @silent-fallback-ok — handled as an invalid reply just below. */ }
+        const reply = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
+        if (!response.ok) {
+          throw Object.assign(new Error('desktop-setup-refused'), { status: response.status,
+            code: typeof reply.code === 'string' && /^[a-z-]{1,32}$/.test(reply.code) ? reply.code : undefined });
+        }
+        return reply;
+      },
       desktopTargetSigningKey: machineId => {
         if (this.directDesktopAccess?.targetInfo().machineId === machineId) {
           return this.directDesktopAccess.targetSigningPublicKey();
@@ -5575,6 +5793,9 @@ export class AgentServer {
               try { stopAutonomousTopic(options.config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },
+            mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
+            raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
+            clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({
               feature: what, primary: 'record and deliver native app conversations', fallback: 'the request was refused or reported outcome-unknown',
               reason: detail, impact: 'An app conversation step needs attention.',
@@ -5625,6 +5846,30 @@ export class AgentServer {
       }
     }
     this.startEcosystemIdeas(options, routeCtx);
+    this.desktopSetupTarget = new DesktopSetupTarget({
+      peerClaimAllowed: resolveDevAgentGate(options.config.remoteDesktop?.guidedSetup?.enabled, options.config),
+      stateDir: options.config.stateDir, platform: process.platform, wsl: isWslHost(),
+      config: options.config, configuredAtBoot: desktopConfiguredAtBoot,
+      diagnostics: () => routeCtx.desktopLocalDiagnostics!(),
+      requestPermission: routeCtx.desktopRequestPermission ?? null,
+      requestRestart: () => this.requestSupervisedRestart('remote desktop guided setup', 'remote-desktop-setup'),
+      // The setup fallback must name the copy a permission request targets, which
+      // is the one this host serves right now, kept or installed.
+      helperPath: () => (process.platform === 'darwin' ? this.macDesktopHost?.setupHelperPath() ?? macDesktopHelperPath() : null),
+      endLiveAccess: () => this.directDesktopAccess?.killSwitch(),
+      onPeerEnable: async senderId => {
+        const name = verifiedEntityName(senderId, options.listPoolMachines?.().find(peer => peer.machineId === senderId)?.nickname) ?? 'Another paired machine';
+        const self = verifiedEntityName(this.meshSelfId ?? '', options.listPoolMachines?.().find(peer => peer.machineId === this.meshSelfId)?.nickname) ?? 'This machine';
+        const body = `${name} turned on Remote Desktop for ${self}, after a PIN on its dashboard. If that was not you, turn it off from the Desktop page.`;
+        if (!options.telegram) throw new Error('desktop-setup-no-notice-channel');
+        await options.telegram.createAttentionItem({
+          // One per claim: an open row with the same id would swallow a repeat.
+          id: `desktop-setup:peer-enabled:${senderId}:${Date.now()}`, title: `Remote Desktop turned on for ${self}`,
+          summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'desktop-setup', source: 'agent',
+        } as Parameters<NonNullable<typeof options.telegram>['createAttentionItem']>[0]);
+      },
+    });
+    routeCtx.desktopSetupTarget = this.desktopSetupTarget;
     const routes = createRoutes(routeCtx);
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
@@ -5950,6 +6195,21 @@ export class AgentServer {
       }, 60_000);
       this.windowRunLivenessTimer.unref?.();
     }
+    if (options.telegram && options.config.autonomousSessions?.preparingWatchdog?.enabled !== false) {
+      const telegram = options.telegram;
+      const watchdog = new PreparingRunWatchdog({
+        store: new AutonomousRunStore(options.config.stateDir),
+        notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
+        boundRuns: () => (windowRunLivenessAuthority?.status().states ?? [])
+          .filter(state => !['stalled', 'failed', 'closed'].includes(state.status))
+          .map(state => ({ topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt })),
+      });
+      this.preparingRunWatchdog = watchdog;
+      this.preparingRunWatchdogTimer = setInterval(() => {
+        void watchdog.tick().catch((error) => console.warn('[preparing-run-watchdog] tick failed:', error));
+      }, 60_000);
+      this.preparingRunWatchdogTimer.unref?.();
+    }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry }));
@@ -5960,6 +6220,7 @@ export class AgentServer {
     if (this.mobilePairing) {
       this.app.use(createMobileConversationRouter({
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,
         telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
@@ -5967,6 +6228,8 @@ export class AgentServer {
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? last.text.slice(0, 140) : null };
         }) : undefined,
       }));
+      this.app.use(createMobileMediaRouter({ pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config) }));
+      this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
     }
 
@@ -7812,12 +8075,14 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
     this.appConversations?.stop();
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
+    this.desktopHelperNotice?.stop();
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
@@ -7829,6 +8094,10 @@ export class AgentServer {
     if (this.windowRunLivenessTimer) {
       clearInterval(this.windowRunLivenessTimer);
       this.windowRunLivenessTimer = null;
+    }
+    if (this.preparingRunWatchdogTimer) {
+      clearInterval(this.preparingRunWatchdogTimer);
+      this.preparingRunWatchdogTimer = null;
     }
     if (this.jobTriageBackupTimer) {
       clearInterval(this.jobTriageBackupTimer);

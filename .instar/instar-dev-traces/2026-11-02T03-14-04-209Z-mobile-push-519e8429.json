@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "mobile-push",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T03:14:04.209Z",
+  "artifactPath": "upgrades/side-effects/mobile-push.md",
+  "artifactSha256": "29518b79fe3b84967ac71008bdfc3d56b9bd430a51d116a97274f152e44ac11d",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "upgrades/side-effects/mobile-push.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line null guard; a revert fully undoes it.",
+  "eli16Path": "docs/specs/mobile-push.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-push.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

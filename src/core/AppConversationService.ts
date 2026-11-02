@@ -20,6 +20,8 @@ import { derivedEventId, isAppConversationKey } from './appConversationText.js';
 import type { AppInboundDispatch } from './appInboundDispatch.js';
 import { verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
 import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
+import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
+import { MAX_PURGE_BATCH } from './appMediaTypes.js';
 import path from 'node:path';
 
 export const STRANDED_REQUEST_AGE_MS = 5 * 60_000;
@@ -48,13 +50,31 @@ export interface AppConversationServiceDeps {
   signer?: MachineSigner | null;
   keyLookup?: MachineKeyLookup | null;
   keyLedger?: MobileDeviceKeyLedger | null;
+  /**
+   * Media (docs/specs/mobile-native-chat-media.md). The store is built whenever native
+   * conversations are on, so a machine with the feature off still keeps and purges what it holds.
+   */
+  mediaMaxStoreBytes?: () => number | undefined;
+  /** One notice per condition (absent ⇒ degradation reports only). */
+  raiseAttention?: (item: { conditionKey: string; title: string; body: string }) => void;
+  clearAttention?: (conditionKey: string) => void;
 }
+
+const MEDIA_SWEEP_MS = 60 * 60_000;
+const MEDIA_REFUSAL_SWEEP_GAP_MS = 5 * 60_000;
 
 export class AppConversationService {
   readonly store: AppConversationStore;
   readonly channels: SessionChannelRegistry;
   private lastLease: boolean | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private mediaTimer: ReturnType<typeof setInterval> | null = null;
+  readonly media: AppMediaStore;
+  private lastRefusalSweep = 0;
+  private readonly refusedConditions = new Set<string>();
+  /* @self-action-controller: app-media-capacity-notice */
+  /** Conditions whose notice is raised: the latch that makes it one notice per episode. */
+  private readonly raisedNotices = new Set<string>();
   private readonly now: () => number;
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
@@ -66,22 +86,113 @@ export class AppConversationService {
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
     });
     this.channels = new SessionChannelRegistry({ registryPath: path.join(deps.stateDir, 'state', 'app-session-registry.json') });
+    this.media = new AppMediaStore({
+      stateDir: deps.stateDir, store: this.store, now: this.now,
+      maxStoreBytes: () => deps.mediaMaxStoreBytes?.() ?? DEFAULT_MAX_STORE_BYTES,
+      reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
+      onRefused: (error) => this.onMediaRefused(error),
+    });
     // Aliases are derived per machine from the replicated store and rebuildable at any time.
     this.reconcileAliases();
     this.leaseTick();
-    try { this.recoverStranded(); } catch (err) { this.report('boot recovery', err); }
+    try { this.recoverStranded(); } catch (err) { this.report('boot recovery', err); } // @silent-fallback-ok — reported through deps.reportDegradation; the 5 s tick repeats it
   }
 
   start(intervalMs = 5_000): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
       this.leaseTick();
-      try { this.recoverStranded(); } catch (err) { this.report('recovery', err); }
+      try { this.recoverStranded(); } catch (err) { this.report('recovery', err); } // @silent-fallback-ok — reported through deps.reportDegradation; the next tick repeats it
     }, intervalMs);
     this.timer.unref?.();
+    void this.sweepMedia();
+    this.mediaTimer = setInterval(() => { void this.sweepMedia(); }, MEDIA_SWEEP_MS);
+    this.mediaTimer.unref?.();
   }
 
-  stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null; }
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    if (this.mediaTimer) clearInterval(this.mediaTimer);
+    this.timer = null;
+    this.mediaTimer = null;
+  }
+
+  /** The hourly media sweep, then the capacity notices (§4.7). Never throws. */
+  async sweepMedia(): Promise<void> {
+    try {
+      await this.media.sweep((id) => this.store.hasMessage(id));
+      this.updateMediaNotices();
+    } catch (err) { this.report('media sweep', err); }
+  }
+
+  /** A capacity refusal: self-heal first; the notice is raised only if it did not clear. */
+  private onMediaRefused(error: string): void {
+    this.refusedConditions.add(error);
+    if (this.now() - this.lastRefusalSweep < MEDIA_REFUSAL_SWEEP_GAP_MS) return;
+    this.lastRefusalSweep = this.now();
+    void this.sweepMedia();
+  }
+
+  /**
+   * The capacity notices (§4.7), after a sweep. One notice per condition episode: raised once
+   * when a refusal persists past the self-heal sweep, never again while it stays raised, and
+   * cleared (re-armed) only when the condition is gone.
+   */
+  private updateMediaNotices(): void {
+    const machine = this.deps.machineId();
+    const raiseOnce = (key: string, item: { title: string; body: string }) => {
+      if (this.raisedNotices.has(key)) return;
+      this.raisedNotices.add(key);
+      this.deps.raiseAttention?.({ conditionKey: key, ...item });
+    };
+    const clear = (key: string) => {
+      if (!this.raisedNotices.delete(key)) return;
+      this.deps.clearAttention?.(key);
+    };
+    if (this.refusedConditions.has('media-store-full')) {
+      if (this.media.usageOverCapFraction(0.9)) {
+        const gib = (n: number) => (n / 1024 ** 3).toFixed(1);
+        const h = this.media.health();
+        raiseOnce('app-media:store-full', {
+          title: 'The app media store is full',
+          body: `${gib(this.media.liveBytes())} GiB of ${gib(this.media.maxBytes())} GiB is in use and ${gib(Number(h.deletedBytes))} GiB sits in deleted conversations. New files are refused until space is freed: the app's Storage screen can permanently remove files, or the limit can be raised.`,
+        });
+      } else {
+        this.refusedConditions.delete('media-store-full');
+        clear('app-media:store-full');
+      }
+    }
+    if (this.refusedConditions.has('media-disk-floor')) {
+      const key = `app-media:disk-floor:${machine}`;
+      if (this.media.belowDiskFloor()) {
+        raiseOnce(key, { title: `${machine} is too low on disk to store app files`, body: 'New files are refused on this machine until its disk has more free space (5% or 2 GiB, whichever is larger).' });
+      } else {
+        this.refusedConditions.delete('media-disk-floor');
+        clear(key);
+      }
+    }
+  }
+
+  /**
+   * Write the purge events for these exact attachment sets (§4.7), at most 500 ids each. Event ids
+   * derive from the request, so a resume after a crash merges away. Then apply it here.
+   */
+  applyPurge(deviceId: string, requestId: string, sets: Readonly<Record<string, string[]>>): { ok: true; purged: number; note: string } {
+    let purged = 0;
+    for (const [key, ids] of Object.entries(sets)) {
+      for (let batch = 0; batch * MAX_PURGE_BATCH < ids.length; batch++) {
+        const attachmentIds = ids.slice(batch * MAX_PURGE_BATCH, (batch + 1) * MAX_PURGE_BATCH);
+        this.store.append({
+          eventId: derivedEventId('pg', deviceId, requestId, key, String(batch)), kind: 'purge',
+          conversationKey: key.startsWith('app:') ? key.slice(4) : key, attachmentIds,
+          at: new Date(this.now()).toISOString(), machineId: this.deps.machineId(),
+        });
+        purged += attachmentIds.length;
+      }
+    }
+    try { this.media.applyReferences(); } catch (err) { this.report('media purge', err); } // @silent-fallback-ok — reported; the hourly sweep re-applies it
+    return { ok: true, purged, note: 'Files were removed from the agent\'s media store. Copies a messaging platform keeps are not affected.' };
+  }
 
   private report(what: string, err: unknown): void {
     try { this.deps.reportDegradation?.('AppConversationService', `${what}: ${err instanceof Error ? err.message : String(err)}`); } catch { /* @silent-fallback-ok — reporting never fails the service */ }
@@ -119,13 +230,16 @@ export class AppConversationService {
    */
   ingestReplicated(events: ReadonlyArray<AppEvent | null>): number {
     let added = 0;
+    let needsMediaPass = false;
     for (const ev of events) {
       if (!ev) continue;
       try {
         const r = this.store.ingestReplicated(ev);
         if (r?.appended) { added++; this.onReplicatedEvent(ev); }
+        if (r?.appended && (ev.kind === 'purge' || ev.kind === 'tombstone')) needsMediaPass = true;
       } catch (err) { this.report('replicated ingest', err); }
     }
+    if (needsMediaPass) { try { this.media.applyReferences(); } catch (err) { this.report('media references', err); } } // @silent-fallback-ok — reported; the hourly sweep re-applies it
     return added;
   }
 
@@ -216,10 +330,17 @@ export class AppConversationService {
    * event from the reservation (same event id, so it merges away) and records `done`.
    */
   recoverStranded(): void {
+    try { this.media.recoverClaims((id) => this.store.hasMessage(id)); } catch (err) { this.report('media claims', err); } // @silent-fallback-ok — reported; the next tick repeats it
     for (const rec of this.deps.requests.stranded(STRANDED_REQUEST_AGE_MS)) {
       const x = rec.extra;
       if (!x || !x.op) continue; // a Telegram chat request: the inherited outcome-unknown answer stands
       const key = x.conversationKey;
+      if (x.op === 'purge') {
+        // The exact set was recorded first; a repeat merges away by event id (§4.7).
+        const sets = JSON.parse(x.sets ?? '{}') as Record<string, string[]>;
+        this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 200, body: this.applyPurge(rec.deviceId, rec.requestId, sets) });
+        continue;
+      }
       if (x.op === 'send') {
         if (!x.messageId || !this.store.hasMessage(x.messageId)) {
           this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 409, body: { error: 'not-delivered', detail: 'This message was not delivered. Send it again.' } });
@@ -270,5 +391,6 @@ export class AppConversationService {
     this.store.append({ eventId: derivedEventId('tb', deviceId, requestId), kind: 'tombstone', conversationKey, at: new Date(this.now()).toISOString(), machineId: this.deps.machineId() });
     const alias = this.deps.registry.appAliasFor(conversationKey);
     if (alias !== null) this.deps.registry.unbindApp(alias);
+    try { this.media.applyReferences(); } catch (err) { this.report('media references', err); } // @silent-fallback-ok — reported; the hourly sweep re-applies it
   }
 }

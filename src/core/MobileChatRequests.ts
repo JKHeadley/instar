@@ -120,6 +120,8 @@ export class MobileChatRequestStore {
     const prev = { ...r };
     r.state = 'done';
     r.result = result;
+    // A purge's attachment list is only needed until it is done (it can be large).
+    if (r.extra?.op === 'purge') delete r.extra.sets;
     try { this.persist(); return true; } catch {
       this.records.set(k, prev); // @silent-fallback-ok — the caller reports the request as outcome-unknown
       return false;

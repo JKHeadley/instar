@@ -4239,6 +4239,9 @@ export async function startServer(options: StartOptions): Promise<void> {
   // The pool block later calls configureBounds AGAIN to add the resolver.
   notificationBatcher.configureBounds({ stateDir: config.stateDir });
 
+  // Mobile push hub-notice hook (docs/specs/mobile-push.md §2.3); reads the live adapter.
+  let _hubNoticeAdapter: { onHubPost?: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null } | null = null;
+  const _hubNoticeHook = (t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => _hubNoticeAdapter?.onHubPost?.(t);
   // State reference — set once StateManager is created, used by notify()
   let _notifyState: { get<T>(key: string): T | null | undefined } | null = null;
 
@@ -4261,6 +4264,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         return;
       }
+    }
+    // Mobile push (docs/specs/mobile-push.md §2.3): a hub notice the filter admitted.
+    if ((!topicId || topicId === hubTopicId) && hubTopicId) {
+      try { _hubNoticeHook?.({ kind: 'notice', dedupeKey: `notice:${category}`, priority: tier === 'IMMEDIATE' ? 'URGENT' : undefined }); }
+      catch { /* @silent-fallback-ok — push is best-effort and never affects the notice */ }
     }
     // Telegram: via notification batcher
     const resolvedTopicId = topicId ?? hubTopicId;
@@ -4822,16 +4830,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       onLeasePullTick: () => _leaseHandbackReconciler?.observe(),
     });
     const machineRole = coordinator.start();
-    // The origin writer below requires a current lease even on ordinary,
-    // non-development installations. Enroll its renewal carrier before lease
-    // initialization; this does not bypass explicit opt-outs or lease fences.
-    const originLeaseRenewal = config.messaging.some(m => m.type === 'telegram' && m.enabled)
-      ? coordinator.enrollOriginWriterLeaseRenewal() : undefined;
+    // The origin writer and native app conversations require a current lease even
+    // on ordinary, non-development installations (without Telegram, the app was
+    // the only surface and its lease lapsed at TTL between 2-minute heartbeats).
+    // Enroll the renewal carrier before lease initialization; this does not bypass
+    // explicit opt-outs or lease fences.
+    const { leaseRenewalDependencies } = await import('../server/leaseRenewalDependencies.js');
+    const leaseRenewalReleases = leaseRenewalDependencies(config).map((name) => coordinator.enrollLeaseRenewalDependency(name));
     const releaseOriginLeaseRenewal = () => {
-      originLeaseRenewal?.();
+      for (const release of leaseRenewalReleases.splice(0)) release();
       process.removeListener('exit', releaseOriginLeaseRenewal);
     };
-    if (originLeaseRenewal) process.once('exit', releaseOriginLeaseRenewal);
+    if (leaseRenewalReleases.length > 0) process.once('exit', releaseOriginLeaseRenewal);
     if (coordinator.enabled) {
       console.log(pc.green(`  Multi-machine: ${pc.bold(machineRole)} (${coordinator.identity!.machineId.slice(0, 12)}...)`));
       if (machineRole === 'standby') {
@@ -8298,6 +8308,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
       // Send-only still owns the attention store: run its hourly lifecycle
       // pass here too (start() is never called on this path). Idempotent.
@@ -8411,6 +8422,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.stateDir,
       );
       armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       telegram.intelligence = sharedIntelligence ?? null;
       await telegram.start();
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
@@ -9190,6 +9202,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             try { stopAutonomousTopic(config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
             try { recordOperatorStop(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
           },
+          mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
+          raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
+          clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
           reportDegradation: (what, detail) => degradationReporter.report({
             feature: what, primary: 'record and deliver native app conversations', fallback: 'the request was refused or reported outcome-unknown',
             reason: detail, impact: 'An app conversation step needs attention.',
@@ -20262,10 +20277,10 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // notify-on-stop Layer B — surface a genuinely-stuck UNATTENDED stop to the
     // user (docs/specs/NOTIFY-ON-STOP-SPEC.md). The evaluate route feeds each
-    // decision to StopNotifier, which filters to the notify-worthy classes
-    // (shadow+continue / escalate), the attended-gate, and per-session dedup,
-    // then hands a coalesced one-liner to a dedicated SentinelNotifier sink
-    // (single lifeline topic, log-always — reuses the post-2026-05-22 discipline).
+    // decision to StopNotifier, which keeps only shadow+continue stops of a
+    // NAMED live autonomous run (attended-gate + per-session dedup), and sends
+    // the notice to that run's own topic so a reply reaches it. Everything else
+    // (`escalate`, unnamed runs) is log-only in logs/sentinel-events.jsonl.
     // Default ON (Justin's "tell me why it stopped"); requires telegram wired.
     let stopNotifier: import('../monitoring/StopNotifier.js').StopNotifier | null = null;
     {
@@ -20277,27 +20292,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         const stopLog = (entry: { kind: string; sessionName: string; detail?: string }): void => {
           try { fs.appendFileSync(stopLogPath, JSON.stringify({ ...entry, sentinel: 'stop-notify', ts: new Date().toISOString() }) + '\n'); } catch { /* best-effort */ }
         };
-        const send = (text: string): Promise<boolean> =>
-          sendConsolidatedWithSelfHeal(
-            localTg,
-            text,
-            (line) => console.warn(pc.yellow(`  [stop-notify] ${line}`)),
-          );
-        const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
-        const stopSink = new SentinelNotifier(
-          { log: stopLog, sendConsolidated: send },
-          { telegramEscalation: true }, // notify-on-stop is default-on by design
-        );
         const { StopNotifier } = await import('../monitoring/StopNotifier.js');
         stopNotifier = new StopNotifier(
-          { escalate: (name, text) => stopSink.escalate('stop-gate', name, text) },
+          {
+            notifyTopic: (topicId, sessionId, text) => {
+              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `topic ${topicId}: ${text}` });
+              localTg.sendToTopic(Number(topicId), text).then(
+                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: `topic ${topicId}` }),
+                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `topic ${topicId}: ${err instanceof Error ? err.message : String(err)}` }),
+              );
+            },
+            log: (kind, sessionId, detail) => stopLog({ kind, sessionName: sessionId, detail }),
+          },
           {
             enabled: true,
             unattendedOnly: nosCfg.unattendedOnly !== false,
             ...(typeof nosCfg.cooldownMs === 'number' ? { cooldownMs: nosCfg.cooldownMs } : {}),
           },
         );
-        console.log(pc.green('  notify-on-stop Layer B: enabled (unjustified-stall heads-up — unattended-only, deduped, coalesced)'));
+        console.log(pc.green('  notify-on-stop Layer B: enabled (named-run stall notice in the run\'s topic — unattended-only, deduped)'));
       } else {
         console.log(pc.dim(`  notify-on-stop Layer B: ${nosEnabled ? 'idle (no telegram)' : 'disabled by config'}`));
       }
@@ -23784,6 +23797,80 @@ export async function startServer(options: StartOptions): Promise<void> {
       } catch (err) {
         console.log(pc.dim(`  [work-admission] self-help notice failed: ${err instanceof Error ? err.message : String(err)}`));
       }
+    }
+
+    // ── Machine self-maintenance, watch-only (docs/specs/machine-self-maintenance.md) ──
+    // Every dep below is a read: this build cannot restart a machine or stop work.
+    // A throwaway agent never runs it, whatever the gate says.
+    try {
+      const mmEnabled = () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('machineMaintenance.enabled', undefined), config);
+      const projectDir = path.dirname(config.stateDir);
+      const { classifyLocation, readThrowawayRecord } = await import('../core/ThrowawayAgentGuard.js');
+      const throwaway = classifyLocation({ projectDir, record: readThrowawayRecord(projectDir) }).throwaway;
+      if (mmEnabled() && !throwaway) {
+        const { DrainRehearsal, readHostCensus, setActiveDrainRehearsal } = await import('../monitoring/machineMaintenance/DrainRehearsal.js');
+        const { HostMaintenanceStore } = await import('../monitoring/machineMaintenance/HostMaintenanceStore.js');
+        const { normalizeSettings } = await import('../monitoring/machineMaintenance/planner.js');
+        const { makeReadOnlyRunner, readMachineSignals } = await import('../monitoring/machineMaintenance/readings.js');
+        const { activeAutonomousJobs } = await import('../core/AutonomousSessions.js');
+        const { getHostTestRunnerSemaphore } = await import('../core/hostTestRunnerSemaphore.js');
+        const { IDLE_PROMPT_PATTERNS } = await import('../core/SessionManager.js');
+        const atBoundary = async (tmux: string): Promise<boolean | null> => {
+          // Async, so a slow pane cannot hold the event loop. tmux returns the whole
+          // pane plus history here, and only the bottom says what the session is doing.
+          const output = await sessionManager.captureOutputAsync(tmux, 12);
+          if (output === null) return null;
+          const tail = output.trimEnd().split('\n').slice(-12).join('\n');
+          // Claude Code shows its prompt box while working too, so the working marker decides first.
+          if (/esc to interrupt/i.test(tail)) return false;
+          return IDLE_PROMPT_PATTERNS.some((p) => tail.includes(p));
+        };
+        const rehearsal = new DrainRehearsal({
+          agentName: config.projectName,
+          version: startupVersion,
+          stateDir: config.stateDir,
+          logPath: path.join(config.stateDir, '..', 'logs', 'machine-drain.jsonl'),
+          store: new HostMaintenanceStore(),
+          enabled: mmEnabled,
+          settings: () => normalizeSettings(liveConfig.get<Record<string, never> | undefined>('machineMaintenance', undefined)),
+          readSignals: () => readMachineSignals(makeReadOnlyRunner(config.sessions.tmuxPath)),
+          census: async ({ readBoundaries }) => {
+            const limiter = getHostTestRunnerSemaphore().status();
+            const snapshot = localVerifyService?.snapshot();
+            const sessions = [];
+            for (const s of sessionManager.getCachedRunningSessions().sessions) {
+              sessions.push({
+                name: s.name, tmuxSession: s.tmuxSession, topicId: s.telegramTopicId, jobSlug: s.jobSlug,
+                slackRoutingKey: _slackAdapter?.getChannelForSession(s.tmuxSession) ?? undefined,
+                atBoundary: readBoundaries ? await atBoundary(s.tmuxSession) : null,
+              });
+            }
+            return {
+              sessions,
+              autonomousRuns: activeAutonomousJobs(config.stateDir).map((j) => ({ topic: j.topic ?? 'legacy' })),
+              localVerifyRunning: snapshot?.inFlight ? [snapshot.inFlight] : [],
+              localVerifyQueued: (snapshot?.queue ?? []).map((e) => ({ pr: e.pr, headSha: e.headSha })),
+              testRuns: [
+                ...limiter.liveHolders.map((h) => ({ pid: h.pid, acquiredAt: h.acquiredAt, lane: 'suite' as const })),
+                ...limiter.targetedHolders.map((h) => ({ pid: h.pid, acquiredAt: h.acquiredAt, lane: 'targeted' as const })),
+              ],
+              scriptRuns: scheduler?.getActiveScriptRunIds() ?? [],
+            };
+          },
+          resumeQueue: () => {
+            const q = resumeQueue?.snapshot();
+            return q ? { disabled: q.disabled, paused: q.paused, dryRun: q.dryRun, entries: q.entries.length } : null;
+          },
+          coResidentAgents: () => readHostCensus(path.join(os.homedir(), '.instar', 'registry.json'), Date.now()),
+          holdsLease: () => (coordinator.enabled ? coordinator.holdsLease() : null),
+          ownUser: os.userInfo().username,
+          log: (line) => console.log(pc.yellow(`  [machine-maintenance] ${line}`)),
+        });
+        setActiveDrainRehearsal(rehearsal);
+        rehearsal.start();
+      }
+    } catch (err) {
+      console.warn(`  [machine-maintenance] not started: ${err instanceof Error ? err.message : err}`);
     }
 
     // ── Overload admission (trustworthy-machine-load Part C) ──

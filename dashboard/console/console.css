@@ -992,6 +992,15 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-tab[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .sess-history { flex: 1; min-width: 0; min-height: 320px; height: 52dvh; overflow-y: auto; padding: var(--s-3); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); display: flex; flex-direction: column; gap: var(--s-3); }
 .sess-history[hidden], .sess-term[hidden] { display: none; }
+/* A column flex box squeezes its children to fit; history items must keep their own height
+   and let the box scroll (tool lines clip their overflow, so without this they shrink to 0). */
+.sess-history > * { flex-shrink: 0; }
+/* Long tool lines never wrap, so their min-content width is the whole line: without these
+   the open session (and the page's grid column) grew to fit it, wider than a phone. */
+.main, .sess-view, .sess-open, .sess-term-wrap, .sess-composer { min-width: 0; }
+.sess-input { min-width: 0; width: 100%; }
+/* History has no live stream to return to: never float "Back to live" over it. */
+.sess-history:not([hidden]) ~ .sess-resume { display: none; }
 .sess-history-note { margin: 0; text-align: center; font-size: 13px; color: var(--text-muted); }
 .sess-h { max-width: 92%; }
 .sess-h-user { align-self: flex-end; background: var(--accent-wash); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-2) var(--s-3); }
@@ -1003,6 +1012,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-resume { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; }
 .sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: 0; padding: var(--s-2) 0; background: var(--bg); }
 .sess-input { flex: 1; min-height: 44px; font-size: 16px; resize: none; }
+.sess-input::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess-composer-btns { display: flex; gap: var(--s-2); }
 .sess-attach { min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; }
 .sess-attach:disabled { opacity: .45; cursor: not-allowed; }
@@ -1028,7 +1038,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   .app:has(> .preview-banner) { --preview-h: 37px; }
   .sessions-page.has-open .sess-open { height: 100%; min-height: 0; }
   .sessions-page.has-open .sess-term-wrap { min-height: 0; }
-  .sessions-page.has-open .sess-term { height: auto; min-height: 0; }
+  .sessions-page.has-open .sess-term, .sessions-page.has-open .sess-history { height: auto; min-height: 0; }
   .sessions-page.has-open .sess-composer { position: static; padding-bottom: 0; }
 }
 .sess-default-box:empty { display: none; }
