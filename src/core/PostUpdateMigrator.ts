@@ -265,6 +265,7 @@ export function WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port: number): string {
 An autonomous window is active only while FIVE independently observed predicates are green: its bound executor process is running; its bound framework transcript has a fresh heartbeat; Telegram delivery is reachable; a fresh monotone durable-work receipt exists; and the exact lifecycle/run binding is admitted and unexpired. Any missing predicate revokes active to at-risk. The authority durably permits exactly one bounded recovery; a verified green re-sample restores active, otherwise it settles loudly to stalled or failed within 15 minutes.
 - **Registry First:** GET http://localhost:${port}/window-run-liveness returns the durable state, predicate verdicts, recovery receipt, hash-chained sample/work audit, transitions, and frozen exit proof. A 503 means it is dark on this agent; never infer health from that.
 - **Durable work receipts:** POST /window-run-liveness/work-advance accepts only the immutable run binding plus a relative artifact path. The server selects the first open/unreceipted task from the run-bound autonomous checklist, resolves and hashes the artifact, rejects unchanged bytes, and mints task/sequence/time/digest; callers never submit task refs, predicate booleans, timestamps, sequences, or digests. Pane narration and spinner changes are not work evidence.
+- **Registering a window:** POST /window-run-liveness/register takes exactly five fields: \`{"windowId":"<unique per window>","topicId":<topic>,"autonomousRunId":"<runId from POST /autonomous/register>","lifecycleRunId":"<same runId for an ordinary run>","executorId":"<this session's tmux name>"}\`. Any other key (e.g. \`runId\`) or a missing field is refused with a 400 that names it; never guess a field name. A finished (failed/stalled/closed) window does not block a new one; a different window that is still live does (\`window-run-liveness-active-binding-exists\`).
 - **Preparation composition:** before lifecycle admission, the state remains preparing and does not consume the sole recovery. The separate between-window preparation carrier owns that interval.
 - **W32 cadence executor:** when explicitly enabled, GET /window-run-liveness/cadence exposes durable, distinct 30-minute interval receipts and 3-hour synthesis delivery receipts. It prompts the bound executor near a due interval but only a server-minted work receipt can pass it; narration never counts. POST /window-run-liveness/cadence/tick is the authenticated deterministic tick surface. A recovered/rebound executor continues the same cadence record instead of resetting the clock.
 - Ships on Echo development agents with dryRun:true unless explicitly enabled/actuated via monitoring.windowRunLiveness. Proactive trigger: when asked whether a window run is actually alive, stalled, or recovered, read this registry instead of trusting an “active” label.
@@ -8128,6 +8129,15 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(oldTriageLine, currentTriageLine);
       patched = true;
       result.upgraded.push('CLAUDE.md: corrected script result supervision wording');
+    }
+
+    if (content.includes('Authoritative Window Run Liveness') && !content.includes('**Registering a window:**')) {
+      const line = WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port).split('\n').find(entry => entry.startsWith('- **Registering a window:**'));
+      if (line) {
+        content += `\n${line}\n`;
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added window-run-liveness register body awareness');
+      }
     }
 
     if (!content.includes('W32 cadence executor:')) {

@@ -3333,10 +3333,28 @@ export function createRoutes(ctx: RouteContext): Router {
       return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+  // A misnamed field (e.g. runId for autonomousRunId) must be refused by name:
+  // silently dropping it once registered a run nothing could ever find.
+  const WINDOW_RUN_FIELD_HINTS: Record<string, string> = { runId: 'autonomousRunId', run_id: 'autonomousRunId', lifecycleId: 'lifecycleRunId', sessionId: 'executorId', session: 'executorId', topic: 'topicId', window: 'windowId', artifactPath: 'artifactRef', artifact: 'artifactRef', path: 'artifactRef' };
+  const windowRunBodyError = (body: Record<string, unknown>, allowed: readonly string[]): { error: string; allowed: readonly string[] } | null => {
+    const unknown = Object.keys(body).filter(key => !allowed.includes(key));
+    if (unknown.length > 0) {
+      const named = unknown.map(key => WINDOW_RUN_FIELD_HINTS[key] && allowed.includes(WINDOW_RUN_FIELD_HINTS[key]) ? `${key} (did you mean ${WINDOW_RUN_FIELD_HINTS[key]}?)` : key);
+      return { error: `window-run-liveness-unknown-field:${named.join(', ')}`, allowed };
+    }
+    const missing = allowed.filter(key => body[key] === undefined || body[key] === null || body[key] === '');
+    if (missing.length > 0) return { error: `window-run-liveness-missing-field:${missing.join(', ')}`, allowed };
+    const topic = body.topicId;
+    if (!(typeof topic === 'number' || (typeof topic === 'string' && /^[0-9]+$/.test(topic)))) return { error: 'window-run-liveness-topic-invalid', allowed };
+    return null;
+  };
+  const WINDOW_RUN_BINDING_FIELDS = ['windowId', 'topicId', 'autonomousRunId', 'lifecycleRunId', 'executorId'] as const;
   router.post('/window-run-liveness/register', async (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
     const body = req.body ?? {};
     if (Object.keys(body).some(key => /predicate|running|heartbeat|reachable|work|admitted|expires/i.test(key))) return res.status(400).json({ error: 'predicate-facts-are-server-owned' });
+    const bodyError = windowRunBodyError(body, WINDOW_RUN_BINDING_FIELDS);
+    if (bodyError) return res.status(400).json(bodyError);
     const authority = ctx.windowRunLivenessAuthority;
     const input = {
       windowId: body.windowId,
@@ -3380,6 +3398,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (Object.keys(body).some(key => forbidden.some(word => key.toLowerCase().includes(word.toLowerCase())))) {
       return res.status(400).json({ error: 'authority-facts-are-server-owned' });
     }
+    const bodyError = windowRunBodyError(body, [...WINDOW_RUN_BINDING_FIELDS, 'artifactRef']);
+    if (bodyError) return res.status(400).json(bodyError);
     try {
       const receipt = await ctx.windowRunLivenessAuthority.recordWorkAdvance({
         windowId: body.windowId,

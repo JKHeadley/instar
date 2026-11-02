@@ -41,6 +41,22 @@ describe('Window run liveness agent awareness migration', () => {
     expect(fresh).toContain('W32 cadence executor:');
   });
 
+  it('teaches existing and new agents the exact register body, once', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-register-awareness-'));
+    dirs.push(projectDir);
+    // An agent that already has the section from an earlier release, without the register line.
+    const legacySection = '\n### Authoritative Window Run Liveness (Echo, dev-gated, observe-first)\n- W32 cadence executor: present\n';
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# Existing agent\n${legacySection}`);
+    const first = migrate(projectDir);
+    expect(first.upgraded).toContain('CLAUDE.md: added window-run-liveness register body awareness');
+    const migrated = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(migrated).toContain('"autonomousRunId":"<runId from POST /autonomous/register>"');
+    expect(migrated.split('**Registering a window:**').length - 1).toBe(1);
+    migrate(projectDir);
+    expect(fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8')).toBe(migrated);
+    expect(generateClaudeMd('instar', 'Echo', 4042, true)).toContain('**Registering a window:**');
+  });
+
   it('backfills dark exact-cadence defaults without overwriting an operator override', () => {
     const freshTarget = {} as Record<string, unknown>;
     applyDefaults(freshTarget, getMigrationDefaults('managed-project'));
