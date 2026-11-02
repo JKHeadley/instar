@@ -12678,6 +12678,19 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
     }
 
+    // Scheduled jobs posting as "agent" (operator report 2026-11-02: the
+    // evolution-overdue-check job reached the Attention topic every few hours
+    // because it claimed source "agent"). Tell deployed agents a job they write
+    // names itself. Sniff: 'never claims `source: "agent"`'.
+    if (content.includes('attention-hub-held.jsonl') && !content.includes('never claims `source: "agent"`')) {
+      const jobSourceBullet = `- **A scheduled job never claims \`source: "agent"\`**: that label means you chose to put the item in front of the user. A job you write names itself instead (\`"source":"<job-slug>"\`), so its rows stay on the dashboard and out of the Attention topic; if a job finds something only the user can do, it tells you in its report and you decide whether to raise it.\n`;
+      const hubLine = /^- \*\*What reaches the user's Attention topic[^\n]*\n/m;
+      if (hubLine.test(content)) content = content.replace(hubLine, (m) => `${m}${jobSourceBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${jobSourceBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added scheduled-job attention source bullet');
+    }
+
     // Attention lifecycle (attention-lifecycle-close-on-cause, operator report
     // 2026-10-25: ~1,140 open items nobody could act on). Deployed agents learn
     // that items are one-per-condition, how to pass a conditionKey, how to
