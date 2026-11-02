@@ -4,7 +4,7 @@
 `src/monitoring/GreenPrAutoMerger.ts` (tick): instead of acting only on the single oldest eligible PR, the pass walks eligible PRs oldest first. When `act` returns `episode-not-eligible` (the PR's episode gave up or is backing off) or `gave-up-rearm-exhausted`, it logs `skipped:episode` and gives the next-oldest PR its turn. Any other outcome (a merge attempt, a refusal from safe-merge, identity/contract/busy skips that apply to every PR) ends the pass as before, so a pass still makes at most one merge attempt.
 
 ## Evidence
-On the Studio (2026-11-02) the eligible snapshot was 2378, 2381, 2567, 2596 (2374 already armed). #2378 has been in `gave-up` since Oct 26 (refused:body-checks), so every pass picked it, `act` returned `episode-not-eligible` without a log line, and the pass ended. #2596 passed its local verify at 20:10, missed its one-shot hand-off because GitHub was still recomputing mergeability, and then never merged; #2567 and #2381 were behind the same PR.
+On the Studio (2026-11-02) the eligible snapshot at 20:41 was 2378, 2381, 2567, 2596 (2374 already armed). #2378 has been in `gave-up` since Oct 26 (refused:body-checks), so that pass picked it, `act` returned `episode-not-eligible` without a log line, and the pass ended. #2596 passed its local verify at 20:10, missed its one-shot hand-off because GitHub was still recomputing mergeability, and merged only at 20:46: about 36 minutes later, on a pass where #2378 happened to read as not mergeable. The stall is intermittent (it bites whenever a gave-up PR reads mergeable), not permanent; every green PR that misses its hand-off waits behind it for as long as that lasts.
 
 ## 1. Over-block
 None; this unblocks.

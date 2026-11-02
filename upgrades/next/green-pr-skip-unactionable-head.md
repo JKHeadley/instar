@@ -8,7 +8,7 @@ Finished changes merge on their own again even when an old, stuck change is at t
 
 ## Evidence
 
-- On a live agent, a PR given up on since Oct 26 was the oldest ready one; every round picked it and stopped, so a fix that passed its checks at 20:10 never merged. Unit tests cover the skip, and that a real attempt still ends the round.
+- On a live agent, a PR given up on since Oct 26 was the oldest ready one; rounds picked it and stopped, so a fix that passed its checks at 20:10 waited until 20:46. Unit tests cover the skip, and that a real attempt still ends the round.
 
 ## Summary of New Capabilities
 
