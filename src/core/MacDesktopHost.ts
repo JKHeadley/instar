@@ -4,7 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validDesktopInput, type DesktopButton, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
+import { parseDesktopDisplays, validDesktopInput, validDisplayId, type DesktopButton, type DesktopDisplayList, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 
 export type MacDesktopInput = DesktopInput;
@@ -26,6 +26,12 @@ const DEFAULT_HOST = path.basename(path.dirname(MODULE_DIR)) === 'src'
 const validInput = validDesktopInput;
 
 export class MacDesktopHost implements DesktopHost {
+  readonly platform = 'macos' as const;
+  /** null is the main display, resolved by the helper at each start. */
+  private selectedDisplayId: string | null = null;
+  private displayCheckPending = false;
+  /** Bumped by every cancel, so a capture that yielded cannot start a helper afterwards. */
+  private captureGeneration = 0;
   private readonly inputChildren = new Set<{ kill(signal?: NodeJS.Signals): boolean }>();
   private indicatorChild: ChildProcessWithoutNullStreams | null = null;
   private inputStream: ChildProcessWithoutNullStreams | null = null;
@@ -194,14 +200,15 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private async run(
-    command: 'probe' | 'capture' | 'cursor' | 'input' | 'release' | 'request-permission',
+    command: 'probe' | 'capture' | 'cursor' | 'displays' | 'input' | 'release' | 'request-permission',
     input?: Buffer,
     identity: HelperIdentity = command === 'capture' ? this.screenIdentity
       : command === 'input' || command === 'release' ? this.inputIdentity : 'inherited',
+    extraArgs: string[] = [],
   ): Promise<Buffer> {
     const resolved = this.trustedBinary();
     return new Promise<Buffer>((resolve, reject) => {
-      const child = spawn(resolved, [command], { stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(identity) });
+      const child = spawn(resolved, [command, ...extraArgs], { stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(identity) });
       if (command === 'input') this.inputChildren.add(child);
       const chunks: Buffer[] = [];
       const limit = command === 'capture' ? FRAME_LIMIT : 4_096;
@@ -295,7 +302,51 @@ export class MacDesktopHost implements DesktopHost {
     return value as MacDesktopProbe;
   }
 
+  async listDisplays(): Promise<DesktopDisplayList> {
+    let value: unknown;
+    try { value = JSON.parse((await this.run('displays')).toString('utf8')); }
+    catch (error) {
+      if (error instanceof SyntaxError) throw new Error('mac-desktop-host-displays-invalid');
+      throw error;
+    }
+    const displays = parseDesktopDisplays(value);
+    return { displays, canShowAll: false,
+      currentDisplayId: this.selectedDisplayId ?? displays.find(display => display.main)?.id ?? null };
+  }
+
+  async selectDisplay(displayId: string | null): Promise<boolean> {
+    if (displayId !== null) {
+      if (!validDisplayId(displayId)) return false;
+      if (!(await this.listDisplays()).displays.some(display => display.id === displayId)) return false;
+    }
+    this.displayCheckPending = false;
+    if (displayId === this.selectedDisplayId) return true;
+    this.selectedDisplayId = displayId;
+    // The next frame starts a fresh helper on the new display, with a keyframe.
+    this.cancelCapture();
+    return true;
+  }
+
+  /** A screen can be unplugged mid-session. Only a confirmed absence moves the
+   * viewer off it; an unreadable list leaves the choice alone. */
+  private async recheckSelectedDisplay(): Promise<void> {
+    this.displayCheckPending = false;
+    const displayId = this.selectedDisplayId;
+    if (displayId === null) return;
+    const list = await this.listDisplays().catch(() => null); // @silent-fallback-ok — the next capture failure asks again.
+    // An empty list means the desktop could not be read, not that the screen left.
+    if (list?.displays.length && this.selectedDisplayId === displayId
+      && !list.displays.some(display => display.id === displayId)) this.selectedDisplayId = null;
+  }
+
   private async capturePacket(mode: 'jpeg' | 'h264', forceKeyframe = false): Promise<Buffer> {
+    if (this.displayCheckPending && !this.captureStream) {
+      const generation = this.captureGeneration;
+      await this.recheckSelectedDisplay();
+      // A Stop during that read has already cancelled capture. Never start a
+      // helper that would outlive the grant.
+      if (generation !== this.captureGeneration) throw new Error('mac-desktop-host-capture-cancelled');
+    }
     if (this.captureMode !== mode) this.cancelCapture();
     const fresh = !this.captureStream;
     if (fresh) this.startCaptureStream(mode);
@@ -306,6 +357,7 @@ export class MacDesktopHost implements DesktopHost {
         if (this.pendingCapture?.timer !== timer) return;
         this.pendingCapture = null;
         if (this.captureStream === child) this.captureStream = null;
+        this.displayCheckPending = true;
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-host-capture-timeout'));
       }, 4_000);
@@ -339,6 +391,7 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private cancelCapture(): void {
+    this.captureGeneration++;
     const child = this.captureStream;
     this.captureStream = null;
     if (this.pendingCapture) {
@@ -354,7 +407,8 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private startCaptureStream(mode: 'jpeg' | 'h264'): void {
-    const child = spawn(this.trustedBinary(), [mode === 'h264' ? 'capture-stream-h264' : 'capture-stream'], {
+    const child = spawn(this.trustedBinary(), [mode === 'h264' ? 'capture-stream-h264' : 'capture-stream',
+      ...(this.selectedDisplayId === null ? [] : [this.selectedDisplayId])], {
       stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(this.screenIdentity),
     });
     this.captureStream = child;
@@ -365,6 +419,7 @@ export class MacDesktopHost implements DesktopHost {
       if (this.captureStream !== child) return;
       this.captureStream = null;
       this.captureLastFrame = null;
+      this.displayCheckPending = true;
       const pending = this.pendingCapture;
       this.pendingCapture = null;
       if (pending) {
@@ -401,7 +456,8 @@ export class MacDesktopHost implements DesktopHost {
 
   /** Local-only readback for the live input acceptance check. */
   async cursor(): Promise<{ x: number; y: number }> {
-    const raw = await this.run('cursor');
+    const raw = await this.run('cursor', undefined, undefined,
+      this.selectedDisplayId === null ? [] : [this.selectedDisplayId]);
     let value: { x?: unknown; y?: unknown };
     try { value = JSON.parse(raw.toString('utf8')) as { x?: unknown; y?: unknown }; }
     catch { throw new Error('mac-desktop-host-cursor-invalid'); }
@@ -443,7 +499,11 @@ export class MacDesktopHost implements DesktopHost {
       }, 2_000);
       timer.unref?.();
       this.pendingInput = { resolve, reject, timer };
-      child.stdin.write(JSON.stringify(action) + '\n', error => {
+      // Pointer fractions are relative to the shown screen. The default keeps
+      // the original wire form, and the helper resolves the main display itself.
+      const onDisplay = this.selectedDisplayId !== null && 'x' in action
+        ? { ...action, displayId: this.selectedDisplayId } : action;
+      child.stdin.write(JSON.stringify(onDisplay) + '\n', error => {
         if (error && this.pendingInput?.timer === timer) {
           clearTimeout(timer);
           this.pendingInput = null;

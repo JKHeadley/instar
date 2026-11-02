@@ -31,11 +31,18 @@
     </div>
     <div class="desktop-dock" aria-label="Remote desktop controls">
       <button id="toolsButton" type="button" aria-label="More controls" aria-expanded="false" aria-controls="desktopTools">☰</button>
+      <button id="displaysButton" type="button" aria-label="Screens" aria-expanded="false" aria-controls="displayMenu" hidden>⧉</button>
       <button id="keyboardButton" type="button" aria-label="Show keyboard" aria-expanded="false" aria-controls="keyboardBar">⌨</button>
       <button id="zoomResetButton" type="button" aria-label="Fit screen" hidden>Fit</button>
       <button id="fullscreenButton" type="button" aria-label="Full screen">⛶</button>
     </div>
+    <div class="desktop-tools" id="displayMenu" aria-label="Screens" hidden></div>
     <div class="desktop-tools" id="desktopTools" hidden>
+      <p id="displayNote" class="display-note" hidden></p>
+      <button data-shortcut="overview" type="button" hidden></button>
+      <button data-shortcut="appWindows" type="button" hidden></button>
+      <button data-shortcut="previousSpace" type="button" hidden></button>
+      <button data-shortcut="nextSpace" type="button" hidden></button>
       <button id="modeButton" type="button" aria-pressed="true" hidden>Trackpad · swipe to move</button>
       <button id="dragButton" type="button" aria-pressed="false">Drag</button>
       <button id="rightButton" type="button">Right click</button>

@@ -1651,6 +1651,7 @@ export class AgentServer {
           switch (body?.operation) {
             case 'status': return this.directDesktopAccess.status(requestId, token);
             case 'cursor': return this.directDesktopAccess.cursor(requestId, token);
+            case 'displays': return this.directDesktopAccess.displays(requestId, token) as unknown as Promise<Record<string, unknown>>;
             case 'ticket': return { ...this.directDesktopAccess.targetInfo(),
               ticket: this.directDesktopAccess.ticket(requestId, token,
                 typeof payload?.connectionNonce === 'string' ? payload.connectionNonce : '',

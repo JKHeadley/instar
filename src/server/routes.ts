@@ -13211,6 +13211,21 @@ export function createRoutes(ctx: RouteContext): Router {
     try { res.json(await ctx.directDesktopAccess.cursor(req.params.id, desktopOperatorSession(req))); }
     catch { res.status(403).json({ error: 'Desktop cursor unavailable' }); }
   });
+  router.get('/desktop/requests/:id/displays', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!desktopTransport(req, res)) return;
+    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+      res.status(403).json({ error: 'Dashboard operator session required' }); return;
+    }
+    if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
+      try { res.json(await ctx.desktopMeshBroker.control(desktopOperatorSession(req), req.params.id, 'displays')); }
+      catch { res.status(403).json({ error: 'Desktop displays unavailable' }); }
+      return;
+    }
+    try { res.json(await ctx.directDesktopAccess.displays(req.params.id, desktopOperatorSession(req))); }
+    catch { res.status(403).json({ error: 'Desktop displays unavailable' }); }
+  });
   router.post('/desktop/requests/:id/ticket', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }

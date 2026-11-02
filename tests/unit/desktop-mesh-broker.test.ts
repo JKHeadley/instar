@@ -174,6 +174,28 @@ describe('DesktopMeshBroker', () => {
     await stop;
   });
 
+  it('relays the screen list read to the target', async () => {
+    const keys = generateSigningKeyPair();
+    const requestId = '12345678-1234-1234-1234-123456789abc';
+    const bodies: Array<Record<string, unknown>> = [];
+    const send = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('operator-begin')) return Response.json({ requestId, targetSessionToken: 'T'.repeat(43) });
+      if (url.endsWith('operator-command')) {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Response.json({ supported: true, platform: 'macos', displays: [], currentDisplayId: null, canShowAll: false });
+      }
+      return Response.json({});
+    });
+    const broker = new DesktopMeshBroker({ selfMachineId: SELF, signingKeyPem: keys.privateKey,
+      peers: () => [{ machineId: TARGET, url: 'https://echo-mini.dawn-tunnel.dev', kind: 'cloudflare' }],
+      verifyFrontSession: () => true, fetch: send as typeof fetch, startupQuarantineMs: 0 });
+    await broker.begin('owner', { machineId: TARGET, browserPublicKey: 'key',
+      browserEcdhPublicKey: 'ecdh', browserNonce: '0123456789abcdef' });
+    expect(await broker.control('owner', requestId, 'displays')).toMatchObject({ supported: true, platform: 'macos' });
+    expect(bodies.at(-1)).toMatchObject({ operation: 'displays', requestId });
+    broker.close();
+  });
+
   it('feeds the shared rope health authority only for transport failures', async () => {
     const keys = generateSigningKeyPair();
     const results: boolean[] = [];

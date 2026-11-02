@@ -4,7 +4,7 @@
  * remains available only when explicitly selected by the caller. */
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import type { DesktopHost, DesktopInput, DesktopProbe } from './DesktopHost.js';
+import { validDisplayId, type DesktopDisplay, type DesktopHost, type DesktopInput, type DesktopPlatform, type DesktopProbe } from './DesktopHost.js';
 import type { RemoteStepUpLockoutPort } from './RemoteStepUpLockouts.js';
 import type { DesktopStreamSession } from '../server/DesktopStreamManager.js';
 import { DesktopAead, deriveDesktopKey } from './DesktopAead.js';
@@ -28,6 +28,8 @@ interface DirectRequest {
   browserEcdhPublicKey: string;
   browserNonce: string;
   videoCodec: 'jpeg' | 'h264';
+  /** The shown screen. Belongs to the logical session, so it survives a resume. */
+  displayId?: string | null;
   operatorSessionHash: string;
   operatorSessionToken?: string;
   codeHash: Buffer;
@@ -68,6 +70,16 @@ export interface DirectDesktopRequestInput {
   videoCodec?: 'jpeg' | 'h264';
   previousVideoCodec?: 'jpeg' | 'h264';
   scopeConfirmed: boolean;
+}
+
+export interface DesktopDisplaysReply {
+  /** false: this host cannot switch screens, and selectDisplay must not be sent. */
+  supported: boolean;
+  /** Which shortcuts apply. null: unknown, so the viewer sends none. */
+  platform: DesktopPlatform | null;
+  displays: DesktopDisplay[];
+  currentDisplayId: string | null;
+  canShowAll: boolean;
 }
 
 export interface DesktopTargetIdentity {
@@ -407,6 +419,19 @@ export class DirectDesktopAccess {
     return point;
   }
 
+  async displays(requestId: string, operatorSessionToken: string): Promise<DesktopDisplaysReply> {
+    const row = this.requests.get(requestId);
+    if (!row) throw new Error('desktop request unavailable');
+    this.assertViewer(row, operatorSessionToken);
+    if (!this.validGrant(row)) throw new Error('desktop displays unavailable');
+    const platform = this.host.platform ?? null;
+    const unsupported = { supported: false, platform, displays: [], currentDisplayId: null, canShowAll: false };
+    if (!this.host.listDisplays) return unsupported;
+    const list = await this.host.listDisplays().catch(() => null); // @silent-fallback-ok — an older helper answers as unsupported, which the viewer states plainly.
+    if (!this.validGrant(row)) throw new Error('desktop displays unavailable');
+    return list ? { supported: true, platform, ...list } : unsupported;
+  }
+
   ticket(requestId: string, operatorSessionToken: string, nonce: string, signature: string): string {
     const row = this.requests.get(requestId);
     if (!row) throw new Error('desktop request unavailable');
@@ -486,6 +511,18 @@ export class DirectDesktopAccess {
       throw new Error('desktop local indicator unavailable');
     }
     finally { if (row.admitPending === indicatorPending) row.admitPending = undefined; }
+    if (this.host.selectDisplay) {
+      // A new grant starts on the default screen; a resumed one keeps its choice.
+      const select = (id: string | null) => this.host.selectDisplay!(id).catch(() => false); // @silent-fallback-ok — a screen that cannot be restored leaves the default showing.
+      if (row.displayId && !(await select(row.displayId))) {
+        row.displayId = null;
+        await select(null);
+      } else if (!row.displayId) await select(null);
+      if (row.grantId !== admittedGrantId || !this.validGrant(row)) {
+        if (row.grantId === admittedGrantId) this.revokeRow(row);
+        throw new Error('desktop grant unavailable');
+      }
+    }
     let lastHostProbeAt = -Infinity;
     let hostProbe: Promise<boolean> | null = null;
     const assertActive = async () => {
@@ -587,6 +624,19 @@ export class DirectDesktopAccess {
         // The OS probe above yields. Recheck synchronously at the native spawn
         // boundary so a revoke during that probe cannot launch late input.
         if (row.grantId !== admittedGrantId || !this.validGrant(row)) throw new Error('desktop grant unavailable');
+        if (action.kind === 'selectDisplay') {
+          if (!this.host.selectDisplay || (action.displayId !== null && !validDisplayId(action.displayId))) {
+            throw new Error('desktop display invalid');
+          }
+          // An unknown screen changes nothing. The viewer reads the list again.
+          if (await this.host.selectDisplay(action.displayId)) {
+            row.displayId = action.displayId;
+            forceKeyframe = true;
+            lastQueuedFrameDigest = null;
+          }
+          row.lastActivity = this.now();
+          return;
+        }
         await this.host.input(action);
         row.inputCount = (row.inputCount ?? 0) + 1;
         row.lastActivity = this.now();
