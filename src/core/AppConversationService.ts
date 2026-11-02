@@ -95,14 +95,14 @@ export class AppConversationService {
     // Aliases are derived per machine from the replicated store and rebuildable at any time.
     this.reconcileAliases();
     this.leaseTick();
-    try { this.recoverStranded(); } catch (err) { this.report('boot recovery', err); }
+    try { this.recoverStranded(); } catch (err) { this.report('boot recovery', err); } // @silent-fallback-ok — reported through deps.reportDegradation; the 5 s tick repeats it
   }
 
   start(intervalMs = 5_000): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
       this.leaseTick();
-      try { this.recoverStranded(); } catch (err) { this.report('recovery', err); }
+      try { this.recoverStranded(); } catch (err) { this.report('recovery', err); } // @silent-fallback-ok — reported through deps.reportDegradation; the next tick repeats it
     }, intervalMs);
     this.timer.unref?.();
     void this.sweepMedia();

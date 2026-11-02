@@ -86,7 +86,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     try {
       const r = requests.reserve(deviceId, requestId as string, hash, 0);
       if (r.kind === 'reserved') requests.finish(deviceId, requestId as string, { status: 200, body });
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — reported through deps.reportDegradation
+      // E2E-PAIRING: EXEMPT — comment-only annotation; these routes are covered by tests/e2e/mobile-native-media-alive.test.ts
       // The upload exists; a retry with a new id starts another, and this one expires by itself.
       svc!.deps.reportDegradation?.('AppMedia.requestStore', err instanceof Error ? err.message : String(err));
     }

@@ -126,6 +126,12 @@ The review kept the feature's refusals to fixed invariants plus the existing cre
 - **Declared, no code change:** the four limits under "Declared limits" in section 2.
 - **Confirming pass: concur**, with one follow-up, done in this change: making `--file` ignore stdin silently dropped a piped caption (`cat <<'EOF' | app-reply.sh --file x`). The script now reads a non-terminal stdin with a bounded wait (`read -t 2` per line, 10 s in all), sends what arrived, and warns on stderr when it stopped waiting part way; a timeout is recognised both by bash 4+'s status above 128 and, on macOS's bash 3.2 (which returns 1), by the read taking the full 2 s. A text argument is still the caption and stdin is then not read. Tested against a stand-in server on bash 3.2 (the only bash on this machine): a heredoc caption arrives whole, a last line with no newline is kept, a never-closed stdin returns in about 2 s with no caption, a stalled pipe sends the first line with the warning.
 
+## Suite ratchets settled in this change (Zero-Failure)
+
+The full Local Verify of 3b3fc747d failed three unit ratchets, all from this PR and none a logic change: `SqliteRegistry-wiring` (the media upload index is now on its list of registered stores), `no-empty-catch-blocks` (the inline worker's directory fsync catch now has a body), and `no-silent-fallbacks` (three catch blocks whose scan window grew to include this PR's code already report through `deps.reportDegradation`; they now say so with `@silent-fallback-ok`).
+
+---
+
 ## Evidence pointers
 
 - `tests/unit/self-action-convergence.test.ts` (controller `app-media-capacity-notice`), `tests/unit/app-media-types.test.ts`, `tests/unit/app-media-store.test.ts`, `tests/unit/app-media-reply-files.test.ts`, `tests/unit/PostUpdateMigrator-appMedia.test.ts`

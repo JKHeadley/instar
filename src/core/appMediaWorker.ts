@@ -49,7 +49,7 @@ function finishWrite(fd, outPath) {
   fs.fsyncSync(fd);
   fs.closeSync(fd);
   fs.chmodSync(outPath, 0o400);
-  try { const d = fs.openSync(require('node:path').dirname(outPath), 'r'); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } } catch {}
+  try { const d = fs.openSync(require('node:path').dirname(outPath), 'r'); try { fs.fsyncSync(d); } finally { fs.closeSync(d); } } catch { /* @silent-fallback-ok — a directory fsync is best-effort on some filesystems; the file itself was fsynced */ }
 }
 
 function run() {
