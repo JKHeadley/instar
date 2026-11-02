@@ -3,8 +3,9 @@
  *
  * Device keys (docs/specs/mobile-device-keys.md): redeem registers the phone's Secure Enclave
  * public key as a PENDING device and sends a 6-digit code only to the owner's private Telegram
- * chat; the phone confirms with that code (device-signed) and from then on signs allowlisted
- * requests. Redeem never returns the API token.
+ * chat — or, with no Telegram owner (mobile-native-conversations §4.4), shows it only to a
+ * dashboard PIN session (GET /mobile/pairing-approvals); the phone confirms with that code
+ * (device-signed) and from then on signs allowlisted requests. Redeem never returns the API token.
  *
  * Public (registered before the bearer gate, each by an exact path+method):
  *   POST /mobile/pairing-codes/redeem   one-time code + device public key → a pending device
@@ -72,6 +73,12 @@ export interface MobilePairingDeps {
   fetchFn?: typeof fetch;
   /** Send the confirmation code to the owner's private chat with a Decline button; resolves to the Telegram message id, or null. */
   ownerDM?: (text: string, declineData: string) => Promise<number | null>;
+  /**
+   * Whether a Telegram owner is known (mobile-native-conversations §4.4): with one, the code goes
+   * to the owner's private chat; without one (and native conversations on), the dashboard path.
+   * Absent ⇒ `ownerDM` presence decides, as before.
+   */
+  telegramOwnerPresent?: () => boolean;
   /** Whether this machine holds the serving lease (single machine: true). */
   holdsLease?: () => boolean;
   /** Raise one attention item (pairing paused by wrong codes). */
@@ -83,7 +90,7 @@ export interface MobilePairingDeps {
   isWsl?: boolean;
 }
 
-type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram' | 'appConversations'>>;
+type PoolCtx = Pick<RouteContext, 'config' | 'resolvePeerUrls' | 'recordRopeResult'> & Partial<Pick<RouteContext, 'mobileInbound' | 'telegram' | 'appConversations' | 'verifyDashboardOperatorSession'>>;
 const PEER_TIMEOUT_MS = 5000;
 const MAX_PEER_BYTES = 128 * 1024;
 
@@ -175,6 +182,12 @@ export class MobilePairingService {
   readonly replay: ReplayGuard;
   /** Decline-button nonce → device id (process memory). */
   readonly declineNonces = new Map<string, string>();
+  /**
+   * Dashboard-path pending devices (mobile-native-conversations §4.4): device id → the plaintext
+   * confirmation code, in process memory ONLY, never on disk, for the pending device's life. Shown
+   * only to a dashboard operator session; a restart loses it (the device expires at boot).
+   */
+  private readonly dashboardCodes = new Map<string, { code: string; expiresAt: number }>();
   private selfNonces = new Map<string, number>();
   private pingTimes: number[] = [];
   private deviceRate = new Map<string, number[]>();
@@ -222,10 +235,53 @@ export class MobilePairingService {
   leaseTick(): void {
     this.confirm.prune();
     for (const [n, id] of this.declineNonces) { const d = this.devices.get(id); if (!d || d.status !== 'pending') this.declineNonces.delete(n); }
+    this.pruneDashboardCodes();
     if (!this.enabled() || this.holdsLease()) return;
-    this.confirm.clearAll();
+    // The Telegram path's code travels through the lease holder's adapter, so a lease move voids
+    // it. A dashboard-path device has no such dependency and survives a lease move (§4.4).
+    const keep = this.dashboardPendingIds();
+    this.confirm.clearAll(keep);
     this.declineNonces.clear();
-    try { this.devices.expireAllPending(); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leaseExpiry', err); } // @silent-fallback-ok — reported through DegradationReporter
+    try { this.devices.expireAllPending(keep); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leaseExpiry', err); } // @silent-fallback-ok — reported through DegradationReporter
+  }
+
+  /**
+   * How the next redeem's confirmation code reaches the operator (§4.4): `telegram` (the owner's
+   * private chat) when a Telegram owner is present; otherwise `dashboard` (shown only to a
+   * dashboard PIN session) when native conversations are on; otherwise null (the old refusal).
+   */
+  approvalPath(): 'telegram' | 'dashboard' | null {
+    // Native conversations off: exactly the old behaviour (try the Telegram DM whenever an adapter exists).
+    if (!this.nativeOn) return this.deps.ownerDM ? 'telegram' : null;
+    const owner = this.deps.telegramOwnerPresent ? this.deps.telegramOwnerPresent() : true;
+    return this.deps.ownerDM && owner ? 'telegram' : 'dashboard';
+  }
+
+  /** Record a dashboard-path pending device's code (memory only). */
+  holdDashboardCode(deviceId: string, code: string, expiresAt: number): void { this.dashboardCodes.set(deviceId, { code, expiresAt }); }
+  isDashboardPending(deviceId: string): boolean { this.pruneDashboardCodes(); return this.dashboardCodes.has(deviceId); }
+  dropDashboardCode(deviceId: string): void { this.dashboardCodes.delete(deviceId); }
+  dashboardPendingIds(): Set<string> { this.pruneDashboardCodes(); return new Set(this.dashboardCodes.keys()); }
+
+  /** Pending dashboard-path devices with their codes — for the operator-session route ONLY. */
+  dashboardApprovals(): Array<{ device: DeviceRecord; code: string; expiresAt: number }> {
+    this.pruneDashboardCodes();
+    const out: Array<{ device: DeviceRecord; code: string; expiresAt: number }> = [];
+    for (const [id, e] of this.dashboardCodes) {
+      const d = this.devices.get(id);
+      if (d && d.status === 'pending') out.push({ device: d, code: e.code, expiresAt: e.expiresAt });
+    }
+    return out;
+  }
+
+  private pruneDashboardCodes(): void {
+    const t = this.now();
+    for (const [id, e] of this.dashboardCodes) {
+      if (e.expiresAt <= t) { this.dashboardCodes.delete(id); continue; }
+      let d: DeviceRecord | null = null;
+      try { d = this.devices.get(id); } catch { d = null; } // @silent-fallback-ok — an unreadable registry drops the code (fail closed: it is never shown)
+      if (!d || d.status !== 'pending') this.dashboardCodes.delete(id);
+    }
   }
 
   stop(): void { if (this.leaseTimer) clearInterval(this.leaseTimer); this.leaseTimer = null; this.ownNames?.stop(); }
@@ -273,6 +329,7 @@ export class MobilePairingService {
     const hits = this.confirm.leakedIn(text);
     for (const id of hits) {
       this.confirm.drop(id);
+      this.dashboardCodes.delete(id);
       try { this.devices.decline(id); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leakDecline', err); }
       void this.deps.ownerDM?.('A pairing code was sent in a conversation, so I cancelled that pairing. Codes only go into the Instar app. Ask me for a new link if you were pairing a phone.', '');
     }
@@ -409,7 +466,12 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     const body = (req.body ?? {}) as Record<string, unknown>;
     const publicKey = typeof body.devicePublicKey === 'string' ? body.devicePublicKey : '';
     if (!parseDevicePublicKey(publicKey)) { res.status(400).json({ error: 'A valid device public key is required.' }); return; }
-    if (!svc.deps.ownerDM || !svc.holdsLease()) {
+    // Which way the confirmation code reaches the operator (mobile-native-conversations §4.4):
+    // the Telegram owner's private chat (needs the serving lease: the code travels through the
+    // lease holder's adapter), or — with no Telegram owner — the dashboard, shown only to a PIN
+    // session, which needs no lease.
+    const approval = svc.approvalPath();
+    if (!approval || (approval === 'telegram' && !svc.holdsLease())) {
       res.status(409).json({ error: 'approval-unavailable', detail: 'This agent cannot send you the confirmation code right now (no Telegram owner chat on this machine).' });
       return;
     }
@@ -436,6 +498,13 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     }
     const device = created.device;
     const code = svc.confirm.issue(device.id, Date.parse(device.expiresAt!));
+    if (approval === 'dashboard') {
+      // No DM to wait for: the code (plaintext, memory only) is shown on the dashboard's Phones
+      // card to an operator session; the phone shows "confirm on your dashboard".
+      svc.holdDashboardCode(device.id, code, Date.parse(device.expiresAt!));
+      res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard' });
+      return;
+    }
     const nonce = crypto.randomBytes(12).toString('hex');
     svc.declineNonces.set(nonce, device.id);
     const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
@@ -447,18 +516,18 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     let delivered: number | null = null;
     try {
       delivered = await Promise.race([
-        svc.deps.ownerDM(text, `md:d:${nonce}`),
+        svc.deps.ownerDM!(text, `md:d:${nonce}`),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
       ]);
     } catch { delivered = null; } // @silent-fallback-ok — treated as not delivered: the pending device is removed and the caller gets 409
-    if (!delivered) {
+    if (!delivered || !svc.deps.ownerDM) {
       svc.confirm.drop(device.id);
       svc.declineNonces.delete(nonce);
       try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); }
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
       return;
     }
-    res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending' });
+    res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'telegram' });
   });
 }
 
@@ -502,6 +571,44 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.json({ devices, pool: { failed: pool.failed } });
   });
 
+  // ── Dashboard pairing approval (mobile-native-conversations §4.4) ──
+  // A dashboard-path pending phone's fingerprint and confirmation code, ONLY to a dashboard
+  // operator session (a fresh PIN unlock, X-Instar-Operator-Session). The Bearer token alone, and
+  // any device, are refused: the code proves the phone's holder could unlock the dashboard.
+  const operatorOnly = (req: Request, res: Response): boolean => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return false; }
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'operator-session-required' }); return false; }
+    const session = req.get('X-Instar-Operator-Session');
+    if (!poolCtx?.verifyDashboardOperatorSession?.(session)) {
+      res.status(403).json({ error: 'operator-session-required', detail: 'Unlock the dashboard with your PIN to see pairing codes.' });
+      return false;
+    }
+    return true;
+  };
+
+  router.get('/mobile/pairing-approvals', (req: Request, res: Response) => {
+    if (!operatorOnly(req, res)) return;
+    const approvals = svc.dashboardApprovals().map(({ device, code, expiresAt }) => ({
+      deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null,
+      code, pairedAt: device.pairedAt, expiresAt: new Date(expiresAt).toISOString(),
+    }));
+    res.json({ approval: svc.approvalPath(), approvals });
+  });
+
+  // "Not me": the operator declines a dashboard-path pairing from the same card.
+  router.post('/mobile/pairing-approvals/:id/decline', (req: Request, res: Response) => {
+    if (!operatorOnly(req, res)) return;
+    const id = String(req.params.id);
+    if (!svc.isDashboardPending(id)) { res.status(404).json({ error: 'not-pending' }); return; }
+    svc.confirm.drop(id);
+    svc.dropDashboardCode(id);
+    try { svc.devices.decline(id); } catch (err) { // @silent-fallback-ok — the code is gone, so the device can never confirm; reported
+      deps.reportDegradation?.('MobilePairing.declineWrite', err);
+    }
+    res.json({ declined: true });
+  });
+
   // Routes to this machine (mobile-multi-route §4.3; device-signed, active only).
   router.get('/mobile/routes', (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -523,7 +630,12 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
     const d = svc.devices.get(p.deviceId);
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
-    res.json({ status: d.status, deviceName: d.deviceName, approvedAt: d.approvedAt ?? null });
+    res.json({
+      status: d.status, deviceName: d.deviceName, approvedAt: d.approvedAt ?? null,
+      // A pending dashboard-path phone (§4.4) tells the operator where the code is.
+      ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: 'dashboard' } : {}),
+      ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
+    });
   });
 
   // Confirm with the code from the owner's private chat (device-signed; pending or active).
@@ -535,8 +647,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
     if (d.status === 'active') { res.json({ status: 'active' }); return; }
     if (d.status !== 'pending') { res.status(409).json({ error: d.status }); return; }
-    if (!svc.holdsLease()) {
-      try { svc.devices.expireAllPending(); } catch (err) { deps.reportDegradation?.('MobilePairing.registryWrite', err); }
+    // A dashboard-path device (§4.4) needs no lease: its code never travelled through Telegram.
+    const viaDashboard = svc.isDashboardPending(d.id);
+    const approvedVia = viaDashboard ? 'dashboard-pin' as const : 'telegram-dm' as const;
+    if (!viaDashboard && !svc.holdsLease()) {
+      try { svc.devices.expireAllPending(svc.dashboardPendingIds()); } catch (err) { deps.reportDegradation?.('MobilePairing.registryWrite', err); }
       res.status(409).json({ error: 'approval-moved', detail: 'This pairing moved machines. Ask for a new link.' });
       return;
     }
@@ -547,14 +662,14 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const approvedAt = new Date().toISOString();
     if (check.result === 'ok' && svc.keyLedger) {
       // Ledger row first (the durable intent), registry second; reconciliation repairs a crash between.
-      try { svc.keyLedger.recordActivation(d, 'telegram-dm', approvedAt); } catch (err) {
+      try { svc.keyLedger.recordActivation(d, approvedVia, approvedAt); } catch (err) {
         deps.reportDegradation?.('MobilePairing.keyLedger', err);
         res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
         return;
       }
     }
     try {
-      after = svc.devices.applyConfirm(d.id, check.result === 'ok' ? { ok: true, approvedVia: 'telegram-dm', approvedAt } : { ok: false, wrongHmac: check.hmac });
+      after = svc.devices.applyConfirm(d.id, check.result === 'ok' ? { ok: true, approvedVia, approvedAt } : { ok: false, wrongHmac: check.hmac });
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
       res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
@@ -562,6 +677,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     }
     if (check.result === 'ok') {
       svc.confirm.drop(d.id); // consumed only after the activation was written
+      svc.dropDashboardCode(d.id);
       for (const [n, id] of svc.declineNonces) if (id === d.id) svc.declineNonces.delete(n);
       res.json({ status: 'active' });
       return;
@@ -571,6 +687,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     }
     if (after?.status === 'declined') {
       svc.confirm.drop(d.id);
+      svc.dropDashboardCode(d.id);
       void deps.ownerDM?.('Three wrong codes were typed for a phone pairing, so I cancelled it. If that was you, ask me for a new link. If not, someone may have your pairing link.', '');
       res.status(409).json({ error: 'declined' });
       return;
@@ -674,13 +791,17 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (notifyTimes.length >= 120) { svc.push.noteRefused(); res.status(429).json({ error: 'too-many-requests' }); return; }
     notifyTimes.push(t);
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const kind = b.kind === 'notice' ? 'notice' : b.kind === 'item' ? 'item' : null;
+    const kind = b.kind === 'notice' ? 'notice' : b.kind === 'item' ? 'item' : b.kind === 'reply' ? 'reply' : null;
     const dedupeKey = typeof b.dedupeKey === 'string' ? b.dedupeKey.slice(0, 200) : '';
     const sourceMachine = typeof b.sourceMachine === 'string' ? b.sourceMachine.slice(0, 80) : '';
     if (!kind || !dedupeKey || !sourceMachine) { res.status(400).json({ error: 'bad-trigger' }); return; }
+    // A reply trigger (mobile-native-conversations §4.7) names its app conversation by strict UUID only.
+    const conversationKey = kind === 'reply' && typeof b.conversationKey === 'string' && new RegExp(`^${APP_CONVERSATION_KEY_PATTERN}$`).test(b.conversationKey) ? b.conversationKey : null;
+    if (kind === 'reply' && !conversationKey) { res.status(400).json({ error: 'bad-trigger' }); return; }
     const trig: PushTrigger = {
       kind, dedupeKey, sourceMachine,
       ...(kind === 'item' && typeof b.itemId === 'string' ? { itemId: b.itemId.slice(0, 120) } : {}),
+      ...(conversationKey ? { conversationKey } : {}),
       ...(typeof b.priority === 'string' ? { priority: b.priority.slice(0, 20) } : {}),
     };
     res.status(202).json({ accepted: true });

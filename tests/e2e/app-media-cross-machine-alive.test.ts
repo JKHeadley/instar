@@ -111,6 +111,7 @@ async function pairAndSendPhoto(server: AgentServer, photo: Buffer): Promise<str
   const m = await request(app).post('/mobile/pairing-codes').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'media-xm-e2e').send({});
   const dms: string[] = [];
   server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+  server.mobilePairing!.deps.telegramOwnerPresent = () => true; // the Telegram path (no owner ⇒ the dashboard path, §4.4)
   const dev = makeDevice();
   const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
   const deviceId = r.body.deviceId as string;

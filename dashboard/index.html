@@ -2596,6 +2596,10 @@
     /* ── Systems Tab ──────────────────────────────────────────── */
     /* Origin controls reuse shared action buttons and theme colors. */
     #originsTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
+    #phonesTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
+    #phonesTab .phone-approval, #phonesTab .phone-row { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); margin-bottom: 10px; overflow-wrap: anywhere; }
+    #phonesTab .phone-code { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; margin: 8px 0; }
+    #phonesTab [role=status]:empty { display: none; }
     #originsTab .glance-root:has(> .glance-drilldown:not([hidden])) > .glance-layer { display: none; }
     #originsTab .glance-drill-back { min-height: 44px; }
     #originsTab .origin-settings { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); display: flex; flex-direction: column; gap: 8px; }
@@ -3093,6 +3097,7 @@
             <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
             <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
             <button class="tab" data-tab="origins" onclick="switchTab('origins')">Message origins</button>
+            <button class="tab" data-tab="phones" onclick="switchTab('phones')">Phones</button>
             <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
           </div>
           <div class="tab-group" role="group" aria-label="Work & Delivery">
@@ -4370,6 +4375,7 @@
          The old ~390-word subsystem prose became a plain headline + tiles; each
          subsystem's full description / processes / metrics live one drill down.
          The shared component renders the headline + tiles + drill-down here. -->
+    <section class="systems-container" id="phonesTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Pair the Instar iPhone app and see paired phones.</p></section>
     <section class="systems-container" id="originsTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Inspect message authorship and choose which origin details appear.</p></section>
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
@@ -6203,6 +6209,9 @@
       {
         id: 'origins',
         panels: ['originsTab'], display: ['flex'], onActivate: () => startOrigins(), onDeactivate: () => originPanel?.stop() },
+      {
+        id: 'phones',
+        panels: ['phonesTab'], display: ['flex'], onActivate: () => startPhones(), onDeactivate: () => phonesPanel?.stop() },
       {
         id: 'systems',
         panels: ['systemsTab'],
@@ -10780,6 +10789,20 @@
           body.innerHTML = '<div class="ins-empty">Couldn’t load insights just now — ' + escapeHtml(msg) + '. Check back shortly.</div>';
         }
       }
+    }
+
+    // ── Phones tab (mobile-native-conversations §4.4): a no-Telegram agent's pairing codes,
+    // shown only after a PIN unlock (operator session), plus the paired-phones list.
+    let phonesPanel = null;
+    async function startPhones() {
+      try {
+        const { mountPhonesPanel } = await import('/dashboard/phones.js');
+        phonesPanel ??= mountPhonesPanel(document.getElementById('phonesTab'), {
+          request: (url, options = {}) => fetch(url, { ...options, headers: { Authorization: `Bearer ${token}`, ...(operatorSessionToken ? { 'X-Instar-Operator-Session': operatorSessionToken } : {}), ...(options.headers || {}) } }),
+          unlock: () => { document.getElementById('authOverlay').style.display = 'flex'; document.getElementById('pinInput').focus(); },
+        });
+        phonesPanel.start();
+      } catch { document.getElementById('phonesTab').textContent = 'Phones are unavailable. Refresh to try again.'; }
     }
 
     let originPanel = null;
