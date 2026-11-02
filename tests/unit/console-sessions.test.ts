@@ -17,7 +17,7 @@ import {
   regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor,
   KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, HISTORY_MAX,
   isInternalSession, attachmentMessage, OPERATOR_CREATED,
-  historyUrl, historyErrorWords, historyText,
+  historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry,
 } from '../../dashboard/console/sessions-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
 
@@ -166,6 +166,16 @@ describe('history', () => {
     expect(historyErrorWords({ ok: false, status: 0, data: {} })).toBe('Can’t tell: the server could not be reached.');
     expect(historyText({ role: 'user', text: '[telegram:127504 "x" from Justin (uid:1)] hello' })).toBe('hello');
     expect(historyText({ role: 'assistant', text: '[telegram:1] kept' })).toBe('[telegram:1] kept');
+  });
+  it("past the session's own record, History continues into its topic's earlier messages", () => {
+    expect(topicOf({ platform: 'telegram', platformId: '127504' })).toBe(127504);
+    expect(topicOf({ platform: 'telegram', platformId: '1' })).toBeNull(); // General is not a conversation topic
+    expect(topicOf({ platform: 'slack', platformId: 'C123' })).toBeNull();
+    expect(topicOf({ platform: 'headless' })).toBeNull();
+    expect(topicHistoryUrl(127504, Date.parse('2026-10-31T00:00:00Z'))).toBe(`/telegram/topics/127504/messages?limit=50&scope=pool&before=${Date.parse('2026-10-31T00:00:00Z')}`);
+    expect(topicHistoryEntry({ text: 'hi', fromUser: true, timestamp: '2026-10-20T17:35:57.000Z' })).toMatchObject({ role: 'user', text: 'hi', atMs: Date.parse('2026-10-20T17:35:57.000Z') });
+    expect(topicHistoryEntry({ text: 'reply', fromUser: false, timestamp: '2026-10-20T17:36:00.000Z' })?.role).toBe('assistant');
+    expect(topicHistoryEntry({ text: '   ', fromUser: true, timestamp: 'x' })).toBeNull();
   });
 });
 

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "session-history-topic-backfill",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T21:36:44.014Z",
+  "artifactPath": "upgrades/side-effects/session-history-topic-backfill.md",
+  "artifactSha256": "6f3b1a96197670340d1ab352f3130260ad917d16f952a91d637d9938221a7a0f",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "upgrades/side-effects/session-history-topic-backfill.eli16.md",
+    "upgrades/side-effects/session-history-topic-backfill.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "annotate one catch for the silent-fallback ratchet",
+  "eli16Path": "upgrades/side-effects/session-history-topic-backfill.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-history-topic-backfill.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

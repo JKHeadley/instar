@@ -11,7 +11,7 @@ import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
   platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
-  canSwitchDoor, attachmentMessage, historyUrl, historyErrorWords, historyText, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
+  canSwitchDoor, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -435,9 +435,18 @@ function sendKey(key) {
 
 // ── History: the conversation record, newest at the bottom, older on scroll-up ──
 async function openHistory(view) {
-  view.history = { before: null, done: false, loading: false, count: 0 };
+  view.history = { before: null, done: false, loading: false, count: 0, phase: 'session', oldestMs: null, topicBefore: null };
   view.historyBox.addEventListener('scroll', () => { if (view.historyBox.scrollTop < 200) loadHistory(view); });
   await loadHistory(view);
+}
+
+function historyRow(e) {
+  const text = historyText(e);
+  if (!text) return null;
+  const when = e.at ? new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+  return e.role === 'tool'
+    ? el('p', { class: 'sess-h sess-h-tool', text: `→ ${text}` })
+    : el('div', { class: `sess-h sess-h-${e.role}` }, el('div', { class: 'sess-h-who', text: [e.role === 'user' ? 'Message in' : 'Session', when].filter(Boolean).join(' · ') }), el('div', { class: 'sess-h-text', text }));
 }
 
 async function loadHistory(view) {
@@ -447,33 +456,59 @@ async function loadHistory(view) {
   const box = view.historyBox;
   const marker = el('p', { class: 'sess-history-note', text: h.count ? 'Loading earlier messages…' : 'Loading the conversation…' });
   box.prepend(marker);
-  const res = await send('GET', historyUrl(view.s, h.before));
+  const topicPhase = h.phase === 'topic';
+  const res = await send('GET', topicPhase ? topicHistoryUrl(topicOf(view.s), h.topicBefore) : historyUrl(view.s, h.before));
   marker.remove();
   h.loading = false;
   if (st.view !== view) return;
-  if (!res.ok || !res.data || !Array.isArray(res.data.entries)) {
+  const list = topicPhase ? res.data && res.data.messages : res.data && res.data.entries;
+  if (!res.ok || !Array.isArray(list)) {
     h.done = true;
-    box.prepend(el('p', { class: 'sess-history-note', text: historyErrorWords(res) }));
+    box.prepend(el('p', { class: 'sess-history-note', text: topicPhase ? `Can’t load earlier messages: ${res.reason || 'the server did not answer'}.` : historyErrorWords(res) }));
     return;
   }
   const first = !h.count;
   const prevHeight = box.scrollHeight, prevTop = box.scrollTop;
   const frag = document.createDocumentFragment();
-  for (const e of res.data.entries) {
-    const text = historyText(e);
-    if (!text) continue;
-    const when = e.at ? new Date(e.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
-    frag.append(e.role === 'tool'
-      ? el('p', { class: 'sess-h sess-h-tool', text: `→ ${text}` })
-      : el('div', { class: `sess-h sess-h-${e.role}` }, el('div', { class: 'sess-h-who', text: [e.role === 'user' ? 'Message in' : 'Session', when].filter(Boolean).join(' · ') }), el('div', { class: 'sess-h-text', text })));
+  // A server without scroll-back support ignores `before` and returns the newest
+  // messages: keep only what is strictly older than the cursor, so nothing repeats.
+  const entries = topicPhase
+    ? list.map(topicHistoryEntry).filter((e) => e && e.atMs != null && e.atMs < h.topicBefore)
+    : list;
+  for (const e of entries) {
+    const row = historyRow(e);
+    if (row) frag.append(row);
+    const ms = e.atMs ?? (e.at ? Date.parse(e.at) : NaN);
+    if (Number.isFinite(ms)) h.oldestMs = h.oldestMs == null ? ms : Math.min(h.oldestMs, ms);
   }
-  h.count += res.data.entries.length;
-  h.before = res.data.nextBefore;
-  if (h.before == null) { h.done = true; frag.prepend(el('p', { class: 'sess-history-note', text: h.count ? 'The start of this conversation.' : 'Nothing has been said in this session yet.' })); }
+  h.count += entries.length;
+  if (topicPhase) {
+    h.topicCount += entries.length;
+    // Nothing earlier after all: the divider would introduce an empty section.
+    if (!h.topicCount && h.divider) { h.divider.remove(); h.divider = null; }
+    h.topicBefore = h.oldestMs;
+    if (list.length < TOPIC_HISTORY_PAGE || entries.length === 0 || h.topicBefore == null) { h.done = true; frag.prepend(el('p', { class: 'sess-history-note', text: 'The start of this conversation.' })); }
+  } else {
+    h.before = res.data.nextBefore;
+    if (h.before == null) {
+      // This session's own record ends here. A conversation keeps going back
+      // through its earlier sessions: continue with the topic's messages.
+      if (topicOf(view.s)) {
+        h.phase = 'topic';
+        h.topicBefore = h.oldestMs ?? Date.now();
+        h.divider = el('p', { class: 'sess-history-note', text: 'Earlier, from this conversation’s previous sessions:' });
+        h.topicCount = 0;
+        frag.prepend(h.divider);
+      } else {
+        h.done = true;
+        frag.prepend(el('p', { class: 'sess-history-note', text: h.count ? 'The start of this conversation.' : 'Nothing has been said in this session yet.' }));
+      }
+    }
+  }
   box.prepend(frag);
   if (first) box.scrollTop = box.scrollHeight;
   else box.scrollTop = prevTop + (box.scrollHeight - prevHeight);
-  // A short first page may not fill the box: keep loading until it scrolls.
+  // A short page may not fill the box: keep loading until it scrolls.
   if (!h.done && box.scrollHeight <= box.clientHeight + 200) loadHistory(view);
 }
 
