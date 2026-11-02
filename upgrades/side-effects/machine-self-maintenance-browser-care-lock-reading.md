@@ -88,3 +88,9 @@ Machine-local by design (hardware-bound-resource): the ledger and verdicts descr
 ## 8. Rollback cost
 
 `machineMaintenance.browserCare.enabled: false` stops the sweep (read live). `machineMaintenance.enabled: false` removes both the sweep and the lock route at the next restart. Reverting the release leaves inert ledger files and the extra helper scripts; nothing reads them. No data migration, no state repair.
+
+## Second-pass review
+
+**Reviewer:** independent subagent, second pass, 2026-11-02
+
+**Verdict: concur**, after a confirming pass on 58b722a80. Findings fixed: automation browsers (Chrome for Testing, Playwright) excluded from the sweep and scripts; the cannot-act test covers BrowserCareProbes.ts and MachineLockStateReader.ts; a lock shield with no password reads unknown. Known low items: the scripts exclude --remote-debugging- as a prefix while the parser lists port and pipe; chrome-close.sh records finished before its checks; a missing sign-in repair system reads as no repair open. The two skipIf(!HAS_PY) skips are justified: /usr/bin/python3 is what the scripts themselves require.
