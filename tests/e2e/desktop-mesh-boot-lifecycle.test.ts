@@ -115,6 +115,16 @@ describe('desktop mesh production boot', () => {
         .set(signRequest(frontIdentity.machineId, frontSigningKey, {})).send({});
       expect(signed.status).toBe(200);
       expect(signed.body.machineId).toBe(targetIdentity.machineId);
+      // Guided setup: a signed front reads the target and cannot be spoofed by a body claim.
+      const setupStatus = await request(targetServer.getApp()).post('/api/desktop/setup')
+        .set(signRequest(frontIdentity.machineId, frontSigningKey, { action: 'status' })).send({ action: 'status' });
+      expect(setupStatus.status).toBe(200);
+      expect(setupStatus.body).toMatchObject({ configured: true, configuredAtBoot: true, frontMachineId: frontIdentity.machineId });
+      const spoofBody = { action: 'turn-on', frontMachineId: targetIdentity.machineId };
+      const spoof = await request(targetServer.getApp()).post('/api/desktop/setup')
+        .set(signRequest(frontIdentity.machineId, frontSigningKey, spoofBody)).send(spoofBody);
+      expect(spoof.status).toBe(400);
+      expect((await request(targetServer.getApp()).post('/api/desktop/setup').send({ action: 'status' })).status).toBe(401);
       const unsigned = await request(targetServer.getApp()).post('/api/desktop/operator-begin').send({});
       expect(unsigned.status).toBe(401);
       // A valid transport identity alone never creates a desktop grant.

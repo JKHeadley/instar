@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-02T00:48:09.605Z",
+  "slug": "desktop-guided-setup",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 842,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopSetupGuide.ts",
+      "src/core/DesktopSetupTarget.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/desktopSetupRoutes.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 836,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: every restart needs a person's press behind the PIN session"
+  },
+  "verdict": "blocked"
+}

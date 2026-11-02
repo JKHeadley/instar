@@ -3594,7 +3594,14 @@ export interface ExternalServicePermissions {
 export interface InstarConfig {
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */
-  remoteDesktop?: { enabled?: boolean; frontMachineId?: string };
+  remoteDesktop?: {
+    enabled?: boolean;
+    frontMachineId?: string;
+    /** Set when Remote Desktop was turned off on this machine itself: a peer cannot turn it back on. */
+    peerClaimRefused?: boolean;
+    /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
+    guidedSetup?: { enabled?: boolean };
+  };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;
   /** Project root directory */
