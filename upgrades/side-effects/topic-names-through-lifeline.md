@@ -34,3 +34,6 @@ Revert the commit. Names already recorded stay, which is harmless.
 
 ## Class closure
 unbounded-self-action: n/a. One best-effort forward per topic service message received; no retry loop.
+
+## Follow-up
+The two rename-handler catches moved into `captureTopicName` carry `@silent-fallback-ok` (the no-silent-fallbacks ratchet reads 20 lines after each catch, and in the new position those lines include fallback wording from the next function). `session-lifecycle-phase-3-wiring` pins the new source shape.

@@ -2934,9 +2934,11 @@ export class TelegramAdapter implements MessagingAdapter {
       if (isRename && this.topicRenamedHandler) {
         try {
           void Promise.resolve(this.topicRenamedHandler(numericTopicId, name)).catch((err) => {
+            // @silent-fallback-ok: rename display is non-critical; the failure is logged
             console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
           });
         } catch (err) {
+          // @silent-fallback-ok: rename display is non-critical; the failure is logged
           console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
         }
       }
