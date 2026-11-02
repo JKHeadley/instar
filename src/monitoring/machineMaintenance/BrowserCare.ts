@@ -93,9 +93,15 @@ export function ledgerFileName(userDataDir: string): string {
   return `${crypto.createHash('sha256').update(userDataDir).digest('hex').slice(0, 16)}.json`;
 }
 
+/** The macOS Chrome app binary, exactly. `Google Chrome for Testing.app` does not match. */
+const NORMAL_CHROME_MAIN = /\/Google Chrome\.app\/Contents\/MacOS\/Google Chrome( |$)/;
+/** Flags an automation-driven browser carries; chrome-launch.sh adds no flags at all. */
+const AUTOMATION_FLAGS = /--remote-debugging-(port|pipe)|--enable-automation|--test-type/;
+
 /**
  * Parses `ps -axo pid=,lstart=,args=`. `lstart` is five fields ("Mon Nov  2 10:00:00 2026").
- * Only the Chrome binary's main process counts; helpers carry `--type=`.
+ * Only the real Chrome app's main process counts; helpers carry `--type=`, and an automation-driven
+ * browser (Playwright, Chrome for Testing) is never counted.
  */
 export function parseChromeProcesses(psOutput: string): ChromeProcess[] {
   const out: ChromeProcess[] = [];
@@ -103,7 +109,9 @@ export function parseChromeProcesses(psOutput: string): ChromeProcess[] {
     const m = /^\s*(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/.exec(line);
     if (!m) continue;
     const args = m[3];
-    if (!/(Google Chrome|google-chrome|chrome)( |$)/.test(args) || /--type=/.test(args)) continue;
+    // The real Chrome app only: not "Google Chrome for Testing" or a Chromium, and not a browser
+    // started for automation (the Playwright MCP's), which the normal-Chrome launcher never is.
+    if (!NORMAL_CHROME_MAIN.test(args) || /--type=/.test(args) || AUTOMATION_FLAGS.test(args)) continue;
     const dir = /--user-data-dir=(\S+)/.exec(args);
     if (!dir) continue;
     out.push({ pid: Number(m[1]), startTime: m[2].replace(/\s+/g, ' '), userDataDir: dir[1] });

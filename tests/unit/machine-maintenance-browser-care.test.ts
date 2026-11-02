@@ -37,6 +37,17 @@ describe('parseChromeProcesses', () => {
     ].join('\n'));
     expect(out).toEqual([{ pid: 501, startTime: 'Mon Nov 2 10:00:00 2026', userDataDir: '/h/.instar/state/playwright-profiles/a' }]);
   });
+
+  it('never counts Chrome for Testing or an automation-driven Chrome, even in a profiles folder (the Playwright MCP browser)', () => {
+    const dir = '/h/.instar/state/playwright-profiles/mcp';
+    expect(parseChromeProcesses([
+      `  601 Mon Nov  2 10:00:00 2026 /Users/x/Library/Caches/ms-playwright/chromium-1/chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --user-data-dir=${dir}`,
+      `  602 Mon Nov  2 10:00:00 2026 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-pipe --user-data-dir=${dir}`,
+      `  603 Mon Nov  2 10:00:00 2026 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --enable-automation --user-data-dir=${dir}`,
+      `  604 Mon Nov  2 10:00:00 2026 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=${dir}`,
+      `  605 Mon Nov  2 10:00:00 2026 /Applications/Chromium.app/Contents/MacOS/Chromium --user-data-dir=${dir}`,
+    ].join('\n'))).toEqual([]);
+  });
 });
 
 describe('normalizeBrowserCare', () => {

@@ -40,7 +40,7 @@ case "$P/" in
   "$AGENT_HOME/.instar/"*|"$AGENT_HOME/.claude/"*) echo "ERR profile-reserved-folder: $P is an agent config folder, not a browser profile" >&2; exit 64 ;;
 esac
 case "$P" in *[[:space:]]*) echo "ERR bad-profile-path: $P resolves to a path with spaces or tabs" >&2; exit 64 ;; esac
-PID=$(ps -axo pid=,args= | K="--user-data-dir=$P" awk '/MacOS\/Google Chrome / && index($0" ", ENVIRON["K"]" ") && !/--type=/ { print $1; exit }')
+PID=$(ps -axo pid=,args= | K="--user-data-dir=$P" awk '/Google Chrome\.app\/Contents\/MacOS\/Google Chrome / && index($0" ", ENVIRON["K"]" ") && !/--type=/ && !/--remote-debugging-|--enable-automation|--test-type/ { print $1; exit }')
 [ -z "$PID" ] && { echo "NO_PID"; exit 1; }
 NONCE="nc$(/usr/bin/python3 -I -c 'import secrets; print(secrets.token_hex(8))')" || { echo "ERR nonce-failed" >&2; exit 1; }
 CHECK="(function(){var N='$NONCE';try{var a=document.activeElement;if(a&&(a.tagName==='IFRAME'||a.tagName==='FRAME'))return N+'unreadable';var y=false,els=document.querySelectorAll('input,textarea,select');for(var k=0;k<els.length&&!y;k++){var e=els[k],t=(e.type||'').toLowerCase();if(e.tagName==='SELECT'){for(var o=0;o<e.options.length;o++){if(e.options[o].selected!==e.options[o].defaultSelected)y=true}}else if(t==='checkbox'||t==='radio'){if(e.checked!==e.defaultChecked)y=true}else if(t==='file'){if(e.files&&e.files.length)y=true}else if(['hidden','submit','button','reset','image'].indexOf(t)<0){if(e.value!==e.defaultValue)y=true}}if(!y){var ce=document.querySelectorAll('[contenteditable]:not([contenteditable=false])');for(var c=0;c<ce.length;c++){if((ce[c].textContent||'').trim()){y=true;break}}}return N+(y?'yes':'no')}catch(x){return N+'unreadable'}})()"

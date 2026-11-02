@@ -35,6 +35,8 @@ describe('decideLockState — the spec table, first matching row wins', () => {
     expect(at({ flagLocked: true, passwordRequired: 'off', displayAsleep: true })).toMatchObject({ lockState: 'screensaver-or-display-sleep', row: 3 });
     // Without the screensaver or sleep it does not match row 3.
     expect(at({ flagLocked: true, passwordRequired: 'off' })).toMatchObject({ lockState: 'unknown', row: 5 });
+    // A lock shield drawn while no password is required is conflicting evidence: unknown, not resting.
+    expect(at({ flagLocked: true, passwordRequired: 'off', screensaverRunning: true, lockShieldSeen: true })).toMatchObject({ lockState: 'unknown', row: 5 });
   });
 
   it('row 4: flag clear and no shield is unlocked, whatever the policy', () => {

@@ -166,4 +166,18 @@ describe.skipIf(!HAS_PY)('the ledger', () => {
     expect(run('chrome-close.sh', ['acct-f']).stdout).toContain('could not be read');
     expect(r.stderr).not.toContain('KILLED');
   });
+
+  it('chrome-close.sh and chrome-unsaved.sh never pick Chrome for Testing or an automation-driven Chrome on the same profile', () => {
+    run('chrome-launch.sh', ['--new', 'acct-g']);
+    const dir = profile('acct-g');
+    stub('ps', [
+      `echo "5001 /Users/x/Library/Caches/ms-playwright/chromium-1/chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing --user-data-dir=${dir}"`,
+      `echo "5002 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-pipe --user-data-dir=${dir}"`,
+    ].join('\n'));
+    stub('osascript', 'echo OSASCRIPT-RAN >&2; echo done');
+    expect(run('chrome-unsaved.sh', ['acct-g']).stdout.trim()).toBe('NO_PID');
+    const r = run('chrome-close.sh', ['acct-g']);
+    expect(r.stdout).toContain('not running');
+    expect(r.stderr).not.toContain('OSASCRIPT-RAN');
+  });
 });

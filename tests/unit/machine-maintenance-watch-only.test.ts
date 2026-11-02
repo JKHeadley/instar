@@ -75,6 +75,39 @@ describe('machine maintenance cannot act', () => {
   });
 });
 
+describe('the two reads kept outside the maintenance folder cannot act either', () => {
+  const read = (f: string) => fs.readFileSync(path.resolve(f), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const probes = read('src/core/BrowserCareProbes.ts');
+  const lock = read('src/core/MachineLockStateReader.ts');
+
+  it('hold no restart command and no way to signal or end a process', () => {
+    for (const [f, src] of [['BrowserCareProbes.ts', probes], ['MachineLockStateReader.ts', lock]]) {
+      expect(src, f).not.toMatch(/\b(shutdown|reboot|sudo|systemctl|launchctl|osascript)\b/);
+      expect(src, f).not.toMatch(/process\.kill|\.kill\(|killSession|send-keys|sendKeys|sendInput|\bspawn\(|(?<![.\w])exec\(|execSync|spawnSync|\bfetch\(|\brequire\(/);
+      expect(src, f).not.toMatch(/writeFileSync|appendFileSync|renameSync|unlinkSync|rmSync|SafeFsExecutor/);
+    }
+  });
+
+  it('run only their named read-only commands, with fixed arguments', () => {
+    expect(probes.match(/execFile\(/g)).toHaveLength(1);
+    expect(probes).toMatch(/execFile\('\/bin\/bash', \[script, userDataDir\]/);
+    expect(probes).toMatch(/'chrome-unsaved\.sh'\)/);
+    expect(lock.match(/execFile\(/g)).toHaveLength(2);
+    expect(lock).toMatch(/execFile\(DEFAULT_MAC_DESKTOP_HELPER, \['probe'\]/);
+    expect(lock).toMatch(/execFile\('\/usr\/sbin\/sysadminctl', \['-screenLock', 'status'\]/);
+  });
+
+  it('imports only from an allowlist', () => {
+    const allowed: Record<string, string[]> = {
+      'BrowserCareProbes.ts': ['node:child_process', 'node:fs', 'node:os', 'node:path', '../monitoring/machineMaintenance/BrowserCare.js'],
+      'MachineLockStateReader.ts': ['node:child_process', 'node:fs', './MacDesktopHost.js', './wslPlatform.js', '../monitoring/machineMaintenance/lockState.js'],
+    };
+    for (const [f, src] of [['BrowserCareProbes.ts', probes], ['MachineLockStateReader.ts', lock]] as const) {
+      for (const m of src.matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)) expect(allowed[f], `${f} imports ${m[1]}`).toContain(m[1]);
+    }
+  });
+});
+
 describe('the yield contract covers the spawn chokepoints', () => {
   const CHOKEPOINTS = ['src/core/SessionManager.ts', 'src/scheduler/JobScheduler.ts', 'src/localVerify/LocalVerifyService.ts', 'src/core/hostTestRunnerSemaphore.ts', 'src/core/AutonomousSessions.ts'];
 

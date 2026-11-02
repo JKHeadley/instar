@@ -45,7 +45,9 @@ As evidence, known gaps, each visible:
 - The per-tab check reads ordinary form fields, ticked boxes, selects, chosen files and contenteditable text. Text held only in a page's own memory or drawn on a canvas reads as no input. Any non-empty contenteditable reads as yes (it has no default to compare), so pages like editors are always kept: over-keeping, the safe side.
 - Tabs are walked by window index; if the window order changed mid-read a tab could be read twice and another missed. The check runs only after 5 minutes with no console input, which makes a reorder unlikely, and in this release nothing closes on its answer.
 - A Chrome with no windows reads as unreadable and is kept.
+- Only the real Chrome app's main process counts (`Google Chrome.app/Contents/MacOS/Google Chrome`). Chrome for Testing, Chromium and any browser started with automation flags (`--remote-debugging-port/pipe`, `--enable-automation`, `--test-type`) are never counted, even inside a profiles folder, so the Playwright MCP browser is never adopted. The same rule applies to the PID lookup in `chrome-unsaved.sh` and `chrome-close.sh`. Added after the independent review of PR 2582.
 - The sweep ignores `relogin-chrome-profile-*` directories and anything outside this agent's profiles folder, so those are never counted as owned.
+- Part A: a lock shield drawn while the flag is set and no password is required is conflicting evidence and reads `unknown` (row 5), not `screensaver-or-display-sleep`; row 3 requires no shield. Added after the independent review.
 - Part A: a stale or missing lock sample, an old helper without lock inputs, or an unreadable policy all read `unknown`. That is honest but means `unknown` may be common until the helper is present everywhere; the live matrix (L1) is still to run.
 
 ---
@@ -58,7 +60,7 @@ The decision logic lives in `monitoring/machineMaintenance/` beside the drain re
 
 ## 4. Signal vs authority compliance
 
-Signal only. `tests/unit/machine-maintenance-watch-only.test.ts` now covers `BrowserCare.ts` and `lockState.ts` too: no restart words, no way to signal a process, exec only through the one allowlisted runner (which gained one read: `ps -axo pid=,lstart=,args=`). `chrome-close.sh` is checked by `tests/unit/browser-care-scripts.test.ts` to hold no kill, quit or Apple Event. `chrome-unsaved.sh`'s page code is checked to assign nothing and to send one event type only. Reference: docs/signal-vs-authority.md.
+Signal only. `tests/unit/machine-maintenance-watch-only.test.ts` now covers `BrowserCare.ts` and `lockState.ts` too, and separately the two reads kept in src/core (`BrowserCareProbes.ts`, `MachineLockStateReader.ts`): no restart words, no process signal, no file writes, only their named commands with fixed arguments, and an import allowlist. In the maintenance folder: no restart words, no way to signal a process, exec only through the one allowlisted runner (which gained one read: `ps -axo pid=,lstart=,args=`). `chrome-close.sh` is checked by `tests/unit/browser-care-scripts.test.ts` to hold no kill, quit or Apple Event. `chrome-unsaved.sh`'s page code is checked to assign nothing and to send one event type only. Reference: docs/signal-vs-authority.md.
 
 ---
 

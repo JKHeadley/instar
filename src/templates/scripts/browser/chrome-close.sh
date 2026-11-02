@@ -52,7 +52,7 @@ if [ "$WHENFREE" = 1 ]; then
   echo "recorded: finished with $1 (the cleanup sweep may close it once closing is turned on)"
   exit 0
 fi
-PID=$(ps -axo pid=,args= | K="--user-data-dir=$P" awk '/MacOS\/Google Chrome / && index($0" ", ENVIRON["K"]" ") && !/--type=/ { print $1; exit }')
+PID=$(ps -axo pid=,args= | K="--user-data-dir=$P" awk '/Google Chrome\.app\/Contents\/MacOS\/Google Chrome / && index($0" ", ENVIRON["K"]" ") && !/--type=/ && !/--remote-debugging-|--enable-automation|--test-type/ { print $1; exit }')
 [ -z "$PID" ] && { log not-running ""; echo "not running"; exit 0; }
 # A download still growing, then every tab: the checks a real close runs first.
 DL="$(PROFILE="$P" /usr/bin/python3 -I -c '

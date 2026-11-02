@@ -49,7 +49,8 @@ export function decideLockState(inputs: LockReadingInputs): LockVerdict {
   // Row 2: all three agree a password is needed now.
   if (shield && flag && pw === 'immediate') return v('locked', 2, 'flag set, lock shield on screen, password required immediately');
   // Row 3: the flag is set but no password is in force and the screen is only resting.
-  if (flag && pw === 'off' && quiet) return v('screensaver-or-display-sleep', 3, 'flag set but no password is required; input dismisses it');
+  // A lock shield on screen while no password is required is conflicting evidence, so it falls to row 5.
+  if (flag && pw === 'off' && quiet && !shield) return v('screensaver-or-display-sleep', 3, 'flag set but no password is required and no lock shield is drawn; input dismisses it');
   // Row 4: nothing says locked.
   if (!flag && !shield) return v('unlocked', 4, 'flag clear, no lock shield, console session present');
   // Row 5: everything else, including a set flag under a delayed or unreadable password policy.
