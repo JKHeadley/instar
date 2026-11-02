@@ -573,3 +573,23 @@ export function headline(allCards) {
   if (bad || otherAttn || blind) return { text: 'Nothing needs you.', tone: 'ok', sub: 'I’m handling the rest. It’s under “See agent status”.' };
   return { text: 'All quiet.', tone: 'ok', sub: 'Nothing needs you right now.' };
 }
+
+// ── Partial pooled reads ──────────────────────────────────────────────────
+/** How long a machine's last complete rows may stand in while it is retried. */
+export const PARTIAL_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Merge a partial pooled answer (some machines did not answer) with the last
+ * complete one: fresh rows from the machines that answered, plus the missing
+ * machines' rows from the last complete answer, if it is recent. Returns null
+ * when that is not possible, so the partial answer is shown as it is.
+ */
+export function fillPartial(fresh, previous, listKey, now, at) {
+  const failed = fresh?.data?.pool?.failed;
+  if (!previous || !Array.isArray(failed) || !failed.length || now - at > PARTIAL_GRACE_MS) return null;
+  const missing = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
+  if (missing.size !== failed.length) return null; // a failure we cannot attribute to a machine stays visible
+  const rows = (previous.data?.[listKey] || []).filter((r) => r && missing.has(r.machineId));
+  return { ...fresh, retrying: true, filledFrom: at,
+    data: { ...fresh.data, [listKey]: [...(fresh.data?.[listKey] || []), ...rows], pool: { ...fresh.data.pool, failed: [] } } };
+}

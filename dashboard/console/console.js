@@ -9,6 +9,7 @@ import {
   failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { fillPartial } from './home-model.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderAccounts } from './accounts.js';
@@ -430,6 +431,20 @@ function paintHeadline(models) {
   $('#heroTime').textContent = `${h.tone === 'attn' ? 'What needs you' : 'Updated'} · ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
+// A machine that misses one pooled read (slow for a moment, or restarting)
+// should not turn Home into "part could not be checked". While it is retried,
+// its rows from the last complete answer stand in, for up to two minutes; the
+// machines that did answer always show their fresh rows.
+const lastComplete = {};
+const ROW_LISTS = { attention: 'items', sessions: 'sessions' };
+function rememberComplete(key, result) {
+  if (ROW_LISTS[key]) lastComplete[key] = { result, at: Date.now() };
+}
+function fillFromLastComplete(key, fresh) {
+  const prev = lastComplete[key];
+  return ROW_LISTS[key] && prev ? fillPartial(fresh, prev.result, ROW_LISTS[key], Date.now(), prev.at) : null;
+}
+
 function loadHome() {
   const run = homeRun;
   if (!run || !run.active || run.document !== document) return;
@@ -475,7 +490,9 @@ function loadHome() {
       const partial = result.ok && (['attention', 'sessions'].includes(key) && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
         || key === 'topics' && ((result.data?.pool?.failed?.length || 0) > 0 || (result.data?.pool?.unresolved?.length || 0) > 0));
       const retryable = partial || (!result.ok && !['not signed in', 'switched off on this agent'].includes(result.reason));
-      results[key] = partial ? { ...result, retrying: true } : result;
+      const filled = partial ? fillFromLastComplete(key, result) : null;
+      if (result.ok && !partial) rememberComplete(key, result);
+      results[key] = filled || (partial ? { ...result, retrying: true } : result);
       if (key === 'systemTopics' && result.ok) {
         const t = Number(result.data?.topics?.attention);
         attentionTopicId = Number.isFinite(t) && t > 1 ? t : null;
