@@ -38,7 +38,7 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/mobile-telegram-free-alive.test.ts' });
 });
 
-async function boot() {
+async function boot(telegram?: Record<string, unknown>) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'notg-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -59,8 +59,8 @@ async function boot() {
   sessionManager.spawnInteractiveSession = async (message: string) => { spawned.push(message); return 'app-session-1'; };
   sessionManager.injectMessage = () => true;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  // No `telegram` option at all: this agent has no Telegram.
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
+  // No `telegram` option (the default): this agent has no Telegram.
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, ...(telegram ? { telegram: telegram as any } : {}) });
   servers.push(server);
   return { server, stateDir, spawned };
 }
@@ -165,5 +165,38 @@ describe('pairing and push without Telegram — production wiring', () => {
     expect(hist.body.messages.map((x: { role: string }) => x.role)).toEqual(['operator', 'agent']);
     expect(hist.body.messages[0].originVerified).toBe('verified');
     expect(hist.body.messages[0].originApprovedVia).toBe('dashboard-pin');
+  });
+
+  it('keeps the Telegram path when a Telegram adapter knows its owner (the production owner check)', async () => {
+    // A stub adapter whose getOwnerUserId() returns a number: the production check wired in
+    // AgentServer (telegramOwnerPresent) must see the owner and send the code to the private chat.
+    const dms: string[] = [];
+    const telegram = {
+      getOwnerUserId: () => 4242,
+      sendOwnerDMWithButton: async (text: string) => { dms.push(text); return 99; },
+      createAttentionItem: async () => undefined,
+    };
+    const { server } = await boot(telegram);
+    const app = server.getApp();
+    const mp = server.mobilePairing!;
+    expect(mp.nativeOn).toBe(true);
+    expect(mp.deps.telegramOwnerPresent!()).toBe(true);
+    expect(mp.approvalPath()).toBe('telegram');
+    mp.deps.fetchFn = (async (url: string) => {
+      const u = new URL(url);
+      const r = await request(app).get(u.pathname + u.search).set('Host', HOST);
+      return { ok: r.status === 200, status: r.status, json: async () => r.body } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const m = await request(app).post('/mobile/pairing-codes').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'notg-e2e').send({});
+    expect(m.status).toBe(200);
+    const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'tg phone', devicePublicKey: makeDevice().publicKey });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ status: 'pending', approval: 'telegram' });
+    expect(dms).toHaveLength(1);
+    expect(dms[0]).toMatch(/is \d{3} \d{3}\./);
+    // Nothing waits on the dashboard for a Telegram-path phone.
+    const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN });
+    const approvals = await request(app).get('/mobile/pairing-approvals').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'notg-e2e').set('X-Instar-Operator-Session', unlock.body.operatorSessionToken);
+    expect(approvals.body).toEqual({ approval: 'telegram', approvals: [] });
   });
 });
