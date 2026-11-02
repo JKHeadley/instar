@@ -55,6 +55,8 @@ const NEEDS_USER_SOURCES: ReadonlyArray<{ source: string; idPrefix?: string; min
   { source: 'telegram-ingress-lifeline-secret' },
   // A passkey revoke the operator ordered has not landed on a machine for 30 days.
   { source: 'passkey-revoke-outbox' },
+  // The monthly bench found an above-noise routing change; only the operator applies it.
+  { source: 'bench-refresh', idPrefix: 'bench-refresh:routing-diff' },
 ];
 
 const PRIORITY_RANK: Record<HubItemLike['priority'], number> = { LOW: 0, NORMAL: 1, HIGH: 2, URGENT: 3 };

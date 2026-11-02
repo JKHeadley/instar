@@ -170,6 +170,23 @@ describe('pairing without Telegram (dashboard path)', () => {
     expect(ctx.svc.devices.get(deviceId)!.status).toBe('declined');
   });
 
+  it('an unreadable registry drops the shown code AND the confirmable code: nothing live is left behind', async () => {
+    const ctx = setup();
+    const { dev, deviceId } = await redeemNew(ctx.app);
+    const code = (await approvals(ctx.app, SESSION)).body.approvals[0].code as string;
+    const realGet = ctx.svc.devices.get.bind(ctx.svc.devices);
+    ctx.svc.devices.get = () => { throw new Error('registry unreadable'); };
+    expect(ctx.svc.isDashboardPending(deviceId)).toBe(false); // prune ran against the failing read
+    ctx.svc.devices.get = realGet;
+    // The registry reads again and the device is still pending, but its code was voided with it.
+    expect(ctx.svc.devices.get(deviceId)!.status).toBe('pending');
+    expect(ctx.svc.confirm.check(deviceId, code).result).toBe('none');
+    const r = await signed(ctx.app, dev, deviceId, 'POST', '/mobile/device/confirm', { code });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe('expired');
+    expect(ctx.svc.devices.get(deviceId)!.status).toBe('pending'); // not activated
+  });
+
   it('a restart loses the code: the pending device expires and the card is empty', async () => {
     const ctx = setup();
     const { deviceId } = await redeemNew(ctx.app);

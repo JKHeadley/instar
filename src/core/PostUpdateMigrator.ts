@@ -962,6 +962,9 @@ ${APP_CONVERSATIONS_POOL_LINE}
 `;
 }
 
+/** The first wording of the code bullet's tail (it overstated the boundary), replaced in place on update. */
+export const PAIRING_WITHOUT_TELEGRAM_STALE_CODE_LINE = '**I never read or relay that code**; my token alone cannot see it.';
+export const PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE = '**I never read or relay that code.** Honest limit: I can read the dashboard PIN from config, so this path only proves that someone could unlock the dashboard, which is weaker than a private Telegram chat.';
 export const PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER = '### Pairing a phone without Telegram';
 /**
  * CLAUDE.md awareness block for dashboard pairing and push without Telegram
@@ -971,7 +974,7 @@ export function PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION(): string {
   return `\n${PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER}
 
 An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the 6-digit code is not sent anywhere: it is shown on the dashboard's **Phones** tab, and only after the operator unlocks the dashboard with the PIN. The operator reads it there and types it into the app (or taps "Not my phone"). Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
-- Send the operator the pairing link and the dashboard link, and tell them: open the link on the phone, then open the dashboard's Phones tab, unlock with the PIN, and type the code shown there into the app. **I never read or relay that code**; my token alone cannot see it.
+- Send the operator the pairing link and the dashboard link, and tell them: open the link on the phone, then open the dashboard's Phones tab, unlock with the PIN, and type the code shown there into the app. ${PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE}
 - A phone approved this way is labelled "approved on dashboard" (\`approvedVia: dashboard-pin\`): it proves the person could unlock the dashboard, not that they can read a private Telegram chat.
 - A server restart loses a waiting code (it lives only in memory); the phone then needs a new link.
 - Every reply I send in an app conversation sends one push to paired phones ("New reply"; never the reply's text), within the push budgets, with or without Telegram.
@@ -8759,6 +8762,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: updated the App conversation media copy line');
     }
+    if (content.includes(PAIRING_WITHOUT_TELEGRAM_STALE_CODE_LINE)) {
+      content = content.replace(PAIRING_WITHOUT_TELEGRAM_STALE_CODE_LINE, PAIRING_WITHOUT_TELEGRAM_CURRENT_CODE_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated the Pairing a phone without Telegram code line');
+    }
     if (content.includes(APP_CONVERSATIONS_STALE_VERDICT_LINE)) {
       content = content.replace(APP_CONVERSATIONS_STALE_VERDICT_LINE, APP_CONVERSATIONS_CURRENT_VERDICT_LINE);
       patched = true;
@@ -12682,6 +12690,19 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added Attention hub filter bullet');
+    }
+
+    // Scheduled jobs posting as "agent" (operator report 2026-11-02: the
+    // evolution-overdue-check job reached the Attention topic every few hours
+    // because it claimed source "agent"). Tell deployed agents a job they write
+    // names itself. Sniff: 'never claims `source: "agent"`'.
+    if (content.includes('attention-hub-held.jsonl') && !content.includes('never claims `source: "agent"`')) {
+      const jobSourceBullet = `- **A scheduled job never claims \`source: "agent"\`**: that label means you chose to put the item in front of the user. A job you write names itself instead (\`"source":"<job-slug>"\`), so its rows stay on the dashboard and out of the Attention topic; if a job finds something only the user can do, it tells you in its report and you decide whether to raise it.\n`;
+      const hubLine = /^- \*\*What reaches the user's Attention topic[^\n]*\n/m;
+      if (hubLine.test(content)) content = content.replace(hubLine, (m) => `${m}${jobSourceBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${jobSourceBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added scheduled-job attention source bullet');
     }
 
     // Attention lifecycle (attention-lifecycle-close-on-cause, operator report
