@@ -44,6 +44,145 @@ import {
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
 import { cleanText } from '../core/MobilePairing.js';
+import type { RouteContext } from './routes.js';
+import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { poolPeerFetch } from './poolPeerFetch.js';
+
+/**
+ * One row of the unified conversation list. The list order is total and the same on every
+ * machine: newest `lastActivity` first (a missing one sorts last as ''), ties broken by the
+ * row's sort key (`app:<uuid>` or `telegram:<topicId>`), both compared as plain strings —
+ * the order the store's SQLite keyset query uses — so one cursor can page every kind losslessly.
+ */
+export interface ConversationListRow {
+  id: string | number;
+  platform: 'app' | 'telegram';
+  title: string | null;
+  lastActivity: string | null;
+  lastPreview: string | null;
+  machine?: string | null;
+}
+
+export function conversationSortKey(r: Pick<ConversationListRow, 'id' | 'platform'>): string { return `${r.platform}:${r.id}`; }
+const actOf = (r: ConversationListRow): string => r.lastActivity ?? '';
+const strCmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** Descending list order (negative ⇒ a comes first). */
+export function compareConversationRows(a: ConversationListRow, b: ConversationListRow): number {
+  return strCmp(actOf(b), actOf(a)) || strCmp(conversationSortKey(b), conversationSortKey(a));
+}
+
+/** The list cursor `<activity>|<sortKey>` (the store's own cursor shape, extended to every kind). */
+export function parseListCursor(cursor: string | null | undefined): { activity: string; key: string } | null {
+  if (!cursor || !cursor.includes('|')) return null;
+  const i = cursor.lastIndexOf('|');
+  return { activity: cursor.slice(0, i), key: cursor.slice(i + 1) };
+}
+export function listCursorFor(r: ConversationListRow): string { return `${actOf(r)}|${conversationSortKey(r)}`; }
+/** Strictly after the cursor in list order. */
+export function isAfterListCursor(r: ConversationListRow, c: { activity: string; key: string } | null): boolean {
+  if (!c) return true;
+  const a = actOf(r);
+  return a < c.activity || (a === c.activity && conversationSortKey(r) < c.key);
+}
+
+/**
+ * Merge pages from several sources (each already strictly after the same cursor, sorted, and
+ * complete up to its own `limit` rows) into one page. Lossless: any row of the true next page is
+ * within its own source's first `limit` rows. Duplicates (the same conversation from two
+ * machines) collapse to the newest copy, the earlier-listed source winning a tie.
+ */
+export function mergeConversationPages(
+  sources: ReadonlyArray<{ rows: ReadonlyArray<ConversationListRow>; more: boolean }>, limit: number,
+): { rows: ConversationListRow[]; nextCursor: string | null } {
+  const best = new Map<string, ConversationListRow>();
+  for (const s of sources) {
+    for (const r of s.rows) {
+      const k = conversationSortKey(r);
+      const cur = best.get(k);
+      if (!cur || actOf(r) > actOf(cur)) best.set(k, r);
+    }
+  }
+  const merged = [...best.values()].sort(compareConversationRows);
+  const page = merged.slice(0, limit);
+  const more = merged.length > limit || sources.some((s) => s.more);
+  const last = page[page.length - 1];
+  return { rows: page, nextCursor: more && last ? listCursorFor(last) : null };
+}
+
+/** A peer's list row, re-validated (peer output is untrusted display data). */
+function sanitizePeerConversation(raw: unknown, machine: string): ConversationListRow | null {
+  const r = raw as Record<string, unknown> | null;
+  if (!r || typeof r !== 'object') return null;
+  const s = (v: unknown, max: number): string | null => (typeof v === 'string' ? v.slice(0, max) : null);
+  // Normalised to strict ISO: a peer's odd value (e.g. "0") must never become the cursor that ends paging.
+  const lastActivity = r.lastActivity === null || r.lastActivity === undefined ? null : strictIso(r.lastActivity);
+  if (lastActivity === undefined) return null;
+  if (r.platform === 'app' && isAppConversationKey(r.id)) {
+    return { id: r.id, platform: 'app', title: s(r.title, 80), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
+  }
+  if (r.platform === 'telegram' && typeof r.id === 'number' && Number.isSafeInteger(r.id) && r.id > 0) {
+    return { id: r.id, platform: 'telegram', title: s(r.title, 128), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
+  }
+  return null;
+}
+
+/** A peer's browse row, re-validated. Its verdict is never trusted (§4.8): recomputed or `unknown`. */
+function sanitizePeerMessage(raw: unknown, machine: string): Record<string, unknown> | null {
+  const m = raw as Record<string, unknown> | null;
+  if (!m || typeof m !== 'object') return null;
+  if (typeof m.eventId !== 'string' || !m.eventId || m.eventId.length > 80 || typeof m.messageId !== 'string' || m.messageId.length > 80) return null;
+  if (m.role !== 'operator' && m.role !== 'agent') return null;
+  const at = strictIso(m.at);
+  if (typeof m.text !== 'string' || m.text.length > 8000 || at === undefined) return null;
+  // A peer's attachment rows are never passed through: their files live on that machine (this
+  // machine cannot serve them) and their fields are unchecked. The row says how many it had.
+  const files = Array.isArray(m.attachments) ? Math.min(m.attachments.length, MAX_ATTACHMENTS) : 0;
+  return {
+    eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at,
+    machineId: typeof m.machineId === 'string' ? m.machineId.slice(0, 80) : null,
+    deliveryState: typeof m.deliveryState === 'string' && /^(pending|delivered|refused|intercepted|unknown)$/.test(m.deliveryState) ? m.deliveryState : 'unknown',
+    originVerified: 'unknown', machine,
+    ...(files > 0 ? { filesOnOtherMachine: files } : {}),
+  };
+}
+
+/** A strict ISO-8601 instant (`Date#toISOString`) from a string, or undefined when it is not one. */
+function strictIso(v: unknown): string | undefined {
+  if (typeof v !== 'string' || v.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(v)) return undefined;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? undefined : new Date(t).toISOString();
+}
+
+const POOL_TIMEOUT_MS = 5000;
+const MAX_POOL_LIST_BYTES = 512 * 1024;
+const MAX_POOL_BROWSE_BYTES = 2 * 1024 * 1024;
+type PoolReadCtx = Pick<RouteContext, 'resolvePeerUrls' | 'recordRopeResult'> & { config: InstarConfig };
+
+/** GET a peer's own (non-pool) read with the agent's Bearer token. A 404 is "nothing there", not a failure. */
+async function fetchPeers<T>(
+  ctx: PoolReadCtx, pathFor: string, maxBytes: number, take: (body: Record<string, unknown>, machineId: string) => T,
+): Promise<{ results: T[]; failed: Array<{ machineId: string; reason: string }> }> {
+  const results: T[] = [];
+  const failed: Array<{ machineId: string; reason: string }> = [];
+  const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+  const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+  await Promise.all(peers.map(async (p) => {
+    if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { failed.push({ machineId: p.machineId, reason: 'peer-url-refused' }); return; }
+    try {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, pathFor, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(POOL_TIMEOUT_MS), redirect: 'manual',
+      });
+      if (r.status === 404) return;
+      if (!r.ok) { failed.push({ machineId: p.machineId, reason: r.status === 503 ? 'off' : `http-${r.status}` }); return; }
+      const text = await r.text();
+      if (Buffer.byteLength(text) > maxBytes) { failed.push({ machineId: p.machineId, reason: 'too-large' }); return; }
+      results.push(take(JSON.parse(text) as Record<string, unknown>, p.machineId));
+    } catch (err) { // @silent-fallback-ok — a dark peer is a visible pool.failed row naming the machine
+      failed.push({ machineId: p.machineId, reason: err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable' });
+    }
+  }));
+  return { results, failed };
+}
 
 export interface MobileConversationRouteDeps {
   config: InstarConfig;
@@ -57,6 +196,8 @@ export interface MobileConversationRouteDeps {
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
   /** The inbound classifier (pause / stop decisions after persist). */
   sentinel?: { decideInboundDisposition(message: string, topicId?: number): Promise<{ disposition: string }> } | null;
+  /** The pool fan-out (`?scope=pool`, §4.8). Absent ⇒ a pool read is this machine alone. */
+  pool?: PoolReadCtx | null;
   now?: () => number;
 }
 
@@ -79,9 +220,12 @@ function attachmentRows(attachments: ReadonlyArray<AppAttachment>, svc: AppConve
 
 /** History rows for the app: the stored fields plus the verdict (§4.6). */
 export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => OriginVerdict, svc?: AppConversationService): Record<string, unknown> {
+  const verdict = verify(m);
+  // How the signing phone was approved (§4.6 display: "approved on dashboard"), only with a good verdict.
+  const approvedVia = svc ? svc.originApprovedVia(m, verdict) : null;
   return {
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
-    deliveryState: m.deliveryState, originVerified: verify(m),
+    deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
   };
 }
@@ -199,24 +343,54 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // ── List ──
-  router.get('/mobile/conversations', (req: Request, res: Response) => {
-    if (!readGate(req, res)) return;
-    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
-    const page = svc!.store.listConversations({ limit, cursor });
-    const rows: Array<Record<string, unknown>> = page.conversations.map((c) => ({
-      id: c.conversationKey, platform: 'app', title: c.title, lastActivity: c.lastActivity ?? c.createdAt, lastPreview: c.lastPreview,
+  /**
+   * This machine's own page strictly after `cursor`: app conversations from the store (its keyset
+   * cursor has the same shape and order) and every Telegram topic, merged on ONE cursor so paging
+   * never drops a row of either kind.
+   */
+  const localListPage = (limit: number, cursor: string | null): { rows: ConversationListRow[]; more: boolean } => {
+    const c = parseListCursor(cursor);
+    const page = svc!.store.listConversations({ limit, cursor: c ? cursor : null });
+    const appRows: ConversationListRow[] = page.conversations.map((x) => ({
+      id: x.conversationKey, platform: 'app', title: x.title, lastActivity: x.lastActivity ?? x.createdAt, lastPreview: x.lastPreview,
     }));
-    // Telegram topics ride the first page only (the app pages its own conversations by cursor).
-    if (!cursor && deps.telegramTopics) {
+    let tgRows: ConversationListRow[] = [];
+    if (deps.telegramTopics) {
       try {
-        for (const t of deps.telegramTopics().slice(0, 200)) {
-          rows.push({ id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: t.lastPreview });
-        }
+        tgRows = deps.telegramTopics()
+          .map((t): ConversationListRow => ({ id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: t.lastPreview }))
+          .filter((r) => isAfterListCursor(r, c));
       } catch { /* @silent-fallback-ok — a Telegram read failure leaves only the app rows; never an error for the app list */ }
     }
-    rows.sort((a, b) => String(b.lastActivity ?? '').localeCompare(String(a.lastActivity ?? '')));
-    res.json({ conversations: rows.slice(0, 200), nextCursor: page.nextCursor });
+    const merged = mergeConversationPages([{ rows: appRows, more: page.nextCursor !== null }, { rows: tgRows, more: false }], limit);
+    return { rows: merged.rows, more: merged.nextCursor !== null };
+  };
+
+  router.get('/mobile/conversations', async (req: Request, res: Response) => {
+    if (!readGate(req, res)) return;
+    if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    const local = localListPage(limit, cursor);
+    if (req.query.scope !== 'pool') {
+      const m = mergeConversationPages([local], limit);
+      res.json({ conversations: m.rows, nextCursor: m.nextCursor });
+      return;
+    }
+    // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
+    // same order (lossless), duplicates collapsed; a dark machine is a `pool.failed` row.
+    const self = deps.machineId();
+    const q = `/mobile/conversations?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const peers = deps.pool
+      ? await fetchPeers(deps.pool, q, MAX_POOL_LIST_BYTES, (body, machineId) => ({
+        rows: (Array.isArray(body.conversations) ? body.conversations.slice(0, limit) : [])
+          .map((r) => sanitizePeerConversation(r, machineId))
+          .filter((r): r is ConversationListRow => r !== null && isAfterListCursor(r, parseListCursor(cursor))),
+        more: typeof body.nextCursor === 'string' && body.nextCursor.length > 0,
+      }))
+      : { results: [], failed: [] };
+    const m = mergeConversationPages([{ rows: local.rows.map((r) => ({ ...r, machine: self })), more: local.more }, ...peers.results], limit);
+    res.json({ conversations: m.rows, nextCursor: m.nextCursor, pool: { failed: peers.failed } });
   });
 
   // ── Rename ──
@@ -478,13 +652,50 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // ── Browse ──
-  router.get('/mobile/chat/app/:key/messages', (req: Request, res: Response) => {
+  router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response) => {
     if (!readGate(req, res)) return;
+    if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
-    if (!svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    const pool = req.query.scope === 'pool';
+    const live = svc!.liveConversation(key);
+    // §4.8: a pool read also covers what has not replicated here yet, so a conversation this
+    // machine has never seen is read from the peers. One it knows is deleted stays a 404.
+    const unseenHere = isAppConversationKey(key) && !svc!.store.getConversation(key);
+    if (!live && !(pool && unseenHere)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
-    const page = svc!.store.browseMessages(key, typeof req.query.before === 'string' ? req.query.before : null, limit);
-    res.json({ conversationKey: key, messages: page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!)), nextBefore: page.nextBefore });
+    const before = typeof req.query.before === 'string' ? req.query.before : null;
+    const page = live ? svc!.store.browseMessages(key, before, limit) : { messages: [], nextBefore: null };
+    const rows = page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!));
+    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore }); return; }
+    // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
+    // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
+    // machine cannot check it: `originVerified: "unknown"`, never the peer's verdict. Never
+    // advances a sync cursor.
+    const self = deps.machineId();
+    const b = before ? before.split(',') : null;
+    const isBefore = (at: string, eventId: string) => !b || b.length !== 2 || at < b[0]! || (at === b[0] && eventId < b[1]!);
+    const q = `/mobile/chat/app/${encodeURIComponent(key)}/messages?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    const peers = deps.pool
+      ? await fetchPeers(deps.pool, q, MAX_POOL_BROWSE_BYTES, (body, machineId) => ({
+        rows: (Array.isArray(body.messages) ? body.messages.slice(0, limit) : [])
+          .map((r) => sanitizePeerMessage(r, machineId))
+          .filter((r): r is Record<string, unknown> => r !== null && isBefore(String(r.at), String(r.eventId))),
+        more: typeof body.nextBefore === 'string' && body.nextBefore.length > 0,
+      }))
+      : { results: [], failed: [] };
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const r of rows) byId.set(String(r.eventId), { ...r, machine: self });
+    for (const p of peers.results) for (const r of p.rows) if (!byId.has(String(r.eventId))) byId.set(String(r.eventId), r);
+    // Not on this machine and no peer has it either: still unknown (unless a machine did not answer).
+    if (!live && peers.results.length === 0 && peers.failed.length === 0) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    const desc = [...byId.values()].sort((x, y) => strCmp(String(y.at), String(x.at)) || strCmp(String(y.eventId), String(x.eventId)));
+    const pageRows = desc.slice(0, limit);
+    const more = desc.length > limit || page.nextBefore !== null || peers.results.some((p) => p.more);
+    const oldest = pageRows[pageRows.length - 1];
+    res.json({
+      conversationKey: key, messages: pageRows.reverse(),
+      nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed },
+    });
   });
 
   // ── Sync ──
@@ -500,7 +711,11 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
         return {
           ...rest,
-          ...(e.kind === 'message' || e.kind === 'media-message' ? { originVerified: svc!.verify(e) } : {}),
+          ...(e.kind === 'message' || e.kind === 'media-message' ? (() => {
+            const verdict = svc!.verify(e);
+            const via = svc!.originApprovedVia(e, verdict);
+            return { originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+          })() : {}),
           ...(e.kind === 'media-message' ? { attachments: attachmentRows(e.attachments, svc!) } : {}),
         };
       }),
@@ -580,7 +795,9 @@ export function joinTelegramHistory(
     if (!ev || ev.kind !== 'message') return { ...row, originVerified: 'unknown' };
     // The verdict covers the STORED text; a Telegram row showing different text gets no verdict.
     if (typeof row.text === 'string' && row.text !== ev.text) return { ...row, originVerified: 'unknown' };
-    return { ...row, originVerified: app.verify(ev) };
+    const verdict = app.verify(ev);
+    const via = app.originApprovedVia(ev, verdict);
+    return { ...row, originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
   });
   const seen = new Set(out.map((r) => (typeof r.eventId === 'string' ? r.eventId : '')).filter(Boolean));
   let stored: BrowsedMessage[] = [];
@@ -590,7 +807,13 @@ export function joinTelegramHistory(
     if (seen.has(m.eventId) || m.role !== 'operator' || (m.deliveryState !== 'delivered' && m.deliveryState !== 'intercepted' && m.deliveryState !== 'unknown')) continue;
     out.push({ deliveryState: m.deliveryState,
       messageId: null, topicId, text: m.text, fromUser: m.role === 'operator', timestamp: m.at, sessionName: null,
-      via: 'mobile-device', eventId: m.eventId, fromStore: true, originVerified: app.verify({ ...m, conversationKey: key }),
+      via: 'mobile-device', eventId: m.eventId, fromStore: true,
+      ...(() => {
+        const rec = { ...m, conversationKey: key };
+        const verdict = app.verify(rec);
+        const via = app.originApprovedVia(rec, verdict);
+        return { originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+      })(),
     });
   }
   return out.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))).slice(-limit);

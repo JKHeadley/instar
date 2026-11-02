@@ -42,7 +42,7 @@ import { MobileChatRequestStore, payloadHash, requestIdAgeOk, requestIdTime } fr
 import type { MobilePushService, PushTrigger } from '../core/MobilePush.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
-import { APP_CONVERSATION_KEY_PATTERN, derivedEventId } from '../core/appConversationText.js';
+import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
@@ -738,11 +738,29 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!tg.getAllTopicMappings().some((m) => m.topicId === topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
     if (!requestIdAgeOk(requestId, t)) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     svc.scanInbound(text); // may cancel a pending pairing; never refuses the message
-    if (PairingInviteTelegram.carriesInvite(text) || /^\/desktop(?:\s|$)/i.test(text)) { res.status(422).json({ error: 'not-from-the-app' }); return; }
-    if (detectOutboundCredential(text).detected) {
-      res.status(422).json({ error: 'credential-refused', detail: 'This looks like a password or key, so it was not sent. Use a Secret Drop link for secrets.' });
-      return;
+    // With native conversations on (mobile-native-conversations §4.2, §4.9) no content check
+    // refuses the message: exact authority tokens (pairing invites, desktop codes) are REMOVED and
+    // the rest is delivered (`redacted: true`), and credential-shaped text is the operator's call,
+    // made in the app — the server only signals it (`credentialShaped: true`). Off: unchanged.
+    let delivered = text;
+    let removedKinds: string[] = [];
+    let credentialShaped = false;
+    if (svc.nativeOn) {
+      const removed = removeAuthorityTokens(text);
+      delivered = removed.text;
+      removedKinds = removed.kinds;
+      credentialShaped = detectOutboundCredential(text).detected;
+    } else {
+      if (PairingInviteTelegram.carriesInvite(text) || /^\/desktop(?:\s|$)/i.test(text)) { res.status(422).json({ error: 'not-from-the-app' }); return; }
+      if (detectOutboundCredential(text).detected) {
+        res.status(422).json({ error: 'credential-refused', detail: 'This looks like a password or key, so it was not sent. Use a Secret Drop link for secrets.' });
+        return;
+      }
     }
+    const extras = {
+      ...(removedKinds.length > 0 ? { redacted: true, removed: removedKinds } : {}),
+      ...(credentialShaped ? { credentialShaped: true } : {}),
+    };
 
     // Signed records (mobile-native-conversations §4.9): with native conversations on, the message
     // is ALSO kept in the app conversation store under `telegram:<topicId>` with its signed origin
@@ -770,11 +788,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
     if (app) {
       const receivedAt = new Date(deviceAdmittedAt(req) ?? Date.now()).toISOString();
-      const signed = buildSignedOrigin(req, svc, p.deviceId, text, [], app.deps.signer ?? null, receivedAt,
+      const signed = buildSignedOrigin(req, svc, p.deviceId, delivered, removedKinds, app.deps.signer ?? null, receivedAt,
         (detail) => app.deps.reportDegradation?.('MobileChat.sign', detail));
       try {
         app.store.append({
-          eventId: storeEventId, kind: 'message', conversationKey: storeKey, messageId: storeMessageId, role: 'operator', text,
+          eventId: storeEventId, kind: 'message', conversationKey: storeKey, messageId: storeMessageId, role: 'operator', text: delivered,
           at: receivedAt, machineId: app.deps.machineId(), receivedAt,
           ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
         });
@@ -802,7 +820,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const fakeReq = {
       headers: {},
       body: {
-        topicId, text, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
+        topicId, text: delivered, messageId: 2 ** 52 + crypto.randomInt(0, 2 ** 47), timestamp: new Date(t).toISOString(),
         fromUserId: ownerId, fromFirstName: ownerName, forwarded: false,
       },
     };
@@ -842,13 +860,16 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     // Mirror: best-effort, never decides delivery.
     let mirrored = false;
     try {
-      await tg.sendToTopic(topicId, `📱 ${ownerName} (from the app): ${text}`, { silent: true, skipStallClear: true, operatorMirror: true });
+      // The mirror is a copy for people reading the topic: credential-shaped spans always show
+      // as "[credential hidden]", even when the operator sent them as written (§4.9).
+      const mirrorText = svc.nativeOn ? hideCredentialSpans(delivered) : text;
+      await tg.sendToTopic(topicId, `📱 ${ownerName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
       mirrored = true;
     } catch (err) {
       deps.reportDegradation?.('MobileChat.mirror', err);
     }
     const response = {
-      ok: true, outcome, eventId, mirrored,
+      ok: true, outcome, eventId, mirrored, ...extras,
       ...(b.killed !== undefined ? { stopped: b.killed } : {}),
       ...(b.paused !== undefined ? { paused: b.paused } : {}),
     };
