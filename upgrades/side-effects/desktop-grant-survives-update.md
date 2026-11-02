@@ -62,6 +62,8 @@ Independent reviewer raised seven concerns; all were addressed before commit. (1
 
 **Reviewer:** independent subagent, second pass of the merged branch, 2026-11-01
 
+**Confirming pass, 2026-11-02 00:34: concur.** The same reviewer re-read fixes 1-6 (0db70965a) and the merge with main (a7378a33c) and agreed. Known follow-up: when the installed copy serves and holds one permission, the reason should ask for both permissions on the kept copy, so setup and the reason name the same path.
+
 The second pass raised six findings, all fixed in the following commit. (1) Blocker: a failed or timed-out probe of the installed copy was cached as null for 30 s with no last-good reading, so a Mac served by the installed copy's grant read as lost, a live session was revoked, and the notice check could raise a false item. A failure now never replaces a good reading: a failed refresh keeps it for one further 30 s window, retried every 5 s. (2) `helperChange` ignored whether the kept copy was in use, so after `retainedHelper: false` the operator was told to allow a path this agent does not launch. It now needs `resolution.source === 'retained'`. (3) Hashing, stat and record writes could throw and reject a probe. `resolve()` and `noteGranted()` no longer throw; unreadable kept bytes are restored from the package. (4) A failed copy retried on every resolve. It now waits one minute, doubling to a one-hour cap, and resets on success. (5) Guided setup's `helperPath` ignored the serving choice. It now reads the host's `servedHelperPath()`, the same choice `requestPermission` uses. (6) The retention e2e cleanup did not name the local-verify root; it now does, as its sibling tests do.
 
 ## Class-Closure Declaration
