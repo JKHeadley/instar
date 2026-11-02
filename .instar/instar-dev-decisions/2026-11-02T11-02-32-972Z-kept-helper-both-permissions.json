@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-02T11:02:32.972Z",
+  "slug": "kept-helper-both-permissions",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopHelperRetention.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

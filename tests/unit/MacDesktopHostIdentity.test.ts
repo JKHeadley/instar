@@ -276,6 +276,28 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost permission identi
     expect(spawns()).not.toContain('request-permission:own');
   });
 
+  it('asks the kept copy for both permissions while the installed copy serves on one', async () => {
+    const change = { kind: 'source-changed', version: '1.3.1580', helperPath: '/k' };
+    const installed = helper({ screen: false, input: false }, { screen: true, input: false });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false }, change);
+    const keptPath = (host['retention']!.resolve() as { path: string }).path;
+    const probe = await host.probe();
+    expect(probe).toMatchObject({ screenPermission: true, inputPermission: false, helperSource: 'packaged',
+      helperChange: { ...change, keptMissing: 'Screen Recording and Accessibility' } });
+    // Guided setup names the kept copy, the same one the notice names.
+    expect(host.setupHelperPath()).toBe(keptPath);
+    expect(host.servedHelperPath()).toBe(fs.realpathSync(installed.host['binary']));
+  });
+
+  it('asks only for what is missing when the kept copy itself serves', async () => {
+    const change = { kind: 'source-changed', version: '1.3.1580', helperPath: '/k' };
+    const installed = helper({ screen: false, input: false }, { screen: false, input: false });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: true, input: false }, change);
+    const probe = await host.probe();
+    expect(probe).toMatchObject({ helperSource: 'retained', helperChange: change });
+    expect(probe.helperChange?.keptMissing).toBeUndefined();
+  });
+
   it('asks for permission only under the helper identity', async () => {
     const { host, spawns } = helper({ screen: false, input: false }, { screen: false, input: false });
     expect(await host.requestPermission()).toEqual({ screenPermission: false, inputPermission: true });
