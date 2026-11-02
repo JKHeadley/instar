@@ -5847,7 +5847,7 @@ export class AgentServer {
       requestRestart: () => this.requestSupervisedRestart('remote desktop guided setup', 'remote-desktop-setup'),
       // The setup fallback must name the copy a permission request targets, which
       // is the one this host serves right now, kept or installed.
-      helperPath: () => (process.platform === 'darwin' ? this.macDesktopHost?.servedHelperPath() ?? macDesktopHelperPath() : null),
+      helperPath: () => (process.platform === 'darwin' ? this.macDesktopHost?.setupHelperPath() ?? macDesktopHelperPath() : null),
       endLiveAccess: () => this.directDesktopAccess?.killSwitch(),
       onPeerEnable: async senderId => {
         const name = verifiedEntityName(senderId, options.listPoolMachines?.().find(peer => peer.machineId === senderId)?.nickname) ?? 'Another paired machine';

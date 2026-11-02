@@ -6,7 +6,10 @@ const PERMISSION_STEP = 'System Settings → Privacy & Security';
 
 /** macOS ties these permissions to the exact program, so a changed helper loses
  * them and nothing on the Mac can restore them without a person. Say that. */
-function helperChangeReason(change: DesktopHelperPermissionChange, missing: string): string {
+function helperChangeReason(change: DesktopHelperPermissionChange, servingMissing: string): string {
+  // A tie keeps the kept copy serving, so granting it only what is missing
+  // overall would leave it short and need a second trip. Ask for all of it.
+  const missing = change.keptMissing || servingMissing;
   const why = change.kind === 'source-changed'
     ? `Instar's Mac desktop helper changed in update ${change.version}, and macOS ties ${missing} to the exact program, so the old permission no longer applies.`
     : `Instar now keeps one permanent copy of its Mac desktop helper, so later updates that leave the helper unchanged cannot remove its permission. macOS needs to allow that copy once.`;

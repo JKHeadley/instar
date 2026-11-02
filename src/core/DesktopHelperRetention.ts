@@ -52,9 +52,14 @@ export interface DesktopHelperResolution {
 
 /** Why a missing permission needs a person. `same-program` means a grant was
  * removed by someone or something else, so no update story applies. */
-export type DesktopHelperPermissionChange =
+export type DesktopHelperPermissionChange = (
   | { kind: 'source-changed'; version: string; helperPath: string }
-  | { kind: 'first-grant'; version: string; helperPath: string };
+  | { kind: 'first-grant'; version: string; helperPath: string }
+) & {
+  /** Set while the installed copy serves on a grant the kept copy lacks: every
+   * permission the kept copy still needs, so one trip to the Mac is enough. */
+  keptMissing?: string;
+};
 
 export interface DesktopHelperRetentionOptions {
   packagedBinary: string;
