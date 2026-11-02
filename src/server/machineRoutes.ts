@@ -59,6 +59,7 @@ export interface MachineRouteContext {
   onDesktopOperatorKeepAlive?: (body: unknown, authenticatedFrontId: string) => boolean;
   onDesktopAvailability?: () => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
   onDesktopOperatorCommand?: (body: unknown, authenticatedFrontId: string) => Promise<unknown>;
+  onDesktopOperatorLocked?: (body: unknown, authenticatedFrontId: string) => Promise<unknown>;
   /**
    * Agent state dir + agent name, for the agent-identity handover on pairing
    * (docs/specs/agent-identity-continuity-on-expansion.md §1). Optional so an
@@ -187,6 +188,13 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
     if (!ctx.onDesktopOperatorKeepAlive(req.body, frontId)) { res.status(403).json({ error: 'desktop operator session unavailable' }); return; }
     res.json({ ok: true });
+  });
+
+  router.post('/api/desktop/operator-locked', authMiddleware, async (req, res) => {
+    if (!ctx.onDesktopOperatorLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopOperatorLocked(req.body, frontId)); }
+    catch (error) { res.status(403).json({ error: error instanceof Error ? error.message : 'desktop request refused' }); }
   });
 
   router.post('/api/desktop/operator-command', authMiddleware, async (req, res) => {

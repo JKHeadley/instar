@@ -3594,7 +3594,12 @@ export interface ExternalServicePermissions {
 export interface InstarConfig {
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */
-  remoteDesktop?: { enabled?: boolean; frontMachineId?: string };
+  remoteDesktop?: {
+    enabled?: boolean;
+    frontMachineId?: string;
+    /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
+    lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
+  };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;
   /** Project root directory */

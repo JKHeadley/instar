@@ -19,6 +19,10 @@
     <label>Machine <select id="machine"></select></label>
     <button id="requestButton">Open selected machine</button>
     <ul id="machineNotes" class="machine-notes" aria-label="Machines that are not ready"></ul>
+    <div id="lockedCard" hidden>
+      <p id="lockedCardText"></p>
+      <button id="lockedToggle" type="button" hidden></button>
+    </div>
   </section>
   <section id="control" hidden>
     <div class="desktop-bar"><strong id="machineName"></strong><span id="liveStatus" role="status"></span><button id="stopButton" class="danger">Stop</button></div>
@@ -74,6 +78,12 @@
       <button data-remote-key="F11" type="button">F11</button>
       <button data-remote-key="F12" type="button">F12</button>
     </div>
+    <form id="lockedPassword" hidden>
+      <label>Mac password <input id="lockedPasswordInput" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="256"></label>
+      <button type="submit">Unlock</button>
+      <p>The machine serving this page and the tunnel provider can read what you type here. The Instar app is safer.</p>
+    </form>
+    <button id="leaveUnlockedButton" type="button" hidden>Leave unlocked</button>
     <div id="keyboardBar" hidden>
       <label class="type-label" for="typeText">Type on remote desktop</label>
       <input id="typeText" maxlength="64" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done">

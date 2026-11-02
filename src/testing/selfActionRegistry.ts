@@ -22,6 +22,7 @@
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, decideLockedRespawn } from '../core/DesktopLockedController.js';
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
@@ -281,6 +282,61 @@ const codexArmSessionSweep: SelfActionController = {
           if (f.targetAlwaysRejects()) failures.set(name, (failures.get(name) ?? 0) + 1);
           else failures.delete(name);
         }
+      },
+    };
+  },
+};
+
+/** desktop-relock-guard-replacement: the sweep replaces a dead relock guard for
+ * one duty, then fails that duty loudly. The count lives on the durable marker. */
+const desktopRelockGuardReplacement: SelfActionController = {
+  id: 'desktop-relock-guard-replacement',
+  actionVerb: 'respawn',
+  models: 'src/core/DesktopLockedController.ts (replaceGuard — decideGuardReplacement cap per duty)',
+  modelsPath: 'src/core/DesktopLockedController.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The count is on the durable marker, so a restart cannot reset it, and a marker from another boot closes.' },
+  boundK: MAX_GUARD_REPLACEMENTS,
+  perTargetBoundK: MAX_GUARD_REPLACEMENTS,
+  ticks: 40,
+  tickMs: 10_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(_f, sink) {
+    let replacements = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideGuardReplacement(replacements) === 'give-up') return;
+        replacements += 1;
+        sink.emit({ verb: 'respawn', target: 'relock-guard' });
+      },
+    };
+  },
+};
+
+/** desktop-locked-helper-respawn: a lock ends the helper; Node respawns it a
+ * bounded number of times per request, however often the state flaps. */
+const desktopLockedHelperRespawn: SelfActionController = {
+  id: 'desktop-locked-helper-respawn',
+  actionVerb: 'respawn',
+  models: 'src/core/DirectDesktopAccess.ts (spendRespawn — decideLockedRespawn, per change and per request)',
+  modelsPath: 'src/core/DirectDesktopAccess.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart revokes every grant, so no request survives to respawn for.' },
+  boundK: RESPAWNS_PER_REQUEST,
+  perTargetBoundK: RESPAWNS_PER_REQUEST,
+  ticks: 40,
+  tickMs: 1_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(_f, sink) {
+    let thisChange = 0;
+    let total = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        thisChange = 0; // Worst case: the state flaps on every tick.
+        if (!decideLockedRespawn(thisChange, total)) return;
+        thisChange += 1;
+        total += 1;
+        sink.emit({ verb: 'respawn', target: 'desktop-helper' });
       },
     };
   },
@@ -3346,6 +3402,8 @@ function sessionPoolStagePromotionModel(f: PressureFixture, sink: ActionSink): {
 }
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  desktopRelockGuardReplacement,
+  desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
   jobSupervisionProviderRetry,
   jobSupervisionCensusRepair,

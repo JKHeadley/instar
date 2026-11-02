@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { mintDesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
+import { mintDesktopLockedAssertion, mintDesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
 import { sign as signMachinePayload } from '../core/MachineIdentity.js';
 import { signRequest } from './machineAuth.js';
 import type { PeerEndpointKind } from './peerUrlGuard.js';
@@ -52,7 +52,7 @@ export class DesktopMeshBroker {
 
   async begin(frontSessionToken: string, input: {
     machineId: string; browserPublicKey: string; browserEcdhPublicKey: string;
-    browserNonce: string; videoCodec?: 'jpeg' | 'h264';
+    browserNonce: string; videoCodec?: 'jpeg' | 'h264'; client?: 'app' | 'browser'; controlRecords?: boolean;
   }): Promise<{ requestId: string }> {
     if (!this.d.verifyFrontSession(frontSessionToken)) throw new Error('recent dashboard PIN session required');
     // Reserve at most three remote slots, including in-flight admissions. The
@@ -76,6 +76,7 @@ export class DesktopMeshBroker {
       assertion, browserPublicKey: input.browserPublicKey,
       browserEcdhPublicKey: input.browserEcdhPublicKey,
       browserNonce: input.browserNonce, videoCodec: input.videoCodec ?? 'h264',
+      client: input.client === 'app' ? 'app' : 'browser', controlRecords: input.controlRecords === true,
     });
     if (this.closed) throw new Error('desktop front closed');
     if (!/^[a-f0-9-]{36}$/i.test(String(result.requestId ?? ''))
@@ -139,6 +140,23 @@ export class DesktopMeshBroker {
     }
     if (operation === 'status' && result.status === 'revoked') this.forget(requestId);
     return result;
+  }
+
+  /** Settings for one Mac, signed here because the PIN session is local here. */
+  async locked(frontSessionToken: string, machineId: string,
+    operation: 'locked-settings' | 'locked-disable', settings: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.closed || !this.d.verifyFrontSession(frontSessionToken)) throw new Error('recent dashboard PIN session required');
+    const peer = await this.peer(machineId);
+    const assertion = mintDesktopLockedAssertion({
+      issuerMachineId: this.d.selfMachineId, targetMachineId: machineId, operation, settings,
+      nowMs: this.now(), sign: canonical => signMachinePayload(canonical, this.d.signingKeyPem),
+    });
+    return this.post(peer, '/api/desktop/operator-locked', { assertion, settings });
+  }
+
+  /** Read-only and machine-authenticated; a dark peer is the caller's row. */
+  async lockedStatus(machineId: string): Promise<Record<string, unknown>> {
+    return this.post(await this.peer(machineId), '/api/desktop/operator-locked', { status: true });
   }
 
   /** A ticket is one-use at this relay and at the target. */
