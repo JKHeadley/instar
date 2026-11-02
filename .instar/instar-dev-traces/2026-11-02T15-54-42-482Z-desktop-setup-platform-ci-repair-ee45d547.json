@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "desktop-setup-platform-ci-repair",
+  "sessionId": "fe73d863-f6e2-4dbf-9f8b-dc2bf1d50fd4",
+  "timestamp": "2026-11-02T15:54:42.482Z",
+  "artifactPath": "upgrades/side-effects/desktop-setup-platform-ci-repair.md",
+  "artifactSha256": "4238ea377a41876aad4fac3d18fba71b213d646b46d0f556eb807a558bb16157",
+  "specPath": "docs/specs/desktop-guided-setup.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "site/src/content/docs/architecture/under-the-hood.md",
+    "site/src/content/docs/reference/api.md",
+    "tests/e2e/desktop-setup-boot-lifecycle.test.ts",
+    "tests/e2e/windows-desktop-local-transport-smoke.mjs",
+    "tests/unit/package-completeness.test.ts",
+    "tests/unit/threadline/ContextThreadMap.test.ts",
+    "upgrades/side-effects/desktop-setup-platform-ci-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
