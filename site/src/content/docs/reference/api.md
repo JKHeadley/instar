@@ -12,6 +12,15 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/health` | Health check (public, no auth). Returns version, session count, scheduler status, memory usage |
 | GET | `/status` | Running sessions + scheduler status |
 
+## Machine Maintenance (Development Agent)
+
+These authenticated reads are watch-only when machine maintenance is enabled on a development agent. They return 503 while the feature is dark; reading them cannot restart the machine, stop work, or close a browser.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/machine-maintenance` | Uptime, next possible window, safety holds, a recorded paper rehearsal, and which agent-owned browsers a dry-run sweep would keep or close |
+| GET | `/machine-maintenance/lock-state` | The Mac's lock reading with the underlying signals and reason; `unknown` is not treated as locked, and Linux is `not-applicable` |
+
 ## Remote Desktop
 
 The dashboard uses these authenticated endpoints after the operator enters the existing dashboard PIN. The [Remote Desktop guide](/guides/remote-desktop/) explains target readiness, the Mac permissions, mobile controls, and revocation. A stream ticket is short lived and scoped to one target and controller.
