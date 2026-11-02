@@ -124,6 +124,12 @@ export interface TopicLinkageDeps {
    * here. Absent ⇒ every post goes to the originating topic.
    */
   resolveUserTopic?: (q: { threadId: string; peers: string[]; originTopicId: number }) => number | null;
+  /**
+   * §2.7 per-message "meant for the user?" judge, used only when the reply is REDIRECTED to the
+   * peer's homebase (`resolveUserTopic` named another topic). Returns null when its switch is
+   * off, and the SalienceGate decides as before. No verdict resolves to user-visible inside.
+   */
+  judgeUserMeant?: (q: { threadId: string; peers: string[]; senderName: string; text: string; deadlineMs: number }) => Promise<{ verdict: SalienceVerdict; reason: string } | null>;
   /** Optional clock for deterministic tests. */
   now?: () => number;
 }
@@ -224,6 +230,8 @@ export function normalizeLiveInject(o: LiveInjectOutcome): Exclude<LiveInjectOut
 
 // Soft rate-limit per thread for user-visible Telegram surfaces.
 const USER_VISIBLE_RATE_LIMIT_MS = 60_000;
+/** §2.7: the most a redirected reply waits for its per-message verdict before posting anyway. */
+const REDIRECTED_JUDGE_BUDGET_MS = 6_000;
 
 // Maximum reply body length included verbatim in the Telegram surface. Longer
 // bodies get a trailing "[truncated]" marker so the topic session still gets
@@ -515,13 +523,14 @@ export class TopicLinkageHandler {
     // Build classifier inputs.
     const history = this.fetchThreadHistory(threadId);
 
-    const verdictResult = await salienceGate.evaluate({
-      replyBody: message.body ?? '',
-      purpose: commitment?.userRequest,
-      history,
-      isFirstReply,
-      remoteAgent: message.from.agent,
-    });
+    const verdictResult = (userTopicId !== topicId ? await this.judgeRedirected(threadId, threadEntry, message) : null)
+      ?? await salienceGate.evaluate({
+        replyBody: message.body ?? '',
+        purpose: commitment?.userRequest,
+        history,
+        isFirstReply,
+        remoteAgent: message.from.agent,
+      });
 
     const sessionName = liveSessionName ?? threadEntry.originSessionName ?? null;
     let deliveryMode: TopicDeliveryMode = 'failure-visible';
@@ -646,7 +655,8 @@ export class TopicLinkageHandler {
     threadEntry: RouteReplyInput['threadEntry'];
     commitment: Commitment | null;
     deliveryMode: TopicDeliveryMode;
-    verdictResult: { verdict: SalienceVerdict; reason: string };
+    /** `perMessage`: decided by the §2.7 judge (lifts the per-thread minute; the per-topic brake stays). */
+    verdictResult: { verdict: SalienceVerdict; reason: string; perMessage?: boolean };
   }): Promise<TopicRouteOutcome> {
     const { threadId, topicId, userTopicId, message, threadEntry, commitment, deliveryMode, verdictResult } = args;
     // §2.6: the reply is meant for the user and the user reads this peer in ANOTHER topic (its
@@ -692,7 +702,10 @@ export class TopicLinkageHandler {
     // for first replies (otherwise N rotating threads = N surfaces = the flood).
     // A carve-out would also misfire once the commitment is delivered, since
     // findByThreadId then returns null and isFirstReply flips true again.
-    const rateOk = this.passesRateLimit(threadId) && this.passesTopicRateLimit(userTopicId);
+    // §2.7: under per-message judging a second user-meant reply inside a minute is still meant
+    // for the user, so only the per-topic flood brake applies to a redirected, judged post.
+    const perMessageJudged = redirected && verdictResult.perMessage === true;
+    const rateOk = (perMessageJudged || this.passesRateLimit(threadId)) && this.passesTopicRateLimit(userTopicId);
     if (shouldSurface && rateOk) {
       try {
         const surfaceText = this.buildTelegramSurface({
@@ -788,6 +801,28 @@ export class TopicLinkageHandler {
     }
   }
 
+  /**
+   * §2.7: a reply redirected to the peer's homebase is judged per message. Null when no judge is
+   * wired or its switch is off (the SalienceGate then decides). A judge that throws yields
+   * user-visible (fail toward the user). Bounded so the inject is never held long.
+   */
+  private async judgeRedirected(
+    threadId: string,
+    threadEntry: RouteReplyInput['threadEntry'],
+    message: MessageEnvelope['message'],
+  ): Promise<{ verdict: SalienceVerdict; reason: string; perMessage: true } | null> {
+    if (!this.deps.judgeUserMeant) return null;
+    try {
+      const peers = [threadEntry.remoteAgent, message.from.agent].filter((p): p is string => typeof p === 'string' && p.length > 0);
+      const v = await this.deps.judgeUserMeant({
+        threadId, peers, senderName: message.from.agent, text: message.body ?? '', deadlineMs: REDIRECTED_JUDGE_BUDGET_MS,
+      });
+      return v ? { ...v, perMessage: true } : null;
+    } catch {
+      return { verdict: 'user-visible', reason: 'per-message judge failed (fail toward the user)', perMessage: true }; // @silent-fallback-ok — a missed notice is worse than a duplicate
+    }
+  }
+
   private safeIsAlive(sessionName: string): boolean {
     try { return this.deps.isSessionAlive(sessionName); } catch { return false; /* @silent-fallback-ok — an unreadable liveness check is "not alive" */ }
   }
@@ -867,7 +902,7 @@ export class TopicLinkageHandler {
     commitment: Commitment | null;
   }): Promise<TopicRouteOutcome> {
     const { plan, threadId, topicId, userTopicId, message, threadEntry, commitment } = args;
-    let verdictResult: { verdict: SalienceVerdict; reason: string } = {
+    let verdictResult: { verdict: SalienceVerdict; reason: string; perMessage?: boolean } = {
       verdict: 'user-visible',
       reason: 'remote topic delivery failed before classification',
     };
@@ -875,13 +910,14 @@ export class TopicLinkageHandler {
     try {
       const isFirstReply = !commitment || !commitment.lastReplyAt;
       const history = this.fetchThreadHistory(threadId);
-      verdictResult = await this.deps.salienceGate.evaluate({
-        replyBody: message.body ?? '',
-        purpose: commitment?.userRequest,
-        history,
-        isFirstReply,
-        remoteAgent: message.from.agent,
-      });
+      verdictResult = (userTopicId !== topicId ? await this.judgeRedirected(threadId, threadEntry, message) : null)
+        ?? await this.deps.salienceGate.evaluate({
+          replyBody: message.body ?? '',
+          purpose: commitment?.userRequest,
+          history,
+          isFirstReply,
+          remoteAgent: message.from.agent,
+        });
       if (plan.first) {
         let holderName: string | null = null;
         try { holderName = this.deps.selfMachineName?.() ?? null; } catch { holderName = null; /* @silent-fallback-ok — the pointer falls back to the machine id */ }

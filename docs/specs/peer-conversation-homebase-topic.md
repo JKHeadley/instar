@@ -16,11 +16,12 @@ approval-note: |
 eli16-overview: peer-conversation-homebase-topic.eli16.md
 tracks: "topic 127831 · operator feature request 2026-10-21"
 parent-principle: "The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred"
-review-convergence: "2026-10-31T19:34:06.000Z"
-review-iterations: 4
-review-completed-at: "2026-10-31T19:34:06.000Z"
+review-convergence: "2026-10-31T21:40:23.000Z"
+review-iterations: 5
+review-completed-at: "2026-10-31T21:40:23.000Z"
 review-report: "docs/specs/reports/peer-conversation-homebase-topic-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
+amendment-2026-10-31b: "§2.7 per-message user-meant judging. Approval basis: the same operator directive as §2.6 (Justin, 2026-10-31: 'all messages from an agent that are intended for the user show up in that topic'), which §2.6 met only for the first message of a conversation; relayed by the coordinating session as the build order for this half. One internal review round on the amendment, iterated to concurrence (findings in upgrades/side-effects/peer-homebase-per-message.md)."
 single-run-completable: true
 frontloaded-decisions: 4
 cheap-to-change-tags: 0
@@ -263,21 +264,106 @@ best-effort, never fails a pairing).
 topic per minute, the same bounds the topic-linked surface uses; a post held by a brake falls
 back to the hub surface (above).
 
-**What is structural and what is not, stated plainly.** Whether a message is meant for the user
-is the existing SalienceGate's verdict. Production runs that gate without a classifier, and its
-fallback rule marks only the FIRST message on a thread as `user-visible`. So the server's own
-post is guaranteed for the first message of each conversation (and for every message the gate
-marks user-visible once a classifier is configured). A later message on the same conversation
-that needs the user reaches the homebase through the session handling it, which is told the
-topic id in its prompt (point 3, and the payload line for topic-linked replies). That second
-part is prompt-level, not enforced. Making it structural needs a user-visibility decision on
-every message, which is the SalienceGate classifier this spec deliberately does not add.
+**What is structural and what is not, stated plainly.** As first built, whether a message is
+meant for the user was the existing SalienceGate's verdict, which production runs without a
+classifier; its fallback marks only the FIRST message on a thread as `user-visible`, so a later
+user-meant message relied on the session following a prompt line. §2.7 closes that: every
+message is judged, and the first-only rule remains only as the behaviour of the off switch.
 
 **Off switch.** `threadline.peerHomebase.enabled: false` (read live) makes the resolver return
 the existing routing everywhere, which restores the previous behaviour exactly.
 
 **Signal vs authority.** This is delivery routing, not a gate: it never blocks, delays or drops a
 message, and every failure falls back to the existing destination.
+
+### 2.7 Every message is judged "meant for the user?" (2026-10-31, second half)
+
+§2.6 delivered the operator's rule for the first message of each conversation only. This makes
+the server post EVERY peer message meant for the user into the §2.6 destination, by deciding
+"meant for the user?" per message (`PeerUserMeantJudge`, `src/threadline/PeerUserMeantJudge.ts`).
+
+**The decision, in order** (first that answers wins):
+
+| # | Step | Result |
+|---|---|---|
+| 1 | Protocol traffic, by wire type: `ack` or `wellness`, or the exact fixed ack sentences (`DEFAULT_AUTO_ACK_MESSAGE`, `NO_REPLY_ACK_MESSAGE`) older peers send without a type | agent-internal, no model call |
+| 2 | The text could not be secret-scrubbed, or no model is available at all | no verdict → post |
+| 2b | The judge's own budget is spent: the daily cap (default 300 model calls, seeded from the audit log so a restart does not reset it) or the per-peer limit (default 30 judged messages per rolling hour; a peer is charged only when a model is actually asked) | the §2.6 first-only rule, with its brakes, decides. A budget is a brake: exhausting it must not become "post everything unjudged" |
+| 3 | Jev (TypeSafe, vault `typesafe_api_key`): a calibrated three-way choice (meant for the person / agent coordination / cannot tell). A confident answer outside the shared cascade band (0.30–0.70) decides | Jev's answer |
+| 4 | Jev unsure, "cannot tell", absent or failing → the referee chain, in order: the Codex fast tier (its own breaker), then the agent's shared provider. The first parseable answer decides | the referee's answer |
+| 5 | Nothing answered, or the decision's deadline passed | no verdict → post |
+
+So the judge works fully on a single provider: a Claude-only agent with no Jev key asks the
+shared provider. It fails toward POSTING: a duplicate notice is better than a missed one. Only
+deterministic protocol types are never posted, and only a spent budget falls back to first-only.
+
+**Judged by meaning, never by string match.** The question (to Jev and to the referees) asks
+whether the message is meant for the receiving agent's person to read: it addresses or asks the
+person, asks the receiving agent to tell or pass something on to them ("tell Justin", "for your
+person", "please pass this on"), needs their decision, approval, answer or action, or carries a
+result, report, warning or news they would want. Coordination the receiving agent can handle
+alone is agent-internal. The message reaches a model only after the durable secret scrub, quoted
+as data the model is told not to follow (fenced); the peer-asserted sender name is reduced to one
+line without control characters so it cannot fake that layout; a private-key marker sends
+nothing (and posts). **Egress:** the scrubbed message text leaves the machine to TypeSafe (Jev)
+when a key is configured, and to the Codex or shared provider's vendor when they answer.
+
+**Where it applies.** (a) `PeerHomebaseRelay`, all three inbound seams of §2.6 point 2; each seam
+passes the wire type it has. (b) `TopicLinkageHandler`, only when the reply is REDIRECTED to the
+homebase (§2.6 point 1). The verdict feeds the session payload, so the inject of such a reply
+waits for it, at most 6 s (Jev answers in about 1.5 s; a referee can take longer), then posts on
+no verdict. Elsewhere the SalienceGate decides exactly as before, with no added wait.
+
+**Brakes under per-message judging.** The per-thread one-post-a-minute brake of §2.6 is lifted
+for judged messages (a second user-meant message inside a minute is still meant for the user);
+the per-topic brake (three posts a minute into one topic) stays as the flood bound. A judged
+user-meant post held by that brake, or whose send failed, is retried (at most twice, at most 50
+pending, after the window frees or 30 s), and the hub surface runs meanwhile, so the homebase
+still gets it. The judge's own budget (step 2b) bounds model spend.
+
+**No double posting.** The spawn-prompt line of §2.6 point 3 now says, only where the relay has
+actually taken the thread, that the server posts each message from that peer it judges meant for
+the user into topic N, so the session must not repost, forward or summarise them, and posts in its
+own words only what it adds (including a point it thinks the user still needs). "Taken" means:
+the relay resolved the homebase for this thread from the transport's own sender evidence and
+judged a message of it with the switch on (recorded synchronously at ingest, before the spawn),
+the switch is still on, and the conversation is unbound. Otherwise the §2.6 line stands. The topic-linked payload already said the server
+posted a user-visible reply.
+
+**Audit.** One content-free row per judged message in `logs/peer-user-meant.jsonl`: time, the
+first 8 characters of the thread id, the first 12 of the peer fingerprint, the message length,
+the verdict, who decided (`protocol` / `jev` / `referee` / `no-verdict`), a closed-enum reason,
+Jev's probability, which referee answered, and the model calls made. No message text. Model
+calls are also metered under the `peer-user-meant` feature on `/metrics/features`.
+
+**Switch.** `threadline.peerHomebase.perMessageClassification`, read live per message. Omitted or
+`true` ⇒ on (the operator's directive). Explicit `false` ⇒ the §2.6 first-only behaviour exactly.
+An object form carries tuning: `{ "enabled": true, "maxChecksPerDay": 300, "perPeerPerHour": 30 }`.
+`threadline.peerHomebase.enabled: false` still turns the whole homebase routing off.
+
+**Signal vs authority.** The verdict decides only whether the server posts a COPY to the operator's
+topic. It never blocks, delays or drops the message on its way to a session; every failure
+resolves to posting. It holds no authority over the peer or the session.
+
+**Limits, stated plainly.**
+- Past the daily cap or a peer's hourly limit, only the first message of a conversation is posted
+  by the server (§2.6) until the budget resets; a later user-meant message then depends on the
+  session again. One busy peer can spend the shared daily cap for every peer.
+- A judged post that still fails after its retries stays in the silent hub only.
+- A wrong agent-internal verdict means no server post; the session was told not to repost the
+  peer's messages, so its own words are the only remaining path (the prompt invites it to add a
+  point it thinks the user still needs).
+- The spawn prompt is fixed when the session starts: switching per-message judging off later
+  leaves a running session believing the server posts; it learns otherwise only on respawn.
+- The session can still post its OWN messages about a peer elsewhere; the prompt line is the only
+  control there (unchanged from §2.6).
+- A bound, non-operator conversation with no thread-resume entry is handled by neither the relay
+  nor the topic-linked path (pre-existing, unchanged; §2.6 under-block).
+- Model verdicts can be wrong in both directions; the measured rate is not known yet. The audit
+  log is the input for measuring it.
+
+**Review round (internal, one).** Findings and their resolution are recorded in the side-effects
+artifact `upgrades/side-effects/peer-homebase-per-message.md`.
 
 ### 2.5 Why automatic creation is permitted here
 

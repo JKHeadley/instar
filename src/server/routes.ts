@@ -529,6 +529,7 @@ import type { QuotaManager } from '../monitoring/QuotaManager.js';
 import type { ThreadlineRouter } from '../threadline/ThreadlineRouter.js';
 import { evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { isAutoAckBody, autoAckBodyRecognition, looksLikeAutoAckText } from '../threadline/autoAck.js';
+import { wireTypeOf } from '../threadline/PeerUserMeantJudge.js';
 import type { HandshakeManager } from '../threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../threadline/ThreadlineEndpoints.js';
 import { resolveChannels } from '../core/channelRegistry.js';
@@ -38101,6 +38102,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   peers: [hbFp],
                   senderName: senderAgentName,
                   text: gText,
+                  messageType: wireTypeOf(body),
                 }).then((r) => { if (!r.posted) hubSurface(); }, () => hubSurface());
               } else {
                 hubSurface();
