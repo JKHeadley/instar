@@ -3592,6 +3592,16 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
+  machineMaintenance?: {
+    enabled?: boolean;
+    cadenceDays?: number;
+    window?: { start: string; end: string };
+    maxIntervalDays?: number;
+    maxEpisodeDelayMinutes?: number;
+    /** tmux sessions that are not agent work: exact name, or a prefix ending in `*`. Default empty. */
+    nonAgentTmuxSessions?: string[];
+  };
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */
   remoteDesktop?: { enabled?: boolean; frontMachineId?: string };

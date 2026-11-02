@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "machine-self-maintenance-watch-only",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T02:26:54.439Z",
+  "artifactPath": "upgrades/side-effects/machine-self-maintenance-watch-only.md",
+  "artifactSha256": "5975315ba4ce91d6089f519ab367dabdf46f57bc23152c2e7291391e1fdb7263",
+  "coveredFiles": [
+    "docs/specs/machine-self-maintenance.eli16.md",
+    "docs/specs/machine-self-maintenance.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/types.ts",
+    "src/monitoring/machineMaintenance/DrainRehearsal.ts",
+    "src/monitoring/machineMaintenance/WorkYieldRegistry.ts",
+    "src/monitoring/machineMaintenance/planner.ts",
+    "src/monitoring/machineMaintenance/readings.ts",
+    "tests/unit/machine-maintenance.test.ts",
+    "upgrades/next/machine-self-maintenance-watch-only.md",
+    "upgrades/side-effects/machine-self-maintenance-watch-only.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two false evidence readings in a watch-only monitor; no action path; a revert fully undoes it.",
+  "eli16Path": "docs/specs/machine-self-maintenance.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/machine-self-maintenance-watch-only.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

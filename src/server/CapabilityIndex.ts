@@ -283,6 +283,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'machineMaintenance',
+    prefixes: ['/machine-maintenance'],
+    description: 'Machine self-maintenance (docs/specs/machine-self-maintenance.md), WATCH-ONLY: every night a paper drain records what a scheduled restart would have done on this machine, which of the closed delays and safety holds read true, and how long each kind of work took to reach its own yield point. It cannot restart anything or stop any work (canRestart:false, canStopWork:false). GET /machine-maintenance reports uptime, due, the next window, the host drain record, delays, safety holds, declared work kinds, lastRehearsal and the evidence gate. 503 when dark (machineMaintenance, dev-agent gated). When asked "what would a nightly restart do here?" or "is this machine due?" read this, never guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /machine-maintenance'],
+    }),
+  },
+  {
     key: 'workAdmission',
     prefixes: ['/work-admission'],
     description: 'Overload admission (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part C) — each machine protects its own resources: when its own multi-signal load verdict is saturated/impaired it CLOSES to new automatic work (scheduled jobs, helper sessions, placement of new conversations; the work waits and retries, nothing is dropped, running conversations keep going), reopens after 5 consecutive good samples, and keeps ONE host-wide recovery slot free so an operator session can always start. GET /work-admission reports enabled/dryRun/enforced, acceptingWork, lastVerdict, the recovery slot (cap/inUse) and counters (closes, reopens, refused, wouldRefuse, recoverySlotGrants). Dev-gated + dry-run first (monitoring.workAdmission): in dry-run it logs would-refuse and refuses nothing; 503 when dark. When asked "why didn\'t a job run / is this machine taking work?" → read this, don\'t guess.',

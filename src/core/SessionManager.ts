@@ -5862,7 +5862,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * (indeterminate/absent/timeout) resolves to `null`, exactly like the sync
    * version's catch — the caller's null handling is byte-for-byte preserved.
    */
-  private async captureOutputAsync(tmuxSession: string, lines: number = 100): Promise<string | null> {
+  async captureOutputAsync(tmuxSession: string, lines: number = 100): Promise<string | null> {
     const out = await this.tmuxExecCoalesced('capture-pane', tmuxSession, [
       'capture-pane',
       '-t',
