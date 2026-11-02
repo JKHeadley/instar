@@ -183,6 +183,7 @@ import { AppConversationService } from '../core/AppConversationService.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
+import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -199,7 +200,7 @@ import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
-import { dashboardUnlockRefused, isLoopbackPeer } from '../core/desktopTransport.js';
+import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
 import { MacDesktopHost } from '../core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
@@ -814,6 +815,12 @@ export class AgentServer {
     viewer?: PrivateViewer;
     jobAnomalySendAutomationReply?: JobAnomalyPusherDeps['sendAutomationReply'];
     tunnel?: TunnelManager;
+    /**
+     * Multi-route own names (docs/specs/mobile-multi-route.md): inject the Tailscale CLI and the
+     * self-probe fetch, and whether to start the probe loop. Under a test run the real CLI is
+     * never used and the loop is not started unless a test injects these.
+     */
+    mobileRoutes?: { tailscaleExec?: import('../core/MobileOwnNames.js').TailscaleExec | null; fetchFn?: typeof fetch; start?: boolean };
     evolution?: EvolutionManager;
     watchdog?: SessionWatchdog;
     triageNurse?: StallTriageNurse;
@@ -1554,6 +1561,12 @@ export class AgentServer {
         return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
       },
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
+      tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
+        ? options.mobileRoutes.tailscaleExec ?? null
+        : (process.env.VITEST ? null : defaultTailscaleExec(wslWindowsHostAddress() !== null)),
+      isWsl: wslWindowsHostAddress() !== null,
+      ...(options.mobileRoutes?.fetchFn ? { fetchFn: options.mobileRoutes.fetchFn } : {}),
       raiseAttention: (title, body) => {
         void options.telegram?.createAttentionItem({
           id: 'mobile-pairing:paused', title, summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'mobile-pairing',
@@ -1563,6 +1576,8 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
+    if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
     if (options.telegram) {
       const mp = this.mobilePairing;
       options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
@@ -5080,6 +5095,7 @@ export class AgentServer {
       messageBridge: options.messageBridge ?? null,
       hookEventReceiver: options.hookEventReceiver ?? null,
       nativeHookIngest: this.nativeHookIngest,
+      mobileOwnNames: this.mobilePairing?.ownNames ?? null,
       worktreeMonitor: options.worktreeMonitor ?? null,
       subagentTracker: options.subagentTracker ?? null,
       instructionsVerifier: options.instructionsVerifier ?? null,

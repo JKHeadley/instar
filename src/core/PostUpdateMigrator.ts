@@ -949,6 +949,21 @@ The session's bind token is the only destination; the script takes no conversati
 `;
 }
 
+/**
+ * CLAUDE.md awareness block for several routes per agent (docs/specs/mobile-multi-route.md).
+ * Unique content-sniff marker: `Mobile app routes`.
+ */
+export function MOBILE_ROUTES_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Mobile app routes — the iPhone app reaches this machine by Tailscale and Cloudflare
+
+A paired phone's signed request is accepted on any of this machine's own names: its Cloudflare tunnel hostname and its Tailscale HTTPS name. A name becomes an own name only from local configuration (the tunnel hostname; \`tailscale status\` + \`tailscale serve\` showing HTTPS 443 → this agent's port) and after the pairing ping proves this process answers on it, with the Host echoed and the request arriving through this machine's own TLS front. A request is accepted on a name only if it is still configured here and arrived through that local front, so a failed outbound check never locks a phone out, and a captured request cannot be replayed on another name. At boot I set up \`tailscale serve\` (HTTPS 443 → my port) myself when 443 has nothing configured; an existing different setup is reported, never overwritten. Development-agent gated (\`mobilePairing.multiRoute.enabled\`, read at boot).
+- Which routes I have and whether they answer (Registry First): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`mobileRoutes\` (\`ownNames\` with \`lastProbeOk\`/\`lastFailure\`, \`candidates\` that never passed with their reason, e.g. \`tailscale-serve-not-configured\`, and \`tailscaleServe\`).
+- The app reads its route list from \`GET /mobile/routes\` (device-signed only; a Bearer token gets 403): \`{ machineId, version, routes: [{ kind, origin, firstVerifiedAt, lastProbeOk, lastProbeAt }] }\`, Tailscale first.
+- A probe that fails 8 times in a row pauses for that name and raises one \`MobileRoutes.probe\` degradation; the name stays listed and still works for requests that reach me.
+- **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
+`;
+}
+
 export function QUEUE_PACE_CLAUDEMD_SECTION(port: number): string {
   return `\n### Queue Pace — is every work pile shrinking or growing? (\`GET /queue-pace\`)
 
@@ -8553,6 +8568,13 @@ setTimeout(() => process.exit(0), 2000);
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Native app conversations section');
+    }
+
+    // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Mobile app routes')) {
+      content += MOBILE_ROUTES_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Mobile app routes section');
     }
 
     // Queue pace (docs/specs/queue-pace.md) — Agent Awareness + Migration Parity.

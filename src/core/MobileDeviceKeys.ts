@@ -95,6 +95,12 @@ export interface SignedRequestParts {
   method: string;
   pathWithQuery: string;
   rawBody: Buffer | undefined;
+  /**
+   * Multi-route (docs/specs/mobile-multi-route.md §4.2): the request's own Host, already checked
+   * by the caller to be one of this machine's own names reached through its local TLS front.
+   * Absent ⇒ the device's stored paired host, exactly as before.
+   */
+  host?: string;
 }
 
 export type VerifyResult =
@@ -148,7 +154,7 @@ export function verifyDeviceRequest(
   const key = parseDevicePublicKey(dev.publicKey);
   if (!key) return { ok: false, reason: 'bad-signature' };
   if (!isStrictLowSDer(sigBytes)) return { ok: false, reason: 'bad-signature' };
-  const message = canonicalString(deviceId, dev.host, parts.method, parts.pathWithQuery, time, parts.rawBody);
+  const message = canonicalString(deviceId, parts.host ?? dev.host, parts.method, parts.pathWithQuery, time, parts.rawBody);
   let valid = false;
   try { valid = crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sigBytes); } catch { valid = false; } // @silent-fallback-ok — a malformed DER signature is simply invalid
   if (!valid) return { ok: false, reason: 'bad-signature' };
