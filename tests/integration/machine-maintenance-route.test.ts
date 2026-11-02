@@ -15,6 +15,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { DrainRehearsal, setActiveDrainRehearsal } from '../../src/monitoring/machineMaintenance/DrainRehearsal.js';
 import { HostMaintenanceStore } from '../../src/monitoring/machineMaintenance/HostMaintenanceStore.js';
 import { DEFAULT_MACHINE_MAINTENANCE } from '../../src/monitoring/machineMaintenance/planner.js';
+import { BrowserCareSweep, normalizeBrowserCare, setActiveBrowserCare } from '../../src/monitoring/machineMaintenance/BrowserCare.js';
+import { MachineLockStateReader, setActiveMachineLockStateReader } from '../../src/core/MachineLockStateReader.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -42,8 +44,8 @@ function app(): express.Express {
 
 describe('GET /machine-maintenance (integration)', () => {
   let dir: string;
-  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-route-')); setActiveDrainRehearsal(null); });
-  afterEach(() => { setActiveDrainRehearsal(null); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/machine-maintenance-route.test.ts' }); });
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-route-')); setActiveDrainRehearsal(null); setActiveBrowserCare(null); setActiveMachineLockStateReader(null); });
+  afterEach(() => { setActiveDrainRehearsal(null); setActiveBrowserCare(null); setActiveMachineLockStateReader(null); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/machine-maintenance-route.test.ts' }); });
 
   it('401 without a bearer token', async () => {
     expect((await request(app()).get('/machine-maintenance')).status).toBe(401);
@@ -72,5 +74,45 @@ describe('GET /machine-maintenance (integration)', () => {
     expect(res.body.declaredKinds.length).toBeGreaterThan(5);
     expect(res.body.evidence).toMatchObject({ nights: 0, nightsNeeded: 14, met: false });
     expect(reads).toBe(0);
+  });
+
+  it('carries browserCare beside the drain status: watch-only, with the sweep\'s verdicts', async () => {
+    setActiveDrainRehearsal(new DrainRehearsal({
+      agentName: 'echo', version: '1', stateDir: dir, logPath: path.join(dir, 'logs', 'machine-drain.jsonl'),
+      store: new HostMaintenanceStore({ dir: path.join(dir, 'host') }), enabled: () => true, settings: () => DEFAULT_MACHINE_MAINTENANCE,
+      readSignals: async () => { throw new Error('no'); }, census: async () => { throw new Error('no'); },
+      resumeQueue: () => null, coResidentAgents: () => [], holdsLease: () => null, ownUser: 'me',
+    }));
+    const profile = path.join(dir, '.instar', 'state', 'playwright-profiles', 'acct');
+    const sweep = new BrowserCareSweep({
+      agentName: 'echo', agentHome: dir, operatorChromeDir: path.join(dir, 'Library', 'Chrome'),
+      ledgerDir: path.join(dir, '.instar', 'state', 'browser-instances'), logPath: path.join(dir, 'logs', 'browser-care.jsonl'),
+      settings: () => normalizeBrowserCare({}), listChrome: async () => [{ pid: 9, startTime: 's', userDataDir: profile }],
+      tmuxSessions: async () => [], inputIdleMs: async () => 3_600_000, signInRepairOpen: () => false,
+      downloadActive: async () => false, checkTabs: async () => ['no'],
+    });
+    await sweep.sweep();
+    setActiveBrowserCare(sweep);
+    const res = await request(app()).get('/machine-maintenance').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    expect(res.body.browserCare).toMatchObject({ dryRun: true, canClose: false, owned: 1, adopted: 1 });
+    expect(res.body.browserCare.instances[0]).toMatchObject({ profile: '.instar/state/playwright-profiles/acct', verdict: 'keep', reason: 'in-use' });
+  });
+
+  it('GET /machine-maintenance/lock-state: 401, 503 dark, and the honest verdict with its inputs', async () => {
+    expect((await request(app()).get('/machine-maintenance/lock-state')).status).toBe(401);
+    expect((await request(app()).get('/machine-maintenance/lock-state').set('Authorization', `Bearer ${AUTH}`)).status).toBe(503);
+    const now = Date.now();
+    setActiveMachineLockStateReader(new MachineLockStateReader({
+      platform: 'darwin',
+      runProbe: async () => JSON.stringify({ screenPermission: true, inputPermission: true, displayCount: 1, sessionActive: false, consoleSessionPresent: true, onConsole: true, loginDone: true, screenLocked: true,
+        lockInputs: { shieldWindow: false, screensaver: true, displayAsleep: false, sampledAtMs: now } }),
+      runPolicy: async () => 'screenLock is off',
+    }));
+    const res = await request(app()).get('/machine-maintenance/lock-state').set('Authorization', `Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    // The 2026-11-01 case: the flag says locked, but no password is required and a keypress wakes it.
+    expect(res.body).toMatchObject({ lockState: 'screensaver-or-display-sleep', screenLocked: true, row: 3 });
+    expect(res.body.inputs).toMatchObject({ flagLocked: true, passwordRequired: 'off', screensaverRunning: true, lockShieldSeen: false });
   });
 });

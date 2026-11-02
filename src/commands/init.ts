@@ -5184,6 +5184,13 @@ function installSecretGet(projectDir: string): void {
 export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh'] as const;
 /** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
 export const MACOS_BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh'] as const;
+/**
+ * Browser-care helpers (machine self-maintenance, Part B): the instance ledger the launch and JS
+ * helpers keep current, and the close, renew and unsaved-input tools. Installed beside the helpers
+ * above by the same always-overwrite installer. The three user-facing ones refuse off macOS;
+ * chrome-ledger.sh is called by the others with an already-resolved profile.
+ */
+export const BROWSER_CARE_SCRIPT_NAMES = ['chrome-ledger.sh', 'chrome-close.sh', 'chrome-renew.sh', 'chrome-unsaved.sh'] as const;
 
 /**
  * Install the normal-Chrome helper scripts (.instar/scripts/browser/) used by the
@@ -5197,7 +5204,7 @@ export function installBrowserScripts(projectDir: string): string[] {
   const scriptsDir = path.join(projectDir, '.instar', 'scripts', 'browser');
   const modDir = __dirname;
   const written: string[] = [];
-  for (const name of BROWSER_SCRIPT_NAMES) {
+  for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES]) {
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
       path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),

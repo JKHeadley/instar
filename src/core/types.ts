@@ -3603,6 +3603,16 @@ export interface InstarConfig {
     maxEpisodeDelayMinutes?: number;
     /** tmux sessions that are not agent work: exact name, or a prefix ending in `*`. Default empty. */
     nonAgentTmuxSessions?: string[];
+    /** Browser care (Part B). Watch-only in this build: the sweep records what it would close and closes nothing. */
+    browserCare?: {
+      enabled?: boolean;
+      maxPerAgent?: number;
+      maxPerHost?: number;
+      idleMinutes?: number;
+      ttlMinutes?: number;
+      /** Profile ids (folders under playwright-profiles) the sweep never picks. */
+      keepProfiles?: string[];
+    };
   };
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */

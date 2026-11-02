@@ -99,6 +99,8 @@ print(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
   "codeBytes": int(os.environ.get("NC_CALLER_CODE_BYTES") or len(code))}))' >> "$LOG"; } 2>/dev/null \
   || echo "warning: could not write the audit line to $LOG" >&2
 OUT="$(send "$WRAPPED")"
+# Keep the browser ledger current: this browser is in use (renews its lease). Never fails the call.
+"$(dirname "$0")/chrome-ledger.sh" touch "$P" 2>/dev/null
 case "$OUT" in
   "${NONCE}ok:"*) printf '%s\n' "${OUT#"${NONCE}ok:"}"; exit 0 ;;
   "${NONCE}err:"*) echo "ERR page-js-error: ${OUT#"${NONCE}err:"}"; exit 1 ;;

@@ -21,7 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { installBuiltinSkills, installBrowserScripts, BROWSER_SCRIPT_NAMES, MACOS_BROWSER_SCRIPT_NAMES } from '../../src/commands/init.js';
+import { installBuiltinSkills, installBrowserScripts, BROWSER_SCRIPT_NAMES, MACOS_BROWSER_SCRIPT_NAMES, BROWSER_CARE_SCRIPT_NAMES } from '../../src/commands/init.js';
 import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_SECTION } from '../../src/data/builtinSkillContent.js';
 import { NORMAL_CHROME_BROWSER_SKILL_MARKER, NORMAL_CHROME_BROWSER_SKILL_V1_SHA256 } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -135,7 +135,7 @@ describe('installBrowserScripts', () => {
 
   it('writes all five helpers, executable and byte-preserving', () => {
     const written = installBrowserScripts(tmp);
-    expect(written).toEqual([...BROWSER_SCRIPT_NAMES]);
+    expect(written).toEqual([...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES]);
     expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh']);
     expect(MACOS_BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh']);
     for (const name of BROWSER_SCRIPT_NAMES) {

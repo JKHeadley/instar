@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-02T13:42:32.344Z",
+  "slug": "machine-self-maintenance-browser-care-lock-reading",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/monitoring/machineMaintenance/BrowserCare.ts",
+      "src/monitoring/machineMaintenance/lockState.ts",
+      "src/templates/scripts/browser/chrome-close.sh",
+      "src/templates/scripts/browser/chrome-unsaved.sh"
+    ],
+    "addedLines": 16,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

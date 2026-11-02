@@ -7,6 +7,8 @@ import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
 import { getActiveDrainRehearsal } from '../monitoring/machineMaintenance/DrainRehearsal.js';
+import { getActiveBrowserCare } from '../monitoring/machineMaintenance/BrowserCare.js';
+import { getActiveMachineLockStateReader } from '../core/MachineLockStateReader.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { resolveSessionPlatform, sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
@@ -14083,7 +14085,23 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ enabled: false, error: 'machine maintenance not enabled on this agent (machineMaintenance — dev-agent gated)' });
       return;
     }
-    res.json(r.status());
+    // Browser care (Part B) rides the same status, watch-only: null where it does not run (off macOS).
+    res.json({ ...r.status(), browserCare: getActiveBrowserCare()?.status() ?? null });
+  });
+
+  // Honest lock reading (Part A): the verdict from the spec's table with every input beside
+  // it. `unknown` means unknown, never locked. Reads the session on demand (cached 5 s).
+  router.get('/machine-maintenance/lock-state', async (_req, res) => {
+    const reader = getActiveMachineLockStateReader();
+    if (!reader) {
+      res.status(503).json({ enabled: false, error: 'machine maintenance not enabled on this agent (machineMaintenance — dev-agent gated)' });
+      return;
+    }
+    try {
+      res.json(await reader.read());
+    } catch (err) {
+      res.status(500).json({ error: 'lock-state read failed', detail: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ── Overload shed status (trustworthy-machine-load Part D) ──

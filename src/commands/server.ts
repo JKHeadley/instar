@@ -23868,6 +23868,40 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         setActiveDrainRehearsal(rehearsal);
         rehearsal.start();
+
+        // Honest lock reading (Part A): a read of the session, never the flag alone.
+        const { MachineLockStateReader, setActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+        setActiveMachineLockStateReader(new MachineLockStateReader());
+
+        // Browser care (Part B), watch-only: the sweep records what it WOULD close and has
+        // no way to close anything. Only the macOS normal-Chrome helpers keep a ledger.
+        if (process.platform === 'darwin') {
+          const { BrowserCareSweep, normalizeBrowserCare, parseChromeProcesses, setActiveBrowserCare, DOWNLOAD_FRESH_MS } = await import('../monitoring/machineMaintenance/BrowserCare.js');
+          const { makeTabChecker, makeDownloadCheck } = await import('../core/BrowserCareProbes.js');
+          const { parseHidIdleMs } = await import('../monitoring/machineMaintenance/readings.js');
+          const read = makeReadOnlyRunner(config.sessions.tmuxPath);
+          const browserCare = new BrowserCareSweep({
+            agentName: config.projectName,
+            agentHome: projectDir,
+            operatorChromeDir: path.join(os.homedir(), 'Library', 'Application Support', 'Google', 'Chrome'),
+            ledgerDir: path.join(config.stateDir, 'state', 'browser-instances'),
+            logPath: path.join(config.stateDir, '..', 'logs', 'browser-care.jsonl'),
+            settings: () => normalizeBrowserCare(liveConfig.get<unknown>('machineMaintenance.browserCare', undefined)),
+            listChrome: async () => { const out = await read('chromeProcesses'); return out === null ? null : parseChromeProcesses(out); },
+            tmuxSessions: async () => { const out = await read('tmuxSessions'); return out === null ? null : out.split('\n').map((l) => l.trim()).filter(Boolean); },
+            inputIdleMs: async () => { const out = await read('inputIdle'); return out === null ? null : parseHidIdleMs(out); },
+            signInRepairOpen: () => {
+              const runtime = subscriptionReloginRuntime;
+              if (!runtime) return false;
+              try { return runtime.store.list({ limit: 500 }).some((e) => !['succeeded', 'refused', 'cancelled', 'failed'].includes(e.state)); } catch { return null; } // @silent-fallback-ok — null reads as "repair state unknown", which keeps every browser
+            },
+            downloadActive: makeDownloadCheck(DOWNLOAD_FRESH_MS),
+            checkTabs: makeTabChecker(projectDir),
+            log: (line) => console.log(pc.yellow(`  [browser-care] ${line}`)),
+          });
+          setActiveBrowserCare(browserCare);
+          browserCare.start();
+        }
       }
     } catch (err) {
       console.warn(`  [machine-maintenance] not started: ${err instanceof Error ? err.message : err}`);

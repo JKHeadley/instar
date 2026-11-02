@@ -112,12 +112,12 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-js.sh",
-      "sha256": "207217aeeb1719fb39b27816a63b34a7e4c38683dd0d746337b8f65446979542",
+      "sha256": "f218690b4d389836cc2e54c61b36cbd619c78cf9206639d0616226ff59bc91e1",
       "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
     },
     {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
-      "sha256": "4d68a8e43d394a790557b6a22340c312c4e10d89f756be0464fdfaea9fd13e0f",
+      "sha256": "66c0fe5f11e763f6039e4a241a88a1e36c9dd47bc302e8f8e561e1ab4965a587",
       "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action; normal-chrome-cross-platform: also refuses a non-URL in the url slot (a launch flag) and launches in the background"
     },
     {
@@ -169,6 +169,26 @@
       "path": "src/templates/scripts/secret-get.mjs",
       "sha256": "c6acba715f339c63d53a889bcea35b5e7de4b46a51de375093631189668447c4",
       "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-ledger.sh",
+      "sha256": "a2f6cbbcbbfca746b279718013e277cda8bd8a63eefced1c1b1b03b297a3c84b",
+      "reason": "machine-self-maintenance Part B: writes this agent's browser-instance ledger for the helpers that call it; refuses only a directory outside the profiles folder and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-close.sh",
+      "sha256": "2a131eebd032d0f7830092f67b4719a26038bc877214a1d66c6773ea8c055f0f",
+      "reason": "machine-self-maintenance Part B: dry-run in this release; records the completion signal and reports what a close would do. It closes nothing and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-renew.sh",
+      "sha256": "4ba2be6ceb94c6fe513e4180dfc265a32d7dcdf5e4af1c8a0f659cdf92c78443",
+      "reason": "machine-self-maintenance Part B: an agent-invoked helper that renews a browser's ledger lease; refuses only its own bad arguments and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/chrome-unsaved.sh",
+      "sha256": "1e282d427b7520e6a5b4e9a69454080f1e45b9cdee1e56aafabe9ba14f293857",
+      "reason": "machine-self-maintenance Part B: a read-only per-tab unsaved-input check; prints yes/no/unreadable per tab and gates nothing itself (the watch-only sweep and chrome-close.sh only record its answer)"
     }
   ]
 }
