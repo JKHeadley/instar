@@ -264,6 +264,13 @@ export function detectFrameworkBinary(name: FrameworkBinary): string | null {
   return result;
 }
 
+/** For the installer: looks again right after installing a binary, which the memo would hide. */
+export function redetectFrameworkBinary(name: FrameworkBinary): string | null {
+  _frameworkBinaryCache.delete(name);
+  _npmPrefixMemo = undefined;
+  return detectFrameworkBinary(name);
+}
+
 /** Memoized `npm config get prefix` — one subprocess per process, not per framework. */
 let _npmPrefixMemo: string | null | undefined;
 function npmGlobalPrefix(): string | null {

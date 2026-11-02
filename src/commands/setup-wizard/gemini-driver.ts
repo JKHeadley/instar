@@ -354,6 +354,14 @@ async function runAction(
   console.log(pc.dim(`  → ${action.description}...`));
 
   switch (action.kind) {
+    case 'install-preflight':
+    case 'install-tools':
+    case 'door-install':
+    case 'door-sign-in':
+    case 'agent-init':
+    case 'owner-slot':
+      throw new Error(`${action.kind} belongs to the install flow, not this wizard`);
+
     case 'init': {
       // We assume instar is on PATH (the bareword `npx instar` flow
       // got us here). Use the installed binary.

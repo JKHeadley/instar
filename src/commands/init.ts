@@ -122,6 +122,10 @@ interface InitOptions {
   expiresIn?: string;
   /** Test-agent leak guard: never expire, even in a temporary folder. */
   keep?: boolean;
+  /** Installer: what this agent is for, in the person's own words. */
+  role?: string;
+  /** Installer: don't ask about cloud backup. The agent offers it later, when wanted. */
+  skipCloudBackup?: boolean;
 }
 
 /**
@@ -1100,6 +1104,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
 
   // Generate identity
   const identity = defaultIdentity(agentName);
+  if (options.role) identity.role = options.role;
   const authToken = randomUUID();
 
   // Write identity files
@@ -1255,7 +1260,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
   }
 
   // Cloud backup setup (recommended — protects agent data from machine loss)
-  await setupCloudBackup(projectDir, stateDir, agentName);
+  if (!options.skipCloudBackup) await setupCloudBackup(projectDir, stateDir, agentName);
 
   // Generate manifest signing key
   const standaloneIntegrity = new ManifestIntegrity(path.join(stateDir, 'state'));

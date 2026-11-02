@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "slug": "install-core",
+  "sessionId": "a08c1d19-231b-474a-a5f8-0999eefb18b2",
+  "timestamp": "2026-11-02T22:59:33.819Z",
+  "artifactPath": "upgrades/side-effects/install-core.md",
+  "artifactSha256": "e0a6ea36ba19141f95652ad33740cf196212b77cfb980362d95e109eb9cbde91",
+  "specPath": "docs/specs/install-experience.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-02T22-52-37-861Z-install-core.json",
+    ".instar/instar-dev-decisions/2026-11-02T22-58-56-278Z-install-core.json",
+    ".instar/instar-dev-decisions/2026-11-02T22-59-08-657Z-install-core.json",
+    ".instar/instar-dev-decisions/2026-11-02T22-59-18-098Z-install-core.json",
+    "src/cli.ts",
+    "src/commands/init.ts",
+    "src/commands/install.ts",
+    "src/commands/install/doors.ts",
+    "src/commands/install/engine.ts",
+    "src/commands/install/progress.ts",
+    "src/commands/setup-wizard/codex-driver.ts",
+    "src/commands/setup-wizard/gemini-driver.ts",
+    "src/commands/setup-wizard/state-machine.ts",
+    "src/core/Config.ts",
+    "src/core/QuotaPoller.ts",
+    "tests/integration/install-agent-init.test.ts",
+    "tests/unit/install-doors.test.ts",
+    "tests/unit/install-flow.test.ts",
+    "upgrades/next/install-core.md",
+    "upgrades/side-effects/install-core.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Runs package installs and provider sign-in on a stranger's machine; unpublished, but security-sensitive",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven installer, not a self-triggered loop"
+  }
+}
