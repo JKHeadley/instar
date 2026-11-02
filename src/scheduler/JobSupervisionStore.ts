@@ -15,8 +15,10 @@ import type { Database as SqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { GRADE_PASS_POINTS } from '../core/decisionGradingPass.js';
 import { isSideRun, type JobRun } from './JobRunHistory.js';
-import { decideFixedResult, type FixedCertificateAuthority, type FixedResultCertificate } from './JobFixedResultCertificate.js';
-import type { ParsedScriptRun } from './jobScriptProtocol.js';
+import { decideFixedResult, type FixedCertificateAuthority, type FixedResultCertificate,
+  type FixedShapeObservation } from './JobFixedResultCertificate.js';
+import { fixedSlugRecertified } from './JobFixedCertificateRegistry.js';
+import type { FreshFixedRegistry } from './JobFixedRegistryReader.js';
 
 export type SupervisionStatus = 'pending' | 'resolved' | 'unresolved' | 'unchecked' | 'expired-unchecked';
 export type SupervisionProvider = 'fixed' | 'jev' | 'replacement' | null;
@@ -108,8 +110,15 @@ export interface CallSettlement {
 }
 
 const DAY_MS = 24 * 60 * 60_000;
+/** Backoff is a safety brake, not permission to drop a false-routine proof. */
+export function fixedRevocationRetryDelay(failureCount: number): number {
+  return failureCount >= 20 ? DAY_MS
+    : Math.min(60 * 60_000, 5_000 * 2 ** Math.min(Math.max(0, failureCount - 1), 10));
+}
 const RETRYABLE_REASONS = new Set(['provider-unavailable', 'provider-timeout', 'provider-error',
-  'queue-overload', 'replacement-budget-exhausted']);
+  'queue-overload', 'replacement-budget-exhausted', 'registry-unreadable']);
+
+export const TRANSIENT_SUPERVISION_HOLD_REASONS = new Set(['registry-unreadable']);
 
 /** Unknown pairing state cannot silently retire an expected pool machine. */
 export function supervisionMembershipStatus(entry: { status?: unknown; revokedAt?: unknown }): 'active' | 'pending' | 'revoked' {
@@ -210,6 +219,7 @@ export class JobSupervisionStore {
         evidence_hash TEXT,
         evidence_sufficient INTEGER NOT NULL DEFAULT 0,
         evidence_text TEXT,
+        fixed_shape_json TEXT,
         receipt_token_hash TEXT
       );
       CREATE INDEX IF NOT EXISTS attempts_status_idx ON attempts(status, registered_at);
@@ -280,7 +290,26 @@ export class JobSupervisionStore {
       CREATE TABLE IF NOT EXISTS held_slugs (
         slug TEXT PRIMARY KEY,
         reason TEXT NOT NULL,
-        held_at TEXT NOT NULL
+        held_at TEXT NOT NULL,
+        released_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS held_slug_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        event TEXT NOT NULL CHECK(event IN ('held','released')),
+        reason TEXT NOT NULL,
+        at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS fixed_revocation_outbox (
+        attempt_id TEXT NOT NULL,
+        certificate_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        graded_at TEXT NOT NULL,
+        delivered_at TEXT,
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        attention_sent_at TEXT,
+        PRIMARY KEY(attempt_id,evidence_id)
       );
       CREATE TABLE IF NOT EXISTS expected_machines (
         machine_id TEXT PRIMARY KEY,
@@ -297,6 +326,9 @@ export class JobSupervisionStore {
     if (!columns.some(c => c.name === 'evidence_text')) {
       this.db.exec('ALTER TABLE attempts ADD COLUMN evidence_text TEXT');
     }
+    if (!columns.some(c => c.name === 'fixed_shape_json')) {
+      this.db.exec('ALTER TABLE attempts ADD COLUMN fixed_shape_json TEXT');
+    }
     if (!columns.some(c => c.name === 'next_retry_at')) {
       this.db.exec('ALTER TABLE attempts ADD COLUMN next_retry_at INTEGER');
     }
@@ -311,6 +343,20 @@ export class JobSupervisionStore {
     }
     if (!columns.some(c => c.name === 'receipt_token_hash')) {
       this.db.exec('ALTER TABLE attempts ADD COLUMN receipt_token_hash TEXT');
+    }
+    const holdColumns = this.db.pragma('table_info(held_slugs)') as Array<{ name: string }>;
+    if (!holdColumns.some(c => c.name === 'released_at')) {
+      this.db.exec('ALTER TABLE held_slugs ADD COLUMN released_at TEXT');
+    }
+    const outboxColumns = this.db.pragma('table_info(fixed_revocation_outbox)') as Array<{ name: string }>;
+    if (!outboxColumns.some(c => c.name === 'failure_count')) {
+      this.db.exec('ALTER TABLE fixed_revocation_outbox ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!outboxColumns.some(c => c.name === 'next_attempt_at')) {
+      this.db.exec('ALTER TABLE fixed_revocation_outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!outboxColumns.some(c => c.name === 'attention_sent_at')) {
+      this.db.exec('ALTER TABLE fixed_revocation_outbox ADD COLUMN attention_sent_at TEXT');
     }
     const receiptColumns = this.db.pragma('table_info(grade_pass_receipts)') as Array<{ name: string }>;
     if (!receiptColumns.some(c => c.name === 'idle_proof_hash')) {
@@ -343,19 +389,90 @@ export class JobSupervisionStore {
   journalWasRecreated(): boolean { return this.journalRecreated; }
 
   holdSlug(slug: string, reason: string, now = Date.now()): void {
-    this.db.prepare('INSERT OR IGNORE INTO held_slugs(slug,reason,held_at) VALUES(?,?,?)')
-      .run(slug, reason, new Date(now).toISOString());
+    this.db.transaction(() => {
+      const at = new Date(now).toISOString();
+      const active = this.slugHoldReason(slug);
+      if (active && TRANSIENT_SUPERVISION_HOLD_REASONS.has(active)
+        && !TRANSIENT_SUPERVISION_HOLD_REASONS.has(reason)) {
+        this.db.prepare(`UPDATE held_slugs SET reason=?,held_at=?
+          WHERE slug=? AND released_at IS NULL`).run(reason, at, slug);
+        this.db.prepare('INSERT INTO held_slug_events(slug,event,reason,at) VALUES(?,?,?,?)')
+          .run(slug, 'held', reason, at);
+        return;
+      }
+      const result = this.db.prepare(`INSERT INTO held_slugs(slug,reason,held_at,released_at) VALUES(?,?,?,NULL)
+        ON CONFLICT(slug) DO UPDATE SET reason=excluded.reason,held_at=excluded.held_at,released_at=NULL
+        WHERE held_slugs.released_at IS NOT NULL`).run(slug, reason, at);
+      if (result.changes) this.db.prepare('INSERT INTO held_slug_events(slug,event,reason,at) VALUES(?,?,?,?)')
+        .run(slug, 'held', reason, at);
+    })();
   }
 
   heldSlugs(): Array<{ slug: string; reason: string; heldAt: string }> {
-    const rows = this.db.prepare('SELECT slug,reason,held_at FROM held_slugs ORDER BY held_at')
+    const rows = this.db.prepare('SELECT slug,reason,held_at FROM held_slugs WHERE released_at IS NULL ORDER BY held_at')
       .all() as Array<{ slug: string; reason: string; held_at: string }>;
     return rows.map(r => ({ slug: r.slug, reason: r.reason, heldAt: r.held_at }));
   }
 
   /** A hold written after startup must still close the next script admission. */
   isSlugHeld(slug: string): boolean {
-    return !!this.db.prepare('SELECT 1 FROM held_slugs WHERE slug=?').get(slug);
+    return !!this.db.prepare('SELECT 1 FROM held_slugs WHERE slug=? AND released_at IS NULL').get(slug);
+  }
+
+  slugHoldReason(slug: string): string | null {
+    const row = this.db.prepare('SELECT reason FROM held_slugs WHERE slug=? AND released_at IS NULL')
+      .get(slug) as { reason: string } | undefined;
+    return row?.reason ?? null;
+  }
+
+  hasOpenRegistryAttempt(slug: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM attempts WHERE slug=? AND reason='registry-unreadable'
+      AND status IN ('pending','unchecked') LIMIT 1`).get(slug);
+  }
+
+  /** A successful independent recovery proof releases only its own hold. */
+  clearHoldSlugIfReason(slug: string, reason: string, now = Date.now()): boolean {
+    if (!TRANSIENT_SUPERVISION_HOLD_REASONS.has(reason)) return false;
+    return this.db.transaction(() => {
+      if (reason === 'registry-unreadable' && this.hasOpenRegistryAttempt(slug)) return false;
+      const at = new Date(now).toISOString();
+      const result = this.db.prepare(`UPDATE held_slugs SET released_at=?
+        WHERE slug=? AND reason=? AND released_at IS NULL`).run(at, slug, reason);
+      if (result.changes) this.db.prepare('INSERT INTO held_slug_events(slug,event,reason,at) VALUES(?,?,?,?)')
+        .run(slug, 'released', reason, at);
+      return result.changes === 1;
+    })();
+  }
+
+  /** Called only after the scheduler verifies a fresh signed registry with a
+   * newer reviewed replacement for every revoked shape of this slug. */
+  releaseRecertifiedSlug(slug: string, registry: FreshFixedRegistry,
+    currentTemplateDigest: string | null, currentFeatureStateHash: string | null, now = Date.now()): boolean {
+    if (!fixedSlugRecertified(registry, slug, currentTemplateDigest, currentFeatureStateHash)
+      || registry.authority.epoch === null) return false;
+    return this.db.transaction(() => {
+      const pending = this.db.prepare(`SELECT 1 FROM fixed_revocation_outbox o
+        JOIN attempts a ON a.attempt_id=o.attempt_id
+        WHERE a.slug=? AND o.delivered_at IS NULL LIMIT 1`).get(slug);
+      if (pending) return false;
+      const at = new Date(now).toISOString();
+      const changed = this.db.prepare(`UPDATE held_slugs SET released_at=?
+        WHERE slug=? AND reason IN ('certificate-revoked','confirmed-false-routine','canary-stale')
+          AND released_at IS NULL`).run(at, slug);
+      if (changed.changes) this.db.prepare('INSERT INTO held_slug_events(slug,event,reason,at) VALUES(?,?,?,?)')
+        .run(slug, 'released', `recertified-epoch:${registry.authority.epoch}`, at);
+      return changed.changes === 1;
+    })();
+  }
+
+  /** Unchecked result and future-fire hold share one SQLite commit. */
+  markUncheckedAndHold(attemptId: string, reason: string, now = Date.now()): void {
+    this.db.transaction(() => {
+      const row = this.get(attemptId);
+      if (!row) throw new Error(`supervision attempt missing: ${attemptId}`);
+      this.holdSlug(row.slug, reason, now);
+      this.markUnchecked(attemptId, reason, now);
+    })();
   }
 
   /** Pairing-registry observations persist across peer outages and restarts.
@@ -416,6 +533,7 @@ export class JobSupervisionStore {
     evidenceHash?: string | null;
     evidenceSufficient?: boolean;
     evidenceText?: string | null;
+    fixedShape?: FixedShapeObservation | null;
     reason?: string | null;
   }): void {
     const at = input.completedAt ?? new Date().toISOString();
@@ -435,9 +553,13 @@ export class JobSupervisionStore {
           throw new Error(`invalid evidence projection for supervision attempt: ${attemptId}`);
         }
       }
-      this.db.prepare(`UPDATE attempts SET completed_at=?, result=?, evidence_hash=?, evidence_sufficient=?, evidence_text=?, reason=?, receipt_token_hash=NULL WHERE attempt_id=?`)
+      const fixedShape = input.fixedShape ? JSON.stringify(input.fixedShape) : null;
+      // A large result cannot become a fixed decision, but may still go to
+      // the ordinary bounded evidence and model path.
+      const boundedShape = fixedShape && Buffer.byteLength(fixedShape) <= 4096 ? fixedShape : null;
+      this.db.prepare(`UPDATE attempts SET completed_at=?, result=?, evidence_hash=?, evidence_sufficient=?, evidence_text=?, fixed_shape_json=?, reason=?, receipt_token_hash=NULL WHERE attempt_id=?`)
         .run(at, input.result, input.evidenceHash ?? null, input.evidenceSufficient ? 1 : 0,
-          input.evidenceText ?? null, input.reason ?? null, attemptId);
+          input.evidenceText ?? null, boundedShape, input.reason ?? null, attemptId);
       this.transition(attemptId, at, 'result-recorded', input.reason ?? null, row.epoch);
     })();
   }
@@ -459,13 +581,15 @@ export class JobSupervisionStore {
   }
 
   resolveFixed(attemptId: string, input: {
-    parsed: ParsedScriptRun;
+    parsed: FixedShapeObservation;
     certificate: FixedResultCertificate | null;
     authority: FixedCertificateAuthority;
   }): boolean {
     return this.db.transaction(() => {
       const row = this.get(attemptId);
-      if (!row || !row.decisionEligible || !row.completedAt || row.status !== 'pending' || row.callCount !== 0) return false;
+      if (!row || !row.decisionEligible || !row.completedAt
+        || (row.status !== 'pending' && !(row.status === 'unchecked' && row.reason === 'registry-unreadable'))
+        || row.callCount !== 0) return false;
       const decision = decideFixedResult({ attempt: row, ...input });
       if (decision.kind === 'hold') {
         this.holdSlug(row.slug, decision.reason, input.authority.now);
@@ -477,8 +601,27 @@ export class JobSupervisionStore {
       this.db.prepare(`UPDATE attempts SET status='resolved',reason=?,provider='fixed',verdict='routine' WHERE attempt_id=?`)
         .run(`certificate:${decision.certificateId}`, attemptId);
       this.transition(attemptId, at, 'fixed-routine', decision.certificateId, row.epoch);
+      this.clearHoldSlugIfReason(row.slug, 'registry-unreadable', input.authority.now);
       return true;
     })();
+  }
+
+  fixedShape(attemptId: string): FixedShapeObservation | null {
+    const row = this.db.prepare('SELECT fixed_shape_json FROM attempts WHERE attempt_id=?')
+      .get(attemptId) as { fixed_shape_json: string | null } | undefined;
+    if (!row?.fixed_shape_json) return null;
+    try {
+      const shape = JSON.parse(row.fixed_shape_json) as Record<string, unknown>;
+      if (!shape || !['success', 'failure', 'skipped'].includes(String(shape.result))
+        || typeof shape.summary !== 'string' || typeof shape.reasonCode !== 'string'
+        || !shape.fields || typeof shape.fields !== 'object' || Array.isArray(shape.fields)
+        || Object.entries(shape.fields).some(([key, value]) => !key || typeof value !== 'string')
+        || typeof shape.missingResultLine !== 'boolean' || typeof shape.overCap !== 'boolean'
+        || !Number.isSafeInteger(shape.ignoredAnomalies) || !Number.isSafeInteger(shape.droppedFields)
+        || !Array.isArray(shape.anomalies)) return null;
+      return shape as unknown as FixedShapeObservation;
+    }
+    catch { return null; /* @silent-fallback-ok — corrupt shape never grants fixed closure. */ }
   }
 
   /** Commit the call's provenance and its lease/epoch atomically, before egress. */
@@ -642,6 +785,14 @@ export class JobSupervisionStore {
       this.db.prepare(`UPDATE calls SET outcome_evidence_id=COALESCE(outcome_evidence_id,?)
         WHERE attempt_id=? AND settlement='current'`).run(input.evidenceId, input.attemptId);
       this.transition(input.attemptId, at, 'outcome-graded', input.grade, row.epoch);
+      if (input.grade === 'incorrect' && row.provider === 'fixed' && row.verdict === 'routine'
+        && row.reason?.startsWith('certificate:')) {
+        const certificateId = row.reason.slice('certificate:'.length);
+        this.holdSlug(row.slug, 'confirmed-false-routine', input.now ?? Date.now());
+        this.db.prepare(`INSERT OR IGNORE INTO fixed_revocation_outbox
+          (attempt_id,certificate_id,evidence_id,graded_at) VALUES(?,?,?,?)`)
+          .run(input.attemptId, certificateId, input.evidenceId, at);
+      }
       return true;
     })();
   }
@@ -649,6 +800,49 @@ export class JobSupervisionStore {
   outcomeGrades(attemptId: string): Array<Record<string, unknown>> {
     return this.db.prepare('SELECT * FROM outcome_grades WHERE attempt_id=? ORDER BY graded_at')
       .all(attemptId) as Array<Record<string, unknown>>;
+  }
+
+  pendingFixedRevocations(limit = 100, now?: number): Array<{
+    attemptId: string; certificateId: string; evidenceId: string; gradedAt: string;
+  }> {
+    const rows = this.db.prepare(`SELECT attempt_id,certificate_id,evidence_id,graded_at
+      FROM fixed_revocation_outbox WHERE delivered_at IS NULL
+        AND (? IS NULL OR next_attempt_at<=?)
+      ORDER BY graded_at LIMIT ?`)
+      .all(now ?? null, now ?? null, Math.max(1, Math.min(limit, 100))) as Array<{
+        attempt_id: string; certificate_id: string; evidence_id: string; graded_at: string;
+      }>;
+    return rows.map(row => ({ attemptId: row.attempt_id, certificateId: row.certificate_id,
+      evidenceId: row.evidence_id, gradedAt: row.graded_at }));
+  }
+
+  /** Durable exponential retry with a daily probe after 20 failures. */
+  recordFixedRevocationFailure(attemptId: string, evidenceId: string, now = Date.now()): boolean {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT failure_count,attention_sent_at FROM fixed_revocation_outbox
+        WHERE attempt_id=? AND evidence_id=? AND delivered_at IS NULL`)
+        .get(attemptId, evidenceId) as { failure_count: number; attention_sent_at: string | null } | undefined;
+      if (!row) return false;
+      const nextCount = row.failure_count + 1;
+      const delay = fixedRevocationRetryDelay(nextCount);
+      this.db.prepare(`UPDATE fixed_revocation_outbox SET failure_count=?,next_attempt_at=?
+        WHERE attempt_id=? AND evidence_id=?`)
+        .run(nextCount, now + delay, attemptId, evidenceId);
+      return row.attention_sent_at === null;
+    })();
+  }
+
+  acknowledgeFixedRevocationAttention(attemptId: string, evidenceId: string,
+    now = Date.now()): boolean {
+    return this.db.prepare(`UPDATE fixed_revocation_outbox SET attention_sent_at=?
+      WHERE attempt_id=? AND evidence_id=? AND attention_sent_at IS NULL`)
+      .run(new Date(now).toISOString(), attemptId, evidenceId).changes === 1;
+  }
+
+  acknowledgeFixedRevocation(attemptId: string, evidenceId: string, now = Date.now()): boolean {
+    return this.db.prepare(`UPDATE fixed_revocation_outbox SET delivered_at=?
+      WHERE attempt_id=? AND evidence_id=? AND delivered_at IS NULL`)
+      .run(new Date(now).toISOString(), attemptId, evidenceId).changes === 1;
   }
 
   /** Server-owned proof that the grading endpoint completed for this script run. */
@@ -714,7 +908,9 @@ export class JobSupervisionStore {
   expireRetries(now = Date.now()): number {
     return this.db.transaction(() => {
       const rows = this.db.prepare(`SELECT attempt_id,reason,epoch FROM attempts
-        WHERE status='unchecked' AND (call_count>=3 OR COALESCE(completed_at,registered_at)<=?)`)
+        WHERE status='unchecked' AND (call_count>=3 OR COALESCE(completed_at,registered_at)<=?)
+          AND NOT EXISTS (SELECT 1 FROM held_slugs h WHERE h.slug=attempts.slug
+            AND h.reason='registry-unreadable' AND h.released_at IS NULL)`)
         .all(new Date(now - DAY_MS).toISOString()) as Array<{ attempt_id: string; reason: string | null; epoch: number }>;
       for (const r of rows) {
         this.db.prepare(`UPDATE attempts SET status='expired-unchecked' WHERE attempt_id=?`).run(r.attempt_id);
@@ -788,9 +984,10 @@ export class JobSupervisionStore {
     const rows = this.db.prepare(`SELECT * FROM attempts
       WHERE decision_eligible=1 AND completed_at IS NOT NULL AND evidence_hash IS NOT NULL
         AND (lease_until IS NULL OR lease_until<=?) AND (next_retry_at IS NULL OR next_retry_at<=?) AND call_count<3
-        AND completed_at>?
+        AND (completed_at>? OR EXISTS (SELECT 1 FROM held_slugs h WHERE h.slug=attempts.slug
+          AND h.reason='registry-unreadable' AND h.released_at IS NULL))
         AND (status='pending' OR (status='unchecked' AND reason IN
-          ('provider-unavailable','provider-timeout','provider-error','queue-overload','replacement-budget-exhausted')))
+          ('provider-unavailable','provider-timeout','provider-error','queue-overload','replacement-budget-exhausted','registry-unreadable')))
       ORDER BY registered_at ASC LIMIT ?`).all(now, now, new Date(now - DAY_MS).toISOString(),
       Math.max(1, Math.min(limit, 2000))) as Array<Record<string, unknown>>;
     return rows.map(r => this.mapAttempt(r));

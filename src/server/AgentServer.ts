@@ -26,6 +26,12 @@ import { JOB_COST_AUDIT_READY } from '../scheduler/JobCostAuditReadiness.js';
 import { jobSupervisionRolloutState } from '../scheduler/JobSupervisionRollout.js';
 import { supervisionMembershipStatus } from '../scheduler/JobSupervisionStore.js';
 import { JobSupervisionWorker } from '../scheduler/JobSupervisionWorker.js';
+import { JobFixedRegistryAuthorityStore } from '../scheduler/JobFixedRegistryAuthorityStore.js';
+import { JobFixedRegistryReplica } from '../scheduler/JobFixedRegistryReplica.js';
+import { JobFixedRegistryReader } from '../scheduler/JobFixedRegistryReader.js';
+import { JobFixedRegistryRevocationDispatcher } from '../scheduler/JobFixedRegistryRevocationDispatcher.js';
+import { createJobFixedRegistryFetcher, createJobFixedRevocationSubmitter,
+  mountJobFixedRegistryRoutes } from './jobFixedRegistryRoutes.js';
 import { JobTriageBackupCheck } from '../scheduler/JobTriageBackupCheck.js';
 import { ScriptCanaryRunner } from '../scheduler/ScriptCanaryRunner.js';
 import { verifyJobAnomalyEpisodes } from '../scheduler/JobCanaryEpisodeHarness.js';
@@ -575,6 +581,11 @@ export class AgentServer {
   private scriptCanaryTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionWorkerTimer: ReturnType<typeof setInterval> | null = null;
+  private jobFixedRegistryRevocationTimer: ReturnType<typeof setInterval> | null = null;
+  private jobFixedRegistrySyncTimer: ReturnType<typeof setInterval> | null = null;
+  private jobFixedRegistryWriter: JobFixedRegistryAuthorityStore | null = null;
+  private jobFixedRegistryReplica: JobFixedRegistryReplica | null = null;
+  private jobFixedRegistryScheduler: JobScheduler | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private relayVerdictCounters: (() => Record<string, number>) | null = null;
   /** A2A inbound message-id ledger controller (docs/specs/a2a-inbound-id-ledger.md). */
@@ -6071,6 +6082,48 @@ export class AgentServer {
       }, 60_000);
       this.scriptCanaryTimer.unref?.();
     }
+    const resolveFixedRegistryWriter = (): JobFixedRegistryAuthorityStore | null => {
+      const registry = options.config.jobResultSupervision?.fixedRegistry;
+      if (!registry || !this.meshSelfId || registry.authorityMachineId !== this.meshSelfId) return null;
+      if (this.jobFixedRegistryWriter) return this.jobFixedRegistryWriter;
+      const signer = loadMachineSigner(options.config.stateDir);
+      if (!signer || signer.machineId() !== this.meshSelfId) return null;
+      this.jobFixedRegistryWriter = new JobFixedRegistryAuthorityStore(options.config.stateDir, signer,
+        registry.authorityMachineId, registry.ownerPublicKeys, registry.reviewerPublicKeys);
+      return this.jobFixedRegistryWriter;
+    };
+    mountJobFixedRegistryRoutes(this.app, { authority: resolveFixedRegistryWriter,
+      keyLookup: identityKeyLookup(options.config.stateDir),
+      sourceAllowed: machineId => {
+        if (machineId === this.meshSelfId) return true;
+        if (options.coordinator?.enabled) {
+          try {
+            const machine = options.coordinator.managers.identityManager.loadRegistry().machines[machineId];
+            return !!machine && supervisionMembershipStatus(machine) === 'active';
+          } catch { return false; }
+        }
+        return !!options.resolvePeerUrls?.().some(peer => peer.machineId === machineId);
+      } });
+    const fixedConfig = options.config.jobResultSupervision?.fixedRegistry;
+    const fixedRegistry = fixedConfig && this.meshSelfId
+      ? new JobFixedRegistryReader({ pinnedAuthorityMachineId: fixedConfig.authorityMachineId,
+        keyLookup: identityKeyLookup(options.config.stateDir),
+        replica: this.jobFixedRegistryReplica ??= new JobFixedRegistryReplica(options.config.stateDir),
+        fetchSnapshot: async () => {
+          if (this.meshSelfId === fixedConfig.authorityMachineId) {
+            const writer = resolveFixedRegistryWriter();
+            if (!writer) throw new Error('fixed registry writer unavailable');
+            return writer.snapshot();
+          }
+          return createJobFixedRegistryFetcher({ authorityMachineId: fixedConfig.authorityMachineId,
+            resolvePeer: () => options.resolvePeerUrls?.().find(peer => peer.machineId === fixedConfig.authorityMachineId) ?? null,
+            authToken: options.config.authToken ?? '', recordRopeResult: options.recordRopeResult })();
+        } }) : undefined;
+    if (fixedRegistry) {
+      void fixedRegistry.read();
+      this.jobFixedRegistrySyncTimer = setInterval(() => { void fixedRegistry.read(); }, 30_000);
+      this.jobFixedRegistrySyncTimer.unref?.();
+    }
     mountJobTriageRoutes(this.app, {
       state: () => triageState,
       auditPath: triageAuditPath,
@@ -6132,10 +6185,14 @@ export class AgentServer {
     }
     if (options.scheduler && !options.scheduler.isReadOnlyStandby()
       && jobSupervisionRolloutState(options.config).active) {
+      options.scheduler.setFixedRegistryReader(fixedRegistry ?? null, true);
+      this.jobFixedRegistryScheduler = options.scheduler;
       const keyStore = new SecretStore({ stateDir: options.config.stateDir,
         forceFileKey: options.config.secrets?.forceFileKey });
       const worker = new JobSupervisionWorker({
         store: options.scheduler.getJobSupervisionStore(),
+        fixedRegistry,
+        fixedRegistryRequired: true,
         readJevKey: () => {
           const key = keyStore.get('typesafe_api_key');
           return typeof key === 'string' ? key : null;
@@ -6155,6 +6212,38 @@ export class AgentServer {
         void worker.drain().catch(error => console.error('[job-supervision] worker failed:', error));
       }, 5000);
       this.jobSupervisionWorkerTimer.unref?.();
+    }
+    if (fixedConfig && fixedRegistry && options.scheduler && !options.scheduler.isReadOnlyStandby()) {
+      const signer = loadMachineSigner(options.config.stateDir);
+      if (signer) {
+        const remoteSubmit = createJobFixedRevocationSubmitter({ authorityMachineId: fixedConfig.authorityMachineId,
+          resolvePeer: () => options.resolvePeerUrls?.().find(peer => peer.machineId === fixedConfig.authorityMachineId) ?? null,
+          authToken: options.config.authToken ?? '', recordRopeResult: options.recordRopeResult });
+        const dispatcher = new JobFixedRegistryRevocationDispatcher({
+          store: options.scheduler.getJobSupervisionStore(), signer, reader: fixedRegistry,
+          submit: async proof => {
+            if (this.meshSelfId === fixedConfig.authorityMachineId) {
+              const writer = resolveFixedRegistryWriter();
+              if (!writer) throw new Error('fixed registry writer unavailable');
+              writer.acceptFalseRoutineProof(proof);
+            } else await remoteSubmit(proof);
+          },
+          onFailure: async certificateId => {
+            if (!options.telegram) throw new Error('attention sink unavailable');
+            await options.telegram.createAttentionItem({ id: `fixed-revocation:${certificateId}`,
+              conditionKey: `fixed-revocation:${certificateId}`,
+              title: 'A fixed result certificate needs revocation',
+              summary: `Confirmed false routine result for ${certificateId}; pool revocation is pending`,
+              description: `Confirmed false routine result for ${certificateId}; pool revocation is pending`,
+              priority: 'HIGH', category: 'job', sourceContext: 'job-supervision' });
+          },
+        });
+        void dispatcher.tick().catch(error => console.error('[job-supervision] fixed revocation delivery failed:', error));
+        this.jobFixedRegistryRevocationTimer = setInterval(() => {
+          void dispatcher.tick().catch(error => console.error('[job-supervision] fixed revocation delivery failed:', error));
+        }, 5000);
+        this.jobFixedRegistryRevocationTimer.unref?.();
+      }
     }
     const scriptSupervisor = JOB_COST_AUDIT_READY.dailySupervision && options.scheduler && options.intelligence && options.telegram
       ? new ScriptJobSupervisor({
@@ -8136,6 +8225,20 @@ export class AgentServer {
       clearInterval(this.jobSupervisionWorkerTimer);
       this.jobSupervisionWorkerTimer = null;
     }
+    if (this.jobFixedRegistryRevocationTimer) {
+      clearInterval(this.jobFixedRegistryRevocationTimer);
+      this.jobFixedRegistryRevocationTimer = null;
+    }
+    if (this.jobFixedRegistrySyncTimer) {
+      clearInterval(this.jobFixedRegistrySyncTimer);
+      this.jobFixedRegistrySyncTimer = null;
+    }
+    this.jobFixedRegistryScheduler?.setFixedRegistryReader(null);
+    this.jobFixedRegistryScheduler = null;
+    this.jobFixedRegistryReplica?.close();
+    this.jobFixedRegistryReplica = null;
+    this.jobFixedRegistryWriter?.close();
+    this.jobFixedRegistryWriter = null;
     if (this.subscriptionLoginLedger) {
       try { this.subscriptionLoginLedger.close(); }
       catch (error) { console.warn('[subscription-login-ledger] clean stop failed:', error); }

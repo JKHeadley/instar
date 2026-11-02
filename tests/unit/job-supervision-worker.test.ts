@@ -9,6 +9,7 @@ import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js'
 import { JobSupervisionWorker, parseJevSupervisionVerdict } from '../../src/scheduler/JobSupervisionWorker.js';
 import { parseJobReplacementVerdictStrict } from '../../src/scheduler/JobSupervisionReplacementPrompt.js';
 import { jobSupervisionRolloutState } from '../../src/scheduler/JobSupervisionRollout.js';
+import type { JobFixedRegistryReader } from '../../src/scheduler/JobFixedRegistryReader.js';
 
 const t0 = Date.parse('2026-10-28T00:00:00Z');
 const evidence = 'job: health-check\nresult: success\nreasonCode: ok';
@@ -51,6 +52,53 @@ describe('JobSupervisionWorker', () => {
     expect(store.get(a)?.status).toBe('resolved');
     expect(store.get(b)?.status).toBe('resolved');
     expect(store.callRows(a)[0]).toMatchObject({ provider: 'jev', settlement: 'current' });
+  });
+
+  it('holds atomically while the pool registry is dark and releases only after a fresh read and audited verdict', async () => {
+    const id = store.register({ runId: 'registry-recovery', fireId: 'fire:registry-recovery',
+      slug: 'health-check', decisionEligible: true, evidencePolicy: 'job-result-structured-v2', now: t0 });
+    store.recordResult(id, { result: 'success', completedAt: new Date(t0).toISOString(),
+      evidenceHash, evidenceText: evidence, evidenceSufficient: true,
+      fixedShape: { result: 'success', summary: 'healthy', reasonCode: 'ok', fields: {},
+        missingResultLine: false, overCap: false, ignoredAnomalies: 0, anomalies: [], droppedFields: 0 } });
+    let ready = false;
+    const reader = { read: async () => ready ? {
+      authority: { epoch: 1, ownerPublicKeys: {}, reviewerPublicKeys: {},
+        activeIds: new Set<string>(), revokedIds: new Set<string>(), now: t0 + 12_000 },
+      certificates: new Map(),
+    } : null } as unknown as JobFixedRegistryReader;
+    const fetchImpl = vi.fn(async () => Response.json({ model: 'jev-1.13.0',
+      answers: { triage: { choice: 'routine', probabilities: { needs_session: 0.01 } },
+        triage_rev: { choice: 'routine', probabilities: { needs_session: 0.01 } } } })) as unknown as typeof fetch;
+    const dark = new JobSupervisionWorker({ store, readJevKey: () => 'key', auditReady: () => true,
+      fixedRegistry: reader, fetchImpl, now: () => t0 + 1000 });
+    expect(await dark.drain()).toBe(1);
+    expect(store.get(id)).toMatchObject({ status: 'unchecked', reason: 'registry-unreadable' });
+    expect(store.slugHoldReason('health-check')).toBe('registry-unreadable');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    ready = true;
+    const recovered = new JobSupervisionWorker({ store, readJevKey: () => 'key', auditReady: () => true,
+      fixedRegistry: reader, fetchImpl, now: () => t0 + 12_000 });
+    expect(await recovered.drain()).toBe(1);
+    expect(store.get(id)).toMatchObject({ status: 'resolved', provider: 'jev' });
+    expect(store.isSlugHeld('health-check')).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds an already recorded result when an active cohort cannot construct its registry reader', async () => {
+    const id = store.register({ runId: 'missing-registry-reader', fireId: 'fire:missing-registry-reader',
+      slug: 'health-check', decisionEligible: true, evidencePolicy: 'job-result-structured-v2', now: t0 });
+    store.recordResult(id, { result: 'success', completedAt: new Date(t0).toISOString(),
+      evidenceHash, evidenceText: evidence, evidenceSufficient: true,
+      fixedShape: { result: 'success', summary: 'healthy', reasonCode: 'ok', fields: {},
+        missingResultLine: false, overCap: false, ignoredAnomalies: 0, anomalies: [], droppedFields: 0 } });
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const worker = new JobSupervisionWorker({ store, readJevKey: () => 'key', auditReady: () => true,
+      fixedRegistryRequired: true, fetchImpl, now: () => t0 + 1000 });
+    expect(await worker.drain()).toBe(1);
+    expect(store.get(id)).toMatchObject({ status: 'unchecked', reason: 'registry-unreadable' });
+    expect(store.slugHoldReason('health-check')).toBe('registry-unreadable');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('grades a routine grading-job verdict only with an independent idle effect proof', async () => {

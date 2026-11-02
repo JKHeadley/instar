@@ -16,6 +16,7 @@ vi.mock('../../src/scheduler/JobSupervisionRollout.js', async importOriginal => 
 });
 
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { SecretStore } from '../../src/core/SecretStore.js';
@@ -88,12 +89,15 @@ console.log(${JSON.stringify(secret)});
 `);
 
     const now = Date.now();
+    const identity = await new MachineIdentityManager(stateDir).generateIdentity({ name: 'joined-trial-writer' });
     const config: InstarConfig = { projectName: 'trial-agent', projectDir: agentDir, stateDir,
       port: 0, authToken: token, secrets: { forceFileKey: true },
       developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } },
       throwawayAgent: { createdAt: new Date(now - 60_000).toISOString(),
         expiresAt: new Date(now + 60 * 60_000).toISOString(), keep: false },
       autostart: { autoInstall: false },
+      jobResultSupervision: { fixedRegistry: { authorityMachineId: identity.machineId,
+        ownerPublicKeys: {}, reviewerPublicKeys: {} } },
     } as InstarConfig;
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config));
     const secretStore = new SecretStore({ stateDir, forceFileKey: true });
@@ -125,7 +129,8 @@ console.log(${JSON.stringify(secret)});
       expect(scheduler.getJobs().map(job => job.slug)).toEqual([slug]);
       expect(scheduler.listScriptJobs().map(job => job.slug)).toEqual([slug]);
       expect(scheduler.scriptRunnersActiveFor(slug)).toBe(true);
-      server = new AgentServer({ config, state, sessionManager: sessions as any, scheduler });
+      server = new AgentServer({ config, state, sessionManager: sessions as any,
+        scheduler, meshSelfId: identity.machineId });
       expect(await scheduler.triggerJob(slug, 'joined-e2e')).toBe('triggered');
       const deadline = Date.now() + 15_000;
       let row = null;
@@ -247,7 +252,7 @@ console.log(${JSON.stringify(secret)});
         id: 'synthetic-healthy-v1', version: 1, registryEpoch: 7, slug,
         templateDigest: 'sha256:synthetic-v1', featureStateHash: 'features-v1',
         result: 'success', summary: 'healthy', reasonCode: 'healthy', fields: {},
-        observedOutcomes: 300, gradableOutcomes: 300, confirmedMisses: 0,
+        observedOutcomes: 300, gradableOutcomes: 300, confirmedMisses: 0, reviewedMissEpoch: 0,
         testEvidenceId: 'synthetic-test', shadowEvidenceId: 'synthetic-shadow',
         canaryAssertionId: 'synthetic-canary', canaryPassedAt: new Date().toISOString(),
         owner: 'synthetic-owner', reviewer: 'synthetic-reviewer',

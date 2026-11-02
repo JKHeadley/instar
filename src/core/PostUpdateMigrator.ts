@@ -63,6 +63,7 @@ import {
   agentConnectSection,
   agentConnectStep1,
   directJobSupervisionQualityAwareness,
+  fixedJobResultRegistryAwareness,
   JEV_CORRECTION_CARD_V1_MARKER,
   jevCirclesShadowAwareness,
   jevCorrectionShadowAwareness,
@@ -8871,6 +8872,11 @@ setTimeout(() => process.exit(0), 2000);
       content += directJobSupervisionQualityAwareness(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added direct job-supervision call quality section');
+    }
+    if (!content.includes('### Fixed Job-Result Certificate Registry')) {
+      content += fixedJobResultRegistryAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added fixed job-result certificate registry section');
     }
 
     // Benchmark-Divergence Detector (benchmark-divergence-detector §Migration

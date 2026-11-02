@@ -35,7 +35,9 @@ import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../config/ConfigDefault
 import { AUDIT_READY_SCRIPT_SLUGS, JOB_COST_AUDIT_READY, JOB_MODEL_ROUTING_AUDIT_READY } from './JobCostAuditReadiness.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
-import { JobSupervisionStore } from './JobSupervisionStore.js';
+import { JobSupervisionStore, TRANSIENT_SUPERVISION_HOLD_REASONS } from './JobSupervisionStore.js';
+import { fixedSlugRecertified } from './JobFixedCertificateRegistry.js';
+import { fixedCertificateIssuanceValid } from './JobFixedResultCertificate.js';
 import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
 import { jobSupervisionRolloutState } from './JobSupervisionRollout.js';
 import { decideJobModelRoute, type JobRouteDecision, type JobRouteEvidence } from './JobModelRoute.js';
@@ -151,6 +153,8 @@ type ProjectedSpawnOptions = Parameters<SessionManager['spawnSession']>[0] & {
 
 /* @self-action-controller: job-failure-alert-delivery */
 export class JobScheduler {
+  private fixedRegistryReader: import('./JobFixedRegistryReader.js').JobFixedRegistryReader | null = null;
+  private fixedRegistryRequired = false;
   private config: JobSchedulerConfig;
   private sessionManager: SessionManager;
   private state: StateManager;
@@ -349,6 +353,58 @@ export class JobScheduler {
     this.stateDir = stateDir;
     this.skipLedger = new SkipLedger(stateDir);
     this.runHistory = new JobRunHistory(stateDir);
+  }
+
+  /** Installed only for an active audited cohort. Every script admission then
+   * checks the pinned writer before the claim, including after a slow gate. */
+  setFixedRegistryReader(reader: import('./JobFixedRegistryReader.js').JobFixedRegistryReader | null,
+    requireAuthority = false): void {
+    this.fixedRegistryReader = reader;
+    if (reader || requireAuthority) this.fixedRegistryRequired = true;
+  }
+
+  private async fixedRegistryAllowsScript(job: JobDefinition): Promise<boolean> {
+    if (!this.running) return false;
+    if (!this.fixedRegistryReader) {
+      if (this.fixedRegistryRequired) this.getJobSupervisionStore().holdSlug(job.slug, 'registry-unreadable');
+      return !this.fixedRegistryRequired;
+    }
+    const fresh = await this.fixedRegistryReader.read();
+    if (!this.running || !this.fixedRegistryReader) return false;
+    const slug = job.slug;
+    if (!fresh) {
+      this.getJobSupervisionStore().holdSlug(slug, 'registry-unreadable');
+      return false;
+    }
+    const store = this.getJobSupervisionStore();
+    const currentFeatureStateHash = this.scriptFeatureStateHash(job);
+    const active = [...fresh.certificates.values()].filter(cert => cert.slug === slug
+      && fresh.authority.activeIds.has(cert.id));
+    if (active.some(cert => !fixedCertificateIssuanceValid(cert, {
+      epoch: cert.registryEpoch, ownerPublicKeys: fresh.authority.ownerPublicKeys,
+      reviewerPublicKeys: fresh.authority.reviewerPublicKeys, now: fresh.authority.now,
+    }))) {
+      this.getJobSupervisionStore().holdSlug(slug, 'canary-stale');
+      return false;
+    }
+    const revoked = [...fresh.certificates.values()].some(cert => cert.slug === slug
+      && fresh.authority.revokedIds.has(cert.id));
+    if (revoked && !fixedSlugRecertified(fresh, slug, job.scriptHashExpected ?? null, currentFeatureStateHash)) {
+      this.getJobSupervisionStore().holdSlug(slug, 'certificate-revoked');
+      return false;
+    }
+    if (revoked) store.releaseRecertifiedSlug(slug, fresh, job.scriptHashExpected ?? null, currentFeatureStateHash);
+    if (!store.hasOpenRegistryAttempt(slug)) store.clearHoldSlugIfReason(slug, 'registry-unreadable');
+    return true;
+  }
+
+  private scriptFeatureStateHash(job: JobDefinition): string {
+    return crypto.createHash('sha256').update(JSON.stringify({
+      supervisionActiveAtStart: jobSupervisionRolloutState(this.readAgentConfig() ?? {}).active,
+      scriptSupervision: job.scriptSupervision ?? null,
+      triageEvidence: job.triageEvidence ?? null,
+      triageFields: [...(job.triageFields ?? [])].sort(),
+    })).digest('hex');
   }
 
   /**
@@ -870,7 +926,8 @@ export class JobScheduler {
     // job's body runs as an agentmd session exactly as before the change,
     // through the normal quota / capacity / claim path below.
     const isScriptRunner = this.isScriptRunnerJob(job);
-    if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
+    if (isScriptRunner && (!await this.fixedRegistryAllowsScript(job)
+      || !this.scriptRunnersActiveFor(job.slug))) {
       // This job was introduced with script runners, so it has no historical
       // session behavior to restore when the rollout is dark.
       if (job.slug === 'script-job-supervisor') {
@@ -1064,7 +1121,8 @@ export class JobScheduler {
 
     // The gate above can wait for seconds. A safety hold recorded during that
     // wait must take effect on this fire, before the script claim or launch.
-    if (runsAsScript && !this.scriptRunnersActiveFor(slug)) {
+    if (runsAsScript && (!await this.fixedRegistryAllowsScript(job)
+      || !this.scriptRunnersActiveFor(slug))) {
       if (slug === 'script-job-supervisor') {
         this.skipLedger.recordSkip(slug, 'disabled');
         this.state.appendEvent({
@@ -1863,7 +1921,12 @@ export class JobScheduler {
     if (!this.supervisionBlocksLoaded) {
       try {
         const store = this.getJobSupervisionStore();
-        for (const held of store.heldSlugs()) this.supervisionBlockedSlugs.add(held.slug);
+        for (const held of store.heldSlugs()) {
+          if (!TRANSIENT_SUPERVISION_HOLD_REASONS.has(held.reason)
+            && held.reason !== 'certificate-revoked'
+            && held.reason !== 'confirmed-false-routine'
+            && held.reason !== 'canary-stale') this.supervisionBlockedSlugs.add(held.slug);
+        }
         const baseline = store.censusBaselineAt();
         const scan = this.runHistory.query({ limit: 100000, excludeSideRuns: true });
         if (!this.runHistory.isReadHealthy() || scan.total > scan.runs.length) {
@@ -1890,8 +1953,11 @@ export class JobScheduler {
     if (!this.supervisionCensusHealthy) return false;
     if (this.supervisionBlockedSlugs.has(slug)) return false;
     try {
-      if (this.getJobSupervisionStore().isSlugHeld(slug)) {
-        this.supervisionBlockedSlugs.add(slug);
+      const holdReason = this.getJobSupervisionStore().slugHoldReason(slug);
+      if (holdReason) {
+        if (!TRANSIENT_SUPERVISION_HOLD_REASONS.has(holdReason)
+          && holdReason !== 'certificate-revoked'
+          && holdReason !== 'confirmed-false-routine') this.supervisionBlockedSlugs.add(slug);
         return false;
       }
     } catch (error) {
@@ -2143,12 +2209,7 @@ export class JobScheduler {
     let supervisionId: string;
     const receiptToken = slug === 'llm-decision-grading' ? crypto.randomBytes(32).toString('hex') : null;
     const supervisionActiveAtStart = jobSupervisionRolloutState(this.readAgentConfig() ?? {}).active;
-    const featureStateHash = crypto.createHash('sha256').update(JSON.stringify({
-      supervisionActiveAtStart,
-      scriptSupervision: job.scriptSupervision ?? null,
-      triageEvidence: job.triageEvidence ?? null,
-      triageFields: [...(job.triageFields ?? [])].sort(),
-    })).digest('hex');
+    const featureStateHash = this.scriptFeatureStateHash(job);
     try {
       const fireId = (this.acquiredClaimPath.get(slug) === 'journal'
         ? this.leaseClaimStore?.getClaim(slug)?.claimId
@@ -2187,6 +2248,15 @@ export class JobScheduler {
     });
 
     const run = async (): Promise<void> => {
+      // The randomized start offset can outlive a revocation made after the
+      // claim. Cancel this already-recorded attempt before executing the script.
+      if (!await this.fixedRegistryAllowsScript(job) || !this.scriptRunnersActiveFor(slug)) {
+        this.finishScriptRun(job, runId, supervisionId, {
+          ...this.untrustedParse('supervision-hold-before-exec'),
+          reasonCode: 'supervision-hold-before-exec',
+        }, '', startedAt, supervisionActiveAtStart);
+        return;
+      }
       const trust = this.checkScriptTrust(job);
       let parsed: ParsedScriptRun;
       let scrubbed = '';
@@ -2256,6 +2326,11 @@ export class JobScheduler {
         evidenceHash: evidence.ok ? evidence.hash : null,
         evidenceText: evidence.ok ? evidence.text : null,
         evidenceSufficient: evidence.ok && evidence.sufficientForRoutine,
+        fixedShape: evidence.ok ? { result: parsed.result, summary: parsed.summary,
+          reasonCode: parsed.reasonCode, fields: parsed.fields,
+          missingResultLine: parsed.missingResultLine, overCap: parsed.overCap,
+          ignoredAnomalies: parsed.ignoredAnomalies, anomalies: parsed.anomalies,
+          droppedFields: parsed.droppedFields } : null,
         reason: parsed.reasonCode || null,
       });
       if (!supervisionActiveAtStart) {

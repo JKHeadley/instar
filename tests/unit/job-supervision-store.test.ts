@@ -44,6 +44,81 @@ describe('JobSupervisionStore', () => {
     expect(() => store.recordResult(id, { result: 'failure', evidenceHash: 'evidence-v2' })).toThrow(/conflicting result/);
   });
 
+  it('persists a bounded scrubbed exact shape separately from the model evidence', () => {
+    store.close();
+    const old = new Database(path.join(dir, 'ledger', 'job-supervision.db'));
+    old.exec('ALTER TABLE attempts DROP COLUMN fixed_shape_json');
+    old.close();
+    store = new JobSupervisionStore(dir);
+    const id = register(store, 'fixed-shape-run');
+    const shape = { result: 'success' as const, summary: 'healthy', reasonCode: 'all-clear',
+      fields: { count: '0' }, missingResultLine: false, overCap: false,
+      ignoredAnomalies: 0, anomalies: [], droppedFields: 0 };
+    store.recordResult(id, { result: 'success', fixedShape: shape });
+    store.close();
+    store = new JobSupervisionStore(dir);
+    expect(store.fixedShape(id)).toEqual(shape);
+    expect(store.get(id)).not.toHaveProperty('fixedShape');
+  });
+
+  it('commits an unreadable-registry hold with the unchecked result and retains release history', () => {
+    const id = register(store, 'registry-outage-run');
+    store.recordResult(id, { result: 'success' });
+    store.markUncheckedAndHold(id, 'registry-unreadable', t0 + 10);
+    expect(store.get(id)).toMatchObject({ status: 'unchecked', reason: 'registry-unreadable' });
+    expect(store.slugHoldReason('health-check')).toBe('registry-unreadable');
+    expect(store.clearHoldSlugIfReason('health-check', 'certificate-revoked', t0 + 20)).toBe(false);
+    expect(store.clearHoldSlugIfReason('health-check', 'registry-unreadable', t0 + 20)).toBe(false);
+    store.markUnchecked(id, 'independently-reconciled', t0 + 21);
+    expect(store.clearHoldSlugIfReason('health-check', 'registry-unreadable', t0 + 22)).toBe(true);
+    expect(store.isSlugHeld('health-check')).toBe(false);
+    store.holdSlug('health-check', 'certificate-revoked', t0 + 30);
+    expect(store.clearHoldSlugIfReason('health-check', 'registry-unreadable', t0 + 40)).toBe(false);
+    expect(store.slugHoldReason('health-check')).toBe('certificate-revoked');
+    store.close();
+    store = new JobSupervisionStore(dir);
+    expect(store.slugHoldReason('health-check')).toBe('certificate-revoked');
+    const db = new Database(path.join(dir, 'ledger', 'job-supervision.db'));
+    expect((db.prepare('SELECT COUNT(*) AS n FROM held_slug_events WHERE slug=?').get('health-check') as { n: number }).n).toBe(3);
+    db.close();
+  });
+
+  it('keeps the registry hold until every open result for the slug is reconciled', () => {
+    const first = register(store, 'registry-first');
+    const second = register(store, 'registry-second');
+    store.recordResult(first, { result: 'success' });
+    store.recordResult(second, { result: 'success' });
+    store.markUncheckedAndHold(first, 'registry-unreadable', t0 + 1);
+    store.markUncheckedAndHold(second, 'registry-unreadable', t0 + 2);
+    store.markUnchecked(first, 'independently-reconciled', t0 + 3);
+    expect(store.clearHoldSlugIfReason('health-check', 'registry-unreadable', t0 + 4)).toBe(false);
+    expect(store.slugHoldReason('health-check')).toBe('registry-unreadable');
+    store.markUnchecked(second, 'independently-reconciled', t0 + 5);
+    expect(store.clearHoldSlugIfReason('health-check', 'registry-unreadable', t0 + 6)).toBe(true);
+    expect(store.isSlugHeld('health-check')).toBe(false);
+  });
+
+  it('promotes an active transient registry hold to a permanent false-routine hold', () => {
+    store.holdSlug('health-check', 'registry-unreadable', t0);
+    store.holdSlug('health-check', 'confirmed-false-routine', t0 + 1);
+    expect(store.slugHoldReason('health-check')).toBe('confirmed-false-routine');
+    expect(store.clearHoldSlugIfReason('health-check', 'registry-unreadable', t0 + 2)).toBe(false);
+    store.close();
+    store = new JobSupervisionStore(dir);
+    expect(store.slugHoldReason('health-check')).toBe('confirmed-false-routine');
+  });
+
+  it('keeps a held registry attempt eligible after the ordinary one-day retry window', () => {
+    const id = register(store, 'long-registry-outage');
+    store.recordResult(id, { result: 'success', completedAt: new Date(t0).toISOString(),
+      evidenceHash: 'evidence-long', evidenceSufficient: true });
+    store.markUncheckedAndHold(id, 'registry-unreadable', t0 + 1);
+    const later = t0 + 2 * 24 * 60 * 60_000;
+    expect(store.expireRetries(later)).toBe(0);
+    expect(store.claimable(later).map(row => row.attemptId)).toContain(id);
+  });
+
+
   it('accepts only a matching server receipt for the grading script and preserves it across restart', () => {
     const token = 'a'.repeat(64);
     const id = store.register({ runId: 'grade-run', fireId: 'grade-fire', slug: 'llm-decision-grading',

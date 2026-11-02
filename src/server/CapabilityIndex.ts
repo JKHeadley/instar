@@ -577,7 +577,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'scheduler',
     prefixes: ['/jobs'],
-    description: 'Cron-based job scheduler',
+    description: 'Cron-based job scheduler. GET /jobs/triage reports script-result supervision coverage and pending fixed-result revocations. GET /jobs/fixed-registry serves the pinned writer\'s fresh signed certificates, revocations, and accepted-miss epochs (503 when authority is absent); POST /jobs/fixed-registry/issue requires owner and independent reviewer signatures over the latest miss epoch; POST /jobs/fixed-registry/renew atomically replaces an active exact shape with a newly signed canary assertion; POST /jobs/fixed-registry/revoke accepts an enrolled machine-signed false-routine proof and suspends the exact contract. These routes do not activate the Jev decision cohort.',
     build: ({ ctx }) => {
       let jobCount = 0;
       let jobSlugs: string[] = [];
@@ -590,6 +590,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         enabled: ctx.config.scheduler.enabled,
         jobCount,
         jobSlugs,
+        fixedRegistryConfigured: !!ctx.config.jobResultSupervision?.fixedRegistry?.authorityMachineId,
+        endpoints: ['GET /jobs/triage', 'GET /jobs/fixed-registry', 'POST /jobs/fixed-registry/issue', 'POST /jobs/fixed-registry/renew', 'POST /jobs/fixed-registry/revoke'],
       };
     },
   },
