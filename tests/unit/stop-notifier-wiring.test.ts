@@ -47,14 +47,23 @@ describe('notify-on-stop Layer B — wiring integrity', () => {
     expect(src).toMatch(/stopNotifier:\s*options\.stopNotifier\s*\?\?\s*null/);
   });
 
-  it('the StopNotifier sink is a SentinelNotifier with escalation ON (coalesced single-topic reuse)', () => {
+  it("the StopNotifier sends to the run's own topic and logs everything else (no lifeline sink)", () => {
     const src = read('src/commands/server.ts');
-    // The dedicated stop-notify sink is default-on (distinct from the
-    // housekeeping sentinel notifier, which is default-off).
-    const block = src.slice(src.indexOf('notify-on-stop Layer B'));
-    expect(block).toMatch(/new SentinelNotifier\(/);
-    expect(block).toMatch(/telegramEscalation: true/);
-    expect(block).toMatch(/stopSink\.escalate\(/);
+    const block = src.slice(src.indexOf('notify-on-stop Layer B'), src.indexOf('Response Review Pipeline'));
+    expect(block).toMatch(/notifyTopic:\s*\(topicId, sessionId, text\)/);
+    expect(block).toMatch(/localTg\.sendToTopic\(Number\(topicId\), text\)/);
+    expect(block).toMatch(/log:\s*\(kind, sessionId, detail\)\s*=>\s*stopLog\(/);
+    // The unnamed lifeline path is gone.
+    expect(block).not.toMatch(/new SentinelNotifier\(/);
+    expect(block).not.toMatch(/sendConsolidatedWithSelfHeal/);
+  });
+
+  it('the evaluate route passes the resolved topic, the live run goal, and the last message', () => {
+    const src = read('src/server/routes.ts');
+    const call = src.slice(src.indexOf('ctx.stopNotifier?.maybeNotify(')).slice(0, 420);
+    expect(call).toContain('topicId: stopTopicId');
+    expect(call).toContain('liveAutonomousRunGoal(ctx.config.stateDir, stopTopicId)');
+    expect(call).toContain('lastActivity: stopLastAgentMessage(body.untrustedContent.recentTurns, reasonPreview)');
   });
 
   it('Layer B respects the config master gate (enabled !== false default-on)', () => {

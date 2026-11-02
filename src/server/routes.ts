@@ -392,6 +392,25 @@ function normalizeFollowThroughOptOutReason(value: unknown): string | null {
  * Returns null on success; failure-detail string on any check that fails.
  * Fail-open path: caller converts a failed verify into `invalidEvidence`.
  */
+/**
+ * notify-on-stop: the stopping session's last message, for the notice text. The
+ * hook appends `last_assistant_message` as the final `source:'agent'` turn; the
+ * stop reason is only a fallback, and only when it reads as a sentence (a bare
+ * harness code such as `end_turn` is not a message).
+ */
+function stopLastAgentMessage(
+  recentTurns: Array<{ source?: string; text?: string }> | undefined,
+  reasonPreview: string,
+): string | null {
+  if (Array.isArray(recentTurns)) {
+    for (let i = recentTurns.length - 1; i >= 0; i--) {
+      const t = recentTurns[i];
+      if (t && t.source === 'agent' && typeof t.text === 'string' && t.text.trim()) return t.text;
+    }
+  }
+  return /\s/.test(reasonPreview.trim()) ? reasonPreview : null;
+}
+
 async function postVerifyEvidence(
   projectDir: string,
   evidence: EvidenceMetadata,
@@ -483,6 +502,7 @@ import {
   stopAllAutonomousJobs,
   suspendAutonomousTopicForMove,
   setAutonomousPreparationState,
+  liveAutonomousRunGoal,
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
@@ -5981,9 +6001,10 @@ export function createRoutes(ctx: RouteContext): Router {
     // notify-on-stop Layer B: whether the stopping session is unattended
     // (autonomous). Used only to gate the user-facing notice (StopNotifier);
     // never affects the gate decision itself.
+    const stopTopicId = resolveTopicForStopGate(sessionId);
     const autonomousActive = getHotPathState({
       sessionId: sessionId || undefined,
-      topicId: resolveTopicForStopGate(sessionId),
+      topicId: stopTopicId,
       stateRoot: path.dirname(ctx.config.stateDir),
     }).autonomousActive;
 
@@ -6262,14 +6283,17 @@ export function createRoutes(ctx: RouteContext): Router {
         reminder,
         latencyMs: r.latencyMs,
       });
-      // notify-on-stop Layer B: surface a genuinely-stuck unattended stop to the
-      // user. No-ops for non-worthy decisions, attended sessions, and recent
-      // dups — see StopNotifier. Fire-and-forget; never affects the response.
+      // notify-on-stop Layer B: surface a genuinely-stuck unattended stop in
+      // the run's own topic. Log-only for `escalate`, unnamed runs, attended
+      // sessions, and recent dups — see StopNotifier. Fire-and-forget; never affects the response.
       ctx.stopNotifier?.maybeNotify({
         sessionId,
         mode,
         decision: r.decision,
         autonomousActive,
+        topicId: stopTopicId ?? null,
+        runGoal: stopTopicId ? liveAutonomousRunGoal(ctx.config.stateDir, stopTopicId) : null,
+        lastActivity: stopLastAgentMessage(body.untrustedContent.recentTurns, reasonPreview),
       });
     } else {
       // Fail-open: allow. Log with the failure kind so guardian-pulse

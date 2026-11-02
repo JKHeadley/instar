@@ -264,6 +264,65 @@ describe('ReapNotifier v2 — per-topic grouping (R1.1)', () => {
   });
 });
 
+describe('ReapNotifier v2 — routine job completions stay off the lifeline (R1.1 amended 2026-11-01)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('an unbound session whose work completed (not mid-work, no restart queued) sends NOTHING', async () => {
+    const { n, rows, sends } = makeV2({ resolveTopic: () => null });
+    for (let i = 0; i < 3; i++) {
+      n.onReaped({ session: sess(`job-health-check-${i}`), reason: 'sentinel-complete', disposition: 'terminal', origin: 'autonomous', midWork: false });
+    }
+    await n.flush();
+    expect(rows).toHaveLength(0);
+    expect(sends).toHaveLength(0);
+  });
+
+  it('an unbound sentinel-complete reap that was MID-WORK still reaches the lifeline', async () => {
+    const { n, rows } = makeV2({ resolveTopic: () => null });
+    n.onReaped({ session: sess('job-x'), reason: 'sentinel-complete', disposition: 'terminal', midWork: true });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].topic_id).toBe(999);
+    expect(rows[0].text).toContain('mid-work');
+  });
+
+  it('an unbound sentinel-complete reap with a QUEUED restart still reaches the lifeline', async () => {
+    const { n, rows } = makeV2({ resolveTopic: () => null, resumeQueuedFor: () => true });
+    n.onReaped({ session: sess('job-y'), reason: 'sentinel-complete', disposition: 'terminal', midWork: false });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].topic_id).toBe(999);
+  });
+
+  it('an unbound reap for any OTHER reason (e.g. stuck) still reaches the lifeline', async () => {
+    const { n, rows } = makeV2({ resolveTopic: () => null });
+    n.onReaped({ session: sess('job-z'), reason: 'watchdog-stuck', disposition: 'terminal' });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toContain('stuck');
+  });
+
+  it('a TOPIC-BOUND sentinel-complete reap still gets its per-topic notice (a conversation the user cares about)', async () => {
+    const { n, rows } = makeV2({ resolveTopic: () => 42 });
+    n.onReaped({ session: sess('chat'), reason: 'sentinel-complete', disposition: 'terminal', midWork: false });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].topic_id).toBe(42);
+  });
+
+  it('routine completions mixed with a real interruption: only the interruption is listed', async () => {
+    const { n, rows } = makeV2({ resolveTopic: () => null });
+    n.onReaped({ session: sess('job-done'), reason: 'sentinel-complete', disposition: 'terminal', midWork: false });
+    n.onReaped({ session: sess('job-stuck'), reason: 'watchdog-stuck', disposition: 'terminal' });
+    await n.flush();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toContain('1 background session was shut down');
+    expect(rows[0].text).toContain('job-stuck');
+    expect(rows[0].text).not.toContain('job-done');
+  });
+});
+
 describe('ReapNotifier v2 — release tiers + caps (R1.5, decision 1)', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());

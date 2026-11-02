@@ -20227,10 +20227,10 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // notify-on-stop Layer B — surface a genuinely-stuck UNATTENDED stop to the
     // user (docs/specs/NOTIFY-ON-STOP-SPEC.md). The evaluate route feeds each
-    // decision to StopNotifier, which filters to the notify-worthy classes
-    // (shadow+continue / escalate), the attended-gate, and per-session dedup,
-    // then hands a coalesced one-liner to a dedicated SentinelNotifier sink
-    // (single lifeline topic, log-always — reuses the post-2026-05-22 discipline).
+    // decision to StopNotifier, which keeps only shadow+continue stops of a
+    // NAMED live autonomous run (attended-gate + per-session dedup), and sends
+    // the notice to that run's own topic so a reply reaches it. Everything else
+    // (`escalate`, unnamed runs) is log-only in logs/sentinel-events.jsonl.
     // Default ON (Justin's "tell me why it stopped"); requires telegram wired.
     let stopNotifier: import('../monitoring/StopNotifier.js').StopNotifier | null = null;
     {
@@ -20242,27 +20242,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         const stopLog = (entry: { kind: string; sessionName: string; detail?: string }): void => {
           try { fs.appendFileSync(stopLogPath, JSON.stringify({ ...entry, sentinel: 'stop-notify', ts: new Date().toISOString() }) + '\n'); } catch { /* best-effort */ }
         };
-        const send = (text: string): Promise<boolean> =>
-          sendConsolidatedWithSelfHeal(
-            localTg,
-            text,
-            (line) => console.warn(pc.yellow(`  [stop-notify] ${line}`)),
-          );
-        const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
-        const stopSink = new SentinelNotifier(
-          { log: stopLog, sendConsolidated: send },
-          { telegramEscalation: true }, // notify-on-stop is default-on by design
-        );
         const { StopNotifier } = await import('../monitoring/StopNotifier.js');
         stopNotifier = new StopNotifier(
-          { escalate: (name, text) => stopSink.escalate('stop-gate', name, text) },
+          {
+            notifyTopic: (topicId, sessionId, text) => {
+              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `topic ${topicId}: ${text}` });
+              localTg.sendToTopic(Number(topicId), text).then(
+                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: `topic ${topicId}` }),
+                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `topic ${topicId}: ${err instanceof Error ? err.message : String(err)}` }),
+              );
+            },
+            log: (kind, sessionId, detail) => stopLog({ kind, sessionName: sessionId, detail }),
+          },
           {
             enabled: true,
             unattendedOnly: nosCfg.unattendedOnly !== false,
             ...(typeof nosCfg.cooldownMs === 'number' ? { cooldownMs: nosCfg.cooldownMs } : {}),
           },
         );
-        console.log(pc.green('  notify-on-stop Layer B: enabled (unjustified-stall heads-up — unattended-only, deduped, coalesced)'));
+        console.log(pc.green('  notify-on-stop Layer B: enabled (named-run stall notice in the run\'s topic — unattended-only, deduped)'));
       } else {
         console.log(pc.dim(`  notify-on-stop Layer B: ${nosEnabled ? 'idle (no telegram)' : 'disabled by config'}`));
       }

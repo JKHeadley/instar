@@ -48,7 +48,7 @@ When `autonomous-stop-hook.sh` takes a **terminal** exit, before `exit 0`, send 
 
 Extend the `/internal/stop-gate/evaluate` route. After the decision is computed, feed a `StopGateNotifier` (a thin sibling that *delegates to* the same coalescing/system-topic sink as `SentinelNotifier`, or `SentinelNotifier` itself via a new `escalate`-style entrypoint). Notify **only** on the genuinely-stuck classifications, **only** for sessions that are unattended:
 
-Notify-worthy decision set (the session is going quiet and shouldn't be):
+Notify-worthy decision set (the session is going quiet and shouldn't be) — see the 2026-11-01 amendment below, which makes `escalate` log-only and sends to the run's own topic:
 - `decision === 'continue'` **in `shadow` mode** — the gate believes the stop was unjustified but cannot block it, so the session silently stalls. THE core incident case.
 - `decision === 'escalate'` (`U_AMBIGUOUS_INSUFFICIENT_SIGNAL`) — the gate cannot tell if the stop was justified; surface it.
 
@@ -65,6 +65,16 @@ Explicitly NOT notify-worthy (stay silent):
 4. **Config + default.** New `monitoring.notifyOnStop` config block: `{ enabled: bool, unattendedOnly: bool, dedupWindowMs, cooldownMs }`. **Default `enabled: true`** — Justin explicitly asked to be told; this is the rare case where notify-default-on is correct. The attended-gate + dedup keep it near-silent in practice. (Distinct from `sentinelTelegramEscalation`, which stays default-off for housekeeping sentinels.)
 
 The notice text is fixed-template, plain-English, with the session's last-known activity and a "want me to dig in?" CTA — never raw logs or internal reasoning (tone-gate still applies on the system-topic sender).
+
+### Layer B amendment (2026-11-01, Lifeline noise bug)
+
+The first build sent `escalate` and `shadow + continue` notices to the lifeline as "A background run stopped mid-task… Want me to pick it back up?". It named no run, it dropped the last-known activity this spec requires, and a reply in the lifeline reaches no session, so the user could not act on it. On Echo, `escalate` was about 1 stop in 9 (52 of about 450 in one day): the authority prompt says "if you are unsure, prefer `escalate`", so it is the gate's normal "not sure" answer, mostly on ordinary turn-ends. The behavior is now:
+
+- **`shadow + continue` on a NAMED live run → notice in the run's own topic.** "Named live run" means the session resolves to a topic whose `.instar/autonomous/<topic>.local.md` says `active: true` (not paused) and has a goal. The notice names the run by its goal, quotes its last message (the stop reason, one line, bounded), and says "reply here", so the reply reaches that topic's session. A file that exists but says `active: false` does not count.
+- **`escalate` → log-only.** Recorded in `logs/sentinel-events.jsonl` (`stop-notify`, `escalation-suppressed`) and in the stop-gate DB as before. This narrows the "notify-worthy" set above: the gate having no evidence either way is not, by itself, a stall the user can act on.
+- **A stall with no resolved topic or no live run goal → log-only**, for the same reason: there is no run to name and nowhere a reply could reach.
+
+Justin's requirement still holds where the system can see the stop: autonomous terminal exits are always announced by Layer A in the run's report topic, and a stall the gate can point to evidence for is announced in the run's own topic. What is narrowed is the "not sure" case and the unnamed case, which now leave a log record instead of a lifeline message.
 
 ## Why this is the right level (signal vs authority)
 
