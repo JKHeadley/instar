@@ -11,7 +11,8 @@
  *
  * v2 (perTopic: true, the shipped default):
  *   - Per-topic coalescing (R1.1): every topic that lost a session gets ONE
- *     notice in THAT topic; the lifeline gets unbound sessions plus — when >1
+ *     notice in THAT topic; the lifeline gets unbound sessions (except a
+ *     routine completion — see isRoutineCompletion) plus — when >1
  *     topic is affected — a one-line cross-topic index. Never creates topics.
  *   - Affected-set tracking is SEPARATE from the bounded detail buffer, so in
  *     a storm larger than the buffer every affected topic still gets at least
@@ -199,6 +200,12 @@ function reapDetailClause(ev: ReapEvent): string {
   return plainEnglishReason(ev.reason);
 }
 
+/** An unbound reap that is a normal finish: work detected complete, nothing
+ *  in flight, no restart queued. Lifeline-silent (it stays in the reap-log). */
+export function isRoutineCompletion(ev: ReapEvent, resumeQueued: boolean): boolean {
+  return ev.reason === 'sentinel-complete' && !ev.midWork && !resumeQueued;
+}
+
 interface TopicAggregate {
   count: number;
   midWorkCount: number;
@@ -275,6 +282,11 @@ export class ReapNotifier {
       agg.detail.push(event);
     };
     if (topicId == null) {
+      // A conversation-less session (a job run) that ended because its work
+      // completed is routine, not an interruption: the `reaped` entry in the
+      // reap-log is its whole record (reap-notify spec R1.1, amended
+      // 2026-11-01 after a */5 job posted a Lifeline notice every few minutes).
+      if (isRoutineCompletion(event, resumeQueued)) return;
       bump(this.unbound);
       return;
     }
