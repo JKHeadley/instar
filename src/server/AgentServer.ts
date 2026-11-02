@@ -182,7 +182,8 @@ import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
-import { AppConversationService } from '../core/AppConversationService.js';
+import { AppConversationService, VOICE_TRANSCRIBE_DEADLINE_MS } from '../core/AppConversationService.js';
+import { transcribeAudioFile, configuredVoiceProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
@@ -5796,6 +5797,8 @@ export class AgentServer {
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },
             mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
+            // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
+            transcribeVoice: (filePath, mediaType) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: VOICE_TRANSCRIBE_DEADLINE_MS }),
             raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
             clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({

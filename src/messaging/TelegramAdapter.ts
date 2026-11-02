@@ -41,6 +41,7 @@ import {
   recordFormatFallbackPlainRetry,
 } from './telegramFormatMetrics.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { transcribeAudioFile } from '../core/VoiceTranscription.js';
 import { pickDashboardPin } from '../core/dashboardPin.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
@@ -3617,82 +3618,15 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
-   * Resolve voice transcription provider from config or environment.
-   * Checks explicit config, then env vars, then auto-detects.
-   */
-  private resolveTranscriptionProvider(): { apiKey: string; baseUrl: string; model: string } | null {
-    const providers: Record<string, { envKey: string; baseUrl: string; model: string }> = {
-      groq: {
-        envKey: 'GROQ_API_KEY',
-        baseUrl: 'https://api.groq.com/openai/v1',
-        model: 'whisper-large-v3',
-      },
-      openai: {
-        envKey: 'OPENAI_API_KEY',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'whisper-1',
-      },
-    };
-
-    // Check explicit config
-    const explicit = this.config.voiceProvider?.toLowerCase();
-    if (explicit && providers[explicit]) {
-      const p = providers[explicit];
-      const apiKey = process.env[p.envKey];
-      if (!apiKey) {
-        console.warn(`[telegram] ${p.envKey} not set — required for ${explicit} voice transcription`);
-        return null;
-      }
-      return { apiKey, baseUrl: p.baseUrl, model: p.model };
-    }
-
-    // Auto-detect: try Groq first (cheaper), then OpenAI
-    for (const [name, p] of Object.entries(providers)) {
-      const apiKey = process.env[p.envKey];
-      if (apiKey) {
-        console.log(`[telegram] Auto-detected voice transcription provider: ${name}`);
-        return { apiKey, baseUrl: p.baseUrl, model: p.model };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Transcribe a voice message using the configured provider.
+   * Transcribe a voice message with the shared provider (src/core/VoiceTranscription.ts):
+   * the explicit `voiceProvider` config first, then Groq, then OpenAI from the environment.
    */
   private async transcribeVoice(filePath: string): Promise<string> {
-    const provider = this.resolveTranscriptionProvider();
-    if (!provider) {
-      throw new Error('No voice transcription provider configured. Set GROQ_API_KEY or OPENAI_API_KEY.');
-    }
-
-    const formData = new FormData();
-    const fileBuffer = fs.readFileSync(filePath);
-    const blob = new Blob([fileBuffer], { type: 'audio/ogg' });
-    formData.append('file', blob, path.basename(filePath));
-    formData.append('model', provider.model);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60_000);
-    try {
-      const response = await fetch(`${provider.baseUrl}/audio/transcriptions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
-        body: formData,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Transcription API error (${response.status}): ${errText}`);
-      }
-
-      const data = await response.json() as { text: string };
-      return data.text;
-    } finally {
-      clearTimeout(timer);
-    }
+    return transcribeAudioFile(filePath, {
+      explicit: this.config.voiceProvider,
+      mediaType: 'audio/ogg',
+      log: (note) => console.log(`[telegram] ${note}`),
+    });
   }
 
   // ── Photo Handling ───────────────────────────────────────
