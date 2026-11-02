@@ -843,6 +843,16 @@ export class GreenPrAutoMerger extends EventEmitter {
           // Say so: zero GitHub Actions checks on this head is NOT green.
           this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'no-checks-ran', pr: pr.number, head: pr.headRefOid });
         }
+        // GitHub answers UNKNOWN mergeability in list results until something reads the PR
+        // itself, and every merge resets it for the others: a verified PR could sit unseen
+        // tick after tick (2026-11-02). One direct read makes GitHub compute it, so the next
+        // tick sees MERGEABLE. Only for verified heads (a passing local record, or green checks
+        // under the actions floor), so this costs one read per ready PR. The read also asks for
+        // `mergeable` (REFETCH_PR_JSON_FIELDS), belt-and-braces: a direct read alone was seen to do it.
+        if (verdict.skip === 'not-mergeable' && pr.mergeable === 'UNKNOWN' && (floor === 'local' ? this.recordFor(pr) : pr.statusRollup === 'SUCCESS')) {
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'mergeability-unknown', pr: pr.number, head: pr.headRefOid });
+          try { await this.deps.refetchPr(pr.number); } catch { /* @silent-fallback-ok: the read only nudges GitHub to compute mergeability; the next tick lists the result either way */ }
+        }
         continue;
       }
       // verdict.eligible but the hold debounce may still hold it back this tick.
