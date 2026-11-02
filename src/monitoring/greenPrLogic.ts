@@ -158,6 +158,7 @@ export const NO_CHECKS_ROLLUP = 'NO_CHECKS';
 
 export type CandidateSkip =
   | 'not-agent-namespace'
+  | 'non-main-base'
   | 'no-checks-ran'
   | 'held'
   | 'not-mergeable'
@@ -178,6 +179,15 @@ export interface CandidateVerdict {
  * via `codeOwnedPaths`), so this returns `eligible:true` only when the cheap
  * gates ALL pass; the caller still runs the code-owner check before acting.
  */
+/**
+ * True when the PR's base is known and is not main (ACT-053). An absent base
+ * (legacy projection) is NOT treated as stacked: safe-merge re-reads the base
+ * and refuses a non-main one at act time either way.
+ */
+export function isStackedPr(pr: Pick<PrSummary, 'baseRefName'>): boolean {
+  return typeof pr.baseRefName === 'string' && pr.baseRefName !== '' && pr.baseRefName !== 'main';
+}
+
 export function classifyCandidate(
   pr: PrSummary,
   agentNamespace: string,
@@ -186,6 +196,10 @@ export function classifyCandidate(
   if (!agentOwnership(pr, agentNamespace, opts.expectedGhLogin).owned) {
     return { eligible: false, skip: 'not-agent-namespace' };
   }
+  // A PR into a feature branch (a stacked PR) is never a landing: safe-merge
+  // refuses it (refused:non-main-base, ACT-053), so attempting it would only
+  // burn ladder attempts. It becomes a candidate once retargeted to main.
+  if (isStackedPr(pr)) return { eligible: false, skip: 'non-main-base' };
   const hold = holdReasonOf(pr);
   if (hold) return { eligible: false, skip: 'held', hold };
   if (pr.mergeable !== 'MERGEABLE') return { eligible: false, skip: 'not-mergeable' };
