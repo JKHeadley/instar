@@ -5694,7 +5694,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // Media (mobile-native-chat-media §4.7): `?scope=pool` adds every machine's appMedia,
     // proxied on read (peers are asked for their plain /health); an unreachable machine is `failed`.
-    if (req.query.scope === 'pool' && isAuthed && ctx.appConversations) {
+    if (req.query?.scope === 'pool' && isAuthed && ctx.appConversations) {
       reaperPoolLimiter(req, res, () => {
         void (async () => {
           try {

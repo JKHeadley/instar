@@ -100,6 +100,10 @@ The remaining increment-1 surface ships with every pull verified before storing 
 
 ---
 
+## Fix after the first Local Verify
+
+The full Local Verify failed 9 integration tests in `tests/integration/health-stale-job-failures.test.ts` and `tests/integration/lease-medium-health.test.ts`. Cause: the `appMediaPool` branch read `req.query.scope` unguarded, and those tests (like any caller that drives `router.handle` without Express's query parser) send a request with no `query`, so every `/health` call threw `Cannot read properties of undefined (reading 'scope')`. Fixed with `req.query?.scope`; both files pass again, with the media tests and `health-auth-gating`. No test was changed.
+
 ## Second-pass review (if required)
 
 Not run (brief: `--second-pass false`).
