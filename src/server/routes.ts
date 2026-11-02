@@ -25,7 +25,7 @@ import { Router } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
-import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from '../messaging/telegram-origin/types.js';
+import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
@@ -19448,6 +19448,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // relayed topic holding a permanently unanswerable message.
       if (err instanceof RelayRefusedError) {
         res.status(err.status).json({ ...err.body, relayedFromHolder: true });
+        return;
+      }
+      // Config could not be READ (a timed-out, failed or stale observation on a
+      // starved process), so the destination and display are unknown — not
+      // "missing". Nothing was sent: a 503 lets the relay queue it, and the
+      // recovery import proves non-delivery from this exact body
+      // (OriginLegacy.isPreDispatchRefusal).
+      if (err instanceof OriginConfigUnavailableError) {
+        res.status(503).json({ error: 'origin-config-unavailable', reason: err.reason, retryable: true,
+          message: 'This machine could not read its current messaging config, so nothing was sent. It will be retried.' });
         return;
       }
       // @silent-fallback-ok — NOT a silent fallback: this catch surfaces a 500 to the

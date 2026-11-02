@@ -241,6 +241,34 @@ describe('origin service durable delivery', () => {
       expect(h.network).toHaveBeenCalledOnce();
     } finally { queue.close(); }
   });
+  it('replays a row refused while being prepared (config unreadable / issues routing) exactly once', async () => {
+    const h = await harness();
+    const queue = PendingRelayStore.open('echo', h.stateDir);
+    try {
+      const at = new Date(Date.now() - 60_000).toISOString();
+      // The exact bodies the reply route returns for these pre-dispatch refusals.
+      queue.enqueue({ delivery_id: 'refused-unknown', topic_id: 42, text_hash: 'h1', text: 'Backlog note', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-config-unavailable', reason: 'origin-config-reader-timeout', retryable: true,
+          message: 'This machine could not read its current messaging config, so nothing was sent. It will be retried.' }) });
+      queue.enqueue({ delivery_id: 'refused-issues', topic_id: 42, text_hash: 'h2', text: 'Issues note', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'issues-chat-not-configured: topic 10000000001 belongs to the issues group, but this process has no messaging config issuesChatId. Refusing to send it to the main group.' }) });
+      // Lookalikes stay uncertain: a generic 500, a relayed body, an extra key.
+      queue.enqueue({ delivery_id: 'generic-500', topic_id: 42, text_hash: 'h3', text: 'Maybe sent', attempted_at: at, http_code: 500,
+        error_body: JSON.stringify({ error: 'telegram send failed' }) });
+      queue.enqueue({ delivery_id: 'relayed-503', topic_id: 42, text_hash: 'h4', text: 'Relayed', attempted_at: at, http_code: 503,
+        error_body: JSON.stringify({ error: 'origin-config-unavailable', reason: 'x', retryable: true, message: 'm', relayedFromHolder: true }) });
+      const snapshots = await h.store.legacyCandidates();
+      const safe = Object.fromEntries(snapshots.map(row => [row.deliveryId, row.replaySafe]));
+      expect(safe).toEqual({ 'refused-unknown': true, 'refused-issues': true, 'generic-500': false, 'relayed-503': false });
+      const row = snapshots.find(item => item.deliveryId === 'refused-unknown')!;
+      const operation = h.service.prepareImportedLegacy(row, 'bot-1', '-100123');
+      expect(await h.store.importLegacy({ snapshot: row, admission: operation.admission })).toBe(true);
+      expect((await h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('outcome-unknown');
+      expect(queue.findByDeliveryId('refused-unknown')?.state).not.toBe('delivered-ambiguous');
+      await h.service.executePreparedBot(operation, h.network);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { queue.close(); }
+  });
   it('isBootBeaconBody accepts only the beacon body', () => {
     expect(isBootBeaconBody('{"status":"warming","phase":"booting"}')).toBe(true);
     expect(isBootBeaconBody('{"phase":"booting","status":"warming"}')).toBe(true);
