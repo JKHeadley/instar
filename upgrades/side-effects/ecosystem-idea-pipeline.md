@@ -77,3 +77,4 @@ The reviewer was a different model family and saw the code, not this author's co
 
 1. A no-tools call form for prompts holding outside text.
 - feat(ecosystem): the idea pipeline service, ledger and routes
+- feat(ecosystem): the adoption lint on tagged specs
