@@ -3594,7 +3594,12 @@ export interface ExternalServicePermissions {
 export interface InstarConfig {
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */
-  remoteDesktop?: { enabled?: boolean; frontMachineId?: string };
+  remoteDesktop?: {
+    enabled?: boolean;
+    frontMachineId?: string;
+    /** macOS: keep one helper copy per Mac so an update with unchanged helper source keeps its grant. Default true. */
+    retainedHelper?: boolean;
+  };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;
   /** Project root directory */

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validDesktopInput, type DesktopButton, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
+import { DesktopHelperRetention } from './DesktopHelperRetention.js';
 
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
@@ -16,10 +17,11 @@ export type MacDesktopProbe = DesktopProbe;
 type HelperIdentity = 'inherited' | 'own';
 const HELPER_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 const OWN_PROBE_GRACE_MS = 30_000;
+const KEPT_PROBE_FAILURE_LIMIT = 3;
 
 const FRAME_LIMIT = 1_250_000;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_HOST = path.basename(path.dirname(MODULE_DIR)) === 'src'
+export const DEFAULT_MAC_DESKTOP_HELPER = path.basename(path.dirname(MODULE_DIR)) === 'src'
   ? path.resolve(MODULE_DIR, '..', '..', 'dist', 'native', 'instar-desktop-host')
   : path.resolve(MODULE_DIR, '..', 'native', 'instar-desktop-host');
 
@@ -48,7 +50,14 @@ export class MacDesktopHost implements DesktopHost {
   private screenIdentity: HelperIdentity = 'inherited';
   private inputIdentity: HelperIdentity = 'inherited';
   private lastOwnProbe: { value: MacDesktopProbe; at: number } | null = null;
-  constructor(private readonly binary = DEFAULT_HOST) {}
+  private lastPackagedOwnProbe: { value: MacDesktopProbe | null; at: number } | null = null;
+  /** Set while the installed copy still holds a grant the kept copy lacks. */
+  private servingPackaged = false;
+  private keptProbeFailures = 0;
+  constructor(
+    private readonly binary = DEFAULT_MAC_DESKTOP_HELPER,
+    private readonly retention: DesktopHelperRetention | null = null,
+  ) {}
 
   setInputFailureHandler(handler: () => void): void { this.inputFailureHandler = handler; }
 
@@ -131,8 +140,16 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private trustedBinary(): string {
+    if (this.retention && !this.servingPackaged) {
+      const resolution = this.retention.resolve();
+      if (resolution.source === 'retained') return resolution.path;
+    }
+    return this.packagedBinary();
+  }
+
+  private packagedBinary(): string {
     if (process.platform !== 'darwin') throw new Error('mac-desktop-host-platform-unavailable');
-    const expectedDir = fs.realpathSync(path.dirname(DEFAULT_HOST));
+    const expectedDir = fs.realpathSync(path.dirname(DEFAULT_MAC_DESKTOP_HELPER));
     const resolved = fs.realpathSync(this.binary);
     if (path.dirname(resolved) !== expectedDir || !fs.statSync(resolved).isFile()) {
       throw new Error('mac-desktop-host-binary-untrusted');
@@ -198,8 +215,8 @@ export class MacDesktopHost implements DesktopHost {
     input?: Buffer,
     identity: HelperIdentity = command === 'capture' ? this.screenIdentity
       : command === 'input' || command === 'release' ? this.inputIdentity : 'inherited',
+    resolved: string = this.trustedBinary(),
   ): Promise<Buffer> {
-    const resolved = this.trustedBinary();
     return new Promise<Buffer>((resolve, reject) => {
       const child = spawn(resolved, [command], { stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(identity) });
       if (command === 'input') this.inputChildren.add(child);
@@ -242,28 +259,76 @@ export class MacDesktopHost implements DesktopHost {
    * capability: an existing inherited grant keeps working until this Mac grants
    * the helper directly, and the helper's own grant wins from then on. */
   async probe(): Promise<MacDesktopProbe> {
-    const inherited = await this.probeAs('inherited');
+    const inputLive = !!(this.inputStream || this.retiringInputStreams.size
+      || this.heldRemoteButton || this.heldRemoteKeys.size);
+    // A live stream stays with the program that started it, and held controls
+    // must be released by the program that pressed them.
+    const live = inputLive || !!this.captureStream;
+    let resolution = this.retention?.resolve() ?? null;
+    let kept = resolution?.source === 'retained' ? resolution.path : undefined;
+    let inherited: MacDesktopProbe;
+    try {
+      inherited = await this.probeAs('inherited', kept);
+      this.keptProbeFailures = 0;
+    } catch (error) {
+      if (!kept) throw error;
+      // One slow start under load is not a broken helper: use the installed
+      // copy for this check, and give up on the kept copy only if it keeps failing.
+      inherited = await this.probeAs('inherited', this.packagedBinary());
+      if (++this.keptProbeFailures >= KEPT_PROBE_FAILURE_LIMIT) this.retention!.markBroken();
+      resolution = this.retention!.resolve();
+      kept = undefined;
+      if (!live) this.servingPackaged = true;
+    }
     // Grants are rechecked every 500 ms, so one slow helper start must not read
     // as a lost grant and revoke a live session.
-    const own = await this.probeAs('own').then(value => {
+    let own = await this.probeAs('own', kept ?? (this.retention ? this.packagedBinary() : undefined)).then(value => {
       this.lastOwnProbe = { value, at: Date.now() };
       return value;
     }).catch(() => { // @silent-fallback-ok — own-identity trouble leaves the inherited reading intact.
       const recent = this.lastOwnProbe && Date.now() - this.lastOwnProbe.at < OWN_PROBE_GRACE_MS;
       return recent ? this.lastOwnProbe!.value : null;
     });
+    if (kept) {
+      const keptHoldsBoth = !!own?.screenPermission && !!own.inputPermission;
+      if (keptHoldsBoth) this.retention!.noteGranted();
+      if (!keptHoldsBoth || this.servingPackaged) {
+        // Never take away a grant that still works: a Mac whose installed copy
+        // is granted keeps using it until the kept copy has its own. The serving
+        // choice changes only here, so nothing spawned during a probe sees it flip.
+        const packaged = await this.packagedOwnProbe();
+        const better = !!packaged && Number(packaged.screenPermission) + Number(packaged.inputPermission)
+          > Number(!!own?.screenPermission) + Number(!!own?.inputPermission);
+        if (!live) this.servingPackaged = better;
+        if (this.servingPackaged && packaged) own = packaged;
+      }
+    }
     this.screenIdentity = own?.screenPermission ? 'own' : 'inherited';
     // Held controls must be released under the identity that pressed them.
-    const inputLive = this.inputStream || this.retiringInputStreams.size
-      || this.heldRemoteButton || this.heldRemoteKeys.size;
     if (!inputLive) this.inputIdentity = own?.inputPermission ? 'own' : 'inherited';
+    const screenPermission = inherited.screenPermission || !!own?.screenPermission;
+    const inputPermission = inherited.inputPermission || !!own?.inputPermission;
+    const helperChange = screenPermission && inputPermission ? null : this.retention?.permissionChange() ?? null;
     return {
       ...inherited,
-      screenPermission: inherited.screenPermission || !!own?.screenPermission,
-      inputPermission: inherited.inputPermission || !!own?.inputPermission,
+      screenPermission,
+      inputPermission,
       screenGrant: own?.screenPermission ? 'own' : inherited.screenPermission ? 'inherited' : 'none',
       inputGrant: own?.inputPermission ? 'own' : inherited.inputPermission ? 'inherited' : 'none',
+      ...(resolution ? { helperSource: this.servingPackaged ? 'packaged' as const : resolution.source } : {}),
+      ...(resolution?.reason ? { helperFallback: resolution.reason } : {}),
+      ...(helperChange ? { helperChange } : {}),
     };
+  }
+
+  /** Probed only while the kept copy lacks a grant, so at most one more helper
+   * start in each grace window on top of the 500 ms recheck. */
+  private async packagedOwnProbe(): Promise<MacDesktopProbe | null> {
+    const cached = this.lastPackagedOwnProbe;
+    if (cached && Date.now() - cached.at < OWN_PROBE_GRACE_MS) return cached.value;
+    const value = await this.probeAs('own', this.packagedBinary()).catch(() => null); // @silent-fallback-ok — no packaged reading means no fallback; the kept copy's reading stands.
+    this.lastPackagedOwnProbe = { value, at: Date.now() };
+    return value;
   }
 
   /** Shows macOS's own prompts on the Mac and lists the helper in Privacy &
@@ -279,8 +344,8 @@ export class MacDesktopHost implements DesktopHost {
     return { screenPermission: value.screenPermission, inputPermission: value.inputPermission };
   }
 
-  private async probeAs(identity: HelperIdentity): Promise<MacDesktopProbe> {
-    const raw = await this.run('probe', undefined, identity);
+  private async probeAs(identity: HelperIdentity, binary?: string): Promise<MacDesktopProbe> {
+    const raw = await this.run('probe', undefined, identity, binary);
     let value: Partial<MacDesktopProbe>;
     try { value = JSON.parse(raw.toString('utf8')) as Partial<MacDesktopProbe>; }
     catch { throw new Error('mac-desktop-host-probe-invalid'); }

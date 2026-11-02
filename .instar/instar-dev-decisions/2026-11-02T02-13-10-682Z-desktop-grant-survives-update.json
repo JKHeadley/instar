@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-02T02:13:10.682Z",
+  "slug": "desktop-grant-survives-update",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/check-native-desktop-release.mjs touches release script (fleet publish path)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 10,
+  "loc": 540,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/check-native-desktop-release.mjs",
+      "src/core/DesktopHelperPermissionNotice.ts",
+      "src/core/DesktopHelperRetention.ts",
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 523,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -139,6 +139,24 @@ describe('native desktop production boot', () => {
     }
   });
 
+  it.skipIf(process.platform !== 'darwin')('reports which helper copy is live on the production diagnostics route', async () => {
+    const { server, dir, config } = await boot(true);
+    try {
+      const response = await request(server.getApp()).get('/desktop/diagnostics')
+        .set('Authorization', `Bearer ${config.authToken}`);
+      expect(response.status).toBe(200);
+      expect(response.body.targetConstructed).toBe(true);
+      // Under a test runner the kept copy stays off by default, so a test can
+      // never touch this Mac's real one. Asserting the fallback proves the
+      // retention object reached the host through the production constructor.
+      expect(response.body.helperSource).toBe('packaged');
+      expect(response.body.helperFallback).toBe('disabled');
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/desktop-boot-lifecycle.test.ts:helper-diagnostics' });
+    }
+  });
+
   it.skipIf(process.platform !== 'darwin')('limits desktop PIN guesses and persists the attempt budget', async () => {
     const { server, dir, stateDir } = await boot(true);
     try {

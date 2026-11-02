@@ -22,6 +22,10 @@ if (!archs.has(0x0100000c) || !archs.has(0x01000007)) {
 if (!(fs.statSync(binary).mode & 0o111)) {
   throw new Error('Release desktop host is not executable');
 }
+const manifest = JSON.parse(fs.readFileSync(`${binary}.json`, 'utf8'));
+if (!/^[a-f0-9]{64}$/.test(manifest.sourceHash ?? '')) {
+  throw new Error('Release desktop host has no source hash, so Macs could not tell when their kept copy is current');
+}
 // The publish job re-checks the artifact on Linux, where codesign is absent.
 if (process.platform === 'darwin') {
   const details = execFileSync('codesign', ['-d', '-r-', '--verbose=2', binary], {
