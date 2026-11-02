@@ -2,9 +2,9 @@
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-A real GPT-tier external pass ran on all nine rounds. Rounds 1 to 7 and 9 returned "SERIOUS ISSUES"; round 8 returned "MINOR ISSUES" with no design finding. Gemini was unavailable (`gemini-not-authed`) and Grok is not enabled, so there was one external family.
+A real GPT-tier external pass ran on all ten rounds. Rounds 1 to 7, 9 and 10 returned "SERIOUS ISSUES"; round 8 returned "MINOR ISSUES" with no design finding. Gemini was unavailable (`gemini-not-authed`) and Grok is not enabled, so there was one external family.
 
-**Verdict: NOT CONVERGED after 9 rounds.** The confirming round 9 raised three design findings, all about safety. No `review-convergence` tag and no `approved` tag were written, and `/instar-dev` will refuse to build from this spec.
+**Verdict: NOT CONVERGED after 10 rounds.** Round 10 raised two design findings, both about safety. The operator accepted a weaker relock guarantee (17:44 PST, topic 134088), and neither finding questions that. No `review-convergence` tag and no `approved` tag were written, and `/instar-dev` will refuse to build from this spec.
 
 ## ELI10 Overview
 
@@ -16,7 +16,7 @@ The split removed the root helper, the step-up, the certificate and the gate. It
 
 ## Iteration Summary
 
-Reviewers ran on the session model, claude-opus-5-5. Round 1 used four panels covering all six lenses. Round 2 used two panels, and rounds 3 to 9 one, all lenses named. Each round also had Codex.
+Reviewers ran on the session model, claude-opus-5-5. Round 1 used four panels covering all six lenses. Round 2 used two panels, and rounds 3 to 10 one, all lenses named. Each round also had Codex.
 
 | Round | Reviewers | Design findings (deduped, approximate) | Left behind | Spec changes | Gate |
 |---|---|---|---|---|---|
@@ -28,40 +28,45 @@ Reviewers ran on the session model, claude-opus-5-5. Round 1 used four panels co
 | 6 | 1 panel, Codex | 5, of which 1 about safety | 7 | Typist stopped first, stale markers, control channel, held keys; operator-required P15 added | Standards-Conformance Gate: ran (2 flags) |
 | 7 | 1 panel, Codex | 3 | 10 | Guard death before admission, separate control direction, test-build route to P15 | Standards-Conformance Gate: ran (1 flag) |
 | 8 | 1 panel, Codex | 1, marginally about safety | 9 | Unlisted macOS is feature-off; policy and notification freshness; pending-duty row | Standards-Conformance Gate: ran (2 flags) |
-| 9 | 1 panel, Codex | 3, all about safety | 10 | **None applied**; verbatim below | Standards-Conformance Gate: ran (1 flag) |
+| 9 | 1 panel, Codex | 3, all about safety | 10 | Operator's 2-minute watch, one definition of gone, flag-true locked, IV domain 3 | Standards-Conformance Gate: ran (1 flag) |
+| 10 | 1 panel, Codex | 2, both about safety | 8 | **None applied**; verbatim below | Standards-Conformance Gate: ran (1 flag) |
 
 ## Proportion
 
-About 300 spec lines, 8 of 8 rounds. The run stopped at 3 under a mistaken cap, was corrected to 6, then the operator authorized 2 more with "go" in topic 134088 at 17:20 PST on 2026-11-01, checked in the topic history. Findings ran 30, 8, 8, 7, 5, 5, 3, 1, 3. Round 9 was one round past what the operator authorized. The coordinator ordered it, on the reasoning that it only adds review and makes the feature more restrictive, and said it would tell him.
+About 300 spec lines, 8 of 8 rounds. The run stopped at 3 under a mistaken cap, was corrected to 6, then the operator authorized 2 more with "go" in topic 134088 at 17:20 PST on 2026-11-01, checked in the topic history. Findings ran 30, 8, 8, 7, 5, 5, 3, 1, 3, 2. Round 9 was one round past what the operator authorized. The coordinator ordered it, on the reasoning that it only adds review and makes the feature more restrictive, and said it would tell him.
 
-Disclosure: the round 8 panel brief said a behaviour settled by a proof row is not itself a design finding, which earlier briefs did not say. That may have reduced what it raised. Codex got no such steer. Round 9 used the neutral brief again, and found more.
+Disclosure: the round 8 panel brief said a behaviour settled by a proof row is not itself a design finding, which earlier briefs did not say. That may have reduced what it raised. Codex got no such steer. Rounds 9 and 10 used the neutral brief. Round 10 was ordered by the coordinator after the operator chose the 2-minute watch. Its panel brief added that the weaker promise itself is not a finding, while whether the design delivers it is.
 
-## Round 9 findings, verbatim, not applied
+## Round 10 findings, verbatim, not applied
 
 Codex, gpt-6-astra:
 
 **Verdict: SERIOUS ISSUES**
 
-- **DESIGN — Relock / “Stopping the typist first”; P15; Honest limits.** The guard can close its duty too early. The spec explicitly permits concluding that the Mac is already locked after a 10-second `enter-pending` watch, while also acknowledging that a submission could unlock after that window. Killing the helper prevents future event posting; it does not establish that an already-posted submission has finished processing. Consequently, the stated sequence allows `relocked` followed by a delayed unlock, with the guard gone and subsequent admission permitted.
+**DESIGN — Admission can reopen before the password producer is stopped.**  
+References: **Relock → “Stopping the typist first,” “Admission,” “A dead guard.”**
 
-  P15 measures observed latency, but the text supplies no mechanism that makes that measured latency an upper bound. This is a gap in the central relock guarantee, rather than an undiscovered empirical result.
+The spec requires a guard to kill and confirm termination of the recorded `input-stream` helper before judging the lock state. However, the admission recovery path specifies killing only the **guard** before marking an expired duty `relock-failed` and allowing an ordinary grant. Guard replacement exhaustion likewise kills the guard without explicitly stopping the typist. Separately, failure to confirm typist termination can itself end in `relock-failed`, which permits admission.
 
-  **Resolution:** Separate “currently locked” from “submission resolved.” Keep an unresolved submission’s duty and admission barrier active until a trustworthy completion condition exists, or explicitly weaken the relock guarantee and obtain acceptance of that behavior. A longer fixed timeout alone does not resolve the architectural gap. P15 should include delayed submission completion beyond the timeout, not merely measure ordinary completion times.
+**Observed in the text:** these terminal paths do not consistently require proof that the password producer is gone.
 
-**Evidence boundary:** This is a textual state-machine finding, not a reproduced macOS failure. The supplied material contains proposed proof procedures, not their results or implementation source. The native password path, TOFU limitations, and exclusion of hostile same-user code are otherwise clearly explained; I found no basis here to recommend an LLM-mediated authorization layer or additional consent flow.
+**Potential consequence, not a measured result:** if Node and the guard stall while the input helper is suspended mid-send, admission recovery can terminate the guard and reopen access. The helper could subsequently resume and post password events after its duty has closed. This is distinct from the explicitly accepted risk of macOS completing an already-posted submission late.
+
+**Resolution:** make confirmed producer termination a prerequisite for reopening admission on every terminal/recovery path that could have started typing. If termination cannot be confirmed, retain an admission-blocking state even when relock has failed. Add a P12/P15 case that suspends the typist and guard, exercises deadline-based admission recovery, then resumes the typist.
+
+This is a textual design finding only. No implementation source or execution results were supplied, so I have not independently verified the stated API behavior or proof outcomes.
 
 Internal panel, claude-opus-5-5:
 
-**D1. "Confirmed gone" fails for a killed child of a hung Node, which breaks the hung-Node relock promise.** Safety, yes (Mac left unlocked). Medium. Measured: a SIGKILLed child whose parent has not reaped it stays in state `Z`; `kill(pid,0)` still succeeds and `ps` still reports its start time, so a pid-plus-start-time check reads it as alive. `input-stream` is Node's child. If Node is suspended the helper cannot be reaped, the check never passes, and the duty is held, retried, then goes `relock-failed` with the Mac unlocked. Takeover and admission hit the same problem, because the guard is also Node's child unless double-forked. Fix: define "gone" once for all three sites: no such process, or a different start time, or process state zombie. Add a P12 case: a suspended Node with an unreaped helper still ends with the Mac locked.
-
-**D2. The guard's "already locked" can be satisfied by a locked-class reading, which closes the duty as `relocked` on an unlocked Mac.** Safety, yes. Low to medium. The only "locked" concept the spec defines is locked-class, justified by "a wrong locked costs refused typing". For relock the costs reverse. With a screensaver running and the flag false, the policy row reads locked-class whenever the policy is on, delayed, unreadable, or (new this round) mid-refresh. Fix: "for relock, locked means a fresh sample with the flag true; a policy-row reading with the flag false does not count, and the guard reads no policy."
+**D1. Renewal, heartbeat and sweep are undefined during `watching`, so the new promise's "tells you" half can fail.** Safety; medium. The lease is renewed by the server, the server reads the heartbeat "at each renewal", and `relock-failed` is noticed only at each renewal and boot. The watch now runs for 2 minutes after the request is gone, and nothing says renewal continues for a marker whose request has ended. So: (1) the watch ends in `relock-failed`, the guard exits, no renewal fires, and the owner hears nothing until the next boot; (2) a guard dies mid-watch with Node healthy, nobody reads the heartbeat, and the replacement is unreachable; (3) a heartbeat that only answers renewals goes stale once Node dies, and the admission test compares the grant deadline, so another agent can SIGKILL a healthy guard, cut the watch short and write a false `relock-failed`. Fix: the guard writes its heartbeat on its own 1 s tick. The server keeps a sweep timer while any of its markers is non-terminal and until the security item is recorded, independent of any live request. For `watching`, admission compares the stored watch start plus 2 minutes plus slack. Add a P12 case: a guard killed mid-watch after Stop with Node alive is replaced, and a `relock-failed` at watch end raises the item within about 10 s without a boot.
 
 ## Left behind
 
 - **Mobile-Complete:** recorded in the spec as a conflict for the operator. P7 passing meets the standard; failing gates the per-Mac flip, never the build.
 - Conformance **fit: weak** on the parent principle in rounds 2 and 3, as before: this serves the operator's reach, not a session's.
 - Know Your Principal flag (rounds 1 and 2): the PIN is agent-readable. Enabling opens nothing without the password. The wider PIN class deserves its own item.
-- Precision from round 9: a policy refresh triggered by derived state flaps, so trigger on raw inputs; the P4 and P12 fallbacks promise a no-password mode that an unlisted version can no longer reach; `iv()` and `recordIv` use a two-way direction test, so `control` needs an explicit domain 3 and a unit test or it reuses a GCM nonce; a settings edit clears Disable, so clear it only on `enabled: true`; name the server that raises the item for another agent's dead marker; name the process carrying notifications; tie a P15 pass to the helper version constant.
+- Precision from round 10: the pre-lock check must allow `watching` as well as `executing`, or the watch never relocks; the relock trigger should be a fresh sample with the flag false; a user switch during the watch should close `closed-not-applicable`, and one unreadable end sample should retry; relate the two retry counts; the pending-duty row omits `watching`; `enter-pending` now only stamps the 15 s rule; P15's delayed case needs a detached test actor, and split P12's unreaped case; `control` needs a discriminator, `controlRecords` must be forwarded, and `scripts/desktop-compat-vectors.mjs` needs vectors.
+- Precision from round 9: a policy refresh triggered by derived state flaps, so trigger on raw inputs; the P4 and P12 fallbacks promise a no-password mode that an unlisted version can no longer reach; a settings edit clears Disable, so clear it only on `enabled: true`; name the server that raises the item for another agent's dead marker; name the process carrying notifications; tie a P15 pass to the helper version constant.
 - Precision from round 8: `control` must be binary with a discriminator, since `DesktopMeshStreamRelay` closes on non-binary, and the target holds the latest control state until the socket opens; the pending-duty table row disagrees with Admission; a delayed-password policy can end a grant at start; the unlock receipt has no proof row; a boot retry can lock a following session (safe direction, long-tail).
 - Precision from round 7: raised in the report's earlier rows and folded in.
 - Precision from round 6: the decision table still says `secretType` where the body says a reserved attempt's Enter; name `DesktopStreamManager`'s two terminal paths and `releaseBarrier`; terminal markers have no retention rule; `version` must be a helper constant; `relock-pending` applies with the feature off; item 5 should say locked-class; absolute "cannot get in" wording conflicts with the timing exception.
@@ -100,6 +105,6 @@ TeamViewer's own article is login-walled, and AnyDesk's file layout comes from a
 
 ## Convergence verdict
 
-Not converged after 9 rounds. The report states 9 rounds: 8 authorized by the operator, plus one confirming round ordered by the coordinator. Round 9 raised three design findings, all about safety, so no `review-convergence` or `approved` tag was written, and `/instar-dev` will refuse to build from this spec. As instructed, the findings are unapplied and the spec is exactly what round 9 reviewed.
+Not converged after 10 rounds. Round 10 raised two new safety design findings, so no `review-convergence` or `approved` tag was written, and no build started. As instructed, the findings are unapplied and the spec is exactly what round 10 reviewed. The operator accepted "relocks, and tells you if it couldn't" on 2026-11-01 at 17:44 PST in topic 134088; both findings say the current text does not yet deliver that promise.
 
-The operator's "go" (topic 134088, 2026-11-01 17:20 PST) and the standing rule that only constitution changes need him (2026-10-22) would cover approval of a converged spec. Neither replaces convergence.
+His "go" at 17:20 PST and the standing rule that only constitution changes need him would cover approval of a converged spec. Neither replaces convergence.

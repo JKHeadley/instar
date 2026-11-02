@@ -30,7 +30,7 @@ Your Mac password is the real barrier. Someone with a stolen dashboard PIN could
 
 ## The safeguards
 
-- The Mac locks itself again when you finish, unless you tap Leave unlocked, even if Instar crashes. If a Mac can't prove it can do this, the password option doesn't appear.
+- The Mac locks itself again when you finish, unless you tap Leave unlocked, and this holds if Instar crashes. Instar then watches for 2 minutes, relocks if the Mac opens, blocks new connections while it watches, and tells you if the Mac ended up unlocked. So the promise is "relocks, and tells you if it couldn't". A very slow unlock past 2 minutes is a risk you accepted. If a Mac can't prove it can relock, the password option doesn't appear.
 - macOS doesn't let anyone draw over the lock screen, so there is a chime at the start and a notice after you next unlock.
 - Every use is logged, and any agent can turn the feature off.
 
