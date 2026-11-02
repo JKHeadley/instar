@@ -1,0 +1,17 @@
+# Windows remote desktop: more pictures per second
+
+## What Changed
+
+Three changes to how a Windows machine sends its screen. The Windows helper no longer redraws every captured screen at the same size before compressing it; a screen that already fits is compressed as captured. The stream now starts the next grab counting from the start of the previous one, so a slow grab no longer adds the full gap on top. And the relay that carries each request between the agent in WSL and the Windows helper now reports how long the Windows side took, so the per-session picture counts split helper time from travel time.
+
+## What to Tell Your User
+
+Remote desktop on a Windows machine shows more movement per second. On Mama PC, the helper change alone took a moving page from about 2.6 to 3.8 pictures a second.
+
+## Summary of New Capabilities
+
+Higher picture rate on Windows hosts; the `[DesktopStream] frames:` line gains `hostCaptureMsAvg` for Windows hosts.
+
+## Evidence
+
+Live on Mama PC with the helper change installed: 71 pictures in 19 seconds (3.8 per second, average grab 145 ms) against 41 in 16 seconds (2.6 per second, 199 ms) before, same moving page, no drops either time. Unit tests: tests/unit/windows-desktop-capture-rate.test.ts. Existing desktop tests pass.

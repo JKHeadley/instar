@@ -21,3 +21,7 @@ If a request fails, the relay keeps later requests in order and still reports th
 ## No more black terminal window
 
 The helper used to be built as a "console" program. When Windows starts a console program in your signed-in session, it opens a terminal window for it, so a black window titled with the helper's folder sat on Mama's screen. The helper is now built as a windowless program. It still shows the red "Instar remote control active" banner while someone is connected, and nothing else.
+
+## More pictures per second
+
+A new count of where each session's pictures go showed that Mama PC dropped none, but each picture took about 200 milliseconds to grab. That limited it to about 2 or 3 a second. Three changes speed this up. The Windows helper used to redraw every captured screen at the same size before compressing it, which wasted time; it now compresses the screen as captured. The stream used to wait its full gap after each picture, even when the grab itself had been slow; it now counts the gap from when the grab started. And the small program that carries each request between Linux and Windows now reports how long the Windows side took, so the counts show the helper's share separately from the travel. On Mama, the first change alone raised a moving page from about 2.6 to 3.8 pictures a second.

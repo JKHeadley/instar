@@ -555,6 +555,7 @@ export class DirectDesktopAccess {
     let candidateGeometry = '';
     return {
       grantId: admittedGrantId, assertActive,
+      hostCaptureTiming: () => this.host.captureTiming?.() ?? null,
       captureEncrypted: async () => {
         await assertActive();
         if (activeCodec === 'h264' && this.host.captureH264) {

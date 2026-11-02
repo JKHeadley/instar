@@ -23,6 +23,7 @@ function Invoke-Relay([string]$line) {
   $body = [System.Text.Encoding]::UTF8.GetBytes([string]$command.body)
   if ($body.Length -gt 4096) { throw 'request' }
   $script:phase = 'request'
+  $clock = [System.Diagnostics.Stopwatch]::StartNew()
   $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create("http://${Address}:$Port/$op")
   $request.Proxy = $null
   $request.ServicePoint.Expect100Continue = $false
@@ -57,8 +58,8 @@ function Invoke-Relay([string]$line) {
     if ($count -gt 1250000) { throw 'reply' }
     $bytes = New-Object byte[] $count
     [Array]::Copy($buffer, $bytes, $count)
-    @{ status = [int]$response.StatusCode; type = $response.ContentType.Split(';')[0]; body = [Convert]::ToBase64String($bytes) } |
-      ConvertTo-Json -Compress
+    @{ status = [int]$response.StatusCode; type = $response.ContentType.Split(';')[0]; body = [Convert]::ToBase64String($bytes);
+      ms = [int]$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
   } finally { $response.Dispose() }
 }
 function Write-Failure {

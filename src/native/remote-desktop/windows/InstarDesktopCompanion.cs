@@ -313,19 +313,25 @@ namespace InstarDesktop {
         using (Graphics g = Graphics.FromImage(full)) g.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size);
         double scale = Math.Min(1, Math.Min(2560.0 / bounds.Width, 1440.0 / bounds.Height));
         int width = Math.Max(1, (int)(bounds.Width * scale)), height = Math.Max(1, (int)(bounds.Height * scale));
+        // A screen that already fits is encoded as captured: redrawing it at
+        // the same size cost a full-screen bicubic pass on every picture.
+        if (width == bounds.Width && height == bounds.Height) return EncodeJpeg(full);
         using (Bitmap image = new Bitmap(width, height)) {
           using (Graphics g = Graphics.FromImage(image)) {
             g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
             g.DrawImage(full, 0, 0, width, height);
           }
-          ImageCodecInfo codec = Array.Find(ImageCodecInfo.GetImageEncoders(), c => c.MimeType == "image/jpeg");
-          foreach (long quality in new long[] { 82, 70, 55 }) {
-            using (MemoryStream output = new MemoryStream()) using (EncoderParameters options = new EncoderParameters(1)) {
-              options.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-              image.Save(output, codec, options);
-              if (output.Length <= MaxFrame) return output.ToArray();
-            }
-          }
+          return EncodeJpeg(image);
+        }
+      }
+    }
+    static readonly ImageCodecInfo JpegCodec = Array.Find(ImageCodecInfo.GetImageEncoders(), c => c.MimeType == "image/jpeg");
+    static byte[] EncodeJpeg(Bitmap image) {
+      foreach (long quality in new long[] { 82, 70, 55 }) {
+        using (MemoryStream output = new MemoryStream()) using (EncoderParameters options = new EncoderParameters(1)) {
+          options.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+          image.Save(output, JpegCodec, options);
+          if (output.Length <= MaxFrame) return output.ToArray();
         }
       }
       throw new InvalidOperationException();

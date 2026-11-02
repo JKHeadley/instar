@@ -11,6 +11,8 @@ export interface DesktopStreamSession {
   /** Point-of-use grant, lease, revocation and OS-session check. */
   assertActive(): Promise<void>;
   captureEncrypted(): Promise<Buffer | null>;
+  /** Optional running totals of capture time inside the host OS. */
+  hostCaptureTiming?(): { count: number; totalMs: number; maxMs: number } | null;
   /** Commit the latest frame only after ws.send accepts it into the bounded queue. */
   frameQueued?(): void;
   frameDropped?(): void;
@@ -95,6 +97,7 @@ export class DesktopStreamManager {
     const stats = { startedAt: Date.now(), ticks: 0, backpressure: 0, captures: 0, unchanged: 0,
       captureMsTotal: 0, captureMsMax: 0, captureFailed: 0, sent: 0, sentBytes: 0,
       droppedBudget: 0, droppedBuffer: 0, droppedSize: 0 };
+    const hostTimingAtStart = session.hostCaptureTiming?.() ?? null;
     const refreshHoldLease = () => {
       if (!heldButton && heldKeys.size === 0) return;
       if (holdTimer) clearTimeout(holdTimer);
@@ -110,7 +113,13 @@ export class DesktopStreamManager {
       closed = true;
       // Reason code only: never log the grant, operator, screen, or input.
       console.warn(`[DesktopStream] closed: ${reason}`);
-      console.warn(`[DesktopStream] frames: ${JSON.stringify(desktopStreamFrameSummary(stats, Date.now()))}`);
+      const hostTiming = session.hostCaptureTiming?.() ?? null;
+      const hostCaptures = hostTiming && hostTimingAtStart ? hostTiming.count - hostTimingAtStart.count : 0;
+      console.warn(`[DesktopStream] frames: ${JSON.stringify({ ...desktopStreamFrameSummary(stats, Date.now()),
+        ...(hostTiming && hostTimingAtStart && hostCaptures > 0 ? {
+          hostCaptureMsAvg: Math.round((hostTiming.totalMs - hostTimingAtStart.totalMs) / hostCaptures),
+          hostCaptureMsMaxEver: hostTiming.maxMs,
+        } : {}) })}`);
       if (timer) clearTimeout(timer);
       if (holdTimer) clearTimeout(holdTimer);
       if (this.sockets.get(session.grantId) === ws) this.sockets.delete(session.grantId);
@@ -120,6 +129,7 @@ export class DesktopStreamManager {
     };
     const nextFrame = async () => {
       if (closed) return;
+      const tickStarted = Date.now();
       if (Date.now() - lastActivity >= IDLE_MS) { close('idle'); return; }
       try {
         await session.assertActive();
@@ -171,7 +181,9 @@ export class DesktopStreamManager {
         }
       } catch { /* @silent-fallback-ok — close records the reason and revokes access. */ close('authority-failed'); return; }
       if (!closed) {
-        timer = setTimeout(() => { void nextFrame(); }, FRAME_INTERVAL_MS);
+        // Pace from the start of this tick: a slow grab already used part of
+        // the gap, so waiting the full interval again only lowered the rate.
+        timer = setTimeout(() => { void nextFrame(); }, Math.max(5, FRAME_INTERVAL_MS - (Date.now() - tickStarted)));
         timer.unref?.();
       }
     };

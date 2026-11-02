@@ -133,6 +133,8 @@ export interface DesktopHost {
   probe(): Promise<DesktopProbe>;
   requestPermission?(): Promise<{ screenPermission: boolean; inputPermission: boolean }>;
   capture(): Promise<Buffer>;
+  /** Optional: running totals of capture time spent inside the host OS. */
+  captureTiming?(): { count: number; totalMs: number; maxMs: number };
   captureH264?(forceKeyframe: boolean): Promise<import('./DesktopVideo.js').DesktopH264Frame | null>;
   cursor?(): Promise<{ x: number; y: number }>;
   input(action: DesktopInput): Promise<void>;
