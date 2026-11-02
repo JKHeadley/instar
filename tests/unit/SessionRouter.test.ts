@@ -28,7 +28,7 @@ function makeRouter(over: Partial<SessionRouterDeps> = {}, registry: MachineCapa
     casClaimOwnership: vi.fn((_s: string, _m: string, e: number) => ({ ok: true, epoch: e + 1 })),
     deliverMessage: async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck,
     handleLocally: vi.fn(async () => {}),
-    spawnOnMachine: vi.fn(async () => {}),
+    spawnOnMachine: vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const })),
     queueMessage: vi.fn(() => 'refused' as const),
     raiseAttention: vi.fn(),
     markOwnerSuspect: vi.fn(),
@@ -113,7 +113,7 @@ describe('SessionRouter.dispatch (§L4)', () => {
   });
 
   it('owner not alive → owner-dead re-placement (marks suspect, re-places, claims)', async () => {
-    const spawn = vi.fn(async () => {});
+    const spawn = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const }));
     const { router, deps } = makeRouter({
       resolveOwnership: () => ({ owner: 'm_dead', epoch: 1, status: 'active' }),
       isMachineAlive: (m) => m !== 'm_dead',
@@ -132,12 +132,12 @@ describe('SessionRouter.dispatch (§L4)', () => {
   });
 
   it('unowned → place → CAS won → spawn on the chosen remote machine + CONFIRM the owner (placing→active, bug #11)', async () => {
-    const spawn = vi.fn(async () => {});
+    const spawn = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const }));
     const confirmClaim = vi.fn();
     const { router } = makeRouter({ spawnOnMachine: spawn, confirmClaim }, [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })]);
     const out = await router.route(msg());
     expect(out).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
-    expect(spawn).toHaveBeenCalledWith('m_remote', expect.objectContaining({ sessionKey: 's1' }));
+    expect(spawn).toHaveBeenCalledWith('m_remote', expect.objectContaining({ sessionKey: 's1' }), 1); // the CAS-landed epoch
     // bug #11: without this confirm the record stays 'placing' and later messages queue forever.
     expect(confirmClaim).toHaveBeenCalledWith('s1', 'm_remote');
   });
@@ -336,5 +336,100 @@ describe('SessionRouter — channel-scope threading (placement-platform-workspac
     await router.route(msg()); // no channel
     const req = decideSpy.mock.calls[0][0] as { channel?: unknown };
     expect(req.channel).toBeUndefined();
+  });
+});
+
+// 2026-11-01 (Echo Bugs topic 10000001183): a message arrived while its topic
+// moved to another machine. The placement hop sent epoch 0 and ignored the
+// reply; the receiver held an older record for the topic, NACKed it stale, and
+// the router still reported `spawned` — so nothing handled the message.
+describe('SessionRouter — remote placement reads the spawn ACK', () => {
+  const remoteFirst = [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })];
+
+  it('spawn carries the epoch the placement CAS landed (not 0)', async () => {
+    const spawn = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const }));
+    const { router } = makeRouter({
+      resolveOwnership: () => ({ owner: null, epoch: 3, status: null }), // a released record at epoch 3
+      spawnOnMachine: spawn,
+    }, remoteFirst);
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
+    expect(spawn).toHaveBeenCalledWith('m_remote', expect.objectContaining({ sessionKey: 's1' }), 4);
+  });
+
+  it('the incident: a receiver holding an older record accepts the placement at the CAS epoch', async () => {
+    const { createDeliverMessageHandler } = await import('../../src/core/DeliverMessageHandler.js');
+    const receiver = createDeliverMessageHandler({ ownerEpochOf: () => 3, recordReceipt: () => true });
+    const spawn = vi.fn(async (_m: string, m: InboundMessage, epoch: number) =>
+      receiver({ type: 'deliverMessage', session: m.sessionKey, messageId: m.messageId, payload: m.payload, ownershipEpoch: epoch }) as DeliverAck);
+    const { router } = makeRouter({ resolveOwnership: () => ({ owner: null, epoch: 3, status: null }), spawnOnMachine: spawn }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
+    // The pre-fix hop (epoch 0) is exactly what this receiver refuses.
+    expect(receiver({ type: 'deliverMessage', session: 's1', messageId: 'evt-2', payload: 'x', ownershipEpoch: 0 })).toMatchObject({ accepted: 'stale-ownership' });
+  });
+
+  it('stale-ownership spawn ACK → NOT spawned: placement taken back and handled locally, no remote confirm', async () => {
+    const confirmClaim = vi.fn();
+    const reclaimPlacement = vi.fn(() => true);
+    const { router, deps } = makeRouter({
+      spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'stale-ownership' as const }),
+      confirmClaim,
+      reclaimPlacement,
+    }, remoteFirst);
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'handled-locally', owner: SELF, detail: 'spawn-stale-ownership', acked: true });
+    expect(isRemotelyHandled(out, SELF)).toBe(false); // the caller dispatches locally
+    expect(reclaimPlacement).toHaveBeenCalledWith('s1', 'm_remote');
+    expect(deps.handleLocally).toHaveBeenCalledOnce();
+    expect(confirmClaim).not.toHaveBeenCalled();
+    expect(deps.markOwnerSuspect).not.toHaveBeenCalled(); // it answered; it is not dead
+  });
+
+  it('spawn transport failure → retries, marks the target suspect, then takes the placement back', async () => {
+    const spawn = vi.fn(async () => { throw new Error('ETIMEDOUT'); });
+    const reclaimPlacement = vi.fn(() => true);
+    const { router, deps } = makeRouter({ spawnOnMachine: spawn, reclaimPlacement }, remoteFirst);
+    const out = await router.route(msg());
+    expect(spawn).toHaveBeenCalledTimes(4); // initial + 3 retries
+    expect(deps.markOwnerSuspect).toHaveBeenCalledWith('m_remote');
+    expect(out).toMatchObject({ action: 'handled-locally', detail: 'spawn-unreachable', acked: true });
+  });
+
+  it('a missing ACK is never read as success', async () => {
+    const reclaimPlacement = vi.fn(() => true);
+    const { router } = makeRouter({ spawnOnMachine: (async () => undefined) as never, reclaimPlacement }, remoteFirst);
+    expect((await router.route(msg())).action).toBe('handled-locally');
+  });
+
+  it('placement cannot be taken back → durable custody (acked) when the queue takes it', async () => {
+    const queueMessage = vi.fn(() => 'queued' as const);
+    const { router } = makeRouter({
+      spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'stale-ownership' as const }),
+      reclaimPlacement: () => false,
+      queueMessage,
+    }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'queued', detail: 'spawn-stale-ownership', acked: true });
+    expect(queueMessage).toHaveBeenCalledWith(expect.anything(), 'spawn-stale-ownership');
+  });
+
+  it('no take-back and no queue → un-acked, so the caller falls through to local dispatch', async () => {
+    const { router } = makeRouter({ spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'stale-ownership' as const }) }, remoteFirst);
+    const out = await router.route(msg());
+    expect(out).toMatchObject({ action: 'queued', acked: false });
+    expect(isRemotelyHandled(out, SELF)).toBe(false);
+  });
+
+  it('a duplicate spawn ACK counts as taken (the target already holds it)', async () => {
+    const confirmClaim = vi.fn();
+    const { router } = makeRouter({ spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'duplicate' as const }), confirmClaim }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'spawned', owner: 'm_remote', acked: true });
+    expect(confirmClaim).toHaveBeenCalledWith('s1', 'm_remote');
+  });
+
+  it('a sender-rejected spawn ACK is a terminal refusal, never spawned or re-placed', async () => {
+    const reclaimPlacement = vi.fn(() => true);
+    const { router } = makeRouter({ spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'sender-rejected' as const }), reclaimPlacement }, remoteFirst);
+    expect(await router.route(msg())).toMatchObject({ action: 'rejected', detail: 'sender-deauthorized', acked: true });
+    expect(reclaimPlacement).not.toHaveBeenCalled();
   });
 });

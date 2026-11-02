@@ -36,7 +36,7 @@ let deps: QueueDrainLoopDeps & {
   pisCleared: string[];
   dispatchResults: Map<string, DrainDispatchResult | ((h: DrainHandover) => Promise<DrainDispatchResult>)>;
   dispatchCalls: DrainMessage[];
-  forceReplaceResult: boolean;
+  forceReplaceResult: boolean | 'rejected' | 'local';
   forceReplaceCalls: DrainMessage[];
   verdicts: Map<string, 'hold' | 'failover' | 'deliver'>;
   stopped: Set<string>;
@@ -480,6 +480,45 @@ describe('maxAttempts → final forced re-place (§3.3)', () => {
       advance(deps.qcfg.maxBackoffMs + 1000);
       await loop.runDrainPass('test');
     }
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('attempts-exhausted');
+    expect(deps.lossReports.some((r) => r.reason === 'attempts-exhausted')).toBe(true);
+  });
+});
+
+describe('maxAttempts → forced re-place lands on THIS machine (`local`)', () => {
+  function exhaust(seq: number): Promise<void> {
+    return (async () => {
+      for (let i = 0; i < deps.qcfg.maxAttempts; i++) {
+        advance(deps.qcfg.maxBackoffMs + 1000);
+        await loop.runDrainPass('test');
+      }
+      expect(store.getRow(seq)?.attempts).toBe(deps.qcfg.maxAttempts);
+    })();
+  }
+
+  it('runs ONE local dispatch under the held claim; delivered only when that dispatch delivers', async () => {
+    const seq = enqueue('s', 'm');
+    deps.dispatchResults.set('m', { kind: 'un-routable', reason: 'transferring' });
+    await exhaust(seq);
+    deps.forceReplaceResult = 'local';
+    deps.dispatchResults.set('m', { kind: 'local-delivered' });
+    const before = deps.dispatchCalls.length;
+    advance(deps.qcfg.maxBackoffMs + 1000);
+    await loop.runDrainPass('test');
+    expect(deps.forceReplaceCalls).toHaveLength(1);
+    expect(deps.dispatchCalls.length).toBe(before + 1);
+    expect(store.getRow(seq)?.state).toBe('delivered');
+  });
+
+  it('the local dispatch fails → terminal attempts-exhausted + loss notice (bounded, never silent)', async () => {
+    const seq = enqueue('s', 'm');
+    deps.dispatchResults.set('m', { kind: 'un-routable', reason: 'transferring' });
+    await exhaust(seq);
+    deps.forceReplaceResult = 'local';
+    deps.dispatchResults.set('m', { kind: 'failed', error: new Error('spawn failed') });
+    advance(deps.qcfg.maxBackoffMs + 1000);
+    await loop.runDrainPass('test');
     expect(store.getRow(seq)?.state).toBe('expired');
     expect(store.getRow(seq)?.terminal_reason).toBe('attempts-exhausted');
     expect(deps.lossReports.some((r) => r.reason === 'attempts-exhausted')).toBe(true);

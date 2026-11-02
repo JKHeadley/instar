@@ -107,8 +107,11 @@ export interface QueueDrainLoopDeps {
    *  non-terminal failure (→ attempts-exhausted), or the DISTINCT `'rejected'`
    *  verdict when the re-place hit a first-class sender refusal (silent-loss-
    *  refusal-conservation §2.A — mapped to the SAME sender-deauthorized terminal
-   *  + unified notice, NOT mislabeled attempts-exhausted). */
-  forceReplace(msg: DrainMessage): Promise<boolean | 'rejected'>;
+   *  + unified notice, NOT mislabeled attempts-exhausted). `'local'` means
+   *  the re-place put the session on THIS machine: the router only decided,
+   *  nothing has delivered the message yet, so the drain runs ONE local
+   *  dispatch under the held claim (a failure there is terminal). */
+  forceReplace(msg: DrainMessage): Promise<boolean | 'rejected' | 'local'>;
   /** §4 hold verdict — required; the server injects always-'failover' when the
    *  policy is off (§4.2). Pure in-memory (breaker + capacity registry). */
   holdVerdict(sessionKey: string): HoldVerdict;
@@ -782,11 +785,16 @@ export class QueueDrainLoop {
       const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
       if (!claimed) return;
       this.d.store.incrementCounter('holdBypassedByAttemptsCap');
-      let res: boolean | 'rejected' = false;
+      let res: boolean | 'rejected' | 'local' = false;
       try {
         res = await this.d.forceReplace(this.toMsg(row, senderEnvelope, topicMetadata));
       } catch { res = false; }
-      if (res === true) {
+      if (res === 'local') {
+        // Counting this `delivered` would drop the message: the router's
+        // local verdict is only a decision (2026-11-01 second-pass finding).
+        summary.dispatched += 1;
+        await this.dispatchClaimed(row, claimed, senderEnvelope, topicMetadata, summary, true);
+      } else if (res === true) {
         this.d.store.transition(row.enqueue_seq, 'claimed', 'delivered', { nowIso: new Date(this.d.now()).toISOString() });
         this.mirrorRemove(row.session_key);
         summary.delivered += 1;
@@ -798,9 +806,7 @@ export class QueueDrainLoop {
         this.mirrorRemove(row.session_key);
         this.d.reportLoss([this.lossItem(row, 'sender-deauthorized')], 'sender-deauthorized');
       } else {
-        this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso: new Date(this.d.now()).toISOString(), terminalReason: 'attempts-exhausted' });
-        this.mirrorRemove(row.session_key);
-        this.d.reportLoss([this.lossItem(row, 'attempts-exhausted')], 'attempts-exhausted');
+        this.expireAttemptsExhausted(row, new Date(this.d.now()).toISOString());
       }
       return;
     }
@@ -809,7 +815,21 @@ export class QueueDrainLoop {
     const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
     if (!claimed) return;
     summary.dispatched += 1;
+    await this.dispatchClaimed(row, claimed, senderEnvelope, topicMetadata, summary, false);
+  }
 
+  /** Dispatch a claimed row and settle it. `final` (the forced re-place's one
+   *  local attempt): a retryable failure terminals attempts-exhausted instead
+   *  of releasing, so the escape hatch stays bounded. */
+  private async dispatchClaimed(
+    row: PendingInboundRow,
+    claimed: { attempts: number },
+    senderEnvelope: SenderEnvelope | null,
+    topicMetadata: unknown,
+    summary: DrainPassSummary,
+    final: boolean,
+  ): Promise<void> {
+    const q = this.d.qcfg;
     // The §3.4 handover contract, bound to THIS row.
     const handover: DrainHandover = {
       commitReceipt: () => this.d.store.writeReceiptIfClaimed(row.enqueue_seq, row.session_key, row.message_id, new Date(this.d.now()).toISOString()),
@@ -873,12 +893,14 @@ export class QueueDrainLoop {
         // attempts++ (§3.1 round-3: without the increment, maxAttempts was
         // unreachable from this class).
         summary.unroutable += 1;
-        this.releaseWithBackoff(row, claimed.attempts + 1, `un-routable: ${result.reason}`, settleIso);
+        if (final) this.expireAttemptsExhausted(row, settleIso);
+        else this.releaseWithBackoff(row, claimed.attempts + 1, `un-routable: ${result.reason}`, settleIso);
         break;
       }
       case 'failed': {
         summary.failed += 1;
-        this.releaseWithBackoff(row, claimed.attempts + 1, sanitizeError(result.error) ?? 'dispatch-failed', settleIso);
+        if (final) this.expireAttemptsExhausted(row, settleIso);
+        else this.releaseWithBackoff(row, claimed.attempts + 1, sanitizeError(result.error) ?? 'dispatch-failed', settleIso);
         break;
       }
     }
@@ -893,6 +915,12 @@ export class QueueDrainLoop {
       topicMetadata,
       enqueueSeq: row.enqueue_seq,
     };
+  }
+
+  private expireAttemptsExhausted(row: PendingInboundRow, nowIso: string): void {
+    this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso, terminalReason: 'attempts-exhausted' });
+    this.mirrorRemove(row.session_key);
+    this.d.reportLoss([this.lossItem(row, 'attempts-exhausted')], 'attempts-exhausted');
   }
 
   private releaseWithBackoff(row: PendingInboundRow, attempts: number, lastError: string, nowIso: string): void {

@@ -27172,10 +27172,27 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               throw new Error(`deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
             },
-            spawnOnMachine: async (machineId, msg) => {
+            // The placement hop is a deliverMessage at the epoch the CAS just
+            // landed, read exactly like a forward. It used to send epoch 0 and
+            // discard the reply: a receiver holding an older record for the
+            // topic NACKed it stale and the router still logged 'spawned'.
+            spawnOnMachine: async (machineId, msg, ownershipEpoch) => {
               const url = peerUrl(machineId);
               if (!url) throw new Error(`no peer url for ${machineId}`);
-              await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: 0 }, 0);
+              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
+              if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
+                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' };
+              }
+              throw new Error(`spawn deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
+            },
+            // Take back a placement whose spawn never landed (see SessionRouter):
+            // only the still-placing record this router put on `placedOn`.
+            reclaimPlacement: (sk, placedOn) => {
+              const cur = ownReg.read(sk);
+              if (!cur || cur.status !== 'placing' || cur.ownerMachineId !== placedOn) return false;
+              const r = ownReg.cas({ type: 'force-claim', machineId: meshSelfId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:rc:${++routerNonce}` });
+              emitPlacement(sk, r, 'failover', placedOn);
+              return r.ok;
             },
             handleLocally: async () => { /* inbound interception falls through to the existing local spawn */ },
             // Durable Inbound Message Queue §2.2: tri-state custody taking.
