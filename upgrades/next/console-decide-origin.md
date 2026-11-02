@@ -13,3 +13,5 @@ No new capability; a fix.
 ## Evidence
 
 Operator screenshot 2026-11-01 23:03: Approve on CMT-1206 answered "ambiguous across machines". The pool view holds CMT-1206 on the Studio (pending), the Mac Mini and the Laptop (expired).
+
+The session History view and composer now fit a phone screen: long one-line tool entries no longer widen the page, and "Back to live" no longer floats over History.

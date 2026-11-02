@@ -14,3 +14,11 @@ Mark as done, Drop and Resume.
 
 ## 6b. Operator-surface quality
 No visual change; the buttons now work.
+
+## Also: History at phone width
+Operator screenshot 2026-11-01 23:05: on a phone the History view and composer ran off the right
+edge. Tool lines never wrap, so their min-content width widened the open session and the page's
+grid column (measured 760 px in a 390 px viewport). `min-width: 0` on `.main`, `.sess-view`,
+`.sess-open`, `.sess-term-wrap`, `.sess-composer` and the input keeps them inside the screen
+(measured 358 px); long tool lines are cut with an ellipsis as designed. "Back to live" no
+longer floats over History, which has no live stream. Desktop is unaffected (same widths).
