@@ -36,7 +36,7 @@ function fixture(lockedOn: boolean) {
       if (op.op === 'read') return { state: { markers }, attempts: { count: 0 } };
       if (op.op === 'marker-create') { markers[op.key] ??= { ...op.marker, state: 'owed' }; return { marker: markers[op.key] }; }
       if (op.op === 'relock-now') { if (markers[op.key]) markers[op.key].relockNow = true; return {}; }
-      if (op.op === 'leave-unlocked') { markers[op.key].state = 'left-unlocked'; return { ok: true }; }
+      if (op.op === 'leave-unlocked') { if (!markers[op.key]) return { ok: false }; markers[op.key].state = 'left-unlocked'; return { ok: true }; }
       return { ok: true };
     },
   };
@@ -68,11 +68,13 @@ function fixture(lockedOn: boolean) {
   } as unknown as DesktopHost;
   const targetKey = crypto.generateKeyPairSync('ed25519');
   const closed: string[] = [];
+  const audits: Array<Record<string, unknown>> = [];
   const authority = new DirectDesktopAccess('machine-1', 'Echo Mac', host,
     { get: () => 0, recordFailure: () => ({ attempts: 0, lockedUntilMs: 0 }) } as never,
     { publicKey: targetKey.publicKey.export({ format: 'der', type: 'spki' }) as Buffer,
       sign: payload => crypto.sign(null, payload, targetKey.privateKey) },
-    () => true, () => true, async () => {}, id => { closed.push(id); }, () => now, undefined, 'pin', undefined,
+    () => true, () => true, async () => {}, id => { closed.push(id); }, () => now,
+    { record: (event: Record<string, unknown>) => { audits.push(event); } } as never, 'pin', undefined,
     controller);
   const browser = crypto.generateKeyPairSync('ed25519');
   const ecdh = crypto.createECDH('prime256v1');
@@ -91,7 +93,7 @@ function fixture(lockedOn: boolean) {
     socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
     return { requestId, stream };
   };
-  return { authority, controller, world, markers, inputs, secrets, closed, open, root,
+  return { authority, controller, world, markers, inputs, secrets, closed, audits, open, root,
     setProbeFails: (v: boolean) => { probeFails = v; }, setCaptureFails: (v: boolean) => { captureFails = v; },
     setSecretReply: (v: void | { refused: string }) => { secretReply = v; }, setEnterAt: (v: number) => { enterAt = v; },
     advance: (ms: number) => { now += ms; perf += ms; }, tickProbe: () => { perf += 600; }, failInput: () => failHandler?.() };
@@ -104,6 +106,17 @@ describe('DirectDesktopAccess at the lock', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     for (const root of cleanup) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'test cleanup' });
+  });
+
+  it('records Leave unlocked in the desktop access audit', async () => {
+    const f = make();
+    const { stream } = await f.open();
+    await (stream as unknown as { leaveUnlocked: () => Promise<void> }).leaveUnlocked();
+    const row = f.audits.find(event => event.kind === 'leave-unlocked');
+    const start = f.audits.find(event => event.kind === 'start');
+    expect(row).toMatchObject({ kind: 'leave-unlocked', machineId: 'machine-1', authMethod: 'pin',
+      grantId: start!.grantId, operatorUid: start!.operatorUid });
+    expect(typeof row!.acknowledged).toBe('boolean');
   });
 
   it('with the feature off a locked Mac stays not ready, exactly as today', async () => {

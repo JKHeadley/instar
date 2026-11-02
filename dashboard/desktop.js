@@ -1430,7 +1430,7 @@ $('stopButton').addEventListener('click', async () => {
   catch { message = 'The viewer closed, but the target has not confirmed revocation. Access expires automatically.'; }
   leave(message);
 });
-$('lockedPassword').addEventListener('submit', event => {
+$('lockedPassword')?.addEventListener('submit', event => {
   event.preventDefault();
   const input = $('lockedPasswordInput');
   const text = input.value;
@@ -1455,8 +1455,8 @@ async function refreshLockedCard() {
     void refreshLockedCard();
   };
 }
-$('machine').addEventListener('change', () => { void refreshLockedCard(); });
-$('leaveUnlockedButton').addEventListener('click', () => { void sendCommand({ type: 'leave-unlocked' }); });
+$('machine')?.addEventListener('change', () => { void refreshLockedCard(); });
+$('leaveUnlockedButton')?.addEventListener('click', () => { void sendCommand({ type: 'leave-unlocked' }); });
 window.addEventListener('beforeunload', () => {
   stopping = true;
   sendCommand({ type: 'stop' });

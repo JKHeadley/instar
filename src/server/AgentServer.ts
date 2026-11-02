@@ -834,8 +834,7 @@ export class AgentServer {
         return { ...await controller.applySettings(patch) };
       },
       disable: async () => {
-        await controller.disable();
-        access.endLockedGrants();
+        await controller.disable(() => access.endLockedGrants());
       },
     };
   }
@@ -2918,8 +2917,12 @@ export class AgentServer {
                   title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
                   category: 'security', sourceContext: 'desktop-locked' } as never);
                 return true;
-              } catch {
+              } catch (error) {
                 console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
+                DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+                  primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
+                  reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
+                  impact: 'The owner is not yet told about a locked-screen security event.' });
                 return false;
               }
             },

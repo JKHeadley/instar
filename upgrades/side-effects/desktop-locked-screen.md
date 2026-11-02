@@ -98,6 +98,24 @@ A second reviewer confirmed those fixes and raised: "Concern raised: the relock 
 
 A third, narrow check of the guard paths ended: "Concur with the review". Its one minor note, a sweep timer stopping with an untold failure file, was fixed.
 
+**Reviewer:** independent subagent, second pass of the merged branch, 2026-11-01
+
+This pass read the branch after it was merged with `main`. It found three things, all fixed here:
+
+- Turning the feature off wrote the helper's Mac-wide off marker first. If that helper call threw or hung, the setting was never saved and open locked-screen sessions were never ended. Now the setting is saved and the sessions are ended first, and the marker is tried last with a 5-second limit. A marker failure is audited, named in the security item, and returned as an error. `tests/unit/DesktopLockedController.test.ts` covers a helper that throws and one that hangs.
+- "Leave unlocked" was not recorded anywhere, because the controller's audit hook was never connected. It is now recorded in the existing desktop access audit (`desktop-access-<date>.jsonl`) as a `leave-unlocked` row with the grant and operator references and whether the tap beat the relock. `tests/unit/DirectDesktopAccess.locked.test.ts` covers it.
+- The production-boot test accepted either 403 or 409 and only checked the reason when a session existed. It now requires a real operator session and exactly 409 `unsupported-macos`.
+
+The full verify also named two failures. Fifteen were the viewer calling three new listeners on elements older pages lack; those now use optional chaining. The other two were the silent-fallback ratchet (496 against a baseline of 494): the periodic sweep's failure and the security item's failure only logged a warning. Both now also report through `DegradationReporter`.
+
+**Known minor** (recorded by the reviewer, not changed here):
+
+- A setting flipped in the middle of a grant.
+- How the guard counts.
+- The typist being ended with SIGKILL.
+- The ignored reply from `marker-create`.
+- Status fan-out per target.
+
 ## Class-Closure Declaration
 
 `unbounded-self-action`, closure `guard`, enforcement `ratchet`, citing `tests/unit/self-action-convergence.test.ts`. Guard replacement caps at 3 per duty on a durable count, and helper respawn caps at 8 per request, then each fails loudly. Both are modeled in the ratchet with the state flapping on every tick.

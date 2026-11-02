@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DesktopLockedController, RELOCK_WATCH_MS, type DesktopLockedSettings, type DesktopRelockMarker } from '../../src/core/DesktopLockedController.js';
+import { DesktopLockedController, DISABLE_MARKER_TIMEOUT_MS, RELOCK_WATCH_MS, type DesktopLockedSettings, type DesktopRelockMarker } from '../../src/core/DesktopLockedController.js';
 import { PROVEN_MACOS_VERSIONS } from '../../src/core/DesktopProvenVersions.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -307,5 +307,36 @@ describe('DesktopLockedController', () => {
     expect(host.store.disabled).toBe(true);
     await controller.applySettings({ enabled: true });
     expect(host.store.disabled).toBe(false);
+  });
+
+  it('disable turns the setting and the grants off even when the helper marker fails', async () => {
+    const controller = build();
+    const order: string[] = [];
+    const real = host.lockedOp;
+    host.lockedOp = async (op: Record<string, any>) => {
+      if (op.op === 'set-disabled') { order.push('marker'); throw new Error('helper exploded'); }
+      return real(op);
+    };
+    await expect(controller.disable(() => { order.push('grants'); expect(settings.enabled).toBe(false); }))
+      .rejects.toThrow('helper exploded');
+    expect(settings.enabled).toBe(false);
+    expect(order).toEqual(['grants', 'marker']);
+    expect(security).toHaveLength(1);
+    expect(host.store.disabled).toBe(false);
+  });
+
+  it('disable does not wait forever on a hung helper marker', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = build();
+      let ended = false;
+      host.lockedOp = (op: Record<string, any>) => op.op === 'set-disabled' ? new Promise(() => {}) : Promise.resolve({});
+      const done = controller.disable(() => { ended = true; });
+      const settled = expect(done).rejects.toThrow('locked-disable-marker-timeout');
+      await vi.advanceTimersByTimeAsync(DISABLE_MARKER_TIMEOUT_MS + 1);
+      await settled;
+      expect(ended).toBe(true);
+      expect(settings.enabled).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
 });

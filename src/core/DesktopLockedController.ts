@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { classifyDesktopLock, isLockedClass, type DesktopLockPolicy, type DesktopLockSample, type DesktopLockState } from './DesktopLockState.js';
 import { PROVEN_MACOS_VERSIONS, provenVersion, type DesktopProvenVersion } from './DesktopProvenVersions.js';
 
@@ -23,6 +24,7 @@ const GUARD_ACK_MS = 3_000;
 const HEARTBEAT_STALE_MS = 5_000;
 export const MAX_GUARD_REPLACEMENTS = 3;
 const RESUME_WINDOW_MS = 30_000;
+export const DISABLE_MARKER_TIMEOUT_MS = 5_000;
 export const RESPAWNS_PER_CHANGE = 3;
 export const RESPAWNS_PER_REQUEST = 8;
 const TERMINAL = new Set(['relocked', 'relock-failed', 'left-unlocked', 'closed-not-applicable']);
@@ -294,12 +296,32 @@ export class DesktopLockedController {
     return (await this.read()).markers[entry.key]?.enterPendingAt ?? null;
   }
 
-  async disable(): Promise<void> {
-    await this.deps.host.lockedOp({ op: 'set-disabled', disabled: true });
+  /** The setting and the live grants go off first, so a helper that throws or
+   * hangs cannot leave a session running; the Mac-wide marker is attempted last. */
+  async disable(endGrants?: () => void): Promise<void> {
     const next = { ...this.deps.settings(), enabled: false };
     this.deps.saveSettings(next);
-    this.deps.raiseSecurity({ key: 'desktop-locked-disabled', title: 'Remote desktop through the lock was turned off',
-      body: 'Any open locked-screen session was ended. The dashboard PIN turns it back on.' });
+    let markerError: unknown = null;
+    try {
+      endGrants?.();
+    } finally {
+      try {
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          this.deps.host.lockedOp({ op: 'set-disabled', disabled: true }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('locked-disable-marker-timeout')), DISABLE_MARKER_TIMEOUT_MS); }),
+        ]).finally(() => clearTimeout(timer));
+      } catch (err) {
+        // Surfaced, not swallowed: audited, named in the security item, and re-thrown below.
+        markerError = err;
+      }
+      this.deps.audit?.({ kind: 'locked-disable', markerWritten: markerError === null });
+      this.deps.raiseSecurity({ key: 'desktop-locked-disabled', title: 'Remote desktop through the lock was turned off',
+        body: markerError === null
+          ? 'Any open locked-screen session was ended. The dashboard PIN turns it back on.'
+          : 'Any open locked-screen session was ended and the setting is off, but the Mac-wide off marker could not be written. Turn it off again from the dashboard to retry.' });
+    }
+    if (markerError !== null) throw markerError instanceof Error ? markerError : new Error(String(markerError));
   }
 
   async isDisabled(): Promise<boolean> { return (await this.read()).disabled; }
@@ -333,7 +355,15 @@ export class DesktopLockedController {
 
   private startSweep(): void {
     if (this.sweepTimer) return;
-    this.sweepTimer = setInterval(() => { void this.sweep().catch(() => { console.warn('[instar] locked-screen sweep failed'); }); }, SWEEP_MS);
+    this.sweepTimer = setInterval(() => {
+      void this.sweep().catch((error: unknown) => {
+        console.warn('[instar] locked-screen sweep failed');
+        DegradationReporter.getInstance().report({ feature: 'DesktopLocked.sweep',
+          primary: 'Locked-screen relock sweep', fallback: 'The next sweep tick retries',
+          reason: `sweep failed: ${error instanceof Error ? error.message : String(error)}`,
+          impact: 'A relock or a guard replacement may be late by one sweep interval or more.' });
+      });
+    }, SWEEP_MS);
     this.sweepTimer.unref?.();
   }
 

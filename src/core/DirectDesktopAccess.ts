@@ -755,6 +755,10 @@ export class DirectDesktopAccess {
       leaveUnlocked: async () => {
         if (row.grantId !== admittedGrantId || !this.locked) return;
         const ok = await this.locked.leaveUnlocked(row.id);
+        try {
+          this.audit?.record({ kind: 'leave-unlocked', grantId: admittedGrantId, machineId: row.machineId,
+            operatorUid: row.operatorUid, authMethod: this.approvalMode, acknowledged: ok });
+        } catch { /* @silent-fallback-ok — the operator's choice already landed; an audit write failure must not undo it */ }
         row.emitControl?.({ type: 'relock', phase: ok ? 'left-unlocked' : 'relocking' });
       },
       input: async (action: DesktopInput) => {

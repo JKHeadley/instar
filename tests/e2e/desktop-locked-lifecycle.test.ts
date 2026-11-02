@@ -51,11 +51,14 @@ describe('locked-screen access on the production boot path', () => {
       expect(status.status).toBe(200);
       expect(status.body).toMatchObject({ enabled: false, active: false, refusal: 'unsupported-macos' });
       const pin = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '123456' });
+      expect(pin.status).toBe(200);
       const session = pin.body.operatorSessionToken as string | undefined;
+      expect(typeof session).toBe('string');
+      expect(session!.length).toBeGreaterThan(0);
       const reply = await request(server.getApp()).post('/desktop/locked/settings')
-        .set({ ...auth, 'X-Instar-Request': '1', 'X-Instar-Operator-Session': session ?? '' }).send({ enabled: true });
-      expect([403, 409]).toContain(reply.status);
-      if (session) expect(reply.body.error).toBe('unsupported-macos');
+        .set({ ...auth, 'X-Instar-Request': '1', 'X-Instar-Operator-Session': session! }).send({ enabled: true });
+      expect(reply.status).toBe(409);
+      expect(reply.body.error).toBe('unsupported-macos');
       const after = await request(server.getApp()).get('/desktop/locked/status').set(auth);
       expect(after.body.enabled).toBe(false);
     } finally { await server.stop(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test cleanup' }); }
