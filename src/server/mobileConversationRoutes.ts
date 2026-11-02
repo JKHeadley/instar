@@ -39,7 +39,7 @@ import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MediaMessageEv
 import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import { buildAppConversationRecordData } from '../core/AppConversationsReplicatedStore.js';
 import {
-  MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, displayName, effectiveKind, sessionLine, type AppAttachment,
+  MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, effectiveKind, type AppAttachment,
 } from '../core/appMediaTypes.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
@@ -625,21 +625,18 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       return;
     }
     // §4.5: one line per file before the caption, with a server-chosen path to a private copy.
+    // §4.12: a file not on this machine is pulled first (≤ 60 s), else "[file still copying: …]"
+    // and one "[file now available: …]" line follows when it lands.
     let sessionText = delivered;
     if (stored.length > 0) {
-      const lines: string[] = [];
-      for (const a of stored) {
-        const copy = await s.media.sessionCopy(messageId, a).catch((err: unknown) => {
-          s.deps.reportDegradation?.('AppMedia.sessionCopy', err instanceof Error ? err.message : String(err));
-          return null;
-        });
-        lines.push(copy ? sessionLine(a, copy) : `[file unavailable: ${displayName(a.filename)}]`);
-      }
+      const lines = await s.sessionLinesFor(key, messageId, stored, delivered);
       sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
     }
+    const pending = s.pendingContext(key);
     let outcome: 'delivered' | 'refused';
     try {
-      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: s.ownerName(), originVerdict: s.verify(msg) });
+      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: s.ownerName(), originVerdict: s.verify(msg), ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
+      if (outcome === 'delivered') pending.ack();
     } catch (err) {
       try { s.appendDelivery(key, messageId, 'unknown', seed); } catch { /* @silent-fallback-ok — the request itself is recorded outcome-unknown below */ }
       requests.markUnknown(deviceId, requestId);

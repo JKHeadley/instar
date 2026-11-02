@@ -25938,6 +25938,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // a mixed-version caller gets a clean answer, never no-handler
             // surprises within one version); answers 'disabled' until the
             // §3.7 replication gate constructs the serve side above.
+            // mobile-native-chat-media §4.12 — the app media copy verb. Registered always (a
+            // mixed-version caller gets a clean answer); 'disabled' without native conversations.
+            // The serve side answers only for blobs an unpurged local event references.
+            'app-media-pull': (cmd) => {
+              if (!_appConversationService) return { ok: false, reason: 'app-media disabled' };
+              return _appConversationService.replicator.serve(cmd);
+            },
             'working-set-pull': (cmd) => {
               if (!workingSetPullServer) return { ok: false, reason: 'working-set disabled' };
               return workingSetPullServer.handle(
@@ -26280,6 +26287,24 @@ export async function startServer(options: StartOptions): Promise<void> {
             return resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl);
           };
           _meshSelfId = meshSelfId;
+          // App media copying (mobile-native-chat-media §4.12): the replicator rides this same
+          // signed transport. Peers are this agent's registered machines; online comes from the
+          // pool registry when it has a capacity row (unknown otherwise).
+          if (_appConversationService) {
+            const { getActiveWorkAdmission } = await import('../core/workAdmission.js');
+            _appConversationService.replicator.attachTransport({
+              peers: () => meshIdMgr.getActiveMachines().filter((m) => m.machineId !== meshSelfId).map((m) => {
+                const cap = machinePoolRegistry?.getCapacities().find((c) => c.machineId === m.machineId);
+                return { machineId: m.machineId, nickname: cap?.nickname ?? m.entry?.name, online: cap ? cap.online !== false : null };
+              }),
+              send: async (machineId, command, timeoutMs) => {
+                const url = peerUrl(machineId);
+                if (!url) return { ok: false, reason: 'no-url' };
+                return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
+              },
+              loadVerdict: () => String(getActiveWorkAdmission()?.status().lastVerdict ?? 'unknown'),
+            });
+          }
           _identityMeshSend = async (machineId, command, timeoutMs) => {
             const url = peerUrl(machineId);
             if (!url) return { ok: false, reason: 'no-url' };

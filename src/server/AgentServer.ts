@@ -186,7 +186,7 @@ import { AppConversationService } from '../core/AppConversationService.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
-import { createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
+import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
 import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
 import { MobilePushService } from '../core/MobilePush.js';
@@ -5834,6 +5834,11 @@ export class AgentServer {
             feature: 'MobileDeviceKeyLedger', primary: 'sign app message receipts and keep the device-key ledger', fallback: 'messages are stored and delivered without a machine receipt',
             reason: 'this machine has no identity key', impact: 'Signed app messages read "couldn\'t check" on this machine.',
           });
+        }
+        // The "now available" follow-up line of media copied after dispatch (media spec §4.12):
+        // typed into the conversation's live session only, never a spawn.
+        if (options.sessionManager) {
+          svc.setFollowUp(createAppFollowUpInjector({ sessions: options.sessionManager as unknown as Parameters<typeof createAppFollowUpInjector>[0]['sessions'], channels: svc.channels }));
         }
         svc.start();
         this.appConversations = svc;
