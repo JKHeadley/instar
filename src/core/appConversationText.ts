@@ -8,6 +8,7 @@
  *   app message before it reaches a session; nothing else is altered (4.2 step 3).
  */
 import crypto from 'node:crypto';
+import { scrubForStore } from './durableSecretScrub.js';
 
 /** The strict lowercase RFC 4122 v4 pattern of spec 4.1 (no anchors; compose with them). */
 export const APP_CONVERSATION_KEY_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -75,4 +76,12 @@ export function removeAuthorityTokens(text: string): { text: string; kinds: Remo
 /** Deterministic event id from parts (sha256, hex, 32 chars, prefixed). */
 export function derivedEventId(prefix: string, ...parts: string[]): string {
   return `${prefix}-${crypto.createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 32)}`;
+}
+
+/**
+ * A copy of `text` for people reading a mirror (§4.9): every credential-shaped span shown as
+ * "[credential hidden]". Used only for the platform mirror, never for what the session receives.
+ */
+export function hideCredentialSpans(text: string): string {
+  return scrubForStore(text).text.replace(/\[REDACTED:[A-Za-z0-9_-]+\]/g, '[credential hidden]');
 }

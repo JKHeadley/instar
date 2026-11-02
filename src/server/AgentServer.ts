@@ -6215,6 +6215,8 @@ export class AgentServer {
         mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,
+        // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
+        pool: routeCtx,
         telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? last.text.slice(0, 140) : null };
