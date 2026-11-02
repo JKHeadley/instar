@@ -22,7 +22,7 @@ const ROOT = process.cwd();
 const SRC_DIR = path.join(ROOT, 'src');
 
 function packWhileTestsRun(args: string[]): string {
-  // The macOS desktop-host tests create and remove helpers inside dist/native
+  // The macOS desktop-host capture and identity tests create and remove helpers inside dist/native
   // for about nine seconds. npm pack may race each removal, so four immediate
   // tries can all fail while that test file is still active on a slower host.
   const maxTransientHelperRetries = 16;
@@ -34,10 +34,11 @@ function packWhileTestsRun(args: string[]): string {
         maxBuffer: 16 * 1024 * 1024,
       });
     } catch (error) {
-      // MacDesktopHostCapture creates and removes native test helpers while
-      // this suite runs. npm can list one just before its afterEach deletes it.
+      // Desktop host tests create and remove native test helpers while this
+      // suite runs. npm can list one just before its afterEach deletes it.
       const stderr = String((error as { stderr?: Buffer }).stderr ?? error);
-      if (attempt >= maxTransientHelperRetries || !stderr.includes('ENOENT') || !stderr.includes('instar-desktop-capture-test-')) throw error;
+      const transientDesktopHelper = /instar-desktop-(?:capture|identity)-test-/.test(stderr);
+      if (attempt >= maxTransientHelperRetries || !stderr.includes('ENOENT') || !transientDesktopHelper) throw error;
     }
   }
 }
