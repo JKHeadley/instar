@@ -985,6 +985,17 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-term-wrap { position: relative; flex: 1; min-height: 320px; display: flex; }
 .sess-term { flex: 1; min-width: 0; min-height: 320px; height: 52dvh; background: #0a0e17; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: 6px; overflow: hidden; }
 .sess-term.plain { overflow: auto; }
+.sess-tabs { display: flex; gap: var(--s-2); }
+.sess-tab[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+.sess-history { flex: 1; min-width: 0; min-height: 320px; height: 52dvh; overflow-y: auto; padding: var(--s-3); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); display: flex; flex-direction: column; gap: var(--s-3); }
+.sess-history[hidden], .sess-term[hidden] { display: none; }
+.sess-history-note { margin: 0; text-align: center; font-size: 13px; color: var(--text-muted); }
+.sess-h { max-width: 92%; }
+.sess-h-user { align-self: flex-end; background: var(--accent-wash); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-2) var(--s-3); }
+.sess-h-assistant { align-self: flex-start; }
+.sess-h-who { font-size: 12px; color: var(--text-faint); margin-bottom: 2px; }
+.sess-h-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.5; color: var(--text); }
+.sess-h-tool { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .sess-pre { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.4; color: #d6dbe4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sess-resume { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; }
 .sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: 0; padding: var(--s-2) 0; background: var(--bg); }
