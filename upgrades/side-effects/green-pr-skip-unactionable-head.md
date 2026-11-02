@@ -36,4 +36,6 @@ Revert the commit.
 unbounded-self-action: n/a. A bounded scan over the current eligible list within one tick, still at most one merge attempt per tick; no new loop or trigger.
 
 ## Second-pass review
+**Reviewer:** independent Claude Opus 5.5 subagent (general-purpose), given the diff and the write-up, not the conclusion.
+
 Concur with the review. Both pass-on returns come before `probeContract`, `refetchPr`, `inFlight`, `runner.run` and `recordOutcome`; the only work before them is the TTL-cached identity check and `maybeRearm`. At most one attempt per tick holds (every post-spawn outcome is outside the pass-on set). `episodeEligible` is false only for gave-up or an unexpired backoff; breaker, identity, contract and busy skips still end the tick. Hand-off and dry-run unchanged. Suggested tests added (backoff pass-on); the runner-fault pacing note above is from this review.
