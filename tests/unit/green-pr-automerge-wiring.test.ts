@@ -189,6 +189,8 @@ describe('gh --json projections are pinned to fields gh actually supports (2026-
     for (const f of LIST_PR_JSON_FIELDS) expect(GH_PR_JSON_FIELDS, `listOpenPrs field ${f}`).toContain(f);
     expect(GH_PR_JSON_FIELDS).not.toContain('mergeCommitOid');
     expect(REFETCH_PR_JSON_FIELDS).toContain('mergeCommit');
+    // The UNKNOWN-mergeability nudge only works if this read asks for the field.
+    expect(REFETCH_PR_JSON_FIELDS).toContain('mergeable');
   });
 
   it('the LIVE gh calls carry exactly the pinned projections (no stray literal field list)', async () => {
