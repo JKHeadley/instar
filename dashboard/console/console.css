@@ -989,6 +989,9 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-tab[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
 .sess-history { flex: 1; min-width: 0; min-height: 320px; height: 52dvh; overflow-y: auto; padding: var(--s-3); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); display: flex; flex-direction: column; gap: var(--s-3); }
 .sess-history[hidden], .sess-term[hidden] { display: none; }
+/* A column flex box squeezes its children to fit; history items must keep their own height
+   and let the box scroll (tool lines clip their overflow, so without this they shrink to 0). */
+.sess-history > * { flex-shrink: 0; }
 .sess-history-note { margin: 0; text-align: center; font-size: 13px; color: var(--text-muted); }
 .sess-h { max-width: 92%; }
 .sess-h-user { align-self: flex-end; background: var(--accent-wash); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-2) var(--s-3); }
@@ -1025,7 +1028,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
   .app:has(> .preview-banner) { --preview-h: 37px; }
   .sessions-page.has-open .sess-open { height: 100%; min-height: 0; }
   .sessions-page.has-open .sess-term-wrap { min-height: 0; }
-  .sessions-page.has-open .sess-term { height: auto; min-height: 0; }
+  .sessions-page.has-open .sess-term, .sessions-page.has-open .sess-history { height: auto; min-height: 0; }
   .sessions-page.has-open .sess-composer { position: static; padding-bottom: 0; }
 }
 .sess-default-box:empty { display: none; }
