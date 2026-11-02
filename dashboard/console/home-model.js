@@ -115,6 +115,23 @@ export function needsOperator(item) {
   return /decision|approval|review|sign-?in|relogin/i.test(cat);
 }
 
+/**
+ * Where the operator acts on an item. Every row in "needs you" gets one: its
+ * own conversation; the Desktop page for that machine; the Accounts page for a
+ * sign-in; otherwise the Attention topic, where the item was posted and can be
+ * answered.
+ */
+export function needAction(item) {
+  if (item && item.topicId != null && Number.isFinite(Number(item.topicId))) return { kind: 'topic', topicId: Number(item.topicId) };
+  const cat = String((item && item.category) || '');
+  if (/^desktop$/i.test(cat)) {
+    const q = item.machineId ? `?machineId=${encodeURIComponent(item.machineId)}` : '';
+    return { kind: 'href', href: `/dashboard/desktop.html${q}` };
+  }
+  if (/sign-?in|relogin/i.test(cat)) return { kind: 'href', href: '#/capacity/accounts' };
+  return { kind: 'attention' };
+}
+
 export const STALE_DAYS = 14;
 const DAY = 86400000;
 
@@ -154,7 +171,7 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
       tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
       detail: top.description || top.body || '',
       expandable: true,
-      action: Number.isFinite(Number(top.topicId)) ? { kind: 'topic', topicId: Number(top.topicId) } : null,
+      action: needAction(top),
     };
   }).sort((a, b) => Number(a.stale) - Number(b.stale) || a.prio - b.prio || b.last - a.last);
   const current = all.filter((g) => !g.stale);

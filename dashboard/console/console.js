@@ -47,6 +47,8 @@ const expanded = new Set();             // cards the operator expanded; kept acr
 const openRows = new Set();             // rows the operator opened; kept across refreshes
 let rowSeq = 0;
 let homeChatId = null;
+// The agent-wide Attention topic, where every attention item is posted.
+let attentionTopicId = null;
 let homeRun = null;
 
 // ── tiny DOM helpers ──────────────────────────────────────────────────────
@@ -257,6 +259,8 @@ function actionHref(action) {
     return `#/work/promises?${params}`;
   }
   if (action.kind === 'topic') return topicLink(homeChatId, action.topicId);
+  if (action.kind === 'href') return action.href || null;
+  if (action.kind === 'attention') return attentionTopicId ? topicLink(homeChatId, attentionTopicId) : null;
   return null;
 }
 
@@ -449,7 +453,7 @@ function loadHome() {
     ? { ...model, retrying: true, line: [model.line, 'Checking again automatically.'].filter(Boolean).join(' ') } : model;
   const refresh = (key) => {
     const names = results.pool ? machineNames(results.pool) : {};
-    if ((key === 'attention' || key === 'pool') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
+    if ((key === 'attention' || key === 'pool' || key === 'systemTopics') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
     if ((key === 'sessions' || key === 'pool' || key === 'topics') && results.sessions) set('doing', annotate(buildDoing(results.sessions, Date.now(), names, topicNameMap(results.topics)), results.sessions));
     if (key === 'pool' && results.pool) set('running', annotate(buildRunning(results.pool), results.pool));
     if ((key === 'commitments' || key === 'pool') && results.commitments) {
@@ -472,6 +476,10 @@ function loadHome() {
         || key === 'topics' && ((result.data?.pool?.failed?.length || 0) > 0 || (result.data?.pool?.unresolved?.length || 0) > 0));
       const retryable = partial || (!result.ok && !['not signed in', 'switched off on this agent'].includes(result.reason));
       results[key] = partial ? { ...result, retrying: true } : result;
+      if (key === 'systemTopics' && result.ok) {
+        const t = Number(result.data?.topics?.attention);
+        attentionTopicId = Number.isFinite(t) && t > 1 ? t : null;
+      }
       if (key === 'pool' && result.ok) {
         const self = (result.data?.machines || []).find((m) => m.isSelf || m.machineId === result.data.selfMachineId);
         homeChatId = self?.servesChannels?.telegram?.chatIds?.[0] || null;
@@ -489,6 +497,7 @@ function loadHome() {
   // A slow source cannot block another card or start overlapping refreshes.
   read('pool', '/pool', POOL_TIMEOUT_MS);
   read('attention', '/attention?scope=pool', POOL_TIMEOUT_MS);
+  read('systemTopics', '/telegram/system-topics');
   read('sessions', '/sessions?scope=pool', POOL_TIMEOUT_MS);
   read('topics', '/telegram/topics?scope=pool', POOL_TIMEOUT_MS);
   read('commitments', '/commitments?scope=mesh', COMMITMENTS_TIMEOUT_MS);
