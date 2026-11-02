@@ -119,3 +119,56 @@ describe('window run liveness HTTP integration', () => {
     expect(ticked.body).toMatchObject({ topicId: 131439 });
   });
 });
+
+describe('window run liveness recovered-episode HTTP boundary', () => {
+  it('keeps a later transient loss at-risk until its own ceiling through the authenticated tick route', async () => {
+    const project = createTempProject();
+    const token = 'w32-later-episode';
+    const baseMs = Date.parse('2026-09-05T20:00:00.000Z');
+    let nowMs = baseMs;
+    let deliveryReachable = true;
+    let heartbeatAt = new Date(baseMs).toISOString();
+    let recoveryCalls = 0;
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(project.stateDir), {
+      now: () => new Date(nowMs).toISOString(),
+      sample: state => ({ sampledAt: new Date(nowMs).toISOString(),
+        executor: { id: state.executorId, running: true, heartbeatAt }, deliveryReachable,
+        work: state.lastWorkReceipt ?? null,
+        lifecycle: { lifecycleRunId: state.lifecycleRunId, state: 'active_start', admitted: true,
+          expiresAt: new Date(baseMs + 24 * 60 * 60_000).toISOString() } }),
+      resolveRecoveryTask: () => 'autonomous:run-episode:1',
+      recover: async ({ taskRef }) => { recoveryCalls++; deliveryReachable = true;
+        return { succeeded: true, detail: 'delivery recovered', receipt: 'recovery-1', resumedTaskRef: taskRef }; },
+      verifyWorkArtifact: (_state, input) => ({ artifact: input.artifactRef, digest: 'b'.repeat(64), taskRef: 'autonomous:run-episode:1' }),
+    }, { enabled: true, dryRun: false, heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000 });
+    const config: InstarConfig = {
+      projectName: 'w32-episode', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: token,
+      requestTimeoutMs: 5000, version: '1.3.1223',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 2, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
+    };
+    const server = new AgentServer({ config, sessionManager: createMockSessionManager() as never,
+      state: project.state, windowRunLivenessAuthority: authority });
+    try {
+      await server.start();
+      const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'w32-episode');
+      const binding = { windowId: 'episode', topicId: 36966, autonomousRunId: 'run-episode',
+        lifecycleRunId: 'run-episode', executorId: 'echo-episode' };
+      await auth(request(server.getApp()).post('/window-run-liveness/register')).send(binding).expect(201);
+      await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/a.ts' }).expect(201);
+      expect((await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200)).body.status).toBe('active');
+      deliveryReachable = false;
+      const recovered = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
+      expect(recovered.body.status).toBe('active');
+      expect(recoveryCalls).toBe(1);
+      nowMs += 20 * 60_000;
+      heartbeatAt = new Date(baseMs).toISOString();
+      const later = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
+      expect(later.body.status).toBe('at-risk');
+      expect(later.body.recoveryAttempt.attemptId).toBe(recovered.body.recoveryAttempt.attemptId);
+      expect(recoveryCalls).toBe(1);
+      heartbeatAt = new Date(nowMs).toISOString();
+      expect((await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200)).body.status).toBe('active');
+    } finally { await server.stop(); project.cleanup(); }
+  });
+});

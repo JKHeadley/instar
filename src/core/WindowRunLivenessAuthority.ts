@@ -697,7 +697,17 @@ export class WindowRunLivenessAuthority {
     }
 
     if (state.recoveryAttempt) {
-      if (Date.parse(now) >= Date.parse(state.recoveryAttempt.deadlineAt)) return await this.fail(state, 'recovery-ceiling-exceeded', now);
+      // A completed recovery is spent: never actuate a second one. A later
+      // loss, however, must be bounded from its own at-risk transition rather
+      // than compared with the first episode's already-expired deadline.
+      const attempt = state.recoveryAttempt;
+      const laterEpisode = (attempt.outcome === 'succeeded' || attempt.outcome === 'executor-busy')
+        && attempt.completedAt !== undefined && state.atRiskSince !== undefined
+        && Date.parse(state.atRiskSince) >= Date.parse(attempt.completedAt);
+      const deadlineMs = laterEpisode
+        ? Date.parse(state.atRiskSince!) + this.cfg.recoveryCeilingMs
+        : Date.parse(attempt.deadlineAt);
+      if (!Number.isFinite(deadlineMs) || Date.parse(now) >= deadlineMs) return await this.fail(state, 'recovery-ceiling-exceeded', now);
       this.recordSample(state, now);
       this.store.save(state);
       return state;

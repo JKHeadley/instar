@@ -14,7 +14,7 @@ import {
 
 const BASE = Date.parse('2026-09-05T20:00:00.000Z');
 
-function harness(options: { dryRun?: boolean; recovery?: boolean; busy?: { healSample: boolean }; replacementExecutorId?: string; resumedTaskRef?: string; projectStatus?: (status: string) => string } = {}) {
+function harness(options: { dryRun?: boolean; recovery?: boolean; busy?: { healSample: boolean }; recoveryAdvanceMs?: number; replacementExecutorId?: string; resumedTaskRef?: string; projectStatus?: (status: string) => string } = {}) {
   let nowMs = BASE;
   let sample: WindowRunLivenessSample = {
     sampledAt: new Date(nowMs).toISOString(),
@@ -32,6 +32,7 @@ function harness(options: { dryRun?: boolean; recovery?: boolean; busy?: { healS
     sample: () => structuredClone(sample),
     recover: async ({ attemptId, taskRef }) => {
       recoveryCalls++;
+      if (options.recoveryAdvanceMs) nowMs += options.recoveryAdvanceMs;
       if (options.busy) {
         // SessionRefresh refuses a mid-work session with code session-busy.
         if (options.busy.healSample) sample.executor.heartbeatAt = new Date(nowMs).toISOString();
@@ -180,6 +181,64 @@ describe('WindowRunLivenessAuthority', () => {
     const state = await h.authority.tick();
     expect(state?.status).toBe('failed');
     expect(state?.transitions.at(-1)?.reason).toBe('recovery-ceiling-exceeded');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it.each([
+    ['busy', { busy: { healSample: true } }],
+    ['resumed', {}],
+  ] as const)('gives a later loss its own ceiling after a %s recovery without actuating twice', async (_kind, options) => {
+    const h = harness(options);
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const first = await h.authority.tick();
+    expect(first?.status).toBe('active');
+    expect(h.recoveryCalls).toBe(1);
+
+    h.advance(20 * 60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE).toISOString(); });
+    const later = await h.authority.tick();
+    expect(later?.status).toBe('at-risk');
+    expect(later?.recoveryAttempt?.attemptId).toBe(first?.recoveryAttempt?.attemptId);
+    expect(h.recoveryCalls).toBe(1);
+    expect(h.notices).toHaveLength(0);
+
+    h.advance(14 * 60_000);
+    expect((await h.authority.tick())?.status).toBe('at-risk');
+    h.advance(60_000);
+    const failed = await h.authority.tick();
+    expect(failed?.status).toBe('failed');
+    expect(failed?.finalSnapshot?.reason).toBe('recovery-ceiling-exceeded');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it('restores active when a later loss heals within its own ceiling', async () => {
+    const h = harness({ busy: { healSample: true } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.advance(20 * 60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('at-risk');
+    h.advance(60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 21 * 60_000).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('active');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it('uses the later episode clock even when it starts in the recovery-completion millisecond', async () => {
+    const h = harness({ recoveryAdvanceMs: 14 * 60_000 });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const recovered = await h.authority.tick();
+    expect(recovered?.status).toBe('active');
+    expect(recovered?.recoveryAttempt?.completedAt).toBe(new Date(BASE + 14 * 60_000).toISOString());
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE).toISOString(); });
+    const later = await h.authority.tick();
+    expect(later?.status).toBe('at-risk');
+    expect(later?.atRiskSince).toBe(recovered?.recoveryAttempt?.completedAt);
+    h.advance(60_000);
+    expect((await h.authority.tick())?.status).toBe('at-risk');
     expect(h.recoveryCalls).toBe(1);
   });
 
