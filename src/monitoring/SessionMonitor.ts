@@ -180,6 +180,9 @@ export class SessionMonitor extends EventEmitter {
       fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
       fs.renameSync(tmp, file);
     } catch (err) {
+      // @silent-fallback-ok — not silent: warns once. A failed save degrades
+      // to the pre-ledger in-memory guard (the old behaviour), never to extra
+      // notices within this process.
       if (!this.deadPersistWarned) {
         this.deadPersistWarned = true;
         console.warn('[SessionMonitor] Could not persist dead-notice ledger (will not warn again):', err);

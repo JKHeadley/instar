@@ -83,3 +83,7 @@ Raised: (1) the ledger recorded a notice even when the send failed — fixed, re
 
 - **`defectClass`** — not an agent-authored-artifact defect; the change modifies a self-triggered notifier (SessionMonitor notify), so the convergence argument: control-loop edge = monitor poll → notice → (Slack echo of the notice) → history. The fix cuts the edge (own posts never count as user messages) and adds a steady-state bound: at most one notice per distinct user-message timestamp per topic, persisted across restarts. Settling brake: existing 30-minute cooldown plus the ledger.
 - **`closure`** — guard: `tests/unit/session-monitor-dead-notice-once.test.ts` (ratchet; "many restarts with no new user message post exactly one notice in total" would have caught this defect).
+
+## Follow-up: ledger save failure is a marked, logged fallback
+
+The full local test run flagged the ledger-save catch in `persistDeadNotified` as a new silent fallback. It is not silent: it warns once. If the save fails, the monitor falls back to the old in-memory guard, so within one process there are still no extra notices. Across restarts the behaviour is the same as before this fix. The catch now carries the `@silent-fallback-ok` tag with that reason. No change in behaviour.

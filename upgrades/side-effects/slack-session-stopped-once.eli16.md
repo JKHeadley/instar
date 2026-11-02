@@ -24,3 +24,5 @@ A real person who messages a stopped session is still handled: the next Slack me
 ## What you need to decide
 
 Nothing. This is a small change that a revert fully undoes.
+
+**Small follow-up:** if saving the "already told them" note to disk ever fails, the agent logs a warning once and behaves as it did before this fix. The code is now marked so the test suite knows this fallback is on purpose.
