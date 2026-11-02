@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-history-shrink-fix",
+  "sessionId": "916956a4-f1bf-4a3b-89db-40a4ec492e50",
+  "timestamp": "2026-11-02T04:44:24.132Z",
+  "artifactPath": "upgrades/side-effects/console-history-shrink-fix.md",
+  "artifactSha256": "55867ebd1942152d8a39d5c4e899d4e37ea8bdbe1bf4c2667fd8b0e0f8c44d96",
+  "coveredFiles": [
+    "dashboard/console/console.css"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CSS-only fix",
+  "eli16Path": "upgrades/side-effects/console-history-shrink-fix.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-history-shrink-fix.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
