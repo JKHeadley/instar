@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-02T00:18:04.425Z",
+  "slug": "lifeline-lock-heartbeat",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 212,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/lifelineLock.ts"
+    ],
+    "addedLines": 186,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
