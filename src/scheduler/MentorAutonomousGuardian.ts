@@ -1,3 +1,4 @@
+import { telegramTopicRef } from '../messaging/shared/topicRef.js';
 /**
  * MentorAutonomousGuardian — the "just be Echo" autonomous-fix loop core
  * (MENTOR-AUTONOMOUS-FIX-LOOP-SPEC).
@@ -125,10 +126,10 @@ export interface AutoloopGoalParams {
  * unit-testable. A host may override it via mentor.autonomousFix.goalTemplate.
  */
 export function buildAutoloopGoal(p: AutoloopGoalParams): string {
-  const driveIn = p.menteeTopicId !== undefined ? ` (Telegram topic ${p.menteeTopicId})` : '';
+  const driveIn = p.menteeTopicId !== undefined ? ` (${telegramTopicRef(p.menteeTopicId)})` : '';
   const reportLine =
     p.reportTopicId !== undefined
-      ? `Report what happened — honestly, including anything skipped or still failing — to Telegram topic ${p.reportTopicId} (.instar/scripts/telegram-reply.sh).`
+      ? `Report what happened — honestly, including anything skipped or still failing — to ${telegramTopicRef(p.reportTopicId)} (.instar/scripts/telegram-reply.sh).`
       : `Report what happened — honestly, including anything skipped or still failing — to your owner over Telegram.`;
   return [
     `You are Echo, the instar developer agent, running ONE autonomous cycle of the ${p.menteeFramework} (${p.menteeAgentName}) dogfooding-and-fix loop.`,

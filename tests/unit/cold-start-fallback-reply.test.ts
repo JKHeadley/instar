@@ -40,19 +40,19 @@ describe('buildColdStartDebugMessage', () => {
       machineLabel: 'the studio',
       kind: 'spawn',
     });
-    expect(msg).toContain('"session paused bug" (#28130)');
+    expect(msg).toContain('topic 28130 "session paused bug"');
     expect(msg).toContain('on the studio');
     expect(msg).toContain('session limit');
     expect(msg).toContain('start'); // spawn → "start"
   });
 
-  it('falls back to "#id" when the topic name is unknown and omits machine when absent', () => {
+  it('says the name is unresolved when the topic name is unknown and omits machine when absent', () => {
     const msg = buildColdStartDebugMessage({
       error: new Error('resource pressure'),
       topicId: 999,
       kind: 'restart',
     });
-    expect(msg).toContain('#999');
+    expect(msg).toContain('topic 999 (name unresolved)');
     expect(msg).not.toContain(' on ');
     expect(msg).toContain('restart'); // restart → "restart"
   });

@@ -38,6 +38,7 @@ import type { PendingRelayRow, DeliveryState } from '../messaging/pending-relay-
 import { parseReapNotifyDeliveryId } from '../messaging/reap-notice-delivery-id.js';
 import type { ReapNotifyOutcome } from './ReapLog.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export interface ReapNoticeDrainStore {
   selectClaimableReapNotices(nowIso: string, limit?: number): PendingRelayRow[];
@@ -279,7 +280,7 @@ export class ReapNoticeDrain {
           `I tried to tell the affected conversation(s) that sessions were shut down, but the messages ` +
           `could not be delivered after repeated attempts. The shutdowns themselves are all recorded — ` +
           `ask me "what happened to my sessions?" and I can reconstruct it. Most recent failure: notice ` +
-          `${noticeId} for topic ${topicId} at ${atIso}.`,
+          `${noticeId} for ${topicRef(topicId)} at ${atIso}.`,
         category: 'delivery',
         priority: 'medium',
         sourceContext: 'reap-notice-drain',

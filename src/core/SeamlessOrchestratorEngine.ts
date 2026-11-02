@@ -1,3 +1,4 @@
+import { topicRef } from '../messaging/shared/topicRef.js';
 /**
  * SeamlessOrchestratorEngine — the lease-gated tier-1 PRELOAD optimizer
  * (spec: llm-seamlessness-orchestrator.md, Phase 1 + the proposal core of Phase 2).
@@ -283,10 +284,10 @@ export class SeamlessOrchestratorEngine {
   buildResidualPrompt(topics: TopicActivity[], deterministic: OrchestratorProposal[]): string {
     const neutralize = (s: string): string =>
       String(s).split('').filter((c) => c.charCodeAt(0) > 31 && c !== '<' && c !== '>').join('').slice(0, 200);
-    const focusLines = topics.map((t) => `- topic ${t.topic}: ${neutralize(t.focus)}`).join(NL);
+    const focusLines = topics.map((t) => `- ${topicRef(t.topic)}: ${neutralize(t.focus)}`).join(NL);
     const candLines = deterministic
       .slice(0, 20)
-      .map((c, i) => `${i}. topic ${c.targetTopic} → ${neutralize(c.detail)}`)
+      .map((c, i) => `${i}. ${topicRef(c.targetTopic)} → ${neutralize(c.detail)}`)
       .join(NL);
     return [
       'You rank which already-produced artifacts a conversation will likely reference NEXT (preload).',

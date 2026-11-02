@@ -136,6 +136,7 @@ import type { DerivedTarget } from '../monitoring/selfaction/types.js';
 import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS } from './VetoedKillBackoff.js';
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 import { ensureAgentOwnedMemory, defaultClaudeConfigHome } from './AgentOwnedMemory.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 import {
   CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS,
   type ThreadlineMcpSpawnWiring,
@@ -1823,7 +1824,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         session,
         topicId,
         reasonKey,
-        message: `Session "${session.name}" on topic ${topicId ?? 'n/a'} is permanently vetoed from idle-zombie cleanup (reason: ${reasonKey}) — likely a stuck open-commitment or a resume-loop; investigate.`,
+        message: `Session "${session.name}" on ${topicId != null ? topicRef(topicId) : 'no topic'} is permanently vetoed from idle-zombie cleanup (reason: ${reasonKey}) — likely a stuck open-commitment or a resume-loop; investigate.`,
       });
     }
   }
@@ -2903,7 +2904,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         : matches[0];
       return {
         topicId,
-        topicName: (topicToName[String(topicId)] as string) || `Topic ${topicId}`,
+        topicName: (topicToName[String(topicId)] as string) || topicRef(topicId),
         channel: 'telegram', // Currently only Telegram uses the registry
         sessionName: tmuxSession,
       };
@@ -7775,7 +7776,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           feature: 'SessionManager.recoverPendingInjects',
           primary: 'Re-deliver an inject orphaned by a server restart',
           fallback: `Pending inject for "${record.tmuxSession}" not re-delivered: ${reason}`,
-          reason: `Why: queued ${record.createdAt}${record.telegramTopicId !== undefined ? ` for topic ${record.telegramTopicId}` : ''}`,
+          reason: `Why: queued ${record.createdAt}${record.telegramTopicId !== undefined ? ` for ${topicRef(record.telegramTopicId)}` : ''}`,
           impact: 'A queued initial message may not have reached its session; the bridge respawns on the next inbound message.',
         });
       },
@@ -8310,7 +8311,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // to ride here too — the observed 2026-08-20 re-deliveries were all long
     // messages, i.e. exactly this branch. buildInjectionTag(topicId) with a
     // falsy flag returns `[telegram:N]`, byte-identical to the previous literal.
-    const refTag = buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
+    const refTag = buildInjectionTag(topicId, safeTopic, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
     const ref = `${refTag} [Long message saved to ${filepath} — read it to see the full message]`;
     return this.injectMessage(tmuxSession, ref) !== false;
   }

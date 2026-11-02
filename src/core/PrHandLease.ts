@@ -31,6 +31,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export type LeaseIntent = 'build' | 'rework' | 'merge';
 export type LeaseTombstoneStatus = 'released' | 'merged' | 'abandoned';
@@ -327,7 +328,7 @@ export class PrHandLease {
         priorMachineId: cur.holderMachineId,
       });
       if (forcedRelease || cur.holderMachineId !== this.d.machineId) {
-        this.attention('pr-lease-forced-release', `Branch ${key} lease force-released from topic ${observed.holderTopicId} (machine ${cur.holderMachineId}).`);
+        this.attention('pr-lease-forced-release', `Branch ${key} lease force-released from ${topicRef(observed.holderTopicId)} (machine ${cur.holderMachineId}).`);
       }
       return rec;
     });

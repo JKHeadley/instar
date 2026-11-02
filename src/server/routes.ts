@@ -659,6 +659,7 @@ import Database from 'better-sqlite3';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
+import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 
 /**
  * Build the /whoami request handler.
@@ -7675,7 +7676,7 @@ export function createRoutes(ctx: RouteContext): Router {
       ? ` The session DELETED ${deleted.length} accreted deliverable(s): ${clampPathList(deleted, 20)}.`
       : '';
     const text =
-      `⚠️ Autonomous run on topic ${rec.topicId} ended (${surface}) with ${paths.length} unbuilt accreted ` +
+      `⚠️ Autonomous run on ${topicRef(rec.topicId)} ended (${surface}) with ${paths.length} unbuilt accreted ` +
       `artifact(s) that were neither built, corroborated, nor ratified: ${clampPathList(paths)}.${deletedNote}` +
       (extra ? ` ${extra}` : '');
     const topicNum = Number(rec.topicId);
@@ -7865,7 +7866,7 @@ export function createRoutes(ctx: RouteContext): Router {
       void ctx.telegram
         ?.createAttentionItem({
           id: `scope-accretion-reregister-${topicId}`,
-          title: `Autonomous re-registration refused for topic ${topicId}`,
+          title: `Autonomous re-registration refused for ${topicRef(topicId)}`,
           summary: `A re-register arrived while run ${result.existingRunId} is still active and unexpired.`,
           priority: 'LOW',
           sourceContext: 'scope-accretion',
@@ -8494,7 +8495,7 @@ export function createRoutes(ctx: RouteContext): Router {
             void ctx.telegram
               ?.createAttentionItem({
                 id: `scope-accretion-condition-divergence-${armedRecord.topicId}-${armedRecord.runId}`,
-                title: `Autonomous run condition diverged mid-run (topic ${armedRecord.topicId})`,
+                title: `Autonomous run condition diverged mid-run (${topicRef(armedRecord.topicId)})`,
                 summary: 'The done-claim carried a condition text different from the one registered at setup. The server judges the REGISTERED condition; mid-run edits are ignored for accretion purposes.',
                 priority: 'NORMAL',
                 sourceContext: 'scope-accretion',
@@ -8577,7 +8578,7 @@ export function createRoutes(ctx: RouteContext): Router {
                   await ctx.telegram
                     .createAttentionItem({
                       id: `scope-accretion-breaker-${armedRecord.topicId}-${armedRecord.runId}`,
-                      title: `Scope-accretion breaker tripped (topic ${armedRecord.topicId})`,
+                      title: `Scope-accretion breaker tripped (${topicRef(armedRecord.topicId)})`,
                       summary: tripText,
                       priority: 'HIGH',
                       sourceContext: 'scope-accretion',
@@ -13231,7 +13232,7 @@ export function createRoutes(ctx: RouteContext): Router {
       .filter(([id, binding]) => /^\d+$/.test(id) && binding.platform === 'telegram')
       .map(([id]) => {
         const name = ctx.telegram?.getTopicName(Number(id))?.trim();
-        return { topicId: Number(id), label: name || `Telegram topic ${id}` };
+        return { topicId: Number(id), label: name || telegramTopicRef(id) };
       });
     const trustedMachines = [...machines, ...peerMachines].map(machine => {
       const key = ctx.desktopTargetSigningKey?.(machine.machineId);
@@ -15002,7 +15003,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.type('html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve MCP change</title>
 <style>body{font-family:system-ui,sans-serif;max-width:30rem;margin:2rem auto;padding:0 1rem}button{font-size:1.1rem;padding:.6rem 1.2rem;width:100%}input{font-size:1.1rem;padding:.5rem;width:100%;box-sizing:border-box}</style></head>
 <body><h2>Approve a tool change?</h2>
-<p>The agent wants to <b>${mcpHtmlEscape(verb)}</b> the <b>${mcpHtmlEscape(view.server)}</b> tool for this conversation (topic ${view.topicId}).</p>
+<p>The agent wants to <b>${mcpHtmlEscape(verb)}</b> the <b>${mcpHtmlEscape(view.server)}</b> tool for this conversation (${topicRef(view.topicId)}).</p>
 <p>Enter your dashboard PIN to approve. The agent cannot approve this itself.</p>
 <form id="mcpForm">
 <p><input id="mcpPin" type="password" inputmode="numeric" autocomplete="off" placeholder="Dashboard PIN" required></p>
@@ -26536,7 +26537,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
         `Default is non-destructive (safe to retry); append --consume after successful handoff. ` +
         `DO NOT use raw curl against /secrets/retrieve — that pattern leaks the value into the Bash tool transcript. ` +
-        `Then acknowledge receipt to the user conversationally via Telegram topic ${topicId}.`;
+        `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`;
 
       const sdRegistryPath = path.join(ctx.config.stateDir, 'topic-session-registry.json');
       let targetSession: string | null = null;
@@ -27131,7 +27132,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               } else {
                 console.error(
                   `[telegram-forward] sentinel emergency-stop: KILL FAILED for session "${sessionName}" ` +
-                  `(topic ${topicId}) — the session was NOT killed. The stop record is still preserved.`,
+                  `(${topicRef(topicId)}) — the session was NOT killed. The stop record is still preserved.`,
                 );
               }
             }
@@ -27530,7 +27531,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const contextLines = [
           ...historyLines,
           ``,
-          `This session was auto-created for Telegram topic ${topicId}.`,
+          `This session was auto-created for ${telegramTopicRef(topicId)}.`,
         ];
         const tmpDir = getTelegramInboundDir(ctx.config.projectDir);
         fs.mkdirSync(tmpDir, { recursive: true });
