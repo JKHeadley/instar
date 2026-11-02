@@ -49,6 +49,18 @@ function fakeAccess(): DirectDesktopAccess {
 }
 
 describe('remote desktop HTTP routes', () => {
+  it('says a changed helper needs a person, not just that the Mac is not ready', async () => {
+    const access = { ...fakeAccess(), probe: async () => ({
+      ready: false, screenPermission: false, inputPermission: false, displayCount: 1, sessionActive: true,
+      helperChange: { kind: 'source-changed', version: '1.3.1580', helperPath: '/Users/x/.instar/desktop-helper/instar-desktop-host' },
+    }) } as unknown as DirectDesktopAccess;
+    const { server } = app(access, desktopRouteAccess(access, 'machine-1', 'machine-1') as Partial<RouteContext>);
+    const response = await request(server).get('/desktop/availability').set('Authorization', `Bearer ${AUTH}`);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(response.body)).toContain('changed in update 1.3.1580');
+    expect(JSON.stringify(response.body)).toContain('will not fix itself');
+  });
+
   it('permits only explicit enabled-state rollout through the config API', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-config-'));
     const stateDir = path.join(root, '.instar');

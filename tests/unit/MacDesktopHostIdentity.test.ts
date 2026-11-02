@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import type { DesktopHelperRetention } from '../../src/core/DesktopHelperRetention.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Helpers sit beside the real binary so the production path and trust check run.
@@ -40,6 +41,22 @@ if (verb === 'probe') {
     host: new MacDesktopHost(filename),
     spawns: () => fs.readFileSync(log, 'utf8').trim().split('\n'),
   };
+}
+
+/** A second helper, standing in for the kept copy. */
+function kept(installed: { host: MacDesktopHost }, inherited: Grants, own: Grants | 'fails', change: unknown = null) {
+  const donor = helper(inherited, own);
+  const notes = { granted: 0, broken: 0 };
+  let broken = false;
+  const retention = {
+    resolve: () => broken
+      ? { path: 'packaged', source: 'packaged', reason: 'disabled' }
+      : { path: donor.host['binary'], source: 'retained' },
+    noteGranted: () => { notes.granted++; },
+    markBroken: () => { notes.broken++; broken = true; },
+    permissionChange: () => change,
+  } as unknown as DesktopHelperRetention;
+  return { host: new MacDesktopHost(installed.host['binary'], retention), spawns: donor.spawns, notes };
 }
 
 describe.skipIf(process.platform !== 'darwin')('MacDesktopHost permission identity', () => {
@@ -103,6 +120,68 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost permission identi
     await host.cancelInput();
     expect(spawns()).toContain('release:own');
     expect(fs.existsSync(log)).toBe(true);
+  });
+
+  it('runs the kept copy and records that it holds its own grant', async () => {
+    const installed = helper({ screen: false, input: false }, { screen: false, input: false });
+    const { host, spawns, notes } = kept(installed, { screen: false, input: false }, { screen: true, input: true });
+    expect(await host.probe()).toMatchObject({ screenGrant: 'own', inputGrant: 'own', helperSource: 'retained' });
+    expect(spawns()).toEqual(expect.arrayContaining(['probe:inherited', 'probe:own']));
+    expect(installed.spawns).toThrow();
+    expect(notes.granted).toBe(1);
+  });
+
+  it('keeps a grant the installed copy still holds until the kept copy has its own', async () => {
+    const installed = helper({ screen: false, input: false }, { screen: true, input: true });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false });
+    expect(await host.probe()).toMatchObject({ screenPermission: true, inputPermission: true,
+      screenGrant: 'own', helperSource: 'packaged' });
+    await host.capture();
+    expect(installed.spawns()).toContain('capture-stream:own');
+    host.stopIndicator();
+    host.cancelInput();
+  });
+
+  it('says what changed when neither copy holds the permission', async () => {
+    const change = { kind: 'source-changed', version: '1.3.1580', helperPath: '/k' };
+    const installed = helper({ screen: false, input: false }, { screen: false, input: false });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false }, change);
+    expect(await host.probe()).toMatchObject({ screenGrant: 'none', helperChange: change, helperSource: 'retained' });
+  });
+
+  it('never reports a change on a Mac that still works on an inherited grant', async () => {
+    const change = { kind: 'source-changed', version: '1.3.1580', helperPath: '/k' };
+    const installed = helper({ screen: false, input: false }, { screen: false, input: false });
+    const { host } = kept(installed, { screen: true, input: true }, { screen: false, input: false }, change);
+    const probe = await host.probe();
+    expect(probe.screenGrant).toBe('inherited');
+    expect(probe.helperChange).toBeUndefined();
+  });
+
+  it('survives one failed kept-copy start, and gives up only if it keeps failing', async () => {
+    const installed = helper({ screen: true, input: true }, { screen: true, input: true });
+    const { host, notes } = kept(installed, { screen: false, input: false }, { screen: true, input: true });
+    const keptPath = (host['retention']!.resolve() as { path: string }).path;
+    const realProbeAs = host['probeAs'];
+    host['probeAs'] = function (this: MacDesktopHost, identity: 'own' | 'inherited', binary?: string) {
+      if (binary === keptPath) return Promise.reject(new Error('timeout'));
+      return realProbeAs.call(this, identity, binary);
+    } as typeof realProbeAs;
+    for (const broken of [0, 0, 1]) {
+      expect(await host.probe()).toMatchObject({ screenPermission: true });
+      expect(notes.broken).toBe(broken);
+    }
+  });
+
+  it('keeps a live session on the granted installed copy', async () => {
+    const installed = helper({ screen: false, input: false }, { screen: true, input: true });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false });
+    await host.probe();
+    await host.input({ kind: 'keyDown', key: 'Shift' });
+    host['lastPackagedOwnProbe'] = null;
+    expect(await host.probe()).toMatchObject({ screenPermission: true, inputPermission: true, helperSource: 'packaged' });
+    await host.cancelInput();
+    expect(installed.spawns()).toContain('release:own');
   });
 
   it('asks for permission only under the helper identity', async () => {

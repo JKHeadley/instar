@@ -1,12 +1,16 @@
 /** Build the local macOS desktop adapter into the package's dist tree.
  * Other platforms use their own adapters and must not claim this one exists. */
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DESKTOP_HOST_IDENTIFIER = 'ai.instar.desktop-host';
+// Change this when the build itself changes what the helper does: installed
+// Macs keep their copy until this hash moves, and moving it costs a macOS grant.
+const BUILD_RECIPE = `v1 -parse-as-library -O ${DESKTOP_HOST_IDENTIFIER}`;
 const releaseUniversal = process.argv.includes('--release-universal');
 const universal = releaseUniversal || (process.env.INSTAR_RELEASE_BUILD === '1' && process.platform === 'darwin');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,6 +18,13 @@ const windowsSource = path.join(root, 'src/native/remote-desktop/windows/InstarD
 const windowsPackageDir = path.join(root, 'dist/native/windows');
 fs.mkdirSync(windowsPackageDir, { recursive: true });
 fs.copyFileSync(windowsSource, path.join(windowsPackageDir, 'InstarDesktopCompanion.cs'));
+// Written on every platform: the publish job builds the package on Linux and
+// adds the macOS binary afterwards, from the same pinned source revision.
+const macSource = fs.readFileSync(path.join(root, 'src/native/remote-desktop/macos/InstarDesktopHost.swift'));
+fs.mkdirSync(path.join(root, 'dist/native'), { recursive: true });
+fs.writeFileSync(path.join(root, 'dist/native/instar-desktop-host.json'), `${JSON.stringify({
+  sourceHash: crypto.createHash('sha256').update(macSource).update('\0').update(BUILD_RECIPE).digest('hex'),
+})}\n`);
 if (releaseUniversal && process.platform !== 'darwin') {
   throw new Error('The universal macOS desktop host must be built on macOS');
 }
