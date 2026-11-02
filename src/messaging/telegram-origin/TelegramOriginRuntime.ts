@@ -27,6 +27,19 @@ import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
 import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
 
+/** How long an origin keeps full detail in the hot tables; the archive holds it after that. */
+const HOT_DETAIL_MS = 7 * 24 * 60 * 60_000;
+const DEFAULT_AUDIT_RETENTION_DAYS = 365;
+const MIN_AUDIT_RETENTION_DAYS = 30;
+const RETENTION_TICK_BUDGET_MS = 500;
+const RETENTION_STEP_SLOW_MS = 250;
+const RETENTION_STEP_QUICK_MS = 100;
+const RETENTION_BATCHES = { fold: { min: 200, max: 2000 }, compact: { min: 4, max: 32 }, purge: { min: 10, max: 50 } };
+/** A mistyped setting must never read as "delete all history". */
+export function auditRetentionDays(value: unknown): number {
+  return Number.isSafeInteger(value) && (value as number) >= MIN_AUDIT_RETENTION_DAYS ? value as number : DEFAULT_AUDIT_RETENTION_DAYS;
+}
+
 export interface TelegramOriginRuntimeOptions {
   storage: OriginStoreOptions;
   identity: OriginServiceOptions['identity'];
@@ -94,6 +107,7 @@ export class TelegramOriginRuntime {
   private retentionAttemptedAt = 0;
   private retentionSucceededAt: number | null = null;
   private retentionUnavailable = false;
+  private readonly retentionBatch = { fold: RETENTION_BATCHES.fold.min, compact: RETENTION_BATCHES.compact.min, purge: RETENTION_BATCHES.purge.min };
   poolAudit?: import('./OriginPoolAudit.js').OriginPoolAudit;
   readonly browsers = new Map<string, { executor: OriginBrowserExecutor;
     resolvePeer: (destination: BrowserDestination) => Promise<{ [key: string]: BrowserJson }> }>();
@@ -369,15 +383,35 @@ export class TelegramOriginRuntime {
   }
   /** Existing runtime maintenance tick owns cleanup and archival; this never
    * dispatches or grants retry authority. Work is bounded and off-event-loop. */
-  async maintainRetention(now = Date.now()): Promise<void> {
+  async maintainRetention(now = Date.now(), scope: 'all' | 'expiry-only' = 'all'): Promise<void> {
     if (this.closed || this.retentionRunning || now - this.retentionAttemptedAt < 60_000) return;
     this.retentionAttemptedAt = now; this.retentionRunning = true;
     try {
+      if (scope === 'expiry-only') { await this.store.cleanupPayloads(now); this.retentionSucceededAt = now; this.retentionUnavailable = false; return; }
+      const started = Date.now(), inBudget = () => Date.now() - started < RETENTION_TICK_BUDGET_MS;
+      const before = now - HOT_DETAIL_MS;
+      let keepOperations: string[];
+      try { keepOperations = this.unrecordedReceipts.pending({ requireReadable: true }).map(entry => entry.operationId); }
+      catch { return; } // Without this list a receipt still to fold in could lose its attempt row.
+      // One request per step, awaited, so a queued admit waits for one step at most.
       await this.store.cleanupPayloads(now);
-      await this.store.archive({ before: now - 30 * 24 * 60 * 60_000, limit: 100 });
+      const fold = inBudget() ? await this.paced('fold', limit => this.store.foldMetricEvents({ before, limit })) : { folded: 0, more: true };
+      if (inBudget()) await this.store.archive({ before, limit: 100, minRecords: 100, flushBefore: before - HOT_DETAIL_MS, now, keepOperations });
+      if (inBudget()) await this.paced('compact', limit => this.store.compactArchives({ limit }));
+      // The fold reads operation rows, so a backlog there keeps them in place.
+      if (inBudget() && !fold.more) await this.paced('purge', limit => this.store.purgeArchived({ before, limit, keepOperations }));
+      if (inBudget()) await this.store.expireAudit({ before: now - auditRetentionDays(this.options.storage.auditRetentionDays) * 24 * 60 * 60_000 });
       this.retentionSucceededAt = now; this.retentionUnavailable = false;
     } catch { this.retentionUnavailable = true; }
     finally { this.retentionRunning = false; }
+  }
+  /** Batch sizes follow what this disk just managed, so a cold or busy store takes
+   * smaller steps instead of one that overruns a queued admit's budget. */
+  private async paced<T>(step: keyof typeof RETENTION_BATCHES, run: (limit: number) => Promise<T>): Promise<T> {
+    const { min, max } = RETENTION_BATCHES[step], limit = this.retentionBatch[step], started = Date.now();
+    const result = await run(limit), ms = Date.now() - started;
+    this.retentionBatch[step] = ms > RETENTION_STEP_SLOW_MS ? Math.max(min, Math.floor(limit / 2)) : ms < RETENTION_STEP_QUICK_MS ? Math.min(max, limit * 2) : limit;
+    return result;
   }
   /** Fold Telegram acceptances whose receipt write failed back into the store.
    * The attempt becomes reconcilable once its claim was reaped to

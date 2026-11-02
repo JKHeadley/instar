@@ -68,6 +68,8 @@ export interface SubscriptionReloginHelperDeps {
   credentialReady: (episode: SubscriptionReloginEpisode) => Promise<boolean>;
   /** Queue (and try to deliver now) the fixed phone-tap notice. Idempotent. */
   queuePhoneTap: (episodeId: string) => void;
+  /** codex-device-limit-tripwire §4: a helper reported a device-limit page (the repair is already settled). */
+  onDeviceLimitReported?: (episodeId: string) => void;
   /** The existing paste-back code-shape validator. */
   validateCode: (code: string) => boolean;
   /** The local server port the helper posts to (loopback). */
@@ -94,7 +96,7 @@ const PERMISSIONS = new Set(['screen-recording', 'accessibility', 'automation'])
  * a CAPTCHA or a wrong-account screen is never driven again automatically. A report can only REDUCE
  * autonomy; it never counts toward success.
  */
-const HARD_LINES = new Set(['captcha', 'phone-confirmation', 'wrong-account', 'unexpected-site']);
+const HARD_LINES = new Set(['captcha', 'phone-confirmation', 'wrong-account', 'unexpected-site', 'device-limit']);
 
 interface LiveDrive {
   tokenHash: Buffer;
@@ -290,6 +292,14 @@ export class SubscriptionReloginHelper {
       this.deps.queuePhoneTap(episodeId);
       return { status: 202, body: { accepted: true, notice: 'phone-tap' } };
     }
+    if (parsed.kind === 'hard-line' && parsed.line === 'device-limit') {
+      // codex-device-limit-tripwire §4: a device-limit page ends THIS repair terminally and is
+      // never retried. It is deliberately not an `agent-hard-line` (that would hold the cell at
+      // approval and count toward unattended graduation); a fresh read decides any bench.
+      entry.settle({ outcome: 'refused', failureClass: 'device-limit', reason: 'agent-reported-device-limit' });
+      this.deps.onDeviceLimitReported?.(episodeId);
+      return { status: 202, body: { accepted: true, notice: 'device-limit' } };
+    }
     if (parsed.kind === 'hard-line') {
       // Every report is the same unverified class: never breaker or re-admission evidence, but it
       // holds the account × machine at approval until the next verified success.
@@ -385,18 +395,19 @@ export function renderHelperPrompt(input: ReloginHelperDriveInput & { token: str
     ...(windows ? [] : ['If macOS asks for Screen Recording, Accessibility or Automation permission, report it and stop:',
       `  ${post('{"notify":"macos-permission","permission":"screen-recording"}')}  (or "accessibility" / "automation")`]),
     '',
-    'Hard lines (these four, and only these four):',
+    'Hard lines (these five, and only these five):',
     `1. Sign in the expected account (${input.expectedEmail}) only.`,
     '2. Never solve or work around a CAPTCHA or a phone / "verify it\'s you" check; only ask for the phone tap above.',
     '3. Type passwords only on Google, Claude or OpenAI pages.',
     windows ? '4. Never touch a Chrome window that is not on this account\'s profile directory.' : '4. Never touch a Chrome window you did not open.',
+    '5. If a page says this device has reached its limit of paid accounts ("Device limit reached" or similar), stop: another sign-in here cannot help.',
     '',
     ...(windows ? ['Set ND_EXPECT_HOST to the host you mean on every command that clicks or types, so nothing lands on another page. Read the page text before typing.',
         'Enter the sign-in link the way the skill says (over stdin, into the address bar). Fill every other field only by its `editfields` index, and pipe each secret to typesecretedit on stdin.']
       : ['Before EVERY keystroke burst, check that the frontmost process is the Chrome you opened and that',
         'document.activeElement is the password or code field you mean. Re-check after anything that can move focus.']),
     'If you reach a hard line, report which one and stop (the repair then waits for the operator and is never retried on its own):',
-    `  ${post('{"notify":"hard-line","line":"captcha"}')}  (or "phone-confirmation" / "wrong-account" / "unexpected-site")`,
+    `  ${post('{"notify":"hard-line","line":"captcha"}')}  (or "phone-confirmation" / "wrong-account" / "unexpected-site" / "device-limit")`,
     'You cannot message anyone. If you cannot finish for any other reason, write the reason in your final output and exit.',
     `Instar verifies the signed-in account itself; your word never counts as success. When done, ${windows ? 'close the tab you used (ctrl w)' : 'close only the Chrome you opened'} and exit.`,
   ];

@@ -174,8 +174,24 @@ export function updateQuestionOf(c, now = Date.now()) {
     : `What is the current status of “${subject}”? Please tell me what is done, what remains, and when I should expect the next update.`;
 }
 
+/** A promise that waits only on the operator's yes or no: the page offers Approve and Decline. */
+export function canDecide(c) {
+  return Boolean(c) && c.status === 'pending' && c.blockedOn === 'user-authorization';
+}
+
+/** The words after an Approve / Decline answer, from the server's reply. */
+export function decideResultWords(decision, res) {
+  if (res && res.ok) {
+    const posted = res.data && res.data.postedInConversation === false ? ' I could not post it in the conversation, so mention it there if it matters.' : '';
+    return { ok: true, text: (decision === 'approve' ? 'Approved. I will go ahead.' : 'Declined. The promise is closed.') + posted };
+  }
+  const why = (res && res.reason) || 'the server could not be reached';
+  return { ok: false, text: `That did not go through: ${String(why).replace(/\.$/, '').replace(/^The /, 'the ')}.` };
+}
+
 /** A concrete next step without assigning the agent's work to the operator. */
 export function nextStepOf(c, now = Date.now()) {
+  if (canDecide(c)) return 'Your approval is needed. Approve or decline it here, or reply in the conversation to talk it through first.';
   if (waitsOnOperator(c)) return 'Your answer or approval is needed. Open the conversation to respond.';
   if (isMissed(c, now) || needsPromiseReview(c, now)) return 'This follow-up is mine: I need to verify the current outcome. No action is needed from you.';
   return 'The next step is mine. No action is needed from you.';

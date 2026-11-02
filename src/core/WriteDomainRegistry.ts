@@ -338,6 +338,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
   } });
+  // Console composer attachments: the file must sit on the disk of the machine
+  // running the session, which reads it by path. Never converges across machines.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/sessions/:name/attachments', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'saved under the gitignored per-agent <stateDir>/state/dashboard-uploads/ for a session running on this machine; 30-day retention; another machine\'s session is refused',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/activate-config', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
@@ -1061,6 +1069,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // even if that rule were violated: the CAS stamp makes a second writer a
   // no-op, so a duplicate reminder is impossible, only duplicated work.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/check-in-reminder/pass', domain: 'cluster-shared' });
+  // The dashboard's Approve / Decline on a promise waiting on the operator: the same
+  // owner-routed commitment mutation as /transition and /withdraw (a replica forwards
+  // to the machine that holds the promise).
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/decide', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });

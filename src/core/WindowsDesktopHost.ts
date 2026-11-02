@@ -2,7 +2,7 @@
  * It never captures WSL's own display. The companion must authenticate every
  * local request and revoke on a lost heartbeat independently of this process. */
 import { createHmac, createHash, randomBytes } from 'node:crypto';
-import type { DesktopHost, DesktopInput, DesktopProbe } from './DesktopHost.js';
+import { validDesktopInput, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 
 const FRAME_LIMIT = 1_250_000;
 const JSON_LIMIT = 4_096;
@@ -58,6 +58,7 @@ export class WindowsDesktopHost implements DesktopHost {
   }
 
   async input(action: DesktopInput): Promise<void> {
+    if (!validDesktopInput(action)) throw new Error('windows-desktop-input-invalid');
     const generation = this.generation;
     const reply = await this.json('input', { leaseId: this.requireLease(), action });
     if (generation !== this.generation || reply.ok !== true) throw new Error('windows-desktop-input-unconfirmed');

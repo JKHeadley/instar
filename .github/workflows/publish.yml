@@ -28,6 +28,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Import macOS signing identity
+        env:
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          [ -n "$MACOS_SIGNING_P12_BASE64" ] || { echo "No macOS signing identity configured; the helper stays ad-hoc signed"; exit 0; }
+          [ -n "$MACOS_SIGNING_IDENTITY" ] || { echo "MACOS_SIGNING_IDENTITY is required with the signing certificate"; exit 1; }
+          keychain="$RUNNER_TEMP/instar-signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 1800 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_SIGNING_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/instar-signing.p12"
+          security import "$RUNNER_TEMP/instar-signing.p12" -k "$keychain" -P "$MACOS_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/instar-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "INSTAR_MACOS_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
       - run: node scripts/build-native-desktop-host.mjs --release-universal
       - run: node scripts/check-native-desktop-release.mjs
       - uses: actions/upload-artifact@v4

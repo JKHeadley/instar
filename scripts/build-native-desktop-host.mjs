@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const DESKTOP_HOST_IDENTIFIER = 'ai.instar.desktop-host';
 const releaseUniversal = process.argv.includes('--release-universal');
 const universal = releaseUniversal || (process.env.INSTAR_RELEASE_BUILD === '1' && process.platform === 'darwin');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,7 +35,16 @@ if (process.platform === 'darwin') {
     compile(arm, 'arm64-apple-macosx13.0');
     compile(intel, 'x86_64-apple-macosx13.0');
     execFileSync('lipo', ['-create', arm, intel, '-output', binary], { cwd: root, stdio: 'inherit', timeout: 30_000 });
-    execFileSync('codesign', ['--force', '--sign', '-', binary], { cwd: root, stdio: 'inherit', timeout: 30_000 });
+    // macOS binds a Screen Recording grant to the binary's designated
+    // requirement. A real identity keeps that requirement stable across
+    // releases; an ad-hoc signature pins it to this exact build's hash.
+    const signingIdentity = process.env.INSTAR_MACOS_SIGNING_IDENTITY?.trim() || '-';
+    if (signingIdentity === '-') {
+      console.warn('No INSTAR_MACOS_SIGNING_IDENTITY: ad-hoc signing, so a changed helper needs a new macOS grant');
+    }
+    execFileSync('codesign', ['--force', '--identifier', DESKTOP_HOST_IDENTIFIER,
+      ...(signingIdentity === '-' ? [] : ['--options', 'runtime', '--timestamp']),
+      '--sign', signingIdentity, binary], { cwd: root, stdio: 'inherit', timeout: 120_000 });
     const archs = execFileSync('lipo', ['-archs', binary], { encoding: 'utf8', timeout: 10_000 }).trim().split(/\s+/);
     if (!archs.includes('arm64') || !archs.includes('x86_64')) {
       throw new Error(`Desktop host is missing a release architecture: ${archs.join(', ')}`);

@@ -159,6 +159,12 @@ export class DirectDesktopAccess {
     return { ...state, ready: state.screenPermission && state.inputPermission && state.displayCount > 0 && state.sessionActive };
   }
 
+  /** Asks macOS to show its own permission prompts on this Mac. */
+  async requestPermission(): Promise<{ screenPermission: boolean; inputPermission: boolean }> {
+    if (this.disabled || !this.host.requestPermission) throw new Error('desktop permission request unavailable');
+    return this.host.requestPermission();
+  }
+
   async begin(input: DirectDesktopRequestInput): Promise<{ requestId: string }> {
     if (this.disabled || input.machineId !== this.machineId
       || !this.isDashboardOperatorSession(input.operatorSessionToken, input.browserPublicKey)
@@ -561,6 +567,11 @@ export class DirectDesktopAccess {
         candidateFrameDigest = null;
       },
       requestKeyframe: () => { if (activeCodec === 'h264') forceKeyframe = true; },
+      // A ping from the admitted, still-valid connection keeps a watched
+      // session alive; it never revives a grant that has already lapsed.
+      touch: () => {
+        if (row.grantId === admittedGrantId && this.validGrant(row)) row.lastActivity = this.now();
+      },
       fallbackVideo: () => { activeCodec = 'jpeg'; candidateFrameDigest = null; },
       decryptCommand: (record: Buffer) => {
         if (row.grantId !== admittedGrantId) throw new Error('desktop grant unavailable');

@@ -146,6 +146,19 @@ export function activeAutonomousJobs(stateDir: string): AutonomousJobSummary[] {
 }
 
 /**
+ * The goal of `topic`'s LIVE autonomous run (active, not paused), or null. Used
+ * by notify-on-stop to name the run in its stop notice; a file that exists but
+ * says `active: false` is not a live run and yields null.
+ */
+export function liveAutonomousRunGoal(stateDir: string, topic: string | number): string | null {
+  const t = String(topic).trim();
+  if (!/^[\w-]+$/.test(t)) return null;
+  const s = summarize(path.join(autonomousDir(stateDir), `${t}.local.md`), t);
+  if (!s || !s.active || s.paused) return null;
+  return s.goal || null;
+}
+
+/**
  * Honest-recycle helper (honest-session-recycle-spec): the ACTIVE autonomous run
  * for `topic` with the seconds remaining on its window — or null when there is no
  * active run for the topic, or its window is already over. This is the single

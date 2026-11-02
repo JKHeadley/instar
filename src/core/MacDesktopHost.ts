@@ -4,36 +4,29 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { DesktopHost, DesktopInput, DesktopProbe } from './DesktopHost.js';
+import { validDesktopInput, type DesktopButton, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
 
+/** macOS checks permissions against the responsible process. `inherited` is
+ * whichever program started this server's process tree; `own` is the helper
+ * binary itself, which is the only one a boot-order race cannot change. */
+type HelperIdentity = 'inherited' | 'own';
+const HELPER_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+const OWN_PROBE_GRACE_MS = 30_000;
+
 const FRAME_LIMIT = 1_250_000;
-const DESKTOP_KEYS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'Enter', 'Tab',
-  'Escape', 'Backspace', 'Delete', 'Space', 'ArrowLeft', 'ArrowRight',
-  'ArrowUp', 'ArrowDown', 'a', 'c', 'v', 'x', 'z']);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_HOST = path.basename(path.dirname(MODULE_DIR)) === 'src'
   ? path.resolve(MODULE_DIR, '..', '..', 'dist', 'native', 'instar-desktop-host')
   : path.resolve(MODULE_DIR, '..', 'native', 'instar-desktop-host');
 
-function validInput(action: MacDesktopInput): boolean {
-  if (!action || typeof action !== 'object') return false;
-  if (action.kind === 'move' || action.kind === 'click' || action.kind === 'buttonDown' || action.kind === 'buttonUp') {
-    if (!Number.isFinite(action.x) || !Number.isFinite(action.y)
-      || action.x < 0 || action.x > 1 || action.y < 0 || action.y > 1) return false;
-    return action.kind === 'move' || action.button === 'left' || action.button === 'right';
-  }
-  if (action.kind === 'scroll') {
-    return Number.isFinite(action.dx) && Number.isFinite(action.dy)
-      && Math.abs(action.dx) <= 1_000 && Math.abs(action.dy) <= 1_000;
-  }
-  if (action.kind === 'keyDown' || action.kind === 'keyUp') return DESKTOP_KEYS.has(action.key);
-  return action.kind === 'type' && typeof action.text === 'string'
-    && action.text.length > 0 && action.text.length <= 1_024 && !action.text.includes('\0');
-}
+/** The helper's real path on this Mac, for the setup fallback's + step. */
+export function macDesktopHelperPath(): string { return fs.realpathSync(DEFAULT_HOST); }
+
+const validInput = validDesktopInput;
 
 export class MacDesktopHost implements DesktopHost {
   private readonly inputChildren = new Set<{ kill(signal?: NodeJS.Signals): boolean }>();
@@ -48,13 +41,16 @@ export class MacDesktopHost implements DesktopHost {
   private pendingCapture: { resolve(frame: Buffer): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   private inputReply = '';
   private pendingInput: { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
-  private heldRemoteButton: 'left' | 'right' | null = null;
+  private heldRemoteButton: DesktopButton | null = null;
   private readonly heldRemoteKeys = new Set<string>();
   private pendingControlAction: DesktopInput | null = null;
   private inputHelperLost = false;
   private inputFailureHandler: (() => void) | null = null;
   private inputGeneration = 0;
   private releaseBarrier: Promise<void> = Promise.resolve();
+  private screenIdentity: HelperIdentity = 'inherited';
+  private inputIdentity: HelperIdentity = 'inherited';
+  private lastOwnProbe: { value: MacDesktopProbe; at: number } | null = null;
   constructor(private readonly binary = DEFAULT_HOST) {}
 
   setInputFailureHandler(handler: () => void): void { this.inputFailureHandler = handler; }
@@ -99,10 +95,12 @@ export class MacDesktopHost implements DesktopHost {
       // A replacement grant cannot post input before the old grant's release
       // has completed. Keep a rejected barrier rejected: uncertain release
       // must fail subsequent input closed until this host is restarted.
+      const pressedAs = this.inputIdentity;
       this.releaseBarrier = this.releaseBarrier.then(async () => {
         await oldHelperExited;
         if (payload) {
-          const reply = await this.run('release', payload);
+          const reply = await this.run('release', payload, pressedAs).catch(() => // @silent-fallback-ok — the other identity is the only remaining way to release held controls; its failure rejects the barrier.
+            this.run('release', payload, pressedAs === 'own' ? 'inherited' : 'own'));
           if (reply.toString('utf8').trim() !== '{"ok":true}') {
             throw new Error('mac-desktop-host-release-invalid');
           }
@@ -129,6 +127,12 @@ export class MacDesktopHost implements DesktopHost {
     if (!this.closedInputStreams.has(child)) this.retiringInputStreams.add(child);
   }
 
+  private helperEnv(identity: HelperIdentity): NodeJS.ProcessEnv {
+    return identity === 'own'
+      ? { PATH: HELPER_PATH, INSTAR_DESKTOP_OWN_IDENTITY: '1' }
+      : { PATH: HELPER_PATH };
+  }
+
   private trustedBinary(): string {
     if (process.platform !== 'darwin') throw new Error('mac-desktop-host-platform-unavailable');
     const expectedDir = fs.realpathSync(path.dirname(DEFAULT_HOST));
@@ -143,7 +147,7 @@ export class MacDesktopHost implements DesktopHost {
   async startIndicator(onUnexpectedExit: () => void): Promise<void> {
     if (this.indicatorChild) throw new Error('mac-desktop-indicator-already-active');
     const child = spawn(this.trustedBinary(), ['indicator'], {
-      stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+      stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv('inherited'),
     });
     this.indicatorChild = child;
     await new Promise<void>((resolve, reject) => {
@@ -192,10 +196,15 @@ export class MacDesktopHost implements DesktopHost {
     child.kill('SIGKILL');
   }
 
-  private async run(command: 'probe' | 'capture' | 'cursor' | 'input' | 'release', input?: Buffer): Promise<Buffer> {
+  private async run(
+    command: 'probe' | 'capture' | 'cursor' | 'input' | 'release' | 'request-permission',
+    input?: Buffer,
+    identity: HelperIdentity = command === 'capture' ? this.screenIdentity
+      : command === 'input' || command === 'release' ? this.inputIdentity : 'inherited',
+  ): Promise<Buffer> {
     const resolved = this.trustedBinary();
     return new Promise<Buffer>((resolve, reject) => {
-      const child = spawn(resolved, [command], { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
+      const child = spawn(resolved, [command], { stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(identity) });
       if (command === 'input') this.inputChildren.add(child);
       const chunks: Buffer[] = [];
       const limit = command === 'capture' ? FRAME_LIMIT : 4_096;
@@ -207,7 +216,8 @@ export class MacDesktopHost implements DesktopHost {
         child.kill('SIGKILL');
         reject(new Error(reason));
       };
-      const timer = setTimeout(() => fail('mac-desktop-host-timeout'), command === 'capture' ? 4_000 : 2_000);
+      const timer = setTimeout(() => fail('mac-desktop-host-timeout'),
+        command === 'request-permission' ? 15_000 : command === 'capture' ? 4_000 : 2_000);
       timer.unref?.();
       child.stdout.on('data', (chunk: Buffer) => {
         size += chunk.length;
@@ -231,8 +241,49 @@ export class MacDesktopHost implements DesktopHost {
     });
   }
 
+  /** A permission is usable under either identity, and each is read per
+   * capability: an existing inherited grant keeps working until this Mac grants
+   * the helper directly, and the helper's own grant wins from then on. */
   async probe(): Promise<MacDesktopProbe> {
-    const raw = await this.run('probe');
+    const inherited = await this.probeAs('inherited');
+    // Grants are rechecked every 500 ms, so one slow helper start must not read
+    // as a lost grant and revoke a live session.
+    const own = await this.probeAs('own').then(value => {
+      this.lastOwnProbe = { value, at: Date.now() };
+      return value;
+    }).catch(() => { // @silent-fallback-ok — own-identity trouble leaves the inherited reading intact.
+      const recent = this.lastOwnProbe && Date.now() - this.lastOwnProbe.at < OWN_PROBE_GRACE_MS;
+      return recent ? this.lastOwnProbe!.value : null;
+    });
+    this.screenIdentity = own?.screenPermission ? 'own' : 'inherited';
+    // Held controls must be released under the identity that pressed them.
+    const inputLive = this.inputStream || this.retiringInputStreams.size
+      || this.heldRemoteButton || this.heldRemoteKeys.size;
+    if (!inputLive) this.inputIdentity = own?.inputPermission ? 'own' : 'inherited';
+    return {
+      ...inherited,
+      screenPermission: inherited.screenPermission || !!own?.screenPermission,
+      inputPermission: inherited.inputPermission || !!own?.inputPermission,
+      screenGrant: own?.screenPermission ? 'own' : inherited.screenPermission ? 'inherited' : 'none',
+      inputGrant: own?.inputPermission ? 'own' : inherited.inputPermission ? 'inherited' : 'none',
+    };
+  }
+
+  /** Shows macOS's own prompts on the Mac and lists the helper in Privacy &
+   * Security. Nothing is granted by this call; a person allows it there. */
+  async requestPermission(): Promise<{ screenPermission: boolean; inputPermission: boolean }> {
+    const raw = await this.run('request-permission', undefined, 'own');
+    let value: { screenPermission?: unknown; inputPermission?: unknown };
+    try { value = JSON.parse(raw.toString('utf8')) as typeof value; }
+    catch { throw new Error('mac-desktop-host-request-invalid'); }
+    if (typeof value.screenPermission !== 'boolean' || typeof value.inputPermission !== 'boolean') {
+      throw new Error('mac-desktop-host-request-invalid');
+    }
+    return { screenPermission: value.screenPermission, inputPermission: value.inputPermission };
+  }
+
+  private async probeAs(identity: HelperIdentity): Promise<MacDesktopProbe> {
+    const raw = await this.run('probe', undefined, identity);
     let value: Partial<MacDesktopProbe>;
     try { value = JSON.parse(raw.toString('utf8')) as Partial<MacDesktopProbe>; }
     catch { throw new Error('mac-desktop-host-probe-invalid'); }
@@ -307,7 +358,7 @@ export class MacDesktopHost implements DesktopHost {
 
   private startCaptureStream(mode: 'jpeg' | 'h264'): void {
     const child = spawn(this.trustedBinary(), [mode === 'h264' ? 'capture-stream-h264' : 'capture-stream'], {
-      stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+      stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(this.screenIdentity),
     });
     this.captureStream = child;
     this.captureMode = mode;
@@ -416,7 +467,7 @@ export class MacDesktopHost implements DesktopHost {
 
   private startInputStream(): void {
     const child = spawn(this.trustedBinary(), ['input-stream'], {
-      stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+      stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(this.inputIdentity),
     });
     this.inputStream = child;
     this.inputReply = '';

@@ -8,7 +8,7 @@ let backend: OriginStoreBackend | null = null;
 const methods = new Set([
   'putEvidence', 'putVerifiedEvidence', 'admit', 'getOrigin', 'getChild', 'getOperation', 'listOrigins', 'getMetrics',
   'claim', 'markDispatched', 'releaseUndispatchedClaim', 'renewClaim', 'recordOutcome', 'reapAbandoned', 'addMaterialization',
-  'recordOperationState', 'reserveNotice', 'recordNoticeOutcome', 'archive', 'cleanupPayloads', 'diagnostics', 'getPayload', 'consumeAuditAssertion',
+  'recordOperationState', 'reserveNotice', 'recordNoticeOutcome', 'archive', 'compactArchives', 'purgeArchived', 'foldMetricEvents', 'expireAudit', 'cleanupPayloads', 'diagnostics', 'getPayload', 'consumeAuditAssertion',
   'retireNoticeOwner', 'reconcileReceipt',
   'reserveRecoveryAttempt', 'listHeldOperations', 'unresolvedHeldOperationCount', 'markHoldExpiryReported', 'recordForwardedAcceptance', 'recordForwardedOutcomeUnknown', 'heldForwardAdmissions', 'supersedeOperation', 'supersedeWithAdmission',
   'healthTransaction', 'recoverableAdmissions', 'takeRecoverableAdmissions', 'registerOwner', 'legacyCandidates', 'importLegacy', 'reserveDiagnostic', 'completeDiagnostic', 'browserRecovery', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'undiagnosedOrigins',

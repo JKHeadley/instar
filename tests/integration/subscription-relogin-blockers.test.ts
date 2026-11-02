@@ -86,6 +86,41 @@ describe('subscription re-login blockers (why a needs-sign-in account has no rep
     runtime.close();
   });
 
+  it('names device-limit-benched for a benched account, with or without an open incident (codex-device-limit-tripwire §8)', async () => {
+    const benched = { statusCause: 'codex-device-limit' as const, deviceLimitSince: '2026-10-31T12:00:00Z' };
+    const accounts = [
+      account('benched-no-incident', 'dawn@example.com', 'needs-reauth', benched),
+      // Would otherwise be admissible (incident + dedicated profile): the bench still names the reason.
+      account('benched-admissible', 'has-profile@example.com', 'needs-reauth', benched),
+      account('benched-codex', 'codex@example.com', 'needs-reauth', { ...benched, provider: 'openai', framework: 'codex-cli' }),
+      // A restored account with a stale cause is not needs-reauth: not listed.
+      account('restored', 'ok@example.com', 'active', benched),
+    ];
+    const { runtime, ledger, enrollment } = build(accounts, [incident(21, 'benched-admissible'), incident(22, 'benched-codex')]);
+    expect(await runtime.blockers()).toEqual([
+      { accountId: 'benched-no-incident', machineId: 'machine-1', framework: 'claude-code', reason: 'device-limit-benched' },
+      { accountId: 'benched-admissible', machineId: 'machine-1', framework: 'claude-code', reason: 'device-limit-benched' },
+      { accountId: 'benched-codex', machineId: 'machine-1', framework: 'codex-cli', reason: 'device-limit-benched' },
+    ]);
+    // Admission agrees: the tick starts no repair for any benched account.
+    await runtime.service.tick();
+    expect(runtime.store.list()).toEqual([]);
+    expect(ledger.recordStatus).not.toHaveBeenCalled();
+    expect(enrollment.start).not.toHaveBeenCalled();
+    runtime.close();
+  });
+
+  it('endForDeviceLimit ends this machine\'s live repair for the account (runtime wiring)', async () => {
+    const { runtime } = build([account('admissible', 'has-profile@example.com', 'needs-reauth')], [incident(31, 'admissible')]);
+    await runtime.service.tick();
+    const [ep] = runtime.store.list();
+    expect(ep).toMatchObject({ accountId: 'admissible', state: 'suggested' });
+    expect(await runtime.endForDeviceLimit('admissible')).toEqual([{ id: ep!.id, ended: true }]);
+    expect(runtime.store.get(ep!.id)).toMatchObject({ state: 'refused', failureClass: 'device-limit' });
+    expect(await runtime.endForDeviceLimit('admissible')).toEqual([]);
+    runtime.close();
+  });
+
   it('is exposed on the route context the server wires (wiring integrity)', async () => {
     const { runtime } = build([account('no-incident', 'dawn@example.com', 'needs-reauth')], []);
     const ctx = subscriptionReloginRouteContext(runtime);

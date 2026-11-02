@@ -44,7 +44,8 @@ function setup(opts: Opts = {}) {
   const config = {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true,
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' },
-    ...(opts.nativeOff ? { mobilePairing: { native: { enabled: false } } } : {}),
+    // Multi-route off: these tests cover the single paired host (mobile-multi-route.md, flag off).
+    mobilePairing: { ...(opts.nativeOff ? { native: { enabled: false } } : {}), multiRoute: { enabled: false } },
   };
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };

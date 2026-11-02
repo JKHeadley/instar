@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "desktop-anydesk-gestures",
+  "sessionId": "22931342-0ba2-4551-8807-182c3b8ae255",
+  "timestamp": "2026-11-01T06:07:14.594Z",
+  "artifactPath": "upgrades/side-effects/desktop-anydesk-gestures.md",
+  "artifactSha256": "235ffef057da6b2569599fe9af91f4bb6248a0561f5fc61dcc9fd81a2e7a3af0",
+  "coveredFiles": [
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/native-remote-desktop-anydesk-gestures.eli16.md",
+    "src/core/DesktopHost.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/core/WindowsDesktopHost.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+    "src/server/DesktopStreamManager.ts",
+    "tests/unit/desktop-anydesk-gestures.test.ts",
+    "tests/unit/desktop-input-protocol.test.ts",
+    "upgrades/next/desktop-anydesk-gestures.md",
+    "upgrades/side-effects/desktop-anydesk-gestures.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "additive input vocabulary and viewer gestures; reverted fully by a revert; no state",
+  "eli16Path": "docs/specs/native-remote-desktop-anydesk-gestures.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-anydesk-gestures.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

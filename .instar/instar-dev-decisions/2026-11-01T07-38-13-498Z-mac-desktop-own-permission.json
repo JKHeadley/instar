@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-01T07:38:13.498Z",
+  "slug": "mac-desktop-own-permission",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/check-native-desktop-release.mjs touches release script (fleet publish path)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 11,
+  "loc": 190,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/check-native-desktop-release.mjs",
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 175,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

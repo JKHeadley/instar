@@ -92,6 +92,18 @@ const KNOWN_REPAIR_STATES = new Set([
  *  history, but must never shadow a newer Active observation or offer a retry that
  *  the server's admission policy is required to refuse. In-flight states remain
  *  visible because pool activation can precede the controller's final ledger close. */
+/**
+ * Codex device-limit tripwire (spec codex-device-limit-tripwire §8): the account is benched
+ * on THIS machine because its Codex refusal was judged a per-device paid-account limit.
+ * Signing in again here cannot help, so the dashboard shows the bench and hides Sign in /
+ * Repair. Only the exact cause on a needs-reauth row counts — a peer on older code (cause
+ * absent) or a cause of 'unknown' is ordinary state, never shown as benched.
+ */
+export const DEVICE_LIMIT_WORDS = 'Suspected device limit: benched on this machine';
+export function isDeviceLimitBenched(account) {
+  return !!(account && account.status === 'needs-reauth' && account.statusCause === 'codex-device-limit');
+}
+
 export function repairAppliesToCurrentState(repair, currentState) {
   if (!repair || !KNOWN_REPAIR_STATES.has(repair.state)) return false;
   if (repair.state === 'suggested' || repair.state === 'failed') {
@@ -415,9 +427,13 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const repair = repairAppliesToCurrentState(repairCandidate, effectiveAccountStatus(a))
       ? repairCandidate
       : null;
+    const benched = isDeviceLimitBenched(a);
+    if (benched) {
+      card.appendChild(el(doc, 'div', 'sub-account-device-limit', DEVICE_LIMIT_WORDS));
+    }
     const accountKey = visibleAccountKey(a);
     const uniqueAccount = accountKey !== null && accountKeys.indexOf(accountKey) === accountKeys.lastIndexOf(accountKey);
-    if (repair) {
+    if (repair && !benched) {
       const repairBox = el(doc, 'div', 'sub-account-repair');
       const terminal = ['succeeded', 'refused', 'cancelled', 'failed'].includes(repair.state);
       const label = repair.state === 'suggested' ? 'Sign-in repair is ready.'
@@ -822,6 +838,13 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   // sign-in flow (link, expected email, code input, TTL, notice) from SERVER state — the flow
   // must never exist only in the bottom panel (topic 29836 D2), and a rebuild mid-flow renders
   // the same step back instead of losing it (D1 defense-in-depth).
+  // (accountId, machineId) benched by the Codex device-limit tripwire (reachable machine only).
+  const deviceLimited = new Set();
+  for (const a of accountRows) {
+    const mid = a && a.machineId;
+    if (!a || !a.id || !mid || offlineMachineIds.has(mid)) continue;
+    if (isDeviceLimitBenched(a)) deviceLimited.add(`${a.id}::${mid}`);
+  }
   const inProgress = new Map();
   for (const l of pendingRows) {
     if (l && l.id && l.machineId) inProgress.set(`${l.id}::${l.machineId}`, l);
@@ -852,6 +875,9 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
       const pendingLogin = cancelled ? null : (inProgress.get(key) || null);
       let state;
       if (m.offline) state = 'offline';                              // whole column offline (FD6)
+      // Benched for a suspected device limit: another sign-in here cannot help, so no
+      // client transient or pending login turns it back into an actionable cell.
+      else if (deviceLimited.has(key)) state = 'device-limit';
       else if (t && t.state === 'held') state = 'held';
       else if (t && t.state === 'cant-resolve') state = 'cant-resolve';
       else if (emailMissing.has(key) || (t && t.state === 'email-missing')) state = 'email-missing';
@@ -889,13 +915,14 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
 
 const MATRIX_CELL_GLYPH = {
   active: '✓', 'needs-reauth': '⟳', 'in-progress': '◷', offline: '—', held: '⚠', 'cant-resolve': '✗',
-  'email-missing': '⚠', expired: '✗', 'just-verified': '✓', broken: '✗',
+  'email-missing': '⚠', expired: '✗', 'just-verified': '✓', broken: '✗', 'device-limit': '⛔',
 };
 const MATRIX_CELL_WORD = {
   active: 'Active', 'needs-reauth': 'Needs sign-in', 'in-progress': 'Signing in…',
   offline: 'Machine offline', held: 'Didn’t match — re-try', 'cant-resolve': 'Can’t set up', other: 'Set up',
   'email-missing': 'Account record is missing its email', expired: 'Sign-in link expired',
   'just-verified': 'Set up complete', broken: 'Sign-in needs a restart',
+  'device-limit': DEVICE_LIMIT_WORDS,
 };
 
 /** D5 wording floor: never show a raw internal machine id (m_<hex>) to the operator —
@@ -1066,7 +1093,7 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
       const repairCandidate = Array.isArray(reloginEpisodes)
         ? reloginEpisodes.find((episode) => episode && episode.accountId === c.accountId && episode.machineId === c.machineId)
         : null;
-      const repair = repairAppliesToCurrentState(repairCandidate, c.state)
+      const repair = c.state !== 'device-limit' && repairAppliesToCurrentState(repairCandidate, c.state)
         ? repairCandidate
         : null;
       const repairUnavailable = Array.isArray(reloginFailures)
@@ -1188,6 +1215,10 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           : (justVerified && c.state === 'active' ? 'Active — just set up' : MATRIX_CELL_WORD[c.state]);
         const glyph = MATRIX_CELL_GLYPH[c.state] || '';
         td.appendChild(el(doc, 'span', 'sub-matrix-glyph', `${glyph} ${word}`.trim()));
+        if (c.state === 'device-limit') {
+          td.appendChild(el(doc, 'div', 'sub-matrix-held-detail',
+            'Another sign-in on this machine can’t fix this.'));
+        }
         if (justVerified) {
           td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-done',
             'Done — this account is set up on this machine.'));

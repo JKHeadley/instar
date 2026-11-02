@@ -577,6 +577,9 @@ interface PendingPromise {
   alerted: boolean;
 }
 
+/** Longest a send waits at boot for the forward-to-holder wiring (see holderForwardReady). */
+export const HOLDER_FORWARD_WIRING_WAIT_MS = 30_000;
+
 export class TelegramAdapter implements MessagingAdapter {
   readonly platform = 'telegram';
 
@@ -837,6 +840,21 @@ export class TelegramAdapter implements MessagingAdapter {
    * throw OriginForwardSettledLocallyError, after which the send is local).
    */
   public holderForwardPolicy: { decide(): 'forward' | 'local' | 'settling' } | null = null;
+  /**
+   * Set by the server right after construction on a machine with a paired peer;
+   * resolves once `holderForwardPolicy` and `outboundRelay` are wired. Until then
+   * a send would take the direct path, which `authorize` holds on a standby and
+   * never replays there (the Mama PC boot-time holds, ~12 s after each restart).
+   * Sends wait for it, bounded by HOLDER_FORWARD_WIRING_WAIT_MS.
+   */
+  public holderForwardReady: Promise<void> | null = null;
+
+  private async awaitHolderForwardWiring(): Promise<void> {
+    if (this.holderForwardPolicy || !this.holderForwardReady) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.holderForwardReady, new Promise<void>(resolve => { timer = setTimeout(resolve, HOLDER_FORWARD_WIRING_WAIT_MS); })]);
+    if (timer) clearTimeout(timer);
+  }
 
   // Sentinel interceptor — fires BEFORE the message handler for real-time interrupt detection.
   // Returns the sentinel classification. If category is 'emergency-stop' or 'pause',
@@ -1658,6 +1676,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // usable token is a non-empty string; anything else (placeholder/null/empty) means
     // "no usable token" → relay through the Telegram-owning router (bug #7).
     const hasUsableBotToken = typeof this.config.token === 'string' && this.config.token.length > 0;
+    if (hasUsableBotToken) await this.awaitHolderForwardWiring();
     // a2a-single-agent-identity §4.1 — a token-holding machine that does not hold the
     // serving lease ALSO relays (to the lease holder). 'settling' goes down the relay path
     // too: the relay runs the bounded lease-settling window and, if it settles to THIS
@@ -2065,6 +2084,9 @@ export class TelegramAdapter implements MessagingAdapter {
       return null;
     }
   }
+
+  /** Mobile push (docs/specs/mobile-push.md): fired after an accepted Attention hub post. Wired by AgentServer. */
+  public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
   public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
@@ -2895,6 +2917,7 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   async resolveTopicName(topicId: number): Promise<string | null> {
     if (this.notAForum) return null;
+    await this.awaitHolderForwardWiring();
     // The probe is a real message. A machine that would not send locally (it
     // forwards to the lease holder) cannot probe: a direct send is held and its
     // "." replayed into the topic later. Fall back to the stored/default name.
@@ -4887,7 +4910,12 @@ export class TelegramAdapter implements MessagingAdapter {
       });
       return item.topicId ?? null;
     }
-    const markPosted = () => this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+    const markPosted = () => {
+      this.attentionHubLastPost.set(item.id, { at: nowMs, priority: item.priority });
+      // Mobile push (docs/specs/mobile-push.md §2.3): only after Telegram accepted the hub post.
+      try { this.onHubPost?.({ kind: 'item', itemId: item.id, dedupeKey: item.conditionKey ?? item.id, priority: item.priority }); }
+      catch { /* @silent-fallback-ok — push is best-effort and never affects the hub post */ }
+    };
     // Easy to read on a phone: what it is, then what to do. Category, priority
     // labels and internal source names live in the store / dashboard.
     const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;
@@ -4973,7 +5001,7 @@ export class TelegramAdapter implements MessagingAdapter {
       this.attentionHubTopicId = topic.topicId;
       this.topicToName.set(topic.topicId, `${TOPIC_STYLE.ALERT.emoji} Attention`);
       try { this.config.systemTopics?.recordAttentionHubTopicId?.(topic.topicId); }
-      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); }
+      catch (err) { console.warn(`[telegram] attention hub: could not record topic ${topic.topicId}: ${err}`); } // @silent-fallback-ok — logged; the hub id stays cached in memory
       return this.attentionHubTopicId;
     })();
 

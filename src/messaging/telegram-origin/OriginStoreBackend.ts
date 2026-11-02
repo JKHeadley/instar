@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { PendingRelayStore } from '../pending-relay-store.js';
 import { snapshotLegacyOrigin } from './OriginLegacy.js';
 import type { OriginLegacySnapshot } from './OriginLegacy.js';
@@ -25,6 +26,17 @@ const MAX_LEASE_MS = 60_000;
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const MAX_ARCHIVE_READ_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_PAGE_BYTES = 2 * 1024 * 1024;
+// A merged file stays well inside MAX_ARCHIVE_BYTES, whatever its sources held.
+const MAX_MERGED_ARCHIVE_BYTES = 16 * 1024 * 1024;
+const ARCHIVE_WALK_ROWS = 2000;
+const FUTURE_SKEW_MS = 24 * 60 * 60_000;
+// The window must clear rows purge leaves in place; each one reads from disk when cold.
+const PURGE_WINDOW_SLACK = 20;
+const MAX_OWNER_ROWS = 2000;
+// Long enough to outlast one retention transaction in the other process, so that
+// a send waits for it instead of failing with SQLITE_BUSY.
+const STORE_BUSY_TIMEOUT_MS = 250;
+const RETAINED_STATES = "('accepted','suppressed','expired','known-failed','superseded')";
 const digest = (bytes: string | Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const fail = (code: string): never => { throw new Error(`origin-store:${code}`); };
 function id(value: string): void { if (typeof value !== 'string' || !value.length || value.length > 256) fail('invalid-id'); }
@@ -38,6 +50,7 @@ function json(value: string, maxBytes: number): void {
 function seal(value: string, hash: string): void {
   if (!/^[a-f0-9]{64}$/.test(hash) || digest(value) !== hash) fail('digest-mismatch');
 }
+type DbArchive = { archive_id: string; filename: string; digest: string; count: number; first_sequence: number; last_sequence: number };
 type DbOrigin = { sequence: number; origin_id: string; machine_id: string; created_at: number; envelope_digest: string; record_json: string | null; archive_id: string | null };
 type DbOperation = { operation_id: string; origin_id: string; admission_digest: string; prepared_at: number; deadline_at: number; max_attempts: number; payload_bytes: number; state: string; kind: string; hold_reason?: string | null; hold_detail_json?: string | null; hold_expiry_reported_at?: number | null };
 type DbChild = { child_id: string; operation_id: string; delivery_id: string; destination_json: string; content_digest: string; generation: number; state: string; allowed_derivations: string };
@@ -52,6 +65,14 @@ export class OriginStoreBackend {
   private readonly archiveDir: string;
   private archiveReadScope?: { handles: Map<string, Database.Database>; bytes: number };
   private readonly archiveReadStats = { filesVerified: 0, bytesHashed: 0 };
+  /** Damaged or missing sources stay as they are; they are not retried by this process. */
+  private readonly unmergeableArchives = new Set<string>();
+  /** Where the next purge looks. Rows it leaves in place never hide the rows behind them. */
+  private purgeAfterRowid = 0;
+  /** How far archive scanned past a row that has to wait. */
+  private archiveScanAfter = 0;
+  /** Where the next look for unreferenced archive files starts. */
+  private expiryScanAfter = 0;
 
   constructor(options: OriginStoreOptions) {
     if (isMainThread) fail('worker-required');
@@ -64,7 +85,7 @@ export class OriginStoreBackend {
     };
     for (const value of Object.values(this.options)) integer(value, 1, Number.MAX_SAFE_INTEGER);
     this.archiveDir = path.join(options.stateDir, 'state', 'telegram-origin-archives', options.agentId.replace(/[^A-Za-z0-9._-]/g, '_'));
-    this.queue = PendingRelayStore.open(options.agentId, options.stateDir, { durability: 'FULL', busyTimeoutMs: 25 });
+    this.queue = PendingRelayStore.open(options.agentId, options.stateDir, { durability: 'FULL', busyTimeoutMs: STORE_BUSY_TIMEOUT_MS });
     this.db = this.queue.rawDb();
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS telegram_origins (
@@ -130,7 +151,19 @@ export class OriginStoreBackend {
         archive_id TEXT PRIMARY KEY, filename TEXT NOT NULL, digest TEXT NOT NULL, count INTEGER NOT NULL,
         first_sequence INTEGER NOT NULL, last_sequence INTEGER NOT NULL, committed_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS telegram_origin_entries_lane ON entries(entry_kind,state,next_attempt_at);
+      CREATE TABLE IF NOT EXISTS telegram_origin_metric_rollups (
+        metric TEXT NOT NULL, machine_id TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(metric,machine_id));
+      CREATE TABLE IF NOT EXISTS telegram_origin_retention (
+        id INTEGER PRIMARY KEY CHECK(id=1), archive_after_sequence INTEGER NOT NULL, expired_before INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS telegram_origin_operation_index (operation_id TEXT PRIMARY KEY, origin_id TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS telegram_origin_operation_index_origin ON telegram_origin_operation_index(origin_id);
+      CREATE INDEX IF NOT EXISTS telegram_origin_operation_open ON telegram_origin_operations(kind,deadline_at,payload_bytes)
+        WHERE state NOT IN ('accepted','suppressed','expired','known-failed','superseded');
+      CREATE INDEX IF NOT EXISTS telegram_origin_entries_text ON entries(delivery_id) WHERE entry_kind='telegram-origin' AND length(text)>0;
+      CREATE INDEX IF NOT EXISTS telegram_origin_receipt_origin ON telegram_origin_platform_receipts(origin_id);
+      CREATE INDEX IF NOT EXISTS telegram_origin_archive_small ON telegram_origin_archives(first_sequence) WHERE count<100;
     `);
+    if (!this.db.prepare('SELECT 1 FROM telegram_origin_retention WHERE id=1').get()) this.db.prepare('INSERT OR IGNORE INTO telegram_origin_retention VALUES (1,0,0)').run();
     // a2a-single-agent-identity §4.2 — additive hold columns. An older reader
     // ignores them and treats a held row exactly as before (unknown reason ⇒
     // the ordinary hold); a newer reader can name WHY a row is held.
@@ -198,7 +231,7 @@ export class OriginStoreBackend {
     const evidenceJson = JSON.stringify(verification); json(evidenceJson, 4096);
     return this.db.transaction(() => {
       const receipt = this.putEvidence(record);
-      this.db.prepare('INSERT OR IGNORE INTO telegram_origin_verifications(origin_id,evidence_json) VALUES (?,?)').run(record.originId, evidenceJson);
+      if (this.db.prepare('SELECT 1 FROM telegram_origins WHERE origin_id=? AND archive_id IS NULL').get(record.originId)) this.db.prepare('INSERT OR IGNORE INTO telegram_origin_verifications(origin_id,evidence_json) VALUES (?,?)').run(record.originId, evidenceJson);
       return receipt;
     }).immediate();
   }
@@ -268,7 +301,8 @@ export class OriginStoreBackend {
   reserveDiagnostic(input: { originId: string; reason: string }): boolean {
     id(input.originId); id(input.reason);
     return this.db.transaction(() => {
-      if (!this.db.prepare('SELECT 1 FROM telegram_origins WHERE origin_id=?').get(input.originId)) return false;
+      // Detail for an archived origin would never be read back.
+      if (!this.db.prepare('SELECT 1 FROM telegram_origins WHERE origin_id=? AND archive_id IS NULL').get(input.originId)) return false;
       return this.db.prepare("INSERT OR IGNORE INTO telegram_origin_diagnostics VALUES (?,'pending',?,?,NULL,NULL)")
         .run(input.originId, input.reason, Date.now()).changes === 1;
     }).immediate();
@@ -347,8 +381,10 @@ export class OriginStoreBackend {
         if (existing.admission_digest !== admissionDigest || existing.kind !== (notice ? 'notice' : 'ordinary')) fail('operation-id-conflict');
         return { operationId: input.operationId, originId: input.record.originId, inserted: false };
       }
+      // A replay outlives the operation row: it is a conflict, never a fresh send.
+      if (this.db.prepare('SELECT 1 FROM telegram_origin_operation_index WHERE operation_id=?').get(input.operationId)) fail('operation-id-conflict');
       if (!notice) {
-        const active = this.db.prepare("SELECT count(*) n,coalesce(sum(payload_bytes),0) bytes FROM telegram_origin_operations WHERE kind='ordinary' AND state NOT IN ('accepted','suppressed','expired','known-failed')").get() as { n: number; bytes: number };
+        const active = this.db.prepare("SELECT count(*) n,coalesce(sum(payload_bytes),0) bytes FROM telegram_origin_operations WHERE kind='ordinary' AND state NOT IN ('accepted','suppressed','expired','known-failed','superseded')").get() as { n: number; bytes: number };
         if (active.n >= this.options.maxOperations || active.bytes + input.payloadBytes > this.options.maxPayloadBytes) fail('capacity-unavailable');
       }
       this.putEvidence(input.record);
@@ -400,8 +436,10 @@ export class OriginStoreBackend {
     id(operationId);
     const op = this.operation(operationId);
     if (op) return this.getOrigin(op.origin_id);
+    const retained = this.db.prepare('SELECT origin_id FROM telegram_origin_operation_index WHERE operation_id=?').get(operationId) as { origin_id: string } | undefined;
+    if (retained) return this.getOrigin(retained.origin_id);
     // Tokenless sources retain an immutable envelope without an executable
-    // operation. Evidence-only rows are never archived by the operation join.
+    // operation. Archiving one moves it into the operation index above.
     const rows = this.db.prepare(`SELECT origin_id FROM telegram_origins WHERE record_json IS NOT NULL
       AND json_extract(json_extract(record_json,'$.envelopeJson'),'$.operationId')=? LIMIT 2`).all(operationId) as Array<{ origin_id: string }>;
     if (rows.length > 1) fail('evidence-operation-conflict');
@@ -955,8 +993,10 @@ export class OriginStoreBackend {
     const row = this.db.prepare('SELECT * FROM telegram_origins WHERE origin_id=?').get(originId) as DbOrigin | undefined;
     if (!row) return null;
     const diagnostic = this.db.prepare('SELECT state,reason,created_at createdAt,resolved_at resolvedAt,diagnosis FROM telegram_origin_diagnostics WHERE origin_id=?').get(originId) as OriginAuditRecord['diagnostic'];
-    const storedRecord: StoredOriginInput = row.record_json === null && row.archive_id ? this.readArchive(row.archive_id, originId).record : JSON.parse(row.record_json!);
     const op = this.db.prepare('SELECT * FROM telegram_origin_operations WHERE origin_id=?').get(originId) as DbOperation | undefined;
+    // Purged detail was captured whole when it was archived.
+    if (!op && row.record_json === null && row.archive_id) return { ...this.readArchive(row.archive_id, originId), sequence: row.sequence };
+    const storedRecord: StoredOriginInput = row.record_json === null && row.archive_id ? this.readArchive(row.archive_id, originId).record : JSON.parse(row.record_json!);
     const children = op ? this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[] : [];
     const attempts = op ? this.db.prepare('SELECT a.* FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id WHERE c.operation_id=? ORDER BY a.created_at,a.attempt_id').all(op.operation_id) as DbAttempt[] : [];
     const verification = this.db.prepare('SELECT evidence_json FROM telegram_origin_verifications WHERE origin_id=?').get(originId) as { evidence_json: string } | undefined;
@@ -1020,7 +1060,9 @@ export class OriginStoreBackend {
       records.push(record); recordBytes += bytes;
     }
     const more = rows.length > records.length, last = rows[records.length - 1];
-    return { records, upperSequence, coverage: 'complete', cursor: more && last ? Buffer.from(JSON.stringify({ v: 1, upper: upperSequence, after: [last.created_at, last.machine_id, last.origin_id], filter })).toString('base64url') : null };
+    const { expired_before: expiredBefore } = this.db.prepare('SELECT expired_before FROM telegram_origin_retention WHERE id=1').get() as { expired_before: number };
+    return { records, upperSequence, coverage: 'complete', ...(expiredBefore ? { historyExpiredBefore: expiredBefore } : {}),
+      cursor: more && last ? Buffer.from(JSON.stringify({ v: 1, upper: upperSequence, after: [last.created_at, last.machine_id, last.origin_id], filter })).toString('base64url') : null };
   }
 
   getMetrics(): OriginMetrics {
@@ -1032,47 +1074,258 @@ export class OriginStoreBackend {
     id(machineId);
     // Prepared/evidence events belong to the source shard; execution events
     // belong to the one outbox. Inert evidence copies cannot inflate a pool.
-    const rows = this.db.prepare(`SELECT e.metric,count(*) count FROM telegram_origin_metric_events e
-      LEFT JOIN telegram_origins o ON o.origin_id=e.event_id
-      WHERE (e.metric!='operation:prepared' AND e.metric NOT LIKE 'evidence:%')
-        OR o.machine_id=? OR (o.machine_id='legacy-unattributed' AND EXISTS
-          (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id))
-      GROUP BY e.metric`).all(machineId) as Array<{ metric: string; count: number }>;
-    return { sampledAt: Date.now(), coverage: 'complete', stale: false,
-      counts: Object.fromEntries(rows.map(row => [row.metric, row.count])) };
+    return this.db.transaction(() => {
+      const rows = this.db.prepare(`SELECT e.metric,count(*) count FROM telegram_origin_metric_events e
+        LEFT JOIN telegram_origins o ON o.origin_id=e.event_id
+        WHERE (e.metric!='operation:prepared' AND e.metric NOT LIKE 'evidence:%')
+          OR o.machine_id=? OR (o.machine_id='legacy-unattributed' AND EXISTS
+            (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id))
+        GROUP BY e.metric`).all(machineId) as Array<{ metric: string; count: number }>;
+      const counts: Record<string, number> = Object.fromEntries(rows.map(row => [row.metric, row.count]));
+      const folded = this.db.prepare("SELECT metric,sum(count) count FROM telegram_origin_metric_rollups WHERE machine_id IN ('',?) GROUP BY metric").all(machineId) as Array<{ metric: string; count: number }>;
+      for (const row of folded) counts[row.metric] = (counts[row.metric] ?? 0) + row.count;
+      return { sampledAt: Date.now(), coverage: 'complete' as const, stale: false as const, counts };
+    })();
   }
 
-  /** Archive at most 200 terminal origins/16 MiB per call; all index rows remain.
-   * Artifact is fsynced BEFORE the transactional manifest redirects any lookup.
+  /** Archive at most 200 terminal origins/16 MiB per call; the origin row stays as
+   * the searchable stub. Reads forward from a durable cursor, so the cost follows
+   * the batch, never the table. Artifact is fsynced BEFORE the transactional
+   * manifest redirects any lookup. A batch under minRecords writes nothing until
+   * its oldest row passes flushBefore.
    */
-  archive(input: { before: number; limit?: number }): ArchiveResult {
+  archive(input: { before: number; limit?: number; minRecords?: number; flushBefore?: number; now?: number; keepOperations?: string[] }): ArchiveResult {
     const limit = input.limit ?? 100; integer(limit, 1, 200);
-    const rows = this.db.prepare(`SELECT o.origin_id,o.sequence FROM telegram_origins o JOIN telegram_origin_operations p ON p.origin_id=o.origin_id
-      WHERE o.archive_id IS NULL AND o.created_at<? AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') ORDER BY o.sequence LIMIT ?`).all(input.before, limit) as Array<{ origin_id: string; sequence: number }>;
-    if (!rows.length) return { archived: 0, archiveId: null, digest: null };
+    const minRecords = input.minRecords ?? 1; integer(minRecords, 1, limit);
+    const now = input.now ?? Date.now();
+    const { rows, skipped, through } = this.archiveCandidates(input.before, limit, now, new Set(input.keepOperations));
+    if (!rows.length || (rows.length < minRecords && !(input.flushBefore !== undefined && rows[0].created_at < input.flushBefore))) {
+      if (skipped !== null) this.db.prepare('UPDATE telegram_origin_retention SET archive_after_sequence=max(archive_after_sequence,?) WHERE id=1').run(skipped);
+      return { archived: 0, archiveId: null, digest: null };
+    }
     const records: OriginAuditRecord[] = []; let bytes = 0;
     for (const row of rows) { const record = this.getOrigin(row.origin_id)!; const size = Buffer.byteLength(JSON.stringify(record)); if (bytes + size > 16 * 1024 * 1024) break; records.push(record); bytes += size; }
     if (!records.length) fail('archive-record-too-large');
+    const { archiveId, filename, hash } = this.writeArchiveFile(records.map(record => ({ originId: record.record.originId, json: JSON.stringify(record) })));
+    const last = records.at(-1)!.sequence;
+    this.db.transaction(() => {
+      for (const record of records) {
+        const current = this.db.prepare('SELECT archive_id FROM telegram_origins WHERE origin_id=?').get(record.record.originId) as { archive_id: string | null };
+        if (current.archive_id !== null) fail('archive-race');
+      }
+      this.db.prepare('INSERT INTO telegram_origin_archives VALUES (?,?,?,?,?,?,?)').run(archiveId, filename, hash, records.length, records[0].sequence, last, Date.now());
+      for (const record of records) {
+        this.db.prepare('UPDATE telegram_origins SET record_json=NULL,archive_id=? WHERE origin_id=?').run(archiveId, record.record.originId);
+        // Evidence-only origins have no operation for purgeArchived to follow.
+        if (!record.operation) {
+          const operationId = (JSON.parse(record.record.envelopeJson) as { operationId?: unknown }).operationId;
+          if (typeof operationId === 'string') this.db.prepare('INSERT OR IGNORE INTO telegram_origin_operation_index VALUES (?,?)').run(operationId, record.record.originId);
+          this.deleteOriginDetail(record.record.originId);
+        }
+      }
+      this.db.prepare('UPDATE telegram_origin_retention SET archive_after_sequence=max(archive_after_sequence,?) WHERE id=1').run(rows.length === records.length ? through : Math.min(last, through));
+    }).immediate();
+    return { archived: records.length, archiveId, digest: hash };
+  }
+
+  /** `skipped` is how far the cursor may move with nothing archived, `through` how
+   * far once these rows are. A row that has to wait holds the durable cursor back but
+   * not the rows after it: the scan runs on past it and wraps round to it later. */
+  private archiveCandidates(before: number, limit: number, now: number, keep: Set<string>): { rows: Array<{ origin_id: string; created_at: number }>; skipped: number | null; through: number } {
+    const { archive_after_sequence: after } = this.db.prepare('SELECT archive_after_sequence FROM telegram_origin_retention WHERE id=1').get() as { archive_after_sequence: number };
+    const walk = this.db.prepare(`SELECT o.sequence,o.origin_id,o.created_at,o.archive_id,p.state,p.operation_id,
+        EXISTS (SELECT 1 FROM telegram_origin_children c JOIN telegram_origin_notices n ON n.child_id=c.child_id
+          WHERE c.operation_id=p.operation_id AND n.state='reserved') reserved FROM telegram_origins o
+      LEFT JOIN telegram_origin_operations p ON p.origin_id=o.origin_id WHERE o.sequence>? ORDER BY o.sequence LIMIT ?`);
+    const rows: Array<{ origin_id: string; created_at: number }> = [];
+    const from = Math.max(after, this.archiveScanAfter);
+    let skipped: number | null = null, through = after, blocked = from > after, scanned = from, walked = 0, ended = true;
+    for (const row of walk.iterate(from, ARCHIVE_WALK_ROWS) as Iterable<{ sequence: number; origin_id: string; created_at: number; archive_id: string | null; state: string | null; operation_id: string | null; reserved: number }>) {
+      walked++;
+      if (row.archive_id === null) {
+        const future = row.created_at > now + FUTURE_SKEW_MS; // A wrong clock must not pin retention.
+        if (row.created_at >= before && !future) break;
+        if ((row.state !== null && !RETAINED_STATES.includes(`'${row.state}'`)) || row.reserved || (row.operation_id !== null && keep.has(row.operation_id))) { blocked = true; scanned = row.sequence; continue; }
+        rows.push(row);
+      } else if (!blocked && !rows.length) skipped = row.sequence;
+      if (!blocked) through = row.sequence;
+      scanned = row.sequence;
+      if (rows.length >= limit) { ended = false; break; }
+    }
+    if (walked === ARCHIVE_WALK_ROWS) ended = false;
+    this.archiveScanAfter = blocked && !ended ? scanned : 0;
+    return { rows, skipped, through };
+  }
+
+  private writeArchiveFile(rows: Array<{ originId: string; json: string }>): { archiveId: string; filename: string; hash: string } {
     fs.mkdirSync(this.archiveDir, { recursive: true, mode: 0o700 });
     const archiveId = randomUUID(); const filename = `${archiveId}.sqlite`; const filenameAbsolute = path.join(this.archiveDir, filename);
     const archive = new Database(filenameAbsolute);
     try {
       fs.chmodSync(filenameAbsolute, 0o600); archive.pragma('synchronous = FULL');
       archive.exec('CREATE TABLE records(origin_id TEXT PRIMARY KEY,record_json TEXT NOT NULL)');
-      archive.transaction(() => { const insert = archive.prepare('INSERT INTO records VALUES (?,?)'); for (const record of records) insert.run(record.record.originId, JSON.stringify(record)); })();
+      archive.transaction(() => { const insert = archive.prepare('INSERT INTO records VALUES (?,?)'); for (const row of rows) insert.run(row.originId, row.json); })();
     } finally { archive.close(); }
     const fd = fs.openSync(filenameAbsolute, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     const dir = fs.openSync(this.archiveDir, 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
-    const hash = digest(fs.readFileSync(filenameAbsolute));
-    this.db.transaction(() => {
-      for (const record of records) {
-        const current = this.db.prepare('SELECT archive_id FROM telegram_origins WHERE origin_id=?').get(record.record.originId) as { archive_id: string | null };
-        if (current.archive_id !== null) fail('archive-race');
+    return { archiveId, filename, hash: digest(fs.readFileSync(filenameAbsolute)) };
+  }
+
+  /** Merge small archive files into one. Sources go only after the new manifest
+   * and every repointed stub commit; a crash before that leaves the sources in
+   * charge and at most one unreferenced file. */
+  compactArchives(input: { limit?: number } = {}): { merged: number; archiveId: string | null } {
+    const limit = input.limit ?? 256; integer(limit, 2, 256);
+    const candidates = this.db.prepare('SELECT * FROM telegram_origin_archives WHERE count<100 ORDER BY first_sequence LIMIT ?')
+      .all(limit + this.unmergeableArchives.size) as DbArchive[];
+    const sources: DbArchive[] = [], rows: Array<{ originId: string; json: string }> = []; let bytes = 0, examined = 0;
+    for (const source of candidates) {
+      if (sources.length >= limit || examined >= limit) break;
+      if (this.unmergeableArchives.has(source.archive_id)) continue;
+      examined++;
+      let records: Array<{ origin_id: string; record_json: string }>;
+      try { records = this.readArchiveRecords(source); }
+      catch { this.unmergeableArchives.add(source.archive_id); continue; }
+      const size = records.reduce((sum, record) => sum + Buffer.byteLength(record.record_json), 0);
+      if (size > MAX_MERGED_ARCHIVE_BYTES) { this.unmergeableArchives.add(source.archive_id); continue; }
+      if (bytes + size > MAX_MERGED_ARCHIVE_BYTES) {
+        // A file too big to pair with its neighbour must not stop every file behind it.
+        if (sources.length === 1) this.unmergeableArchives.add(sources[0].archive_id);
+        break;
       }
-      this.db.prepare('INSERT INTO telegram_origin_archives VALUES (?,?,?,?,?,?,?)').run(archiveId, filename, hash, records.length, records[0].sequence, records.at(-1)!.sequence, Date.now());
-      for (const record of records) this.db.prepare('UPDATE telegram_origins SET record_json=NULL,archive_id=? WHERE origin_id=?').run(archiveId, record.record.originId);
+      sources.push(source); bytes += size;
+      for (const record of records) rows.push({ originId: record.origin_id, json: record.record_json });
+    }
+    if (sources.length < 2) return { merged: 0, archiveId: null };
+    const { archiveId, filename, hash } = this.writeArchiveFile(rows);
+    const abandon = (): { merged: number; archiveId: null } => {
+      SafeFsExecutor.safeUnlinkSync(path.join(this.archiveDir, filename), { operation: 'telegram-origin-archive-compaction' });
+      return { merged: 0, archiveId: null };
+    };
+    let committed: boolean;
+    try {
+      committed = this.db.transaction(() => {
+        for (const source of sources) if (!this.db.prepare('SELECT 1 FROM telegram_origin_archives WHERE archive_id=?').get(source.archive_id)) return false;
+        this.db.prepare('INSERT INTO telegram_origin_archives VALUES (?,?,?,?,?,?,?)').run(archiveId, filename, hash, rows.length,
+          Math.min(...sources.map(source => source.first_sequence)), Math.max(...sources.map(source => source.last_sequence)), Date.now());
+        for (const source of sources) {
+          this.db.prepare('UPDATE telegram_origins SET archive_id=? WHERE sequence BETWEEN ? AND ? AND archive_id=?').run(archiveId, source.first_sequence, source.last_sequence, source.archive_id);
+          this.db.prepare('DELETE FROM telegram_origin_archives WHERE archive_id=?').run(source.archive_id);
+        }
+        return true;
+      }).immediate();
+    } catch (error) { abandon(); throw error; }
+    if (!committed) return abandon();
+    this.removeArchiveFiles(sources);
+    return { merged: sources.length, archiveId };
+  }
+
+  private removeArchiveFiles(archives: DbArchive[]): void {
+    for (const archive of archives) {
+      if (path.basename(archive.filename) !== archive.filename) continue;
+      try { SafeFsExecutor.safeUnlinkSync(path.join(this.archiveDir, archive.filename), { operation: 'telegram-origin-archive-retention' }); }
+      catch { /* Unreferenced now; a leftover file costs disk, never correctness. */ }
+    }
+  }
+
+  /** Full detail leaves the hot tables once its archive copy is committed. The
+   * stub, destination and receipts stay. Only the oldest operations are looked at,
+   * so nothing here scans. Kept: a reserved notice permit, a held expiry not yet
+   * reported once, and operations the caller names (a receipt still to fold in). */
+  purgeArchived(input: { before: number; limit?: number; keepOperations?: string[] }): number {
+    const limit = input.limit ?? 200; integer(limit, 1, 1000);
+    return this.db.transaction(() => {
+      const window = limit * 3 + PURGE_WINDOW_SLACK;
+      const { top, scanned } = this.db.prepare('SELECT max(rowid) top,count(*) scanned FROM (SELECT rowid FROM telegram_origin_operations WHERE rowid>? ORDER BY rowid LIMIT ?)').get(this.purgeAfterRowid, window) as { top: number | null; scanned: number };
+      const rows = this.db.prepare(`SELECT p.operation_id,p.origin_id FROM
+        (SELECT rowid scanned,operation_id,origin_id,state,hold_reason,hold_expiry_reported_at FROM telegram_origin_operations WHERE rowid>? ORDER BY rowid LIMIT ?) p
+        JOIN telegram_origins o ON o.origin_id=p.origin_id
+        WHERE o.archive_id IS NOT NULL AND o.created_at<? AND p.operation_id NOT IN (SELECT value FROM json_each(?))
+        AND NOT (p.state='expired' AND p.hold_reason IS 'lease-not-held' AND p.hold_expiry_reported_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c
+          JOIN telegram_origin_notices n ON n.child_id=c.child_id WHERE c.operation_id=p.operation_id AND n.state='reserved') LIMIT ?`)
+        .all(this.purgeAfterRowid, window, input.before, JSON.stringify(input.keepOperations ?? []), limit) as Array<{ operation_id: string; origin_id: string }>;
+      if (scanned < window) this.purgeAfterRowid = 0;
+      else if (rows.length < limit) this.purgeAfterRowid = top!;
+      for (const row of rows) {
+        const children = '(SELECT child_id FROM telegram_origin_children WHERE operation_id=?)';
+        this.db.prepare(`DELETE FROM telegram_origin_outcome_details WHERE attempt_id IN (SELECT attempt_id FROM telegram_origin_attempts WHERE child_id IN ${children})`).run(row.operation_id);
+        this.db.prepare(`DELETE FROM telegram_origin_attempts WHERE child_id IN ${children}`).run(row.operation_id);
+        this.db.prepare(`DELETE FROM telegram_origin_materializations WHERE child_id IN ${children}`).run(row.operation_id);
+        this.db.prepare(`DELETE FROM telegram_origin_notices WHERE child_id IN ${children}`).run(row.operation_id);
+        this.db.prepare('DELETE FROM entries WHERE delivery_id IN (SELECT delivery_id FROM telegram_origin_children WHERE operation_id=?)').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_children WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_payloads WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_recovery_schedule WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_operations WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('INSERT OR IGNORE INTO telegram_origin_operation_index VALUES (?,?)').run(row.operation_id, row.origin_id);
+        this.deleteOriginDetail(row.origin_id);
+      }
+      return rows.length;
     }).immediate();
-    return { archived: records.length, archiveId, digest: hash };
+  }
+  private deleteOriginDetail(originId: string): void {
+    this.db.prepare('DELETE FROM telegram_origin_diagnostics WHERE origin_id=?').run(originId);
+    this.db.prepare('DELETE FROM telegram_origin_verifications WHERE origin_id=?').run(originId);
+  }
+
+  /** Move old count-once keys into rollups; getMetrics' counters never change and
+   * getFederatedMetrics adds the rollups back. Event ids carry no time, so age comes
+   * from the first origin at or past `before`: its prepared event marks the line.
+   * With no newer origin, every event is old enough. Every event() writer needs a
+   * live row, gone with these same origins, so a dropped key cannot refire in practice. */
+  foldMetricEvents(input: { before: number; limit?: number }): { folded: number; more: boolean } {
+    const limit = input.limit ?? 5000; integer(limit, 1, 50_000);
+    return this.db.transaction(() => {
+      const newer = this.db.prepare('SELECT 1 FROM telegram_origins WHERE created_at>=? LIMIT 1').get(input.before);
+      const mark = newer ? this.db.prepare(`SELECT e.rowid FROM telegram_origins o JOIN telegram_origin_metric_events e ON e.event_id=o.origin_id AND e.metric='operation:prepared'
+        WHERE o.created_at>=? ORDER BY o.created_at LIMIT 1`).get(input.before) as { rowid: number } | undefined : { rowid: Number.MAX_SAFE_INTEGER };
+      if (!mark) return { folded: 0, more: false };
+      const { top, folded } = this.db.prepare('SELECT max(rowid) top,count(*) folded FROM (SELECT rowid FROM telegram_origin_metric_events WHERE rowid<? ORDER BY rowid LIMIT ?)').get(mark.rowid, limit) as { top: number | null; folded: number };
+      if (top === null) return { folded: 0, more: false };
+      this.db.prepare(`INSERT INTO telegram_origin_metric_rollups(metric,machine_id,count)
+        SELECT metric,scope,count(*) FROM (SELECT e.metric,CASE
+            WHEN e.metric!='operation:prepared' AND e.metric NOT LIKE 'evidence:%' THEN ''
+            WHEN o.machine_id='legacy-unattributed' THEN CASE WHEN EXISTS (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id) THEN '' END
+            ELSE o.machine_id END scope
+          FROM telegram_origin_metric_events e LEFT JOIN telegram_origins o ON o.origin_id=e.event_id WHERE e.rowid<=?)
+        WHERE scope IS NOT NULL GROUP BY metric,scope
+        ON CONFLICT(metric,machine_id) DO UPDATE SET count=count+excluded.count`).run(top);
+      this.db.prepare('DELETE FROM telegram_origin_metric_events WHERE rowid<=?').run(top);
+      return { folded, more: folded === limit };
+    }).immediate();
+  }
+
+  /** The operator's audit horizon: stubs and their archives go, and readers are
+   * told how far back history now reaches. Files go after commit. */
+  expireAudit(input: { before: number; limit?: number }): number {
+    const limit = input.limit ?? 500; integer(limit, 1, 1000);
+    const { expired, archives } = this.db.transaction(() => {
+      const rows = this.db.prepare(`SELECT o.origin_id FROM telegram_origins o WHERE o.created_at<? AND o.archive_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id) ORDER BY o.created_at LIMIT ?`).all(input.before, limit) as Array<{ origin_id: string }>;
+      for (const row of rows) {
+        this.db.prepare('DELETE FROM telegram_origin_destinations WHERE origin_id=?').run(row.origin_id);
+        this.db.prepare('DELETE FROM telegram_origin_platform_receipts WHERE origin_id=?').run(row.origin_id);
+        this.db.prepare('DELETE FROM telegram_origin_operation_index WHERE origin_id=?').run(row.origin_id);
+        this.db.prepare('DELETE FROM telegram_origins WHERE origin_id=?').run(row.origin_id);
+        this.deleteOriginDetail(row.origin_id);
+      }
+      if (rows.length) this.db.prepare('UPDATE telegram_origin_retention SET expired_before=max(expired_before,?) WHERE id=1').run(input.before);
+      // `forwarded:<machine>` rows are reused for good, and there is one per machine.
+      const owners = (this.db.prepare("SELECT count(*) n FROM telegram_origin_owners WHERE owner_boot_id NOT LIKE 'forwarded:%'").get() as { n: number }).n;
+      if (owners > MAX_OWNER_ROWS) this.db.prepare("DELETE FROM telegram_origin_owners WHERE rowid IN (SELECT rowid FROM telegram_origin_owners WHERE owner_boot_id NOT LIKE 'forwarded:%' ORDER BY rowid LIMIT ?)").run(owners - MAX_OWNER_ROWS);
+      // Age is per stub, so a file goes once no stub in its own range points at it.
+      // Not tied to this batch: a quiet shard still finishes what an earlier one began.
+      const { expired_before: horizon } = this.db.prepare('SELECT expired_before FROM telegram_origin_retention WHERE id=1').get() as { expired_before: number };
+      const scan = horizon ? this.db.prepare('SELECT * FROM telegram_origin_archives WHERE first_sequence>? ORDER BY first_sequence LIMIT 64').all(this.expiryScanAfter) as DbArchive[] : [];
+      this.expiryScanAfter = scan.length === 64 ? scan[63].first_sequence : 0;
+      const stubOf = this.db.prepare('SELECT 1 FROM telegram_origins WHERE sequence BETWEEN ? AND ? AND archive_id=? LIMIT 1');
+      const archives = scan.filter(archive => !stubOf.get(archive.first_sequence, archive.last_sequence, archive.archive_id));
+      for (const archive of archives) this.db.prepare('DELETE FROM telegram_origin_archives WHERE archive_id=?').run(archive.archive_id);
+      return { expired: rows.length, archives };
+    }).immediate();
+    this.removeArchiveFiles(archives);
+    return expired;
   }
 
   private withArchiveReads<T>(read: () => T): T {
@@ -1095,7 +1348,27 @@ export class OriginStoreBackend {
       return JSON.parse(row.record_json);
     }
     const manifest = this.db.prepare('SELECT filename,digest FROM telegram_origin_archives WHERE archive_id=?').get(archiveId) as { filename: string; digest: string } | undefined;
-    if (!manifest || path.basename(manifest.filename) !== manifest.filename) return fail('archive-unavailable');
+    if (!manifest) return fail('archive-unavailable');
+    const archive = this.openVerifiedArchive(manifest, scope);
+    if (scope.handles.size >= 16) {
+      const oldest = scope.handles.entries().next().value!;
+      oldest[1].close(); scope.handles.delete(oldest[0]);
+    }
+    scope.handles.set(archiveId, archive);
+    const record = archive.prepare('SELECT record_json FROM records WHERE origin_id=?').get(originId) as { record_json: string } | undefined;
+    if (!record) return fail('archive-incomplete');
+    return JSON.parse(record.record_json);
+  }
+  private readArchiveRecords(manifest: DbArchive): Array<{ origin_id: string; record_json: string }> {
+    const archive = this.openVerifiedArchive(manifest, { bytes: 0 });
+    try {
+      const records = archive.prepare('SELECT origin_id,record_json FROM records').all() as Array<{ origin_id: string; record_json: string }>;
+      if (records.length !== manifest.count) fail('archive-incomplete');
+      return records;
+    } finally { archive.close(); }
+  }
+  private openVerifiedArchive(manifest: { filename: string; digest: string }, scope: { bytes: number }): Database.Database {
+    if (path.basename(manifest.filename) !== manifest.filename) return fail('archive-unavailable');
     const filename = path.join(this.archiveDir, manifest.filename);
     const fd = fs.openSync(filename, 'r');
     let bytes: Buffer;
@@ -1115,31 +1388,23 @@ export class OriginStoreBackend {
       this.archiveReadStats.filesVerified++; this.archiveReadStats.bytesHashed += bytes.length;
     } finally { fs.closeSync(fd); }
     if (digest(bytes) !== manifest.digest) return fail('archive-integrity');
-    const archive = new Database(filename, { readonly: true, fileMustExist: true });
-    if (scope.handles.size >= 16) {
-      const oldest = scope.handles.entries().next().value!;
-      oldest[1].close(); scope.handles.delete(oldest[0]);
-    }
-    scope.handles.set(archiveId, archive);
-    const record = archive.prepare('SELECT record_json FROM records WHERE origin_id=?').get(originId) as { record_json: string } | undefined;
-    if (!record) return fail('archive-incomplete');
-    return JSON.parse(record.record_json);
+    return new Database(filename, { readonly: true, fileMustExist: true });
   }
 
   cleanupPayloads(now = Date.now()): number {
     return this.db.transaction(() => {
-      const expired = this.db.prepare("SELECT operation_id FROM telegram_origin_operations WHERE deadline_at<=? AND state NOT IN ('accepted','suppressed','expired','known-failed') LIMIT 1000").all(now) as { operation_id: string }[];
+      const expired = this.db.prepare("SELECT operation_id FROM telegram_origin_operations WHERE deadline_at<=? AND state NOT IN ('accepted','suppressed','expired','known-failed','superseded') LIMIT 1000").all(now) as { operation_id: string }[];
       for (const op of expired) this.expireOperation(op.operation_id, now);
       this.db.prepare(`UPDATE entries SET text=X'' WHERE delivery_id IN
-        (SELECT e.delivery_id FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id
-          JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE length(e.text)>0
-          AND e.entry_kind='telegram-origin' AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') LIMIT 1000)`).run();
+        (SELECT e.delivery_id FROM entries e INDEXED BY telegram_origin_entries_text CROSS JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id
+          CROSS JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE e.entry_kind='telegram-origin' AND length(e.text)>0
+          AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') LIMIT 1000)`).run();
       this.db.prepare(`UPDATE telegram_origin_payloads SET data=NULL WHERE rowid IN
-        (SELECT b.rowid FROM telegram_origin_payloads b JOIN telegram_origin_operations p ON p.operation_id=b.operation_id
+        (SELECT b.rowid FROM telegram_origin_payloads b INDEXED BY telegram_origin_payload_live CROSS JOIN telegram_origin_operations p ON p.operation_id=b.operation_id
           WHERE b.data IS NOT NULL AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') AND p.kind='ordinary' LIMIT 1000)`).run();
       return this.db.prepare(`UPDATE telegram_origin_materializations SET request_json=NULL WHERE rowid IN
-        (SELECT m.rowid FROM telegram_origin_materializations m JOIN telegram_origin_children c ON c.child_id=m.child_id
-          JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE m.request_json IS NOT NULL
+        (SELECT m.rowid FROM telegram_origin_materializations m INDEXED BY telegram_origin_materialization_live CROSS JOIN telegram_origin_children c ON c.child_id=m.child_id
+          CROSS JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE m.request_json IS NOT NULL
           AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') AND p.kind='ordinary' LIMIT 1000)`).run().changes;
     }).immediate();
   }

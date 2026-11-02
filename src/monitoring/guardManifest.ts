@@ -570,6 +570,24 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Machine-coherence guard evaluator: compares version/resolved-flag/protocol/manifest across the agent\'s own ONLINE machines (the F4 skew class) and will raise ONE episode-scoped attention item from exactly ONE elected machine. Signal-only; MUTATES NOTHING.',
   },
   {
+    // Codex device-limit tripwire (codex-device-limit-tripwire §9). `enabled` is
+    // deliberately OMITTED from ConfigDefaults — the runtime resolves it through the
+    // developmentAgent dark-feature gate (live on a dev agent, off on the fleet until
+    // graduation), re-read live on every read and tick. defaultEnabled:false reflects the
+    // fleet default. expectRuntime:false — it registers no runtime getter; its state is the
+    // `deviceLimit` block on GET /subscription-pool. NOT loadBearing: it only reduces autonomy
+    // and nothing depends on it being on.
+    key: 'subscriptionPool.codexDeviceLimit.enabled',
+    kind: 'config',
+    configPath: 'subscriptionPool.codexDeviceLimit.enabled',
+    defaultEnabled: false,
+    liveConfig: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'CodexDeviceLimitTripwire',
+    description: 'Codex device-limit tripwire: Jev (Luna referee) judges the Codex app-server\'s own refusal; two separate fresh device_limit verdicts 5–60 min apart, with another account here reading clean, bench that account on this machine only (no placement, no repair, sessions moved). Reduces autonomy only; two clean reads release.',
+  },
+  {
     // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
     // it through the developmentAgent dark-feature gate (dark on the fleet, live on
     // a dev agent). defaultEnabled:false reflects the fleet default. Constructed
@@ -1321,6 +1339,7 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'PromptGuard', reason: 'Prompt-injection defense helpers (filtering/output validation) for LLM conflict resolution; pure library, no boot lifecycle.' },
   { component: 'QuotaExhaustionDetector', reason: 'Post-mortem classifier of why a dead session died (pattern-matching over tmux output); pure library, no lifecycle or switch.' },
   { component: 'ReapGuard', reason: 'Stateless KEEP-check helper consulted by the single ReapAuthority before any terminate; precondition logic inside the reap path, not a posture guard itself.' },
+  { component: 'PlannedRestartVerifyGuard', reason: 'Shared file/PID precondition helper consulted by existing supervisor and foreground restart authorities; no independent boot lifecycle or switch.' },
   { component: 'RevertDetector', reason: 'Read-only git revert scan feeding the FailureLedger; failure-learning ingestion plumbing, fail-open, no operator switch.' },
   { component: 'SelfViolationDetector', reason: 'Observe-only detector arm of the correctionLearning.selfViolationSignal sub-guard, which IS declared in the manifest under component CorrectionLearningLoop.' },
   { component: 'SessionActivitySentinel', reason: 'Mid-session activity digests + completion synthesis; session observability/digest feature, takes no protective action.' },

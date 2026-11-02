@@ -1,6 +1,6 @@
 /**
  * Migration parity for signed records (docs/specs/mobile-native-conversations.md increment 2):
- * the Native app conversations section's increment-1 "signature checking is not built yet" line
+ * the Native app conversations section's increment-1 "this agent does not check signatures yet" line (the wording increment 1 shipped)
  * is refreshed in place on existing agents, idempotently, to the wording new agents get.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

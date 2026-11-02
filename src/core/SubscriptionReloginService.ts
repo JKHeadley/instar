@@ -71,6 +71,12 @@ export interface SubscriptionReloginServiceDeps {
    * `resolved-elsewhere` — the account was signed in another way. Absent ⇒ never closes.
    */
   cellHealthy?: (episode: SubscriptionReloginEpisode) => boolean;
+  /**
+   * codex-device-limit-tripwire §4: true while the episode's account is suspected or benched for a
+   * device limit on this machine (read from the pool record, switch-aware). A slow retry is
+   * deferred while it holds; the episode itself is never mutated by suspicion.
+   */
+  deviceLimitHold?: (episode: SubscriptionReloginEpisode) => boolean;
   tickMs?: number;
   now?: () => number;
 }
@@ -165,6 +171,43 @@ export class SubscriptionReloginService {
     const approved = this.deps.store.approve(target.id, { inputDigest: verdict.inputDigest, authority });
     void this.runEpisode(approved.id);
     return approved;
+  }
+
+  /**
+   * codex-device-limit-tripwire §4: end every non-terminal repair for this account on this machine
+   * because it was benched for a (suspected) device limit. `suggested` → `refused`; any other live
+   * state → `failed`; both with failureClass `device-limit` (terminal, never slow-retried, no
+   * per-episode notice). The store transition comes first, then a live drive in this process is
+   * aborted (the orchestrator reports that ending as terminal). A CAS conflict or invalid
+   * transition is returned, never thrown: the bench on the pool record stands regardless.
+   */
+  async endForDeviceLimit(accountId: string, machineId: string): Promise<Array<{ id: string; ended: boolean; reason?: string }>> {
+    const results: Array<{ id: string; ended: boolean; reason?: string }> = [];
+    const terminal = new Set(['succeeded', 'refused', 'cancelled', 'failed']);
+    const at = new Date((this.deps.now ?? Date.now)()).toISOString();
+    for (const episode of this.deps.store.list({ accountId, limit: 500 })) {
+      if (episode.machineId !== machineId || terminal.has(episode.state)) continue;
+      try {
+        this.deps.store.transition(episode.id, {
+          expectedVersion: episode.version,
+          to: episode.state === 'suggested' ? 'refused' : 'failed',
+          eventClass: 'device-limit-stopped',
+          failureClass: 'device-limit',
+          reason: 'relogin-device-limit-benched',
+          at,
+        });
+        this.controllers.get(episode.id)?.abort();
+        results.push({ id: episode.id, ended: true });
+      } catch (err) {
+        results.push({ id: episode.id, ended: false, reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return results;
+  }
+
+  private deviceLimitHeld(episode: SubscriptionReloginEpisode): boolean {
+    try { return this.deps.deviceLimitHold?.(episode) ?? false; }
+    catch { return false; } // @silent-fallback-ok — an unreadable pool never blocks a retry (today's behaviour)
   }
 
   async cancel(episodeId: string): Promise<SubscriptionReloginEpisode> {
@@ -286,6 +329,7 @@ export class SubscriptionReloginService {
       const eligible = isSlowRetryEligible(episode) && episode.slowRetryCount < this.slowRetry.maxRetries
         && !this.deps.store.challengedSinceAdmission(episode.id);
       if (!eligible && episode.nextAttemptAt === null) continue; // nothing to do, no lookup needed
+      if (eligible && this.deviceLimitHeld(episode)) continue; // deferred, schedule kept
       try {
         let open = false;
         if (eligible) {

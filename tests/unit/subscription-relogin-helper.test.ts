@@ -162,6 +162,47 @@ describe('SubscriptionReloginHelper.drive + submit', () => {
     }
   });
 
+  it('a device-limit report settles refused/device-limit (not operator-only, not agent-hard-line) and reports it (codex-device-limit-tripwire §4)', async () => {
+    const onDeviceLimitReported = vi.fn();
+    const h = harness({ onDeviceLimitReported });
+    const drive = h.helper.drive(input(), new AbortController().signal);
+    await waitForSpawn(h);
+    expect(h.helper.submit('ep-1', h.token(), { notify: 'hard-line', line: 'device-limit' }))
+      .toEqual({ status: 202, body: { accepted: true, notice: 'device-limit' } });
+    // A report after the outcome is decided is refused, never falsely "accepted".
+    expect(h.helper.submit('ep-1', h.token(), { notify: 'hard-line', line: 'device-limit' })).toEqual({ status: 409, body: { error: 'already-settled' } });
+    const result = await drive;
+    expect(result).toEqual({ outcome: 'refused', failureClass: 'device-limit', reason: 'agent-reported-device-limit' });
+    expect(result.outcome).not.toBe('operator-only');
+    expect((result as { failureClass: string }).failureClass).not.toBe('agent-hard-line');
+    expect(onDeviceLimitReported).toHaveBeenCalledTimes(1);
+    expect(onDeviceLimitReported).toHaveBeenCalledWith('ep-1');
+    expect(h.queuePhoneTap).not.toHaveBeenCalled();
+    expect(h.kill).toHaveBeenCalled();
+  });
+
+  it('a device-limit report without the optional callback still settles refused/device-limit', async () => {
+    const h = harness();
+    const drive = h.helper.drive(input(), new AbortController().signal);
+    await waitForSpawn(h);
+    expect(h.helper.submit('ep-1', h.token(), { notify: 'hard-line', line: 'device-limit' }).status).toBe(202);
+    expect(await drive).toMatchObject({ outcome: 'refused', failureClass: 'device-limit' });
+  });
+
+  it('a hard line outside HARD_LINES is still refused (400) and never settles the drive', async () => {
+    const onDeviceLimitReported = vi.fn();
+    const h = harness({ onDeviceLimitReported });
+    const drive = h.helper.drive(input(), new AbortController().signal);
+    await waitForSpawn(h);
+    for (const line of ['device-limits', 'Device-Limit', 'device limit', 'quota']) {
+      expect(h.helper.submit('ep-1', h.token(), { notify: 'hard-line', line }).status).toBe(400);
+    }
+    expect(h.helper.isDriving('ep-1')).toBe(true);
+    expect(onDeviceLimitReported).not.toHaveBeenCalled();
+    h.helper.submit('ep-1', h.token(), { code: VALID_CODE });
+    expect(await drive).toMatchObject({ outcome: 'approved' });
+  });
+
   it('abort (cancel) throws AbortError and still kills the helper and releases the seat', async () => {
     const h = harness();
     const controller = new AbortController();
@@ -213,14 +254,15 @@ describe('parseHelperBody (strict tagged union)', () => {
     for (const permission of ['screen-recording', 'accessibility', 'automation']) {
       expect(parseHelperBody({ notify: 'macos-permission', permission })).toEqual({ kind: 'macos-permission', permission });
     }
-    for (const line of ['captcha', 'phone-confirmation', 'wrong-account', 'unexpected-site']) {
+    for (const line of ['captcha', 'phone-confirmation', 'wrong-account', 'unexpected-site', 'device-limit']) {
       expect(parseHelperBody({ notify: 'hard-line', line })).toEqual({ kind: 'hard-line', line });
     }
   });
   it('refuses everything else', () => {
     for (const body of [null, [], 'code', {}, { code: 1 }, { code: '' }, { notify: 'other' }, { notify: 'phone-tap', x: 1 },
       { notify: 'macos-permission' }, { notify: 'macos-permission', permission: 'camera' }, { code: 'x', notify: 'phone-tap' },
-      { code: 'x'.repeat(600) }, { notify: 'hard-line' }, { notify: 'hard-line', line: 'other' }, { notify: 'hard-line', line: 1 }]) {
+      { code: 'x'.repeat(600) }, { notify: 'hard-line' }, { notify: 'hard-line', line: 'other' }, { notify: 'hard-line', line: 1 },
+      { notify: 'hard-line', line: 'device-limits' }, { notify: 'hard-line', line: 'device-limit', extra: 1 }]) {
       expect(parseHelperBody(body)).toBeNull();
     }
   });
@@ -240,6 +282,16 @@ describe('renderHelperPrompt', () => {
     expect(text).toContain('{"notify":"hard-line","line":"captcha"}');
     expect(text).toContain('Try another way');
     expect(text).toContain('SAME Chrome window');
+  });
+
+  it('lists five hard lines, including the device-limit stop, and names device-limit as a reportable line', () => {
+    for (const browserDriver of [undefined, 'windows' as const]) {
+      const text = renderHelperPrompt({ ...input(), ...(browserDriver ? { browserDriver, profileDir: 'C:\\p1' } : {}), token: 'T', port: 4042, seat: SEAT });
+      expect(text).toContain('Hard lines (these five, and only these five):');
+      expect(text).not.toContain('these four');
+      expect(text).toMatch(/^5\. .*Device limit reached/m);
+      expect(text).toContain('/ "device-limit")');
+    }
   });
 
   it('on Windows names ndrive.sh and the Windows folder, and drops every macOS step', () => {

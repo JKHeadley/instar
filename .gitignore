@@ -131,6 +131,10 @@ src/data/standards-guard-index.meta.json
 # Judgment-call provenance rows — machine-local decision context.
 state/judgment-provenance/
 
+# Codex device-limit judge provenance — machine-local masked provider text (codex-device-limit-tripwire §1).
+state/codex-device-limit-provenance/
+.instar/state/codex-device-limit-provenance/
+
 # Sandbox-safe worktrees — per-machine, multi-GB foreign-repo contents.
 .worktrees/
 

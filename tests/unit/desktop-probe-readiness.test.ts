@@ -39,4 +39,14 @@ describe('desktop probe explanation', () => {
     expect(lockedAndUnpermitted).toContain('Screen Recording and Accessibility permission');
     expect(lockedAndUnpermitted).toContain('agent is online');
   });
+
+  it('tells the operator the one step that fixes each condition', () => {
+    const locked = desktopProbeUnavailableReason({ ...permitted, sessionActive: false,
+      consoleSessionPresent: true, onConsole: true, loginDone: true, screenLocked: true,
+      screenPermission: false });
+    expect(locked).toContain('unlock it at the Mac, then tap Retry');
+    expect(locked).toContain('Privacy & Security → Screen Recording → turn on instar-desktop-host');
+    expect(desktopProbeUnavailableReason({ ...permitted, sessionActive: true, inputPermission: false }))
+      .toContain('Accessibility → instar-desktop-host, then tap Retry');
+  });
 });

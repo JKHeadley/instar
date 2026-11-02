@@ -236,6 +236,27 @@ describe('DirectDesktopAccess', () => {
     await expect(stream.assertActive()).rejects.toThrow('grant');
     expect(f.closed).toEqual([stream.grantId]);
   });
+  it('keeps a watched session alive on pings without input, and never revives a lapsed one', async () => {
+    const f = fixture('pin');
+    const start = 1_800_000_000_000;
+    const { requestId } = await f.begin();
+    const state = f.authority.status(requestId, 'dashboard-proof');
+    const payload = Buffer.from(JSON.stringify(['desktop-browser-possession-v1', requestId, state.connectionNonce]));
+    const ticket = f.authority.ticket(requestId, 'dashboard-proof', state.connectionNonce!,
+      crypto.sign(null, payload, f.browser.privateKey).toString('base64'));
+    const stream = await f.authority.admit({ headers: { origin: 'https://instar.example', host: 'instar.example',
+      'x-forwarded-proto': 'https', 'sec-websocket-protocol': `instar-desktop-v1, ticket.${ticket}` },
+    url: '/desktop-stream', socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage);
+    for (let second = 30; second <= 180; second += 30) {
+      f.setNow(start + second * 1_000);
+      stream.touch?.();
+    }
+    await expect(stream.assertActive()).resolves.toBeUndefined();
+    f.setNow(start + 180_000 + 121_000);
+    await expect(stream.assertActive()).rejects.toThrow('grant');
+    stream.touch?.();
+    await expect(stream.assertActive()).rejects.toThrow('grant');
+  });
   it('rejects a PIN session bound to a different browser key before granting access', async () => {
     const f = fixture('pin');
     const other = crypto.generateKeyPairSync('ed25519');

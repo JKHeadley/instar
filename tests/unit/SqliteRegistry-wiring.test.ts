@@ -51,6 +51,9 @@ const LONG_LIVED_STORES = [
   'src/messaging/MessageProcessingLedger.ts',
   'src/messaging/OutboundDedupStore.ts',
   'src/messaging/pending-relay-store.ts',
+  // Native app conversation index (mobile-native-conversations §4.5): registers its handle in
+  // the constructor (registerSqliteHandle), process-lifetime; derived from the JSONL files.
+  'src/core/AppConversationStore.ts',
   'src/messaging/imessage/NativeBackend.ts',
   'src/threadline/A2ADeliveryTracker.ts',
   // A2A inbound message-id ledger: registers its handle in the constructor and
@@ -83,9 +86,6 @@ const LONG_LIVED_STORES = [
   // Script-result supervision keeps its WAL journal open for the scheduler's
   // lifetime and must close before process exit.
   'src/scheduler/JobSupervisionStore.ts',
-  // Native app conversations (mobile-native-conversations §4.5): the derived index over the
-  // conversation JSONL files registers its handle in the constructor, process-lifetime.
-  'src/core/AppConversationStore.ts',
 ];
 
 /**

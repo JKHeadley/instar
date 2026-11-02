@@ -10,7 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   MAX_BOUNDED_POOL_SCAN,
+  SubscriptionAccountEmailRegistrar,
   SubscriptionPool,
+  isDeviceLimitBenched,
   SubscriptionPoolUnavailableError,
   ValidationError,
 } from '../../src/core/SubscriptionPool.js';
@@ -270,5 +272,105 @@ describe('SubscriptionPool', () => {
       state: 'unavailable', reason: 'machine-identity-unavailable', maintenance: null,
     });
     expect(() => pool.list()).toThrow(SubscriptionPoolUnavailableError);
+  });
+});
+
+describe('SubscriptionPool device-limit fields (codex-device-limit-tripwire §4/§6)', () => {
+  let dir: string;
+  let pool: SubscriptionPool;
+  const CODEX = {
+    id: 'codex-acct-1', nickname: 'codex one', provider: 'openai' as const, framework: 'codex-cli' as const,
+    configHome: '/Users/x/.codex-one', email: 'codex@example.com',
+  };
+  const BENCH = {
+    status: 'needs-reauth' as const,
+    statusCause: 'codex-device-limit' as const,
+    deviceLimitSince: '2026-10-31T20:06:00.000Z',
+    deviceLimitSuspectedAt: '2026-10-31T20:00:00.000Z',
+    deviceLimitNextReadAt: '2026-10-31T21:06:00.000Z',
+    deviceLimitRefusedReads: 2,
+    deviceLimitReadsStopped: false,
+  };
+  const FIELDS = ['statusCause', 'deviceLimitSince', 'deviceLimitSuspectedAt', 'deviceLimitNextReadAt',
+    'deviceLimitRefusedReads', 'deviceLimitReadsStopped'] as const;
+
+  beforeEach(() => {
+    dir = tmpDir();
+    pool = new SubscriptionPool({ stateDir: dir });
+    pool.addFixture({ ...CODEX });
+  });
+  afterEach(() => {
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/subscription-pool.test.ts:device-limit-cleanup' }); } catch { /* @silent-fallback-ok: best-effort temp-dir cleanup */ }
+  });
+
+  it('accepts the six fields through update() and persists them across a reload', () => {
+    const benched = pool.update(CODEX.id, { ...BENCH })!;
+    expect(benched).toMatchObject(BENCH);
+    expect(isDeviceLimitBenched(benched)).toBe(true);
+    const reloaded = new SubscriptionPool({ stateDir: dir }).get(CODEX.id)!;
+    expect(reloaded).toMatchObject(BENCH);
+    expect(isDeviceLimitBenched(reloaded)).toBe(true);
+  });
+
+  it('validates each field and refuses bad values', () => {
+    expect(() => pool.update(CODEX.id, { statusCause: 'something-else' as never })).toThrow(ValidationError);
+    expect(() => pool.update(CODEX.id, { deviceLimitSince: 'yesterday' })).toThrow(ValidationError);
+    expect(() => pool.update(CODEX.id, { deviceLimitSuspectedAt: '2026-13-45T99:00:00Z' })).toThrow(ValidationError);
+    expect(() => pool.update(CODEX.id, { deviceLimitNextReadAt: 12 as never })).toThrow(ValidationError);
+    expect(() => pool.update(CODEX.id, { deviceLimitRefusedReads: -1 })).toThrow(ValidationError);
+    expect(() => pool.update(CODEX.id, { deviceLimitRefusedReads: 1.5 })).toThrow(ValidationError);
+    expect(() => pool.update(CODEX.id, { deviceLimitReadsStopped: 'yes' as never })).toThrow(ValidationError);
+    // Nothing partially applied.
+    expect(pool.get(CODEX.id)!.version).toBe(1);
+    expect(pool.update(CODEX.id, { deviceLimitRefusedReads: 0, deviceLimitReadsStopped: true })).toMatchObject({
+      deviceLimitRefusedReads: 0, deviceLimitReadsStopped: true,
+    });
+  });
+
+  it('null removes a field', () => {
+    pool.update(CODEX.id, { deviceLimitSuspectedAt: '2026-10-31T20:00:00.000Z' });
+    const cleared = pool.update(CODEX.id, { deviceLimitSuspectedAt: null })!;
+    expect(cleared).not.toHaveProperty('deviceLimitSuspectedAt');
+  });
+
+  it('clears all six when update() moves status off needs-reauth', () => {
+    pool.update(CODEX.id, { ...BENCH });
+    const released = pool.update(CODEX.id, { status: 'active' })!;
+    for (const field of FIELDS) expect(released).not.toHaveProperty(field);
+    expect(isDeviceLimitBenched(released)).toBe(false);
+    const reloaded = new SubscriptionPool({ stateDir: dir }).get(CODEX.id)!;
+    for (const field of FIELDS) expect(reloaded).not.toHaveProperty(field);
+  });
+
+  it('does NOT clear the fields the same patch sets itself', () => {
+    pool.update(CODEX.id, { ...BENCH });
+    const moved = pool.update(CODEX.id, { status: 'active', deviceLimitSuspectedAt: '2026-10-31T22:00:00.000Z' })!;
+    expect(moved.deviceLimitSuspectedAt).toBe('2026-10-31T22:00:00.000Z');
+    for (const field of FIELDS.filter((f) => f !== 'deviceLimitSuspectedAt')) expect(moved).not.toHaveProperty(field);
+  });
+
+  it('keeps the fields on a write that leaves status needs-reauth, or does not move status', () => {
+    pool.update(CODEX.id, { ...BENCH });
+    expect(pool.update(CODEX.id, { status: 'needs-reauth' })).toMatchObject(BENCH);
+    expect(pool.update(CODEX.id, { nickname: 'renamed' })).toMatchObject(BENCH);
+    // A suspicion on an active account survives an active→active write.
+    pool.update(CODEX.id, { status: 'active' });
+    pool.update(CODEX.id, { deviceLimitSuspectedAt: '2026-10-31T23:00:00.000Z' });
+    expect(pool.update(CODEX.id, { status: 'active' })!.deviceLimitSuspectedAt).toBe('2026-10-31T23:00:00.000Z');
+  });
+
+  it('clears all six through the enrollment commit (completeValidated)', () => {
+    pool.update(CODEX.id, { ...BENCH });
+    const registrar = new SubscriptionAccountEmailRegistrar(pool, {} as never);
+    const enrolled = registrar.completeValidated(CODEX.id, CODEX.email, { status: 'active' })!;
+    expect(enrolled.status).toBe('active');
+    for (const field of FIELDS) expect(enrolled).not.toHaveProperty(field);
+    for (const field of FIELDS) expect(pool.get(CODEX.id)!).not.toHaveProperty(field);
+  });
+
+  it('isDeviceLimitBenched needs BOTH needs-reauth and the cause', () => {
+    expect(isDeviceLimitBenched({ status: 'needs-reauth', statusCause: 'codex-device-limit' })).toBe(true);
+    expect(isDeviceLimitBenched({ status: 'needs-reauth' })).toBe(false);
+    expect(isDeviceLimitBenched({ status: 'active', statusCause: 'codex-device-limit' })).toBe(false);
   });
 });

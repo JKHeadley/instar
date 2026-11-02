@@ -307,6 +307,9 @@ function liveInjectOutcomeFromObservation(r: InjectionConfirmation): LiveInjectO
 import { createThreadlineTopicRespawn } from '../threadline/topicRespawnHook.js';
 import { WarrantsReplyGate, evaluateAndRecordInbound } from '../threadline/WarrantsReplyGate.js';
 import { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
+import { PeerHomebaseRelay } from '../threadline/peerHomebaseRelay.js';
+import { withThreadlineForwardedAuthor } from '../threadline/TelegramOriginAttribution.js';
+import { makePeerUserTopicResolver, peerHomebaseEnabled as _peerHomebaseEnabledForRouting, type PeerUserTopicResolverDeps } from '../threadline/peerHomebase.js';
 import { ListenerSessionManager } from '../threadline/ListenerSessionManager.js';
 import { SystemReviewer } from '../monitoring/SystemReviewer.js';
 import { createSessionProbes } from '../monitoring/probes/SessionProbe.js';
@@ -4235,6 +4238,9 @@ export async function startServer(options: StartOptions): Promise<void> {
   // The pool block later calls configureBounds AGAIN to add the resolver.
   notificationBatcher.configureBounds({ stateDir: config.stateDir });
 
+  // Mobile push hub-notice hook (docs/specs/mobile-push.md §2.3); reads the live adapter.
+  let _hubNoticeAdapter: { onHubPost?: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null } | null = null;
+  const _hubNoticeHook = (t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => _hubNoticeAdapter?.onHubPost?.(t);
   // State reference — set once StateManager is created, used by notify()
   let _notifyState: { get<T>(key: string): T | null | undefined } | null = null;
 
@@ -4257,6 +4263,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         return;
       }
+    }
+    // Mobile push (docs/specs/mobile-push.md §2.3): a hub notice the filter admitted.
+    if ((!topicId || topicId === hubTopicId) && hubTopicId) {
+      try { _hubNoticeHook?.({ kind: 'notice', dedupeKey: `notice:${category}`, priority: tier === 'IMMEDIATE' ? 'URGENT' : undefined }); }
+      catch { /* @silent-fallback-ok — push is best-effort and never affects the notice */ }
     }
     // Telegram: via notification batcher
     const resolvedTopicId = topicId ?? hubTopicId;
@@ -8247,6 +8258,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     const lifelineOwnsPolling = telegramConfig && telegramBotToken
       ? lifelineOwnsTelegramPoll(config.stateDir, telegramBotToken)
       : false;
+    // Boot window: on a machine with a paired peer, sends wait (bounded) until the
+    // forward-to-holder policy and relay are wired far below, so a notice sent in
+    // the first seconds is not held on the direct path a standby never replays.
+    let resolveHolderForwardWiring: () => void = () => {};
+    const holderForwardWiring = new Promise<void>(resolve => { resolveHolderForwardWiring = resolve; });
+    const armHolderForwardWait = (adapter: TelegramAdapter): void => {
+      try {
+        const machines = Object.values(coordinator.managers.identityManager.loadRegistry().machines ?? {});
+        if (machines.filter(m => !m.revokedAt).length >= 2) adapter.holderForwardReady = holderForwardWiring;
+      } catch { /* @silent-fallback-ok — an unreadable registry keeps the old immediate send */ }
+    };
     const telegramTopology = resolveTelegramStartupTopology({
       telegramConfigured: telegramConfig != null,
       skipTelegram,
@@ -8274,6 +8296,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
+      armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       console.log(pc.green(`  Telegram send-only mode (${isStandbyTelegram ? 'standby' : lifelineOwnsPolling ? 'lifeline owns polling (lease detected)' : 'lifeline owns polling'})`));
       // Send-only still owns the attention store: run its hourly lifecycle
       // pass here too (start() is never called on this path). Idempotent.
@@ -8386,6 +8410,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         config.stateDir,
       );
+      armHolderForwardWait(telegram);
+      _hubNoticeAdapter = telegram;
       telegram.intelligence = sharedIntelligence ?? null;
       await telegram.start();
       console.log(pc.green(`  Telegram connected (stall alerts: ${sharedIntelligence ? 'LLM-gated' : 'timer-only'})`));
@@ -14923,6 +14949,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       return resolveClaudeSlotAccountId(subscriptionPool.list(), await credSwapOracle.resolveSlotTenant(slot));
     };
     let quotaPollerRef: import('../core/QuotaPoller.js').QuotaPoller | null = null;
+    // Late-bound for the device-limit tripwire (built before the sign-in repair runtime).
+    let subscriptionReloginRuntimeRef: import('../core/SubscriptionReloginRuntime.js').SubscriptionReloginRuntime | null = null;
     const credentialSwapExecutor = new CredentialSwapExecutor({
       funnel: credentialWriteFunnel,
       ledger: credentialLocationLedger,
@@ -15226,6 +15254,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // refusal is told apart from a transport failure, and only a live read proves login.
       codexLiveUsageReaderDetailed: buildCodexLiveUsageReaderDetailed(config.subscriptionPool),
       codexLoginStatus: (codexHome) => codexLoginStatusChecker.check(codexHome),
+      // codex-device-limit-tripwire §2 A′: the same single run, with its status text kept.
+      codexLoginStatusWithText: (codexHome) => codexLoginStatusChecker.checkWithText(codexHome),
       loginObservationSink: subscriptionLoginLedger
         ? (input) => subscriptionLoginLedger!.recordObservation(input)
         : undefined,
@@ -15304,6 +15334,95 @@ export async function startServer(options: StartOptions): Promise<void> {
       },
     });
     sessionManager.setInteractiveLoginExpiredSink((signal) => interactiveLoginExpiredRecovery.handle(signal));
+    // Codex device-limit tripwire (spec codex-device-limit-tripwire): Jev (Luna referee on another
+    // account) judges the Codex app-server's own refusal text; only two such judgements 5–60 min
+    // apart, with another account here reading clean, bench an account ON THIS MACHINE. Screens and
+    // sign-in pages only ask for a fresh read or stop one repair. Dev-gated: live on a development
+    // agent, off on the fleet until graduation; `subscriptionPool.codexDeviceLimit.enabled` wins.
+    let codexDeviceLimit: import('../core/codexDeviceLimitWiring.js').CodexDeviceLimitWiring | null = null;
+    if (subscriptionPoolMachineId) {
+      try {
+        const { buildCodexDeviceLimitWiring, installCodexDeviceLimitWiring } = await import('../core/codexDeviceLimitWiring.js');
+        const { SecretStore: DeviceLimitSecretStore } = await import('../core/SecretStore.js');
+        const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+        let deviceLimitReferee: import('../core/types.js').IntelligenceProvider | null = null;
+        try {
+          const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+          const { buildIntelligenceProvider: buildDeviceLimitReferee } = await import('../core/intelligenceProviderFactory.js');
+          // Its own Codex provider (own breaker); every call names its account explicitly.
+          deviceLimitReferee = buildDeviceLimitReferee({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+        } catch { /* @silent-fallback-ok — no Codex CLI means no referee; Jev alone, or undecided (no action) */ }
+        const deviceLimitCfg = () => {
+          const raw = liveConfig.get<{ enabled?: boolean; ignoreAccounts?: unknown } | undefined>('subscriptionPool.codexDeviceLimit',
+            (config.subscriptionPool as { codexDeviceLimit?: { enabled?: boolean; ignoreAccounts?: unknown } } | undefined)?.codexDeviceLimit);
+          return {
+            enabled: resolveDevAgentGate(typeof raw?.enabled === 'boolean' ? raw.enabled : undefined, config),
+            ignoreAccounts: Array.isArray(raw?.ignoreAccounts) ? raw!.ignoreAccounts.filter((x): x is string => typeof x === 'string') : [],
+          };
+        };
+        const dlTelegram = telegram;
+        codexDeviceLimit = buildCodexDeviceLimitWiring({
+          pool: subscriptionPool,
+          ledger: subscriptionLoginLedger ?? null,
+          quotaPoller,
+          machineId: subscriptionPoolMachineId,
+          stateDir: config.stateDir,
+          logsDir: path.join(config.stateDir, '..', 'logs'),
+          config: deviceLimitCfg,
+          judgeConfig: () => liveConfig.get<import('../core/CodexDeviceLimitJudge.js').JevCodexDeviceLimitConfig | undefined>(
+            'intelligence.jevCodexDeviceLimit', (config.intelligence as { jevCodexDeviceLimit?: import('../core/CodexDeviceLimitJudge.js').JevCodexDeviceLimitConfig } | undefined)?.jevCodexDeviceLimit),
+          readKey: () => {
+            try { const v = new DeviceLimitSecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get('typesafe_api_key'); return typeof v === 'string' && v ? v : null; }
+            catch { return null; } // @silent-fallback-ok — no key ⇒ the referee alone, or undecided
+          },
+          referee: deviceLimitReferee,
+          listSessions: () => sessionManager.listRunningSessions().map((s) => ({
+            tmuxSession: s.tmuxSession, name: s.name, subscriptionAccountId: s.subscriptionAccountId ?? null,
+            jobSlug: s.jobSlug ?? null, protected: config.sessions.protectedSessions.includes(s.tmuxSession),
+          })),
+          swap: async (args) => {
+            if (!_quotaAwareScheduler) return { swapped: false, toAccountId: null, reason: 'scheduler-not-configured' };
+            return _quotaAwareScheduler.onQuotaPressure(args);
+          },
+          swapEnabled: () => liveConfig.get<unknown>('subscriptionPool.loginExpiredSwap.enabled', (config.subscriptionPool as { loginExpiredSwap?: { enabled?: boolean } } | undefined)?.loginExpiredSwap?.enabled ?? true) !== false,
+          // The sign-in repair runtime is built later; this reads it at call time.
+          endRepairs: (accountId) => subscriptionReloginRuntimeRef?.endForDeviceLimit(accountId),
+          raiseNotice: (notice) => {
+            if (!dlTelegram) return;
+            void dlTelegram.createAttentionItem({
+              id: `codex-device-limit-${notice.machineId}`,
+              conditionKey: notice.conditionKey,
+              category: notice.category,
+              title: notice.title,
+              summary: notice.body,
+              description: notice.body,
+              priority: notice.priority === 'HIGH' ? 'HIGH' : notice.priority === 'normal' ? 'NORMAL' : 'LOW',
+              sourceContext: 'codex-device-limit-tripwire',
+              needsUser: true,
+              ...(notice.silent ? { silent: true } : {}),
+            }).catch((err) => console.warn(`[DeviceLimit] notice failed: ${err instanceof Error ? err.message : String(err)}`));
+          },
+          clearNotice: (conditionKey, resolution) => {
+            try { dlTelegram?.clearAttentionCondition({ conditionKey }, resolution); }
+            catch { /* @silent-fallback-ok — the hourly resolver closes it on the next pass */ }
+          },
+          metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+          // Late-bound: the judgment-provenance log is constructed later in boot.
+          provenance: () => _judgmentProvenance as unknown as { recordDecision(input: Record<string, unknown>): string | null } | null,
+          reportDegradation: (e) => DegradationReporter.getInstance().report(e),
+          logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+        });
+        installCodexDeviceLimitWiring(codexDeviceLimit);
+        const dl = codexDeviceLimit;
+        sessionManager.setCodexSigninTriggerSink((input) => dl.onSessionSigninSighting(input));
+        dlTelegram?.registerAttentionConditionResolver('subscription-device-limit', (item) => dl.resolveNotice(item));
+        console.log(pc.dim(`  Codex device-limit tripwire: ${deviceLimitCfg().enabled ? 'on' : 'off'} (judge: Jev${deviceLimitReferee ? ' + Luna referee' : ''})`));
+      } catch (err) {
+        // @silent-fallback-ok (logged): without the tripwire, today's sign-out handling applies unchanged.
+        console.warn(`[DeviceLimit] tripwire not started: ${err instanceof Error ? err.message : String(err)}`);
+        codexDeviceLimit = null;
+      }
+    }
     if (subscriptionPool.size() > 0) {
       quotaPoller.start();
       console.log(pc.green('  Subscription quota poller started'));
@@ -15900,7 +16019,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
           unattendedPolicy: reloginCfg.unattendedPolicy,
           slowRetry: reloginCfg.slowRetry,
+          // codex-device-limit-tripwire §2 C / §4: page judgement, stopped-repair report, retry hold.
+          ...(codexDeviceLimit ? {
+            deviceLimitHold: codexDeviceLimit.deviceLimitHold,
+            judgeDeviceLimitPage: codexDeviceLimit.judgeDeviceLimitPage,
+            onDeviceLimitStopped: codexDeviceLimit.onDeviceLimitStopped,
+          } : {}),
         });
+        subscriptionReloginRuntimeRef = subscriptionReloginRuntime;
         subscriptionReloginRuntime.start();
         console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${reloginNavigation}, browser: ${process.platform === 'darwin' || windowsRepair ? 'normal' : 'automated'}, last-resort model: ${reloginLastResort && !windowsRepair ? (reloginLastResort.available() ? reloginLastResort.config.model : `key ${reloginLastResort.config.keyName} not in vault`) : 'off'})`));
       } catch (error) {
@@ -18182,6 +18308,54 @@ export async function startServer(options: StartOptions): Promise<void> {
     const collaborationSurfacer = telegram
       ? new CollaborationSurfacer({ telegram, stateDir: config.stateDir })
       : undefined;
+    // peer-conversation-homebase-topic §2.6 (operator rule 2026-10-31): a peer's message meant
+    // for the user is posted to the peer's own topic. One resolver for every delivery point;
+    // the trust manager is built further down (Threadline bootstrap), so its read is late-bound
+    // and resolves to the existing routing until then.
+    let _peerProfileFor: PeerUserTopicResolverDeps['profileFor'] | null = null;
+    const peerUserTopic = makePeerUserTopicResolver({
+      enabled: () => _peerHomebaseEnabledForRouting(config),
+      profileFor: (peer) => _peerProfileFor?.(peer) ?? null,
+      conversationFor: (threadId) => conversationStore.get(threadId) ?? null,
+    });
+    // §2.7: "meant for the user?" is judged PER MESSAGE (Jev first, then the Codex fast tier,
+    // then the shared provider — so a Claude-only agent still judges; no verdict posts). Read
+    // live: `threadline.peerHomebase.perMessageClassification: false` restores first-only.
+    let peerUserMeantJudge: import('../threadline/PeerUserMeantJudge.js').PeerUserMeantJudge | null = null;
+    try {
+      const { buildPeerUserMeantJudge } = await import('../threadline/PeerUserMeantJudge.js');
+      const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+      const { SecretStore } = await import('../core/SecretStore.js');
+      let userMeantCodex: import('../core/types.js').IntelligenceProvider | null = null;
+      try {
+        const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+        const { buildIntelligenceProvider: buildUserMeantReferee } = await import('../core/intelligenceProviderFactory.js');
+        userMeantCodex = buildUserMeantReferee({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+      } catch { /* @silent-fallback-ok — no Codex CLI; the shared provider is the next referee */ }
+      peerUserMeantJudge = buildPeerUserMeantJudge({
+        readPeerHomebaseBlock: () => liveConfig.get<unknown>('threadline.peerHomebase', undefined),
+        readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+        referees: () => [
+          ...(userMeantCodex ? [{ name: 'codex', provider: userMeantCodex }] : []),
+          ...(sharedIntelligence ? [{ name: 'shared', provider: sharedIntelligence }] : []),
+        ],
+        stateDir: config.stateDir,
+        metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+      });
+      console.log(pc.dim(`  Peer user-meant judge: constructed (referees: ${[userMeantCodex ? 'codex' : null, sharedIntelligence ? 'shared' : null].filter(Boolean).join(', ') || 'none'})`));
+    } catch (err) {
+      console.log(pc.yellow(`  Peer user-meant judge: not constructed (${(err as Error)?.message ?? 'unknown'}) — first-only rule applies`));
+    }
+    const peerHomebaseRelay = telegram
+      ? new PeerHomebaseRelay({
+        resolve: peerUserTopic,
+        salienceGate: new (await import('../threadline/SalienceGate.js')).SalienceGate(),
+        userMeantJudge: peerUserMeantJudge,
+        sendToTopic: (topicId, text) => withThreadlineForwardedAuthor(telegramOriginBoot?.runtime.service, 'inbound', topicId, text,
+          () => telegram.sendToTopic(topicId, text)),
+        log: (m) => console.log(m),
+      })
+      : undefined;
     // CMT-567: one shared BriefDeps for the "open this" LLM topic-name + summary.
     // Built once here (all three inputs in scope) and threaded to BOTH getHubDeps
     // closures AND the AgentServer ctx, so the HTTP route + the structural
@@ -18797,6 +18971,12 @@ export async function startServer(options: StartOptions): Promise<void> {
       config as { developmentAgent?: boolean; threadline?: { relayForward?: { enabled?: boolean } } },
     );
     const salienceGate = new SalienceGate(); // fallback-only for v1; spec §5.4
+    // §2.6: tell a spawned thread session which topic to use for the user.
+    threadlineRouter.setPeerUserTopicResolver((q) => peerUserTopic({ threadId: q.threadId, peers: q.peers }), {
+      // §2.7: only where the relay has actually taken this thread under per-message judging.
+      serverPostsUserMeant: (threadId) => peerHomebaseRelay?.postsUserMeantFor(threadId) === true
+        && conversationStore.get(threadId)?.boundTopicId == null,
+    });
     let topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null = null;
     if (commitmentTracker) {
       topicLinkageHandler = new TopicLinkageHandler({
@@ -18843,6 +19023,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         selfMachineId: () => _meshSelfId,
         selfMachineName: () => _meshSelfId ? (verifiedEntityName(_meshSelfId, _listPoolMachines?.().find((m) => m.machineId === _meshSelfId)?.nickname) ?? 'this machine') : 'this machine',
         topicOwnerOf: (topicId: number) => sessionOwnershipRegistry?.ownerOf(String(topicId)) ?? null,
+        // §2.6: a user-facing post about this reply goes to the peer's own topic (the operator's
+        // binding still wins); the reply itself is still handed to the originating session.
+        resolveUserTopic: (q) => {
+          const r = peerUserTopic({ threadId: q.threadId, peers: q.peers, existingTopicId: q.originTopicId });
+          return r.topicId;
+        },
+        // §2.7: a reply redirected to the homebase is judged per message (null when switched off).
+        judgeUserMeant: async (q) => {
+          if (!peerUserMeantJudge || !peerUserMeantJudge.enabled()) return null;
+          const v = await peerUserMeantJudge.judge({ threadId: q.threadId, peer: q.peers[0] ?? '', senderName: q.senderName, text: q.text, deadlineMs: q.deadlineMs });
+          if (v.firstOnly) return null; // the judge's budget is spent: the SalienceGate (first-only) decides
+          return { verdict: v.userMeant ? 'user-visible' : 'agent-internal', reason: `per-message: ${v.decidedBy}/${v.reason}` };
+        },
         onRemoteReplyEvent: (event) => {
           if (event === 'ask') a2aRelayForwardCtx.counters.replyAsks++;
           else if (event === 'injected') a2aRelayForwardCtx.counters.replyInjected++;
@@ -19354,6 +19547,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         const { peerHomebaseEnabled, displayNameCollides } = await import('../threadline/peerHomebase.js');
         const asPeer = (p: { agent: string; fingerprint?: string; pairingState?: string } | null) =>
           p && p.fingerprint && p.pairingState === 'mutual-verified' ? { fingerprint: p.fingerprint, name: p.agent } : null;
+        // §2.6: the routing resolver reads the same trust store.
+        _peerProfileFor = (fp) => tm.getProfileByFingerprint(fp);
         _peerHomebaseBackfill = new PeerHomebaseBackfill({
           enabled: () => peerHomebaseEnabled(config),
           holdsLease: () => !state.readOnly,
@@ -19369,6 +19564,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           getRecorded: (fp) => tm.getHomebaseTopic(fp),
           record: (fp, topicId) => tm.setHomebaseTopic(fp, topicId),
           log: (m) => console.log(m),
+        });
+        // §2.1 on BOTH sides of an invite pairing: the inviter ('finishing', its person tapped
+        // Finish) and the acceptor ('finish-received', the inviter's signed finish arrived) each
+        // create their homebase the moment the pairing is mutual-verified — before the first
+        // message, which previously reached the acceptor before its topic existed. 'paired' is a
+        // late backstop; ensureFor is idempotent, lease-holder-only, and never throws.
+        const hbBackfill = _peerHomebaseBackfill;
+        threadline.pairingInvites?.events.on('notice', (n: { kind?: string; peerFp?: string }) => {
+          if (!n || typeof n.peerFp !== 'string') return;
+          if (n.kind === 'finishing' || n.kind === 'finish-received' || n.kind === 'paired') {
+            void hbBackfill.ensureFor(n.peerFp).catch(() => { /* @silent-fallback-ok — ensureFor logs; a homebase never affects pairing */ });
+          }
         });
       }
 
@@ -19669,15 +19876,34 @@ export async function startServer(options: StartOptions): Promise<void> {
               // a peer reaching out cold. Topic-bound conversations are surfaced by
               // TopicLinkageHandler instead, so we skip them here. Best-effort,
               // non-blocking; never breaks the inbound path.
-              if (collaborationSurfacer) {
-                const hasParentTopic = conversationStore.get(gateThreadId)?.boundTopicId != null;
-                void collaborationSurfacer.surface({
+              const hasParentTopic = conversationStore.get(gateThreadId)?.boundTopicId != null;
+              // §2.6 (operator rule 2026-10-31): a peer with its own topic gets its user-meant
+              // messages posted THERE by the server — never left to whichever topic a session
+              // picks. Topic-bound conversations are TopicLinkageHandler's (it applies the same
+              // rule), so only an unbound one is relayed here. The silent-hub first-contact post
+              // is replaced by the homebase post for such a peer.
+              // When the relay does not post (agent-internal, rate-limited, send failed) the
+              // existing hub surface still runs, so no message is left with no topic at all.
+              const hubSurface = () => {
+                // No bare early exit here: the ACT-091 audit pins every exit after the ack stage.
+                void collaborationSurfacer?.surface({
                   threadId: gateThreadId,
                   senderName,
                   text: textContent,
                   hasParentTopic,
                   warrants: !decision.suppress,
                 });
+              };
+              if (peerHomebaseRelay && !hasParentTopic) {
+                void peerHomebaseRelay.relayInbound({
+                  threadId: gateThreadId,
+                  peers: [senderFingerprint],
+                  senderName,
+                  text: textContent,
+                  messageType: typeof msgType === 'string' ? msgType : null,
+                }).then((r) => { if (!r.posted) hubSurface(); }, () => hubSurface());
+              } else {
+                hubSurface();
               }
             } catch (gateErr) {
               // Gate failure → fail toward responsive (never silently drop a message).
@@ -20011,10 +20237,10 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // notify-on-stop Layer B — surface a genuinely-stuck UNATTENDED stop to the
     // user (docs/specs/NOTIFY-ON-STOP-SPEC.md). The evaluate route feeds each
-    // decision to StopNotifier, which filters to the notify-worthy classes
-    // (shadow+continue / escalate), the attended-gate, and per-session dedup,
-    // then hands a coalesced one-liner to a dedicated SentinelNotifier sink
-    // (single lifeline topic, log-always — reuses the post-2026-05-22 discipline).
+    // decision to StopNotifier, which keeps only shadow+continue stops of a
+    // NAMED live autonomous run (attended-gate + per-session dedup), and sends
+    // the notice to that run's own topic so a reply reaches it. Everything else
+    // (`escalate`, unnamed runs) is log-only in logs/sentinel-events.jsonl.
     // Default ON (Justin's "tell me why it stopped"); requires telegram wired.
     let stopNotifier: import('../monitoring/StopNotifier.js').StopNotifier | null = null;
     {
@@ -20026,27 +20252,25 @@ export async function startServer(options: StartOptions): Promise<void> {
         const stopLog = (entry: { kind: string; sessionName: string; detail?: string }): void => {
           try { fs.appendFileSync(stopLogPath, JSON.stringify({ ...entry, sentinel: 'stop-notify', ts: new Date().toISOString() }) + '\n'); } catch { /* best-effort */ }
         };
-        const send = (text: string): Promise<boolean> =>
-          sendConsolidatedWithSelfHeal(
-            localTg,
-            text,
-            (line) => console.warn(pc.yellow(`  [stop-notify] ${line}`)),
-          );
-        const { SentinelNotifier } = await import('../monitoring/SentinelNotifier.js');
-        const stopSink = new SentinelNotifier(
-          { log: stopLog, sendConsolidated: send },
-          { telegramEscalation: true }, // notify-on-stop is default-on by design
-        );
         const { StopNotifier } = await import('../monitoring/StopNotifier.js');
         stopNotifier = new StopNotifier(
-          { escalate: (name, text) => stopSink.escalate('stop-gate', name, text) },
+          {
+            notifyTopic: (topicId, sessionId, text) => {
+              stopLog({ kind: 'escalated', sessionName: sessionId, detail: `topic ${topicId}: ${text}` });
+              localTg.sendToTopic(Number(topicId), text).then(
+                () => stopLog({ kind: 'escalation-sent', sessionName: sessionId, detail: `topic ${topicId}` }),
+                (err: unknown) => stopLog({ kind: 'notify-error', sessionName: sessionId, detail: `topic ${topicId}: ${err instanceof Error ? err.message : String(err)}` }),
+              );
+            },
+            log: (kind, sessionId, detail) => stopLog({ kind, sessionName: sessionId, detail }),
+          },
           {
             enabled: true,
             unattendedOnly: nosCfg.unattendedOnly !== false,
             ...(typeof nosCfg.cooldownMs === 'number' ? { cooldownMs: nosCfg.cooldownMs } : {}),
           },
         );
-        console.log(pc.green('  notify-on-stop Layer B: enabled (unjustified-stall heads-up — unattended-only, deduped, coalesced)'));
+        console.log(pc.green('  notify-on-stop Layer B: enabled (named-run stall notice in the run\'s topic — unattended-only, deduped)'));
       } else {
         console.log(pc.dim(`  notify-on-stop Layer B: ${nosEnabled ? 'idle (no telegram)' : 'disabled by config'}`));
       }
@@ -26874,7 +27098,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 send: async (machineId, command) => {
                   const url = peerUrl(machineId);
                   if (!url) return { ok: false, reason: 'no peer url' };
-                  const r = await meshClient.send({ machineId, url }, command, 0);
+                  // The receiver decrypts and writes the whole set before answering, which can take
+                  // longer than the mesh default (5 s): a WSL peer stored every push yet the sender
+                  // reported "aborted" (2026-10-31). 30 s keeps a slow answer from reading as a failure.
+                  const r = await meshClient.send({ machineId, url }, command, 0, { timeoutMs: 30_000 });
                   return { ok: r.ok, reason: r.reason };
                 },
                 log: (m) => console.log(pc.dim(`  ${m}`)),
@@ -27104,10 +27331,27 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               throw new Error(`deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
             },
-            spawnOnMachine: async (machineId, msg) => {
+            // The placement hop is a deliverMessage at the epoch the CAS just
+            // landed, read exactly like a forward. It used to send epoch 0 and
+            // discard the reply: a receiver holding an older record for the
+            // topic NACKed it stale and the router still logged 'spawned'.
+            spawnOnMachine: async (machineId, msg, ownershipEpoch) => {
               const url = peerUrl(machineId);
               if (!url) throw new Error(`no peer url for ${machineId}`);
-              await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: 0 }, 0);
+              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
+              if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
+                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' };
+              }
+              throw new Error(`spawn deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
+            },
+            // Take back a placement whose spawn never landed (see SessionRouter):
+            // only the still-placing record this router put on `placedOn`.
+            reclaimPlacement: (sk, placedOn) => {
+              const cur = ownReg.read(sk);
+              if (!cur || cur.status !== 'placing' || cur.ownerMachineId !== placedOn) return false;
+              const r = ownReg.cas({ type: 'force-claim', machineId: meshSelfId }, { sessionKey: sk, sender: meshSelfId, nonce: `${meshSelfId}:rc:${++routerNonce}` });
+              emitPlacement(sk, r, 'failover', placedOn);
+              return r.ok;
             },
             handleLocally: async () => { /* inbound interception falls through to the existing local spawn */ },
             // Durable Inbound Message Queue §2.2: tri-state custody taking.
@@ -28474,6 +28718,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (isRelayRefusal(r)) throw new RelayRefusedError(r);
               return r;
             };
+            resolveHolderForwardWiring();
           }
 
           // ── Topic placement pin store (U4.1): the authoritative local record of
@@ -29693,7 +29938,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
-    const server = new AgentServer({ config, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;

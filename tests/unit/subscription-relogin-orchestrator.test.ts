@@ -184,6 +184,57 @@ describe('SubscriptionReloginOrchestrator', () => {
     store.close();
   });
 
+  it('a refused/device-limit drive ends failed with eventClass device-limit-stopped (codex-device-limit-tripwire §4)', async () => {
+    const { store, approved, ports } = fixture();
+    ports.driveBrowser.mockResolvedValue({ outcome: 'refused', failureClass: 'device-limit', reason: 'page-judged-device-limit' } as never);
+    const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
+    expect(result).toMatchObject({ outcome: 'terminal', episode: { state: 'failed', failureClass: 'device-limit' } });
+    expect(store.listEvents(approved.id)[0]).toMatchObject({ eventClass: 'device-limit-stopped', toState: 'failed' });
+    // Slow-retry eligible; the service defers it while the account is suspected/benched (§4).
+    expect(isSlowRetryEligible(result.episode)).toBe(true);
+    expect(ports.finishCli).not.toHaveBeenCalled();
+    expect(ports.finalizeSuccess).not.toHaveBeenCalled();
+    // No per-episode terminal notice.
+    expect(store.claimNotifications(10).filter((n) => n.kind === 'terminal')).toEqual([]);
+    store.close();
+  });
+
+  it('an aborted drive whose episode was already ended failed/device-limit reports terminal, not waiting', async () => {
+    const { store, approved, ports } = fixture();
+    let release!: () => void;
+    ports.driveBrowser.mockImplementation(async (_episode, _artifact, signal) => {
+      await new Promise<void>((resolve) => { release = resolve; signal.addEventListener('abort', resolve, { once: true }); });
+      const error = new Error('aborted'); error.name = 'AbortError'; throw error;
+    });
+    const controller = new AbortController();
+    const pending = new SubscriptionReloginOrchestrator(ports).tick(approved.id, controller.signal);
+    await vi.waitFor(() => expect(ports.driveBrowser).toHaveBeenCalledOnce());
+    // What endForDeviceLimit does: end the episode in the store first, then abort the drive.
+    const current = store.get(approved.id)!;
+    const ended = store.transition(current.id, { expectedVersion: current.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'device-limit-benched' });
+    controller.abort();
+    release();
+    const result = await pending;
+    expect(result).toMatchObject({ outcome: 'terminal', episode: { state: 'failed', failureClass: 'device-limit' } });
+    expect(store.get(approved.id)?.version).toBe(ended.version); // nothing written after the ending
+    store.close();
+  });
+
+  it('an aborted drive on a still-live episode stays "waiting for cancel" (control for the device-limit branch)', async () => {
+    const { store, approved, ports } = fixture();
+    ports.driveBrowser.mockImplementation(async (_episode, _artifact, signal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      const error = new Error('aborted'); error.name = 'AbortError'; throw error;
+    });
+    const controller = new AbortController();
+    const pending = new SubscriptionReloginOrchestrator(ports).tick(approved.id, controller.signal);
+    await vi.waitFor(() => expect(ports.driveBrowser).toHaveBeenCalledOnce());
+    controller.abort();
+    expect(await pending).toMatchObject({ outcome: 'waiting', reason: 'cancel-requested' });
+    store.close();
+  });
+
   it('enforces the episode wall-clock budget across retries and restart-like ticks', async () => {
     const { store, approved, ports, advance } = fixture();
     ports.driveBrowser.mockResolvedValue({ outcome: 'transient', failureClass: 'provider-transient' });

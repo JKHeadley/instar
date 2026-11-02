@@ -3,9 +3,9 @@
  * sections, Home agreement, coverage honesty, the story, the actions, and the
  * shipped page in jsdom (sections, detail sheet, conversation link, deliver).
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor, until, nextDue } from '../../dashboard/console/promises-model.js';
+import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor, until, nextDue, canDecide, decideResultWords } from '../../dashboard/console/promises-model.js';
 import { buildPromised } from '../../dashboard/console/home-model.js';
 import { topicLink, renderPromises } from '../../dashboard/console/promises.js';
 import { promiseActionLinks } from '../../dashboard/console/promise-actions.js';
@@ -156,7 +156,10 @@ describe('promises page model', () => {
 
 describe('promises page in a DOM', () => {
   let dom: JSDOM;
-  afterEach(() => dom?.window.close());
+  // The page reads Date.now(); pin it to the fixtures' NOW so the rows' ages do not
+  // drift with the day the suite runs. Only Date is faked — timers stay real.
+  beforeEach(() => vi.useFakeTimers({ toFake: ['Date'], now: NOW }));
+  afterEach(() => { vi.useRealTimers(); dom?.window.close(); });
   it('does not ask the operator to complete an internal follow-up', async () => {
     dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'http://localhost:4040/dashboard/console/#/work/promises' });
     Object.assign(globalThis, { window: dom.window, document: dom.window.document, location: dom.window.location,
@@ -271,5 +274,20 @@ describe('a machine that sent no promises is named, without claiming it failed',
     const page = buildPromisesPage(res as never, now, { expectedPeers: 2, peerIds: ['m-mini', 'm-mama'], names: { 'm-mini': 'Mac Mini', 'm-mama': 'Mama PC' } });
     expect(JSON.stringify(page)).toContain('No promises came from Mama PC. It may have none, or may not have answered.');
     expect(JSON.stringify(page)).not.toContain('not represented');
+  });
+});
+
+describe('Approve / Decline on a promise waiting for the operator\'s yes', () => {
+  it('only a pending promise blocked on the operator\'s authorization offers the buttons', () => {
+    expect(canDecide({ status: 'pending', blockedOn: 'user-authorization' })).toBe(true);
+    expect(canDecide({ status: 'pending', blockedOn: 'user-input' })).toBe(false);
+    expect(canDecide({ status: 'pending', blockedOn: 'none' })).toBe(false);
+    expect(canDecide({ status: 'delivered', blockedOn: 'user-authorization' })).toBe(false);
+    expect(nextStepOf({ status: 'pending', blockedOn: 'user-authorization', owner: 'user' }, Date.now())).toContain('Approve or decline it here');
+  });
+  it('the answer is said plainly, including a failure in the server\'s words', () => {
+    expect(decideResultWords('approve', { ok: true, data: { postedInConversation: true } }).text).toBe('Approved. I will go ahead.');
+    expect(decideResultWords('decline', { ok: true, data: { postedInConversation: false } }).text).toContain('could not post it');
+    expect(decideResultWords('approve', { ok: false, reason: 'This promise is already delivered' })).toEqual({ ok: false, text: 'That did not go through: This promise is already delivered.' });
   });
 });

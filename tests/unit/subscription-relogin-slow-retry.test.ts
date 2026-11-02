@@ -29,7 +29,7 @@ afterEach(() => {
 function harness(opts: { mode?: 'approval' | 'unattended'; failure?: SubscriptionReloginFailureClass;
   terminal?: 'failed' | 'refused' | 'cancelled'; incidentOpen?: boolean; admissible?: boolean;
   slowRetry?: { enabled?: boolean; delaysMs?: unknown; maxRetries?: number; quietHours?: { startHour: number; endHour: number } | null };
-  startAt?: number } = {}) {
+  startAt?: number; deviceLimitHold?: (episode: { accountId: string }) => boolean } = {}) {
   // Noon local time, so the default quiet window (23:00–08:00 local) never interferes unless a test wants it.
   const start = new Date(2026, 9, 14, 12, 0, 0, 0).getTime();
   let now = opts.startAt ?? start;
@@ -58,7 +58,8 @@ function harness(opts: { mode?: 'approval' | 'unattended'; failure?: Subscriptio
   const onTerminal = vi.fn(async () => undefined);
   const orchestrator = { tick: vi.fn(async () => ({ outcome: 'waiting' })) } as unknown as SubscriptionReloginOrchestrator;
   const service = new SubscriptionReloginService({ store, orchestrator, scanCandidates: async () => [], revalidate,
-    sourceIncidentOpen: () => incidentOpen, onTerminal, now: () => now, slowRetry: opts.slowRetry as never });
+    sourceIncidentOpen: () => incidentOpen, onTerminal, now: () => now, slowRetry: opts.slowRetry as never,
+    ...(opts.deviceLimitHold ? { deviceLimitHold: opts.deviceLimitHold } : {}) });
   return { store, service, revalidate, orchestrator, onTerminal, clock, id: ep.id,
     closeIncident: () => { incidentOpen = false; } };
 }
@@ -274,6 +275,60 @@ describe('SubscriptionReloginService slow retry', () => {
       h.store.close();
     });
   }
+
+  it('a device-limit ending (a page stop the check did not bear out) is retried on the slow cadence, never while held (codex-device-limit-tripwire §4)', async () => {
+    let held = true;
+    const h = harness({ failure: 'device-limit', deviceLimitHold: () => held });
+    for (let i = 0; i < 3; i++) { await h.service.tick(); h.clock.advance(48 * HOUR); }
+    expect(h.revalidate).not.toHaveBeenCalled(); // suspected or benched: never retried
+    held = false;
+    await h.service.tick(); // schedules
+    h.clock.advance(7 * HOUR);
+    await h.service.tick();
+    expect(h.revalidate).toHaveBeenCalledOnce(); // the ordinary slow retry, re-admitted (a bench would be refused there)
+    h.store.close();
+  });
+
+  it('a device-limit hold defers a due slow retry and keeps its schedule; lifting the hold lets it run', async () => {
+    let held = false;
+    const hold = vi.fn((episode: { accountId: string }) => { expect(episode.accountId).toBe('acct-1'); return held; });
+    const h = harness({ deviceLimitHold: hold });
+    await h.service.tick(); // schedules
+    const scheduled = h.store.get(h.id)!.nextAttemptAt;
+    expect(scheduled).not.toBeNull();
+    held = true;
+    h.clock.advance(7 * HOUR);
+    await h.service.tick();
+    await h.service.tick();
+    expect(hold).toHaveBeenCalled();
+    expect(h.revalidate).not.toHaveBeenCalled();
+    expect(h.store.get(h.id)).toMatchObject({ state: 'failed', nextAttemptAt: scheduled, slowRetryCount: 0 });
+    held = false;
+    await h.service.tick();
+    expect(h.revalidate).toHaveBeenCalledOnce();
+    expect(h.store.get(h.id)).toMatchObject({ state: 'approved', slowRetryCount: 1 });
+    h.store.close();
+  });
+
+  it('a device-limit hold returning false never changes today\'s behaviour', async () => {
+    const h = harness({ deviceLimitHold: () => false });
+    await h.service.tick();
+    h.clock.advance(7 * HOUR);
+    await h.service.tick();
+    expect(h.revalidate).toHaveBeenCalledOnce();
+    expect(h.store.get(h.id)).toMatchObject({ state: 'approved', slowRetryCount: 1 });
+    h.store.close();
+  });
+
+  it('a device-limit hold that throws never blocks a retry (unreadable pool ⇒ today\'s behaviour)', async () => {
+    const h = harness({ deviceLimitHold: () => { throw new Error('pool unreadable'); } });
+    await h.service.tick();
+    h.clock.advance(7 * HOUR);
+    await h.service.tick();
+    expect(h.revalidate).toHaveBeenCalledOnce();
+    expect(h.store.get(h.id)).toMatchObject({ state: 'approved', slowRetryCount: 1 });
+    h.store.close();
+  });
 
   it('a closed source incident clears a scheduled retry and never retries', async () => {
     const h = harness();

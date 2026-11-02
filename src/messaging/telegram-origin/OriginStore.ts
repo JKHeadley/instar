@@ -345,7 +345,11 @@ export class OriginStore {
   recordNoticeOutcome(input: Parameters<import('./OriginStoreBackend.js').OriginStoreBackend['recordNoticeOutcome']>[0]): Promise<OutcomeWriteResult> { return this.call('recordNoticeOutcome', input); }
   retireNoticeOwner(ownerBootId: string): Promise<number> { return this.call('retireNoticeOwner', ownerBootId); }
   reconcileReceipt(input: { childId: string; attemptId: string; receiptJson: string; outcome: 'accepted' | 'scheduled'; now?: number }): Promise<boolean> { return this.call('reconcileReceipt', input); }
-  archive(input: { before: number; limit?: number }): Promise<ArchiveResult> { return this.call('archive', input); }
+  archive(input: { before: number; limit?: number; minRecords?: number; flushBefore?: number; now?: number; keepOperations?: string[] }): Promise<ArchiveResult> { return this.call('archive', input); }
+  compactArchives(input: { limit?: number } = {}): Promise<{ merged: number; archiveId: string | null }> { return this.call('compactArchives', input); }
+  purgeArchived(input: { before: number; limit?: number; keepOperations?: string[] }): Promise<number> { return this.call('purgeArchived', input); }
+  foldMetricEvents(input: { before: number; limit?: number }): Promise<{ folded: number; more: boolean }> { return this.call('foldMetricEvents', input); }
+  expireAudit(input: { before: number; limit?: number }): Promise<number> { return this.call('expireAudit', input); }
   cleanupPayloads(now?: number): Promise<number> { return this.call('cleanupPayloads', now); }
   diagnostics(): Promise<{ path: string; synchronous: number; journalMode: string; archiveReads: { filesVerified: number; bytesHashed: number } }> { return this.call('diagnostics'); }
   async close(): Promise<void> {

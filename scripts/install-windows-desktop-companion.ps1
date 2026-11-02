@@ -129,7 +129,7 @@ try {
 if ($Phase -eq 'Stage') {
   if (Test-Path $nextExe) { Remove-Item -Force $nextExe }
   Add-Type -Path $code -ReferencedAssemblies @('System.Drawing', 'System.Windows.Forms', 'System.Web.Extensions') `
-    -OutputAssembly $nextExe -OutputType ConsoleApplication -ErrorAction Stop
+    -OutputAssembly $nextExe -OutputType WindowsApplication -ErrorAction Stop
   if (-not (Test-Path $nextExe)) { throw 'Companion compiler produced no executable' }
   @{ staged = $true; taskRunning = ($null -ne $prior -and $prior.State -eq 4) } | ConvertTo-Json -Compress
   return

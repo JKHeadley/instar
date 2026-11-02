@@ -16,7 +16,7 @@ export type BrowserRepairResult =
   | { outcome: 'approved'; pasteCode?: string }
   | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' | 'automation-permission' | 'no-healthy-seat' | 'agent-hard-line'; reason?: string }
   | { outcome: 'transient'; failureClass: 'seat-busy' | 'target-unreachable' | 'artifact-expired' | 'provider-transient'; reason?: string }
-  | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' | 'passkey-refused' | 'agent-sign-in-unfinished'; reason?: string };
+  | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' | 'passkey-refused' | 'agent-sign-in-unfinished' | 'device-limit'; reason?: string };
 
 /**
  * The agent-session pre-attempt verdict (spec skill-driven-signin-repair §2). `ok` means the
@@ -215,7 +215,8 @@ export class SubscriptionReloginOrchestrator {
         const to = result.failureClass === 'wrong-identity' || result.failureClass === 'unexpected-origin'
           || result.failureClass === 'passkey-refused' ? 'refused' : 'failed';
         ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to,
-          eventClass: result.failureClass === 'agent-sign-in-unfinished' ? 'agent-sign-in-unfinished' : 'browser-drive-refused',
+          eventClass: result.failureClass === 'agent-sign-in-unfinished' ? 'agent-sign-in-unfinished'
+            : result.failureClass === 'device-limit' ? 'device-limit-stopped' : 'browser-drive-refused',
           failureClass: result.failureClass, reason: result.reason, at: this.isoNow() });
         return { outcome: 'terminal', episode: ep };
       }
@@ -323,6 +324,11 @@ export class SubscriptionReloginOrchestrator {
   private cancelledResult(ep: SubscriptionReloginEpisode): SubscriptionReloginTickResult {
     const latest = this.mustGet(ep.id);
     if (latest.state === 'cancelled') return { outcome: 'terminal', episode: latest };
+    // codex-device-limit-tripwire §4: settleForDeviceLimit ends the episode in the store first and
+    // then aborts the drive; that ending is terminal, never "waiting for cancel".
+    if (latest.failureClass === 'device-limit' && (latest.state === 'failed' || latest.state === 'refused')) {
+      return { outcome: 'terminal', episode: latest };
+    }
     return { outcome: 'waiting', episode: latest, reason: 'cancel-requested' };
   }
   private recordArtifactReissues(ep: SubscriptionReloginEpisode, artifact: ReloginArtifact): SubscriptionReloginEpisode {

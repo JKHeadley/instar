@@ -179,8 +179,24 @@ export interface SessionRouterDeps {
   deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null }) => Promise<DeliverAck>;
   /** Router == owner: process the message on this machine. */
   handleLocally: (msg: InboundMessage) => Promise<void>;
-  /** Instruct the chosen machine to spawn/resume the session. */
-  spawnOnMachine: (machineId: string, msg: InboundMessage) => Promise<void>;
+  /**
+   * Instruct the chosen machine to spawn/resume the session: ONE deliverMessage
+   * attempt carrying the epoch the placement CAS just landed. Returns the
+   * receiver's ACK; throws on transport error/timeout (like deliverMessage).
+   * The router reads the ACK — a placement counts as `spawned` only when the
+   * chosen machine actually took the message (2026-11-01: the reply was
+   * ignored, the receiver refused a hard-coded epoch 0 as stale, and the
+   * message was logged `spawned` while no machine held it).
+   */
+  spawnOnMachine: (machineId: string, msg: InboundMessage, ownershipEpoch: number) => Promise<DeliverAck>;
+  /**
+   * Undo a remote placement this router just made whose spawn never landed:
+   * move the still-`placing` record (owned by `placedOn`) to THIS machine as
+   * active, so the message can be handled locally under real ownership.
+   * Returns true when the record now names this machine. Absent → the router
+   * falls back to durable custody / the un-acked local fall-through.
+   */
+  reclaimPlacement?: (sessionKey: string, placedOn: string) => boolean;
   /**
    * Confirm a just-placed REMOTE session as the owner (status placing→active) once
    * the spawn has been dispatched to it. Without this the ownership stays 'placing'
@@ -242,7 +258,7 @@ export class SessionRouter {
    * dispatch. Returns true when the message ended up durably handled
    * (acked outcome that isn't another queued/blocked verdict).
    */
-  async forceReplace(msg: InboundMessage): Promise<boolean | 'rejected'> {
+  async forceReplace(msg: InboundMessage): Promise<boolean | 'rejected' | 'local'> {
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(() => this.placeAndClaim(msg, 'failover', true));
     const tail = next.then(() => undefined, () => undefined);
@@ -261,6 +277,12 @@ export class SessionRouter {
     // `sender-deauthorized` terminal handling (unified notice + divergence probe).
     // placeAndClaim CAN yield `rejected` via its CAS-lost → forwardToOwner arm.
     if (outcome.action === 'rejected') return 'rejected';
+    // The session landed on THIS machine. handleLocally is only the router's
+    // verdict (the caller owns local delivery), so this is NOT "durably
+    // handled" — the drain must deliver it locally itself.
+    if (outcome.action === 'handled-locally' || (outcome.action === 'owner-dead-replaced' && outcome.owner === this.deps.selfMachineId)) {
+      return 'local';
+    }
     return (
       outcome.acked &&
       outcome.action !== 'queued' &&
@@ -408,11 +430,53 @@ export class SessionRouter {
       await this.deps.handleLocally(msg);
       return { action: fromDead ? 'owner-dead-replaced' : 'handled-locally', owner: decision.chosenMachine, detail: 'placed-self', acked: true };
     }
-    await this.deps.spawnOnMachine(decision.chosenMachine, msg);
-    // Confirm the remote owner (placing → active). The 'place' above left the record
-    // transient; without this the session is owned-but-never-active and every later
-    // message routes to the placing/transferring branch → queued forever (bug #11).
-    this.deps.confirmClaim?.(msg.sessionKey, decision.chosenMachine);
-    return { action, owner: decision.chosenMachine, acked: true };
+    const target = decision.chosenMachine;
+    const spawn = await this.spawnWithRetries(target, msg, cas.epoch);
+    if (spawn === 'queued' || spawn === 'duplicate') {
+      // Confirm the remote owner (placing → active). The 'place' above left the record
+      // transient; without this the session is owned-but-never-active and every later
+      // message routes to the placing/transferring branch → queued forever (bug #11).
+      this.deps.confirmClaim?.(msg.sessionKey, target);
+      return { action, owner: target, acked: true };
+    }
+    if (spawn === 'sender-rejected') {
+      // Same terminal refusal as the forward path (§2.A): never re-placed.
+      this.deps.onOwnerResponsive?.(target);
+      return { action: 'rejected', owner: target, detail: 'sender-deauthorized', acked: true };
+    }
+    // The chosen machine never took the message (it refused the epoch as stale,
+    // or never answered). Reporting `spawned` here is the silent loss: the caller
+    // skips local dispatch and nothing holds the message. Take the placement back
+    // and handle it here; failing that, durable custody; failing that, un-acked
+    // → the caller's local fall-through. Delivery beats placement.
+    if (spawn === 'unreachable') this.deps.markOwnerSuspect?.(target);
+    else this.deps.onOwnerResponsive?.(target);
+    this.deps.log?.(`spawn on ${target} for ${msg.sessionKey} not accepted (${spawn}) — keeping the message on this machine`);
+    let reclaimed = false;
+    try {
+      reclaimed = this.deps.reclaimPlacement?.(msg.sessionKey, target) ?? false;
+    } catch (err) {
+      this.deps.log?.(`reclaimPlacement for ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+    }
+    if (reclaimed) {
+      await this.deps.handleLocally(msg);
+      return { action: 'handled-locally', owner: this.deps.selfMachineId, detail: `spawn-${spawn}`, acked: true };
+    }
+    const q = this.deps.queueMessage(msg, `spawn-${spawn}`);
+    return { action: 'queued', owner: target, detail: `spawn-${spawn}`, acked: q === 'queued' || q === 'already-queued' };
+  }
+
+  /** The placement spawn hop, with the same retry/backoff as forwardToOwner. */
+  private async spawnWithRetries(target: string, msg: InboundMessage, epoch: number): Promise<DeliverAck['accepted'] | 'unreachable'> {
+    for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
+      try {
+        const ack = await this.deps.spawnOnMachine(target, msg, epoch);
+        return ack.accepted;
+      } catch (err) {
+        this.deps.log?.(`spawn attempt ${attempt} on ${target} failed: ${String((err as Error)?.message ?? err)}`);
+        if (attempt < this.cfg.deliverMessageMaxRetries) await this.deps.sleep(this.backoff(attempt));
+      }
+    }
+    return 'unreachable';
   }
 }

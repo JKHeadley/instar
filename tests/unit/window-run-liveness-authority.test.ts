@@ -515,6 +515,48 @@ describe('WindowRunLivenessAuthority', () => {
       .toThrow('window-run-liveness-active-binding-exists');
     expect(h.store.load()?.executorId).toBe('echo-topic-36966');
   });
+
+  // 2026-11-01: a session registered with `runId` instead of `autonomousRunId`
+  // and no `lifecycleRunId`. RegExp.test(undefined) matched "undefined", so the
+  // binding was projected onto a run named "undefined" and failed with
+  // autonomous-run-not-found, leaving a 24h run stuck in preparing.
+  it.each(['windowId', 'autonomousRunId', 'lifecycleRunId', 'executorId'] as const)('refuses a missing %s by name before projecting anything', field => {
+    const projections: string[] = [];
+    const h = harness({ projectStatus: status => { projections.push(status); return `projected:${status}`; } });
+    h.authority.freeze('first-window-finished', 'failed');
+    const before = projections.length;
+    const input: Record<string, unknown> = { windowId: 'w-other', topicId: 131439, autonomousRunId: 'run-other', lifecycleRunId: 'run-other', executorId: 'echo-other' };
+    delete input[field];
+    expect(() => h.authority.register(input as never)).toThrow(`window-run-liveness-registration-invalid:${field}`);
+    expect(projections.length).toBe(before);
+    expect(h.store.load()?.windowId).toBe('w32');
+  });
+
+  it('refuses a non-string id even when its text form would match', () => {
+    const h = harness();
+    h.authority.freeze('first-window-finished', 'failed');
+    expect(() => h.authority.register({ windowId: 'w-other', topicId: 131439, autonomousRunId: 12345 as never, lifecycleRunId: 'run-other', executorId: 'echo-other' }))
+      .toThrow('window-run-liveness-registration-invalid:autonomousRunId');
+  });
+
+  it("admits a different topic's window once the previous topic's window is terminal", () => {
+    const projected: Array<{ topicId: number; autonomousRunId: string; status: string }> = [];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-other-'));
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(dir), {
+      now: () => new Date(BASE).toISOString(),
+      sample: async () => { throw new Error('not sampled'); },
+      projectStatus: (state, status) => { projected.push({ topicId: state.topicId, autonomousRunId: state.autonomousRunId, status }); return `projected:${status}`; },
+    }, { enabled: true, dryRun: false });
+    authority.register({ windowId: 'instar-app-134088', topicId: 134088, autonomousRunId: 'run-a', lifecycleRunId: 'run-a', executorId: 'echo-instar-app' });
+    expect(() => authority.register({ windowId: 'desktop-131439', topicId: 131439, autonomousRunId: 'run-b', lifecycleRunId: 'run-b', executorId: 'echo-desktop' }))
+      .toThrow('window-run-liveness-active-binding-exists');
+    authority.freeze('recovery-ceiling-exceeded', 'failed');
+    const next = authority.register({ windowId: 'desktop-131439', topicId: 131439, autonomousRunId: 'run-b', lifecycleRunId: 'run-b', executorId: 'echo-desktop' });
+    expect(next).toMatchObject({ status: 'preparing', topicId: 131439, autonomousRunId: 'run-b' });
+    // The new binding is projected onto ITS OWN run, never the finished topic's run.
+    expect(projected.at(-1)).toEqual({ topicId: 131439, autonomousRunId: 'run-b', status: 'preparing' });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:other-topic-cleanup' });
+  });
 });
 
 describe('resolveWindowRunSampleLifecycle', () => {

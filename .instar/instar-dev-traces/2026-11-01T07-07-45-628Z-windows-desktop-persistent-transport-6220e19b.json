@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-persistent-transport",
+  "sessionId": "22931342-0ba2-4551-8807-182c3b8ae255",
+  "timestamp": "2026-11-01T07:07:45.628Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-persistent-transport.md",
+  "artifactSha256": "f11f6aeaecec2ecdfc7d19b6fa71d5782b8935be60749b505d7249dfa8f7dc48",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-windows-input.eli16.md",
+    "scripts/windows-desktop-local-transport.ps1",
+    "src/core/WindowsDesktopLocalTransport.ts",
+    "tests/unit/windows-desktop-local-transport.test.ts",
+    "upgrades/next/windows-desktop-persistent-transport.md",
+    "upgrades/side-effects/windows-desktop-persistent-transport.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "transport keeps one process alive; old path retained as fallback; revert restores",
+  "eli16Path": "docs/specs/native-remote-desktop-windows-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-persistent-transport.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a relay process starts only when a caller sends a request and none is alive; at most one per lane (two total), never restarted on its own"
+  }
+}

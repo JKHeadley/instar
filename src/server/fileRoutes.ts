@@ -115,6 +115,10 @@ export const NEVER_SERVED_PREFIXES = [
   // path — it stays only as a legacy-layout regression pin.
   'state/judgment-provenance/',
   '.instar/state/judgment-provenance/',
+  // Codex device-limit judge provenance (codex-device-limit-tripwire §1): the prepared refusal
+  // text, machine-local only; the HTTP surface is the content-free log + GET /subscription-pool.
+  'state/codex-device-limit-provenance/',
+  '.instar/state/codex-device-limit-provenance/',
   // External-hog decision store: grading GROUND TRUTH (llm-decision-quality-
   // meter spec §5.3) — the dashboard file editor must not read or rewrite it
   // (serve-deny implies edit-deny via isNeverEditable).

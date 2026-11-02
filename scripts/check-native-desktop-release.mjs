@@ -1,4 +1,5 @@
 /** Refuse an npm release that would omit the Mac desktop helper. */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,5 +21,14 @@ if (!archs.has(0x0100000c) || !archs.has(0x01000007)) {
 }
 if (!(fs.statSync(binary).mode & 0o111)) {
   throw new Error('Release desktop host is not executable');
+}
+// The publish job re-checks the artifact on Linux, where codesign is absent.
+if (process.platform === 'darwin') {
+  const details = execFileSync('codesign', ['-d', '-r-', '--verbose=2', binary], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (process.env.INSTAR_MACOS_SIGNING_IDENTITY?.trim() && /designated => cdhash/.test(details)) {
+    throw new Error('Release desktop host lost its signing identity, so macOS grants would not survive an update');
+  }
 }
 console.log('Universal macOS desktop host is packaged and executable');

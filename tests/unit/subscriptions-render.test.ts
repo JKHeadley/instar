@@ -32,6 +32,7 @@ import {
   buildMatrixModel,
   renderOutcomeCard,
   providerClass,
+  isDeviceLimitBenched,
 } from '../../dashboard/subscriptions.js';
 
 let doc: Document;
@@ -1243,5 +1244,66 @@ describe('renderAccountMatrix — provider grouping', () => {
     const model = buildMatrixModel(mixedPool, pending, {});
     const grouped = groupMatrixRowsByProvider(model.rows);
     expect(grouped.filter((g) => g.__row).length).toBe(model.rows.length);
+  });
+});
+
+describe('Codex device-limit tripwire cell (spec codex-device-limit-tripwire §8)', () => {
+  const pool = (accounts) => ({ enabled: true, accounts, pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool' });
+  const row = (extra) => ({ id: 'c1', email: 'c1@x.com', provider: 'openai', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop', ...extra });
+
+  it('isDeviceLimitBenched requires needs-reauth AND the exact cause', () => {
+    expect(isDeviceLimitBenched(row({ statusCause: 'codex-device-limit' }))).toBe(true);
+    expect(isDeviceLimitBenched(row({ statusCause: 'unknown' }))).toBe(false);
+    expect(isDeviceLimitBenched(row({}))).toBe(false);
+    expect(isDeviceLimitBenched(row({ status: 'active', statusCause: 'codex-device-limit' }))).toBe(false);
+    expect(isDeviceLimitBenched(null)).toBe(false);
+  });
+
+  it('a benched cell shows the bench and hides Sign in and every repair action, even with a repair episode', () => {
+    for (const state of ['suggested', 'failed', 'browser-driving', 'waiting-operator-only']) {
+      const t = el();
+      renderAccountMatrix(doc, t, pool([row({ statusCause: 'codex-device-limit' })]), { enabled: true, logins: [] }, {}, [
+        { id: 'r1', accountId: 'c1', machineId: 'm1', state },
+      ]);
+      const cell = t.querySelector('[data-cell-key="c1::m1"]');
+      expect(cell!.className, state).toContain('sub-matrix-device-limit');
+      expect(cell!.textContent, state).toContain('Suspected device limit: benched on this machine');
+      expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      expect(cell!.querySelector('[data-matrix-relogin]'), state).toBeNull();
+    }
+  });
+
+  it('a pending login or client transient does not turn a benched cell back into an action', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, pool([row({ statusCause: 'codex-device-limit' })]),
+      { enabled: true, logins: [{ id: 'c1', machineId: 'm1', expectedEmail: 'c1@x.com', verificationUrl: 'https://auth.openai.com/x' }] },
+      { 'c1::m1': { state: 'held' } });
+    const cell = t.querySelector('[data-cell-key="c1::m1"]');
+    expect(cell!.className).toContain('sub-matrix-device-limit');
+    expect(cell!.querySelector('button')).toBeNull();
+  });
+
+  it("a remote row with statusCause 'unknown' is ordinary needs-sign-in, not benched", () => {
+    const t = el();
+    renderAccountMatrix(doc, t, pool([row({ statusCause: 'unknown', machineId: 'm2', machineNickname: 'Studio', remote: true })]), { enabled: true, logins: [] }, {});
+    const cell = t.querySelector('[data-cell-key="c1::m2"]');
+    expect(cell!.className).toContain('sub-matrix-needs-reauth');
+    expect(cell!.textContent).not.toContain('device limit');
+    expect(cell!.querySelector('[data-matrix-setup]')!.textContent).toBe('Sign in');
+  });
+
+  it('the account card shows the bench and no repair controls', () => {
+    const t = el();
+    renderAccounts(doc, t, [row({ statusCause: 'codex-device-limit' })], NOW, null, [
+      { id: 'r1', accountId: 'c1', state: 'suggested' },
+    ]);
+    expect(t.textContent).toContain('Suspected device limit: benched on this machine');
+    expect(t.querySelector('[data-relogin-action]')).toBeNull();
+    const plain = el();
+    renderAccounts(doc, plain, [row({ statusCause: 'unknown' })], NOW, null, [
+      { id: 'r1', accountId: 'c1', state: 'suggested' },
+    ]);
+    expect(plain.textContent).not.toContain('device limit');
+    expect(plain.querySelector('[data-relogin-action="approve"]')).toBeTruthy();
   });
 });
