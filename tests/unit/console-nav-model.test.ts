@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GROUPS, allTabIds, legacyHref, ICONS } from '../../dashboard/console/nav-model.js';
+import { GROUPS, allTabIds, legacyHref, ICONS, MERGED, NATIVE_PAGES } from '../../dashboard/console/nav-model.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HTML = fs.readFileSync(path.resolve(__dirname, '../../dashboard/index.html'), 'utf-8');
@@ -27,6 +27,11 @@ describe('console navigation', () => {
     const ids = allTabIds();
     expect(new Set(ids).size).toBe(ids.length);
     expect([...ids].sort()).toEqual([...legacy].sort());
+  });
+
+  it('no tile only says where its content moved; every merged tab still redirects to its page', () => {
+    for (const t of GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])])) expect(t.desc).not.toMatch(/^Now inside/);
+    for (const id of MERGED) expect(NATIVE_PAGES[id as keyof typeof NATIVE_PAGES]).toBeTruthy();
   });
 
   it('has five top-level destinations for the phone bar (Home + four groups)', () => {
