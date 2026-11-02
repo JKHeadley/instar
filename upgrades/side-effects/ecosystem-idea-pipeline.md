@@ -65,6 +65,8 @@ The Ideas page leads with one sentence saying whether anything is ready, then th
 
 ## Second-pass review
 
+**Reviewer:** Codex `gpt-6-astra`, through the spec-converge reviewer door; concurred at round 5.
+
 Independent reviewer: Codex (`gpt-6-astra`), through the spec-converge reviewer door, reading the code. Five rounds. The first three raised, and this change fixed: stale writes from a lost lease; new revisions inheriting judgments; PIN approval not binding the displayed revision; launch recovery able to start twice; incomplete payload validation; empty paths passing the lint; unfinished ideas bypassing failure backoff; automatic launches going stale across awaits; partial scans given a full week. Round 4 raised two consequences of those fixes, also fixed. Round 5 concurred on those two changes, reading the service file only, by static inspection; its boundary note is that the ledger's part is shown by tests rather than that read.
 
 The reviewer was a different model family and saw the code, not this author's conclusions. It was a cross-model script rather than a same-model subagent, so that the author's context could not lead it.
@@ -76,7 +78,7 @@ The reviewer was a different model family and saw the code, not this author's co
 ## Build steps
 
 1. A no-tools call form for prompts holding outside text.
-- feat(ecosystem): the idea pipeline service, ledger and routes
-- feat(ecosystem): the adoption lint on tagged specs
-- feat(console): the Ideas page in the Work group
-- feat(ecosystem): agent awareness, new and existing agents
+2. The pipeline service, ledger and routes.
+3. The adoption lint on tagged specs.
+4. The Ideas console page.
+5. Agent awareness, new and existing agents.
