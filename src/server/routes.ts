@@ -1123,6 +1123,8 @@ export interface RouteContext {
    *  the route 503s (governor not initialized on this build). */
   selfActionGovernor?: import('../monitoring/selfaction/governor.js').SelfActionGovernorCore | null;
   telegram: TelegramAdapter | null;
+  /** Attention list kept when there is no Telegram adapter (LocalAttentionItems). */
+  localAttention?: import('../core/LocalAttentionItems.js').LocalAttentionItems | null;
   relationships: RelationshipManager | null;
   feedback: FeedbackManager | null;
   dispatches: DispatchManager | null;
@@ -21624,6 +21626,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/attention', async (req, res) => {
     if (!ctx.telegram) {
+      if (ctx.localAttention) {
+        // No Telegram: the local list (security items such as "a Mac may still be unlocked").
+        const requestedStatus = req.query.status as string | undefined;
+        const localStatus = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
+        const localLimit = parseAttentionLimit(req.query as Record<string, unknown>);
+        const all = ctx.localAttention.list(localStatus).map((it) => ({ ...it, machineId: ctx.meshSelfId ?? undefined }));
+        const items = localLimit === undefined ? all : all.slice(0, localLimit);
+        res.json({ items, count: items.length, surface: 'local' });
+        return;
+      }
       res.status(503).json({ error: 'Telegram not configured' });
       return;
     }
@@ -21734,6 +21746,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/attention/:id', (req, res) => {
     if (!ctx.telegram) {
+      if (ctx.localAttention) {
+        const local = ctx.localAttention.get(req.params.id);
+        if (!local) { res.status(404).json({ error: 'Attention item not found' }); return; }
+        res.json(local);
+        return;
+      }
       res.status(503).json({ error: 'Telegram not configured' });
       return;
     }
@@ -21747,7 +21765,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.patch('/attention/:id', async (req, res) => {
-    if (!ctx.telegram) {
+    if (!ctx.telegram && !ctx.localAttention) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
     }
@@ -21765,6 +21783,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const resolution = typeof rawResolution === 'string' ? rawResolution.trim().slice(0, 2000) : undefined; // bounded-input-reviewed: stored display text on the attention item, never fed to a model
+
+    if (!ctx.telegram) {
+      // No Telegram: the local list. No topic to close, no relayed-ack precedence (single store).
+      if (refuseInadmissibleWrite(req, res)) return;
+      const updated = ctx.localAttention!.setStatus(req.params.id, status as import('../core/LocalAttentionItems.js').LocalAttentionStatus, resolution);
+      if (!updated) { res.status(404).json({ error: 'Attention item not found' }); return; }
+      res.json(updated);
+      return;
+    }
 
     // Standby-write reconciliation §3.4 (I1): admission first after validation.
     if (refuseInadmissibleWrite(req, res)) return;

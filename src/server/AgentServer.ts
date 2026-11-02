@@ -190,6 +190,7 @@ import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDis
 import { appReplyRelayReadiness, ensureAppReplyRelay, packagedAppReplyRelayTemplate } from '../core/AppReplyRelayInstaller.js';
 import { defaultTailscaleExec } from '../core/MobileOwnNames.js';
 import { MobilePushService } from '../core/MobilePush.js';
+import { LocalAttentionItems } from '../core/LocalAttentionItems.js';
 import { QueuePaceLedger, QueuePaceTickLog, isQueuePaceEnabled } from '../monitoring/QueuePaceLedger.js';
 import { QueuePaceTuner } from '../monitoring/QueuePaceTuner.js';
 import { commitmentsAdapter, evolutionAdapter, feedbackFixAdapter, feedbackTriageAdapter, maturationAdapter, readExecutorFacts } from '../monitoring/QueuePaceAdapters.js';
@@ -466,6 +467,51 @@ export class AgentServer {
   private desktopStreamManager: DesktopStreamManager | null = null;
   private directDesktopAccess: DirectDesktopAccess | null = null;
   private desktopLockedController: DesktopLockedController | null = null;
+  /** Attention list for an agent with no Telegram adapter (security items only today). */
+  private localAttention: LocalAttentionItems | null = null;
+
+  /**
+   * The locked-screen security item ("a Mac may still be unlocked", "turned off").
+   * With Telegram it is an attention topic; without, it is stored on the local
+   * attention list and pushed to paired phones. Returns true only when the owner
+   * can now see it, so the controller retries otherwise.
+   */
+  private async raiseLockedSecurityItem(item: { key: string; title: string; body: string }): Promise<boolean> {
+    if (!this.telegramAdapter) {
+      // No Telegram: the item goes to the local attention list (GET /attention, the app)
+      // and buzzes paired phones. True only once the row is on disk, so a failed write
+      // is retried by the next sweep instead of being marked reported.
+      const id = `agent:${item.key}`;
+      const stored = this.localAttention?.raise({ id, title: item.title, summary: item.body,
+        description: item.body, priority: 'HIGH', category: 'security', source: 'agent',
+        sourceContext: 'desktop-locked' }) ?? false;
+      if (!stored) {
+        console.warn('[instar] locked-screen security item could not be stored; the next sweep tries again');
+        DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+          primary: 'Locked-screen security item on the local attention list', fallback: 'Retried by the next locked-screen sweep',
+          reason: 'local attention list write failed', impact: 'The owner is not yet told about a locked-screen security event.' });
+        return false;
+      }
+      try {
+        this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'HIGH' });
+      } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+      return true;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id: `agent:${item.key}`, conditionKey: item.key,
+        title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
+        category: 'security', sourceContext: 'desktop-locked' } as never);
+      return true;
+    } catch (error) {
+      console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
+      DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+        primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
+        reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
+        impact: 'The owner is not yet told about a locked-screen security event.' });
+      return false;
+    }
+  }
+
   private desktopLockedOsMajor: number | undefined;
   private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
   private macDesktopHost: MacDesktopHost | null = null;
@@ -1398,6 +1444,7 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
     this.sessionManager = options.sessionManager;
@@ -2937,22 +2984,7 @@ export class AgentServer {
               const lifecycle = options.tunnel?.lifecycleState;
               return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
             },
-            raiseSecurity: async item => {
-              if (!this.telegramAdapter) { console.warn('[instar] locked-screen security item has no attention surface'); return false; }
-              try {
-                await this.telegramAdapter.createAttentionItem({ id: `agent:${item.key}`, conditionKey: item.key,
-                  title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
-                  category: 'security', sourceContext: 'desktop-locked' } as never);
-                return true;
-              } catch (error) {
-                console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
-                DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
-                  primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
-                  reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
-                  impact: 'The owner is not yet told about a locked-screen security event.' });
-                return false;
-              }
-            },
+            raiseSecurity: item => this.raiseLockedSecurityItem(item),
           }) : null;
           if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
           const host: DesktopHost = macHost
@@ -5218,6 +5250,7 @@ export class AgentServer {
       // `initialized: false` honestly on a build that never wired it).
       selfActionGovernor: getSelfActionGovernor(),
       telegram: options.telegram ?? null,
+      localAttention: this.localAttention,
       telegramOrigin: options.telegramOrigin ?? null,
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,

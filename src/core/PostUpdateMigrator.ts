@@ -12713,6 +12713,18 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: added attention lifecycle (close-on-cause + expiry) bullet');
     }
 
+    // Attention without Telegram (locked-security-item-no-telegram): deployed agents
+    // learn that an agent with no Telegram still has a local attention list.
+    // Sniff: 'local-attention-items.json'.
+    if (content.includes('**Attention Queue**') && !content.includes('local-attention-items.json')) {
+      const localBullet = `- **No Telegram?** An agent without Telegram still has an attention list: items it must show the owner (today the remote-desktop security items, such as "A Mac may still be unlocked") are kept on disk in \`state/local-attention-items.json\`, read with the same \`GET /attention\` / \`GET /attention/ATT-ID\` (the list carries \`surface: "local"\`), resolved with the same \`PATCH /attention/ATT-ID\`, shown in the iPhone app, and pushed to paired phones. **When to use** (PROACTIVE): on an agent without Telegram, the owner asks "is anything wrong / did a Mac stay unlocked?" → read \`GET /attention\`.\n`;
+      const proactive = /^- \*\*Proactive use\*\*: queue an item only[^\n]*\n/m;
+      if (proactive.test(content)) content = content.replace(proactive, (m) => `${m}${localBullet}`);
+      else content = content.replace(/\*\*Attention Queue\*\*[^\n]*\n/, (m) => `${m}${localBullet}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added attention-without-Telegram bullet');
+    }
+
     // WS4.3 (MULTI-MACHINE-SEAMLESSNESS-SPEC) — pool-scope jobs awareness.
     // A deployed agent whose CLAUDE.md already carries the Job Scheduler
     // section gets the ?scope=pool bullet inserted after the /jobs View line.
