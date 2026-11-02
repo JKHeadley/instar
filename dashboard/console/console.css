@@ -1009,6 +1009,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .sess-resume { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 2; }
 .sess-composer { display: flex; gap: var(--s-2); align-items: flex-end; position: sticky; bottom: 0; padding: var(--s-2) 0; background: var(--bg); }
 .sess-input { flex: 1; min-height: 44px; font-size: 16px; resize: none; }
+.sess-input::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess-composer-btns { display: flex; gap: var(--s-2); }
 .sess-attach { min-width: 44px; min-height: 44px; padding: 0 10px; font-size: 18px; }
 .sess-attach:disabled { opacity: .45; cursor: not-allowed; }

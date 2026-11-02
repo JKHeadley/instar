@@ -239,7 +239,7 @@ function openView(box, row) {
   const termBox = el('div', { class: 'sess-term', 'aria-label': 'Live terminal' });
   const resume = el('button', { class: 'btn-primary btn-inline sess-resume', type: 'button', text: '▼ Back to live', hidden: true });
   const more = el('button', { class: 'btn-quiet sess-more', type: 'button', 'aria-label': 'More', text: '⋯', 'data-more': '1' });
-  const input = el('textarea', { class: 'reason-input sess-input', rows: '1', placeholder: 'Type a message…', 'aria-label': 'Message to the session' });
+  const input = el('textarea', { class: 'reason-input sess-input', rows: '1', placeholder: 'Message…', 'aria-label': 'Message to the session' });
   const sendBtn = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send', 'data-send': '1' });
   const keysBtn = el('button', { class: 'btn-quiet', type: 'button', text: 'Keys', 'aria-expanded': 'false', 'data-keys': '1' });
   // Attach: a screenshot or file, picked, pasted or dropped. Saved on this machine, so a
