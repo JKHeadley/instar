@@ -30,7 +30,7 @@ const READ_HASH = crypto.createHash('sha256').update(READ).digest('hex');
 function setup(opts: { pushOff?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mpush-int-'));
   dirs.push(dir);
-  const config = { projectName: 'echo', stateDir: dir, authToken: 'tok-1', developmentAgent: true, mobilePairing: opts.pushOff ? { push: { enabled: false } } : undefined } as never;
+  const config = { projectName: 'echo', stateDir: dir, authToken: 'tok-1', developmentAgent: true, mobilePairing: { ...(opts.pushOff ? { push: { enabled: false } } : {}), multiRoute: { enabled: false } } } as never;
   const deps: MobilePairingDeps = { config, stateDir: dir, holdsLease: () => true, selfMachineId: 'm_self' };
   const svc = new MobilePairingService(deps);
   services.push(svc);
