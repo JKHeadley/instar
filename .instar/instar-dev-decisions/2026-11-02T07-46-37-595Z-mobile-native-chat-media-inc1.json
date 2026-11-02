@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-02T07:46:37.595Z",
+  "slug": "mobile-native-chat-media-inc1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 120,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/core/AppMediaStore.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/appMediaReplyFiles.ts",
+      "src/core/appMediaTypes.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/app-reply.sh"
+    ],
+    "addedLines": 91,
+    "deletedLines": 29
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-media-capacity-notice: under a store that stays full forever the notice is raised once per episode; the raisedNotices latch refuses every later raise and only the condition clearing re-arms it, so the action count is 1 at any horizon."
+    }
+  },
+  "verdict": "pass"
+}

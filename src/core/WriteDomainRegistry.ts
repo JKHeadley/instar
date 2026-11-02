@@ -615,6 +615,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({
     kind: 'route',
     method: 'POST',
+    pathPrefix: '/mobile/media/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'a phone uploads to the machine holding its device record (mobile-device-keys §4); staged chunks and blobs live under this machine\'s state dir, and only the resulting events replicate, through the appConversations kind; no git-synced store is mutated',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
     pathPrefix: '/slack/session-reply',
     domain: 'machine-local',
     story: {

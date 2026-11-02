@@ -188,6 +188,10 @@ import { CapabilityRegistryReceiver, CapabilityRegistryWriter, classifyProjectio
 import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { derivedEventId } from '../core/appConversationText.js';
+import { attachmentIdFor, kindFromBytes, sniffMediaType } from '../core/appMediaTypes.js';
+import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.js';
+import { isNeverServed } from './fileRoutes.js';
+import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import { joinTelegramHistory } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
@@ -5396,6 +5400,8 @@ export function createRoutes(ctx: RouteContext): Router {
       if (ctx.nativeHookIngest) base.hookEvents = ctx.nativeHookIngest.snapshot();
       // Native app conversations (mobile-native-conversations §4.5): store size, authed only.
       if (ctx.appConversations) { try { base.appConversations = ctx.appConversations.store.health(); } catch { /* @silent-fallback-ok — observability */ } }
+      // Media (mobile-native-chat-media §4.7): this machine's numbers; a count the sweep has not taken reads null.
+      if (ctx.appConversations) { try { base.appMedia = ctx.appConversations.media.health(); } catch { /* @silent-fallback-ok — observability */ } }
       // Multi-route (mobile-multi-route §4.1): own names + health, never-proven candidates with
       // their last failure, and the tailscale-serve state. Bearer only; device principals keep
       // the basic health and read their routes from GET /mobile/routes.
@@ -20925,9 +20931,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const app = ctx.appConversations;
     if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     const bodyKeys = Object.keys(req.body ?? {});
-    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'metadata')) {
-      res.status(400).json({ error: 'spawned app session body permits only conversationId, text and metadata' });
+    if (bodyKeys.some(key => key !== 'conversationId' && key !== 'text' && key !== 'metadata' && key !== 'files')) {
+      res.status(400).json({ error: 'spawned app session body permits only conversationId, text, files and metadata' });
       return;
+    }
+    // Files (mobile-native-chat-media §4.6): up to 10 `{path}` entries; empty text is then allowed.
+    const replyFiles = req.body?.files;
+    const filePaths: string[] = [];
+    if (replyFiles !== undefined) {
+      if (!Array.isArray(replyFiles) || !replyFiles.every((f: unknown) => !!f && typeof (f as { path?: unknown }).path === 'string')) {
+        res.status(400).json({ error: '"files" must be a list of {path}' });
+        return;
+      }
+      for (const f of replyFiles as Array<{ path: string }>) filePaths.push(f.path);
+      if (filePaths.length > 0 && !isMobileMediaEnabled(ctx.config)) {
+        res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' });
+        return;
+      }
     }
     const conversationId = Number(req.body?.conversationId);
     if (!Number.isSafeInteger(conversationId) || conversationId >= 0) {
@@ -20935,7 +20955,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const text = typeof req.body?.text === 'string' ? req.body.text : '';
-    if (!text.trim() || text.length > 16_000) {
+    if ((!text.trim() && filePaths.length === 0) || text.length > 16_000) {
       res.status(400).json({ error: '"text" must be 1-16000 characters' });
       return;
     }
@@ -20964,29 +20984,96 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const eventId = derivedEventId('ag', key, seed);
     if (app.store.hasEvent(key, eventId)) { res.json({ ok: true, idempotent: true, conversationKey: key, eventId }); return; }
     const trimmed = text.trim();
-    if (trimmed.length >= APP_DUPLICATE_MIN_CHARS) {
+    // Files are checked and copied first: the duplicate key includes their hashes, and the
+    // credential wall must see them before anything is published (§4.6).
+    let prepared: Awaited<ReturnType<typeof prepareReplyFiles>> | null = null;
+    if (filePaths.length > 0) {
+      try {
+        prepared = await prepareReplyFiles(app.media, filePaths, { projectDir: ctx.config.projectDir, outboxDir: app.media.outboxDir }, isNeverServed, detectOutboundCredential);
+      } catch (err) {
+        res.status(500).json({ error: 'reply-not-recorded', detail: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      if ('status' in prepared) {
+        if (prepared.error === 'credential-exposure-guard') res.status(422).json({ error: prepared.error, blockedBy: 'credential-exposure-guard', overridable: false, notSent: true, issue: prepared.detail });
+        else res.status(prepared.status).json({ error: prepared.error, detail: prepared.detail });
+        return;
+      }
+    }
+    const preparedFiles = prepared && !('status' in prepared) ? prepared : null;
+    const fileHashes = (preparedFiles?.snapshots ?? []).map(s => s.hashed.sha256).join(',');
+    if (trimmed.length >= APP_DUPLICATE_MIN_CHARS || fileHashes) {
       const cutoff = Date.now() - APP_DUPLICATE_WINDOW_MS;
-      const dup = app.store.browseMessages(key, null, 20).messages.some(m => m.role === 'agent' && m.text.trim() === trimmed && Date.parse(m.at) >= cutoff);
-      if (dup) { res.json({ ok: true, suppressed: true, reason: 'exact-duplicate', conversationKey: key }); return; }
+      const dup = app.store.browseMessages(key, null, 20).messages.some(m => m.role === 'agent' && m.text.trim() === trimmed
+        && (m.attachments ?? []).map(a => a.sha256).join(',') === fileHashes && Date.parse(m.at) >= cutoff);
+      if (dup) {
+        if (preparedFiles) discardPrepared(app.media, preparedFiles);
+        res.json({ ok: true, suppressed: true, reason: 'exact-duplicate', conversationKey: key });
+        return;
+      }
     }
     // The tone-advisory reaction (comply / override-with-reason) rides metadata, as on the
     // Telegram and Slack reply paths; no other metadata field has any effect here.
     const replyMetadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
       ? req.body.metadata as Record<string, unknown> : undefined;
-    if (await checkOutboundMessage(text, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) return;
+    // With no caption, the file names are what the operator reads: they go through the same check.
+    const outboundText = text.trim() ? text : (preparedFiles?.snapshots ?? []).map(s => s.filename).join('\n');
+    if (outboundText.trim() && await checkOutboundMessage(outboundText, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) {
+      if (preparedFiles) discardPrepared(app.media, preparedFiles);
+      return;
+    }
     const messageId = derivedEventId('am', key, seed);
     try {
-      app.store.append({
-        eventId, kind: 'message', conversationKey: key, messageId, role: 'agent', text,
-        at: new Date().toISOString(), machineId: app.deps.machineId(),
-      });
+      const common = { eventId, conversationKey: key, messageId, role: 'agent' as const, text, at: new Date().toISOString(), machineId: app.deps.machineId() };
+      if (preparedFiles) {
+        // Publish the snapshots that were scanned, then the event: never an event without its blobs.
+        const attachments = preparedFiles.snapshots.map((snap, index) => {
+          const mediaType = sniffMediaType(Buffer.from(snap.hashed.headB64, 'base64'));
+          const kind = kindFromBytes(mediaType);
+          app.media.publishSnapshot(snap.snapshotPath, snap.hashed.sha256);
+          return {
+            attachmentId: attachmentIdFor(messageId, index), index, sha256: snap.hashed.sha256, size: snap.hashed.size,
+            declaredKind: kind, kind, mediaType, declaredType: mediaType, filename: snap.filename,
+          };
+        });
+        app.store.append({ ...common, kind: 'media-message', attachments });
+        for (const id of preparedFiles.reservationIds) app.media.releaseReply(id);
+      } else {
+        app.store.append({ ...common, kind: 'message' });
+      }
     } catch (err) {
+      if (preparedFiles) discardPrepared(app.media, preparedFiles);
       res.status(500).json({ error: 'reply-not-recorded', detail: err instanceof Error ? err.message : String(err) });
       return;
     }
     // Push trigger (§4.7) — the hook point; increment 3 sends the push.
     app.onAgentReplyAppended(key, messageId);
     res.json({ ok: true, conversationKey: key, eventId, messageId });
+  });
+
+  // The session's lazy way to an earlier file (mobile-native-chat-media §4.5): Bearer plus the
+  // bind token of the conversation that holds it; makes the session copy and returns its path.
+  router.get('/app/media-path/:attachmentId', async (req, res) => {
+    const app = ctx.appConversations;
+    if (!app) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
+    const conversationId = Number(req.query.conversationId);
+    if (!Number.isSafeInteger(conversationId) || conversationId >= 0) { res.status(400).json({ error: 'negative conversationId required' }); return; }
+    const bindHeader = req.headers['x-instar-bind-token'];
+    const rawToken = Array.isArray(bindHeader) ? bindHeader[0] : bindHeader;
+    const verdict = verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: conversationId, rawToken: typeof rawToken === 'string' ? rawToken : undefined, attention: ctx.telegram });
+    if (!verdict.ok) { res.status(403).json({ error: 'conversation-bind-refused', detail: verdict.detail }); return; }
+    const key = ctx.conversationRegistry?.appConversationFor(conversationId) ?? null;
+    if (!key || !app.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    if (!app.ownsAlias(conversationId)) { res.status(409).json({ error: 'not-owner', detail: 'This machine does not currently run this app conversation.' }); return; }
+    const ref = app.store.mediaRef(String(req.params.attachmentId));
+    if (!ref || ref.canonicalKey !== `app:${key}`) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
+    if (ref.purged) { res.status(404).json({ error: 'file-removed', detail: 'This file was permanently removed.' }); return; }
+    const ev = app.store.getMessageEvent(key, ref.messageId);
+    const attachment = ev && ev.kind === 'media-message' ? ev.attachments[ref.idx] : undefined;
+    if (!attachment) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
+    const copied = await app.media.sessionCopy(ref.messageId, attachment);
+    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: 'this file is not on this machine yet' }); return; }
+    res.json({ path: copied });
   });
 
   router.post('/internal/slack-forward', async (req, res) => {

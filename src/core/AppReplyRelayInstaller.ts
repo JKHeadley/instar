@@ -13,7 +13,12 @@ import { fileURLToPath } from 'node:url';
 import { reconcileRelayFile, type SlackRelayInstallResult } from './SlackReplyRelayInstaller.js';
 
 /** Every historical shipped app-reply.sh before the current one. Append-only. */
-export const PRIOR_SHIPPED_APP_RELAY_SHA256: ReadonlySet<string> = new Set<string>([]);
+export const PRIOR_SHIPPED_APP_RELAY_SHA256: ReadonlySet<string> = new Set<string>([
+  'a2070b6941b1eb59111fa44345c5dbaf25ed08bbeaae4f79a22543c9fa8241a0',
+]);
+
+/** Every historical shipped app-media-path before the current one. Append-only. */
+export const PRIOR_SHIPPED_APP_MEDIA_PATH_SHA256: ReadonlySet<string> = new Set<string>([]);
 
 export type AppRelayInstallResult = SlackRelayInstallResult;
 
@@ -22,11 +27,20 @@ export function ensureAppReplyRelay(params: {
   stateDir: string;
   template: string;
   claudeCompatibility?: boolean;
+  /** The app-media-path helper (media spec §4.5), installed beside the relay. */
+  mediaPathTemplate?: string | null;
 }): AppRelayInstallResult {
   const result: AppRelayInstallResult = { installed: [], current: [], degraded: [], errors: [] };
   reconcileRelayFile(path.join(params.stateDir, 'scripts', 'app-reply.sh'), params.template, PRIOR_SHIPPED_APP_RELAY_SHA256, result);
   if (params.claudeCompatibility !== false) {
     reconcileRelayFile(path.join(params.projectDir, '.claude', 'scripts', 'app-reply.sh'), params.template, PRIOR_SHIPPED_APP_RELAY_SHA256, result);
+  }
+  const helper = params.mediaPathTemplate === undefined ? packagedScriptTemplate('app-media-path') : params.mediaPathTemplate;
+  if (helper) {
+    reconcileRelayFile(path.join(params.stateDir, 'scripts', 'app-media-path'), helper, PRIOR_SHIPPED_APP_MEDIA_PATH_SHA256, result);
+    if (params.claudeCompatibility !== false) {
+      reconcileRelayFile(path.join(params.projectDir, '.claude', 'scripts', 'app-media-path'), helper, PRIOR_SHIPPED_APP_MEDIA_PATH_SHA256, result);
+    }
   }
   return result;
 }
@@ -48,10 +62,14 @@ export function appReplyRelayReadiness(stateDir: string, expectedTemplate: strin
 
 /** The packaged template bytes (dist or source layout), or null when the asset is absent. */
 export function packagedAppReplyRelayTemplate(): string | null {
+  return packagedScriptTemplate('app-reply.sh');
+}
+
+function packagedScriptTemplate(name: string): string | null {
   const here = path.dirname(fileURLToPath(import.meta.url));
   for (const candidate of [
-    path.resolve(here, '..', 'templates', 'scripts', 'app-reply.sh'),
-    path.resolve(here, '..', '..', 'src', 'templates', 'scripts', 'app-reply.sh'),
+    path.resolve(here, '..', 'templates', 'scripts', name),
+    path.resolve(here, '..', '..', 'src', 'templates', 'scripts', name),
   ]) {
     try { return fs.readFileSync(candidate, 'utf8'); } catch { /* @silent-fallback-ok — try the other packaged/dev layout */ }
   }

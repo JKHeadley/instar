@@ -35,8 +35,12 @@ import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileCh
 import {
   cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
 } from '../core/appConversationText.js';
-import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MessageEvent } from '../core/AppConversationStore.js';
-import { signReceipt, signRedaction, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
+import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
+import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
+import { buildAppConversationRecordData } from '../core/AppConversationsReplicatedStore.js';
+import {
+  MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, displayName, effectiveKind, sessionLine, type AppAttachment,
+} from '../core/appMediaTypes.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
 import { cleanText } from '../core/MobilePairing.js';
@@ -46,6 +50,8 @@ export interface MobileConversationRouteDeps {
   pairing: MobilePairingService;
   /** Null when `mobilePairing.native.enabled` resolved off at boot. */
   service: AppConversationService | null;
+  /** `mobilePairing.native.media.enabled`, resolved at boot. */
+  mediaEnabled?: boolean;
   machineId: () => string;
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
@@ -62,13 +68,43 @@ function principalOf(req: Request): Principal {
 const SEND_RATE_PER_MIN = 20;
 const off = (res: Response) => res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' });
 const hashOf = (...parts: string[]) => crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
+/** The serialized-record ceiling of media spec §4.1 (fits the 80 KiB journal entry and the 256 KiB line). */
+const MAX_RECORD_BYTES = 72 * 1024;
+const MAX_ORIGIN_BODY_B64 = 64 * 1024;
+
+/** Attachment rows for the app: the stored fields plus the per-file byte fact (§4.13). Never a server path. */
+function attachmentRows(attachments: ReadonlyArray<AppAttachment>, svc: AppConversationService): Array<Record<string, unknown>> {
+  return attachments.map((a) => ({ ...a, ...svc.media.byteFact(a.sha256, a.attachmentId) }));
+}
 
 /** History rows for the app: the stored fields plus the verdict (§4.6). */
-export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => OriginVerdict): Record<string, unknown> {
+export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => OriginVerdict, svc?: AppConversationService): Record<string, unknown> {
   return {
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
     deliveryState: m.deliveryState, originVerified: verify(m),
+    ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
   };
+}
+
+/** One attachment of a send body, as signed by the phone. */
+interface SignedAttachment { uploadId: string; sha256: string; size: number; declaredKind: string; declaredType: string; filename: string; transcript?: string; durationMs?: number; width?: number; height?: number }
+
+function parseSignedAttachments(raw: unknown): SignedAttachment[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: SignedAttachment[] = [];
+  for (const r of raw) {
+    const a = r as Record<string, unknown> | null;
+    if (!a || typeof a.uploadId !== 'string' || typeof a.sha256 !== 'string' || typeof a.size !== 'number' || typeof a.declaredKind !== 'string'
+      || typeof a.declaredType !== 'string' || typeof a.filename !== 'string') return null;
+    if (a.transcript !== undefined && typeof a.transcript !== 'string') return null;
+    const hint = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+    out.push({
+      uploadId: a.uploadId, sha256: a.sha256, size: a.size, declaredKind: a.declaredKind, declaredType: a.declaredType, filename: a.filename,
+      ...(typeof a.transcript === 'string' ? { transcript: a.transcript } : {}),
+      ...(hint(a.durationMs) !== undefined ? { durationMs: hint(a.durationMs) } : {}), ...(hint(a.width) !== undefined ? { width: hint(a.width) } : {}), ...(hint(a.height) !== undefined ? { height: hint(a.height) } : {}),
+    });
+  }
+  return out;
 }
 
 export function createMobileConversationRouter(deps: MobileConversationRouteDeps): Router {
@@ -225,8 +261,19 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     if (!validRequestId(res, body.requestId)) return;
     const requestId = body.requestId;
-    if (text.length < 1 || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
-    const hash = hashOf('app-send', key, text);
+    // Media (§4.3): a body with attachments creates a `media-message`. An exact emergency stop
+    // never waits on its files: it is handled as the text it is and the uploads simply expire.
+    const hasAttachments = body.attachments !== undefined;
+    const signedFiles = hasAttachments && !isExactStopMessage(text) ? parseSignedAttachments(body.attachments) : null;
+    const wantsMedia = hasAttachments && !isExactStopMessage(text);
+    if (wantsMedia && !deps.mediaEnabled) { res.status(400).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' }); return; }
+    if (wantsMedia && (!signedFiles || signedFiles.length < 1)) { res.status(400).json({ error: 'bad-attachments' }); return; }
+    if (wantsMedia && signedFiles!.length > MAX_ATTACHMENTS) { res.status(413).json({ error: 'too-many-attachments', detail: `A message can carry at most ${MAX_ATTACHMENTS} files.` }); return; }
+    if ((text.length < 1 && !wantsMedia) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
+    // The idempotency hash covers the text and each file's signed fields (§4.3).
+    const hash = signedFiles
+      ? hashOf('app-send', key, text, ...signedFiles.map((a) => `${a.sha256}:${a.size}:${a.declaredKind}:${a.declaredType}:${a.filename}:${sha256Hex(a.transcript ?? '')}`))
+      : hashOf('app-send', key, text);
     const seed = `${deviceId}\u0000${requestId}`;
     const messageId = derivedEventId('msg', seed);
     const eventId = derivedEventId('op', seed);
@@ -257,7 +304,65 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     const removed = removeAuthorityTokens(text);
     const delivered = removed.text;
-    const credentialShaped = detectOutboundCredential(text).detected;
+
+    // Media preflight (§4.3): every named upload must be this device's finished upload for this
+    // conversation, with exactly the signed fields. Transcripts and filenames get the caption's
+    // treatment, so a dictated code or a named invite never reaches a session or the store.
+    const removedKinds = new Set<string>(removed.kinds);
+    const uploadIds: string[] = [];
+    const stored: AppAttachment[] = [];
+    if (signedFiles) {
+      const media = s.media;
+      let total = 0;
+      for (let i = 0; i < signedFiles.length; i++) {
+        const a = signedFiles[i]!;
+        const u = media.getUpload(a.uploadId);
+        const mismatch = () => res.status(409).json({ error: 'attachment-mismatch', index: i, detail: `Attachment ${i + 1} does not match its upload.` });
+        if (!u || u.deviceId !== deviceId || u.conversationRef !== `app:${key}`) { mismatch(); return; }
+        if (u.state === 'claimed' || u.state === 'sent') { res.status(409).json({ error: 'upload-already-sent', index: i, detail: 'This file was already sent.' }); return; }
+        if (u.sha256 !== a.sha256 || u.size !== a.size || u.declaredKind !== a.declaredKind || u.declaredType !== a.declaredType || u.filename !== a.filename) { mismatch(); return; }
+        if (u.state !== 'complete' || !u.mediaType) { mismatch(); return; }
+        if ((a.transcript?.length ?? 0) > MAX_TRANSCRIPT_CHARS) { res.status(413).json({ error: 'message-too-large', detail: 'A transcript can be at most 4000 characters.' }); return; }
+        total += a.size;
+        uploadIds.push(u.uploadId);
+        deps.pairing.scanInbound(a.filename);
+        if (a.transcript) deps.pairing.scanInbound(a.transcript);
+        const f = removeAuthorityTokens(a.filename);
+        const tr = a.transcript !== undefined ? removeAuthorityTokens(a.transcript) : null;
+        for (const k of [...f.kinds, ...(tr?.kinds ?? [])]) removedKinds.add(k);
+        stored.push({
+          attachmentId: attachmentIdFor(messageId, i), index: i, sha256: a.sha256, size: a.size,
+          declaredKind: u.declaredKind, kind: effectiveKind(u.declaredKind, u.mediaType), mediaType: u.mediaType, declaredType: a.declaredType,
+          filename: f.text.slice(0, 255), ...(tr ? { transcript: tr.text } : {}),
+          ...(a.durationMs !== undefined ? { durationMs: a.durationMs } : {}), ...(a.width !== undefined ? { width: a.width } : {}), ...(a.height !== undefined ? { height: a.height } : {}),
+        });
+      }
+      if (total > MAX_MESSAGE_BYTES) { res.status(413).json({ error: 'message-too-large', detail: 'A message can carry at most 64 MiB.' }); return; }
+    }
+    const classifiedText = [delivered, ...stored.map((a) => a.transcript ?? '')].filter(Boolean).join('\n');
+    const credentialShaped = detectOutboundCredential([text, ...(signedFiles ?? []).map((a) => a.transcript ?? '')].join('\n')).detected;
+
+    // `receivedAt` is when the device signature was accepted (the authenticator), so a request at
+    // the edge of the 60 s window is judged by the same clock that admitted it.
+    const t = deviceAdmittedAt(req) ?? now();
+    const receivedAt = new Date(t).toISOString();
+    const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, [...removedKinds], s.deps.signer ?? null, receivedAt,
+      (detail) => s.deps.reportDegradation?.('AppConversations.sign', detail), signedFiles ? stored : undefined);
+    const base = {
+      eventId, conversationKey: key, messageId, role: 'operator' as const, text: delivered,
+      at: receivedAt, machineId: deps.machineId(), receivedAt,
+      ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
+    };
+    const msg: MessageEvent | MediaMessageEvent = signedFiles ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
+    // §4.1: the record exactly as stored and as journaled must fit, before any upload is claimed.
+    if (signedFiles) {
+      const asStored = Buffer.byteLength(JSON.stringify({ ...msg, ingestSeq: 0 }));
+      const asJournaled = Buffer.byteLength(JSON.stringify(buildAppConversationRecordData(msg)({ physical: 0, logical: 0, node: deps.machineId() } as never, deps.machineId())));
+      if (Math.max(asStored, asJournaled) > MAX_RECORD_BYTES || (signed.origin?.bodyB64?.length ?? 0) > MAX_ORIGIN_BODY_B64) {
+        res.status(413).json({ error: 'message-too-large', detail: 'This message is too long to store. Shorten the text or send fewer files.' });
+        return;
+      }
+    }
 
     // Step 4 — reserve, then persist the message with its signed origin (fsync) BEFORE dispatch.
     let r: ReturnType<typeof requests.reserve>;
@@ -268,26 +373,39 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
     if (r.kind !== 'reserved') { answerLookup(res, r); return; }
 
-    // `receivedAt` is when the device signature was accepted (the authenticator), so a request at
-    // the edge of the 60 s window is judged by the same clock that admitted it.
-    const t = deviceAdmittedAt(req) ?? now();
-    const receivedAt = new Date(t).toISOString();
-    const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, removed.kinds, s.deps.signer ?? null, receivedAt,
-      (detail) => s.deps.reportDegradation?.('AppConversations.sign', detail));
-    const msg: MessageEvent = {
-      eventId, kind: 'message', conversationKey: key, messageId, role: 'operator', text: delivered,
-      at: receivedAt, machineId: deps.machineId(), receivedAt,
-      ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
-    };
-    try { s.store.append(msg); } catch (err) {
+    // Media (§4.3): claim every upload at once, make the bytes durable, and only then the event.
+    if (signedFiles) {
+      if (!s.media.claimUploads(uploadIds, messageId)) {
+        requests.release(deviceId, requestId);
+        res.status(409).json({ error: 'upload-already-sent', detail: 'One of these files was already sent.' });
+        return;
+      }
+      try { await s.media.verifyClaimed(uploadIds); } catch (err) {
+        s.media.releaseClaim(uploadIds, messageId);
+        requests.release(deviceId, requestId);
+        s.deps.reportDegradation?.('AppMedia.publish', err instanceof Error ? err.message : String(err));
+        res.status(503).json({ error: 'chat-unavailable', detail: 'The files could not be saved, so the message was not sent. Try again.' });
+        return;
+      }
+    }
+    // Publish and append with no await between them (media review finding 1): nothing can remove
+    // a blob after it is published and before the event that references it is stored.
+    try {
+      if (signedFiles) s.media.publishVerified(uploadIds);
+      s.store.append(msg);
+    } catch (err) {
+      if (signedFiles) s.media.releaseClaim(uploadIds, messageId);
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
       res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
       return;
     }
+    if (signedFiles) s.media.markSent(uploadIds, messageId);
+    const reclassified = stored.filter((a) => a.kind !== a.declaredKind).map((a) => a.index);
     const extras = {
-      ...(removed.kinds.length > 0 ? { redacted: true, removed: removed.kinds } : {}),
+      ...(removedKinds.size > 0 ? { redacted: true, removed: [...removedKinds] } : {}),
       ...(credentialShaped ? { credentialShaped: true } : {}),
+      ...(reclassified.length > 0 ? { reclassified } : {}),
     };
     const finish = (status: number, b: Record<string, unknown>): void => {
       if (!requests.finish(deviceId, requestId, { status, body: b })) s.deps.reportDegradation?.('AppConversations.requestStore', 'could not record a finished request');
@@ -314,9 +432,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       res.status(409).json({ error: 'outcome-unknown', eventId, messageId, detail: 'This message is saved but may not have reached the agent. Check the conversation.' });
       return;
     }
-    if (deps.sentinel) {
+    if (deps.sentinel && classifiedText) {
       try {
-        const d = await deps.sentinel.decideInboundDisposition(delivered, alias);
+        const d = await deps.sentinel.decideInboundDisposition(classifiedText, alias);
         if (d.disposition === 'kill' || d.disposition === 'pause') {
           const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
           s.appendDelivery(key, messageId, 'intercepted', seed);
@@ -332,9 +450,22 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       finish(503, { error: 'chat-unavailable', detail: 'Your message is saved, but this machine cannot start a session for it right now.', conversationKey: key, eventId, messageId, deliveryState: 'refused', ...extras });
       return;
     }
+    // §4.5: one line per file before the caption, with a server-chosen path to a private copy.
+    let sessionText = delivered;
+    if (stored.length > 0) {
+      const lines: string[] = [];
+      for (const a of stored) {
+        const copy = await s.media.sessionCopy(messageId, a).catch((err: unknown) => {
+          s.deps.reportDegradation?.('AppMedia.sessionCopy', err instanceof Error ? err.message : String(err));
+          return null;
+        });
+        lines.push(copy ? sessionLine(a, copy) : `[file unavailable: ${displayName(a.filename)}]`);
+      }
+      sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
+    }
     let outcome: 'delivered' | 'refused';
     try {
-      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: delivered, messageId, ownerName: s.ownerName(), originVerdict: s.verify(msg) });
+      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: s.ownerName(), originVerdict: s.verify(msg) });
     } catch (err) {
       try { s.appendDelivery(key, messageId, 'unknown', seed); } catch { /* @silent-fallback-ok — the request itself is recorded outcome-unknown below */ }
       requests.markUnknown(deviceId, requestId);
@@ -353,7 +484,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const page = svc!.store.browseMessages(key, typeof req.query.before === 'string' ? req.query.before : null, limit);
-    res.json({ conversationKey: key, messages: page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }))), nextBefore: page.nextBefore });
+    res.json({ conversationKey: key, messages: page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!)), nextBefore: page.nextBefore });
   });
 
   // ── Sync ──
@@ -367,7 +498,11 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       conversationKey: key,
       events: page.events.map((e) => {
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
-        return { ...rest, ...(e.kind === 'message' ? { originVerified: svc!.verify(e) } : {}) };
+        return {
+          ...rest,
+          ...(e.kind === 'message' || e.kind === 'media-message' ? { originVerified: svc!.verify(e) } : {}),
+          ...(e.kind === 'media-message' ? { attachments: attachmentRows(e.attachments, svc!) } : {}),
+        };
       }),
       cursor: page.cursor,
     });
@@ -387,6 +522,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
 export function buildSignedOrigin(
   req: Request, pairing: MobilePairingService, deviceId: string, storedText: string, removedKinds: ReadonlyArray<string>,
   signer: MachineSigner | null, receivedAt: string, report?: (detail: string) => void,
+  attachments?: ReadonlyArray<AppAttachment>,
 ): { origin?: DeviceSignedOrigin; receipt?: MachineReceipt } {
   const dev = pairing.devices.get(deviceId);
   const raw = (req as unknown as { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
@@ -405,13 +541,15 @@ export function buildSignedOrigin(
   let receipt: MachineReceipt | undefined;
   try {
     origin = redacted
-      ? { ...base, redaction: signer ? signRedaction(signer, bodySha256, storedText, [...removedKinds]) : { kinds: [...removedKinds], machineId: 'unsigned' } }
+      ? { ...base, redaction: signer
+        ? (attachments ? signRedactionV2(signer, bodySha256, storedText, [...removedKinds], attachments) : signRedaction(signer, bodySha256, storedText, [...removedKinds]))
+        : { ...(attachments ? { v: 2 as const } : {}), kinds: [...removedKinds], machineId: 'unsigned' } }
       : { ...base, bodyB64: raw.toString('base64') };
     if (signer) receipt = signReceipt(signer, base, receivedAt);
   } catch (err) {
     // @silent-fallback-ok — reported; the message is still stored and delivered, and reads `unknown`
     report?.(`this machine could not sign the receipt (${err instanceof Error ? err.message : String(err)}); the message reads "couldn't check"`);
-    origin = redacted ? { ...base, redaction: { kinds: [...removedKinds], machineId: 'unsigned' } } : { ...base, bodyB64: raw.toString('base64') };
+    origin = redacted ? { ...base, redaction: { ...(attachments ? { v: 2 as const } : {}), kinds: [...removedKinds], machineId: 'unsigned' } } : { ...base, bodyB64: raw.toString('base64') };
     receipt = undefined;
   }
   if (!signer) report?.('this machine has no identity key, so app messages are stored without a machine receipt and read "couldn\'t check"');
