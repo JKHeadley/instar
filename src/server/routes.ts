@@ -89,6 +89,7 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 import fs from 'node:fs';
 import { readTranscriptPage } from '../core/SessionTranscriptReader.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
+import { boundedHead } from '../core/boundedInput.js';
 import os from 'node:os';
 import path from 'node:path';
 import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
@@ -35252,6 +35253,77 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const code = /not found/.test(msg) ? 404 : /terminal/.test(msg) ? 409 : 400;
       res.status(code).json({ error: msg });
     }
+  });
+
+  /**
+   * POST /commitments/:id/decide — the dashboard's Approve / Decline for a promise
+   * that waits only on the operator (blockedOn user-authorization or user-input).
+   * Approve hands the next step back to the agent (owner agent, blockedOn none);
+   * Decline withdraws it with the operator's reason. Either way the decision is
+   * posted in the promise's own conversation and handed to its session, so the
+   * agent acts on it without the operator re-typing it in chat.
+   */
+  router.post('/commitments/:id/decide', async (req, res) => {
+    if (!ctx.commitmentTracker) { res.status(404).json({ error: 'CommitmentTracker not configured' }); return; }
+    const body = (req.body ?? {}) as { decision?: unknown; note?: unknown };
+    const decision = body.decision === 'approve' || body.decision === 'decline' ? body.decision : null;
+    if (!decision) { res.status(400).json({ error: '"decision" must be "approve" or "decline"' }); return; }
+    // 500: a decision decisionNote is a sentence or two; the head carries it.
+    const decisionNote = typeof body.note === 'string' ? boundedHead(body.note.trim(), 500) : '';
+    const origin = typeof req.query.origin === 'string' ? req.query.origin : undefined;
+    const route = await resolveCommitmentRoute(req.params.id, origin);
+    if (route === 'ambiguous') { res.status(409).json({ error: `Commitment id ${req.params.id} is ambiguous across machines — retry with ?origin=<machineId>` }); return; }
+    const local = typeof route === 'object' ? null : ctx.commitmentTracker.get(req.params.id);
+    if (typeof route !== 'object') {
+      if (!local) { res.status(404).json({ error: `Commitment ${req.params.id} not found` }); return; }
+      if (local.status !== 'pending') { res.status(409).json({ error: `This promise is already ${local.status}` }); return; }
+      if (local.blockedOn !== 'user-authorization' && local.blockedOn !== 'user-input') {
+        res.status(409).json({ error: 'This promise is not waiting on you' }); return;
+      }
+    }
+    const reason = `Declined by the operator in the dashboard${decisionNote ? `: ${decisionNote}` : ''}`;
+    if (typeof route === 'object') {
+      await forwardMutation(res, route.forward.owner, decision === 'approve'
+        ? mutatePayload(req, route.forward.owner, 'transition', { owner: 'agent', blockedOn: 'none' })
+        : mutatePayload(req, route.forward.owner, 'withdraw', { reason }));
+      return;
+    }
+    try {
+      if (decision === 'approve') ctx.commitmentTracker.transitionState(req.params.id, { owner: 'agent', blockedOn: 'none' });
+      else if (!ctx.commitmentTracker.withdraw(req.params.id, reason)) { res.status(409).json({ error: 'This promise could not be closed' }); return; }
+    } catch (err) {
+      if (err instanceof CommitmentPersistenceError) { res.status(503).json({ error: 'commitment-persistence-unavailable' }); return; }
+      res.status(400).json({ error: (err as Error).message }); return;
+    }
+    const c = local!;
+    // 400: the promise's own words open with what was promised (its identity), so
+    // the head is kept; it is shown to the operator and the session as context.
+    const what = boundedHead(String(c.agentResponse || c.userRequest || c.id), 400);
+    const headline = decision === 'approve'
+      ? `✅ Approved in the dashboard (${c.id}): ${what}${decisionNote ? `\nNote: ${decisionNote}` : ''}`
+      : `❌ Declined in the dashboard (${c.id}): ${what}${decisionNote ? `\nReason: ${decisionNote}` : ''}`;
+    let told = false;
+    const topicId = typeof c.topicId === 'number' ? c.topicId : null;
+    if (topicId !== null && ctx.telegram) {
+      try { await ctx.telegram.sendToTopic(topicId, headline, { provenance: 'automation' }); told = true; }
+      catch (err) { console.warn(`[commitments/decide] could not post the decision in topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+      // Hand the decision to the conversation's session so the agent acts on it.
+      // It carries no sender identity: it is a record of a dashboard tap, never
+      // an operator binding or command authority.
+      try {
+        void ctx.telegram.onTopicMessage?.({
+          id: `dash-decide-${c.id}-${Date.now()}`,
+          userId: 'dashboard',
+          content: `[dashboard decision] ${decision === 'approve'
+            ? `The operator approved promise ${c.id} in the dashboard. Go ahead with: ${what}${decisionNote ? `\nTheir decisionNote: ${decisionNote}` : ''}`
+            : `The operator declined promise ${c.id} in the dashboard, so it is withdrawn. Do not do: ${what}${decisionNote ? `\nTheir reason: ${decisionNote}` : ''}`}`,
+          channel: { type: 'telegram', identifier: String(topicId) },
+          receivedAt: new Date().toISOString(),
+          metadata: { messageThreadId: topicId, senderUnverified: true, viaDashboardDecision: true, telegramMessageId: '' },
+        } as never);
+      } catch (err) { console.warn(`[commitments/decide] could not hand the decision to topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`); }
+    }
+    res.json({ ok: true, id: c.id, decision, postedInConversation: told });
   });
 
   router.post('/commitments/:id/withdraw', async (req, res) => {
