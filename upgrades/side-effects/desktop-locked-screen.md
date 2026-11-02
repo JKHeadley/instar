@@ -125,3 +125,5 @@ After the PR 2562 merge, a reviewer concurred with one low follow-up, fixed here
 `unbounded-self-action`, closure `guard`, enforcement `ratchet`, citing `tests/unit/self-action-convergence.test.ts`. Guard replacement caps at 3 per duty on a durable count, and helper respawn caps at 8 per request, then each fails loudly. Both are modeled in the ratchet with the state flapping on every tick.
 
 **Suite ratchet, 2026-11-02:** the write-domain ratchet flagged the two new locked-screen routes. They are now classified machine-local in the write-domain registry (each Mac owns its setting; a peer is changed by relaying, never by syncing). Metadata only, no logic change.
+
+**Confirming pass on 5a36b3a6b, 2026-11-02 02:12: concur.** The reviewer confirmed the kept-copy probe failure now reports helperSource packaged, so the password check cannot pass on the installed copy grant.
