@@ -8,7 +8,7 @@
 #   EOF
 #   .instar/scripts/app-reply.sh "short reply"
 #   .instar/scripts/app-reply.sh --file /path/to/report.pdf "Here it is"    (up to 10 --file, before the text;
-#   with --file the caption must be the text argument: stdin is not read)
+#   a piped caption also works: it is read with a bounded wait, 2 s per line and 10 s in all)
 #
 # The session's bind token is the only destination authority: the script never names a
 # conversation itself. Spec: docs/specs/mobile-native-conversations.md §4.3.
@@ -37,9 +37,38 @@ done
 if [ $# -gt 0 ]; then
   MESSAGE="$*"
 elif [ ${#FILES[@]} -gt 0 ]; then
-  # Files with no text argument: no caption, and stdin is never read (a stdin that never closes
-  # would block here). Give a caption as the text argument after the --file flags.
+  # Files with no text argument: a piped caption (a heredoc) is read with a bounded wait, so a
+  # stdin that never closes cannot block the send: 2 s for each line, 10 s in all. A terminal is
+  # never read.
   MESSAGE=""
+  if [ ! -t 0 ]; then
+    START=$SECONDS
+    LINES_READ=0
+    STATUS=0
+    while :; do
+      LINE=""
+      T0=$SECONDS
+      if IFS= read -r -t 2 LINE; then STATUS=0; else STATUS=$?; fi
+      # A timeout returns above 128 on bash 4+ but 1 on macOS's bash 3.2; a failed read that
+      # took the full 2 s is a timeout either way (end of input returns at once).
+      if [ "$STATUS" -gt 128 ] || { [ "$STATUS" -ne 0 ] && [ $((SECONDS - T0)) -ge 2 ]; }; then
+        # Timed out: whatever arrived so far is the caption.
+        [ "$LINES_READ" -gt 0 ] && echo "Warning: stopped waiting for more piped caption text after 2 s; sending what arrived." >&2
+        break
+      fi
+      if [ "$STATUS" -ne 0 ]; then
+        # End of input; a last line with no newline still counts.
+        [ -n "$LINE" ] && MESSAGE="${MESSAGE}${LINE}"
+        break
+      fi
+      if [ "$LINES_READ" -gt 0 ]; then MESSAGE="${MESSAGE}"$'\n'"${LINE}"; else MESSAGE="${LINE}"; fi
+      LINES_READ=$((LINES_READ + 1))
+      if [ $((SECONDS - START)) -ge 10 ]; then
+        echo "Warning: piped caption text took over 10 s; sending what arrived, the rest was ignored." >&2
+        break
+      fi
+    done
+  fi
 else
   MESSAGE="$(cat)"
 fi

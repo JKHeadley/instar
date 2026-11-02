@@ -103,7 +103,7 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     lines.push('EOF');
     lines.push('');
     lines.push('Strip the [app:] prefix before interpreting the message.');
-    lines.push('To send files, add --file <path> before the text (repeat it for several); with --file, give the text as an argument: stdin is not read.');
+    lines.push('To send files, add --file <path> before the text (repeat it for several); the text can be an argument or piped in as usual.');
     lines.push('Only relay conversational text and the files you mean to send — not tool output or internal reasoning.');
     lines.push(`Conversation id: ${input.alias} — the durable identity of THIS app conversation on this machine. Use it as the topicId when opening durable state (e.g. POST /commitments).`);
     const contextData = lines.join('\n');
