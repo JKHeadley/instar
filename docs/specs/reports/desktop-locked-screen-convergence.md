@@ -1,68 +1,55 @@
-# Convergence Report — Remote desktop into locked machines
+# Convergence Report — Remote desktop through the ordinary Mac lock screen
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-A real GPT-tier external pass ran on all six rounds. Every round returned "SERIOUS ISSUES", with three to four findings each, and the findings kept getting narrower. Gemini was unavailable (`gemini-not-authed`), so there was one external family, not two. The Grok family was not enabled.
+A real GPT-tier external pass ran on all three rounds. Each returned "SERIOUS ISSUES". Gemini was unavailable (`gemini-not-authed`) and Grok is not enabled, so there was one external family.
 
-**Verdict: NOT CONVERGED. Failed at the cap.** Round 6 of 6 raised safety-related design findings. The skill's rule at the cap is to stop and ask the operator. No `review-convergence` tag and no `approved` tag were written.
+**Verdict: NOT CONVERGED. Failed at the 3-round cap.** Round 3 raised safety design findings. No `review-convergence` tag and no `approved` tag were written, and `/instar-dev` will refuse to build from this spec.
 
 ## ELI10 Overview
 
-The operator wants to open a locked Mac from a phone, as AnyDesk does. The main finding is that "locked" is several situations. The ordinary lock screen happens inside the user's own session, so no powerful helper is needed: the existing helper has to stop refusing and keep working through the lock. Only the login window after a restart, logout or user switch needs a new helper that macOS runs as root.
-
-So the design has two tiers. Tier 1 covers the ordinary lock. It installs nothing, and the Mac's own password is the real barrier. Tier 2 covers the login window. It is designed here but not committed: Instar offers it when real rescue attempts keep failing there, and only the operator decides. FileVault's pre-boot screen and a fully asleep Mac stay out of reach for anyone.
-
-The password is typed live, sealed for one small helper, and has no way to be stored. The Mac relocks when the session ends, and a Mac that cannot prove relock does not get a password box.
+The operator wants to open a locked Mac from a phone. An earlier spec covered both the ordinary lock and the login window, and failed at 6 rounds, mostly on the login window. This run split them. `docs/specs/desktop-login-window.md` now holds the login window as an unapproved note nothing depends on. This spec covers only the ordinary lock, with nothing to install and no root. The operator types the password live into the Instar app's native viewer, the Mac relocks when he finishes, and a hostile program running as him is not stopped.
 
 ## Original vs Converged
 
-- **"Login-window helper fixes locked Macs"** became two tiers. Reviewers and Apple's own material showed the helper never runs at the ordinary lock.
-- **"A step-up no session can produce"** was false on Tier 1. The verifier, keys and helper are all writable by the same user. Tier 1's step-up was removed, and the spec now says plainly that Tier 1 does not stop hostile code running as the user. Tier 1 no longer depends on the mobile app, push or Telegram.
-- **"Telegram tap as fallback"** was removed. Agents hold the operator's Telegram login in this deployment, so a tap proves nothing.
-- **"The front sees ciphertext only"** was false for a browser viewer, because the front serves the page. It is now a stated limit.
-- **The grant model** gained real transitions: a grant ends if a person unlocks locally, so nobody can wait at the shield for that.
-- **Relock** went from a Node action to a detached guard with its own deadline and lease, and a logged-in Aqua agent on Tier 2, so a crash or update cannot leave a Mac open.
-- **Tier 2** changed: a role account, outbound-only dial, a fork-safe roster, first key confirmed at the Mac, one designated front, and a measured offer rather than a committed phase.
+The split removed the root helper, the step-up, the certificate and the gate. It made the app the phone path and turned the browser box off by default, because the machine serving a page and the tunnel provider can read what is typed there. Review then replaced a loose "two inputs agree" rule with fixed predicates; moved the retained helper to one digest-checked binary per Mac; keyed grant state to the request, since a resumed grant changes id; and gave relock a real state machine, a replaceable guard and a shared lock.
 
 ## Iteration Summary
 
-Reviewers below are internal Claude subagents on claude-opus-5-5 (the session's model), plus Codex. Rounds 3 to 6 combined the internal lenses into one reader to control cost; all lenses were named in each brief.
+Reviewers ran on the session model, claude-opus-5-5. Round 1 used four panels covering all six lenses. Round 2 used two panels, and round 3 one, all lenses named. Each round also had Codex.
 
-| Round | Reviewers | Design findings | Left behind | Spec changes | Gate |
+| Round | Reviewers | Design findings (deduped, approximate) | Left behind | Spec changes | Gate |
 |---|---|---|---|---|---|
-| 1 | security, adversarial, integration, decision-completeness, lessons, platform facts, Codex | about 40 raw, heavily overlapping | a few | Full rewrite | ran (3 flags) |
-| 2 | 3 combined panels, Codex | about 16 | 4 | Tier 1 simplified, step-up moved to Tier 2 | ran (4 flags) |
-| 3 | combined, Codex | 7 | 4 | Local-unlock rule, relay, roster, Aqua relock holder | ran (1 flag) |
-| 4 | combined, Codex | 6 | 3 | Carry binding, one front, allowlist | ran (1 flag) |
-| 5 | combined, Codex | 6 | 1 | Lease, fork rule, attempt event, seal anchor | ran (2 flags) |
-| 6 | combined, Codex | 6 (5 about safety or security) | 0 | Fixes written, **not re-reviewed** | ran (1 flag) |
+| 1 | 4 panels, Codex | 30 | 9 | Lock predicates, retained helper, request keys, relock, input rules | Standards-Conformance Gate: ran (3 flags) |
+| 2 | 2 panels, Codex | 8 | 7 | Dirty field per Mac, marker lock, pin scope, per-Mac disable, rig Mac | Standards-Conformance Gate: ran (1 flag) |
+| 3 | 1 panel, Codex | 8, of which 5 about safety | 9 | Fixes written, **not re-reviewed** | Standards-Conformance Gate: ran (0 flags) |
 
 ## Proportion
 
-Tier 2+ (security-sensitive), about 500 spec lines, 6 of 6 rounds. Effort was in line for the attack surface. Most late findings were in Tier 2, which is uncommitted: the spec is carrying a large design that nobody has decided to build.
+About 300 spec lines, 3 of 3 rounds. The cap was the operator's instruction for this run. By `/spec-converge`'s own size rule a password path is security-sensitive, which would be Tier 2+ with a cap of 6. Findings fell from 30 to 8, then held at 8, and round 3's were narrow gaps in relock and dirty-field state, not new attack paths.
 
-## Round 6 findings, fixes unreviewed
+## Round 3 findings, fixes unreviewed
 
-These are written into the spec but no reviewer has seen them.
+Safety:
+1. A dead guard left the Mac open with nothing noticing, and `executing` had no way out. Now the guard answers each renewal, gets replaced, and `executing` can be taken over.
+2. "Boot resumes renewing" was wrong: requests are memory-only, so a restart left an open Mac with no viewer. Now boot relocks.
+3. Node and Swift had no shared lock. Now every change goes through a helper verb using `flock`.
+4. A guard could lock whoever else was on console. Now it re-checks and closes without locking.
+5. A disable did not reach another agent's live grant. Now the probe and each `secretType` read it.
 
-Tier 1:
-1. Attempts were reserved before Enter, so a half-typed field could be submitted around the count. Now reserved before the first character, with input blocked until the field clears.
-2. The guard did not confirm duty before typing, so Node dying right after the marker left a gap. Now it must acknowledge a lease first.
-3. Relock at the ten-minute ceiling gave no warning. Now a 60 s countdown offers Leave unlocked. Not a safety item.
-
-Tier 2:
-4. A password logging in a different account left no relock holder. Now a relock-only record.
-5. The app-started rate-limit exemption had no proof. Now needs a fresh roster signature.
-6. A pending request could sit on the one grant slot. Now a signed request replaces it, with a 150 s bound.
+Not safety:
+6. `field-dirty` had no exit on the normal path, which broke the feature. Now Enter and `unlocked` clear it.
+7. A Mac locked with its display asleep likely fails readiness (`displayCount`), which is the commonest locked state. Read from SDK headers, not measured; now P10.
+8. The pin's label rule could refuse a phone permanently. Now a stronger tap and a Forget action.
 
 ## Left behind
 
-- Standards-Conformance flag, **Mobile-Complete Operator Actions**: the macOS Screen Recording and Accessibility grants may need a person at the Mac. Apple allows no automation on an unmanaged Mac, and the standard grants no exception. This needs the operator's acceptance or a standard change; it cannot be designed away. L12 tests whether the phone can do it through the viewer.
-- Conformance **fit: weak** on every round: the checker reads "The Agent Is Always Reachable" as being about sessions, and this feature serves the operator's reach. Parent principle may be worth reconsidering.
-- The dashboard PIN readable by agents is a wider class: the same PIN gates kill arming, money commits, mandates and guard acceptance. Out of scope; deserves its own item.
-- The single designated front contradicts decentralized-by-default and carries over from the mesh spec.
-- Windows and Linux are direction only and need their own specs.
-- Precision items: a hostile relay can fake the page; the agent awareness wording; Tart VM limits on secure-field proof; a stuck secure-input holder.
+- **Mobile-Complete:** recorded in the spec as a conflict for the operator. P7 passing meets the standard; failing gates the per-Mac flip, never the build.
+- Conformance **fit: weak** on the parent principle in rounds 2 and 3, as before: this serves the operator's reach, not a session's.
+- Know Your Principal flag (rounds 1 and 2): the PIN is agent-readable. Enabling opens nothing without the password. The wider PIN class deserves its own item.
+- Precision from round 3: stamp the 15 s rule at Enter; a later `secretType` after `left-unlocked` needs a new marker; a replaced candidate must be strictly newer and the flip bound to the probed digest; enforce the allowlist in the helper and keep `activeSession()` on `type`; idle revoke's relock has no countdown; a Mac inside its delayed-lock window ends its own grant; cache the per-spawn hash; rebase over `f6f3700f0` and recheck the allowlist.
+- Precision from earlier rounds: the on-screen keyboard limit is now P13; check the guard's identity on a real Mac (P4, P12).
+- Windows and Linux moved to the design note as direction only.
 
 ## Apple constraints
 
@@ -95,8 +82,6 @@ TeamViewer's own article is login-walled, and AnyDesk's file layout comes from a
 
 ## Convergence verdict
 
-Not converged at round 6 of 6. Safety design findings remained at the cap. Their fixes are written and unreviewed, so the spec cannot honestly carry a convergence tag. It stays unapproved, and `/instar-dev` will refuse to build from it.
+Not converged at round 3 of 3. Safety design findings remained at the cap, and their fixes are unreviewed, so the spec cannot honestly carry a tag. It stays unapproved.
 
-The standing rule that only constitution changes need the operator would cover approval of a converged spec. It does not apply here, because this one did not converge, and the skill sends an at-cap safety failure to the operator.
-
-The recommended way forward is to split Tier 2 into its own spec, then run a fresh convergence on the much smaller Tier 1. Almost all late findings came from Tier 2, which is uncommitted.
+The standing rule that only constitution changes need the operator (operator directive, 2026-10-22) would let Echo approve a spec that converged. It does not apply here, because this one did not, and `/spec-converge` sends an at-cap safety failure to the operator.

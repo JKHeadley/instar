@@ -1,517 +1,286 @@
 ---
-title: "Remote desktop into locked machines"
+title: "Remote desktop through the ordinary Mac lock screen"
 slug: "desktop-locked-screen"
 author: "echo"
 created: "2026-11-01"
 eli16-overview: "docs/specs/desktop-locked-screen.eli16.md"
-convergence-status: "failed-at-cap: round 6 of 6 raised safety design findings; their fixes are written below but unreviewed; see docs/specs/reports/desktop-locked-screen-convergence.md"
+convergence-status: "failed-at-cap: round 3 of 3 raised safety design findings; their fixes are written below but unreviewed; see docs/specs/reports/desktop-locked-screen-convergence.md"
 parent-principle: "The Agent Is Always Reachable"
-parent-principle-fit: "A machine the operator cannot open is a machine the agent cannot be rescued on. This gives the operator, never the agent, a way through the lock from a phone, inside principal and capacity floors."
+parent-principle-fit: "A Mac the operator cannot open is a Mac the agent cannot be rescued on. This gives the operator, never the agent, a way through the ordinary lock from a phone."
 lessons-engaged: >
-  Verify the State, Not Its Symbol (the lock flag); Know Your Principal (the PIN and any Telegram tap
-  are reachable by same-user sessions here, so neither authorizes a login-window grant); Signal vs. Authority;
-  Structure > Willpower (no code path can store a password); No Silent Degradation; Bounded Blast
-  Radius; No Unbounded Loops (dial brake); No Single Device Lockout; Mobile-Complete Operator Actions
-  (with one Apple-imposed exception, declared); Live-User-Channel Proof Before Done; TCC follows the
-  responsible process; test-agent-leak-guard (throwaways cannot install).
+  Verify the State, Not Its Symbol (the lock flag); Know Your Principal (the PIN is readable by same-user
+  sessions, so the Mac password is the barrier); Signal vs. Authority; Structure > Willpower (no code path
+  stores or originates a password); No Silent Degradation; Bounded Blast Radius; No Unbounded Loops;
+  Mobile-Complete Operator Actions (one Apple-imposed conflict, declared); Live-User-Channel Proof Before
+  Done; TCC follows the responsible process (docs/specs/mac-desktop-own-permission-identity.md).
 ---
 
-# Remote desktop into locked machines
+# Remote desktop through the ordinary Mac lock screen
 
 ## Problem statement
 
 Operator, 2026-11-01: "We NEED to have the ability to remote into locked machines like AnyDesk does."
 
-Today the macOS helper refuses every capture, input and indicator call while
-`CGSSessionScreenIsLocked` is true (`activeSession()` in `InstarDesktopHost.swift`). The Windows
-companion refuses unless it is in the interactive console session. A locked machine is reported
-unavailable, and the operator must walk to it.
+The macOS helper refuses every capture, input and indicator call while `CGSSessionScreenIsLocked` is true
+(`activeSession()` in `InstarDesktopHost.swift`). A locked Mac reads as unavailable and the operator has to walk to it.
 
-### What "locked" actually is
+"Locked" is several states with different fixes. This spec covers only the ordinary lock, where the user is logged in
+and the shield sits over their live session. A LoginWindow agent never runs there (TN2083), so no root code is needed.
+RustDesk issue 11802 shows third-party tools see and type at this screen from the user's own session.
 
-The earlier note assumed one situation: the session goes off console, so a login-window helper fixes
-it. Apple's own engineers say otherwise. There are several states, and they have different fixes.
+| State | Instar server | This spec |
+|---|---|---|
+| `unlocked` | Running | Today's path |
+| `screensaver-or-sleep` (no password needed) | Running | Wake it; today's path |
+| `locked-in-session` | Running | **The feature** |
+| `login-window-switched` | Running | Refused, named reason |
+| `other-user-on-console` | Running | Refused, named reason |
+| `login-window-no-session`, `filevault-preboot`, `system-asleep` | Not running | `offline: can't tell` from outside |
+| `unknown` | Running | Locked-class, no password |
 
-| State | What is on the screen | Instar server | Who can draw and capture | Fix |
-|---|---|---|---|---|
-| `unlocked` | The user's desktop | Running | The existing helper | None |
-| `screensaver-or-sleep` | Screensaver or dark display, and the password policy read says none is needed | Running | The existing helper | Wake it; today's path |
-| `system-asleep` | Whole machine asleep | Not reachable | Nothing runs; nothing dials | **Refused**, named reason |
-| `locked-in-session` | The lock shield over the logged-in user's session | Running | User-session helper, if the OS allows it | **Tier 1** |
-| `login-window-switched` | Login window after fast user switching; the user's session is alive off console | Running | Only a LoginWindow-session agent | **Tier 2** |
-| `login-window-no-session` | Login window after a restart or logout | **Not running** (`ai.instar.*` are per-user LaunchAgents) | Only a LoginWindow-session agent | **Tier 2** |
-| `filevault-preboot` | The FileVault unlock screen, drawn before macOS is up | Not running | Nothing third-party | **Refused**, by physics |
-
-Plus `other-user-on-console` (another human's session is on the console, refused) and `unknown`.
-
-A locked session is still an Aqua session, and launchd starts a LoginWindow session only at the login
-window (TN2083), so a LoginWindow agent does **not** help the ordinary locked Mac, which is the case
-the operator hits. Apple DTS agrees on the edges: third-party UI cannot appear over the shield, and with
-FileVault "your pre-login agent isn't running at all". RustDesk 11802 shows third-party tools do see and
-type at the lock screen. That case lives in the user's own session and needs no root code.
-
-### How the others do it (evidence)
-
-- **AnyDesk.** Runs as a service since 4.0 (2018), which also "Added support for connections to the
-  login screen". The changelog shows this breaking on most macOS releases: 7.2.1 infinite waiting for
-  image, 8.1.2 "connecting to the Login Screen or Remote Restart might not work", 8.1.3 fixed for
-  Sequoia, 9.6.4 fixed for Tahoe. 8.1.3 and 8.1.4 changed the signing identity and told users to reset
-  permissions. Consumer reports place `com.philandro.anydesk.Frontend.plist` in `/Library/LaunchAgents`
-  (not vendor-confirmed). 8.1.1 "Remote restart support for Macs with FileVault enabled" is not
-  described further. Expect ongoing OS-release maintenance.
-- **TeamViewer.** `com.teamviewer.teamviewer_service` and `com.teamviewer.Helper` in
-  `/Library/LaunchDaemons`, `com.teamviewer.teamviewer_desktop` in `/Library/LaunchAgents`
-  (community and admin sources; the vendor article is login-walled). Its docs say Screen Recording must
-  be granted by a user, and MDM can only delegate that to a standard user.
-- **RustDesk (open source, read directly).** A root daemon plus an agent with
-  `LimitLoadToSessionType = [LoginWindow, Aqua]`. Issue 11802: keystrokes at the macOS lock screen
-  were lost until `fix: osx, reset modifiers' state after locking screen`; after that, typing a
-  password at the lock screen worked. AnyDesk, RealVNC and RemotePC worked for those reporters.
-- **Apple DTS, January 2026 (accepted answer, thread 814152):** daemon for network, agent for GUI,
-  agent connects to daemon, `LimitLoadToSessionType` of Aqua and LoginWindow; "I've recently prototyped
-  this approach using ScreenCaptureKit and it works as expected on macOS 14.4 and later". Daemons must
-  never touch the window server. Pre-login agents run as root. Nothing Apple published says how TCC
-  behaves for such an agent; that is proof row L5.
+The login window is out of scope. `docs/specs/desktop-login-window.md` is an unapproved design note and nothing here
+depends on it. Windows and Linux report `locked-screen-unsupported` and refuse `lockedScreen.enabled`.
 
 ## Proposed design
 
-**Tier 1** (ordinary lock, no install) is what this spec commits to build. **Tier 2** (login window) is fully
-designed here, but building it is a separate go/no-go, with a measured trigger, because it adds root-started
-code, a Swift protocol stack and yearly OS maintenance. A cheap alternative covers much of the same need:
-on a FileVault-off Mac, macOS auto-login brings the server back after a restart (the Studio already uses
-`autoLoginUser`), but it leaves that Mac unlocked until the owner's own setting locks it. The readiness card explains this as an
-owner choice with its trade-off. Instar never changes that setting and adds no lock-at-login of its own.
+Nothing to install, no root, nothing new listening. Off by default on every machine.
 
-**Tier 1 stays small on purpose.** The macOS password is the barrier there. The phone-key machinery below
-protects nothing the password does not already protect in Tier 1, so it belongs only to Tier 2, where a
-root-started boundary makes it real. Tier 1 therefore does not depend on the mobile app, on push, or on Telegram.
-
-### Who this protects against, by tier
+### Who this protects against
 
 Stated first, because a false claim here is worse than a weak control.
 
-| Attacker | Tier 1 | Tier 2 |
-|---|---|---|
-| Stolen dashboard PIN, or an honest agent acting wrongly | Can watch the shield (including any notification previews it shows) and press its buttons. **Cannot get in** without the password; guesses capped. If a person unlocks locally the grant ends, leaving today's PIN exposure on an unlocked Mac, nothing more | **Stopped** at the login window by step-up |
-| Network observer | Stopped: end-to-end encrypted | Stopped; no listening port |
-| Whoever serves the viewer page: the tunnel provider, or a backup relay | **In path for a browser password.** The box shows only while `GET /tunnel` reports `lifecycle.state: active` on the first-tier provider. Cloudflare stays in path, and a hostile relay could fake the page, so this stops a passive relay only; the viewer line says so | Native sheet is not affected |
-| Hostile code on the front machine | **Can read a password**, in the browser because the front serves that page, in the sheet because no anchor exists. It can read the frames too. Stated limit | The app's sheet, chained to the pinned gate key, stops password theft. A browser viewer still gives a hostile front the frames and input after unlock |
-| Hostile code running as this user on the target | **Not stopped.** Helper, flag and viewer are same-user writable. It can capture a password typed through them. It gains nothing else: it already holds the session | Cannot reach the login window, change the policy or swap root-owned code, **unless** the user has `NOPASSWD` sudo, where same-user is root |
+| Attacker | Result |
+|---|---|
+| Stolen dashboard PIN, or an honest agent acting wrongly | Can watch the shield, including notification previews, and press what the input rules allow. **Cannot get in** without the password; password-path guesses capped, macOS's delays bind the rest |
+| Network observer | Stopped: end-to-end encrypted |
+| Tunnel provider or backup relay, native app | Stopped for a password **once this phone has pinned this Mac's key**. First contact trusts what the front supplied |
+| Tunnel provider or backup relay, browser page | **Can read the password.** It serves or carries the page and can change it |
+| Hostile code on the serving front | **Can read a password typed in a browser**, and can serve a password box whatever the setting says. It can alter that page to see frames and send input after unlock. Against the native app, after pinning, it holds only ciphertext; at first contact it can supply its own key |
+| Hostile code running as this user on the target | **Not stopped.** The helper, flag and counters are same-user writable, and it can capture a password typed through them. It already holds the session, so it gains the password and the keychain that password opens |
 
-So decision 3 reads: **Instar gives no agent a password, and has no route that originates one.** Tier 2's status
-reports `boundary: root-owned`, `boundary: none-nopasswd` (the Studio today) or `boundary: unknown`; only a
-verified reading may say `root-owned`.
+So: **Instar gives no agent a password and has no route that originates one.** It does not claim to stop hostile code running as the user.
 
 ### Lock reading
 
-New `src/core/DesktopLockState.ts` plus `probe` additions. The flag stays an input, never the answer. Inputs:
-`CGSSessionScreenIsLocked`, `kCGSessionOnConsoleKey`, `kCGSessionLoginDoneKey`, `SCDynamicStoreCopyConsoleUser`,
-owner of `/dev/console`, a loginwindow-owned shield window, the password policy (`sysadminctl -screenLock
-status`, as `machine-self-maintenance` reads it on branch `echo/machine-self-maintenance`), and lock
-notifications seen by a long-lived helper. The dictionary is NULL outside a GUI session, so the gate reads
-only console user, `/dev/console` and its agent's report.
+New `src/core/DesktopLockState.ts`, fed by `probe`. The flag is an input, never the answer. Inputs fall into two classes, and only the first can tell locked from unlocked:
 
-| Rule | Result |
+- **Lock-discriminating:** `CGSSessionScreenIsLocked`; a loginwindow-owned shield window, identified by the layer and bounds P9 measures, never by owner alone; lock and unlock notifications seen by a helper alive at the time.
+- **Session-only:** console user (`SCDynamicStoreCopyConsoleUser`), owner of `/dev/console`, `kCGSessionOnConsoleKey`, `kCGSessionLoginDoneKey`. These name whose session is on the console and stay true at the shield.
+
+First match wins, top to bottom, all read in one sample no older than 2 s.
+
+| State | Predicate |
 |---|---|
-| Two independent inputs agree and none contradicts | That row |
-| Any contradiction | `unknown` |
-| Screensaver or display sleep, password policy reads off | `screensaver-or-sleep` |
-| Screensaver or display sleep, policy on, delayed or unreadable | Locked-class |
+| `other-user-on-console` | Console user is a different person |
+| `login-window-switched` | No console user, or loginwindow is on console while this user's session is off console |
+| `locked-in-session` | Console is this user, flag true, shield window present. A notification corroborates when one was seen; a helper started at the shield has none |
+| Locked-class by policy | Screensaver or display asleep, and either the flag is true or the policy is on, delayed or unreadable |
+| `screensaver-or-sleep` | Screensaver or display asleep, flag false, policy reads off |
+| `unlocked` | Console is this user, flag false, no shield window, no screensaver, display awake |
+| `unknown` | Any contradiction, stale sample or missing input |
 
-**Locked-class** means `locked-in-session`, `login-window-*` and `unknown`. Locked-class refuses ordinary `type`, and
-Tier 2 needs step-up. `secretType` needs a **positive** locked state, never `unknown`. A wrong "locked" costs refused
-typing; a wrong "unlocked" is today's exposure. Proof of capture is a real frame, never a reading. A host whose
-probe lacks these fields (Windows, an older helper) refuses `lockedScreen.enabled` rather than reading `unknown`
-forever. `machine-self-maintenance` has a similar classifier on an unmerged branch whose convergence failed at
-its cap; this module does not depend on it, and whichever lands second adopts the other.
+**Locked-class** is `locked-in-session`, the policy row and `unknown`. A wrong "locked" costs refused typing; a wrong "unlocked" is today's exposure. A real frame, not a reading, proves capture. The probe path already spawns helpers on a 2 s timeout, so `sysadminctl -screenLock status` is cached for 60 s and refreshed on a state change; the flag and window read run per probe.
 
-### Tier 1: the ordinary locked Mac
+**Proven versions.** A code-owned table lists the macOS major versions that passed the proof rows. Anything else reports `unsupported-macos` and the password path stays off, so a new macOS cannot fall through with undocumented keys. Versions without a test Mac stay unlisted; that blocks nothing else.
 
-No install, no root, nothing listening. Enabled per machine from the Desktop page's machine card behind the PIN
-(`POST /desktop/locked/enable`, stored as `remoteDesktop.lockedScreen.enabled`; absent means off everywhere, and `PATCH /config` does not
-accept it). The PIN session is local to the front, so the front signs an operator assertion with new operations `locked-enable` and
-`locked-settings`, which the target verifies. A session that reads the PIN can enable it; the barrier stays the password. Off is today's
-behaviour byte for byte.
+### Turning it on
 
-**Honest cost.** "No install" is true, but step 7 needs one macOS Accessibility and Screen Recording grant to the helper itself. Apple allows
-only a person to do that: on the Mac, or from the phone through the desktop viewer while unlocked if L12 passes. Declared under Mobile-Complete as
-Apple-imposed. Ad-hoc signing ties that grant to one build, so an auto-update must not drop it while the owner is away: Tier 1 runs a
-**retained copy** of the last granted helper at a stable path until the new build is granted on the card, the way sessions keep a retained
-Claude binary. An incompatible wire version turns the password box off with a named reason.
+The machine card on the Desktop page, behind the PIN, on the phone or anywhere: `POST /desktop/locked/settings`, stored as `remoteDesktop.lockedScreen` (`enabled`, `browserBox`, `chime`). `PATCH /config` does not accept it and preserves it on a `remoteDesktop` patch. The setting is read live at each grant and needs no restart. The front signs an operator assertion with new operations `locked-settings` and `locked-disable`, which the target verifies. These carry no browser key and sign a digest of the settings, under a new version string, so `begin`'s bytes stay unchanged for targets not yet updated; a front that is its own target verifies locally. Older targets refuse the new operations, so targets update first. A session that reads the PIN can enable it; that opens no Mac, since the barrier stays the password. Off is today's behaviour byte for byte.
 
-A normal grant, PIN as today, may begin or continue at the shield. The ceiling and idle rules stand. **A grant ends when the Mac
-goes from a positive locked reading to `unlocked` with no `secretType` from that grant in the preceding 15 s,** so nobody can sit at the
-shield waiting for a person to unlock. A brief `unknown` does not count. This is best effort: timing cannot prove cause, so a wrong remote password
-at the instant of a local unlock lets the grant continue. That is no worse than today, where the same PIN opens an unlocked Mac, so no stronger
-check is built. The change is more than `activeSession()`:
+**Helper permission.** The password path needs the helper's own Accessibility and Screen Recording grants, because relock runs after Node has gone. Only a person can grant them; see "Mobile-Complete conflict".
 
-0. The helper is told per spawn that `lockedScreen` is on, so off stays byte for byte. `ready` in `DirectDesktopAccess` must stay true at
-   the shield, or the first 500 ms probe after a lock revokes the grant. The target reads the flag live.
+**Retained helper.** Ad-hoc signing ties a grant to one build, so an update could silently remove it while the owner is away, and that shows only at the lock. While the feature is on, **every helper verb runs one retained binary**:
 
-1. `probe` computes `sessionActive` separately (Swift line 243), and `release` and held-input paths also refuse when
-   locked. All of them change together, or a lock with a held key poisons `releaseBarrier`.
-2. Locking ends `SCStream` and the helper exits. Node respawns it at most 3 times per state change, releasing held
-   controls first. Input-stream or indicator loss during a state change is not a revocation; only exhausting the
-   3 respawns revokes.
-3. If ScreenCaptureKit yields no frames at the shield, the helper falls back to `CGDisplayStream` for this state. That API
-   is obsoleted at the macOS 15 SDK target, so the helper keeps its deployment target below 15; if a future SDK removes
-   it, this fallback ends and L2 reruns.
-4. At grant start in a locked state the helper wakes the display with a user-activity assertion.
-5. `indicator` stops exiting when locked. See "On-machine notice".
-6. The 2 s input ack timeout becomes per-action: `secretType` gets 20 s.
-7. Readiness requires `inputGrant: own` and proven relock (L4) before the password box appears, because relock must run
-   after Node has gone, under the helper's own identity. An inherited-only Mac gets a named reason and a step to grant.
+- It lives per Mac, outside any agent's project tree, at `~/.instar/desktop-helper/retained/<sha256>/`, with a `current` pointer file holding the digest. The file viewer cannot reach it. Agents on one Mac share it, so one grant serves them.
+- `MacDesktopHost.trustedBinary()` today accepts only `dist/native`. It gains this one path: a regular file, owned by this user, whose SHA-256 is checked against the pointer before every spawn, including the guard.
+- `probe` runs it, so `screenGrant` and `inputGrant` describe the binary that will actually type and relock. Readiness reads only that.
+- With the feature on and an installed build newer than the pointer, by the `version` verb, that build lands as the one candidate per Mac in its own directory, under the per-Mac lock. Agents on a Mac update at different times, so nothing older than the pointer can flip it back, and an agent on older code uses the newer helper through the additive wire contract. The card asks for the grant, naming the candidate in the macOS prompt, a real probe of the candidate must pass, then the pointer flips. Old directories are pruned once no process maps them, the way `ClaudeBinaryRetainer` keeps versions.
+- A retained helper can miss helper fixes. The helper gains a `version` verb, status shows the retained copy's age, and a code-owned minimum version turns the password path off with a named reason when a helper fix must not be skipped. The wire contract stays additive; a mismatch turns the password path off with a named reason.
+- Missing, tampered or wrong-digest retained copy: the installed build serves unlocked use, the locked features are off with a named reason, and nothing falls back to an ungranted build.
+- `instar nuke` leaves this directory and reports it, because another agent may use it. It is inert without a server. A stable signing identity would make this copy unnecessary, since a grant then survives releases; none exists yet, and this feature does not wait for one.
+
+### The grant at the shield
+
+A normal grant, PIN as today, may begin or continue at the shield. Only one locked-class grant per Mac holds input, under a Mac-wide lock, whichever agent opened it. The ten-minute ceiling and idle rules stand. Grant-bound state in this spec keys to the **request id**, not `grantId`, because an interrupted grant resumes with a new `grantId` up to 3 times. Changes:
+
+1. The helper is told per spawn that the feature is on. `ready` in `DirectDesktopAccess` stays true at the shield, or the first 500 ms probe after a lock revokes the grant. `desktopReadiness`, `DesktopProbeReadiness` and `GET /desktop/targets` take the new reading, or a locked Mac keeps listing as unavailable. `ready` also needs `displayCount > 0`, which likely reads 0 with the display asleep, so under the flag a locked-class reading counts online displays and wakes before that check.
+2. Every `activeSession()` refusal changes together under that flag: `probe`, `capture`, both capture streams, `input-stream` and `performInput`, `cursor`, `release`, held-input paths and `indicator`. `indicator` holds the controller lock and its exit revokes the grant, so it must keep running at the shield.
+3. Locking ends `SCStream` and the helper exits. A lock-caused capture exit is a respawn, never a codec failure, so it does not downgrade H.264 to JPEG. Under the flag this replaces today's revoke on `input-stream` loss. Node respawns capture or input at most 3 times per state change and 8 per request, with 1, 2 and 4 s backoff, releasing held controls first. Exhausting either revokes. A brief `unknown` is not a state change.
+4. If ScreenCaptureKit yields no frames, the helper falls back to `CGDisplayStream` for this state. That API is obsoleted at the macOS 15 SDK; the deployment target is 13 today and stays below 15. If a future SDK removes it the row reruns.
+5. At grant start in a locked state the helper wakes the display, and holds a user-activity assertion while a locked-class grant is live, so the shield does not vanish mid-grant.
+6. The 2 s input ack becomes per-action; `secretType` gets 20 s. `input-stream` reads commands on a separate thread, so Stop and abort take effect between characters.
+
+**Input by state.** At positive locked states, an allowlist: Enter, Tab, Escape, arrows, pointer, and mouse clicks unless P13 fails. Everything else is refused, so a password cannot take the plaintext path by habit. At `unknown`, view only, no input at all; a grant cannot start input there.
+
+**A grant ends** when the Mac reaches `unlocked` with its last positive state locked, and no `secretType` from that request in the preceding 15 s, so nobody can wait at the shield for a person to unlock. A grant that began at `unknown` counts as locked. If the last positive state was `unlocked`, a return to `unlocked` continues. While a locked-class request is interrupted, Node keeps sampling the reading once a second and stamps any change, and resume applies this same rule. Timing cannot prove cause, so a wrong remote password at the instant of a local unlock lets the grant continue; that equals today's PIN exposure on an unlocked Mac. A move to `login-window-switched` or `other-user-on-console` also ends it, with a named reason.
 
 ### Password path
 
-- `secretType` carries sealed bytes only. The **`input-stream` helper** is the one process that holds the seal key,
-  decrypts and types, so plaintext has no path through Node. It makes an ephemeral P-256 key at start and reports the
-  public key inside the encrypted grant channel. A respawn rotates the key; a send sealed to an old key is refused and
-  the viewer re-seals. AES-GCM, AAD of request id and sequence; repeats refused.
-- Tier 1's box is in the viewer: `type=password`, `autocomplete=off`, cleared on send, never in clipboard or storage.
-  The limit is shown in one line at first use, and the box shows only while the tunnel is `active` on its first-tier provider. When
-  the app's native sheet ships (Tier 2 prerequisite), it becomes the default, and an owner can turn the browser box off. On Tier 1 it has no pinned anchor, so the sheet keeps
-  the password from a tunnel provider or relay but **not** from a hostile serving front, and it says so.
-- Allowed only on a positive locked state, and only while the shield is loginwindow's and secure event input is held by
-  loginwindow (`kCGSSessionSecureInputPID` read in-process from the `IOConsoleUsers` registry entry). The owner counts only
-  together with the shield, since a stuck holder has been reported outside the lock. Checked per character; any drop aborts.
-- **This narrows the risk; it does not eliminate it.** A check and a posted event are not atomic, so if a person unlocks at that
-  moment, the rest of the password could reach the app that gets focus. Enter is sent last and only after a final check.
-  The only way to remove the window is not to type, so this is accepted and stated. L14 measures it with focus changes in flight.
-- Typing uses real key events from the active layout (`UCKeyTranslate` inverse), after a modifier reset, per RustDesk 11802.
-  Unicode events are a fallback only if L3 shows them working. Maximum 256 scalars.
-- Decoded into a raw buffer overwritten after use. The claim is exactly: plaintext stays out of Node, logs, disk and durable
-  state. Endpoint memory in the viewer and helper is not claimed clean.
-- While locked-class, keyboard input is an allowlist: Enter, Tab, Escape, arrows, mouse. Everything else, including `type`, is refused, so a
-  password cannot take the plaintext path by habit.
-- **Attempt limit.** An attempt is reserved durably before the first character is typed, and refunded only if the state reads `unlocked` within 10 s. Anything else counts,
-  including aborts, crashes and uncertain outcomes. An interrupted send clears the field with Escape, and ordinary Enter and mouse input stay blocked until the clear is confirmed, so a half-typed
-  field cannot be submitted around the count. 3 per logical request, 6 per machine per calendar day, reset at local midnight; stored in the
-  agent state dir on Tier 1 and the role directory on Tier 2. This protects the account. On Tier 1 the count is
-  same-user writable, so it binds honest code, and macOS's own delays bind the rest.
-- No HTTP route, CLI, config key, vault lookup or job originates `secretType`. A lint test asserts it has no callers outside the
-  stream decoder and the viewer. An agent asked for a password refuses, and a password pasted in chat is treated as leaked.
+- **The native app is the phone path.** Instar's iPhone app already has a native remote desktop viewer (`instar-ios`, `RemoteDesktop/`) with a direct encrypted channel to the target, opened with the dashboard PIN. It gains a native password sheet. Its code is not served by the front or tunnel, so neither can change it.
+- **Pin.** Today the app accepts the target key the front lists in `GET /desktop/targets` each session. The app now stores each machine's target signing key in its Keychain, keyed by machine id alone, on first sight, because the address can change with a tunnel or relay. A known machine with the same key on a new address needs no tap. On a later change it refuses the sheet with a plain notice. Accepting a changed key is a separate tap naming the risk, and offers no password in that session; legitimate machine identity recovery lands here. A never-seen machine needs its own first-use tap. A new machine id or key carrying a label already pinned on this phone to a different one, at any address, gets a stronger first-use tap naming the conflict, and the phone has a Forget action, because agents sharing a Mac have separate ids and unnamed machines share a label. A front can still choose another label. This is trust on first use: a front or tunnel hostile at first contact is not caught.
+- **The browser box is off by default.** An owner may turn it on per machine on the card, behind the PIN, with the limit shown once and one line beside the box: the serving machine and the tunnel provider can read what is typed here. While on, the viewer shows it only when `GET /tunnel` reports `lifecycle.state: active` on the first-tier provider. `type=password`, `autocomplete=off`, cleared on send, never in clipboard or storage.
+- **Enforcement of that setting.** The viewer declares `client: app` or `client: browser` at grant start, and the target refuses `secretType` from a browser grant while the box is off. The declaration is not authenticated, so "off" binds honest pages only; a hostile front can show a box anyway.
+- `secretType` carries sealed bytes only. The **`input-stream` helper** is the one process that holds the seal key, decrypts and types, so plaintext has no path through Node. It makes an ephemeral P-256 key at start and reports the public key inside the encrypted grant channel, through a new reply type on the `input-stream` parser. A respawn rotates it. AES-GCM, AAD of request id and sequence; repeats refused.
+- **No automatic resend.** The viewer holds no password after send. Any refusal or interruption reopens the sheet and the owner retypes.
+- Allowed only on positive `locked-in-session`, on a proven macOS version, with relock duty acknowledged (below), no `field-dirty` marker, the shield present, and secure event input held by loginwindow (`kCGSSessionSecureInputPID` from the `IOConsoleUsers` entry). If P9 shows the field needs focus first, the helper runs that one fixed focusing step before checking. Checked per character; any drop aborts.
+- **This narrows the risk; it does not remove it.** A check and a posted event are not atomic, so a person unlocking at that moment could send the rest of the password to the app that gets focus. Enter goes last, after a final check. P9 measures it and the sheet states it.
+- Typing uses real key events from the layout the shield uses (`UCKeyTranslate` inverse), after a modifier reset, per RustDesk 11802. A character the layout cannot produce is refused before an attempt is reserved. Maximum 256 scalars.
+- Decoded into a raw buffer overwritten after use. The claim is exactly: plaintext stays out of Node, logs, disk and durable state. Endpoint memory in the viewer and helper is not claimed clean.
+- **Attempt limit.** An attempt is reserved durably before the first character, and refunded only if the state reads `unlocked` within 10 s. Everything else counts, including aborts and crashes. 3 per request, 6 per Mac per local day, in a per-Mac counter under `~/.instar/desktop-helper/`, updated under a lock so agents share it. This protects the account. It is same-user writable, so it binds honest code; macOS's own delays bind the rest.
+- **Half-typed field.** A durable `field-dirty` marker under `~/.instar/desktop-helper/`, per Mac and login session, is written before the first character. It clears when Enter is posted after the final check, on a positive `unlocked` reading, or on a confirmed clear. It outlives the request. An abort, or the next helper after a kill, first sends modifier-up, then Escape while the shield is confirmed, so a held Shift or partial field does not survive. Until cleared, and only in locked-class states, Enter and mouse stay blocked for every agent on that Mac, so a half-typed field cannot be submitted around the count. P14 proves Escape clears it. On a macOS where it does not, a dirty field keeps those keys blocked until that login session ends or a person unlocks.
+- No HTTP route, CLI, config key, vault lookup or job originates `secretType`. A lint test asserts it has no callers outside the stream decoder and the two viewers. An agent asked for a password refuses, and a password pasted in chat is treated as leaked.
 
-**Limit, stated plainly.** The login password also opens the login keychain. Code that can tamper with the viewer or helper (rows 3
-and 4 of the table above) can read it. The viewer says this once, in one line.
+### Relock
+
+- **Owed.** Any request that sent `secretType` owes a relock when it ends. No timing guess clears that: a needless relock costs one password and a missed one leaves a Mac open.
+- **No proven relock, no password.** Readiness needs the retained helper's own input grant and proof row P4 before the sheet or box appears. An inherited-only Mac gets a named reason and a step to grant.
+- **When.** At Stop or the ceiling, at once. The viewer counts down from 60 s before the ceiling. On transport loss, only after the resume window, so a phone blip cannot relock mid-task.
+- **Leave unlocked** is a separate tap at Stop or in the countdown. It travels as a command inside the encrypted grant channel, so no HTTP route or Bearer token can issue it, and it is audited.
+- **Survives Node.** Before the first password character, a durable marker per request is written under `~/.instar/desktop-helper/`, naming the owning agent, request, deadline, boot session UUID and login session. A detached `relock-guard` must then **acknowledge a lease bound to that request and deadline**. The guard is the retained helper in its own session (`setsid`), started with its own permission identity (`INSTAR_DESKTOP_OWN_IDENTITY`), so a tmux or launchd job kill does not reach it. Nothing new listens: the lease is a file only the owning agent's server renews every 10 s, the guard answers in a heartbeat file, and "relock now" is a marker state the guard polls each second. Deadline passed, or lease lapsed past the resume window, each mean relock, so a hung Node cannot hold the Mac open. The guard sends modifier-up first.
+- **A dead guard.** The server reads the heartbeat at each renewal. A missed answer starts a replacement guard, and so does boot. An `executing` older than 30 s may be taken over. A replacement re-reads the lock state: already locked closes as `relocked`, otherwise it locks again.
+- **Ending the duty.** The marker has one state: `owed`, `executing`, then `relocked` or `relock-failed`; or `owed` to `left-unlocked`; or `closed-not-applicable`. The guard must take `executing` before it calls lock. Leave unlocked must take `left-unlocked` from `owed`, and only then is the tap acknowledged. If the guard won, the viewer says relocking has begun. All changes to markers, counters and the pointer go through a short-lived helper verb that takes `flock`, so Node and Swift share one lock, Node never holds it, and the kernel frees it on death. A guard exits at a terminal state, and each request has its own guard, so a later grant starts clean.
+- **Before every lock call,** including fallback and retry, the guard re-checks boot, login session and that this user is on console. If any differs, the marker closes as `closed-not-applicable`, audited, with no lock call, so it never locks whoever else is there.
+- **Boot.** Requests are memory-only, so a restart has already revoked the grant. The owning agent's server boot therefore never renews: a live marker whose request is gone means relock now, so an update restart cannot leave a Mac open. A marker from another boot or login session closes as above.
+- `relock` is a helper verb: `SACLockScreenImmediate` (private), else Control-Command-Q with Q resolved through the layout inverse. Verified by a fresh reading, one retry, then `relock-failed` and one security attention item raised by the target itself, since a partitioned target is the only machine that knows; the pool then de-duplicates.
 
 ### On-machine notice
 
-Apple blocks third-party UI over the shield; the exception is an authorization plug-in, which runs in the login
-flow and can break login, so we refuse it.
-
-- `locked-in-session`: one chime at grant start, if L13 passes. The owner can turn it off on the machine card, behind the PIN.
-  The `● Instar remote control` item is live and appears at unlock.
-- After every locked-class grant the next unlocked session shows one notification with time and duration.
-- `login-window-*`: a small "Remote control active" window if L9 passes; else chime if L13 passes; else the claim is
-  receipt only.
-- Every locked-class grant lands in the audit and the status. Only failures raise anything.
-
-### After unlock and relock
-
-- **Relock on end (default on).** Any session that sent `secretType` owes a relock when it ends. No timing guess clears that: a needless relock costs one
-  password, and a missed one leaves a Mac open. "Leave unlocked" is a separate tap at Stop, recorded in the audit; on Tier 2 it needs a fresh device signature.
-- **No proven relock, no password box** (Tier 1 step 7), so the rule has no silent exception.
-- **Timing.** At Stop or ceiling at once. The viewer counts down from 60 s before the ten-minute ceiling and offers "Leave unlocked" there too. On transport loss, only after the resume window expires, so a phone blip cannot relock mid-task.
-- **Survives Node.** A durable `relock-owed` marker is written, and the guard must **acknowledge a lease bound to this grant and its deadline**, before any password character. A detached `relock-guard` (helper in its own
-  session via `setsid`, so a tmux or launchd job kill does not reach it, own Accessibility grant) is given the absolute grant deadline and a lease
-  the server renews every 10 s. Deadline passed, lease lapsed past the resume window, or stdin EOF past that window all mean relock, so a hung Node with an open pipe
-  cannot hold the Mac open. Server boot honours a marker. An auto-update restart cannot leave a Mac open.
-- `relock` is a helper verb: `SACLockScreenImmediate` (private; the Keychain menu item's call, per reverse-engineering), else
-  Control-Command-Q with Q resolved through the layout inverse. Verified by a fresh reading, one retry, then one security item.
-
-### Tier 2: the login window
-
-**Trigger.** On Tier 1 the target is reachable and counts `login-window-switched` refusals itself. At `login-window-no-session`,
-`system-asleep` and `filevault-preboot` no Instar code runs, so these cannot be told apart from outside. The front reports `offline:
-can't tell` with last-known hints (FileVault, auto-login), and counts failed desktop opens to dark targets. Reaching 3 in 30 days raises
-one attention item offering Tier 2. Tier 2 begins on the operator's yes or on his earlier ask, and needs the Developer ID certificate and
-the prerequisites below. If Tier 1 proof fails, Tier 2 cannot replace it, since it never runs at the shield; that goes to the fallback spec.
-
-**Prerequisites.** Mobile pairing and push merged (`MobilePushService` is not on main today); the app's native step-up and password
-sheet released; pairing confirmation that works without Telegram for agents that have none. Each is a named build item at Tier 2's start.
-
-```
-phone/browser -> front -> (outbound WSS dialled by gate) -> gate daemon (role user)
-                                                              | launchd socket, code-sign pinned
-                                                              v
-                                                           LoginWindow agent (root, launchd-forced)
-```
-
-#### Step-up (Tier 2 only)
-
-The PIN is readable by every same-user session, and agents hold the operator's Telegram login in this deployment, so neither authorizes
-this. **There is no PIN path and no Telegram path.**
-
-- **Keys.** A dedicated Secure Enclave key (`.biometryCurrentSet`, used only for this) and a **one-time recovery code**, the seed of an
-  Ed25519 key shown once on the phone for the owner to keep beyond any agent's reach. A second device is offered. Using the code enrols a new one.
-- **First key's trust.** Mobile pairing alone is not enough: it is minted by Bearer and confirmed through Telegram. The first key is pinned
-  only at install: a macOS dialog shows its fingerprint and the phone shows the same one. Done through the desktop viewer from a phone it works,
-  but a hostile front at that moment could fake the view; the card says that doing it at the Mac is stronger.
-- **Roster.** `policy.json` holds the root keys. A role-owned, append-only `roster.log` carries later changes. Each entry names its predecessor's
-  hash and a generation, and is signed by a key valid at that point. Two different successors to one entry are a **fork**. A fork is order-independent: every revocation
-  on either side applies, and the gate refuses all Tier 2 grants until a recovery-signed entry resolves it. A recovery-signed entry beats any device-signed entry. Device keys cannot revoke
-  the recovery key. Each gate stores its accepted head, and older heads are refused, so rollback cannot restore a key. An offline machine, or one whose front withholds entries, still
-  accepts a revoked key until it catches up.
-- **Prompt.** Target-issued memory-only nonce, and `hostSealKey`, both signed by the gate key the phone pinned at install. The phone verifies this before it shows the
-  sheet, so a hostile front cannot swap the key. The phone shows machine, state, how the lock began ("locked 4 minutes ago, during an agent
-  session", or "unknown"). The viewer shows a 4-character code and **the operator types it into the phone**, so a prompt started by anyone else
-  cannot be approved blind. A request carrying a fresh signature from a roster key, verified by the gate, skips the rate limit and replaces any unapproved pending request, invalidating its nonce,
-  so an agent can neither burn the owner's rescue budget nor sit on the one grant slot. Anything else is rate-limited, and a pending request lasts at most 150 s.
-- **Signature.** Domain tag `instar-desktop-stepup-v1` over `{targetMachineId, browserKeyDigest, hostSealKey, nonce, lockState, exp}`, `exp` at
-  most 120 s, single use. The agent generates `hostSealKey` before approval and holds the one grant slot while pending.
-- **Path back.** Phone to its paired host's new device-allowlisted route, relayed over the machine-authenticated pool to the front, then down the
-  gate's connection. Paired host down means `step-up-unreachable`, shown on the phone.
-- **Rate.** 1 prompt a minute, 10 a day.
-
-- **`Instar Desktop Access.app`**, signed bundle, root owned, at `/Library/Application Support/Instar/`. A root process
-  must never run from the npm tree. Every component has its own requirement: `identifier "<x>"`, Team ID and the
-  Developer ID markers (`anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "AG9AE2H87X"`). The root step reads the verified bundle's version and refuses anything below the policy's minimum, so an old build cannot be downgraded in.
-- **Gate daemon.** `/Library/LaunchDaemons/ai.instar.desktop-gate.plist`, `UserName = _instardesktop`,
-  `AssociatedBundleIdentifiers`. Never touches the window server (Apple: daemons have no business there). **Outbound
-  only.** Implements in Swift (CryptoKit, no dependencies) the target side: assertion, ECDH, AEAD, grant, lock, Stop,
-  heartbeat, deadlines. Wire conformance tested against the TypeScript vectors. One locked-class grant at a time.
-  Ed25519 gate key, 0600, role user.
-- **LoginWindow agent.** `/Library/LaunchAgents/ai.instar.desktop-login.plist`,
-  `LimitLoadToSessionType = [LoginWindow, Aqua]`, as Apple advises. The Aqua instance runs as the user and does one thing: hold relock duty
-  (see handoff). At the login window launchd runs it as root and ignores `UserName`, and the window server needs root,
-  so we plan on root (L6 tests a sandbox only). Handles SIGTERM, and tolerates a duplicate instance after direct user
-  switching. ScreenCaptureKit, macOS 14.4 floor. Connects to the daemon. It is the decrypting typist in Tier 2. No network, no exec, no file writes, one bounded
-  input parser, hardened runtime, library validation.
-- **Sockets.** Created by launchd (`Sockets`, `SockPathMode`, `SockPathOwner`, `SockPathGroup`), with `RunAtLoad` and `KeepAlive` so the gate dials without waiting for activation, because `/var/run` is not role-writable and clears at boot. Agent socket
-  in a role-owned directory; the peer's audit token is checked against the requirement. A separate same-user socket
-  takes exactly three verbs: `status`, `disable`, `carry` (read).
-- **Front route.** New: `/desktop/gate`, a WSS the gate dials, multiplexing control calls and stream, because
-  `DesktopMeshBroker` and `DesktopMeshStreamRelay` only dial peers. A gate is enrolled at install: its key is signed by the
-  machine identity key, and the browser pins that vouched key. Availability comes from the gate's heartbeat, since the
-  Node probe is down. The gate dials the **one designated front**, which keeps the mesh spec's pool admission ceiling and quarantine. Changing the front is a
-  roster entry, and the front's restart quarantine applies. The single front remains a single point of failure; a multi-front design needs shared admission and is out of scope.
-- **Dial addresses.** `dial.json`, role owned, seeded at install and refreshed over the connection, signed by a front key.
-  A public tunnel must be a named tunnel: a quick URL rotates, and install refuses it. Stale addresses mean a named
-  `gate-unreachable` on the front; re-install is the repair. Front key rotation arrives signed by the old key.
-- **Dial brake.** Backoff to 5 minutes with jitter; after 7 days of failure, hourly; after 30 days the breaker opens and the gate
-  sleeps until reboot or a network change, each of which earns a bounded 24-hour retry window. Logged, shown in status.
-- **Policy.** `policy.json`, root owned: owner agent, machine id, pinned fronts, root keys, gate key. The app shows and signs its hash with
-  the bundle version. The root step verifies that signature. Everything that changes later rides `roster.log`, so a new phone does not need a
-  root step. The gate key reaches the phone through the same install step, as the pin that `hostSealKey` chains to.
-- **Update.** No root updater. A wire mismatch turns Tier 2 dark with a card, and the owner repeats the action.
-- **One owner per Mac.** The first installer owns it. A second agent reads status and is refused install. Throwaway agents are
-  refused. `instar nuke` reports the leftover and never escalates.
-- **Reachability, honest.** `login-window-no-session` needs a network before login and a live front elsewhere. A single-machine agent
-  has no path there. Tailscale's Mac apps need a logged-in user; only open-source `tailscaled` runs earlier. So the
-  gate prefers a named public tunnel.
-
-#### Login-window handoff
-
-launchd ends the LoginWindow instance at login. The Aqua instance is long-lived: install bootstraps it into any live `gui/<uid>` session, so a fast-user-switch return, where
-launchd starts nothing new and Node never reboots, still has a holder. The gate writes a signed, single-use `carry` record (operator, policy's owner macOS account, absolute expiry, relock duty,
-Leave-unlocked choice) **only if the grant's own `secretType` and Enter preceded the login, and only if the console user is that owner account.** A local login ends the grant. If our `secretType` logged in another account, the gate writes a relock-only record: no follow-on grant, and any Aqua instance passing the code
-requirement claims it and relocks at once. The viewer says "Signing in…". The agent's **Aqua instance**, which launchd starts at login with no help from Node, claims it over the socket, checked by uid, session and code requirement (one claim wins; a duplicate instance gets nothing), and holds relock duty
-from that moment. Node watches for `carry` while running and at boot, and opens the follow-on grant with no second step-up, inside the original ceiling. Duty passes to Node's guard only on an
-acknowledged transfer. Past 180 s with no controller, the Aqua instance relocks. So Node never starting cannot leave the Mac open.
-
-### Install (Tier 2): one owner action
-
-Offered on the Desktop page, for the owner, never automatic, never from a migration. One root step, as
-`machine-self-maintenance` reasons, so nothing can swap a validated file:
-
-1. Server stages bundle and policy. App shows keys and version; owner signs. The macOS dialog shows the same fingerprint.
-2. If `sudo -n true` works, no box is needed, and the card names `boundary: none-nopasswd`. Otherwise
-   `osascript ... with administrator privileges` shows macOS's own box; Instar never sees the password. It is typed by a
-   person at the Mac unless L10 passes.
-3. Inside the root step: verify the phone signature, make the role account with `sysadminctl -roleAccount` using the UID range that macOS
-   version states (it has changed between releases), read it back with `dscl` and fail on drift, copy to a fresh root-owned directory, verify each requirement there, rename, write plists, bootstrap the daemon.
-4. macOS's Privacy switches for the bundle: Screen Recording and Accessibility. Apple gives no way to automate these on an
-   unmanaged Mac. If L12 shows they also refuse remote input, this is a **declared Mobile-Complete exception**:
-   one on-site sitting per Mac, imposed by Apple.
-5. Install is "proven" only after a real capture. The card offers a logout test on a throwaway account or at the owner's next restart.
-
-So **one signature, one fingerprint match, one password box and two switches, once per Mac**. Remove reverses it. A failed install rolls back.
-
-### Code signing and release
-
-| Item | Requirement |
-|---|---|
-| Tier 1 | Works ad-hoc, as today. Every helper change needs a fresh macOS grant (the M5 Pro's 5 entries), and a lost grant shows only at the lock. So readiness probes while unlocked and reminds the operator **before** it matters. |
-| Tier 2 | **Developer ID Application, hardened runtime, notarized.** Notarization is Gatekeeper policy, not a launchd rule; the hard reason is that the root step's requirement needs a team. Proof rig is a separate artifact pinned by `cdhash`, not a config flag. |
-| Certificate | Only the Account Holder can create it. Team AG9AE2H87X, Individual. One sign-in, one upload of a certificate request. The p12 holds the private key, and it will sit in the vault, in Bitwarden and in repo secrets, so anyone reaching those can sign what root accepts. We accept that for CI; the alternative is signing only on the Studio. |
-| Pipeline | Needed: `.app` build, `notarytool` and stapling, in both `publish.yml` and `release-local.mjs`. |
-| Moving Tier 1 to Developer ID | Changes the helper's requirement, and likely drops existing grants once. Done with a notice, separately. |
-| Team change | The LLC conversion (CMT-1172) may change the Team ID. Checked then. |
-| Entitlement | `com.apple.developer.persistent-content-capture`: Apple-reviewed, for VNC-class apps, reported to remove the monthly prompt, needs a provisioning profile and an app bundle. Apply; nothing depends on it. |
-
-### Windows (direction only; needs its own spec)
-
-The companion stops at the lock because that is another desktop. Direction: a LocalSystem service in session 0, installed through UAC;
-a worker in the console session with a SYSTEM token attached to `WinSta0\Winlogon` following desktop switches; `SendSAS`
-called from the service; `LockWorkStation` run with the user's token and verified by session notification; outbound-only dial
-because WSL is down before logon; same step-up. Windows allows a real logon-desktop banner. Authenticode is not strictly required
-but antivirus and SmartScreen make it practical. Mama PC live proof is mandatory. Not built under this spec.
-
-### Linux (not built)
-
-No Linux desktop exists in the pool. Diagnostics report `locked-screen-unsupported-linux`. GNOME Remote Login (`grdctl --system`)
-is a different feature: a GDM login over an inbound RDP port, not a way into a locked console session.
-
-### Rejected alternatives
-
-- **Bridge to Apple's Screen Sharing.** Reaches the lock with Apple's code, and Apple carries the OS maintenance. Rejected as primary:
-  needs a VNC decoder and a second password prompt, and enabling it is Apple's setting. It is the **named fallback** if L1 to L3
-  fail, by its own spec.
-- **Authorization plug-in.** A bug can lock everyone out.
-- **`fdesetup authrestart`.** Needs the password or recovery key each time; storing either is refused.
-- **Tahoe SSH FileVault unlock.** Real on macOS 26, needs Remote Login. A good later follow-up for FileVault laptops.
+Apple blocks third-party UI over the shield, and an authorization plug-in can break login, so we refuse one. One chime at grant start if P8 passes, which the owner can turn off on the card. The `● Instar remote control` item is live and appears at unlock. After every locked-class grant the next unlocked session shows one notification with time and duration.
 
 ### Off switches
 
-1. `remoteDesktop.lockedScreen.enabled`: absent means off everywhere, including development agents. Set by the PIN-gated enable route.
-2. `POST /desktop/locked/disable`, Bearer plus intent header: any session may stop it, with one security notice. PIN re-enables. On Tier 2
-   grants are refused, the gate keeps dialling, and an unsigned disable expires after 24 h, so a prompt-injected session cannot strand the owner
-   before a restart; a device signature re-enables at once.
-3. On the Mac: Remove, or System Settings' login items list.
+1. `remoteDesktop.lockedScreen.enabled`: absent is off everywhere, including development agents. Set by the PIN route.
+2. Disable: `POST /desktop/locked/disable` with Bearer plus intent header, or from the phone through the front's `locked-disable` operation. Any session may stop it, with one security notice. It writes a per-Mac `disabled` marker under `~/.instar/desktop-helper/`, read by every agent on that Mac at each grant, in the 500 ms probe and before each `secretType`, so another agent's live grant stops too. Only a PIN route clears it. Disable ends active locked-class grants through the normal relock path, and never clears a marker or guard.
+3. A revert of the code restores today's behaviour. A running guard still finishes its duty. What remains is the inert retained directory and macOS's permission rows.
 
-### Audit
+### Audit and status
 
-- `DesktopAccessAudit` gains `lockedState`, `stepUpMethod`, `secretTypeCount`, `relock`. Still screen-free and keystroke-free.
-- Gate: append-only hash-chained `/Library/Logs/Instar/desktop-gate.log`, role owned, 90 days.
-- Security attention, at once with no heal-first delay (Self-Heal exempt: security class): 3 step-up failures in 10 minutes, a socket peer
-  failing code check, policy drift, relock failure after retry, disable.
-- `GET /desktop/locked/status` is `proxied-on-read` with `?scope=pool`: state, inputs, boundary, install, last relock, refused counts.
-
-### Permission honesty
-
-`GET /desktop/diagnostics` adds `screenConfirmationDueAt` only if L7 finds a readable source. A lapsed confirmation at the lock is a
-named reason, never a black stream.
+- `DesktopAccessAudit` gains `lockedState`, `secretTypeCount`, `relock`. Still screen-free and keystroke-free.
+- Security attention, at once (Self-Heal exempt, security class): relock failure after retry, disable.
+- `GET /desktop/locked/status` with `?scope=pool`: state, inputs, last relock, refused counts, retained helper version and age, and whether the password path is ready with its named reason.
+- `GET /desktop/diagnostics` adds `screenConfirmationDueAt` only if P5 finds a readable source. A lapsed macOS monthly confirmation at the lock is a named reason, never a black stream.
 
 ### Phases
 
-1. **Proof rig.** Nothing shipping. Scratch helper on a throwaway macOS user or VM, expected results first. Secure-field rows need a real Mac.
-2. **Lock reading**, dark, read-only, plus the Agent Awareness bullet (`PostUpdateMigrator` rewrites it when it differs; `remoteDesktopBullet`
-   and `DesktopProbeReadiness` drop "cannot open a locked Mac" only at flip), and the front's dark-target counter.
-3. **Tier 1**, dark. Graduation: user-role live harness through the real dashboard on a throwaway user: lock mid-grant, wrong password, unlock,
-   relock, Node killed mid-grant, restart mid-grant, fake window, Stop.
-4. **Native sheet** in the app, when mobile push lands. Not a Tier 1 prerequisite.
-5. **Tier 2**, on its trigger; the first run ends at the certificate. Then the gate.
+1. **Proof rig.** Nothing shipping. A scratch helper on a throwaway macOS user, expected results written first, on the macOS versions the pool actually has; others stay unlisted. Secure-field rows need a real Mac. Its macOS grants are the build run's one human step: the run stops there, and the phone path of P7 is tried first.
+2. **Lock reading**, dark and read-only, plus the Agent Awareness bullet (`generateClaudeMd`, rewritten by `PostUpdateMigrator` when it differs). `remoteDesktopBullet` and `DesktopProbeReadiness` drop "cannot open a locked Mac" only at flip. No config migration: absent is off.
+3. **The feature**, dark. Includes the app's sheet and pin in `instar-ios`, released to TestFlight. Graduation: user-role live harness through the real app on a throwaway macOS user: lock mid-grant, wrong password, unlock, relock, Node killed mid-grant, restart mid-grant, fake window, Stop. Unit, integration and e2e tiers as the Testing Integrity standard requires.
 
-Per-machine flip after proof. Fleet default stays off. No migration ever installs anything privileged.
+Maturation: test agent, then development agent, then available to the fleet, off per machine at every stage. Each Mac is flipped only after proof, and only under the Mobile-Complete rule below.
 
 ### Proof rows
 
-Settled only by a real frame, a real key in a real field and a real unlock. Run per macOS 14, 15, 26, and any newer installed. A row that passes on some versions
-ships for those; others report `unsupported-macos`.
+Settled only by a real frame, a real key in a real field and a real unlock. A version passes only when every row passes or takes its stated fallback, and then enters the proven-versions table.
 
 | # | Question | If it fails |
 |---|---|---|
-| L1 | Frames at the shield with ScreenCaptureKit? | L2 |
-| L2 | With `CGDisplayStream`? An alert on the Mac counts as fail | Tier 1 stops; Screen Sharing fallback spec |
-| L3 | Posted keys reach the password field? Unicode? Modifier reset? | Same |
-| L4 | Does `relock` work under the guard's own identity with Node gone, either mechanism, on non-US layouts? | No password box on that macOS; view and Enter only |
-| L5 | How does a LoginWindow agent get TCC? | Tier 2 stops |
-| L6 | Sandbox compatible with capture and input? | No sandbox; stated |
-| L7 | Monthly confirmation in each helper mode, and readable? | No reminder; reason only |
-| L8 | Outbound dial at `login-window-no-session`, Wi-Fi and Ethernet? | Claim narrows to what passed; neither means Tier 2 covers `login-window-switched` only |
-| L9 | LoginWindow agent can show a window? | Chime |
-| L10 | Admin box accepts remote input? | Person at the Mac |
-| L11 | Lock reading settles every state? | Row stays `unknown`; if that is `locked-in-session`, Tier 1 stops as L3 |
-| L12 | Privacy switches accept remote input? | Declared exception |
-| L13 | Chime audible at shield and login window? | Receipt only |
-| L14 | Secure input owner readable per character; fake window rejected; how many characters can leak with unlock or focus changing in flight? | Owner unreadable: as L3. Leak measured: stated in the viewer line |
-| L15 | Display wake at the shield, headless Mac too? | Named reason |
-| L16 | Frames and a key at first-boot, after-logout and fast-switch login windows, as root agent? | Tier 2 claim narrows per row |
-| L17 | Does the retained helper keep its macOS grant across an Instar update? | Box off after updates until regranted; stated |
-| L18 | Login succeeds but Node never starts, a fast-user-switch return, a session older than install, and another account logged in: does the Aqua instance relock, with its own Accessibility grant? | Tier 2 stops |
-| L19 | Node suspended with descriptors open, and Node killed at each startup step: does the guard relock, and does typing refuse without its acknowledgement? | Password box stays off |
+| P1 | Frames at the shield with ScreenCaptureKit? | P2 |
+| P2 | With `CGDisplayStream`? An alert on the Mac counts as fail | Feature stops; Apple Screen Sharing bridge gets its own spec |
+| P3 | Posted keys reach the password field after a modifier reset, on a non-US layout, and which layout does the shield use? | Same |
+| P4 | `relock` works under the guard's own identity with Node gone, on non-US layouts? | No password on that macOS; view and Enter only |
+| P5 | Monthly confirmation in each helper mode, and readable? | No reminder; reason only |
+| P6 | Lock reading settles every state, including display asleep while locked? | Row stays `unknown`; if that is `locked-in-session`, stop as P3 |
+| P7 | Privacy switches accept remote input through the viewer while unlocked? | Mobile-Complete rule below |
+| P8 | Chime audible at the shield? | Receipt only |
+| P9 | Shield window's layer and bounds; does an unlocked session ever match; secure-input owner readable per character, and held before the field has focus; fake window rejected; per-character cost against the 20 s ack; how many characters leak with unlock or focus changing in flight? | Owner unreadable: as P3. Leak measured: stated on the sheet |
+| P10 | Does a Mac locked with its display asleep pass readiness? Display wake at the shield, and held through a grant, headless Mac too? | Named reason |
+| P11 | Retained helper keeps its grant across an Instar update, and does a candidate granted in its own directory work at the pointer flip? | Password off after updates until regranted; stated |
+| P12 | Node suspended with descriptors open, killed at each startup step, tmux and launchd kills, guard killed in each marker state, a user switch or logout with the guard alive, Leave unlocked racing the guard both ways, Leave unlocked followed by a crash, and an immediate next grant: does the guard do exactly its duty, and does typing refuse without its acknowledgement? | Password path stays off |
+| P13 | Can pointer and clicks at the shield reach an on-screen keyboard or other typing surface? | Clicks refused at the shield on that macOS; pointer, Enter, Tab, Escape remain |
+| P14 | Does Escape clear a partial password, and do modifiers release after a killed helper, and does a failed clear stay blocked into a new request? | Keys stay blocked after an interrupted send, as above |
+
+### Rejected alternatives
+
+- **Bridge to Apple's Screen Sharing.** Apple's code reaches the lock, but it needs a VNC decoder and a second prompt. It is the named fallback if P1 to P3 fail, by its own spec.
+- **Phone step-up on this path.** The verifier and keys would be same-user writable, so it would protect nothing the password does not.
+- **Browser page as the default phone path.** Rejected for the limit above; the app's viewer already exists.
+- **Authorization plug-in.** A bug can lock everyone out.
+
+## Mobile-Complete conflict
+
+The standard says every operator action must be completable from a phone, and it fails closed: do not roll out an operator-required action otherwise. macOS's Accessibility and Screen Recording switches can only be set by a person on an unmanaged Mac; software cannot set them. The retained helper is a new path, so every Mac needs this grant once, including Macs where the installed helper is already granted. With ad-hoc signing a new helper build needs it again, though the old build keeps working until then.
+
+If P7 passes, the owner does this from the phone through the viewer while the Mac is unlocked, and the standard is met. If P7 fails, it means a sitting at each Mac, which **conflicts with the standard, and this spec does not resolve that**. Only the operator can accept it or amend the standard, since it is a constitution question. This gates the per-Mac flip, not the build: the code ships dark either way, and no Mac is flipped on an on-site grant until he has answered.
 
 ## Decision points touched
 
 | Decision point | Classification | Floor or justification |
 |---|---|---|
 | Enable on this machine | `invariant` | PIN route; Bearer cannot. |
-| Admit a Tier 2 grant | `invariant` | Valid step-up signature or refused. Identity proof has no competing signals. |
-| Which lock state | `invariant` | Deterministic table; contradiction is `unknown`. No model: a real-frame test settles it. |
-| Respawn vs revoke at state change | `invariant` | Bound of 3. |
+| Enable the browser box | `invariant` | PIN route, limit shown, off by default. Target-side refusal binds honest clients only. |
+| Which lock state | `invariant` | Fixed predicates; contradiction is `unknown`. A real-frame test settles it. |
+| Which helper build runs | `invariant` | Digest-checked retained binary while on; never an ungranted fallback. |
+| macOS version admitted | `invariant` | Code-owned proven table; anything else unsupported. |
+| Respawn vs revoke at state change | `invariant` | 3 per change, 8 per request. |
 | Refuse ordinary `type` in locked-class | `invariant` | A password must not take the plaintext path. |
-| Allow `secretType` | `invariant` | Positive state, shield and secure-input owner, relock proven. |
-| Attempt limit | `invariant` | Reserved before Enter, refunded on verified unlock; 3 per request, 6 per day. |
-| Prompt rate | `invariant` | 1 a minute, 10 a day; only a fresh roster signature is exempt. |
-| Relock on end | `invariant` | Only an explicit, audited tap exempts. |
-| End grant on outside unlock | `invariant` | A grant may not inherit a person's unlock. |
-| Roster fork | `invariant` | Apply all revocations, refuse grants, recovery resolves. |
-| Install | `invariant` | Owner signature on the exact hash, never agent-initiated. |
-| Disable | `invariant` | Always allowed, safe direction. |
-| Offer Tier 2 | `invariant` | Fixed count raises one item; the operator decides. |
+| Allow `secretType` | `invariant` | Positive state, proven version, shield, secure-input owner, relock acknowledged, clean field. |
+| Password sheet on a changed key | `invariant` | Refused in that session; identity has no competing signals. |
+| Attempt limit and refund | `invariant` | Reserved before the first character; refunded only on a verified unlock; 3 per request, 6 per Mac per day. |
+| Relock on end | `invariant` | Only Leave unlocked exempts; one state under one lock decides. |
+| Leave unlocked | `invariant` | Inside the encrypted channel; audited; no route. |
+| End grant on outside unlock | `invariant` | Ends with no `secretType` in the prior 15 s; the timing exception is stated. |
+| Disable | `invariant` | Always allowed, safe direction; never clears relock duty. |
 
 ## Multi-machine posture
 
-Machine-local surfaces, each bound to one physical console or chip:
+- machine-local-justification: hardware-bound-resource impossible-because="lock reading, helper, grant, retained binary, relock marker and guard drive one physical console" permanence=permanent
+- machine-local-justification: hardware-bound-resource impossible-because="password counters and the disabled and field-dirty markers are statements about one physical Mac, shared by its agents; visible through proxied-on-read status" permanence=permanent
+- machine-local-justification: hardware-bound-resource impossible-because="lockedScreen settings are one agent's choice for one physical console, and each agent on a Mac has its own; visible through proxied-on-read status" permanence=permanent
 
-- machine-local-justification: hardware-bound-resource impossible-because="lock reading, helper, grant, relock marker, gate and LoginWindow agent drive one physical console" permanence=permanent
-- machine-local-justification: hardware-bound-resource impossible-because="lockedScreen.enabled, install state and password counters are statements about one physical Mac; visible through proxied-on-read status" permanence=permanent
-- machine-local-justification: hardware-bound-resource impossible-because="gate key, seal key and Secure Enclave keys each identify one console or chip" permanence=permanent
-
-Unified: `roster.log` replicates through each gate's connection, carrying generations; status is `proxied-on-read`, with dark peers shown with age;
-security notices have one voice, the serving-lease holder, through the existing hub. The front relays ciphertext on the wire, and the viewer page it serves is
-the limit stated above. A conversation move does not move a grant. A partition ends the grant at its heartbeat deadline, then relock.
+Status is `proxied-on-read`, dark peers shown with age. `remoteDesktop.lockedScreen` must not travel with any config sync; if `config.json` syncs on an agent, the setting is keyed by machine id. Relock failure is raised by the target, then de-duplicated in the pool. The app's key pin is local to one phone by design. A conversation move does not move a grant. A partition ends the grant at its heartbeat deadline, then relock.
 
 ## Frontloaded Decisions
 
-1. **Tier 1 first and committed; Tier 2 on a measured offer.**
-2. **FileVault pre-boot and system sleep refused;** from outside they read `offline: can't tell`.
-3. **Instar gives no agent a password and has no route that originates one.** Tier 1 does not claim to stop hostile same-user code.
+1. **Ordinary lock only.** The login window is a separate, unapproved note.
+2. **No step-up; the macOS password is the barrier.**
+3. **Instar gives no agent a password and has no route that originates one.**
 4. **Passwords typed live, never stored.**
-5. **Tier 1: no step-up; the macOS password is the barrier.** Tier 1 does not depend on the app, push or Telegram.
-6. **Tier 2 roots: Secure Enclave keys and a one-time recovery code, first key confirmed at the Mac. No PIN, no Telegram.**
-7. **Browser password box on in Tier 1, with its limit stated;** native sheet becomes the default when it ships.
-8. **`input-stream` helper holds the seal key and types.**
-9. **No network code as root; outbound only.**
-10. **Swift for the gate;** no Node at root, no root updater.
-11. **Developer ID required for Tier 2.** One Account Holder sign-in; ends Tier 2's first run.
-12. **Apply for the entitlement;** nothing waits on it.
-13. **macOS 14.4 floor for Tier 2;** Tier 1 per proof row.
-14. **Relock on end, default on; no proven relock means no password box.**
-15. **Chime on, owner can turn off.**
-16. **Classic plists, not `SMAppService`.** `SMAppService` adds an approval step without improving this threat model; vendors ship classic plists. Durable after first install.
-17. **Windows and Linux need their own specs.** No money is committed here.
-18. **One owner agent per Mac; throwaways refused.**
-19. **Auto-login is explained, never set;** Instar adds no lock-at-login.
+5. **Native app is the phone path; browser box off by default, owner opt-in per machine.** No dependence on push, on Telegram, or on pairing: the viewer uses the dashboard PIN, and the app needs only the designated front's address.
+6. **Trust on first use for the target key.** A stronger anchor needs the login-window design's install step, which is not built.
+7. **`input-stream` helper holds the seal key and types.**
+8. **Relock on end, default on; no proven relock means no password.**
+9. **Chime on, owner can turn off.**
+10. **One retained, digest-checked helper per Mac until a new build is granted.** Stable signing would replace it when a certificate exists; this feature does not wait.
+11. **macOS only, proven versions only; other hosts refuse the enable.** The rig runs on the macOS versions the pool has.
+12. **Attempts 3 per request, 6 per Mac per day, shared by agents.**
+13. **All grant-bound state keys to the request id.**
+14. **`unknown` is view only.**
+15. **One locked-class grant per Mac; a per-Mac disable overrides every agent; each agent's own PIN can enable its own access.**
+16. **Rig: the Mac Mini first, any free pool Mac otherwise.** It has no daily console user, and a throwaway user takes the console by fast user switching. One grant sitting covers phases 1 and 3.
+17. **Mobile-Complete: P7 passing meets the standard; otherwise the operator's answer gates the per-Mac flip, never the build.**
 
 ## Verify the State
 
 | Detector | Symbol | Claimed state | Independent corroboration | Unmeasurable |
 |---|---|---|---|---|
 | Lock state | Session flags | A password is needed | Second input; policy read | `unknown`, locked-class |
-| Dark target | No answer from Node | Machine state | None possible from outside | `offline: can't tell` |
 | Secure field | Shield window plus secure-input owner | Keys reach loginwindow at the check; delivery is not atomic | Both per character, Enter last | Abort |
-| Install complete | Files exist | Agent can capture | Real capture at a real login window | "Installed, not proven" |
-| TCC grant | Switch on | Capture works | A frame with a non-wallpaper login UI element; a sleeping display is not a failure | Named reason |
+| TCC grant | Switch on | Capture works | A real frame | Named reason |
 | Unlock succeeded | Reads `unlocked` | Session usable | Notification and fresh frame | Keep locked-class limits |
 | Relock | Lock call made | Mac locked | Fresh reading | Retry, then security item |
-| Unlock cause | State became `unlocked` | Our `secretType` did it | Send within 15 s; **timing only, not proof**, and the failure case equals today's PIN exposure | No send: end grant. Any send: relock owed regardless |
-| Step-up (Tier 2) | Signature valid | Owner approved | Root-owned root key and generation-checked roster; typed code | Refuse |
-| Boundary | Root-owned files | Same-user cannot alter | NOPASSWD check | `boundary: unknown`, no claim |
-| Disable | Verb acknowledged | Grants refused | Refused test grant in status | Report unconfirmed |
-| Remove | Files gone | Nothing remains | Re-scan paths, role account, launchd | List what remains |
-| Chime | Played call | Audible | Only L13 | Say receipt only |
+| Unlock cause | State became `unlocked` | Our `secretType` did it | Send within 15 s; **timing only, not proof** | No send: end grant. Any send: relock owed regardless |
+| Relock duty | Guard acknowledged | Guard will act | Its heartbeat, answered at each 10 s renewal; P12 | Replacement guard; no password until acknowledged |
+| Partial field cleared | Escape sent | Field empty | P14 proof; no live read exists | Keys stay blocked |
+| Helper identity | Digest matches pointer | The granted binary runs | Real probe of that binary | Locked features off |
+| Target identity | Key matches the pin | This Mac | Target signature over the channel keys | Sheet refused |
 | Password not stored | No storage code | Absent from disk and logs | Fixture password scanned across logs, audit, dumps | Fail the test |
-| Gate offline | No heartbeat | Unreachable | Peer liveness | "Can't tell" |
-| Wire version | Number matches | Compatible | Handshake | Tier 2 dark |
+| Disable | Verb acknowledged | Grants refused | Refused test grant in status | Report unconfirmed |
+| Chime | Played call | Audible | Only P8 | Say receipt only |
 
 ## Honest limits
 
-- macOS releases break the login window; AnyDesk's changelog shows it most years.
-- No indicator over the shield.
-- Tier 1 does not stop same-user code, and the login password opens the keychain.
-- A person at the Mac sees the pointer move; the chime is a signal, not prevention.
-- `login-window-no-session` needs network before login and a live front elsewhere.
-- FileVault-on Macs are unreachable after restart.
-- Tier 1: a stolen PIN can watch the lock screen, including any notification previews it shows.
-- A password typed in the browser is exposed to hostile code on the front or target, and to a hostile tunnel provider or relay.
+- A password typed in a browser can be read by the serving machine and by the tunnel provider. That is why the box is off by default, and "off" binds honest pages only: a hostile front can serve a box anyway, and it also reports the tunnel state that page checks.
+- The native app's protection against them starts after this phone first pins this Mac's key. First contact trusts the front.
+- This does not stop hostile code running as the user, and the login password also opens the login keychain. The sheet says so once.
+- A stolen PIN can watch the lock screen, including notification previews, and press its buttons, including any Restart or Shut Down on it. That can take the Mac offline. It cannot get in through this path.
+- A retained helper can lag fixes until it is regranted. Status shows its age.
+- On a Mac with several agents, each agent's PIN can enable access for that agent, so the weakest PIN sets the reach to the shield. The password is still the barrier.
+- If the server and the guard both die with no supervisor restart, an owed relock waits until the server next boots. If the user switches away first, the duty closes with no lock call, and macOS's own setting decides what the return asks for.
 - An unlock's cause is inferred from timing.
 - Password typing is not atomic with its checks.
-- A roster revocation reaches a machine only when it reconnects, and a hostile front can delay it.
-- A roster fork, which needs two valid keys at odds, halts Tier 2 until the recovery code is used.
-- Tier 1 has no pinned anchor, so a hostile serving front can read a password even from the sheet.
-- Tier 2 depends on mobile pairing and push; without a paired phone there is no Tier 2.
+- No indicator over the shield. A person at the Mac sees the pointer move; the chime is a signal, not prevention.
+- `CGSSessionScreenIsLocked`, `kCGSSessionSecureInputPID` and `SACLockScreenImmediate` are undocumented and may change.
+- A Mac at the login window after a restart stays unreachable, with or without this.
 
 ## Open questions
 
