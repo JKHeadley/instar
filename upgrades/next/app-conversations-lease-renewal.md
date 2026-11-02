@@ -1,0 +1,17 @@
+# iPhone app conversations work on an agent without Telegram
+
+## What Changed
+
+On an agent with no Telegram, the serving lease was renewed only by the 2-minute heartbeat, so it spent part of every 2 minutes expired, and app messages sent then got `503 owner-unavailable`. Native app conversations now enroll the same holder-only renewal timer the Telegram origin writer uses. An explicit `multiMachine.leaseSelfHeal.resilientRenew.enabled: false` still turns it off, and a higher-epoch holder on another machine still wins.
+
+## What to Tell Your User
+
+If you use the Instar iPhone app with an agent that has no Telegram, your messages no longer get "the machine that runs this conversation is not available right now" every couple of minutes.
+
+## Summary of New Capabilities
+
+None; a fix to an existing feature.
+
+## Evidence
+
+tests/unit/lease-renewal-app-dependency.test.ts (lease held at the same epoch across 6 minutes of heartbeat ticks with the app dependency; lapses and climbs without it; higher epoch, explicit false and observe-only still stop renewal). tests/integration/mobile-native-conversations.test.ts (an app message after the lease TTL: 200 with the dependency, 503 owner-unavailable without it). tests/e2e/app-conversations-lease-renewal.test.ts (real timers: the boot-time dependency decision keeps the lease held past the lease window at epoch 1).
