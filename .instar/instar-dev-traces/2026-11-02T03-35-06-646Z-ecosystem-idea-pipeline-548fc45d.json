@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "ecosystem-idea-pipeline",
+  "sessionId": "18604a86-3b10-4658-ba57-581bcce3d6ca",
+  "timestamp": "2026-11-02T03:35:06.646Z",
+  "artifactPath": "upgrades/side-effects/ecosystem-idea-pipeline.md",
+  "artifactSha256": "627aaefdf06b1a3621b0dde0edf3ec94748b5c3222386bfecdf4d9ef83566781",
+  "specPath": "docs/specs/ecosystem-idea-pipeline.md",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/ideas-model.js",
+    "dashboard/console/ideas.js",
+    "tests/unit/ecosystem/console-ideas.test.ts",
+    "upgrades/side-effects/ecosystem-idea-pipeline.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New dev-gated capability from a converged, approved spec; a revert removes it.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "A failing project gets at most 3 attempts per cycle with backoff, then a durable week, then a breaker after 3 cycles: nine attempts in total, then silence until a person retries. Registered as ecosystem-idea-review."
+    }
+  }
+}

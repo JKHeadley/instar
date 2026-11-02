@@ -10,6 +10,7 @@
  *   uploads/<uploadId>/      chunks, then `assembled`
  *   session-files/<messageId>/  a session's private copy (clone where the filesystem can)
  *   outbox/                  the place an agent may put a file it means to send
+ *   pulls/<sha>.part         a blob being copied from another machine (verified before it is kept)
  *
  * Every step of an upload is safe to repeat and every crash point has one recovery answer
  * (§4.2 steps 4-5, §4.3 recovery). A message event is never written before its blobs are durable.
@@ -73,6 +74,11 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS blob_checks (sha256 TEXT PRIMARY KEY, checkedAt INTEGER NOT NULL, mtimeMs REAL NOT NULL, size INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS orphans (sha256 TEXT PRIMARY KEY, firstSeenAt INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
+  // Copying between machines (§4.12): per-blob pull state, per-peer breakers, and the durable
+  // "still copying" rows the owner turns into a "now available" line when the blob lands.
+  `CREATE TABLE IF NOT EXISTS pulls (sha256 TEXT PRIMARY KEY, firstWantedAt INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, nextAttemptAt INTEGER NOT NULL DEFAULT 0, lastServedAt INTEGER, unrecoverable INTEGER NOT NULL DEFAULT 0, lastError TEXT)`,
+  `CREATE TABLE IF NOT EXISTS pull_peers (machineId TEXT PRIMARY KEY, failures INTEGER NOT NULL DEFAULT 0, openUntil INTEGER NOT NULL DEFAULT 0, opensDay TEXT, opens INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS pending_deliveries (attachmentId TEXT PRIMARY KEY, messageId TEXT NOT NULL, conversationKey TEXT NOT NULL, sha256 TEXT NOT NULL, displayName TEXT NOT NULL, caption TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL, path TEXT)`,
 ];
 
 export class AppMediaStore {
@@ -83,6 +89,7 @@ export class AppMediaStore {
   private readonly uploadsDir: string;
   private readonly sessionDir: string;
   readonly outboxDir: string;
+  readonly pullsDir: string;
   private readonly db: BetterSqliteDatabase;
   private readonly now: () => number;
   private readonly finalizing = new Map<string, Promise<void>>();
@@ -91,6 +98,8 @@ export class AppMediaStore {
   /** Agent-reply reservations (held only for the length of one request). */
   private readonly replyReservations = new Map<string, number>();
   private lastInventory: { orphanBlobs: number; missingBlobs: number; at: number } | null = null;
+  /** The copier's numbers (§4.12); absent until it is attached, so they read null, never 0. */
+  private replicationHealth: (() => { unrecoverableBlobs: number | null; singleCopyBlobs: number | null }) | null = null;
   private sweepRunning = false;
 
   constructor(private readonly opts: AppMediaStoreOptions) {
@@ -101,8 +110,9 @@ export class AppMediaStore {
     this.uploadsDir = path.join(this.root, 'uploads');
     this.sessionDir = path.join(this.root, 'session-files');
     this.outboxDir = path.join(this.root, 'outbox');
+    this.pullsDir = path.join(this.root, 'pulls');
     this.now = opts.now ?? Date.now;
-    for (const d of [this.blobsDir, this.deletedDir, this.quarantineDir, this.uploadsDir, this.sessionDir, this.outboxDir]) {
+    for (const d of [this.blobsDir, this.deletedDir, this.quarantineDir, this.uploadsDir, this.sessionDir, this.outboxDir, this.pullsDir]) {
       fs.mkdirSync(d, { recursive: true, mode: 0o700 });
     }
     const dbPath = path.join(this.uploadsDir, 'index.sqlite');
@@ -114,6 +124,12 @@ export class AppMediaStore {
     for (const ddl of SCHEMA) this.db.exec(ddl);
     registerSqliteHandle(() => { try { this.db.close(); } catch { /* @silent-fallback-ok — already closed */ } });
   }
+
+  /**
+   * The index handle, for the cross-machine copier (AppMediaReplicator) that keeps its pull,
+   * breaker and pending-delivery rows beside the upload state in the same database.
+   */
+  get indexDb(): BetterSqliteDatabase { return this.db; }
 
   close(): void { try { this.db.close(); } catch { /* @silent-fallback-ok — already closed */ } }
 
@@ -471,6 +487,51 @@ export class AppMediaStore {
 
   publishSnapshot(snapshotPath: string, sha: string): void { this.publish(snapshotPath, sha); }
 
+  /**
+   * A blob copied from another machine, already hashed equal to its name by the caller: rename it
+   * in, then place it where its references say (live → blobs/, only deleted conversations → deleted/).
+   */
+  publishPulled(filePath: string, sha: string): boolean {
+    const refs = this.opts.store.mediaBlobRefs(sha);
+    // Purged (or never referenced) by now: the operator removed these bytes, so the copy is discarded.
+    if (!refs || refs.allRefs === 0) {
+      SafeFsExecutor.safeRmSync(filePath, { force: true, operation: `${OP}:pulled-unreferenced` });
+      return false;
+    }
+    this.publish(filePath, sha);
+    if (refs.liveRefs === 0 && fs.existsSync(this.blobPath(sha))) this.moveBlob(this.blobPath(sha), this.deletedPath(sha));
+    return true;
+  }
+
+  /**
+   * Before serving a blob to another machine: if its size or mtime changed since its last check
+   * (or it was never checked), hash it now; a blob that no longer matches its name is quarantined
+   * here (moved, never deleted) and not served, so a damaged copy never travels.
+   */
+  async verifyBeforeServe(sha: string): Promise<boolean> {
+    const p = this.locateBlob(sha);
+    if (!p) return false;
+    let st: fs.Stats;
+    try { st = fs.statSync(p); } catch { return false; } // @silent-fallback-ok — moved or removed since it was located; reads as not held
+    const check = this.db.prepare('SELECT mtimeMs, size FROM blob_checks WHERE sha256 = ?').get(sha) as { mtimeMs: number; size: number } | undefined;
+    if (check && check.mtimeMs === st.mtimeMs && check.size === st.size) return true;
+    const h = await hashFile(p);
+    if (h.sha256 === sha) { this.recordCheck(sha); return true; }
+    this.quarantine(p, sha);
+    return false;
+  }
+
+  private quarantine(p: string, sha: string): void {
+    try { fs.renameSync(p, path.join(this.quarantineDir, sha)); } catch (err) { this.report(`a damaged file could not be set aside: ${err instanceof Error ? err.message : String(err)}`); return; } // @silent-fallback-ok — reported through deps.reportDegradation; the next check retries
+    this.db.prepare('DELETE FROM blob_checks WHERE sha256 = ?').run(sha);
+    this.report(`a stored file no longer matches its hash and was quarantined (${sha.slice(0, 12)}…)`);
+  }
+
+  /** Every blob this machine holds (live and deleted/), sorted, de-duplicated. */
+  heldHashes(): string[] {
+    return [...new Set([...this.listBlobs(this.blobsDir), ...this.listBlobs(this.deletedDir)])].sort();
+  }
+
   discardSnapshot(snapshotPath: string): void {
     SafeFsExecutor.safeRmSync(snapshotPath, { force: true, operation: `${OP}:discard-snapshot` });
   }
@@ -600,6 +661,7 @@ export class AppMediaStore {
       for (const sha of this.listBlobs(dir)) {
         if (this.opts.store.mediaBlobRefs(sha)) continue;
         if (this.db.prepare(`SELECT 1 FROM uploads WHERE sha256 = ? AND state IN ('open','assembling','complete','claimed') LIMIT 1`).get(sha)) continue;
+        if (this.db.prepare('SELECT 1 FROM pending_deliveries WHERE sha256 = ? LIMIT 1').get(sha)) continue;
         seen.add(sha);
         this.db.prepare('INSERT OR IGNORE INTO orphans (sha256, firstSeenAt) VALUES (?, ?)').run(sha, t);
         const row = this.db.prepare('SELECT firstSeenAt FROM orphans WHERE sha256 = ?').get(sha) as { firstSeenAt: number };
@@ -633,10 +695,7 @@ export class AppMediaStore {
         if (!full && check && check.mtimeMs === st.mtimeMs && check.size === st.size) continue;
         const h = await hashFile(p);
         if (h.sha256 === sha) { this.recordCheck(sha); continue; }
-        const q = path.join(this.quarantineDir, sha);
-        try { fs.renameSync(p, q); } catch (err) { this.report(`a damaged file could not be set aside: ${err instanceof Error ? err.message : String(err)}`); continue; }
-        this.db.prepare('DELETE FROM blob_checks WHERE sha256 = ?').run(sha);
-        this.report(`a stored file no longer matches its hash and was quarantined (${sha.slice(0, 12)}…)`);
+        this.quarantine(p, sha);
       }
     }
     if (full) this.db.prepare(`INSERT OR REPLACE INTO meta (k, v) VALUES ('lastFullCheck', ?)`).run(String(t));
@@ -693,6 +752,12 @@ export class AppMediaStore {
   liveBytes(): number { return this.opts.store.mediaLiveBytes(); }
   maxBytes(): number { return this.opts.maxStoreBytes(); }
 
+  setReplicationHealth(fn: () => { unrecoverableBlobs: number | null; singleCopyBlobs: number | null }): void { this.replicationHealth = fn; }
+
+  private readReplicationHealth(): { unrecoverableBlobs: number | null; singleCopyBlobs: number | null } {
+    try { return this.replicationHealth?.() ?? { unrecoverableBlobs: null, singleCopyBlobs: null }; } catch { return { unrecoverableBlobs: null, singleCopyBlobs: null }; } // @silent-fallback-ok — observability: unmeasurable reads null, never 0
+  }
+
   health(): Record<string, unknown> {
     const open = this.db.prepare(`SELECT COUNT(*) AS n FROM uploads WHERE state IN ('open','assembling','complete','claimed')`).get() as { n: number };
     let deletedBytes = 0;
@@ -703,8 +768,7 @@ export class AppMediaStore {
       liveBytes: this.opts.store.mediaLiveBytes(), deletedBytes, stagedBytes: this.stagedBytes(), reservedBytes: this.reservedBytes(),
       blobs: this.listBlobs(this.blobsDir).length + this.listBlobs(this.deletedDir).length,
       orphanBlobs: this.lastInventory?.orphanBlobs ?? null, missingBlobs: this.lastInventory?.missingBlobs ?? null,
-      // Peer pulls and inventories are the next increment: these cannot be measured yet.
-      unrecoverableBlobs: null, singleCopyBlobs: null,
+      ...this.readReplicationHealth(),
       inventoryAsOf: this.lastInventory ? new Date(this.lastInventory.at).toISOString() : null, openUploads: open.n,
     };
   }

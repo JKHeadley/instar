@@ -793,6 +793,43 @@ const appMediaCapacityNotice: SelfActionController = {
   },
 };
 
+/**
+ * app-media-replication — the app media copier's self-raised actions (mobile-native-chat-media
+ * §4.12, AppMediaReplicator.evaluateAlarms / evaluateUnrecoverable / verifyFailure). Under the
+ * pinned worst case (a file held on one machine forever while every peer is online, polled every
+ * hour) the copier nudges each peer ONCE per episode (`nudgedAt` is set before the sends and is
+ * reset only when the count clears) and raises the single-copy notice ONCE (the `raised` latch,
+ * keyed by condition and reason; re-armed only when the condition clears). Per-blob pull retries
+ * are bounded by the 30 s → 1 h backoff and the 7-day give-up, and are not notices.
+ */
+const appMediaReplication: SelfActionController = {
+  id: 'app-media-replication',
+  actionVerb: 'nudge-and-notify',
+  models: 'src/core/AppMediaReplicator.ts (evaluateAlarms: nudgedAt once per episode, raised latch per condition+reason)',
+  modelsPath: 'src/core/AppMediaReplicator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the latch and episode clocks are empty: the count must be measured fresh (null until peer inventories arrive), then at most one nudge and one notice per episode; the attention item is deduplicated by its condition key.' },
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    let nudged = false;
+    const raised = new Set<string>();
+    let hours = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        hours += 1; // the pinned pressure: one file held alone, every peer online, forever
+        if (hours >= 2 && !nudged) { nudged = true; sink.emit({ verb: 'nudge-and-notify', target: 'peer-B' }); return; }
+        if (nudged && hours >= 3 && !raised.has('app-media:single-copy:A')) {
+          raised.add('app-media:single-copy:A');
+          sink.emit({ verb: 'nudge-and-notify', target: 'app-media:single-copy:A' });
+        }
+      },
+    };
+  },
+};
+
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
   actionVerb: 'reap-expired-actions',
@@ -1115,6 +1152,53 @@ const feedbackTriageTick: SelfActionController = {
       f.durableState.set('feedback-triage-last-requeued-at', f.clock.nowMs());
       sink.emit({ verb: 'retry-triage-call', target: 'hot-cluster' });
       sink.emitTimesMs.push(f.clock.nowMs());
+    } };
+  },
+};
+
+/**
+ * ecosystem-idea-review — retrying a failed project review (docs/specs/ecosystem-idea-pipeline.md, Failure handling).
+ *
+ * Convergence argument: under sustained pressure (the project never reviews cleanly) the service
+ * makes at most 3 attempts in a cycle with backoff, waits out the week through the durable
+ * cycleExhaustedUntil, and opens a breaker after 3 failed cycles, after which it stops until the
+ * operator retries or a review succeeds. The counters live in the replicated ledger, so a restart
+ * buys no fresh attempts. Nine attempts in total, then silence.
+ */
+const ecosystemIdeaReview: SelfActionController = {
+  id: 'ecosystem-idea-review',
+  actionVerb: 'retry-project-review',
+  models: 'src/ecosystem/EcosystemIdeaService.ts (3 attempts per cycle with backoff, durable cycleExhaustedUntil, breaker after 3 failed cycles)',
+  modelsPath: 'src/ecosystem/EcosystemIdeaService.ts',
+  boundK: 9,
+  perTargetBoundK: 9,
+  ticks: 24 * 7 * 8,
+  tickMs: 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return ecosystemIdeaReview.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WEEK = 7 * 24 * 60 * 60_000;
+    const BACKOFF = [30 * 60_000, 2 * 60 * 60_000];
+    return { tick() {
+      sink.considered += 1;
+      const now = f.clock.nowMs();
+      const failedCycles = (f.durableState.get('ecosystem-failed-cycles') as number | undefined) ?? 0;
+      if (failedCycles >= 3) return;
+      const notBefore = (f.durableState.get('ecosystem-not-before') as number | undefined) ?? 0;
+      if (now < notBefore) return;
+      const attempt = ((f.durableState.get('ecosystem-attempt') as number | undefined) ?? 0) + 1;
+      sink.emit({ verb: 'retry-project-review', target: 'failing-project' });
+      sink.emitTimesMs.push(now);
+      if (attempt >= 3) {
+        f.durableState.set('ecosystem-attempt', 0);
+        f.durableState.set('ecosystem-failed-cycles', failedCycles + 1);
+        f.durableState.set('ecosystem-not-before', now + WEEK);
+      } else {
+        f.durableState.set('ecosystem-attempt', attempt);
+        f.durableState.set('ecosystem-not-before', now + BACKOFF[attempt - 1]);
+      }
     } };
   },
 };
@@ -3496,6 +3580,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   overloadAdmissionSelfHelp,
   overloadShed,
   feedbackTriageTick,
+  ecosystemIdeaReview,
   queuePaceExtraRun,
   jobScriptTriageEpisode,
   jobScriptTriageBackup,
@@ -3515,6 +3600,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   standDownMaintenance,
   evolutionActionExpirySweep,
   appMediaCapacityNotice,
+  appMediaReplication,
   spendReconSweep,
   spendDoorDarkBrakes,
   spendFallbackSpike,

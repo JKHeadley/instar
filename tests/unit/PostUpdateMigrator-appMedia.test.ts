@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { PostUpdateMigrator, APP_MEDIA_CLAUDEMD_MARKER, APP_MEDIA_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, APP_MEDIA_CLAUDEMD_MARKER, APP_MEDIA_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, APP_MEDIA_STALE_COPY_LINE, APP_MEDIA_CURRENT_COPY_LINE } from '../../src/core/PostUpdateMigrator.js';
 import { ensureAppReplyRelay, packagedAppReplyRelayTemplate, PRIOR_SHIPPED_APP_RELAY_SHA256 } from '../../src/core/AppReplyRelayInstaller.js';
 import { ReplayGuard, MAX_REPLAY_PER_DEVICE, REPLAY_SEND_RESERVE } from '../../src/core/MobileDeviceKeys.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -46,6 +46,20 @@ describe('PostUpdateMigrator — app conversation media', () => {
     expect(after).toContain('app-reply.sh --file');
     expect(run().upgraded).not.toContain(ADDED);
     expect(APP_MEDIA_CLAUDEMD_SECTION()).toContain('app-media-path');
+  });
+
+  it('the section describes copies between machines, and an installed section with the old line is refreshed once', () => {
+    expect(APP_MEDIA_CLAUDEMD_SECTION()).toContain(APP_MEDIA_CURRENT_COPY_LINE);
+    expect(APP_MEDIA_CLAUDEMD_SECTION()).not.toContain(APP_MEDIA_STALE_COPY_LINE);
+    const file = path.join(projectDir, 'CLAUDE.md');
+    const installed = APP_MEDIA_CLAUDEMD_SECTION().replace(APP_MEDIA_CURRENT_COPY_LINE, APP_MEDIA_STALE_COPY_LINE);
+    fs.writeFileSync(file, `# CLAUDE.md\n${APP_CONVERSATIONS_CLAUDEMD_SECTION(4321)}${installed}`);
+    const run = () => { const r: MigrationResult = { upgraded: [], skipped: [], errors: [] }; (migrator() as unknown as { migrateClaudeMd(r: MigrationResult): void }).migrateClaudeMd(r); return r; };
+    expect(run().upgraded).toContain('CLAUDE.md: updated the App conversation media copy line');
+    const after = fs.readFileSync(file, 'utf-8');
+    expect(after).toContain(APP_MEDIA_CURRENT_COPY_LINE);
+    expect(after).not.toContain(APP_MEDIA_STALE_COPY_LINE);
+    expect(run().upgraded).not.toContain('CLAUDE.md: updated the App conversation media copy line');
   });
 
   it('installs the helper beside the relay, and the previously shipped relay is on the replaceable list', () => {

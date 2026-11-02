@@ -17,14 +17,26 @@ import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import { AppConversationStore, type AppEvent } from './AppConversationStore.js';
 import { derivedEventId, isAppConversationKey } from './appConversationText.js';
-import type { AppInboundDispatch } from './appInboundDispatch.js';
-import { verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
+import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
+import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
 import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
 import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
-import { MAX_PURGE_BATCH } from './appMediaTypes.js';
+import { MAX_PURGE_BATCH, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
+import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
 import path from 'node:path';
 
 export const STRANDED_REQUEST_AGE_MS = 5 * 60_000;
+
+interface PendingRow { attachmentId: string; messageId: string; conversationKey: string; sha256: string; displayName: string; caption: string; createdAt: number; state: 'waiting' | 'ready' | 'expired'; path: string | null }
+
+/** The first 40 characters of a caption, safe inside the line's quotes. */
+export function captionSnippet(caption: string): string {
+  return Array.from(caption.replace(/[\x00-\x1f\x7f"[\]]/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 40).join('');
+}
+
+export function availableLine(filePath: string, caption: string): string {
+  return `[file now available: ${filePath}]${caption ? ` (for the message "${caption}")` : ''}`;
+}
 
 export interface AppConversationServiceDeps {
   stateDir: string;
@@ -70,6 +82,13 @@ export class AppConversationService {
   private timer: ReturnType<typeof setInterval> | null = null;
   private mediaTimer: ReturnType<typeof setInterval> | null = null;
   readonly media: AppMediaStore;
+  /** Copies blobs between the agent's machines (§4.12); idle until a mesh transport is attached. */
+  readonly replicator: AppMediaReplicator;
+  /**
+   * Types one line into the conversation's live session, never spawning (the "now available"
+   * follow-up of §4.12). Wired where the dispatch is; absent ⇒ the line waits for the next delivery.
+   */
+  private followUp: ((alias: number, line: string) => boolean) | null = null;
   private lastRefusalSweep = 0;
   private readonly refusedConditions = new Set<string>();
   /* @self-action-controller: app-media-capacity-notice */
@@ -92,6 +111,13 @@ export class AppConversationService {
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
       onRefused: (error) => this.onMediaRefused(error),
     });
+    this.replicator = new AppMediaReplicator({
+      media: this.media, store: this.store, selfId: deps.machineId, now: this.now,
+      report: (detail) => deps.reportDegradation?.('AppMediaReplicator', detail),
+      raiseAttention: (item) => deps.raiseAttention?.(item),
+      clearAttention: (key) => deps.clearAttention?.(key),
+      onBlobLanded: (sha) => { void this.resolvePending(sha); },
+    });
     // Aliases are derived per machine from the replicated store and rebuildable at any time.
     this.reconcileAliases();
     this.leaseTick();
@@ -108,6 +134,7 @@ export class AppConversationService {
     void this.sweepMedia();
     this.mediaTimer = setInterval(() => { void this.sweepMedia(); }, MEDIA_SWEEP_MS);
     this.mediaTimer.unref?.();
+    this.replicator.start();
   }
 
   stop(): void {
@@ -115,12 +142,15 @@ export class AppConversationService {
     if (this.mediaTimer) clearInterval(this.mediaTimer);
     this.timer = null;
     this.mediaTimer = null;
+    this.replicator.stop();
   }
 
   /** The hourly media sweep, then the capacity notices (§4.7). Never throws. */
   async sweepMedia(): Promise<void> {
     try {
       await this.media.sweep((id) => this.store.hasMessage(id));
+      this.expirePending();
+      this.replicator.evaluateUnrecoverable();
       this.updateMediaNotices();
     } catch (err) { this.report('media sweep', err); }
   }
@@ -200,6 +230,77 @@ export class AppConversationService {
 
   ownerName(): string { return this.deps.ownerName(); }
 
+  // ── Delivering media the owner does not hold yet (§4.12) ─────────────────────────
+
+  setFollowUp(fn: ((alias: number, line: string) => boolean) | null): void { this.followUp = fn; }
+
+  /**
+   * The session lines for a media message on the machine that delivers it (§4.5, §4.12): a private
+   * copy per attachment; a blob not held here is pulled first, for at most 60 seconds in all; past
+   * that the line reads `[file still copying: <name>]` and a durable row turns into one
+   * `[file now available: <path>]` line when the blob lands.
+   */
+  async sessionLinesFor(conversationKey: string, messageId: string, attachments: ReadonlyArray<AppAttachment>, caption: string, waitMs = OWNER_PULL_WAIT_MS): Promise<string[]> {
+    const missing = attachments.filter((a) => !this.media.locateBlob(a.sha256));
+    if (missing.length > 0) await Promise.all(missing.map((a) => this.replicator.awaitBlob(a.sha256, waitMs)));
+    const lines: string[] = [];
+    for (const a of attachments) {
+      const copy = await this.media.sessionCopy(messageId, a).catch((err: unknown) => { // @silent-fallback-ok — reported through deps.reportDegradation; the line says the file is unavailable
+        this.report('session copy', err);
+        return null;
+      });
+      if (copy) { lines.push(sessionLine(a, copy)); continue; }
+      // Held here but the copy failed: not a copying problem (reported above).
+      if (this.media.locateBlob(a.sha256)) { lines.push(`[file unavailable: ${displayName(a.filename)}]`); continue; }
+      lines.push(`[file still copying: ${displayName(a.filename)}]`);
+      try {
+        this.media.indexDb.prepare(`INSERT OR IGNORE INTO pending_deliveries (attachmentId, messageId, conversationKey, sha256, displayName, caption, createdAt, state, path) VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', NULL)`)
+          .run(a.attachmentId, messageId, conversationKey, a.sha256, displayName(a.filename), captionSnippet(caption), this.now());
+      } catch (err) { this.report('pending delivery', err); }
+      this.replicator.want(a.sha256);
+    }
+    return lines;
+  }
+
+  /** A blob landed: each waiting row gets its session copy and one follow-up line. */
+  async resolvePending(sha: string): Promise<void> {
+    const rows = this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE sha256 = ? AND state = 'waiting'`).all(sha) as PendingRow[];
+    for (const r of rows) {
+      try {
+        const ev = this.store.getMessageEvent(r.conversationKey, r.messageId);
+        const a = ev && ev.kind === 'media-message' ? ev.attachments.find((x) => x.attachmentId === r.attachmentId) : undefined;
+        const copy = a ? await this.media.sessionCopy(r.messageId, a) : null;
+        if (!copy) continue;
+        // Claim the row first, so two landings never produce two lines (§4.12: de-duplicated by attachment).
+        const claimed = this.media.indexDb.prepare(`UPDATE pending_deliveries SET state = 'ready', path = ? WHERE attachmentId = ? AND state = 'waiting'`).run(copy, r.attachmentId);
+        if (claimed.changes !== 1) continue;
+        const alias = this.deps.registry.appAliasFor(r.conversationKey);
+        const title = this.store.getConversation(r.conversationKey)?.title ?? 'Untitled';
+        const sent = alias !== null && this.ownsAlias(alias)
+          && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}`) === true;
+        if (sent) this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ?').run(r.attachmentId);
+      } catch (err) { this.report('pending resolve', err); }
+    }
+  }
+
+  /**
+   * Lines for the next delivery's context: files that became available with no live session to
+   * tell, and files that could not be copied within 7 days. `ack` removes them once delivered.
+   */
+  pendingContext(conversationKey: string): { lines: string[]; ack: () => void } {
+    const rows = this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[];
+    const lines = rows.map((r) => (r.state === 'ready' && r.path ? availableLine(r.path, r.caption) : `(a file from ${new Date(r.createdAt).toISOString().slice(0, 10)}, ${r.displayName}, could not be copied to this machine)`));
+    return {
+      lines,
+      ack: () => { for (const r of rows) this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ? AND state = ?').run(r.attachmentId, r.state); },
+    };
+  }
+
+  /** Waiting rows older than 7 days become a line in the session's next context (§4.12). */
+  private expirePending(): void {
+    try { this.media.indexDb.prepare(`UPDATE pending_deliveries SET state = 'expired' WHERE state = 'waiting' AND createdAt <= ?`).run(this.now() - PENDING_DELIVERY_TTL_MS); } catch (err) { this.report('pending expiry', err); }
+  }
+
   /**
    * The §4.6 verdict for a stored message, against THIS machine's ledger and key history.
    * Never throws; anything that cannot be checked reads `unknown`.
@@ -213,6 +314,18 @@ export class AppConversationService {
       this.report('verify', err);
       return 'unknown';
     }
+  }
+
+  /**
+   * How the phone that signed this record was approved (`telegram-dm` / `dashboard-pin`), from
+   * THIS machine's ledger, so the app can show "approved on dashboard" (§4.4, §4.6). Only for a
+   * record whose verdict is `verified` or `redacted`; otherwise (or unreadable) null.
+   */
+  originApprovedVia(record: Pick<VerifiableRecord, 'origin'>, verdict: OriginVerdict): string | null {
+    const o = record.origin as { keyHash?: unknown; deviceId?: unknown } | undefined;
+    if (!o || typeof o.keyHash !== 'string' || typeof o.deviceId !== 'string') return null;
+    if (verdict !== 'verified' && verdict !== 'redacted') return null;
+    try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.approvedVia ?? null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
   }
 
   /** Mint (idempotently) a local alias for every live conversation in the store. */
@@ -237,6 +350,9 @@ export class AppConversationService {
         const r = this.store.ingestReplicated(ev);
         if (r?.appended) { added++; this.onReplicatedEvent(ev); }
         if (r?.appended && (ev.kind === 'purge' || ev.kind === 'tombstone')) needsMediaPass = true;
+        if (r?.appended && (ev.kind === 'media-message' || ev.kind === 'purge')) {
+          this.replicator.markWantedDirty(ev.kind === 'media-message' ? ev.attachments.map((a) => a.sha256) : undefined);
+        }
       } catch (err) { this.report('replicated ingest', err); }
     }
     if (needsMediaPass) { try { this.media.applyReferences(); } catch (err) { this.report('media references', err); } } // @silent-fallback-ok — reported; the hourly sweep re-applies it

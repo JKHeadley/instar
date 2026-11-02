@@ -268,6 +268,11 @@ export type MeshCommand =
       manifestOnly?: boolean;
       want?: { relPath: string; offset: number }[];
     }
+  // App media copying (mobile-native-chat-media §4.12). Read/observe class: serves OWN blobs that
+  // an unpurged local event references (≤ 1 MiB slices), this machine's held-hash inventory, or a
+  // nudge asking it to pull hashes a peer holds alone. The receiver verifies length and SHA-256
+  // before keeping a byte, so the verb carries reach, never authority.
+  | import('./AppMediaReplicator.js').AppMediaPullCommand
   | {
       // WS4.4 "links that survive machine boundaries"
       // (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). The tunnel-fronting machine
@@ -491,6 +496,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
+    case 'app-media-pull':
     case 'topic-profile-pull':
     case 'commitments-sync':
     case 'preferences-sync':
@@ -530,6 +536,9 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // files behind a fresh-manifest allowlist (disclosure accepted for
       // registered same-operator peers, §3.1 note); the handler itself stays
       // dark unless replication is explicitly enabled (§3.7 gate).
+      // app-media-pull joins it (mobile-native-chat-media §4.12): it serves OWN
+      // blobs only while an unpurged local event references them; the puller
+      // keeps a copy only when its length and SHA-256 equal the reference.
       // topic-profile-pull joins it (TOPIC-PROFILE-SPEC §5.3): it serves OWN
       // per-topic profile entries — disclosure-only for registered
       // same-operator peers; the receiver revalidates every field (§10.2)
