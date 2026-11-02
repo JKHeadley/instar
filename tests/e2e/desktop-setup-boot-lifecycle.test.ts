@@ -7,6 +7,7 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { isWslHost } from '../../src/core/wslPlatform.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
 /** Production boot path with desktop OFF: guided setup must be alive, because it
@@ -39,7 +40,7 @@ async function boot(remoteDesktop: InstarConfig['remoteDesktop'], developmentAge
 }
 
 describe('guided setup production boot', () => {
-  it('is alive with desktop off, turns this machine on, and asks for a real restart', async () => {
+  it.skipIf(process.platform !== 'darwin')('is alive with desktop off, turns this Mac on, and asks for a real restart', async () => {
     const { server, app, dir, stateDir, machineId, session } = await boot({ enabled: false } as never);
     try {
       expect((await request(app).get('/desktop/targets').set(session)).status).toBe(503);
@@ -57,6 +58,26 @@ describe('guided setup production boot', () => {
       const flag = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'restart-requested.json'), 'utf8'));
       expect(flag.requestedBy).toBe('remote-desktop-setup');
       expect(fs.readFileSync(path.join(stateDir, 'logs', 'desktop-setup.jsonl'), 'utf8')).toContain('"sender":"local"');
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop-setup-boot cleanup' });
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux' || isWslHost())('shows native Linux as unsupported without writing setup config', async () => {
+    const { server, app, dir, stateDir, machineId, session } = await boot({ enabled: false } as never);
+    try {
+      const list = await request(app).get('/desktop/setup').set(session);
+      expect(list.status).toBe(200);
+      expect(list.body.machines).toHaveLength(1);
+      expect(list.body.machines[0]).toMatchObject({ machineId, state: 'not-supported', ready: false, actions: [] });
+      const on = await request(app).post(`/desktop/setup/${machineId}`).set(session)
+        .set('X-Instar-Request', '1').send({ action: 'turn-on' });
+      expect(on.status).toBe(409);
+      expect(on.body.code).toBe('not-supported');
+      const file = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'));
+      expect(file).toMatchObject({ keep: 'me' });
+      expect(file.remoteDesktop).toBeUndefined();
     } finally {
       await server.stop();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'desktop-setup-boot cleanup' });
