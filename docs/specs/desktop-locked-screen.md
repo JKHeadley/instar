@@ -100,15 +100,12 @@ The machine card on the Desktop page, behind the PIN, on the phone or anywhere: 
 
 **Helper permission.** The password path needs the helper's own Accessibility and Screen Recording grants, because relock runs after Node has gone. Only a person can grant them; see "Mobile-Complete conflict".
 
-**Retained helper.** Ad-hoc signing ties a grant to one build, so an update could silently remove it while the owner is away, and that shows only at the lock. While the feature is on, **every helper verb runs one retained binary**:
+**Retained helper.** PR 2562 (`DesktopHelperRetention`, spec `docs/specs/desktop-grant-survives-update.md`) owns this, and this feature reuses it rather than adding a second copy. A helper with no app bundle is matched by path, so there is one helper per Mac at the fixed path `~/.instar/desktop-helper/instar-desktop-host`, replaced only when the helper's source changes. This replaces the digest-named folders and pointer the review rounds described.
 
-- It lives per Mac, outside any agent's project tree, at `~/.instar/desktop-helper/retained/<sha256>/`, with a `current` pointer file holding the digest. The file viewer cannot reach it. Agents on one Mac share it, so one grant serves them.
-- `MacDesktopHost.trustedBinary()` today accepts only `dist/native`. It gains this one path: a regular file, owned by this user, with no group or other write on it or the pointer, whose SHA-256 is checked against the pointer before every spawn, including the guard.
-- `probe` runs it, so `screenGrant` and `inputGrant` describe the binary that will actually type and relock. Readiness reads only that.
-- With the feature on and no pointer, or an installed build newer than the pointer by the `version` verb, that build lands as the one candidate per Mac in its own directory, under the per-Mac lock. Agents on a Mac update at different times, so nothing older than the pointer can flip it back, the installed build keeps serving the viewer until the first flip, and an agent on older code uses the newer helper through the additive wire contract. The card asks for the grant, naming the candidate in the macOS prompt, a real probe of the candidate must pass, then the pointer flips. Old directories are pruned once no process maps them, the way `ClaudeBinaryRetainer` keeps versions.
-- A retained helper can miss helper fixes. The helper gains a `version` verb returning a code-owned helper constant, not the package version, so only a helper change asks for a grant, status shows the retained copy's age, and a code-owned minimum version turns the password path off with a named reason when a helper fix must not be skipped. The wire contract stays additive; a mismatch turns the password path off with a named reason.
-- Missing, tampered or wrong-digest retained copy: the installed build serves unlocked use, the locked features are off with a named reason, and nothing falls back to an ungranted build. During a live duty, the grant ends and a security item fires.
-- `instar nuke` leaves this directory and reports it, because another agent may use it. It is inert without a server. A stable signing identity would make this copy unnecessary, since a grant then survives releases; none exists yet, and this feature does not wait for one.
+- While the feature is on, every helper verb runs through `MacDesktopHost.trustedBinary()`, which resolves to that copy, so `screenGrant` and `inputGrant` describe the binary that will type and relock.
+- The password path needs `helperSource: retained` and the helper's own input grant. Anything else is off with a named reason, and it never falls back to an ungranted build. Until PR 2562 lands that field is absent, so the password path stays off.
+- A helper source change loses the macOS grant, and the password path is off until it is granted again. With a stable signing identity the grant would survive source changes at the same path.
+- The locked-screen state lives beside it in `~/.instar/desktop-helper/locked/`, outside any agent's project tree.
 
 ### The grant at the shield
 
@@ -237,7 +234,7 @@ If P7 passes, the owner does this from the phone through the viewer while the Ma
 | Enable on this machine | `invariant` | PIN route; Bearer cannot. |
 | Enable the browser box | `invariant` | PIN route, limit shown, off by default. Target-side refusal binds honest clients only. |
 | Which lock state | `invariant` | Fixed predicates; contradiction is `unknown`. A real-frame test settles it. |
-| Which helper build runs | `invariant` | Digest-checked retained binary while on; never an ungranted fallback. |
+| Which helper build runs | `invariant` | The fixed per-Mac copy from PR 2562; never an ungranted fallback. |
 | macOS version admitted | `invariant` | Code-owned proven table, requiring recorded P12 and P15 passes; anything else unsupported and not enableable. |
 | Respawn vs revoke at state change | `invariant` | 3 per change, 8 per request. |
 | Refuse ordinary `type` in locked-class | `invariant` | A password must not take the plaintext path. |
@@ -268,7 +265,7 @@ Status is `proxied-on-read`, dark peers shown with age. `remoteDesktop.lockedScr
 7. **`input-stream` helper holds the seal key and types.**
 8. **Relock on end, default on, then a 2-minute watch with admission blocked; no proven relock means no password.** The promise is "relocks, and tells you if it couldn't"; the operator accepted that on 2026-11-01 in topic 134088, and a slow unlock past 2 minutes is accepted risk.
 9. **Chime on, owner can turn off.**
-10. **One retained, digest-checked helper per Mac until a new build is granted.** Stable signing would replace it when a certificate exists; this feature does not wait.
+10. **One kept helper per Mac at a fixed path, owned by PR 2562.** This feature adds no second copy.
 11. **macOS only, proven versions only; other hosts refuse the enable.** The rig runs on the macOS versions the pool has.
 12. **Attempts 3 per request, 6 per Mac per day, shared by agents.**
 13. **All grant-bound state keys to the request id.**
@@ -294,7 +291,7 @@ Status is `proxied-on-read`, dark peers shown with age. `remoteDesktop.lockedScr
 | Relock duty | Guard acknowledged | Guard will act | Its own 1 s heartbeat, read by the 10 s sweep; P12 | Replacement guard; no password until acknowledged |
 | Duty closed unneeded | Console or session differs | Someone else is there | Positive reading, never an unreadable one | Retry, then `relock-failed` |
 | Partial field cleared | Escape sent | Field empty | P14 proof; no live read exists | Keys stay blocked |
-| Helper identity | Digest matches pointer | The granted binary runs | Real probe of that binary | Locked features off |
+| Helper identity | `helperSource: retained` | The granted binary runs | Real probe of that binary | Locked features off |
 | Target identity | Key matches the pin | This Mac | Target signature over the channel keys | Sheet refused |
 | Password not stored | No storage code | Absent from disk and logs | Fixture password scanned across logs, audit, dumps | Fail the test |
 | Disable | Verb acknowledged | Grants refused | Refused test grant in status | Report unconfirmed |

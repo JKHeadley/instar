@@ -1690,7 +1690,16 @@ export interface RouteContext {
   desktopRequestPermission?: import('./desktopRouteContext.js').DesktopRouteAccess['desktopRequestPermission'];
   desktopLocalDiagnostics?: () => Promise<Record<string, unknown>>;
   desktopMeshBroker?: import('./DesktopMeshBroker.js').DesktopMeshBroker | null;
+  /** Target-side locked-screen levers; null when this machine has none. */
+  desktopLocked?: {
+    machineId: string;
+    status(): Promise<Record<string, unknown>>;
+    settings(patch: Record<string, unknown>): Promise<Record<string, unknown>>;
+    disable(): Promise<void>;
+  } | null;
   desktopTargetSigningKey?: (machineId: string) => string | null;
+  /** Other pool machines a pool status read should ask. */
+  desktopTargets?: () => string[];
   desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
   /** Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5/§7).
    *  Null/absent when monitoring.blockerLedger.selfUnblockChecklist.enabled is false
@@ -13141,6 +13150,66 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'Supervised restart is unavailable' });
     }
   });
+  // ── Locked-screen access. Off everywhere by default. The enable refuses any
+  // macOS without recorded P12 and P15 passes; no route originates a password.
+  const lockedPatch = (body: Record<string, unknown>): Record<string, boolean> | null => {
+    const patch: Record<string, boolean> = {};
+    for (const key of ['enabled', 'browserBox', 'chime']) {
+      if (body[key] === undefined) continue;
+      if (typeof body[key] !== 'boolean') return null;
+      patch[key] = body[key] as boolean;
+    }
+    return Object.keys(patch).length ? patch : null;
+  };
+  router.get('/desktop/locked/status', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.desktopLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
+    const local = { machineId: ctx.desktopLocked.machineId, ...await ctx.desktopLocked.status() };
+    if (req.query.scope !== 'pool') { res.json(local); return; }
+    const machines: Array<Record<string, unknown>> = [local];
+    const failed: Array<{ machineId: string; reason: string }> = [];
+    if (ctx.desktopMeshBroker && ctx.desktopTargets) {
+      for (const peer of ctx.desktopTargets()) {
+        try { machines.push({ machineId: peer, ...await ctx.desktopMeshBroker.lockedStatus(peer) }); }
+        catch { failed.push({ machineId: peer, reason: 'unreachable' }); }
+      }
+    }
+    res.json({ scope: 'pool', machines, failed });
+  });
+  router.post('/desktop/locked/settings', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!desktopTransport(req, res) || !desktopIntent(req, res)) return;
+    const session = desktopOperatorSession(req);
+    if (!ctx.verifyDashboardOperatorSession?.(session)) { res.status(403).json({ error: 'Dashboard operator session required' }); return; }
+    const patch = lockedPatch((req.body ?? {}) as Record<string, unknown>);
+    if (!patch) { res.status(400).json({ error: 'No valid setting' }); return; }
+    const machineId = typeof req.body?.machineId === 'string' ? req.body.machineId : ctx.desktopLocked?.machineId;
+    try {
+      if (machineId === ctx.desktopLocked?.machineId) {
+        if (!ctx.desktopLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
+        res.json(await ctx.desktopLocked.settings(patch));
+        return;
+      }
+      if (!ctx.desktopMeshBroker || !machineId) { res.status(503).json({ error: 'Remote desktop mesh is unavailable' }); return; }
+      res.json(await ctx.desktopMeshBroker.locked(session, machineId, 'locked-settings', patch));
+    } catch (error) { res.status(409).json({ error: (error as Error).message }); }
+  });
+  router.post('/desktop/locked/disable', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!desktopIntent(req, res)) return;
+    const machineId = typeof req.body?.machineId === 'string' ? req.body.machineId : ctx.desktopLocked?.machineId;
+    try {
+      if (machineId === ctx.desktopLocked?.machineId) {
+        if (!ctx.desktopLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
+        await ctx.desktopLocked.disable();
+        res.json({ disabled: true });
+        return;
+      }
+      if (!ctx.desktopMeshBroker || !machineId) { res.status(503).json({ error: 'Remote desktop mesh is unavailable' }); return; }
+      res.json(await ctx.desktopMeshBroker.locked(desktopOperatorSession(req), machineId, 'locked-disable', {}));
+    } catch (error) { res.status(409).json({ error: (error as Error).message }); }
+  });
+
   router.get('/desktop/targets', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
@@ -13198,6 +13267,7 @@ export function createRoutes(ctx: RouteContext): Router {
           machineId: req.body?.machineId, browserPublicKey: req.body?.browserPublicKey,
           browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
           browserNonce: req.body?.browserNonce, videoCodec: req.body?.videoCodec,
+          client: req.body?.client === 'app' ? 'app' : 'browser', controlRecords: req.body?.controlRecords === true,
         });
         res.status(201).json(result);
         return;
@@ -13209,6 +13279,7 @@ export function createRoutes(ctx: RouteContext): Router {
         browserEcdhPublicKey: req.body?.browserEcdhPublicKey,
         browserNonce: req.body?.browserNonce, videoCodec: req.body?.videoCodec,
         scopeConfirmed: req.body?.scopeConfirmed,
+        client: req.body?.client === 'app' ? 'app' : 'browser', controlRecords: req.body?.controlRecords === true,
       });
       res.status(201).json(result);
     } catch (error) { res.status(403).json({ error: (error as Error).message }); }

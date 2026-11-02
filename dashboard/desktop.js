@@ -220,7 +220,7 @@ const base64ToBytes = text => Uint8Array.from(atob(text), character => character
 function recordIv(direction, sequence) {
   const iv = new Uint8Array(12);
   const view = new DataView(iv.buffer);
-  view.setUint32(0, direction === 'frame' ? 1 : 2);
+  view.setUint32(0, { frame: 1, input: 2, control: 3 }[direction]);
   view.setBigUint64(4, sequence);
   return iv;
 }
@@ -379,11 +379,65 @@ function receiveH264(bytes, epoch) {
     timestamp, data }));
   needsVideoKeyframe = false;
 }
+const CONTROL_MARKER = 0xc7;
+let controlSequence = 0n;
+let lockedSealKey = '';
+let lockedScreenState = '';
+let lockedBoxAllowed = false;
+let secretSequence = 0;
+function syncLockedPassword() {
+  const show = lockedBoxAllowed && lockedScreenState === 'locked-in-session' && !!lockedSealKey;
+  $('lockedPassword').hidden = !show;
+  if (!show) $('lockedPasswordInput').value = '';
+}
+function lockedMessage(reason) {
+  return { 'relock-pending': 'This Mac is finishing a relock. Try again in a couple of minutes.',
+    'attempts-per-request': 'Too many tries in this session.', 'attempts-per-day': 'Too many tries today.',
+    'seal-stale': 'The connection changed. Type your password again.',
+    aborted: 'Stopped before the password finished. Type it again.',
+    'field-dirty': 'Clearing the password field. Try again in a moment.',
+    'browser-box-off': 'Password entry from a browser is off for this Mac.',
+    'tunnel-not-first-tier': 'Password entry is off while the backup connection is in use.' }[reason]
+    ?? 'This Mac did not accept that. Try again.';
+}
+async function receiveControl(record) {
+  const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
+  const sequence = view.getBigUint64(0) & 0x00ff_ffff_ffff_ffffn;
+  if (sequence <= controlSequence) throw new Error('Remote control record invalid.');
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: recordIv('control', sequence),
+    additionalData: recordAad('control') }, aesKey, record.subarray(8));
+  controlSequence = sequence;
+  const value = JSON.parse(new TextDecoder().decode(plain));
+  if (value.type === 'seal') lockedSealKey = value.key;
+  if (value.type === 'state') { lockedScreenState = value.state; lockedBoxAllowed = value.box === true; }
+  if (value.type === 'secret-result' && value.refused) status(lockedMessage(value.refused));
+  if (value.type === 'secret-result' && value.sent) { $('leaveUnlockedButton').hidden = false; }
+  if (value.type === 'relock') status(value.phase === 'left-unlocked' ? 'This Mac will stay unlocked.' : 'Relocking has begun.');
+  syncLockedPassword();
+}
+/** Sealed for the helper alone: Node and the front carry bytes they cannot read. */
+async function sendLockedPassword(text) {
+  const helperKey = lockedSealKey;
+  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const helper = await crypto.subtle.importKey('raw', base64ToBytes(helperKey), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const bits = await crypto.subtle.deriveBits({ name: 'ECDH', public: helper }, pair.privateKey, 256);
+  const hkdf = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0),
+    info: encoder.encode(`instar-desktop-secret-v1:${requestId}:${helperKey}`) }, hkdf,
+  { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const seq = ++secretSequence;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv,
+    additionalData: encoder.encode(JSON.stringify(['instar-desktop-secret-v1', requestId, seq])) }, key, encoder.encode(text));
+  const ephemeral = await crypto.subtle.exportKey('raw', pair.publicKey);
+  return sendCommand({ type: 'secret', secret: { ephemeral: bytesToBase64(ephemeral), iv: bytesToBase64(iv), ct: bytesToBase64(ct), seq } });
+}
 async function receiveFrame(recordBuffer, epoch) {
   if (!inputEnabled || epoch !== streamEpoch) return;
   if (!aesKey || !(recordBuffer instanceof ArrayBuffer) || recordBuffer.byteLength < 28
     || recordBuffer.byteLength > 1_600_000) throw new Error('Encrypted frame invalid.');
   const record = new Uint8Array(recordBuffer);
+  if (record[0] === CONTROL_MARKER) { await receiveControl(record); return; }
   const sequence = new DataView(recordBuffer).getBigUint64(0);
   // The target may drop an already-encrypted frame under backpressure. A
   // strictly increasing nonce still rejects replay/reordering without treating
@@ -626,6 +680,7 @@ async function loadTargetsAndMaybeOpen() {
     const trustedKey = typeof target.targetSigningPublicKey === 'string'
       ? target.targetSigningPublicKey : '';
     option.disabled = !target.ready || !trustedKey;
+    setTimeout(() => { void refreshLockedCard(); }, 0);
     option.textContent = option.disabled
       ? `${target.label} — ${target.unavailableReason || 'Unavailable right now'}`
       : target.label;
@@ -744,6 +799,8 @@ async function requestDesktop() {
       browserEcdhPublicKey: bytesToBase64(ecdhPublicKey),
       browserNonce: crypto.randomUUID().replaceAll('-', ''),
       videoCodec,
+      client: 'browser',
+      controlRecords: true,
     });
     requestId = result.requestId;
     const approved = await api(`/desktop/requests/${encodeURIComponent(requestId)}`);
@@ -802,6 +859,10 @@ async function openStream(result, resume = null) {
   sendChain = Promise.resolve();
   receiveChain = Promise.resolve();
   socket.binaryType = 'arraybuffer';
+  controlSequence = 0n;
+  lockedSealKey = '';
+  secretSequence = 0;
+  syncLockedPassword();
   return new Promise((resolve, reject) => {
   let opened = false;
   let settled = false;
@@ -855,8 +916,17 @@ async function openStream(result, resume = null) {
   });
 }
 
+const LOCK_SCREEN_KEYS = new Set(['Enter', 'Tab', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+/** A password typed at the shield must never leave as plain input. The helper
+ * also refuses it, but only this stops it reaching the server at all. */
+function refusedAtLock(action) {
+  if (!['locked-in-session', 'locked-by-policy', 'screensaver-or-sleep', 'unknown'].includes(lockedScreenState)) return false;
+  if (action.kind === 'type') return true;
+  return action.kind === 'keyDown' && !LOCK_SCREEN_KEYS.has(action.key);
+}
 function send(action) {
   if (!inputEnabled) return Promise.resolve(false);
+  if (refusedAtLock(action)) return Promise.resolve(true);
   return sendCommand({ type: 'input', action });
 }
 function imageArea() {
@@ -1324,6 +1394,33 @@ $('stopButton').addEventListener('click', async () => {
   catch { message = 'The viewer closed, but the target has not confirmed revocation. Access expires automatically.'; }
   leave(message);
 });
+$('lockedPassword').addEventListener('submit', event => {
+  event.preventDefault();
+  const input = $('lockedPasswordInput');
+  const text = input.value;
+  input.value = '';
+  if (text) void sendLockedPassword(text);
+});
+const LOCKED_REASONS = { 'unsupported-macos': 'Not available yet: this Mac\u2019s macOS has not passed the crash and Stop tests.' };
+async function refreshLockedCard() {
+  let rows;
+  try { rows = (await api('/desktop/locked/status?scope=pool')).machines; }
+  catch { $('lockedCard').hidden = true; return; }
+  const row = rows?.find(item => item.machineId === $('machine').value);
+  if (!row) { $('lockedCard').hidden = true; return; }
+  $('lockedCard').hidden = !row.enabled && !!row.refusal;
+  $('lockedCardText').textContent = row.refusal ? LOCKED_REASONS[row.refusal] ?? 'Opening this Mac at its lock screen is unavailable.'
+    : row.enabled ? 'You can open this Mac at its lock screen. It relocks when you finish.' : 'Opening this Mac at its lock screen is off.';
+  $('lockedToggle').hidden = !!row.refusal;
+  $('lockedToggle').textContent = row.enabled ? 'Turn off' : 'Turn on';
+  $('lockedToggle').onclick = async () => {
+    try { await api('/desktop/locked/settings', 'POST', { machineId: row.machineId, enabled: !row.enabled }); }
+    catch (error) { status(error.message); }
+    void refreshLockedCard();
+  };
+}
+$('machine').addEventListener('change', () => { void refreshLockedCard(); });
+$('leaveUnlockedButton').addEventListener('click', () => { void sendCommand({ type: 'leave-unlocked' }); });
 window.addEventListener('beforeunload', () => {
   stopping = true;
   sendCommand({ type: 'stop' });

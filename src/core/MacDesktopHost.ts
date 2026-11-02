@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validDesktopInput, type DesktopButton, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
 import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
+import type { DesktopSealedSecret } from './DesktopHost.js';
 
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
@@ -37,7 +38,9 @@ export class MacDesktopHost implements DesktopHost {
   private captureLastFrame: Buffer | null = null;
   private pendingCapture: { resolve(frame: Buffer): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   private inputReply = '';
-  private pendingInput: { resolve(): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private pendingInput: { resolve(reply: void | { refused: string }): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private lockedMode: { root: string; refuse: string[]; chime?: boolean } | null = null;
+  private sealKeyHandler: ((key: string) => void) | null = null;
   private heldRemoteButton: DesktopButton | null = null;
   private readonly heldRemoteKeys = new Set<string>();
   private pendingControlAction: DesktopInput | null = null;
@@ -51,6 +54,38 @@ export class MacDesktopHost implements DesktopHost {
   constructor(private readonly binary = DEFAULT_HOST) {}
 
   setInputFailureHandler(handler: () => void): void { this.inputFailureHandler = handler; }
+  setSealKeyHandler(handler: (key: string) => void): void { this.sealKeyHandler = handler; }
+
+  /** Off means no helper is ever told, so every verb refuses at the shield. */
+  setLockedMode(mode: { root: string; refuse: string[]; chime?: boolean } | null): void { this.lockedMode = mode; }
+
+  /** Stop reaches a password send between characters. */
+  abortInput(): void { this.inputStream?.stdin.write('{"kind":"abort"}\n'); }
+
+  /** The seal key must exist before a sheet can open. */
+  ensureInputStream(): void { if (!this.inputStream) this.startInputStream(); }
+
+  /** One short-lived helper per change, so Node never holds the kernel lock. */
+  async lockedOp(op: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.lockedRoot) throw new Error('mac-desktop-host-locked-unavailable');
+    const raw = await this.run('state-op', Buffer.from(JSON.stringify({ root: this.lockedRoot, ...op })));
+    try { return JSON.parse(raw.toString('utf8')) as Record<string, unknown>; }
+    catch { throw new Error('mac-desktop-host-locked-invalid'); }
+  }
+
+  private lockedRoot: string | null = null;
+  setLockedRoot(root: string): void { this.lockedRoot = root; }
+
+  /** Detached into its own session, so nothing that kills Node reaches it. */
+  async startRelockGuard(key: string): Promise<void> {
+    if (!this.lockedRoot || !/^[a-f0-9-]{36}\.\d+$/.test(key)) throw new Error('mac-desktop-host-guard-invalid');
+    const child = spawn(this.trustedBinary(), ['relock-guard', this.lockedRoot, key], {
+      stdio: 'ignore', detached: true,
+      env: { ...this.helperEnv('own'), INSTAR_DESKTOP_LOCKED_ROOT: this.lockedRoot },
+    });
+    child.on('error', () => { /* @silent-fallback-ok — no heartbeat follows, so typing stays refused and the sweep replaces it. */ });
+    child.unref();
+  }
 
   /** Local kill switch: stop any native input still running when a grant ends. */
   cancelInput(): Promise<void> {
@@ -125,9 +160,14 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private helperEnv(identity: HelperIdentity): NodeJS.ProcessEnv {
+    const locked = this.lockedMode
+      ? { INSTAR_DESKTOP_LOCKED: '1', INSTAR_DESKTOP_LOCKED_ROOT: this.lockedMode.root,
+        INSTAR_DESKTOP_LOCKED_REFUSE: this.lockedMode.refuse.join(','),
+        ...(this.lockedMode.chime ? { INSTAR_DESKTOP_LOCKED_CHIME: '1' } : {}) }
+      : {};
     return identity === 'own'
-      ? { PATH: HELPER_PATH, INSTAR_DESKTOP_OWN_IDENTITY: '1' }
-      : { PATH: HELPER_PATH };
+      ? { PATH: HELPER_PATH, INSTAR_DESKTOP_OWN_IDENTITY: '1', ...locked }
+      : { PATH: HELPER_PATH, ...locked };
   }
 
   private trustedBinary(): string {
@@ -194,7 +234,7 @@ export class MacDesktopHost implements DesktopHost {
   }
 
   private async run(
-    command: 'probe' | 'capture' | 'cursor' | 'input' | 'release' | 'request-permission',
+    command: 'probe' | 'capture' | 'cursor' | 'input' | 'release' | 'request-permission' | 'state-op',
     input?: Buffer,
     identity: HelperIdentity = command === 'capture' ? this.screenIdentity
       : command === 'input' || command === 'release' ? this.inputIdentity : 'inherited',
@@ -204,7 +244,7 @@ export class MacDesktopHost implements DesktopHost {
       const child = spawn(resolved, [command], { stdio: ['pipe', 'pipe', 'pipe'], env: this.helperEnv(identity) });
       if (command === 'input') this.inputChildren.add(child);
       const chunks: Buffer[] = [];
-      const limit = command === 'capture' ? FRAME_LIMIT : 4_096;
+      const limit = command === 'capture' ? FRAME_LIMIT : command === 'state-op' ? 64_000 : 4_096;
       let size = 0;
       let settled = false;
       const fail = (reason: string) => {
@@ -214,7 +254,8 @@ export class MacDesktopHost implements DesktopHost {
         reject(new Error(reason));
       };
       const timer = setTimeout(() => fail('mac-desktop-host-timeout'),
-        command === 'request-permission' ? 15_000 : command === 'capture' ? 4_000 : 2_000);
+        command === 'request-permission' ? 15_000 : command === 'capture' ? 4_000
+          : command === 'state-op' ? 10_000 : 2_000);
       timer.unref?.();
       child.stdout.on('data', (chunk: Buffer) => {
         size += chunk.length;
@@ -412,8 +453,14 @@ export class MacDesktopHost implements DesktopHost {
     return { x: value.x, y: value.y };
   }
 
-  async input(action: MacDesktopInput): Promise<void> {
+  async input(action: MacDesktopInput): Promise<void | { refused: string }> {
     if (!validInput(action)) throw new Error('mac-desktop-host-input-invalid');
+    // A press refused at the shield leaves no held state, so its release has
+    // nothing to pair with. Under the flag that is a refused no-op, not a fault.
+    if (this.lockedMode && ((action.kind === 'keyUp' && !this.heldRemoteKeys.has(action.key))
+      || (action.kind === 'buttonUp' && this.heldRemoteButton !== action.button))) {
+      return { refused: 'nothing-held' };
+    }
     const generation = this.inputGeneration;
     try { await this.releaseBarrier; }
     catch { throw new Error('mac-desktop-host-release-unconfirmed'); }
@@ -432,7 +479,27 @@ export class MacDesktopHost implements DesktopHost {
     const child = this.inputStream!;
     if (this.pendingInput) throw new Error('mac-desktop-host-input-busy');
     this.pendingControlAction = action;
-    await new Promise<void>((resolve, reject) => {
+    const reply = await this.sendInputLine(child, JSON.stringify(action), 2_000);
+    if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
+    this.pendingControlAction = null;
+    if (reply) return reply;
+    if (action.kind === 'buttonDown') this.heldRemoteButton = action.button;
+    if (action.kind === 'buttonUp') this.heldRemoteButton = null;
+    if (action.kind === 'keyDown') this.heldRemoteKeys.add(action.key);
+    if (action.kind === 'keyUp') this.heldRemoteKeys.delete(action.key);
+  }
+
+  /** Twenty seconds: it types one character at a time. Only sealed bytes pass. */
+  async secretType(input: { requestId: string; key: string; secret: DesktopSealedSecret }): Promise<void | { refused: string }> {
+    if (!this.lockedMode) throw new Error('mac-desktop-host-input-invalid');
+    if (!this.inputStream) this.startInputStream();
+    if (this.pendingInput) throw new Error('mac-desktop-host-input-busy');
+    return this.sendInputLine(this.inputStream!, JSON.stringify({ kind: 'secretType', requestId: input.requestId,
+      key: input.key, ...input.secret }), 20_000);
+  }
+
+  private sendInputLine(child: ChildProcessWithoutNullStreams, line: string, timeoutMs: number): Promise<void | { refused: string }> {
+    return new Promise<void | { refused: string }>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pendingInput?.timer !== timer) return;
         this.pendingInput = null;
@@ -440,10 +507,10 @@ export class MacDesktopHost implements DesktopHost {
         this.retireInputStream(child);
         child.kill('SIGKILL');
         reject(new Error('mac-desktop-host-input-timeout'));
-      }, 2_000);
+      }, timeoutMs);
       timer.unref?.();
       this.pendingInput = { resolve, reject, timer };
-      child.stdin.write(JSON.stringify(action) + '\n', error => {
+      child.stdin.write(line + '\n', error => {
         if (error && this.pendingInput?.timer === timer) {
           clearTimeout(timer);
           this.pendingInput = null;
@@ -454,12 +521,6 @@ export class MacDesktopHost implements DesktopHost {
         }
       });
     });
-    if (this.inputGeneration !== generation) throw new Error('mac-desktop-host-input-cancelled');
-    if (action.kind === 'buttonDown') this.heldRemoteButton = action.button;
-    if (action.kind === 'buttonUp') this.heldRemoteButton = null;
-    if (action.kind === 'keyDown') this.heldRemoteKeys.add(action.key);
-    if (action.kind === 'keyUp') this.heldRemoteKeys.delete(action.key);
-    this.pendingControlAction = null;
   }
 
   private startInputStream(): void {
@@ -496,18 +557,26 @@ export class MacDesktopHost implements DesktopHost {
     child.stdout.on('data', (chunk: Buffer) => {
       if (this.inputStream !== child) return;
       this.inputReply += chunk.toString('utf8');
-      if (this.inputReply.length > 128) { child.kill('SIGKILL'); fail(); return; }
-      const newline = this.inputReply.indexOf('\n');
-      if (newline < 0) return;
-      const reply = this.inputReply.slice(0, newline).trim();
-      this.inputReply = this.inputReply.slice(newline + 1);
-      const pending = this.pendingInput;
-      if (!pending || reply !== '{"ok":true}' || this.inputReply.length > 0) {
-        child.kill('SIGKILL'); fail(); return;
+      if (this.inputReply.length > (this.lockedMode ? 512 : 128)) { child.kill('SIGKILL'); fail(); return; }
+      for (;;) {
+        const newline = this.inputReply.indexOf('\n');
+        if (newline < 0) return;
+        const reply = this.inputReply.slice(0, newline).trim();
+        this.inputReply = this.inputReply.slice(newline + 1);
+        if (this.lockedMode) {
+          const seal = /^\{"sealKey":"([A-Za-z0-9+/=]{80,120})"\}$/.exec(reply);
+          if (seal) { this.sealKeyHandler?.(seal[1]); continue; }
+        }
+        const refused = this.lockedMode ? /^\{"refused":"([a-z-]{1,40})"\}$/.exec(reply) : null;
+        const pending = this.pendingInput;
+        // Off keeps today's strict parse: exactly one reply, nothing after it.
+        if (!pending || (reply !== '{"ok":true}' && !refused) || (!this.lockedMode && this.inputReply.length > 0)) {
+          child.kill('SIGKILL'); fail(); return;
+        }
+        this.pendingInput = null;
+        clearTimeout(pending.timer);
+        pending.resolve(refused ? { refused: refused[1] } : undefined);
       }
-      this.pendingInput = null;
-      clearTimeout(pending.timer);
-      pending.resolve();
     });
     child.on('error', fail);
     child.stdin.on('error', fail);

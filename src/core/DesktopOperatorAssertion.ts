@@ -64,6 +64,70 @@ export function mintDesktopOperatorAssertion(input: {
   return { ...unsigned, signature: input.sign(canonicalDesktopOperatorAssertion(unsigned)) };
 }
 
+/** Settings for one physical Mac, signed by the designated front. A separate
+ * version, so `begin`'s bytes stay unchanged for targets not yet updated. */
+export interface DesktopLockedAssertion {
+  version: 'instar-desktop-locked-v1';
+  issuerMachineId: string;
+  targetMachineId: string;
+  operation: 'locked-settings' | 'locked-disable';
+  settingsDigest: string;
+  jti: string;
+  issuedAtMs: number;
+  expiresAtMs: number;
+  signature: string;
+}
+
+export function desktopLockedSettingsDigest(settings: unknown): string {
+  return createHash('sha256').update(JSON.stringify(settings ?? null), 'utf8').digest('base64url');
+}
+
+export function canonicalDesktopLockedAssertion(assertion: Omit<DesktopLockedAssertion, 'signature'>): string {
+  return JSON.stringify([assertion.version, assertion.issuerMachineId, assertion.targetMachineId,
+    assertion.operation, assertion.settingsDigest, assertion.jti, assertion.issuedAtMs, assertion.expiresAtMs]);
+}
+
+export function mintDesktopLockedAssertion(input: {
+  issuerMachineId: string; targetMachineId: string; operation: DesktopLockedAssertion['operation'];
+  settings: unknown; nowMs: number; sign: (canonical: string) => string;
+}): DesktopLockedAssertion {
+  if (!MACHINE_ID.test(input.issuerMachineId) || !MACHINE_ID.test(input.targetMachineId)
+    || !Number.isSafeInteger(input.nowMs)) throw new Error('desktop-operator-assertion-invalid-input');
+  const unsigned: Omit<DesktopLockedAssertion, 'signature'> = {
+    version: 'instar-desktop-locked-v1', issuerMachineId: input.issuerMachineId,
+    targetMachineId: input.targetMachineId, operation: input.operation,
+    settingsDigest: desktopLockedSettingsDigest(input.settings),
+    jti: randomBytes(24).toString('base64url'),
+    issuedAtMs: input.nowMs, expiresAtMs: input.nowMs + DESKTOP_OPERATOR_MAX_TTL_MS,
+  };
+  return { ...unsigned, signature: input.sign(canonicalDesktopLockedAssertion(unsigned)) };
+}
+
+export function verifyDesktopLockedAssertion(input: {
+  assertion: DesktopLockedAssertion; expectedTargetMachineId: string; expectedIssuerMachineId: string;
+  settings: unknown; nowMs: number; resolveIssuerKey: (machineId: string) => string | null;
+  verifySignature: (canonical: string, signature: string, publicKey: string) => boolean;
+  seenJti: (jti: string) => boolean;
+}): { ok: true; jti: string } | { ok: false; reason: DesktopOperatorAssertionRefusal } {
+  const a = input.assertion;
+  if (!a || a.version !== 'instar-desktop-locked-v1' || (a.operation !== 'locked-settings' && a.operation !== 'locked-disable')
+    || !MACHINE_ID.test(a.issuerMachineId) || !MACHINE_ID.test(a.targetMachineId)
+    || !/^[A-Za-z0-9_-]{32}$/.test(a.jti) || !Number.isSafeInteger(a.issuedAtMs) || !Number.isSafeInteger(a.expiresAtMs)
+    || typeof a.signature !== 'string' || a.signature.length < 32 || a.signature.length > 256) return { ok: false, reason: 'malformed' };
+  if (a.targetMachineId !== input.expectedTargetMachineId) return { ok: false, reason: 'wrong-target' };
+  if (a.issuerMachineId !== input.expectedIssuerMachineId) return { ok: false, reason: 'wrong-issuer' };
+  if (a.settingsDigest !== desktopLockedSettingsDigest(input.settings)) return { ok: false, reason: 'wrong-browser' };
+  if (a.expiresAtMs <= input.nowMs) return { ok: false, reason: 'expired' };
+  if (a.issuedAtMs > input.nowMs + DESKTOP_OPERATOR_CLOCK_SKEW_MS) return { ok: false, reason: 'not-yet-valid' };
+  if (a.expiresAtMs <= a.issuedAtMs || a.expiresAtMs - a.issuedAtMs > DESKTOP_OPERATOR_MAX_TTL_MS) return { ok: false, reason: 'ttl-invalid' };
+  const key = input.resolveIssuerKey(a.issuerMachineId);
+  if (!key) return { ok: false, reason: 'unknown-issuer' };
+  const { signature: _signature, ...unsigned } = a;
+  if (!input.verifySignature(canonicalDesktopLockedAssertion(unsigned), a.signature, key)) return { ok: false, reason: 'signature-invalid' };
+  if (input.seenJti(a.jti)) return { ok: false, reason: 'replayed' };
+  return { ok: true, jti: a.jti };
+}
+
 export type DesktopOperatorAssertionRefusal =
   | 'malformed' | 'wrong-target' | 'wrong-issuer' | 'wrong-browser'
   | 'expired' | 'not-yet-valid' | 'ttl-invalid' | 'unknown-issuer'

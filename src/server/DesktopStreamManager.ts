@@ -3,7 +3,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { DesktopButton, DesktopInput } from '../core/DesktopHost.js';
+import type { DesktopButton, DesktopInput, DesktopSealedSecret } from '../core/DesktopHost.js';
 // E2E-PAIRING: EXEMPT — type-only change (held button may be middle); no route change.
 
 export interface DesktopStreamSession {
@@ -18,8 +18,13 @@ export interface DesktopStreamSession {
   fallbackVideo?(): void;
   /** An open, visible viewer counts as use: refresh the grant's idle clock. */
   touch?(): void;
-  decryptCommand(record: Buffer): { type: 'stop' | 'ping' | 'input' | 'keyframe' | 'video-fallback'; action?: DesktopInput };
-  input(action: DesktopInput): Promise<void>;
+  decryptCommand(record: Buffer): { type: 'stop' | 'ping' | 'input' | 'keyframe' | 'video-fallback' | 'secret' | 'leave-unlocked'; action?: DesktopInput; secret?: DesktopSealedSecret };
+  /** A `refused` reply changes nothing and does not close the stream. */
+  input(action: DesktopInput): Promise<void | { refused: string }>;
+  /** Locked-screen only. Control records stay outside the video budget. */
+  attachControl?(send: (record: Buffer) => void): void;
+  secret?(secret: DesktopSealedSecret): Promise<void>;
+  leaveUnlocked?(): Promise<void>;
   revoke(): Promise<void>;
   release(reason?: 'transport-lost' | 'terminal'): void;
 }
@@ -161,7 +166,8 @@ export class DesktopStreamManager {
           const command = pendingInputs.shift()!;
           await session.assertActive();
           if (closed) return;
-          await session.input(command.action);
+          const reply = await session.input(command.action);
+          if (reply) { lastActivity = Date.now(); continue; }
           if (command.action.kind === 'buttonDown') heldButton = command.action.button;
           if (command.action.kind === 'buttonUp') heldButton = null;
           if (command.action.kind === 'keyDown') heldKeys.add(command.action.key);
@@ -200,6 +206,16 @@ export class DesktopStreamManager {
         }
         return;
       }
+      if (command.type === 'secret') {
+        if (!session.secret || !command.secret) { close('protocol'); return; }
+        lastActivity = Date.now();
+        void session.secret(command.secret).catch(() => close('input-failed'));
+        return;
+      }
+      if (command.type === 'leave-unlocked') {
+        void session.leaveUnlocked?.().catch(() => { /* @silent-fallback-ok — no acknowledgement means the relock still runs. */ });
+        return;
+      }
       if (command.type !== 'input' || !command.action) { close('protocol'); return; }
       const last = pendingInputs.at(-1);
       if (command.action.kind === 'move' && last?.action.kind === 'move') {
@@ -217,6 +233,10 @@ export class DesktopStreamManager {
         return;
       }
       void drainInputs();
+    });
+    // Sent directly, never queued behind video, and a send failure is transport loss.
+    session.attachControl?.(record => {
+      if (!closed) ws.send(record, { binary: true }, error => { if (error) close('transport-lost'); });
     });
     ws.on('close', code => close(!this.shuttingDown && code === 1006 ? 'transport-lost' : `socket-close-${code}`));
     // ws also emits parser and maxPayload errors here. A close-only 1006 is

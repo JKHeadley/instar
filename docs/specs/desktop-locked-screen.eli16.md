@@ -2,6 +2,8 @@
 
 > The one-line version: you will be able to open a locked Mac from the Instar app on your phone and type its password yourself. Instar never keeps that password, and it gives no agent one.
 
+**Where this stands.** Built and switched off on every machine. The design review did not fully finish, so you chose to build behind real tests instead. No Mac can turn this on until the crash and Stop tests pass on real hardware.
+
 ## The problem in one breath
 
 Instar's remote desktop stops the moment a Mac locks, so you have to walk to the machine. AnyDesk does not have that problem, and you need it not to be a problem here either.

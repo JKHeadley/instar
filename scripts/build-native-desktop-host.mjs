@@ -50,7 +50,9 @@ if (process.platform === 'darwin') {
       throw new Error(`Desktop host is missing a release architecture: ${archs.join(', ')}`);
     }
   } else {
-    compile(binary);
+    // Pinned everywhere: CGDisplayStream, the locked-screen capture fallback,
+    // is unavailable when compiling for macOS 15 or later.
+    compile(binary, `${process.arch === 'x64' ? 'x86_64' : 'arm64'}-apple-macosx13.0`);
   }
   fs.chmodSync(binary, 0o755);
   console.log(universal ? 'Built universal macOS desktop host' : 'Built local macOS desktop host');

@@ -1,0 +1,51 @@
+{
+  "ts": "2026-11-02T03:02:23.485Z",
+  "slug": "desktop-locked-screen",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 2181,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "src/core/DesktopAead.ts",
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopLockState.ts",
+      "src/core/DesktopLockedController.ts",
+      "src/core/DesktopOperatorAssertion.ts",
+      "src/core/DesktopProvenVersions.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/types.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/DesktopMeshBroker.ts",
+      "src/server/DesktopStreamManager.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2115,
+    "deletedLines": 66
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Guard replacement caps at 3 per duty on a durable count, and helper respawn caps at 8 per request, then each fails loudly; both are modeled in the ratchet under a flapping state."
+    }
+  },
+  "verdict": "blocked"
+}

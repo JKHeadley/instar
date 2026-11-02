@@ -4,7 +4,9 @@
  * remains available only when explicitly selected by the caller. */
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import type { DesktopHost, DesktopInput, DesktopProbe } from './DesktopHost.js';
+import type { DesktopHost, DesktopInput, DesktopProbe, DesktopSealedSecret } from './DesktopHost.js';
+import { isLockedClass, type DesktopLockState } from './DesktopLockState.js';
+import { RESPAWNS_PER_CHANGE, decideLockedRespawn, type DesktopLockedController } from './DesktopLockedController.js';
 import type { RemoteStepUpLockoutPort } from './RemoteStepUpLockouts.js';
 import type { DesktopStreamSession } from '../server/DesktopStreamManager.js';
 import { DesktopAead, deriveDesktopKey } from './DesktopAead.js';
@@ -17,6 +19,10 @@ const CHALLENGE_MS = 2 * 60_000;
 const GRANT_MS = 10 * 60_000;
 const TICKET_MS = 30_000;
 const IDLE_MS = 2 * 60_000;
+const UNLOCK_CAUSE_WINDOW_MS = 15_000;
+const ATTEMPT_REFUND_WINDOW_MS = 10_000;
+const RESPAWN_BACKOFF_MS = [1_000, 2_000, 4_000];
+const LOCK_SAMPLE_WHILE_INTERRUPTED_MS = 1_000;
 
 interface DirectRequest {
   id: string;
@@ -55,6 +61,24 @@ interface DirectRequest {
   connected?: boolean;
   lastActivity?: number;
   inputCount?: number;
+  /** Everything below is locked-screen state, keyed to this logical request:
+   * a resume changes grantId but never these. */
+  client?: 'app' | 'browser';
+  controlRecords?: boolean;
+  lockedActive?: boolean;
+  lockedBegan?: boolean;
+  lastPositive?: DesktopLockState;
+  lastState?: DesktopLockState;
+  outsideUnlockSeen?: boolean;
+  lastEnterAt?: number;
+  respawnsThisChange?: number;
+  respawnsTotal?: number;
+  nextRespawnAt?: number;
+  probeFailures?: number;
+  secretInFlight?: boolean;
+  interruptSampler?: ReturnType<typeof setInterval>;
+  interruptExpiry?: ReturnType<typeof setTimeout>;
+  emitControl?: (value: Record<string, unknown>) => void;
 }
 
 export interface DirectDesktopRequestInput {
@@ -68,6 +92,9 @@ export interface DirectDesktopRequestInput {
   videoCodec?: 'jpeg' | 'h264';
   previousVideoCodec?: 'jpeg' | 'h264';
   scopeConfirmed: boolean;
+  /** Unauthenticated declarations, so they bind honest viewers only. */
+  client?: 'app' | 'browser';
+  controlRecords?: boolean;
 }
 
 export interface DesktopTargetIdentity {
@@ -82,6 +109,7 @@ export class DirectDesktopAccess {
   private readonly keyPair = crypto.generateKeyPairSync('ed25519');
   private activeGrantId: string | null = null;
   private disabled = false;
+  private sealKey: string | null = null;
 
   constructor(
     private readonly machineId: string,
@@ -97,11 +125,55 @@ export class DirectDesktopAccess {
     private readonly audit?: DesktopAccessAudit,
     private readonly approvalMode: 'telegram' | 'pin' = 'telegram',
     private readonly isRelayIssuer?: (operatorSessionToken: string, machineId: string) => boolean,
+    private readonly locked: DesktopLockedController | null = null,
   ) {
     this.host.setInputFailureHandler?.(() => {
       const row = [...this.requests.values()].find(item => item.grantId === this.activeGrantId);
-      if (row) this.revokeRow(row);
+      if (!row) return;
+      // A lock ends the helper. Under the flag that is a respawn, bounded.
+      if (row.lockedActive && this.spendRespawn(row)) {
+        const respawn = setTimeout(() => { if (row.status === 'approved') this.host.ensureInputStream?.(); },
+          Math.max(0, (row.nextRespawnAt ?? 0) - this.now()));
+        respawn.unref?.();
+        return;
+      }
+      this.revokeRow(row);
     });
+    this.host.setSealKeyHandler?.(key => {
+      this.sealKey = key;
+      const row = [...this.requests.values()].find(item => item.grantId === this.activeGrantId);
+      row?.emitControl?.({ type: 'seal', key });
+    });
+  }
+
+  /** 3 per state change and 8 per request, with backoff. */
+  private spendRespawn(row: DirectRequest): boolean {
+    if (!decideLockedRespawn(row.respawnsThisChange ?? 0, row.respawnsTotal ?? 0)) return false;
+    row.nextRespawnAt = this.now() + (RESPAWN_BACKOFF_MS[row.respawnsThisChange ?? 0] ?? 4_000);
+    row.respawnsThisChange = (row.respawnsThisChange ?? 0) + 1;
+    row.respawnsTotal = (row.respawnsTotal ?? 0) + 1;
+    return true;
+  }
+
+  /** Ends a grant that reached a state it may not continue into. */
+  private async trackLock(row: DirectRequest, state: DesktopLockState): Promise<boolean> {
+    const previous = row.lastState;
+    row.lastState = state;
+    if (previous !== state) {
+      if (state !== 'unknown') row.respawnsThisChange = 0;
+      row.emitControl?.({ type: 'state', state, box: row.client !== 'browser' || !!this.locked?.browserBoxShown() });
+    }
+    if (state === 'login-window-switched' || state === 'other-user-on-console') return false;
+    if (state === 'unknown') { row.lastPositive ??= 'locked-in-session'; return true; }
+    if (state === 'unlocked' && previous !== 'unlocked') await this.locked?.noteUnlocked().catch(() => {}); // @silent-fallback-ok — a stale dirty flag only blocks Enter at a later shield.
+    if (state === 'unlocked' && row.lastPositive && isLockedClass(row.lastPositive)) {
+      const enter = await this.locked?.enterPostedAt(row.id).catch(() => null) ?? row.lastEnterAt ?? null; // @silent-fallback-ok — no reading means no credit, which ends the grant.
+      const at = row.lastEnterAt = enter ?? undefined;
+      if (at === undefined || this.now() - at > UNLOCK_CAUSE_WINDOW_MS) return false;
+      if (this.now() - at <= ATTEMPT_REFUND_WINDOW_MS) await this.locked?.refundAttempt(row.id).catch(() => {}); // @silent-fallback-ok — a lost refund only spends one attempt.
+    }
+    row.lastPositive = state;
+    return true;
   }
 
   requiresTelegramStepUp(): boolean { return this.approvalMode === 'telegram'; }
@@ -156,7 +228,26 @@ export class DirectDesktopAccess {
   async probe(): Promise<DesktopProbe & { ready: boolean }> {
     if (this.disabled) return { ready: false, screenPermission: false, inputPermission: false, displayCount: 0, sessionActive: false };
     const state = await this.host.probe();
-    return { ...state, ready: state.screenPermission && state.inputPermission && state.displayCount > 0 && state.sessionActive };
+    const ready = state.screenPermission && state.inputPermission && state.displayCount > 0 && state.sessionActive;
+    if (!this.locked) return { ...state, ready };
+    this.locked.applyMode(state.osMajor);
+    if (!this.locked.active(state.osMajor)) return { ...state, ready };
+    const lockState = await this.locked.readState(state);
+    if (await this.locked.isDisabled()) {
+      this.endLockedGrants();
+      return { ...state, lockState, ready };
+    }
+    // A sleeping display likely reads 0 active displays, which is the commonest
+    // locked Mac, so these states count online displays. The probe wakes nothing.
+    const shieldReady = this.locked.active(state.osMajor)
+      && (isLockedClass(lockState) || lockState === 'screensaver-or-sleep')
+      && state.screenPermission && state.inputPermission && (state.lockInputs?.onlineDisplays ?? 0) > 0;
+    return { ...state, lockState, ready: ready || shieldReady };
+  }
+
+  /** Status for the viewer and the card; decides nothing. */
+  lockedStatus(): Promise<Record<string, unknown>> | null {
+    return this.locked ? this.locked.status(undefined) : null;
   }
 
   /** Asks macOS to show its own permission prompts on this Mac. */
@@ -190,6 +281,8 @@ export class DirectDesktopAccess {
       check.generateKeys();
       check.computeSecret(browserEcdh);
     } catch { throw new Error('browser ECDH key invalid'); }
+    const refusal = await this.locked?.admissionRefusal();
+    if (refusal) throw new Error(refusal);
     if (!(await this.probe()).ready) throw new Error('desktop host is not ready');
     const lockoutKey = this.requiresTelegramStepUp()
       ? `${input.operatorUid}:${input.machineId}`
@@ -224,6 +317,7 @@ export class DirectDesktopAccess {
       operatorSessionHash: this.sessionHash(input.operatorSessionToken),
       operatorSessionToken: this.requiresTelegramStepUp() ? undefined : input.operatorSessionToken,
       codeHash: Buffer.concat([salt, digest]), createdAt: this.now(), status: 'pending',
+      client: input.client === 'app' ? 'app' : 'browser', controlRecords: input.controlRecords === true,
     };
     this.requests.set(id, row);
     this.lastRequestAt.set(lockoutKey, this.now());
@@ -372,7 +466,15 @@ export class DirectDesktopAccess {
     // A ticket may have been consumed while the local indicator is still
     // starting. Do not replace that generation until admission settles.
     if (row.admitPending) await row.admitPending.catch(() => {});
-    if (!(await this.probe()).ready) throw new Error('desktop host is not ready');
+    const refusal = await this.locked?.admissionRefusal(requestId);
+    if (refusal) throw new Error(refusal);
+    const resumed = await this.probe();
+    if (!resumed.ready) throw new Error('desktop host is not ready');
+    if (row.lockedActive && (row.outsideUnlockSeen
+      || (resumed.lockState && !await this.trackLock(row, resumed.lockState as DesktopLockState)))) {
+      this.revokeRow(row);
+      throw new Error('desktop resume unavailable');
+    }
     // The probe yields. Recheck both authority and the revocation state before activation.
     this.assertViewer(row, token);
     if (row.status === 'approved' && row.resumeAttemptId === attemptId) {
@@ -391,6 +493,7 @@ export class DirectDesktopAccess {
     row.resumePayloadHash = payloadHash;
     row.resumeCount = (row.resumeCount ?? 0) + 1;
     row.interruptedAt = undefined;
+    this.stopInterruptWatch(row);
     if (!this.approveRow(row, true)) throw new Error('desktop resume unavailable');
     return this.status(requestId, token);
   }
@@ -486,6 +589,22 @@ export class DirectDesktopAccess {
       throw new Error('desktop local indicator unavailable');
     }
     finally { if (row.admitPending === indicatorPending) row.admitPending = undefined; }
+    /** Decided per probe, not once: the feature can turn on mid-grant, and an
+     * untracked grant at the shield would break the outside-unlock rule. */
+    const startTracking = (probe: DesktopProbe) => {
+      if (row.lockedActive || !this.locked?.active(probe.osMajor)) return;
+      row.lockedActive = true;
+      const state = probe.lockState ?? 'unknown';
+      if (isLockedClass(state)) row.lockedBegan = true;
+      row.lastState = state;
+      row.lastPositive ??= state === 'unknown' ? 'locked-in-session' : state;
+      this.locked.noteGrant(row.id);
+      this.host.ensureInputStream?.();
+    };
+    if (this.locked?.wanted()) {
+      const opening = await this.probe().catch(() => null); // @silent-fallback-ok — the next 500 ms probe starts tracking.
+      if (opening) startTracking(opening);
+    }
     let lastHostProbeAt = -Infinity;
     let hostProbe: Promise<boolean> | null = null;
     const assertActive = async () => {
@@ -498,8 +617,19 @@ export class DirectDesktopAccess {
       // a 15 fps stream does not spawn three probes per frame.
       if (performance.now() - lastHostProbeAt < 500) return;
       if (!hostProbe) {
-        hostProbe = this.probe().then(result => result.ready, () => false)
-          .finally(() => { hostProbe = null; });
+        hostProbe = this.probe().then(async result => {
+          row.probeFailures = 0;
+          startTracking(result);
+          if (!row.lockedActive) return result.ready;
+          const state = (result as { lockState?: DesktopLockState }).lockState ?? 'unknown';
+          return await this.trackLock(row, state) && result.ready;
+        }, async () => {
+          if (!row.lockedActive) return false;
+          // One helper timeout must not relock a Mac the owner just unlocked.
+          row.probeFailures = (row.probeFailures ?? 0) + 1;
+          if (row.probeFailures > RESPAWNS_PER_CHANGE) return false;
+          return this.trackLock(row, 'unknown');
+        }).finally(() => { hostProbe = null; });
       }
       const ready = await hostProbe;
       if (!ready || row.grantId !== admittedGrantId || !this.validGrant(row)) {
@@ -533,6 +663,11 @@ export class DirectDesktopAccess {
             // Never turn that cancellation into a new JPEG helper launch.
             if (row.grantId !== admittedGrantId || !this.validGrant(row)
               || (error as Error).message === 'mac-desktop-host-capture-cancelled') throw error;
+            // A lock ends the capture helper. That is a respawn, not a codec fault.
+            if (row.lockedActive) {
+              if (this.now() < (row.nextRespawnAt ?? 0) || this.spendRespawn(row)) return null;
+              throw error;
+            }
             // Hardware encoding is optional. Downgrade this logical session
             // without changing its controller lock or input authority.
             activeCodec = 'jpeg';
@@ -543,7 +678,13 @@ export class DirectDesktopAccess {
         if (row.grantId !== admittedGrantId || !this.validGrant(row)) {
           throw new Error('desktop grant unavailable');
         }
-        const image = await this.host.capture();
+        let image: Buffer;
+        try { image = await this.host.capture(); }
+        catch (error) {
+          if (!row.lockedActive || (error as Error).message === 'mac-desktop-host-capture-cancelled') throw error;
+          if (this.now() < (row.nextRespawnAt ?? 0) || this.spendRespawn(row)) return null;
+          throw error;
+        }
         const digest = crypto.createHash('sha256').update(image).digest();
         if (lastQueuedFrameDigest?.equals(digest)) return null;
         candidateFrameDigest = digest;
@@ -577,17 +718,56 @@ export class DirectDesktopAccess {
         if (row.grantId !== admittedGrantId) throw new Error('desktop grant unavailable');
         const value = admittedAead.decryptInput(record);
         if (!value || typeof value !== 'object'
-          || !['stop', 'ping', 'input', 'keyframe', 'video-fallback'].includes((value as { type?: string }).type ?? '')) {
+          || !['stop', 'ping', 'input', 'keyframe', 'video-fallback', 'secret', 'leave-unlocked'].includes((value as { type?: string }).type ?? '')) {
           throw new Error('desktop command invalid');
         }
-        return value as { type: 'stop' | 'ping' | 'input' | 'keyframe' | 'video-fallback'; action?: DesktopInput };
+        return value as { type: 'stop' | 'ping' | 'input' | 'keyframe' | 'video-fallback' | 'secret' | 'leave-unlocked'; action?: DesktopInput; secret?: DesktopSealedSecret };
+      },
+      attachControl: (send: (record: Buffer) => void) => {
+        if (!row.controlRecords) return;
+        row.emitControl = value => { if (row.grantId === admittedGrantId) send(admittedAead.encryptControl(value)); };
+        if (row.lastState) row.emitControl({ type: 'state', state: row.lastState, box: row.client !== 'browser' || !!this.locked?.browserBoxShown() });
+        if (this.sealKey && row.lockedActive) row.emitControl({ type: 'seal', key: this.sealKey });
+      },
+      secret: async (secret: DesktopSealedSecret) => {
+        const refused = (reason: string) => row.emitControl?.({ type: 'secret-result', refused: reason });
+        if (!row.lockedActive) throw new Error('desktop command invalid');
+        await assertActive();
+        if (row.grantId !== admittedGrantId || !this.validGrant(row) || !this.locked || !this.host.secretType) { refused('not-available'); return; }
+        const probe = await this.probe();
+        const state = (probe as { lockState?: DesktopLockState }).lockState ?? 'unknown';
+        const refusal = this.locked.passwordRefusal(probe, row.client ?? 'browser', state);
+        if (refusal) { refused(refusal); return; }
+        const prepared = await this.locked.prepareSecret(row.id, (row.approvedAt ?? 0) + GRANT_MS);
+        if ('refused' in prepared) { refused(prepared.refused); return; }
+        if (row.grantId !== admittedGrantId || !this.validGrant(row)) { refused('grant-ended'); return; }
+        row.secretInFlight = true;
+        let reply: void | { refused: string };
+        try { reply = await this.host.secretType({ requestId: row.id, key: prepared.key, secret }); }
+        finally { row.secretInFlight = false; }
+        row.lastActivity = this.now();
+        if (reply) refused(reply.refused);
+        else {
+          row.lastEnterAt = this.now();
+          row.emitControl?.({ type: 'secret-result', sent: true });
+        }
+      },
+      leaveUnlocked: async () => {
+        if (row.grantId !== admittedGrantId || !this.locked) return;
+        const ok = await this.locked.leaveUnlocked(row.id);
+        row.emitControl?.({ type: 'relock', phase: ok ? 'left-unlocked' : 'relocking' });
       },
       input: async (action: DesktopInput) => {
         await assertActive();
         // The OS probe above yields. Recheck synchronously at the native spawn
         // boundary so a revoke during that probe cannot launch late input.
         if (row.grantId !== admittedGrantId || !this.validGrant(row)) throw new Error('desktop grant unavailable');
-        await this.host.input(action);
+        if (row.lockedActive && row.lastState === 'unknown' && action.kind !== 'keyUp' && action.kind !== 'buttonUp') {
+          return { refused: 'state-unknown' };
+        }
+        if (row.secretInFlight) return { refused: 'busy' };
+        const reply = await this.host.input(action);
+        if (reply) return reply;
         row.inputCount = (row.inputCount ?? 0) + 1;
         row.lastActivity = this.now();
       },
@@ -607,6 +787,38 @@ export class DirectDesktopAccess {
     this.revokeRow(row);
   }
 
+  /** Disable reaches every request that began locked or owes a relock,
+   * including one since unlocked. Ordinary unlocked grants are left alone. */
+  endLockedGrants(): void {
+    for (const row of this.requests.values()) {
+      if (row.status !== 'revoked' && (row.lockedBegan || row.lastEnterAt !== undefined)) this.revokeRow(row);
+    }
+  }
+
+  private stopInterruptWatch(row: DirectRequest): void {
+    if (row.interruptSampler) clearInterval(row.interruptSampler);
+    if (row.interruptExpiry) clearTimeout(row.interruptExpiry);
+    row.interruptSampler = undefined;
+    row.interruptExpiry = undefined;
+  }
+
+  /** The stream is gone, so nothing else would see an unlock, and a resume
+   * must apply the same rule. A timer ends the request at its window. */
+  private startInterruptWatch(row: DirectRequest): void {
+    this.stopInterruptWatch(row);
+    row.interruptSampler = setInterval(() => {
+      void this.probe().then(async result => {
+        const state = (result as { lockState?: DesktopLockState }).lockState;
+        if (state && row.status === 'interrupted' && !await this.trackLock(row, state)) row.outsideUnlockSeen = true;
+      }, () => {}); // @silent-fallback-ok — an unreadable sample records nothing; the expiry timer still ends the request.
+    }, LOCK_SAMPLE_WHILE_INTERRUPTED_MS);
+    row.interruptSampler.unref?.();
+    row.interruptExpiry = setTimeout(() => {
+      if (row.status === 'interrupted') this.revokeRow(row);
+    }, 30_000);
+    row.interruptExpiry.unref?.();
+  }
+
   killSwitch(): void {
     this.disabled = true;
     for (const row of this.requests.values()) this.revokeRow(row);
@@ -617,12 +829,16 @@ export class DirectDesktopAccess {
   private revokeRow(row: DirectRequest): void {
     if (row.status === 'revoked') return;
     row.status = 'revoked';
+    this.stopInterruptWatch(row);
+    row.emitControl = undefined;
+    if (row.lockedActive) void this.locked?.endRequest(row.id, 'stop').catch(() => {}); // @silent-fallback-ok — the guard's deadline and lease still relock with no help from here.
     row.operatorSessionToken = undefined;
     row.ticketHash = undefined;
     row.ticketPlaintext = undefined;
     row.ticketProofHash = undefined;
     const ownsActiveHost = !!row.grantId && this.activeGrantId === row.grantId;
     if (ownsActiveHost) {
+      this.host.abortInput?.();
       this.host.cancelInput();
       this.host.stopIndicator();
     }
@@ -647,6 +863,8 @@ export class DirectDesktopAccess {
     row.status = 'interrupted';
     row.interruptedAt = this.now();
     row.connected = false;
+    row.emitControl = undefined;
+    if (row.lockedActive) this.startInterruptWatch(row);
     row.ticketHash = undefined;
     row.ticketPlaintext = undefined;
     row.ticketProofHash = undefined;
