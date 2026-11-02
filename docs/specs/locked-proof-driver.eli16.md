@@ -19,7 +19,9 @@ Only what software cannot: in the test account, allow the helper's two macOS per
 
 - Nothing touches the Mac unless the script is run with `--execute`; otherwise it only prints its plan.
 - The driver refuses to act on anything except the test account running the special test build.
-- The password lives only in the vault and in the driver's memory, never in output, results or logs.
+- The password lives only in the vault (and Bitwarden) and in the driver's memory, never in output, results, logs or any command line. The setup refuses to run if the vault helper would put it on a command line.
+- The driver only ever signals processes that belong to the test account, checks that right before each signal, and always resumes and relocks the test account after each test, even if the test itself crashes.
+- A check the driver cannot measure yet counts as a failure, never as a pass.
 - Resetting the daily try counter is refused while a relock is in progress, and every reset is logged.
 
 ## What you need to decide

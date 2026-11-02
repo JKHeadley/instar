@@ -45,8 +45,8 @@ case "$MODE" in
     as_user npm install --prefix "$PREFIX" --no-audit --no-fund "$STAGED"
     as_user "$INSTAR" init --standalone locked-proof --port 4098 --keep
     as_user "$INSTAR" init --standalone locked-proof-b --port 4097 --keep
-    as_user node "$HERE/configure-proof-agent.mjs" "$A" --port 4098 --tunnel
-    as_user node "$HERE/configure-proof-agent.mjs" "$B" --port 4097
+    as_user node "$HERE/configure-proof-agent.mjs" "$A" --port 4098 --tunnel --execute
+    as_user node "$HERE/configure-proof-agent.mjs" "$B" --port 4097 --execute
     as_user cp "$HERE/reset-attempts.py" "$HOME_DIR/.instar/reset-attempts.py"
     echo "staged; next: the person logs in to $PROOF_USER once, then --start"
     ;;
@@ -60,8 +60,8 @@ case "$MODE" in
   finalize)
     echo "Plan: make each proof agent its own desktop front, then restart both."
     [ "$EXECUTE" -eq 1 ] || { echo "Dry run: nothing done."; exit 0; }
-    as_user node "$HERE/configure-proof-agent.mjs" "$A" --port 4098 --tunnel --front
-    as_user node "$HERE/configure-proof-agent.mjs" "$B" --port 4097 --front
+    as_user node "$HERE/configure-proof-agent.mjs" "$A" --port 4098 --tunnel --front --execute
+    as_user node "$HERE/configure-proof-agent.mjs" "$B" --port 4097 --front --execute
     in_session "$INSTAR" server restart --dir "$A" || in_session "$INSTAR" server start --dir "$A"
     in_session "$INSTAR" server restart --dir "$B" || in_session "$INSTAR" server start --dir "$B"
     ;;

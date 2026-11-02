@@ -10,11 +10,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { CASES, TERMINAL, assertProofTarget, generateProofPassword, judge, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
+import { CASES, RESUME_WINDOW_MS, TERMINAL, assertProofTarget, generateProofPassword, judge, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { refusalFromStatus } from '../../scripts/locked-proof/driver.mjs';
+import { RealTarget, ownerOf, refusalFromStatus } from '../../scripts/locked-proof/driver.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { proofConfig } from '../../scripts/locked-proof/configure-proof-agent.mjs';
+import { isInsideProofHome, proofConfig } from '../../scripts/locked-proof/configure-proof-agent.mjs';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DIR = path.join(ROOT, 'scripts/locked-proof');
@@ -31,6 +31,8 @@ class FakeTarget {
   typist = false;
   guard: number | null = null;
   acts: string[] = [];
+  recovered = 0;
+  failAt: string | null = null;
   asked: string[] = [];
   constructor(private c: { final: string; markerEnd?: string[] }, private broken = false, readonly password = 'abcdefghjkmnpqrstuvw') {}
   now() { return this.t; }
@@ -40,10 +42,11 @@ class FakeTarget {
   calibration() { return { reserveMs: 300, perCharMs: 40, length: this.password.length }; }
   async typePassword() { this.typist = true; this.markers.k = { ...this.markers.k, enterPendingAt: this.t }; return { sent: true }; }
   async snapshot() {
-    return { now: this.t, markers: JSON.parse(JSON.stringify(this.markers)), lockState: this.lockState, typistRunning: this.typist, guardPid: this.guard ?? undefined, events: ['lease-written', 'guard-spawned', 'guard-acked', 'deadline-passed', 'other-grant-tried', 'takeover', 'next-grant-open', 'proof-user-console'] };
+    return { now: this.t, dirty: false, markers: JSON.parse(JSON.stringify(this.markers)), lockState: this.lockState, typistRunning: this.typist, guardPid: this.guard ?? undefined, events: ['lease-written', 'guard-spawned', 'guard-acked', 'deadline-passed', 'other-grant-tried', 'takeover', 'next-grant-open', 'proof-user-console'] };
   }
   async act(action: string) {
     this.acts.push(action);
+    if (this.failAt === action) throw new Error(`boom at ${action}`);
     if (['start-server', 'cont-server', 'lock-now', 'cont-guards'].includes(action)) return {};
     if (action === 'grant-other-agent') return { opened: false, refused: 'relock-pending' };
     // Any disruption: the guard does its duty (unless this fake is broken).
@@ -54,6 +57,7 @@ class FakeTarget {
     return { done: true };
   }
   async askPerson(text: string) { this.asked.push(text); }
+  async recover() { this.recovered++; return []; }
   settled(snap: { markers: Record<string, Marker> }) { return Object.values(snap.markers).every(m => TERMINAL.includes(m.state)) && !this.typist; }
   async extraEvidence() { return { submissions: 0, submissionsAfterClose: 0, guardReplaced: true, producerGone: true, oldGuardGone: true, typistGone: true, grantAlive: true, securityItemMs: 2_000, securityItemRaised: true }; }
 }
@@ -109,6 +113,21 @@ describe('locked-proof safety helpers', () => {
     expect(next.remoteDesktop.lockedScreen).toBeUndefined();
     expect(proofConfig({ tunnel: { enabled: true } }, { port: 4097, tunnel: false }).tunnel.enabled).toBe(false);
   });
+
+  it('configure-proof-agent refuses any directory outside the proof home, and needs --execute', () => {
+    expect(isInsideProofHome('/Users/instarproof/.instar/agents/locked-proof')).toBe(true);
+    expect(isInsideProofHome('/Users/instarproofX/a')).toBe(false);
+    expect(isInsideProofHome('/Users/dabombstudio/.instar/agents/echo')).toBe(false);
+    const d = tmp('proof-config-');
+    try {
+      fs.mkdirSync(path.join(d, '.instar'));
+      fs.writeFileSync(path.join(d, '.instar', 'config.json'), '{"port":1}');
+      const r = spawnSync(process.execPath, [path.join(DIR, 'configure-proof-agent.mjs'), d, '--port', '4098', '--execute'], { encoding: 'utf8' });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/is not inside \/Users\/instarproof/);
+      expect(fs.readFileSync(path.join(d, '.instar', 'config.json'), 'utf8')).toBe('{"port":1}');
+    } finally { rm(d); }
+  });
 });
 
 describe('locked-proof runner and verdict', () => {
@@ -133,6 +152,55 @@ describe('locked-proof runner and verdict', () => {
     expect(target.asked).toHaveLength(1);
     expect(ev.verdict.pass).toBe(true);
     expect(JSON.stringify(ev)).not.toContain(target.password);
+  });
+
+  it('a case that throws still resumes and relocks, and fails with the error', async () => {
+    const c = CASES.find((x: { id: string }) => x.id === '12.1');
+    const target = new FakeTarget(c);
+    target.failAt = 'stop-server';
+    const ev = await runCase(c, target, { pollMs: 50 });
+    expect(target.recovered).toBe(1);
+    expect(ev.verdict.pass).toBe(false);
+    expect(ev.verdict.reasons[0]).toBe('case stopped with an error: boom at stop-server');
+  });
+
+  it('a target without recover() fails the case', async () => {
+    const c = CASES.find((x: { id: string }) => x.id === '15.1');
+    const target = new FakeTarget(c) as unknown as Record<string, unknown>;
+    target.recover = undefined;
+    const ev = await runCase(c, target, { pollMs: 50 });
+    expect(ev.verdict.reasons).toContain('recovery problems: target has no recover()');
+  });
+
+  it('an expectation with no measurement fails loudly, and a measured one is judged', () => {
+    const base = { unfired: [], fired: [], final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked' } }, processesGone: true } };
+    const c155 = CASES.find((x: { id: string }) => x.id === '15.5');
+    expect(judge(c155, { ...base, extra: {} }).reasons).toContain('not measured: relock time after the transport drop');
+    expect(judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } }).reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
+    expect(judge(c155, { ...base, extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500 } }).pass).toBe(true);
+    const c159 = CASES.find((x: { id: string }) => x.id === '15.9');
+    expect(judge(c159, { ...base, extra: { typistGone: true } }).reasons).toContain('not measured: password field state at the end');
+    expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: true } }).reasons).toContain('password field left dirty at the end');
+    expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: false } }).pass).toBe(true);
+    const c1212 = CASES.find((x: { id: string }) => x.id === '12.12');
+    const closed = { ...base, final: { ...base.final, markers: { k: { state: 'closed-not-applicable' } } } };
+    expect(judge(c1212, { ...closed, extra: {} }).reasons).toContain('not measured: lock calls against another session (no observable source yet)');
+  });
+
+  it('the runner measures the relock time after a transport drop from its own samples', async () => {
+    const c = CASES.find((x: { id: string }) => x.id === '15.6');
+    const ev = await runCase(c, new FakeTarget(c), { pollMs: 50 });
+    expect(ev.extra.relockAfterDropMs).toBeLessThan(1_000);
+    expect(ev.extra.fieldDirtyAtEnd).toBe(false);
+    expect(ev.verdict.reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
+  });
+
+  it('never signals a process the proof user does not own', () => {
+    expect(ownerOf(process.pid)).toBe(os.userInfo().username);
+    const target = Object.create(RealTarget.prototype) as { stopped: Set<number>; kill(pid: number, sig: string): unknown };
+    target.stopped = new Set();
+    expect(() => target.kill(process.pid, 'STOP')).toThrow(/not instarproof/);
+    expect(target.stopped.size).toBe(0);
   });
 
   it('judge names every unmet expectation', () => {
@@ -232,6 +300,25 @@ open(${JSON.stringify(order)}, 'a').write('authonly ' + ('ok' if pw == open(${JS
   });
 });
 
+describe('create-proof-user.sh refuses a Bitwarden helper that leaks to argv', () => {
+  it('stops before storing or creating anything', () => {
+    const d = tmp('proof-user-helper-');
+    try {
+      const bin = path.join(d, 'bin');
+      fs.mkdirSync(bin);
+      fs.mkdirSync(path.join(d, '.instar', 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(d, '.instar', 'scripts', 'credential-store.mjs'), "id = JSON.parse(bw(['create', 'item', bw(['encode'], JSON.stringify(i)).trim()])).id;\n");
+      const log = path.join(d, 'calls.log');
+      for (const name of ['sysadminctl', 'credential-store', 'pwpolicy']) fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho ${name} >> ${JSON.stringify(log)}\n`, { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'dscl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      const r = spawnSync('bash', [path.join(DIR, 'create-proof-user.sh'), '--agent-home', d, '--execute'], { encoding: 'utf8', env: { ...process.env, LOCKED_PROOF_FAKE_BIN: bin } });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/command line; update it to pass it on stdin/);
+      expect(fs.existsSync(log)).toBe(false);
+    } finally { rm(d); }
+  });
+});
+
 describe('reset-attempts.py', () => {
   it('resets the counter under the lock and refuses while a duty is open', () => {
     const d = tmp('proof-attempts-');
@@ -240,15 +327,21 @@ describe('reset-attempts.py', () => {
       fs.mkdirSync(root, { recursive: true });
       const file = path.join(root, 'locked-state.json');
       fs.writeFileSync(file, JSON.stringify({ markers: { k: { state: 'relocked' } }, attempts: { day: 'x', count: 6, perRequest: { r: 3 } } }));
-      expect(spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), root]).status).toBe(0);
+      const env = { ...process.env, LOCKED_PROOF_TEST_ROOT: root };
+      const noExecute = spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), root], { env, encoding: 'utf8' });
+      expect(noExecute.status).not.toBe(0);
+      expect(noExecute.stderr).toMatch(/no --execute/);
+      expect(spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), root], { encoding: 'utf8' }).status).not.toBe(0);
+      expect(spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), '--execute', root], { encoding: 'utf8' }).stderr).toMatch(/not the proof user/);
+      expect(spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), '--execute', root], { env }).status).toBe(0);
       const after = JSON.parse(fs.readFileSync(file, 'utf8'));
       expect(after.attempts).toMatchObject({ count: 0, perRequest: {} });
       expect(after.markers.k.state).toBe('relocked');
       fs.writeFileSync(file, JSON.stringify({ markers: { k: { state: 'owed' } } }));
-      const refused = spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), root], { encoding: 'utf8' });
+      const refused = spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), '--execute', root], { env, encoding: 'utf8' });
       expect(refused.status).not.toBe(0);
       expect(refused.stderr).toMatch(/duty k is owed/);
-      expect(spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), d]).status).not.toBe(0);
+      expect(spawnSync('python3', [path.join(DIR, 'reset-attempts.py'), '--execute', d], { env }).status).not.toBe(0);
     } finally { rm(d); }
   });
 });

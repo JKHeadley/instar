@@ -2,7 +2,10 @@
 /**
  * Set a proof agent's config for the locked-Mac proof run. Runs as the proof user.
  *
- *   configure-proof-agent.mjs <agent-dir> --port N [--tunnel] [--front]
+ *   configure-proof-agent.mjs <agent-dir> --port N [--tunnel] [--front] --execute
+ *
+ * Without --execute it prints what it would change. It refuses any directory that
+ * does not resolve inside /Users/instarproof (the throwaway proof user's home).
  *
  * - remote desktop on, the kept helper on (the proof user's own copy), locked-screen
  *   access left absent (off): the run turns it on with the dashboard PIN route.
@@ -15,6 +18,13 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+
+export const PROOF_HOME = '/Users/instarproof';
+
+/** True only for a resolved path inside the proof user's home. */
+export function isInsideProofHome(resolved) {
+  return resolved === PROOF_HOME || resolved.startsWith(`${PROOF_HOME}/`);
+}
 
 export function proofConfig(config, { port, tunnel, frontMachineId }) {
   const next = { ...config, port };
@@ -34,15 +44,21 @@ function main() {
   const opt = name => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : undefined; };
   const port = Number(opt('port'));
   if (!dir || !Number.isSafeInteger(port)) { process.stderr.write('usage: configure-proof-agent.mjs <agent-dir> --port N [--tunnel] [--front]\n'); process.exit(2); }
-  const file = path.join(dir, '.instar', 'config.json');
+  const real = fs.realpathSync(dir);
+  if (!isInsideProofHome(real)) { process.stderr.write(`refusing: ${real} is not inside ${PROOF_HOME}\n`); process.exit(1); }
+  const file = path.join(real, '.instar', 'config.json');
   const config = JSON.parse(fs.readFileSync(file, 'utf8'));
   let frontMachineId;
   if (rest.includes('--front')) {
-    const identity = path.join(dir, '.instar', 'machine', 'identity.json');
+    const identity = path.join(real, '.instar', 'machine', 'identity.json');
     if (!fs.existsSync(identity)) { process.stderr.write('no machine identity yet: start the server once, then run with --front\n'); process.exit(1); }
     frontMachineId = JSON.parse(fs.readFileSync(identity, 'utf8')).machineId;
   }
   const next = proofConfig(config, { port, tunnel: rest.includes('--tunnel'), frontMachineId });
+  if (!rest.includes('--execute')) {
+    process.stdout.write(`dry run (no --execute): would write ${file}\n${JSON.stringify({ port: next.port, remoteDesktop: next.remoteDesktop, updates: next.updates, autostart: next.autostart, tunnel: next.tunnel ?? null })}\n`);
+    return;
+  }
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, file);

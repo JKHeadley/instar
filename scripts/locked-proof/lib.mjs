@@ -142,57 +142,83 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
   const evidence = { id: c.id, gate: c.gate, startedAt: target.now(), samples: [], fired: [], person: null, notes: [] };
   const sample = async () => {
     const snap = await target.snapshot();
-    evidence.samples.push({ t: snap.now, lockState: snap.lockState, markers: snap.markers, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
+    evidence.samples.push({ t: snap.now, lockState: snap.lockState, markers: snap.markers, dirty: snap.dirty, guard: snap.guardPid ?? null, typist: snap.typistRunning === true });
     return snap;
   };
-  await target.prepare(c);
-  const ctx = { sent: false, beforeEnterDue: undefined };
-  const grant = await target.openGrant(c);
-  evidence.grantOpenedAt = target.now();
-  if (c.password) {
-    const pace = target.calibration();
-    if (pace) ctx.beforeEnterDue = target.now() + pace.reserveMs + pace.perCharMs * Math.max(0, pace.length - 2);
-    void target.typePassword(c).then(
-      r => { ctx.sent = r?.sent === true; evidence.secretResult = r ?? null; },
-      err => { evidence.secretResult = { error: err instanceof Error ? err.message : String(err) }; });
-  }
   const pending = [...c.inject];
-  const deadline = target.now() + (c.timeoutMs ?? WATCH_MS + GRANT_CEILING_MS / 4);
-  let personCued = false;
-  while (target.now() < deadline) {
-    const snap = await sample();
-    for (const step of [...pending]) {
-      if (!matchAt(step.at, snap, ctx)) continue;
-      if (step.delayMs) await target.sleep(step.delayMs);
-      pending.splice(pending.indexOf(step), 1);
-      const result = await target.act(step.action, { case: c, step, grant, snap });
-      evidence.fired.push({ action: step.action, at: step.at, t: target.now(), result: result ?? null });
-      log(`[${c.id}] ${step.action} (${step.at})`);
+  try {
+    await target.prepare(c);
+    const ctx = { sent: false, beforeEnterDue: undefined };
+    const grant = await target.openGrant(c);
+    evidence.grantOpenedAt = target.now();
+    if (c.password) {
+      const pace = target.calibration();
+      if (pace) ctx.beforeEnterDue = target.now() + pace.reserveMs + pace.perCharMs * Math.max(0, pace.length - 2);
+      void target.typePassword(c).then(
+        r => { ctx.sent = r?.sent === true; evidence.secretResult = r ?? null; },
+        err => { evidence.secretResult = { error: err instanceof Error ? err.message : String(err) }; });
     }
-    if (c.person && !personCued && pending.length === 0) {
-      personCued = true;
-      if (c.person.cueAfterMs) await target.sleep(c.person.cueAfterMs);
-      evidence.person = { cuedAt: target.now(), text: c.person.text };
-      await target.askPerson(c.person.text);
+    const deadline = target.now() + (c.timeoutMs ?? WATCH_MS + GRANT_CEILING_MS / 4);
+    let personCued = false;
+    while (target.now() < deadline) {
+      const snap = await sample();
+      for (const step of [...pending]) {
+        if (!matchAt(step.at, snap, ctx)) continue;
+        if (step.delayMs) await target.sleep(step.delayMs);
+        pending.splice(pending.indexOf(step), 1);
+        const result = await target.act(step.action, { case: c, step, grant, snap });
+        evidence.fired.push({ action: step.action, at: step.at, t: target.now(), result: result ?? null });
+        log(`[${c.id}] ${step.action} (${step.at})`);
+      }
+      if (c.person && !personCued && pending.length === 0) {
+        personCued = true;
+        if (c.person.cueAfterMs) await target.sleep(c.person.cueAfterMs);
+        evidence.person = { cuedAt: target.now(), text: c.person.text };
+        await target.askPerson(c.person.text);
+      }
+      const settled = pending.length === 0 && (!c.person || personCued) && target.settled(snap, c);
+      if (settled) break;
+      await target.sleep(pollMs);
     }
-    const settled = pending.length === 0 && (!c.person || personCued) && target.settled(snap, c);
-    if (settled) break;
-    await target.sleep(pollMs);
+    for (const step of c.then ?? []) await target.act(step, { case: c });
+    const final = await sample();
+    evidence.final = { lockState: final.lockState, markers: final.markers, processesGone: final.processesGone !== false };
+    evidence.extra = { ...measured(evidence), ...(await target.extraEvidence(c, evidence)) };
+    for (const step of c.cleanup ?? []) await target.act(step, { case: c });
+  } catch (err) {
+    evidence.error = err instanceof Error ? err.message : String(err);
+  } finally {
+    // Whatever happened: resume every process this case stopped, then lock the proof session.
+    const problems = (await target.recover?.(c).catch(e => [String(e)])) ?? ['target has no recover()'];
+    if (problems.length) evidence.recoveryProblems = problems;
   }
-  for (const step of c.then ?? []) await target.act(step, { case: c });
-  const final = await sample();
-  evidence.final = { lockState: final.lockState, markers: final.markers, processesGone: final.processesGone !== false };
-  evidence.extra = await target.extraEvidence(c, evidence);
-  for (const step of c.cleanup ?? []) await target.act(step, { case: c });
   evidence.endedAt = target.now();
   evidence.unfired = pending.map(s => `${s.action} at ${s.at}`);
   evidence.verdict = judge(c, evidence);
   return evidence;
 }
 
+export const RESUME_WINDOW_MS = 30_000;
+
+/** Measurements every target gets from its own samples (the target may add more). */
+export function measured(ev) {
+  const out = {};
+  const drop = ev.fired.find(f => f.action === 'drop-transport');
+  if (drop) {
+    const closed = ev.samples.find(s => s.t >= drop.t && Object.values(s.markers ?? {}).length > 0
+      && Object.values(s.markers).every(m => TERMINAL.includes(m.state)));
+    if (closed) out.relockAfterDropMs = closed.t - drop.t;
+  }
+  const last = ev.samples[ev.samples.length - 1];
+  if (last && typeof last.dirty === 'boolean') out.fieldDirtyAtEnd = last.dirty;
+  return out;
+}
+
 /** Expected versus actual. Returns { pass, reasons[] }; a reason is a failed expectation. */
 export function judge(c, ev) {
   const reasons = [];
+  if (ev.error) reasons.push(`case stopped with an error: ${ev.error}`);
+  if (ev.recoveryProblems?.length) reasons.push(`recovery problems: ${ev.recoveryProblems.join('; ')}`);
   if (ev.unfired?.length) reasons.push(`injection never fired: ${ev.unfired.join(', ')}`);
   const markers = Object.values(ev.final?.markers ?? {});
   const terminal = markers.filter(m => TERMINAL.includes(m.state));
@@ -220,7 +246,19 @@ export function judge(c, ev) {
   if (c.typistGone && !x.typistGone) reasons.push('typist not confirmed gone');
   if (c.grantAlive && !x.grantAlive) reasons.push('the grant ended after a stray letter');
   if (c.secretRefused && ev.secretResult?.refused !== c.secretRefused) reasons.push(`expected refusal ${c.secretRefused}, got ${JSON.stringify(ev.secretResult ?? null)}`);
-  if (c.noLockCall && x.lockCalls > 0) reasons.push(`${x.lockCalls} lock call(s) against another session`);
+  // An expectation with no measurement fails loudly: an unmeasured check is never a pass.
+  if (c.noLockCall) {
+    if (typeof x.lockCalls !== 'number') reasons.push('not measured: lock calls against another session (no observable source yet)');
+    else if (x.lockCalls > 0) reasons.push(`${x.lockCalls} lock call(s) against another session`);
+  }
+  if (c.relockAfterResumeWindow) {
+    if (typeof x.relockAfterDropMs !== 'number') reasons.push('not measured: relock time after the transport drop');
+    else if (x.relockAfterDropMs < RESUME_WINDOW_MS - 1_000) reasons.push(`duty closed ${x.relockAfterDropMs} ms after the drop, inside the ${RESUME_WINDOW_MS} ms resume window`);
+  }
+  if (c.fieldClearedBeforeNextEnter) {
+    if (typeof x.fieldDirtyAtEnd !== 'boolean') reasons.push('not measured: password field state at the end');
+    else if (x.fieldDirtyAtEnd) reasons.push('password field left dirty at the end');
+  }
   for (const f of ev.fired ?? []) {
     const want = c.inject.find(s => s.action === f.action && s.expectRefusal)?.expectRefusal;
     if (want && f.result?.refused !== want) reasons.push(`${f.action}: expected refusal ${want}, got ${f.result?.refused ?? 'none'}`);

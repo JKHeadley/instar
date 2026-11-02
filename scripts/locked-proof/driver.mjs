@@ -44,6 +44,8 @@ function sh(cmd, args, { allowFail = false, input } = {}) {
   return r.stdout ?? '';
 }
 const sudo = (args, o) => sh('sudo', ['-n', ...args], o);
+/** The login name owning a pid, or '' when it is gone. */
+export function ownerOf(pid) { return sh('ps', ['-o', 'user=', '-p', String(pid)], { allowFail: true }).trim(); }
 
 /** The proof Mac, the proof user, its two agents and the real viewer page. */
 export class RealTarget {
@@ -55,6 +57,8 @@ export class RealTarget {
     this.pids = {};
     this.viewers = [];
     this.stopper = null;
+    /** Every pid this run SIGSTOPped and has not resumed or killed. */
+    this.stopped = new Set();
   }
 
   now() { return Date.now(); }
@@ -67,7 +71,10 @@ export class RealTarget {
     this.b = { port: this.o.portB, dir: this.o.proofDirB, ...this.pick(this.agentConfig(this.o.proofDirB)) };
     for (const agent of [this.a, this.b]) {
       const health = await this.api(agent, 'GET', '/health');
-      assertProofTarget({ user: PROOF_USER, version: health.version });
+      // The real owner of the process answering on this port, not a constant.
+      const pid = Number(sudo(['lsof', '-nP', '-t', `-iTCP:${agent.port}`, '-sTCP:LISTEN'], { allowFail: true }).trim().split('\n')[0]) || null;
+      assertProofTarget({ user: pid ? ownerOf(pid) : '', version: health.version });
+      assertProofTarget({ user: sh('stat', ['-f', '%Su', agent.dir]).trim(), version: health.version });
     }
     // Read once, kept in memory only. stdout is captured, stderr discarded (it names lengths).
     const value = execFileSync(process.execPath, [path.join(this.o.agentHome, '.instar/scripts/secret-get.mjs'), VAULT_KEY],
@@ -128,7 +135,7 @@ export class RealTarget {
     if (guard) { this.events.add('guard-spawned'); this.pids.firstGuard ??= guard.pid; this.pids.guard = guard.pid; }
     if (typist) this.pids.typist = typist.pid;
     if (sh('stat', ['-f', '%Su', '/dev/console']).trim() === PROOF_USER) this.events.add('proof-user-console');
-    return { now, markers, lockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
+    return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
       processesGone: !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
   }
 
@@ -163,7 +170,7 @@ export class RealTarget {
       await this.sleep(1_000);
     }
     // Attempt counter reset under the helper's own lock (plan 4.4), audited.
-    sudo(['-u', PROOF_USER, 'python3', path.join(HERE, 'reset-attempts.py'), this.store]);
+    sudo(['-u', PROOF_USER, 'python3', path.join(HERE, 'reset-attempts.py'), '--execute', this.store]);
     fs.appendFileSync(path.join(this.o.out, 'attempt-resets.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), before: c.id })}\n`);
     if (await this.readLockState() !== 'locked-in-session') await this.act('lock-now', { case: c });
     await this.sleep(2_000);
@@ -214,11 +221,37 @@ export class RealTarget {
     return { sent: false, refused: 'no-result-within-60s' };
   }
 
+  /** The proof user's listening process on the port, and only that user's (lsof -a ANDs the filters). */
   serverPid(agent) {
-    return Number(sudo(['lsof', '-nP', '-t', `-iTCP:${agent.port}`, '-sTCP:LISTEN'], { allowFail: true }).trim().split('\n')[0]) || null;
+    const pid = Number(sudo(['lsof', '-a', '-u', PROOF_USER, '-nP', '-t', `-iTCP:${agent.port}`, '-sTCP:LISTEN'], { allowFail: true }).trim().split('\n')[0]) || null;
+    return pid && ownerOf(pid) === PROOF_USER ? pid : null;
   }
 
-  kill(pid, sig) { if (pid) sudo(['kill', `-${sig}`, String(pid)], { allowFail: true }); return { pid, sig }; }
+  /** Signals only a process the proof user owns, checked immediately before each signal. */
+  kill(pid, sig) {
+    if (!pid) return { pid: null, sig, skipped: 'no-pid' };
+    const owner = ownerOf(pid);
+    if (owner !== PROOF_USER) throw new Error(`refusing to signal pid ${pid}: owned by "${owner || 'nobody'}", not ${PROOF_USER}`);
+    sudo(['kill', `-${sig}`, String(pid)], { allowFail: true });
+    if (sig === 'STOP') this.stopped.add(pid);
+    if (sig === 'CONT' || sig === 'KILL') this.stopped.delete(pid);
+    return { pid, sig };
+  }
+
+  /**
+   * After every case, thrown or not: resume everything this run stopped, stop the
+   * guard-stopper, then lock the proof session. Errors here are collected, never thrown.
+   */
+  async recover() {
+    const problems = [];
+    if (this.stopper) { clearInterval(this.stopper); this.stopper = null; }
+    for (const pid of [...this.stopped]) {
+      try { this.kill(pid, 'CONT'); } catch (err) { problems.push(String(err instanceof Error ? err.message : err)); this.stopped.delete(pid); }
+    }
+    try { if (await this.readLockState() !== 'locked-in-session') await this.act('lock-now', {}); }
+    catch (err) { problems.push(`lock-now: ${err instanceof Error ? err.message : String(err)}`); }
+    return problems;
+  }
 
   asProof(args) { return sudo(['launchctl', 'asuser', this.uid, 'sudo', '-u', PROOF_USER, '-H', ...args], { allowFail: true }); }
 
@@ -338,7 +371,8 @@ export class RealTarget {
   }
 
   async close() {
-    if (this.stopper) clearInterval(this.stopper);
+    const problems = await this.recover();
+    if (problems.length) process.stderr.write(`[locked-proof] recovery problems: ${problems.join('; ')}\n`);
     await this.closeViewers();
     await this.browser?.close();
   }

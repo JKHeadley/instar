@@ -7,7 +7,10 @@
 # passwordless sudo, on the proof Mac):
 #   1. generates a throwaway password (20 lowercase letters/digits, layout-safe),
 #   2. stores it in the agent's vault FIRST (credential-store.mjs, value on stdin),
-#      under key locked_proof_user_password, so no password exists that the vault lacks,
+#      under key locked_proof_user_password, so no password exists that the vault lacks.
+#      credential-store.mjs writes Bitwarden first; this script refuses to run unless that
+#      helper hands Bitwarden the encoded item on stdin (an older copy put it on `bw`'s
+#      command line, where `ps` can read it),
 #   3. creates the standard (non-admin) user with sysadminctl, answering its password
 #      prompt through a pseudo-terminal (never on a command line, never in a log),
 #   4. clears the user's account policies, so macOS does not force a password change
@@ -57,6 +60,15 @@ fi
 if $DSCL . -read "/Users/$PROOF_USER" UniqueID >/dev/null 2>&1; then
   echo "user $PROOF_USER already exists; remove it first (remove-proof-user.sh)" >&2
   exit 1
+fi
+
+HELPER="$AGENT_HOME/.instar/scripts/credential-store.mjs"
+if [ -z "${LOCKED_PROOF_FAKE_BIN:-}" ] && [ ! -f "$HELPER" ]; then echo "no $HELPER" >&2; exit 1; fi
+if [ -f "$HELPER" ]; then
+  if grep -Eq "bw\(\['(create', 'item'|edit', 'item', [a-z.]+), bw\(" "$HELPER"; then
+    echo "refusing: $HELPER puts the encoded Bitwarden item on bw's command line; update it to pass it on stdin first" >&2
+    exit 1
+  fi
 fi
 
 PW="$(node --input-type=module -e "import { generateProofPassword } from '$HERE/lib.mjs'; process.stdout.write(generateProofPassword());")"

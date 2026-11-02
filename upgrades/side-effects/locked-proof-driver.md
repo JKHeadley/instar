@@ -15,6 +15,14 @@ Files: `lib.mjs` (cases, expected table, runner, verdict, password generator, at
 
 None in runtime code. The driver's verdict is a test-harness judgement recorded with its evidence; it gates nothing by itself (a passing record still goes through a normal PR to the proven-versions table).
 
+## Review follow-ups (independent review on #2598)
+
+1. Signals are owner-checked: `serverPid` asks `lsof -a -u instarproof` (only the proof user's listener), and `kill()` reads the pid's owner (`ps -o user=`) immediately before every signal and throws for anyone but `instarproof`. `assertProofTarget` now gets the real owner of each agent's listening process and of each agent directory, not a constant.
+2. `runCase` runs the case in try/finally: whatever throws, `target.recover()` resumes every pid the run SIGSTOPped, clears the guard-stopper and locks the proof session; a recovery problem or the error fails the case by name. `close()` runs the same recovery.
+3. `configure-proof-agent.mjs` and `reset-attempts.py` refuse without `--execute`, and refuse anything that does not resolve inside `/Users/instarproof` (the reset script's only other accepted root is a test root inside the system temporary directory named by `LOCKED_PROOF_TEST_ROOT`).
+4. Expectations without a measurement now fail as "not measured" instead of passing silently. Measured from the run's own samples: relock time after a transport drop (15.5/15.6, must be at least the 30 s resume window) and whether the password field is left dirty at the end (15.9, from the store's `dirty` flag, which blocks any later Enter). Lock calls against another session (12.12/12.13) have no observable source yet, so those two cases fail as "not measured" until one exists.
+5. Bitwarden: the agent's `credential-store.mjs` put the base64 item (which holds the password) on `bw`'s command line. Echo's copy on this machine now pipes it on stdin (`bw create item` / `bw edit item <id>` read the encoded JSON from stdin, per `bw --help`, version 2026.7.0). `create-proof-user.sh` refuses to run if the helper it would call still puts the item on the command line, so the Laptop's copy must be updated before setup. The password is on no command line in this flow: stdin to the helper, stdin to `bw`, the pty prompt to `sysadminctl` and `dscl`.
+
 ## 1. Over-block
 
 None: no runtime path changes.
