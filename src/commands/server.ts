@@ -9162,7 +9162,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // its request store with the Telegram chat route).
     if (_appNativeOn) {
       try {
-        const [{ AppConversationService }, { createAppInboundDispatch }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
+        const [{ AppConversationService, VOICE_TRANSCRIBE_DEADLINE_MS }, { createAppInboundDispatch }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
           import('../core/AppConversationService.js'), import('../core/appInboundDispatch.js'), import('../core/MobileChatRequests.js'),
           import('../server/mobileConversationRoutes.js'), import('../core/AppReplyRelayInstaller.js'), import('../core/AppConversationsReplicatedStore.js'),
         ]);
@@ -9175,8 +9175,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         let appDispatch: import('../core/appInboundDispatch.js').AppInboundDispatch | null = null;
         // Signed records (§4.6): this machine's identity signer, the signing-key history lookup and
         // the device-key ledger. No identity ⇒ messages are still stored and delivered, read `unknown`.
-        const [sigMod, ledgerMod, ledgerReplMod] = await Promise.all([
+        const [sigMod, ledgerMod, ledgerReplMod, voiceMod] = await Promise.all([
           import('../core/AppRecordSignatures.js'), import('../core/MobileDeviceKeyLedger.js'), import('../core/MobileDeviceKeyLedgerReplicatedStore.js'),
+          import('../core/VoiceTranscription.js'),
         ]);
         const appSigner = sigMod.loadMachineSigner(config.stateDir);
         const appKeyLookup = sigMod.identityKeyLookup(config.stateDir);
@@ -9208,6 +9209,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             try { recordOperatorStop(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
           },
           mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
+          // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
+          transcribeVoice: (filePath, mediaType) => voiceMod.transcribeAudioFile(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: VOICE_TRANSCRIBE_DEADLINE_MS }),
           raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
           clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
           reportDegradation: (what, detail) => degradationReporter.report({

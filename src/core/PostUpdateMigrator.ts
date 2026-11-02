@@ -984,6 +984,9 @@ An agent with no Telegram owner can still add a phone. The pairing link works th
 export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
 /** The section's last sentence before copies between machines shipped (refreshed in place on update). */
 export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads `not-here` until copies between machines ship.';
+/** The voice form before server-side transcription shipped (increment 2; refreshed in place on update). */
+export const APP_MEDIA_STALE_VOICE_LINE = '`[voice:<path>] <transcript>`.';
+export const APP_MEDIA_CURRENT_VOICE_LINE = '`[voice:<path>] <transcript>` (a voice note the phone did not transcribe is transcribed here with the same provider as Telegram voice notes, `GROQ_API_KEY` or `OPENAI_API_KEY`; with none, or when it fails or takes over 60 s, the line reads `(transcription unavailable: <reason>; the audio file is at that path)` and I can still read the file).';
 export const APP_MEDIA_CURRENT_COPY_LINE = 'A file on another of my machines is copied here by itself, checked against its hash: while it copies, history reads `not-here` and a download answers 202 `fetching`. A message whose file has not arrived reads `[file still copying: <name>]`, and one `[file now available: <path>]` line follows when it lands. `/health?scope=pool` → `appMediaPool` shows every machine; `singleCopyBlobs` counts files only this machine holds (null when it cannot be measured, never a guessed 0).';
 
 /**
@@ -993,7 +996,7 @@ export const APP_MEDIA_CURRENT_COPY_LINE = 'A file on another of my machines is 
 export function APP_MEDIA_CLAUDEMD_SECTION(): string {
   return `\n${APP_MEDIA_CLAUDEMD_MARKER}
 
-App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, \`[voice:<path>] <transcript>\`. Read the file at that path; the copy is mine and a change to it never touches the stored file.
+App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path; the copy is mine and a change to it never touches the stored file.
 - **Earlier files** are listed in the context file by name with an attachment id. Open one with \`.instar/scripts/app-media-path <attachment id>\`, which prints a path.
 - **Reply with files**: \`.instar/scripts/app-reply.sh --file <path> "Here it is"\` (up to 10 \`--file\`, before the text; the caption is the text argument or piped in, read with a bounded wait; 50 MiB each, 64 MiB per reply). Put a generated file in \`.instar/app-media/outbox/\`, the project or the temporary directory.
 - **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
@@ -8756,6 +8759,15 @@ setTimeout(() => process.exit(0), 2000);
     // now false. Refresh that one line in place (content-sniffed; idempotent).
     // Copies between machines (media spec §4.12): the media section's "until copies ship" line is
     // now false. Refresh that one line in place (content-sniffed; idempotent).
+    // Server-side voice transcription (media spec §4.5.1, increment 2): refresh the voice form in place.
+    {
+      const staleVoice = `\`[video:<path>]\`, ${APP_MEDIA_STALE_VOICE_LINE} Read the file at that path`;
+      if (content.includes(staleVoice)) {
+        content = content.replace(staleVoice, `\`[video:<path>]\`, ${APP_MEDIA_CURRENT_VOICE_LINE} Read the file at that path`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: updated the App conversation media voice line');
+      }
+    }
     if (content.includes(APP_MEDIA_STALE_COPY_LINE)) {
       content = content.replace(APP_MEDIA_STALE_COPY_LINE, APP_MEDIA_CURRENT_COPY_LINE);
       patched = true;

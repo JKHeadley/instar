@@ -10,7 +10,7 @@
  * Wiring integrity: the media store, the raw chunk parser, the media router and the boot-time
  * app-media-path install are real. A fleet agent answers 503 media-off.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,6 +33,7 @@ const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
 afterAll(async () => {
+  vi.unstubAllEnvs();
   for (const s of servers) await s.stop();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/mobile-native-media-alive.test.ts' });
 });
@@ -71,6 +72,9 @@ async function boot(developmentAgent: boolean) {
 
 describe('media in app conversations — production wiring', () => {
   it('is alive with no messaging service and no transcription provider: upload, send, session paths, reply with a file, history', async () => {
+    // No transcription provider: a voice note the phone did not transcribe must still arrive (§4.5.1).
+    vi.stubEnv('GROQ_API_KEY', '');
+    vi.stubEnv('OPENAI_API_KEY', '');
     const { server, stateDir, dir, spawned } = await boot(true);
     const app = server.getApp();
     // Wiring integrity: the media store is real and the helper is installed at boot.
@@ -109,9 +113,11 @@ describe('media in app conversations — production wiring', () => {
     // A photo (two chunks) and a voice note, uploaded through the production raw-body parser.
     const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(1024 * 1024 + 500)]);
     const voice = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), crypto.randomBytes(3000)]);
+    const voice2 = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), crypto.randomBytes(2000)]);
     const files = [
       { bytes: photo, declaredKind: 'photo', declaredType: 'image/jpeg', filename: 'beach.jpg' },
       { bytes: voice, declaredKind: 'voice', declaredType: 'audio/mp4', filename: 'note.m4a', transcript: 'meet at the pier at noon' },
+      { bytes: voice2, declaredKind: 'voice', declaredType: 'audio/mp4', filename: 'untranscribed.m4a' },
     ];
     const attachments: Array<Record<string, unknown>> = [];
     for (const f of files) {
@@ -137,6 +143,9 @@ describe('media in app conversations — production wiring', () => {
     const note = /\[voice:([^\]]+)\] meet at the pier at noon/.exec(msg)![1]!;
     expect(fs.readFileSync(image).equals(photo)).toBe(true);
     expect(fs.readFileSync(note).equals(voice)).toBe(true);
+    // Increment 2: no phone transcript and no provider ⇒ the path with an honest note.
+    const note2 = /\[voice:([^\]]+)\] \(transcription unavailable: no transcription provider is configured; the audio file is at that path\)/.exec(msg)![1]!;
+    expect(fs.readFileSync(note2).equals(voice2)).toBe(true);
     expect(msg).toContain('Photos from today');
 
     // The agent replies with a file through the relay route.
@@ -152,7 +161,7 @@ describe('media in app conversations — production wiring', () => {
     const hist = await send('GET', `/mobile/chat/app/${key}/messages`);
     const [op, ag] = hist.body.messages;
     expect(op).toMatchObject({ role: 'operator', originVerified: 'verified' });
-    expect(op.attachments.map((a: { kind: string; bytes: string }) => [a.kind, a.bytes])).toEqual([['photo', 'verified'], ['voice', 'verified']]);
+    expect(op.attachments.map((a: { kind: string; bytes: string }) => [a.kind, a.bytes])).toEqual([['photo', 'verified'], ['voice', 'verified'], ['voice', 'verified']]);
     expect(ag).toMatchObject({ role: 'agent', text: 'Here is the plan.', originVerified: 'none' });
     expect(ag.attachments[0]).toMatchObject({ kind: 'file', mediaType: 'application/pdf', bytes: 'verified' });
     for (const a of [...op.attachments, ...ag.attachments]) {
@@ -161,7 +170,7 @@ describe('media in app conversations — production wiring', () => {
       expect(dl.headers['x-content-type-options']).toBe('nosniff');
     }
     const health = await auth(request(app).get('/health'));
-    expect(health.body.appMedia).toMatchObject({ liveBytes: photo.length + voice.length + fs.statSync(itinerary).size, openUploads: 0 });
+    expect(health.body.appMedia).toMatchObject({ liveBytes: photo.length + voice.length + voice2.length + fs.statSync(itinerary).size, openUploads: 0 });
   });
 
   it('is off on a fleet agent: the media routes answer 503', async () => {
