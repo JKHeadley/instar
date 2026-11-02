@@ -44,6 +44,33 @@ export type PeerSelectionResult =
     };
 
 /**
+ * Every candidate rope for a peer, in the resolver's priority order, with its
+ * kind — no admission filter. Callers that apply their own admission rule (the
+ * remote-desktop calls, whose gate admits proven Tailscale plain-http) use this
+ * to fall back across ropes instead of stopping at one selection.
+ */
+export function resolveMeshPeerCandidates(
+  resolver: PeerEndpointResolver | undefined,
+  machineId: string,
+  endpoints: MeshEndpoint[] | undefined,
+  lastKnownUrl: string | undefined,
+): PeerEndpointSelection[] {
+  const candidates: PeerEndpointSelection[] = [];
+  if (resolver) {
+    for (const ep of resolver.resolve(machineId, endpoints, lastKnownUrl)) {
+      // A resolved endpoint carries its advertised kind; the legacy
+      // `lastKnownUrl` fallback the resolver may append has none, so it is
+      // represented explicitly rather than left absent.
+      const kind = (ep as { kind?: PeerEndpointKind }).kind ?? 'last-known-url';
+      candidates.push({ url: ep.url, kind });
+    }
+  } else if (lastKnownUrl) {
+    candidates.push({ url: lastKnownUrl, kind: 'last-known-url' });
+  }
+  return candidates;
+}
+
+/**
  * The best candidate rope THAT THE CREDENTIAL GUARD ADMITS.
  *
  * The defect this exists to fix: `resolveMeshPeerUrl` takes `resolve(...)[0]`,
@@ -64,18 +91,7 @@ export function resolveMeshPeerSelection(
   lastKnownUrl: string | undefined,
   extraHostSuffixes?: readonly string[],
 ): PeerSelectionResult {
-  const candidates: PeerEndpointSelection[] = [];
-  if (resolver) {
-    for (const ep of resolver.resolve(machineId, endpoints, lastKnownUrl)) {
-      // A resolved endpoint carries its advertised kind; the legacy
-      // `lastKnownUrl` fallback the resolver may append has none, so it is
-      // represented explicitly rather than left absent.
-      const kind = (ep as { kind?: PeerEndpointKind }).kind ?? 'last-known-url';
-      candidates.push({ url: ep.url, kind });
-    }
-  } else if (lastKnownUrl) {
-    candidates.push({ url: lastKnownUrl, kind: 'last-known-url' });
-  }
+  const candidates = resolveMeshPeerCandidates(resolver, machineId, endpoints, lastKnownUrl);
 
   if (candidates.length === 0) return { ok: false, outcome: 'no-known-url', refusals: [] };
 

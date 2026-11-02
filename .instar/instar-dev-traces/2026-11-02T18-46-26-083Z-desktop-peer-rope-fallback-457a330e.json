@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "desktop-peer-rope-fallback",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T18:46:26.083Z",
+  "artifactPath": "upgrades/side-effects/desktop-peer-rope-fallback.md",
+  "artifactSha256": "5697c00f5e63457d3b433e93e1b8d92887701601a071c162ca83a7b7888f4f44",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/resolveMeshPeerUrl.ts",
+    "src/server/AgentServer.ts",
+    "src/server/DesktopMeshBroker.ts",
+    "src/server/desktopPeerRopeFetch.ts",
+    "src/server/poolPeerFetch.ts",
+    "tests/unit/desktop-peer-rope-fetch.test.ts",
+    "upgrades/next/desktop-peer-rope-fallback.md",
+    "upgrades/side-effects/desktop-peer-rope-fallback.eli16.md",
+    "upgrades/side-effects/desktop-peer-rope-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow transport fix for remote-desktop peer calls; no authority change; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/desktop-peer-rope-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-peer-rope-fallback.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
