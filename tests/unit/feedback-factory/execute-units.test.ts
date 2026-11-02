@@ -357,6 +357,10 @@ describe('session prompt, result file and base classification', () => {
     expect(classifyBaseFailure(' FAIL tests/a.test.ts > x\nAssertionError: expected 2 to be 3', 1, [])).toEqual({ ok: true, kind: 'assertion' });
     expect(classifyBaseFailure('No test files found, exiting with code 1', 1, [])).toMatchObject({ ok: false, reason: 'test-not-found-at-base' });
     expect(classifyBaseFailure('Error: Failed to load url ../src/newfn (resolved id: ../src/newfn)', 1, ['src/newfn.ts'])).toEqual({ ok: true, kind: 'missing-new-source' });
+    const missingNewSourceWithVitestSummary = 'FAIL tests/unit/config-file-writer-mode.test.ts [ tests/unit/config-file-writer-mode.test.ts ]\nError: Failed to load url ../../src/core/ConfigFileWriter.js (resolved id: ../../src/core/ConfigFileWriter.js) in tests/unit/config-file-writer-mode.test.ts. Does the file exist?\n ❯ tests/unit/config-file-writer-mode.test.ts (0 test)\n Test Files  1 failed (1)\n      Tests  no tests';
+    expect(classifyBaseFailure(missingNewSourceWithVitestSummary, 1, ['src/core/ConfigFileWriter.ts'])).toEqual({ ok: true, kind: 'missing-new-source' });
+    expect(classifyBaseFailure(missingNewSourceWithVitestSummary, 1, ['src/core/OtherWriter.ts'])).toEqual({ ok: false, reason: 'import-error-at-base' });
+    expect(classifyBaseFailure(' Test Files  1 failed (1)\n      Tests  no tests', 1, ['src/core/ConfigFileWriter.ts'])).toEqual({ ok: false, reason: 'test-not-found-at-base' });
     expect(classifyBaseFailure('Error: Failed to load url ../src/other (resolved id: ../src/other)', 1, ['src/newfn.ts'])).toEqual({ ok: false, reason: 'import-error-at-base' });
     expect(classifyBaseFailure('TypeError: add is not a function', 1, ['src/existing.ts'], { add: 'src/existing' })).toEqual({ ok: true, kind: 'missing-new-source' });
     expect(classifyBaseFailure('TypeError: add is not a function', 1, ['src/existing.ts'], { add: 'src/elsewhere' })).toEqual({ ok: false, reason: 'type-error-at-base' });
