@@ -59,6 +59,22 @@ describe('window run liveness HTTP integration', () => {
     await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, taskRef: 'task-1', artifactRef: 'src/a.ts', digest: 'b'.repeat(64) }).expect(400);
   });
 
+  it('refuses a misnamed or missing binding field by name and keeps the existing binding', async () => {
+    // The 2026-11-01 shape: runId instead of autonomousRunId, no lifecycleRunId.
+    const misnamed = await auth(request(server.getApp()).post('/window-run-liveness/register'))
+      .send({ windowId: 'desktop-131439', runId: 'run-131439', topicId: '131439', executorId: 'echo-desktop' }).expect(400);
+    expect(misnamed.body.error).toBe('window-run-liveness-unknown-field:runId (did you mean autonomousRunId?)');
+    expect(misnamed.body.allowed).toEqual(['windowId', 'topicId', 'autonomousRunId', 'lifecycleRunId', 'executorId']);
+    const missing = await auth(request(server.getApp()).post('/window-run-liveness/register'))
+      .send({ windowId: 'desktop-131439', topicId: '131439', autonomousRunId: 'run-131439', executorId: 'echo-desktop' }).expect(400);
+    expect(missing.body.error).toBe('window-run-liveness-missing-field:lifecycleRunId');
+    await auth(request(server.getApp()).post('/window-run-liveness/register')).send({ ...binding, topicId: null }).expect(400);
+    const work = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactPath: 'src/a.ts' }).expect(400);
+    expect(work.body.error).toBe('window-run-liveness-unknown-field:artifactPath (did you mean artifactRef?)');
+    const status = await auth(request(server.getApp()).get('/window-run-liveness')).expect(200);
+    expect(status.body.state).toMatchObject({ windowId: 'w32', autonomousRunId: 'run-w32' });
+  });
+
   it('mints a receipt, evaluates all five predicates, and exposes durable state', async () => {
     const minted = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'src/a.ts' }).expect(201);
     expect(minted.body.receipt).toMatchObject({ sequence: 1, observedAt: now, digest: 'b'.repeat(64), taskRef: 'autonomous:run-w32:1' });
