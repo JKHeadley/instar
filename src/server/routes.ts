@@ -13153,7 +13153,7 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   router.post('/desktop/requests', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!ctx.directDesktopAccess || ctx.config.remoteDesktop?.enabled !== true) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!ctx.directDesktopAccess || ctx.config.remoteDesktop?.enabled === false) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);

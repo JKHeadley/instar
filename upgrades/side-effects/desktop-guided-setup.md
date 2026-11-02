@@ -24,7 +24,7 @@ in the PR body. Proportion is in line with a security-sensitive feature.
 - `desktopSetupRoutes` guard — add — PIN session + transport check on all routes.
 - `DesktopSetupGuide` — add — presentation only; no authority.
 - `DirectDesktopAccess` admission — modify — a new start is refused while
-  `remoteDesktop.enabled` is false, so Turn off holds during a deferred restart.
+  `remoteDesktop.enabled` is explicitly false, so Turn off holds during a deferred restart.
 
 ---
 

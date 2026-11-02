@@ -23,9 +23,10 @@ function app(extras: Partial<RouteContext> & { self?: Record<string, unknown>; c
     if (body.action === 'show-prompt') throw Object.assign(new Error('no'), { status: 409, code: 'locked' });
     return { restartRequested: true };
   });
+  const { config: configOverride, self: _self, ...rest } = extras;
   const ctx = {
     config: { projectName: 'setup', projectDir: '/tmp', stateDir: '/tmp', port: 0, authToken: AUTH,
-      developmentAgent: true, remoteDesktop: { enabled: true, frontMachineId: SELF }, ...(extras.config as object) },
+      developmentAgent: true, remoteDesktop: { enabled: true, frontMachineId: SELF }, ...(configOverride as object) },
     sessionManager: { listRunningSessions: () => [] }, state: {}, scheduler: null, startTime: new Date(),
     meshSelfId: SELF,
     listPoolMachines: () => [
@@ -36,7 +37,7 @@ function app(extras: Partial<RouteContext> & { self?: Record<string, unknown>; c
     desktopMeshBroker: {},
     desktopTargetSigningKey: () => 'key',
     verifyDashboardOperatorSession: (token: string) => token === 'operator-proof',
-    ...extras,
+    ...rest,
   } as unknown as RouteContext;
   const server = express();
   server.use(express.json());
