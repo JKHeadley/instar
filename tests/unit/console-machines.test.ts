@@ -95,6 +95,32 @@ describe('machines page in a DOM', () => {
   });
 });
 
+describe('machineCarePool (CMT-1199)', () => {
+  it('gives each machine its own line, names the ones it cannot read, and keeps the watch-only header', async () => {
+    const { machineCarePool } = await import('../../dashboard/console/machines-model.js');
+    expect(machineCarePool({ ok: false })).toBeNull();
+    const v = machineCarePool({ ok: true, data: {
+      scope: 'pool',
+      machines: [
+        { machineId: 'm_self', machineNickname: 'Studio', self: true, state: { uptimeDays: 2, safetyHolds: [], lastRehearsal: null } },
+        { machineId: 'm_mini', machineNickname: 'Mac Mini', self: false, state: { uptimeDays: 9, safetyHolds: [{ active: true, label: 'A person using the machine now' }], lastRehearsal: { outcome: 'would-roll' } } },
+      ],
+      pool: { failed: [{ machineId: 'm_pc', machineNickname: 'Mama PC', reason: 'route-missing' }, { machineId: 'm_x', reason: 'peer-unreachable' }] },
+    } });
+    expect(v.header).toBe('Restart care is watching only, nothing restarts.');
+    expect(v.byMachine.m_self).toBe('Up 2 days · no practice run yet');
+    expect(v.byMachine.m_mini).toBe('Up 9 days · practice run: would have waited a night · holding: A person using the machine now');
+    expect(v.selfLine).toBe('Up 2 days · no practice run yet');
+    expect(v.missing).toEqual(['Mama PC: can’t tell, on an older version', 'a machine with no name yet: can’t tell, did not answer']);
+  });
+
+  it('treats an older server that ignores scope=pool as this machine only', async () => {
+    const { machineCarePool } = await import('../../dashboard/console/machines-model.js');
+    const v = machineCarePool({ ok: true, data: { uptimeDays: 3, safetyHolds: [], lastRehearsal: { outcome: 'would-restart' } } });
+    expect(v).toEqual({ header: 'Restart care is watching only, nothing restarts.', byMachine: {}, selfLine: 'Up 3 days · practice run: would have restarted', missing: [] });
+  });
+});
+
 describe('machineCareLine', () => {
   it('says plainly that nothing restarts, and reports the last practice run', async () => {
     const { machineCareLine } = await import('../../dashboard/console/machines-model.js');

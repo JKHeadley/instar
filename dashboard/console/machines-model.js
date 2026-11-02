@@ -148,3 +148,51 @@ export function machineCareLine(r) {
     : 'Last practice run: outcome unknown';
   return [`Restart care is watching only, nothing restarts.`, uptime, last, held.length ? `Holding now: ${held.join(', ')}` : null].filter(Boolean).join(' · ');
 }
+
+const CARE_FAILED = {
+  offline: 'offline',
+  'not-enabled': 'not turned on there',
+  'route-missing': 'on an older version',
+  unauthorized: 'did not accept this machine',
+  'url-rejected': 'no safe connection',
+  'peer-unreachable': 'did not answer',
+  'read-failed': 'its reading failed',
+};
+
+/** One short care line for one machine's state (no repeated "watching only" preface). */
+function careShort(d) {
+  const uptime = typeof d.uptimeDays === 'number' ? `Up ${d.uptimeDays} days` : 'Uptime unread';
+  const held = (Array.isArray(d.safetyHolds) ? d.safetyHolds : []).filter((h) => h && h.active).map((h) => h.label);
+  const night = d.lastRehearsal;
+  const last = !night ? 'no practice run yet'
+    : night.outcome === 'would-restart' ? 'practice run: would have restarted'
+    : night.outcome === 'would-roll' ? 'practice run: would have waited a night'
+    : night.outcome === 'would-hold' ? 'practice run: would have been held'
+    : 'practice run: outcome unknown';
+  return [uptime, last, held.length ? `holding: ${held.join(', ')}` : null].filter(Boolean).join(' · ');
+}
+
+/**
+ * Restart care across the pool (GET /machine-maintenance?scope=pool, CMT-1199).
+ * Returns { header, byMachine: {machineId: line}, selfLine, missing: [line] } or null.
+ * An older server ignores scope and answers its own status only: treated as self.
+ */
+export function machineCarePool(r) {
+  if (!r || !r.ok || !r.data) return null;
+  const d = r.data;
+  const header = 'Restart care is watching only, nothing restarts.';
+  if (!Array.isArray(d.machines)) {
+    return { header, byMachine: {}, selfLine: careShort(d), missing: [] };
+  }
+  const byMachine = {};
+  let selfLine = null;
+  for (const m of d.machines) {
+    if (!m || !m.state) continue;
+    const line = careShort(m.state);
+    byMachine[m.machineId] = line;
+    if (m.self) selfLine = line;
+  }
+  const failed = d.pool && Array.isArray(d.pool.failed) ? d.pool.failed : [];
+  const missing = failed.map((f) => `${f.machineNickname || 'a machine with no name yet'}: can’t tell, ${CARE_FAILED[f.reason] || 'no answer'}`);
+  return { header, byMachine, selfLine, missing };
+}
