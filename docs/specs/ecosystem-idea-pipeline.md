@@ -35,6 +35,7 @@ measures a cost and says nothing about what that cost buys.
 ## Non-goals
 
 - **Building anything.** Starting a spec opens an ordinary `/instar-dev` spec. There is no executor.
+- **Gating a running agent.** The one downstream block is the lint in section 8, on a development step.
 - **Outreach.** Reports to other projects, stars and email are a separate decision.
 
 ## Design
@@ -203,8 +204,6 @@ The first run reviews the ten lessons in `docs/research/ecosystem/life-distribut
 | Framework admission | invariant | Must-fail canary; a failed or unrunnable probe refuses the framework. Evidence only, no judgment |
 | Exception, watchlist yes, decline | invariant | The operator's act, by PIN |
 | Agent starting a spec | judgment-candidate | Floor: Now band only, one open at a time, reason recorded, operator can decline. Fallback: no spec. The operator may start one on any idea |
-
-Nothing here gates a running agent. The one downstream block is the lint in section 8.
 
 ## Multi-machine posture
 
