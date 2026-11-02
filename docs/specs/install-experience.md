@@ -237,7 +237,9 @@ Then a guided second level: a scheduled email report, calendar, another computer
 | Which door to offer first | judgment-candidate | Floor: only detected doors. Default: the harness running the installer. Arbiter: the setup flow. Fallback: ask the one question |
 | First tasks from purpose | judgment-candidate | Floor: the three named tasks. Arbiter: the agent. Fallback: offer all three |
 
-**State versus symbol.** "First result delivered" reads the outcome record, not a send result. "Signed in" uses a live call. "Own name" uses a probe answered by this process, which shows observed reachability, not exclusive control; one machine fronting a name remains a stated deployment rule. Each reports `unknown` when it can't be measured and never treats that as success.
+## State versus symbol
+
+"First result delivered" reads the outcome record, not a send result. "Signed in" uses a live call. "Own name" uses a probe answered by this process, which shows observed reachability, not exclusive control; one machine fronting a name remains a stated deployment rule. Each reports `unknown` when it can't be measured and never treats that as success.
 
 ## 12. Rollout and migration
 

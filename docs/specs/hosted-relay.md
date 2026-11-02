@@ -87,7 +87,9 @@ Apple accepts alerts for the App Store app only when signed with the key of the 
 | Name issuance and removal | invariant | Signed owner request |
 | Connection displacement by lease epoch | invariant | Existing fenced lease, no judgment |
 
-**State versus symbol.** Reachability uses the existing proof that this process answers on the name. A certificate that matches a logged entry isn't assumed to be ours until compared with our key. An unreachable log reads `unknown`, not clean.
+## State versus symbol
+
+Reachability uses the existing proof that this process answers on the name. A certificate that matches a logged entry isn't assumed to be ours until compared with our key. An unreachable log reads `unknown`, not clean.
 
 ## Multi-machine posture
 

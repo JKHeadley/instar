@@ -167,7 +167,9 @@ No operator boundary. The `a2a-pairing-invite-link.md` amendment is a spec chang
 | Approval cap and decline pause | invariant | Fixed numbers, bounded blast radius |
 | Agent creation cap | invariant | Fixed number, bounded blast radius |
 
-**State versus symbol.** "Owner" means a signature verified against the merged record, never a name or a session. An unreadable record refuses risky actions and allows viewing.
+## State versus symbol
+
+"Owner" means a signature verified against the merged record, never a name or a session. An unreadable record refuses risky actions and allows viewing.
 
 ## Multi-machine posture
 
