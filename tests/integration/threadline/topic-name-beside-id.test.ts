@@ -89,7 +89,7 @@ describe('topic name beside id — threadline session text', () => {
     expect(text).toContain(`topic ${HOMEBASE} "🤝 echo"`);
     expect(text).toContain(`topic ${ORIGIN} (name unresolved)`);
     // No bare id anywhere in the notice line.
-    expect(text).not.toMatch(/topic \d+(?! "| \(name unresolved\))/);
+    expect(text).not.toMatch(/topic \d+\b(?! "| \(name unresolved\))/);
   });
 
   it('the spawn-prompt topic hint names the topic', () => {
@@ -99,6 +99,6 @@ describe('topic name beside id — threadline session text', () => {
     router.setPeerUserTopicResolver(() => ({ topicId: HOMEBASE, via: 'homebase' }));
     const hint = (router as unknown as { userTopicHint: (t: string, r: string, c?: unknown) => string }).userTopicHint('t', PEER, relayCtx);
     expect(hint).toContain(`topic ${HOMEBASE} "🤝 echo"`);
-    expect(hint).not.toMatch(/topic \d+(?! "| \(name unresolved\))/);
+    expect(hint).not.toMatch(/topic \d+\b(?! "| \(name unresolved\))/);
   });
 });
