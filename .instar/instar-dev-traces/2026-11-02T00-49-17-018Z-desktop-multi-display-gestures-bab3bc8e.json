@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "desktop-multi-display-gestures",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T00:49:17.018Z",
+  "artifactPath": "upgrades/side-effects/desktop-multi-display-gestures.md",
+  "artifactSha256": "c8637d14d96eeee1516814325c5bb5bfc47500077d1e5cee77befaf39058cf6b",
+  "coveredFiles": [
+    "dashboard/desktop.js",
+    "docs/specs/desktop-multi-display-gestures.eli16.md",
+    "docs/specs/desktop-multi-display-gestures.md",
+    "tests/unit/desktop-anydesk-gestures.test.ts",
+    "tests/unit/desktop-touch-gestures.test.ts",
+    "upgrades/next/desktop-multi-display-gestures.md",
+    "upgrades/side-effects/desktop-multi-display-gestures.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Viewer gesture fix on a Tier-1 change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/desktop-multi-display-gestures.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-multi-display-gestures.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the capture helper restarts only when the operator picks a screen"
+  }
+}

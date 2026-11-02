@@ -8,9 +8,11 @@ Three-finger swipes send the machine's standard shortcuts through the existing i
 
 The Windows "Instar remote control active" banner no longer sits over window buttons. It is a small always-on-top strip at the bottom right that either person can drag, and it cannot leave the screen.
 
+On a phone, double-tap and hold now drags with no click pair, so dragging a window by its title bar no longer maximizes it. A lone tap's click waits about 300 ms to tell it apart from a double tap.
+
 ## What to Tell Your User
 
-Remote desktop now handles more than one screen. A Screens button lists them by name and size, and tapping one switches to it without reconnecting. Three-finger swipes work like a Mac trackpad: up shows everything, down shows the app's windows or goes back, and left and right change desktops. If a swipe does nothing on a Mac, those shortcuts are turned off in its Keyboard settings. On Windows the "remote control active" banner has moved to the bottom right, and you can drag it.
+Remote desktop now handles more than one screen. A Screens button lists them by name and size, and tapping one switches to it without reconnecting. Three-finger swipes work like a Mac trackpad: up shows everything, down shows the app's windows or goes back, and left and right change desktops. If a swipe does nothing on a Mac, those shortcuts are turned off in its Keyboard settings. On Windows the "remote control active" banner has moved to the bottom right, and you can drag it. On a phone, double-tap and hold now drags instead of maximizing a window, so a single tap clicks a moment later than before.
 
 ## Summary of New Capabilities
 

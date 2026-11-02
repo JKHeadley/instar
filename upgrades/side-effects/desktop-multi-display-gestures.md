@@ -39,7 +39,7 @@ No brittle check gains blocking authority. Refusing a malformed id on an authent
 - Version skew is the main risk: an older host treats an unknown command as a protocol violation and ends the session. The viewer sends `selectDisplay` only after `supported: true`, and treats any failure of the read as unsupported.
 - Switching kills the capture helper while a frame may be pending. That counts as one capture failure, below the limit of three; the next tick starts fresh with a keyframe.
 - If an H.264 helper fails because a screen vanished, the existing fallback moves the session to JPEG for the rest of the session. The picture survives; it is lower quality.
-- PR 2531 (AnyDesk gestures, open) touches the same viewer and helper files and adds a three-finger tap. A swipe is not a tap: 2531's multi-tap marks movement, so the two should coexist, but one of the two PRs will need a rebase. Its double-tap-and-hold drag has the same double-click problem fixed here in the iPhone app.
+- PR 2531 (merged while this was in review) adds a three-finger tap. A swipe is not a tap: its multi-tap marks movement, so a swipe does not also middle-click. Its double-tap-and-hold drag sent a click and then a press, which the host read as a double-click and maximized a window being dragged; fixed here. A lone touch tap now clicks about 300 ms later, the cost of telling a tap from the start of a double tap.
 - Adding Fn and NumericPad to posted arrow keys changes all remote arrow keys on a Mac to match a physical keyboard.
 
 ## 6. External surfaces

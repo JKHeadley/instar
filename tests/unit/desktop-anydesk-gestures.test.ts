@@ -57,6 +57,20 @@ describe('desktop viewer gestures match the AnyDesk report', () => {
     expect(kinds()).toEqual(['click:left', 'buttonDown:left', 'buttonUp:left']);
   });
 
+  it('sends a real double tap as one double-click, and a lone tap after the window', async () => {
+    const { pointer, kinds, actions } = setup();
+    pointer('pointerdown', 1, 60, 60); pointer('pointerup', 1, 60, 60);
+    expect(kinds()).toEqual([]);
+    pointer('pointerdown', 2, 62, 62); pointer('pointerup', 2, 62, 62);
+    await wait(350);
+    expect(kinds()).toEqual(['click:left']);
+    expect(actions.at(-1)?.count).toBe(2);
+    pointer('pointerdown', 3, 200, 200); pointer('pointerup', 3, 200, 200);
+    await wait(350);
+    expect(kinds()).toEqual(['click:left', 'click:left']);
+    expect(actions.at(-1)?.count).toBeUndefined();
+  });
+
   it('right-clicks on a two-finger tap and middle-clicks on a three-finger tap', () => {
     const { pointer, kinds } = setup();
     pointer('pointerdown', 1, 40, 40); pointer('pointerdown', 2, 100, 40);
@@ -92,7 +106,9 @@ describe('desktop viewer gestures match the AnyDesk report', () => {
     await wait(0);
     pointer('pointerup', 2, 120, 120);
     await wait(0); await wait(0);
-    expect(kinds()).toEqual(['click:left', 'buttonDown:left', 'buttonUp:left']);
+    // No click before the press: the host would read the pair as a double-click
+    // and maximize a window being dragged by its title bar.
+    expect(kinds()).toEqual(['buttonDown:left', 'buttonUp:left']);
   });
 
   it('turns a letter typed with Ctrl latched into a shortcut key', async () => {

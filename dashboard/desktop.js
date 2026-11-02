@@ -89,6 +89,9 @@ const LONG_PRESS_MS = 550;
 const DOUBLE_TAP_MS = 300;
 let mousePress = null;
 let lastTap = null;
+// A lone tap's click waits this long. A click followed at once by a press reads on
+// the host as a double-click, which maximizes a window being dragged by its title.
+let pendingTapClick = 0;
 let dragPointerId = null;
 let multiTap = null;
 // What the connected machine says about its screens. Until it answers
@@ -1291,8 +1294,10 @@ $('surface').addEventListener('pointerdown', event => {
     multiTap = null;
     const state = pointers.get(event.pointerId);
     const now = Date.now();
-    state.secondTap = !!lastTap && now - lastTap.at < DOUBLE_TAP_MS
+    state.secondTap = !!pendingTapClick && !!lastTap && now - lastTap.at < DOUBLE_TAP_MS
       && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 40;
+    if (state.secondTap) { clearTimeout(pendingTapClick); pendingTapClick = 0; }
+    else flushTapClick();
     // Hold still to right-click, as on AnyDesk and most phone remote desktops.
     state.longPress = setTimeout(() => {
       if (pointers.get(event.pointerId) !== state || state.maxDistance >= 10 || state.multi || state.secondTap) return;
@@ -1409,15 +1414,32 @@ $('surface').addEventListener('pointerup', event => {
   }
   const distance = Math.max(state.maxDistance,
     Math.hypot(event.clientX - state.startX, event.clientY - state.startY));
-  if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
+  if (!state.multi && distance < 10 && state.secondTap) {
+    // The first tap's click is still unsent: a real double tap goes out as one
+    // double-click, and a second press held without moving as one click.
+    if (!trackpad) { const at = position(event); if (at) cursor = at; }
+    flushPendingMove();
+    clickCursor('left', Date.now() - state.at < 500 ? 2 : 1);
+    lastTap = null;
+  } else if (!state.multi && distance < 10 && Date.now() - state.at < 500) {
     if (!trackpad || event.pointerType === 'mouse') { const at = position(event); if (at) cursor = at; }
-    clickCursor(event.button === 2 ? 'right' : 'left');
-    lastTap = event.pointerType === 'mouse' ? null : { at: Date.now(), x: event.clientX, y: event.clientY };
+    if (event.pointerType === 'mouse') { clickCursor(event.button === 2 ? 'right' : 'left'); lastTap = null; }
+    else {
+      lastTap = { at: Date.now(), x: event.clientX, y: event.clientY };
+      pendingTapClick = setTimeout(flushTapClick, DOUBLE_TAP_MS);
+    }
   }
 });
 function twoFingerUsed(tap) { return tap.zoomed === true; }
+function flushTapClick() {
+  if (!pendingTapClick) return;
+  clearTimeout(pendingTapClick);
+  pendingTapClick = 0;
+  clickCursor('left');
+}
 function cancelGestures() {
   stopEdgePan();
+  clearTimeout(pendingTapClick); pendingTapClick = 0;
   for (const state of pointers.values()) clearTimeout(state.longPress);
   pointers.clear(); twoFinger = null; threeFinger = null; multiTap = null; mousePress = null; dragPointerId = null; lastTap = null;
   releaseControls();

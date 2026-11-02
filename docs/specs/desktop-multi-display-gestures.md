@@ -83,6 +83,10 @@ Sent as ordinary `keyDown`/`keyUp` through the existing input path. All these ke
 
 The Windows "Instar remote control active" banner sat at the top right and covered window buttons. It is now a small borderless strip at the bottom right of the main screen's working area, sized to its text, still always on top. Dragging it moves it, so the person at the machine or the viewer can put it elsewhere; it cannot be dragged off screen, and the spot is kept for later sessions until the companion restarts. Closing it still ends control. The Mac indicator is a menu bar item, which never covers windows, so it is unchanged.
 
+## Double-tap and hold
+
+Tap, then press and hold, then move must drag: mouse down, moves, mouse up. It used to send the first tap's click at once, then the press. The two together read on the host as a double-click, so grabbing a window's title bar maximized it. Both viewers now hold a lone tap's click for the 300 ms double-tap window. A second tap in that window cancels it: if the finger lifts quickly, one double-click goes out; if it holds and moves, a drag; if it holds without moving, one click. A lone tap therefore clicks about 300 ms later than before; that delay is the cost of telling the two apart.
+
 ## Verification
 
 Tests exercise the protocol, the hosts against fake helpers, the routes and the production boot path. The Swift helper is compiled here. The C# companion cannot be compiled here. Nothing was run against a real screen. Before calling this working, a live check must show: three real screens listed with their right names and resolutions; switching among them with correct click placement, including a screen left of or above the main one; and each gesture doing its job on a Mac and on Mama PC.
