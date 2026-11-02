@@ -513,7 +513,9 @@ function loadHome() {
   // Every source has one in-flight request and its own bounded retry timer.
   // A slow source cannot block another card or start overlapping refreshes.
   read('pool', '/pool', POOL_TIMEOUT_MS);
-  read('attention', '/attention?scope=pool', POOL_TIMEOUT_MS);
+  // Open items only: a machine's full history (closed items included) can be
+  // over a megabyte, enough to miss the per-machine time limit.
+  read('attention', '/attention?scope=pool&status=OPEN', POOL_TIMEOUT_MS);
   read('systemTopics', '/telegram/system-topics');
   read('sessions', '/sessions?scope=pool', POOL_TIMEOUT_MS);
   read('topics', '/telegram/topics?scope=pool', POOL_TIMEOUT_MS);

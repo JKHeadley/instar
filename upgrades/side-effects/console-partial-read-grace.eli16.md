@@ -4,4 +4,6 @@ The dashboard's home screen collects what needs you from all of the agent's mach
 
 Now, when one machine misses a refresh, the dashboard keeps showing what that machine reported the last time it did answer, as long as that was less than two minutes ago. Everything from the machines that did answer is still fresh. Meanwhile it keeps asking the missing machine again in the background. If the machine stays silent for more than two minutes, the warning comes back exactly as before, because by then it is a real problem worth telling you about.
 
+There was also a simpler cause. The home screen asked every machine for its whole list of alerts, including the hundreds that were closed long ago. One machine's list was over a megabyte, which sometimes took longer to send than the dashboard waits. The home screen only ever shows open alerts, so it now asks for open ones only, which is about a tenth of the size and comes back in well under a second.
+
 So you only see "could not be checked" when a machine really is unreachable, not every time one is briefly slow.
