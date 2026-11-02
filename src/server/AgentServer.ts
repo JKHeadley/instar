@@ -1626,6 +1626,8 @@ export class AgentServer {
         if (!options.telegram) return null;
         return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
       },
+      // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
+      telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
@@ -5840,6 +5842,10 @@ export class AgentServer {
         if (options.sessionManager) {
           svc.setFollowUp(createAppFollowUpInjector({ sessions: options.sessionManager as unknown as Parameters<typeof createAppFollowUpInjector>[0]['sessions'], channels: svc.channels }));
         }
+        // Push without Telegram (§4.7): every agent reply appended to an app conversation sends one
+        // push through the push service's budgets, folding and dedupe (fanned out to peers).
+        const pairing = this.mobilePairing;
+        svc.pushHook = (conversationKey, messageId) => { pairing.push?.onAppReply(conversationKey, messageId); };
         svc.start();
         this.appConversations = svc;
         routeCtx.appConversations = svc;

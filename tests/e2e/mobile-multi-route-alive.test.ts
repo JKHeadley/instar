@@ -76,6 +76,7 @@ describe('mobile multi-route — production wiring', () => {
     expect(m.status).toBe(200);
     const dms: string[] = [];
     mp.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    mp.deps.telegramOwnerPresent = () => true; // the Telegram path (no owner ⇒ the dashboard path, §4.4)
     const dev = makeDevice();
     const red = await request(app).post('/mobile/pairing-codes/redeem').set('Host', CF).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
     expect(red.status).toBe(200);

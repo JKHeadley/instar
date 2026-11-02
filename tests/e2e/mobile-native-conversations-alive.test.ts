@@ -98,6 +98,7 @@ describe('native app conversations — production wiring', () => {
     expect(m.status).toBe(200);
     const dms: string[] = [];
     server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    server.mobilePairing!.deps.telegramOwnerPresent = () => true; // the Telegram path (no owner ⇒ the dashboard path, §4.4)
     const dev = makeDevice();
     const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
     expect(r.status).toBe(200);

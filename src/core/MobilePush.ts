@@ -1,6 +1,7 @@
 /**
  * Mobile push (docs/specs/mobile-push.md): notify paired phones through Apple's push service
- * when the Attention hub posts. Direct from this agent with the operator's APNs key; no relay.
+ * when the Attention hub posts, and when the agent replies in a native app conversation
+ * (mobile-native-conversations §4.7, no Telegram needed). Direct from this agent with the operator's APNs key; no relay.
  *
  * Bounds are durable and per device (`.instar/state/mobile-push-state.json`): a 2-minute fold,
  * hourly after 40 sends in any rolling 24 h, an URGENT bypass of the hourly wait (10 more per
@@ -25,8 +26,11 @@ const PAUSE_RECHECK_MS = 30 * 60_000;
 const BUNDLE_ID = 'io.sagemindai.instar';
 
 export interface PushTrigger {
-  kind: 'item' | 'notice';
+  /** `reply`: an agent reply appended to a native app conversation (mobile-native-conversations §4.7). */
+  kind: 'item' | 'notice' | 'reply';
   itemId?: string;
+  /** For `reply`: the app conversation's UUID, so the phone can open it. Never the reply's text. */
+  conversationKey?: string;
   dedupeKey: string;
   priority?: string;
   sourceMachine: string;
@@ -134,6 +138,15 @@ export class MobilePushService {
     void this.receive(trig, false).catch((err) => this.deps.reportDegradation?.('MobilePush.receive', err));
   }
 
+  /**
+   * An agent reply appended to a native app conversation (mobile-native-conversations §4.7): one
+   * push per reply, through the same budgets, folding and dedupe as a hub post, fanned out so a
+   * phone paired on another machine hears it too. Needs no Telegram.
+   */
+  onAppReply(conversationKey: string, messageId: string): void {
+    this.onHubPost({ kind: 'reply', conversationKey, dedupeKey: `app-reply:${messageId}` });
+  }
+
   /** A trigger from this machine or a peer. Returns 'deduped' or 'accepted'. */
   async receive(t: PushTrigger, fromPeer: boolean): Promise<'deduped' | 'accepted' | 'off'> {
     if (!this.deps.enabled()) return 'off';
@@ -150,7 +163,7 @@ export class MobilePushService {
       const ds = this.dev(st, d.id);
       prune(ds, t0);
       if (!ds.pending && this.dueFor(ds, urgent) <= t0) {
-        await this.send(d.id, { kind: t.kind, itemId: t.kind === 'item' ? t.itemId : undefined, machine: t.sourceMachine, count: 1 }, urgent && this.throttled(ds));
+        await this.send(d.id, { kind: t.kind, itemId: t.kind === 'item' ? t.itemId : undefined, conversationKey: t.kind === 'reply' ? t.conversationKey : undefined, machine: t.sourceMachine, count: 1 }, urgent && this.throttled(ds));
       } else {
         ds.pending = { count: (ds.pending?.count ?? 0) + 1, hasUrgent: (ds.pending?.hasUrgent ?? false) || urgent };
         ds.dueAt = this.dueFor(ds, ds.pending.hasUrgent);
@@ -199,7 +212,7 @@ export class MobilePushService {
   }
 
   // ── Sending ────────────────────────────────────────────────────────────────────
-  private async send(deviceId: string, p: { kind: 'item' | 'notice' | 'aggregate'; itemId?: string; machine?: string; count: number }, urgentBypass: boolean): Promise<string> {
+  private async send(deviceId: string, p: PushPayloadInput, urgentBypass: boolean): Promise<string> {
     const st = this.load();
     if (!st) return 'state-unreadable';
     const ds = this.dev(st, deviceId);
@@ -295,10 +308,15 @@ function prune(ds: DeviceState, t0: number): void {
   if (ds.backoffUntil && ds.backoffUntil <= t0) ds.backoffUntil = null;
 }
 
-export function buildPayload(agentName: string, agentId: string, deviceId: string, p: { kind: 'item' | 'notice' | 'aggregate'; itemId?: string; machine?: string; count: number }): Record<string, unknown> {
-  const body = p.kind === 'aggregate' ? `${p.count} more ${p.count === 1 ? 'thing needs' : 'things need'} you` : 'Something needs you';
+export interface PushPayloadInput { kind: 'item' | 'notice' | 'reply' | 'aggregate'; itemId?: string; conversationKey?: string; machine?: string; count: number }
+
+export function buildPayload(agentName: string, agentId: string, deviceId: string, p: PushPayloadInput): Record<string, unknown> {
+  const body = p.kind === 'aggregate' ? `${p.count} more ${p.count === 1 ? 'thing needs' : 'things need'} you`
+    : p.kind === 'reply' ? 'New reply' : 'Something needs you';
   const instar: Record<string, unknown> = { kind: p.kind, agentId, deviceId, count: p.count };
   if (p.kind === 'item' && p.itemId) { instar.itemId = p.itemId; instar.machine = p.machine; }
+  // The conversation to open; never the reply's text (the phone fetches it itself).
+  if (p.kind === 'reply' && p.conversationKey) instar.conversationKey = p.conversationKey;
   return {
     aps: { alert: { title: agentName, body }, sound: 'default', 'mutable-content': 1, 'thread-id': agentName },
     instar,

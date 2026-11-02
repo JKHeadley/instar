@@ -323,11 +323,14 @@ export class DeviceRegistry {
     return d;
   }
 
-  /** Boot and lease loss: no pending device can be confirmed any more. */
-  expireAllPending(): void {
+  /**
+   * Boot and lease loss: no pending device can be confirmed any more. `except` keeps the named
+   * devices pending (a lease move does not expire a dashboard-path device, mobile-native-conversations §4.4).
+   */
+  expireAllPending(except?: ReadonlySet<string>): void {
     const f = this.normalize(this.read());
     let changed = false;
-    for (const d of f.devices) if (d.status === 'pending') { d.status = 'expired'; d.expiresAt = new Date(this.now()).toISOString(); changed = true; }
+    for (const d of f.devices) if (d.status === 'pending' && !except?.has(d.id)) { d.status = 'expired'; d.expiresAt = new Date(this.now()).toISOString(); changed = true; }
     if (changed) this.write(f);
   }
 
@@ -426,8 +429,11 @@ export class ConfirmationCodes {
 
   drop(deviceId: string): void { this.codes.delete(deviceId); }
 
-  /** Lease loss: no code issued before it may confirm anything. */
-  clearAll(): void { this.codes.clear(); }
+  /** Lease loss: no code issued before it may confirm anything (`except`: dashboard-path devices keep theirs). */
+  clearAll(except?: ReadonlySet<string>): void {
+    if (!except?.size) { this.codes.clear(); return; }
+    for (const id of [...this.codes.keys()]) if (!except.has(id)) this.codes.delete(id);
+  }
 
   /** Forget codes past their expiry (bounded memory). */
   prune(): void { const t = this.now(); for (const [id, e] of this.codes) if (e.expiresAt <= t) this.codes.delete(id); }

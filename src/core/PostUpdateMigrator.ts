@@ -961,6 +961,23 @@ ${APP_CONVERSATIONS_POOL_LINE}
 `;
 }
 
+export const PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER = '### Pairing a phone without Telegram';
+/**
+ * CLAUDE.md awareness block for dashboard pairing and push without Telegram
+ * (docs/specs/mobile-native-conversations.md §4.4, §4.7 — increment 3). Sniffed by its exact heading.
+ */
+export function PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION(): string {
+  return `\n${PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER}
+
+An agent with no Telegram owner can still add a phone. The pairing link works the same; after the phone opens it, the 6-digit code is not sent anywhere: it is shown on the dashboard's **Phones** tab, and only after the operator unlocks the dashboard with the PIN. The operator reads it there and types it into the app (or taps "Not my phone"). Where a Telegram owner exists, the code still goes to the owner's private Telegram chat.
+- Send the operator the pairing link and the dashboard link, and tell them: open the link on the phone, then open the dashboard's Phones tab, unlock with the PIN, and type the code shown there into the app. **I never read or relay that code**; my token alone cannot see it.
+- A phone approved this way is labelled "approved on dashboard" (\`approvedVia: dashboard-pin\`): it proves the person could unlock the dashboard, not that they can read a private Telegram chat.
+- A server restart loses a waiting code (it lives only in memory); the phone then needs a new link.
+- Every reply I send in an app conversation sends one push to paired phones ("New reply"; never the reply's text), within the push budgets, with or without Telegram.
+- **When to use** (PROACTIVE): "add you to my phone" on an agent without Telegram → mint the link and point the operator at the dashboard Phones tab.
+`;
+}
+
 export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
 /** The section's last sentence before copies between machines shipped (refreshed in place on update). */
 export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads `not-here` until copies between machines ship.';
@@ -8720,6 +8737,12 @@ setTimeout(() => process.exit(0), 2000);
       content += APP_MEDIA_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added App conversation media section');
+    }
+    // Increment 3 (dashboard pairing and push without Telegram): its own section, by exact heading.
+    if (!content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER)) {
+      content += PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Pairing a phone without Telegram section');
     }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);

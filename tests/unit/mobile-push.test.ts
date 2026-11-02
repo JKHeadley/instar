@@ -202,3 +202,47 @@ describe('DeviceRegistry.setPush', () => {
     expect(c.reg.get(c.id)!.pushToken).toBeUndefined();
   });
 });
+
+// Push without Telegram (mobile-native-conversations §4.7): an agent reply in an app conversation.
+describe('MobilePushService — app conversation replies', () => {
+  const KEY_A = '2f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f';
+
+  it('reply payload names the conversation and says "New reply", never the reply text', () => {
+    const p = buildPayload('Echo', 'echo', 'd1', { kind: 'reply', conversationKey: KEY_A, machine: 'm1', count: 1 }) as any;
+    expect(p.aps.alert).toEqual({ title: 'Echo', body: 'New reply' });
+    expect(p.instar).toEqual({ kind: 'reply', agentId: 'echo', deviceId: 'd1', count: 1, conversationKey: KEY_A });
+  });
+
+  it('onAppReply sends one push per reply, fans out, and a repeat of the same message is deduped', async () => {
+    const c = setup();
+    const fanned: unknown[] = [];
+    const svc = new MobilePushService({
+      stateDir: c.dir, registry: c.reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+      enabled: () => true, credentials: () => ({ keyPem: KEY, keyId: 'KEY1', teamId: 'T' }),
+      transport: async (_e, _t, headers, body) => { c.sent.push({ headers, body: JSON.parse(body) }); return { status: 200 }; },
+      fanOut: (t) => fanned.push(t), now: () => c.clock.t,
+    });
+    svc.onAppReply(KEY_A, 'msg-1');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(c.sent).toHaveLength(1);
+    expect((c.sent[0]!.body as any).instar).toMatchObject({ kind: 'reply', conversationKey: KEY_A });
+    expect(JSON.stringify(c.sent[0]!.body)).not.toContain('msg-1');
+    expect(fanned).toEqual([{ kind: 'reply', conversationKey: KEY_A, dedupeKey: 'app-reply:msg-1', sourceMachine: 'm1' }]);
+    // The same reply's trigger arriving again (a peer echo) is deduped; a new reply folds.
+    expect(await svc.receive({ kind: 'reply', conversationKey: KEY_A, dedupeKey: 'app-reply:msg-1', sourceMachine: 'm2' }, true)).toBe('deduped');
+    c.clock.t += 10_000;
+    svc.onAppReply(KEY_A, 'msg-2');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(c.sent).toHaveLength(1); // inside the 2-minute fold
+    c.clock.t += 2 * 60_000; await svc.tick();
+    expect(c.sent).toHaveLength(2);
+    expect((c.sent[1]!.body as any).instar).toMatchObject({ kind: 'aggregate', count: 1 });
+  });
+
+  it('push turned off: a reply sends nothing', async () => {
+    const c = setup({ enabled: { on: false } });
+    c.svc.onAppReply(KEY_A, 'msg-1');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(c.sent).toHaveLength(0);
+  });
+});

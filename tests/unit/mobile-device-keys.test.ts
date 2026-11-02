@@ -162,3 +162,27 @@ describe('ConfirmationCodes', () => {
     expect(codes.leakedIn('nothing here 12')).toEqual([]);
   });
 });
+
+// Dashboard-path pairing (mobile-native-conversations §4.4): a lease move does not expire it.
+describe('lease loss spares dashboard-path pending devices', () => {
+  it('expireAllPending(except) keeps the named pending devices and expires the rest', () => {
+    const reg = new DeviceRegistry(tmp());
+    const a = reg.createPending({ deviceName: null, label: null, publicKey: makeDevice().publicKey, host: 'h' });
+    const b = reg.createPending({ deviceName: null, label: null, publicKey: makeDevice().publicKey, host: 'h' });
+    if (!a.ok || !b.ok) throw new Error('create failed');
+    reg.expireAllPending(new Set([a.device.id]));
+    expect(reg.get(a.device.id)!.status).toBe('pending');
+    expect(reg.get(b.device.id)!.status).toBe('expired');
+  });
+
+  it('ConfirmationCodes.clearAll(except) keeps only the named devices\' codes', () => {
+    const codes = new ConfirmationCodes();
+    const ca = codes.issue('a', Date.now() + 60_000);
+    const cb = codes.issue('b', Date.now() + 60_000);
+    codes.clearAll(new Set(['a']));
+    expect(codes.check('a', ca).result).toBe('ok');
+    expect(codes.check('b', cb).result).toBe('none');
+    codes.clearAll();
+    expect(codes.check('a', ca).result).toBe('none');
+  });
+});
