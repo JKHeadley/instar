@@ -437,3 +437,167 @@ describe('verb, placement and line helpers', () => {
     expect(availableLine('/x/0-a.png', 'hi')).toBe('[file now available: /x/0-a.png] (for the message "hi")');
   });
 });
+
+describe('review fixes', () => {
+  it('a purge that lands while the last slice is in flight: the copy is discarded, never published', async () => {
+    const clock = { t: Date.now() };
+    const a = machine('A', clock);
+    const b = machine('B', clock);
+    const bytes = png(300);
+    const ev = await holdOn(a, bytes, 'm1', clock);
+    b.store.ingestReplicated(ev);
+    link(b, [a], {
+      tamper: (c, r) => {
+        if (c.op === 'slice') b.store.ingestReplicated({ eventId: 'pg-mid', kind: 'purge', conversationKey: KEY, attachmentIds: [ev.attachments[0].attachmentId], at: new Date(clock.t).toISOString(), machineId: 'A' });
+        return r;
+      },
+    });
+    const waited = b.rep.awaitBlob(sha(bytes), 5_000);
+    await b.rep.tick();
+    expect(await waited).toBe(false);
+    expect(b.media.locateBlob(sha(bytes))).toBeNull();
+    expect(fs.readdirSync(b.media.pullsDir)).toEqual([]);
+    expect(b.media.indexDb.prepare('SELECT COUNT(*) AS n FROM pulls').get()).toEqual({ n: 0 });
+  });
+
+  it('publishPulled discards a file nothing unpurged references', () => {
+    const clock = { t: Date.now() };
+    const b = machine('B', clock);
+    const bytes = png();
+    const f = path.join(b.media.pullsDir, 'x.part');
+    fs.writeFileSync(f, bytes);
+    expect(b.media.publishPulled(f, sha(bytes))).toBe(false);
+    expect(fs.existsSync(f)).toBe(false);
+    expect(b.media.locateBlob(sha(bytes))).toBeNull();
+  });
+
+  it('canFetch: refuses with a plain reason when no copy can start', async () => {
+    const clock = { t: Date.now() };
+    const a = machine('A', clock);
+    const b = machine('B', clock);
+    const bytes = png();
+    b.store.ingestReplicated(await holdOn(a, bytes, 'm1', clock));
+    expect(b.rep.canFetch(sha(bytes))).toEqual({ ok: false, reason: expect.stringMatching(/not connected/) });
+    let online = false;
+    link(b, [a], { online: () => online });
+    expect(b.rep.canFetch(sha(bytes))).toEqual({ ok: false, reason: 'A is not reachable' });
+    online = true;
+    expect(b.rep.canFetch(sha(bytes))).toEqual({ ok: true });
+    b.diskBox.v = { free: 1e9, total: 1e12 };
+    expect(b.rep.canFetch(sha(bytes))).toEqual({ ok: false, reason: expect.stringMatching(/out of disk space/) });
+    expect(b.rep.whyNotHere(sha(bytes))).toMatch(/out of disk space/);
+    b.diskBox.v = { free: 1e12, total: 2e12 };
+    // A fresh inventory from A that lacks the file rules A out.
+    const c = machine('C', clock);
+    const other = png();
+    b.store.ingestReplicated(await holdOn(c, other, 'm2', clock));
+    link(b, [c]);
+    await b.rep.inventoryRound();
+    expect(b.rep.canFetch(sha(bytes))).toEqual({ ok: false, reason: 'no reachable machine of this agent holds it' });
+  });
+
+  it('whyNotHere names the load pause', async () => {
+    const clock = { t: Date.now() };
+    const a = machine('A', clock);
+    const b = machine('B', clock);
+    const bytes = png();
+    b.store.ingestReplicated(await holdOn(a, bytes, 'm1', clock));
+    link(b, [a], { load: () => 'saturated', online: () => true, tamper: (c, r) => (c.op === 'slice' ? { ok: false, reason: 'not-held' } : r) });
+    await b.rep.tick();
+    expect(b.rep.whyNotHere(sha(bytes))).toMatch(/paused while this machine is overloaded/);
+  });
+
+  it('repeated asks and nudges skip a file\'s backoff at most once per backoff window', async () => {
+    const clock = { t: Date.now() };
+    const a = machine('A', clock);
+    const b = machine('B', clock);
+    const bytes = png();
+    const ev = event('m1', bytes, clock.t);
+    a.store.append(ev); // A cannot serve it: every attempt fails
+    b.store.ingestReplicated(ev);
+    const sent: AppMediaPullCommand[] = [];
+    link(b, [a], { sent });
+    await b.rep.tick();
+    const slices = () => sent.filter((c) => c.op === 'slice').length;
+    expect(slices()).toBe(1);
+    for (let i = 0; i < 10; i++) {
+      b.rep.want(sha(bytes));
+      await b.rep.serve({ type: 'app-media-pull', op: 'nudge', hashes: [sha(bytes)] });
+      await b.rep.tick();
+      await new Promise((r) => setTimeout(r, 5));
+      clock.t += 2_000;
+    }
+    expect(slices()).toBe(2); // one hurried attempt in the window, not ten
+    clock.t += BACKOFF_MAX_MS;
+    b.rep.want(sha(bytes));
+    await new Promise((r) => setTimeout(r, 20));
+    await b.rep.tick();
+    expect(slices()).toBe(3);
+  });
+
+  it('a timed-out waiter is removed', async () => {
+    const clock = { t: Date.now() };
+    const a = machine('A', clock);
+    const b = machine('B', clock);
+    const bytes = png();
+    const ev = event('m1', bytes, clock.t);
+    a.store.append(ev);
+    b.store.ingestReplicated(ev);
+    link(b, [a]);
+    expect(await b.rep.awaitBlob(sha(bytes), 30)).toBe(false);
+    expect(b.rep.waiterCount()).toBe(0);
+  });
+
+  it('a partial copy comes from one peer; if it goes away the copy restarts from another, and only the bad peer is blamed', async () => {
+    const clock = { t: Date.now() };
+    const a = machine('A', clock);
+    const c = machine('C', clock);
+    const b = machine('B', clock);
+    const bytes = png(2 * APP_MEDIA_SLICE_BYTES + 10);
+    const ev = await holdOn(a, bytes, 'm1', clock);
+    await holdOn(c, bytes, 'm1', clock);
+    b.store.ingestReplicated(ev);
+    const servedBy: Array<{ peer: string; offset: number }> = [];
+    let aOnline = true;
+    const t: AppMediaTransport = {
+      peers: () => [{ machineId: 'A', online: aOnline }, { machineId: 'C', online: true }],
+      send: async (id, cmd) => {
+        if (cmd.op === 'slice') servedBy.push({ peer: id, offset: cmd.offset! });
+        const r = await (id === 'A' ? a : c).rep.serve(cmd) as { dataB64?: string };
+        // C flips a byte in every slice it serves.
+        if (id === 'C' && r.dataB64) { const buf = Buffer.from(r.dataB64, 'base64'); buf[0] ^= 1; return { ok: true, result: { ...r, dataB64: buf.toString('base64') } }; }
+        return { ok: true, result: r };
+      },
+    };
+    b.rep.attachTransport(t);
+    // Move one slice (budget: break after it) by pulling with A, then take A away.
+    const pull = b.rep as unknown as { pullOneSlice(s: string): Promise<string> };
+    expect(await pull.pullOneSlice(sha(bytes))).toBe('moved');
+    expect(servedBy).toEqual([{ peer: 'A', offset: 0 }]);
+    aOnline = false;
+    for (let i = 0; i < 3; i++) await pull.pullOneSlice(sha(bytes));
+    // Restarted from offset 0 with C; every later slice from C.
+    expect(servedBy.slice(1).map((s) => s.peer)).toEqual(['C', 'C', 'C']);
+    expect(servedBy[1].offset).toBe(0);
+    expect(b.media.locateBlob(sha(bytes))).toBeNull();
+    const failures = (id: string) => (b.media.indexDb.prepare('SELECT failures FROM pull_peers WHERE machineId = ?').get(id) as { failures: number } | undefined)?.failures ?? 0;
+    expect(failures('C')).toBe(1);
+    expect(failures('A')).toBe(0);
+  });
+
+  it('a serving machine quarantines a blob whose bytes changed instead of serving it', async () => {
+    const clock = { t: Date.now() };
+    const a = machine('A', clock);
+    const bytes = png(300);
+    await holdOn(a, bytes, 'm1', clock);
+    const p = a.media.locateBlob(sha(bytes))!;
+    fs.chmodSync(p, 0o600);
+    const damaged = Buffer.from(bytes);
+    damaged[20] ^= 0xff;
+    fs.writeFileSync(p, damaged);
+    fs.utimesSync(p, new Date(), new Date(Date.now() + 5_000));
+    expect(await a.rep.serve({ type: 'app-media-pull', op: 'slice', sha256: sha(bytes), offset: 0 })).toEqual({ ok: false, reason: 'not-held' });
+    expect(a.media.locateBlob(sha(bytes))).toBeNull();
+    expect(a.media.isQuarantined(sha(bytes))).toBe(true);
+  });
+});

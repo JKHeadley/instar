@@ -173,6 +173,11 @@ async function sendOnA(a: Env, b: Env, bytes: Buffer, caption = 'Look at this') 
   return { key, ev };
 }
 
+/** The failed attempts while A was unreachable put the file in backoff; let that window pass. */
+function elapseBackoff(b: Env, h: string): void {
+  b.svc.media.indexDb.prepare('UPDATE pulls SET nextAttemptAt = 0 WHERE sha256 = ?').run(h);
+}
+
 async function until(cond: () => boolean, b: Env, ms = 15_000): Promise<void> {
   const end = Date.now() + ms;
   while (!cond() && Date.now() < end) { await b.svc.replicator.tick(); await new Promise((r) => setTimeout(r, 30)); }
@@ -198,6 +203,17 @@ describe('copying between machines over signed MeshRpc', () => {
     expect(a.svc.replicator.counters.slicesServed).toBe(2);
     const hist = await signed(b, 'GET', `/mobile/chat/app/${key}/messages`);
     expect(hist.body.messages[0].attachments[0]).toMatchObject({ attachmentId: ev.attachments[0].attachmentId, bytes: 'verified' });
+  }, 30_000);
+
+  it('a download answers 404 with the reason, not 202, when no copy can start', async () => {
+    const a = await machine('A');
+    const b = await machine('B');
+    const bytes = png(300);
+    const { key } = await sendOnA(a, b, bytes);
+    b.svc.replicator.attachTransport({ peers: () => [{ machineId: 'A', nickname: 'the mini', online: false }], send: async () => ({ ok: false }) });
+    const r = await signed(b, 'GET', `/mobile/media/${sha(bytes)}?ref=app:${key}`);
+    expect(r.status).toBe(404);
+    expect(r.body).toEqual({ error: 'media-unavailable', detail: 'This file is not on this machine: the mini is not reachable.' });
   }, 30_000);
 
   it('a corrupted slice is never kept, and the failure is counted for that peer', async () => {
@@ -250,7 +266,7 @@ describe('the owner delivers media it does not hold yet', () => {
     const lines = await b.svc.sessionLinesFor(key, ev.messageId, ev.attachments, ev.text, 200);
     expect(lines).toEqual(['[file still copying: holiday.png]']);
     reach.on = true;
-    b.svc.replicator.want(sha(bytes));
+    elapseBackoff(b, sha(bytes));
     await until(() => followUps.length > 0, b);
     expect(followUps).toHaveLength(1);
     expect(followUps[0].alias).toBe(b.registry.appAliasFor(key));
@@ -271,7 +287,7 @@ describe('the owner delivers media it does not hold yet', () => {
     b.svc.setFollowUp(() => false);
     await b.svc.sessionLinesFor(key, ev.messageId, ev.attachments, ev.text, 100);
     reach.on = true;
-    b.svc.replicator.want(sha(bytes));
+    elapseBackoff(b, sha(bytes));
     await until(() => b.svc.pendingContext(key).lines.length > 0, b);
     const pending = b.svc.pendingContext(key);
     expect(pending.lines).toHaveLength(1);

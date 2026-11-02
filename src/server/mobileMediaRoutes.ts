@@ -146,9 +146,11 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on this machine and has been set aside.' }); return; }
     if (!blob) {
       // §4.8/§4.12: start (or hurry) the copy from another machine and tell the app to poll.
+      // 202 only when a copy can actually start: a mesh, a machine with disk room, an online peer
+      // that could hold it, and not given up on. Otherwise an honest 404 with the reason.
       const rep = svc!.replicator;
-      if (rep.isUnrecoverable(sha)) { res.status(404).json({ error: 'media-unavailable', detail: 'None of the agent\'s machines has been able to provide this file for 7 days.' }); return; }
-      if (!rep.hasTransport()) { res.status(404).json({ error: 'media-unavailable', detail: 'This file is on another of the agent\'s machines, and this machine is not connected to them.' }); return; }
+      const can = rep.canFetch(sha);
+      if (!can.ok) { res.status(404).json({ error: 'media-unavailable', detail: `This file is not on this machine: ${can.reason}.` }); return; }
       rep.want(sha);
       res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
       return;

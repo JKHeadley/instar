@@ -491,10 +491,40 @@ export class AppMediaStore {
    * A blob copied from another machine, already hashed equal to its name by the caller: rename it
    * in, then place it where its references say (live → blobs/, only deleted conversations → deleted/).
    */
-  publishPulled(filePath: string, sha: string): void {
-    this.publish(filePath, sha);
+  publishPulled(filePath: string, sha: string): boolean {
     const refs = this.opts.store.mediaBlobRefs(sha);
-    if (refs && refs.liveRefs === 0 && refs.allRefs > 0 && fs.existsSync(this.blobPath(sha))) this.moveBlob(this.blobPath(sha), this.deletedPath(sha));
+    // Purged (or never referenced) by now: the operator removed these bytes, so the copy is discarded.
+    if (!refs || refs.allRefs === 0) {
+      SafeFsExecutor.safeRmSync(filePath, { force: true, operation: `${OP}:pulled-unreferenced` });
+      return false;
+    }
+    this.publish(filePath, sha);
+    if (refs.liveRefs === 0 && fs.existsSync(this.blobPath(sha))) this.moveBlob(this.blobPath(sha), this.deletedPath(sha));
+    return true;
+  }
+
+  /**
+   * Before serving a blob to another machine: if its size or mtime changed since its last check
+   * (or it was never checked), hash it now; a blob that no longer matches its name is quarantined
+   * here (moved, never deleted) and not served, so a damaged copy never travels.
+   */
+  async verifyBeforeServe(sha: string): Promise<boolean> {
+    const p = this.locateBlob(sha);
+    if (!p) return false;
+    let st: fs.Stats;
+    try { st = fs.statSync(p); } catch { return false; } // @silent-fallback-ok — moved or removed since it was located; reads as not held
+    const check = this.db.prepare('SELECT mtimeMs, size FROM blob_checks WHERE sha256 = ?').get(sha) as { mtimeMs: number; size: number } | undefined;
+    if (check && check.mtimeMs === st.mtimeMs && check.size === st.size) return true;
+    const h = await hashFile(p);
+    if (h.sha256 === sha) { this.recordCheck(sha); return true; }
+    this.quarantine(p, sha);
+    return false;
+  }
+
+  private quarantine(p: string, sha: string): void {
+    try { fs.renameSync(p, path.join(this.quarantineDir, sha)); } catch (err) { this.report(`a damaged file could not be set aside: ${err instanceof Error ? err.message : String(err)}`); return; } // @silent-fallback-ok — reported through deps.reportDegradation; the next check retries
+    this.db.prepare('DELETE FROM blob_checks WHERE sha256 = ?').run(sha);
+    this.report(`a stored file no longer matches its hash and was quarantined (${sha.slice(0, 12)}…)`);
   }
 
   /** Every blob this machine holds (live and deleted/), sorted, de-duplicated. */
@@ -665,10 +695,7 @@ export class AppMediaStore {
         if (!full && check && check.mtimeMs === st.mtimeMs && check.size === st.size) continue;
         const h = await hashFile(p);
         if (h.sha256 === sha) { this.recordCheck(sha); continue; }
-        const q = path.join(this.quarantineDir, sha);
-        try { fs.renameSync(p, q); } catch (err) { this.report(`a damaged file could not be set aside: ${err instanceof Error ? err.message : String(err)}`); continue; }
-        this.db.prepare('DELETE FROM blob_checks WHERE sha256 = ?').run(sha);
-        this.report(`a stored file no longer matches its hash and was quarantined (${sha.slice(0, 12)}…)`);
+        this.quarantine(p, sha);
       }
     }
     if (full) this.db.prepare(`INSERT OR REPLACE INTO meta (k, v) VALUES ('lastFullCheck', ?)`).run(String(t));

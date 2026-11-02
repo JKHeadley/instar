@@ -16,6 +16,11 @@
  *            (then one slice per tick until it clears). Slices land in `pulls/<sha>.part`; a
  *            complete file is hashed in a worker and kept ONLY if length and SHA-256 equal the
  *            referencing event's.
+ *   blame  — a partial copy comes from ONE peer: the peer that served offset 0 serves every later
+ *            slice of it; if that peer stops answering, the partial copy is discarded and the
+ *            file restarts from another peer. So a failed whole-file hash is blamed on exactly
+ *            the one peer whose bytes it was. A serving peer re-hashes a blob whose size or
+ *            mtime changed since its last check and quarantines it locally instead of serving it.
  *   brakes — per blob: exponential backoff 30 s → 1 h; after 7 days with no peer able to serve
  *            it the blob is `unrecoverable` (one notice per machine) until a new event or a peer
  *            inventory names a holder. Per peer: 5 consecutive verification failures open its
@@ -129,6 +134,10 @@ export class AppMediaReplicator {
   private readonly priority = new Set<string>();
   private readonly waiters = new Map<string, Array<(landed: boolean) => void>>();
   private readonly peerCursor = new Map<string, number>();
+  /** The one peer each partial copy comes from (§ blame, above). In memory: after a restart a part with no known source is restarted. */
+  private readonly partPeer = new Map<string, string>();
+  /** When an on-demand ask or a nudge last skipped this file's backoff (at most once per backoff window). */
+  private readonly lastHurryAt = new Map<string, number>();
   private readonly peerInventories = new Map<string, PeerInventory>();
   private ownInventories: Array<{ version: string; hashes: string[]; set: Set<string>; at: number }> = [];
   private loadPausedSince: number | null = null;
@@ -205,6 +214,8 @@ export class AppMediaReplicator {
     this.serving++;
     let handle: fs.promises.FileHandle | null = null;
     try {
+      // A blob changed since its last check is re-hashed first; a damaged one is quarantined, never served.
+      if (!(await this.d.media.verifyBeforeServe(sha))) return { ok: false, reason: 'not-held' };
       const st = fs.lstatSync(blob);
       if (!st.isFile()) return { ok: false, reason: 'not-held' };
       handle = await fs.promises.open(blob, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
@@ -265,8 +276,8 @@ export class AppMediaReplicator {
     let queued = 0;
     for (const h of hashes) {
       if (!this.referenced(h) || this.d.media.locateBlob(h)) continue;
-      this.rearm(h);
-      this.db.prepare('UPDATE pulls SET nextAttemptAt = 0 WHERE sha256 = ?').run(h);
+      this.rearm(h); // a peer naming itself as a holder re-arms a given-up file (§4.12)
+      this.hurry(h);
       queued++;
     }
     if (queued > 0) this.wantedDirty = true;
@@ -314,9 +325,53 @@ export class AppMediaReplicator {
     if (!isSha256Hex(sha) || this.d.media.locateBlob(sha) || !this.referenced(sha)) return;
     this.priority.add(sha);
     this.db.prepare('INSERT OR IGNORE INTO pulls (sha256, firstWantedAt) VALUES (?, ?)').run(sha, this.now());
-    this.db.prepare('UPDATE pulls SET nextAttemptAt = 0 WHERE sha256 = ? AND unrecoverable = 0').run(sha);
+    this.hurry(sha);
     void this.tick();
   }
+
+  /**
+   * Skip a file's backoff for one immediate attempt, at most once per backoff window: an app
+   * polling a download every 2 s, or repeated nudges, can never turn the backoff into a hot loop.
+   */
+  private hurry(sha: string): void {
+    const row = this.pullRow(sha);
+    if (!row || row.unrecoverable === 1 || row.nextAttemptAt <= this.now()) return;
+    const window = Math.min(BACKOFF_MIN_MS * 2 ** Math.min(Math.max(row.attempts - 1, 0), 20), BACKOFF_MAX_MS);
+    const last = this.lastHurryAt.get(sha);
+    if (last !== undefined && this.now() - last < window) return;
+    this.lastHurryAt.set(sha, this.now());
+    this.db.prepare('UPDATE pulls SET nextAttemptAt = ? WHERE sha256 = ?').run(this.now(), sha);
+  }
+
+  /** Whether an on-demand copy can start now; otherwise the plain reason (the download route's 202 vs 404). */
+  canFetch(sha: string): { ok: true } | { ok: false; reason: string } {
+    if (!this.transport) return { ok: false, reason: 'this machine is not connected to the agent\'s other machines' };
+    if (this.isUnrecoverable(sha)) return { ok: false, reason: 'no machine of this agent has been able to provide it for 7 days' };
+    if (this.d.media.belowDiskFloor()) return { ok: false, reason: 'this machine is nearly out of disk space, so nothing is copied here until space is freed' };
+    if (this.candidatePeers(sha).length === 0) return { ok: false, reason: this.noPeerReason() };
+    return { ok: true };
+  }
+
+  /** Online peers with a closed breaker that could hold this file (a fresh inventory that lacks it rules a peer out). */
+  private candidatePeers(sha: string): string[] {
+    const t = this.now();
+    return (this.transport?.peers() ?? []).filter((p) => {
+      if (p.online === false || this.breakerOpen(p.machineId, t)) return false;
+      const inv = this.peerInventories.get(p.machineId);
+      return !inv || t - inv.at > INVENTORY_FRESH_MS || inv.set.has(sha);
+    }).map((p) => p.machineId);
+  }
+
+  private noPeerReason(): string {
+    const peers = this.transport?.peers() ?? [];
+    if (peers.length === 0) return 'no other machine of this agent is registered';
+    const offline = peers.filter((p) => p.online === false).map((p) => p.nickname || p.machineId);
+    if (offline.length === peers.length) return `${offline.join(', ')} ${offline.length === 1 ? 'is' : 'are'} not reachable`;
+    return 'no reachable machine of this agent holds it';
+  }
+
+  /** On-demand asks waiting for a blob right now (observability and tests). */
+  waiterCount(): number { let n = 0; for (const ws of this.waiters.values()) n += ws.length; return n; }
 
   /** Resolve true when the blob is held, or false after `ms` (the pull keeps going in the background). */
   awaitBlob(sha: string, ms: number): Promise<boolean> {
@@ -325,7 +380,15 @@ export class AppMediaReplicator {
     return new Promise<boolean>((resolve) => {
       let done = false;
       const finish = (v: boolean) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
-      const timer = setTimeout(() => finish(false), ms);
+      const timer = setTimeout(() => {
+        // Timed out: this waiter leaves the list (the pull itself keeps going).
+        const list = this.waiters.get(sha);
+        if (list) {
+          const rest = list.filter((w) => w !== finish);
+          if (rest.length > 0) this.waiters.set(sha, rest); else this.waiters.delete(sha);
+        }
+        finish(false);
+      }, ms);
       timer.unref?.();
       const list = this.waiters.get(sha) ?? [];
       list.push(finish);
@@ -337,13 +400,11 @@ export class AppMediaReplicator {
   /** Why a blob is not here yet, in plain words (app-media-path's message). */
   whyNotHere(sha: string): string {
     const row = this.pullRow(sha);
-    if (!this.transport) return 'this machine is not connected to the agent\'s other machines';
-    const peers = this.transport.peers();
-    if (peers.length === 0) return 'no other machine of this agent is registered';
-    const offline = peers.filter((p) => p.online === false).map((p) => p.nickname || p.machineId);
-    if (row?.unrecoverable === 1) return 'no machine of this agent has been able to provide it for 7 days';
-    if (offline.length === peers.length) return `${offline.join(', ')} ${offline.length === 1 ? 'is' : 'are'} not reachable`;
-    return row?.lastError ? `still copying (${row.lastError})` : 'still copying';
+    const can = this.canFetch(sha);
+    if (!can.ok) return can.reason;
+    const paused = this.loadPausedSince !== null && this.now() - this.loadPausedSince < LOAD_PAUSE_MAX_MS;
+    const load = paused ? '; background copying is paused while this machine is overloaded, this file is copied on request' : '';
+    return `${row?.lastError ? `still copying (${row.lastError})` : 'still copying'}${load}`;
   }
 
   private settleWaiters(sha: string, landed: boolean): void {
@@ -393,9 +454,14 @@ export class AppMediaReplicator {
     }
   }
 
-  private peerChoice(sha: string): string | null {
+  private peerChoice(sha: string, have: number): string | null {
     const t = this.now();
     const peers = (this.transport?.peers() ?? []).filter((p) => p.online !== false && !this.breakerOpen(p.machineId, t));
+    if (have > 0) {
+      // A partial copy continues only from the peer that started it.
+      const pinned = this.partPeer.get(sha);
+      return pinned && peers.some((p) => p.machineId === pinned) ? pinned : null;
+    }
     if (peers.length === 0) return null;
     const holders = peers.filter((p) => this.peerInventories.get(p.machineId)?.set.has(sha));
     const pool = holders.length > 0 ? holders : peers;
@@ -414,12 +480,20 @@ export class AppMediaReplicator {
     try { have = fs.statSync(part).size; } catch { have = 0; } // @silent-fallback-ok — no partial file yet
     if (have > refs.size) { this.removePart(sha); have = 0; }
     // A complete part left by an earlier tick (the disk floor, a crash): verify and keep it, no request.
-    if (have === refs.size) return this.finishPart(sha, refs.size, null);
-    const peer = this.peerChoice(sha);
+    if (have === refs.size) return this.finishPart(sha, refs.size, this.partPeer.get(sha) ?? null);
+    let peer = this.peerChoice(sha, have);
+    if (!peer && have > 0) {
+      // The peer that started this partial copy is gone (offline, breaker, restart): start over from another.
+      this.removePart(sha);
+      this.partPeer.delete(sha);
+      have = 0;
+      peer = this.peerChoice(sha, 0);
+    }
     if (!peer) { this.blobFailure(sha, 'no peer is reachable'); return 'refused'; }
     let res: MeshSendResult;
     try { res = await this.transport!.send(peer, { type: 'app-media-pull', op: 'slice', sha256: sha, offset: have }, SLICE_TIMEOUT_MS); } catch (err) {
       this.advancePeer(sha);
+      if (have > 0) { this.removePart(sha); this.partPeer.delete(sha); }
       this.blobFailure(sha, `${peer} did not answer (${err instanceof Error ? err.message : String(err)})`);
       return 'refused';
     }
@@ -427,6 +501,8 @@ export class AppMediaReplicator {
     if (!r || r.ok !== true) {
       const reason = r && r.ok === false ? r.reason : (res.reason ?? `status ${res.status ?? '?'}`);
       this.advancePeer(sha);
+      // The pinned peer no longer serves this file: the partial copy restarts from another peer.
+      if (have > 0 && reason !== 'busy') { this.removePart(sha); this.partPeer.delete(sha); }
       if (reason === 'busy') return 'refused'; // try again next tick, no backoff
       this.blobFailure(sha, `${peer}: ${reason}`);
       return 'refused';
@@ -435,9 +511,11 @@ export class AppMediaReplicator {
     // A slice must be exactly what was asked for, from a file of the referenced size.
     if (!data || r.offset !== have || r.size !== refs.size || data.length === 0 || data.length > APP_MEDIA_SLICE_BYTES || have + data.length > refs.size) {
       this.removePart(sha);
+      this.partPeer.delete(sha);
       this.verifyFailure(peer, sha, 'a slice did not match the request');
       return 'refused';
     }
+    if (have === 0) this.partPeer.set(sha, peer);
     const fd = fs.openSync(part, have === 0 ? 'w' : 'r+', 0o600); /* state-registry: app-media */
     try { fs.writeSync(fd, data, 0, data.length, have); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     this.counters.slicesPulled++;
@@ -452,22 +530,37 @@ export class AppMediaReplicator {
     const h = await hashFile(part);
     if (h.sha256 !== sha || h.size !== size) {
       this.removePart(sha);
+      this.partPeer.delete(sha);
       if (peer) this.verifyFailure(peer, sha, 'the copied file did not match its hash');
       else this.blobFailure(sha, 'a partial copy did not match its hash');
       return 'refused';
     }
+    // A purge can land while the hash runs: purged bytes are never published (§4.7, §4.12).
+    if (!this.referenced(sha)) { this.dropUnreferenced(sha); return 'refused'; }
     if (this.d.media.belowDiskFloor()) return 'refused'; // keep the verified part; publish when the floor clears
     fs.chmodSync(part, 0o400);
-    this.d.media.publishPulled(part, sha);
+    if (!this.d.media.publishPulled(part, sha)) { this.dropUnreferenced(sha); return 'refused'; }
+    this.partPeer.delete(sha);
     if (peer) this.peerSuccess(peer);
     this.counters.blobsLanded++;
     this.landed(sha);
     return 'landed';
   }
 
+  /** The file stopped being wanted mid-copy (purged): its partial copy and pull state go, waiters hear no. */
+  private dropUnreferenced(sha: string): void {
+    this.removePart(sha);
+    this.partPeer.delete(sha);
+    this.priority.delete(sha);
+    this.db.prepare('DELETE FROM pulls WHERE sha256 = ?').run(sha);
+    this.wantedDirty = true;
+    this.settleWaiters(sha, false);
+  }
+
   private landed(sha: string): void {
     this.db.prepare('DELETE FROM pulls WHERE sha256 = ?').run(sha);
     this.priority.delete(sha);
+    this.lastHurryAt.delete(sha);
     this.wanted = this.wanted.filter((h) => h !== sha);
     const latest = this.ownInventories[this.ownInventories.length - 1];
     if (latest) latest.at = 0; // the next inventory read recomputes (versions stay valid for diffs)

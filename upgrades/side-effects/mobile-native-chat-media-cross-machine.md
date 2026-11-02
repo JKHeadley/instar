@@ -3,7 +3,7 @@
 **Version / slug:** `mobile-native-chat-media-cross-machine`
 **Date:** `2026-11-02`
 **Author:** `echo`
-**Second-pass reviewer:** `not run (the build brief set --second-pass false; see the conclusion)`
+**Second-pass reviewer:** `independent review 2026-11-02: CONCERN, six findings, each fixed below (confirming pass not run; brief: --second-pass false)`
 
 ## Summary of the change
 
@@ -103,6 +103,15 @@ The remaining increment-1 surface ships with every pull verified before storing 
 ## Fix after the first Local Verify
 
 The full Local Verify failed 9 integration tests in `tests/integration/health-stale-job-failures.test.ts` and `tests/integration/lease-medium-health.test.ts`. Cause: the `appMediaPool` branch read `req.query.scope` unguarded, and those tests (like any caller that drives `router.handle` without Express's query parser) send a request with no `query`, so every `/health` call threw `Cannot read properties of undefined (reading 'scope')`. Fixed with `req.query?.scope`; both files pass again, with the media tests and `health-auth-gating`. No test was changed.
+
+## Fixes after the independent review (CONCERN)
+
+1. **Purge during the hash** (medium, confirmed): `finishPart` awaited the worker hash and then published without re-checking the reference, so a purge landing mid-hash let purged bytes reach `blobs/` until the next sweep. Now the reference is re-checked after the hash (the partial copy, pull row and waiters are dropped), and `AppMediaStore.publishPulled` itself discards a file whose hash has no unpurged reference. Test: a purge applied while the last slice is in flight.
+2. **`202 fetching` only when a copy can start** (confirmed): the route now asks `canFetch` and answers `404 media-unavailable` with the reason when there is no mesh, the blob was given up on, the machine is below the disk floor, or no online peer with a closed breaker could hold it (a fresh inventory lacking the hash rules a peer out). `whyNotHere` names the disk floor and the background load pause. **Load is not a refusal for an on-demand copy**: spec §4.12 pauses the eager background pulls under load, and the download's pull is the on-demand latency path, which is not paused, so a `202` under load is true. Tests: unit `canFetch`, integration 404 with the reason.
+3. **Backoff reset on every poll or nudge** (confirmed): `want()` and the nudge set `nextAttemptAt = 0` each time, so an app polling every 2 s retried every 2 s. Now an ask or nudge skips a file's backoff at most once per backoff window (`hurry`); a nudge still re-arms a given-up file once (the peer names itself a holder, §4.12). Test: ten asks + ten nudges in a window → one extra attempt.
+4. **Timed-out waiters stayed in the list** (confirmed): removed on timeout. Test.
+5. **Blame for a failed hash** (confirmed): chose the simpler rule, *one peer per partial copy*. The peer that served offset 0 serves every later slice; if it stops serving (offline, breaker, refusal, no answer) the partial copy is discarded and restarts from another peer. A failed whole-file hash is then blamed on exactly that peer. The pin is in memory: after a restart a partial file with no known source restarts from 0 (cost: re-copying at most one partial file per blob). The serving side re-hashes a blob whose size or mtime changed since its last check before serving it, and quarantines a damaged one locally (`verifyBeforeServe`), so a damaged copy is not sent. Tests: restart-from-another-peer with blame on the bad peer only; serve-side quarantine.
+6. **Gate wording** (confirmed): the spec (Configuration) requires pulls to keep running with the media flag off, so the handler, tick and inventory stay on `mobilePairing.native.enabled`; the upgrade note was corrected to say so.
 
 ## Second-pass review (if required)
 
