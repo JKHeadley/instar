@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "pool-read-cloudflare-edge-fallthrough",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T20:38:14.170Z",
+  "artifactPath": "upgrades/side-effects/pool-read-cloudflare-edge-fallthrough.md",
+  "artifactSha256": "43e1071c968d81c03fc6292a1abaa3e4671c933a86af26b09c029398088ca66c",
+  "coveredFiles": [
+    "src/server/poolPeerFetch.ts",
+    "tests/unit/pool-peer-fetch-fallthrough.test.ts",
+    "upgrades/next/pool-read-cloudflare-edge-fallthrough.md",
+    "upgrades/side-effects/pool-read-cloudflare-edge-fallthrough.eli16.md",
+    "upgrades/side-effects/pool-read-cloudflare-edge-fallthrough.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one dial function; read-only fallthrough within the existing credential guard; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/pool-read-cloudflare-edge-fallthrough.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pool-read-cloudflare-edge-fallthrough.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "bounded per-request retry across the peer own advertised ropes, at most one attempt per rope within the caller single timeout; no background loop"
+  }
+}
