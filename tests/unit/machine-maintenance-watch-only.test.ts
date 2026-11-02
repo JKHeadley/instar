@@ -40,7 +40,7 @@ describe('machine maintenance cannot act', () => {
     expect(code('readings.ts').match(/execFile\(/g)).toHaveLength(1);
     const table = /READ_ONLY_CALLS = \{([\s\S]*?)\n\} as const/.exec(code('readings.ts'))![1];
     expect([...table.matchAll(/command: '(\w+)', args: \[([^\]]*)\]/g)].map((m) => `${m[1]} ${m[2]}`).sort()).toEqual([
-      "ioreg '-c', 'IOHIDSystem', '-d', '4'", "pmset '-g', 'batt'", "ps '-axo', 'args='", "sysctl '-n', 'kern.boottime'",
+      "ioreg '-c', 'IOHIDSystem', '-d', '4'", "pmset '-g', 'batt'", "ps '-axo', 'args='", "ps '-axo', 'pid=,lstart=,args='", "sysctl '-n', 'kern.boottime'",
       "tmux 'list-sessions', '-F', '#{session_name}'", "who '-u'",
     ]);
   });

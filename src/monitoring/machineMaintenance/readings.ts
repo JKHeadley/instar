@@ -24,6 +24,7 @@ const READ_ONLY_CALLS = {
   inputIdle: { command: 'ioreg', args: ['-c', 'IOHIDSystem', '-d', '4'] },
   ttyUsers: { command: 'who', args: ['-u'] },
   processes: { command: 'ps', args: ['-axo', 'args='] },
+  chromeProcesses: { command: 'ps', args: ['-axo', 'pid=,lstart=,args='] },
   battery: { command: 'pmset', args: ['-g', 'batt'] },
   tmuxSessions: { command: 'tmux', args: ['list-sessions', '-F', '#{session_name}'] },
 } as const;
@@ -38,7 +39,7 @@ export function makeReadOnlyRunner(tmuxPath?: string): ReadOnlyRunner {
     if (!call) return Promise.reject(new Error(`not a read-only call: ${String(name)}`));
     const command = name === 'tmuxSessions' && tmuxPath ? tmuxPath : call.command;
     return new Promise((resolve) => {
-      execFile(command, [...call.args], { timeout: 3000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
+      execFile(command, [...call.args], { timeout: 3000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } }, (err, stdout) => resolve(err ? null : stdout));
     });
   };
 }

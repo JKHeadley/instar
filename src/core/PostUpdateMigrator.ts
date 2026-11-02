@@ -1210,6 +1210,22 @@ Long-running machines collect stuck state, and a planned restart with work pause
 `;
 }
 
+/**
+ * Browser care and honest lock reading (machine-self-maintenance spec, Parts A and B), one
+ * definition for fresh agents and updated ones. Describes the watch-only build only: nothing is
+ * closed. Sniff key: `/machine-maintenance/lock-state`.
+ */
+export function MACHINE_BROWSER_CARE_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+### Browsers I opened, and is that Mac really locked? (watch-only)
+
+- **Is the screen really locked?** Read it, never guess from one flag: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/machine-maintenance/lock-state\` → \`{ lockState, row, reason, inputs }\`. \`lockState\` is \`unlocked\`, \`locked\` (only when the session flag, the lock shield on screen and an immediate password requirement all agree), \`screensaver-or-display-sleep\` (a keypress wakes it, no password), \`unknown\` or \`not-applicable\` (Linux). **\`unknown\` means unknown: never tell the operator a machine is locked unless it says \`locked\`**; quote the \`reason\`.
+- **Browsers I opened:** \`chrome-launch.sh\` records each normal Chrome in a ledger (\`--purpose <words>\` says what for; \`--ttl-minutes <n>\` declares how long its contents matter). When the task ends, run \`.instar/scripts/browser/chrome-close.sh <profile>\` (\`--when-free\` if you cannot close it yourself). **In this release it closes nothing:** it records that you are finished, runs the unsaved-input and download checks, and says what a close would do. \`chrome-renew.sh <profile>\` keeps a long-running browser marked in use.
+- A sweep every 15 minutes records which of my browsers it WOULD close (finished, declared lifetime over, or its session gone) and why it keeps the rest (unsaved input, a download, the operator at the machine, a sign-in repair). It never touches the operator's own Chrome. Profiles listed in \`machineMaintenance.browserCare.keepProfiles\` are never picked. Status: \`GET /machine-maintenance\` → \`browserCare\`; audit: \`logs/browser-care.jsonl\`.
+- **When to use** (PROACTIVE): the operator says a machine is "littered with browsers" or asks "which browsers did you leave open?" → read \`browserCare.instances\`; "is the Mac locked?" → read \`lock-state\` first.
+`;
+}
+
 export function DUPLICATE_RECONCILER_CLAUDEMD_SECTION(port: number): string {
   return `\n### Duplicate-Session Prevention & Auto-Heal (⚗️ ownership-gated spawn — observe-only for now)
 
@@ -11597,6 +11613,16 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added machine self-maintenance section');
     } else {
       result.skipped.push('CLAUDE.md: machine self-maintenance section already present');
+    }
+
+    // Browser care + honest lock reading (machine-self-maintenance Parts A and B). Idempotent
+    // via content-sniffing on the lock-state route.
+    if (!content.includes('/machine-maintenance/lock-state')) {
+      content += '\n' + MACHINE_BROWSER_CARE_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added browser care and lock reading section');
+    } else {
+      result.skipped.push('CLAUDE.md: browser care and lock reading section already present');
     }
 
     // Reap notices: a background job whose work completed normally no longer

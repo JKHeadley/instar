@@ -932,6 +932,43 @@
       }
     },
     {
+      "category": "browser-instance-ledger",
+      "description": "Browser care (docs/specs/machine-self-maintenance.md, Part B): one small file per normal-Chrome instance this agent opened (profile dir, pid + start time, session, purpose, lease). Written by the browser helper scripts and the watch-only sweep; describes live processes on this machine only.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/browser-instances/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "domain-cardinality",
+        "note": "One file per running owned Chrome instance; BrowserCareSweep removes the file once its process has exited, so the count tracks open browsers, never history."
+      }
+    },
+    {
+      "category": "audit-browser-care",
+      "description": "Browser care audit (docs/specs/machine-self-maintenance.md, Part B): what the watch-only sweep and chrome-close.sh would close or keep, and why. Profile paths relative to the agent home, never page content. Machine-local observability; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/browser-care.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "BrowserCareSweep.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending; it writes only when an instance's verdict changes."
+      }
+    },
+    {
       "category": "audit-machine-drain",
       "description": "Watch-only drain audit (docs/specs/machine-self-maintenance.md): what each nightly rehearsal would have done, phase by phase, with delays, holds and yield times. Machine-local observability of this machine; never authority, never replicated.",
       "scope": "machine-local",

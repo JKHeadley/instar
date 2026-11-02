@@ -1,0 +1,46 @@
+{
+  "ts": "2026-11-02T12:20:35.201Z",
+  "slug": "machine-self-maintenance-browser-care-lock-reading",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 1140,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/BrowserCareProbes.ts",
+      "src/core/MachineLockStateReader.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/monitoring/machineMaintenance/BrowserCare.ts",
+      "src/monitoring/machineMaintenance/lockState.ts",
+      "src/monitoring/machineMaintenance/readings.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/browser/chrome-close.sh",
+      "src/templates/scripts/browser/chrome-js.sh",
+      "src/templates/scripts/browser/chrome-launch.sh",
+      "src/templates/scripts/browser/chrome-ledger.sh",
+      "src/templates/scripts/browser/chrome-renew.sh",
+      "src/templates/scripts/browser/chrome-unsaved.sh"
+    ],
+    "addedLines": 1129,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
