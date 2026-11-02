@@ -250,9 +250,10 @@ describe('navigation', () => {
 
 describe('plans page in a DOM', () => {
   let dom: JSDOM;
-  afterEach(() => dom?.window.close());
+  afterEach(() => { vi.restoreAllMocks(); dom?.window.close(); });
 
   it('renders In the way above In flight, opens the project sheet, and stops the round through its confirm; Resume sends that round’s index', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
     const posted: Array<[string, unknown]> = [];
     const p1 = project({ id: 'console-makeover', firstLaunchAckAt: daysAgo(4) });
     const p2 = project({ id: 'stopped-one', title: 'Stopped one', rounds: [round({ status: 'complete' }), round({ name: 'Second', status: 'in-progress', haltedAt: minsAgo(10), haltReason: 'operator' })] });

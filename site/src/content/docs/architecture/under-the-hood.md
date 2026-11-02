@@ -67,6 +67,8 @@ This escalation lets a codex agent heal itself with no external nudge, across a 
 - **SessionRecoveryChannel** — the cross-process request/ack channel. The server-side sentinel writes recovery *requests* (sole writer of the request file); the lifeline writes *acks* (sole writer of the ack file) — single-writer-per-file, atomic, so the two processes never race. It also holds a **durable** restart cooldown: a server restart wipes the sentinel's in-memory loop-guard, so the cooldown that prevents a restart loop has to survive on disk.
 - **SessionRecoveryConsumer** — the lifeline-side executor. Reads tier-C requests and performs `ServerSupervisor.performGracefulRestart` + queue replay, **dry-run-first**, refusing to restart while the durable cooldown is active and deduping on attempt id. It is the *authority* half: the sentinel only signals; the consumer decides and acts.
 
+For planned restarts, `PlannedRestartVerifyGuard` checks the verifier's durable in-flight marker and live child process before the supervisor or foreground watcher consumes a restart request. It holds an ordinary request for up to three hours while a verification runs; the verifier pauses new starts until that request is consumed. Explicit forced restarts retain their override.
+
 Ships **dark** behind `monitoring.codexWedgeRecovery` (default off, dry-run first) on the Graduated-Feature-Rollout track. With no config it is byte-for-byte the legacy keypress-only behavior.
 
 ### PendingInjectStore (queued messages survive restarts)
