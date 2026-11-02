@@ -1173,6 +1173,7 @@ export class AgentServer {
     threadMessageRecorder?: import('../threadline/recordThreadMessage.js').ThreadMessageRecorder;
     warrantsReplyGate?: import('../threadline/WarrantsReplyGate.js').WarrantsReplyGate;
     collaborationSurfacer?: import('../threadline/CollaborationSurfacer.js').CollaborationSurfacer; // CMT-509
+    peerHomebaseRelay?: import('../threadline/peerHomebaseRelay.js').PeerHomebaseRelay; // peer-homebase §2.6
     /** ThreadResumeMap — for topic-linkage outbound capture on /threadline/relay-send.
      *  Per THREAD-TOPIC-LINKAGE-SPEC.md. */
     threadResumeMap?: import('../threadline/ThreadResumeMap.js').ThreadResumeMap;
@@ -5105,6 +5106,7 @@ export class AgentServer {
       threadMessageRecorder: options.threadMessageRecorder,
       warrantsReplyGate: options.warrantsReplyGate,
       collaborationSurfacer: options.collaborationSurfacer,
+      peerHomebaseRelay: options.peerHomebaseRelay,
       threadResumeMap: options.threadResumeMap ?? null,
       topicLinkageHandler: options.topicLinkageHandler ?? null,
       handshakeManager: options.handshakeManager ?? null,

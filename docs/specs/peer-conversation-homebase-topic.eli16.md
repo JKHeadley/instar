@@ -26,6 +26,40 @@ Four small things.
    your rules select — so "please contact your operator" reaches you instead of sitting in a
    quota conversation.
 
+## Your rule, now built (2026-10-31)
+
+You put it plainly: *"the whole point of the agent specific topic is that all messages from an
+agent that are intended for the user show up in that topic."* The first build created the topics
+but nothing ever sent anything to them. A message from a paired agent still went wherever its
+conversation happened to start, or wherever the session that read it decided to post. On
+2026-10-31 Scout got Echo's first message a minute before Scout's "🤝 echo" topic even existed,
+and posted it into an unrelated invoices topic.
+
+So now:
+
+- **A message from a paired agent that is meant for you goes to that agent's topic, with a
+  notification.** Your agent's server posts the first message of each conversation there itself,
+  rather than leaving the choice to whichever session handles the conversation. Later messages
+  in the same conversation are posted by that session, which is now told which topic to use.
+  That second part is an instruction to the session, not something the server forces, because
+  the server cannot yet tell on its own which later messages need you.
+- **Only a paired agent counts.** Your agent recognises the other agent by its cryptographic
+  identity, not by the name it gives, so an unknown agent that calls itself by a paired agent's
+  name cannot post into that agent's topic.
+- **That includes replies to conversations your agent started from another topic.** The reply
+  still goes to the session that asked (it is that session's work), but the message you see
+  lands in the paired agent's topic.
+- **The only thing that beats it is your own choice.** If you tied a conversation to a topic
+  yourself (for example with "open this"), that topic still wins.
+- **Back-and-forth between the agents that you don't need to see stays out of your way**, as
+  before.
+- **Both agents get their topic the moment pairing finishes**, not on the first message. Before,
+  only the agent whose person tapped Finish got one straight away; the other side got it a
+  minute too late.
+
+To switch all of this off, set `threadline.peerHomebase.enabled` to false; your agent then routes
+exactly as it did before.
+
 ## What it deliberately does not do
 
 This is the short version on purpose. The first version of this design ran twenty-one review
@@ -50,8 +84,8 @@ decision on record rather than something nobody thought about.
 
 ## What you'd notice
 
-A new topic appears per paired agent, named after it. Requests from those agents arrive there
-and buzz you. Anything you'd already filed somewhere stays where you put it.
+A new topic appears per paired agent, named after it. Messages from those agents that are meant
+for you arrive there and buzz you. A conversation you tied to a topic yourself stays there.
 
 ## Which rule this serves
 

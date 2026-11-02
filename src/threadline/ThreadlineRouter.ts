@@ -376,6 +376,8 @@ export class ThreadlineRouter {
    * path. Wired via setter post-construction so existing callers don't break.
    */
   private topicLinkageHandler: import('./TopicLinkageHandler.js').TopicLinkageHandler | null = null;
+  /** peer-conversation-homebase-topic §2.6: where this peer's user-meant messages go. Optional. */
+  private peerUserTopic: ((q: { threadId: string; peers: string[] }) => { topicId: number | null; via: string }) | null = null;
 
   /** Track in-flight spawn requests to prevent concurrent spawns for the same thread */
   private readonly pendingSpawns = new Set<string>();
@@ -505,6 +507,34 @@ export class ThreadlineRouter {
     handler: import('./TopicLinkageHandler.js').TopicLinkageHandler | null,
   ): void {
     this.topicLinkageHandler = handler;
+  }
+
+  /**
+   * Attach the §2.6 destination resolver. A spawned session is then told which Telegram topic
+   * to use when it writes to the user about this conversation (the peer's own topic, or the
+   * operator's binding), so it never picks an unrelated one. Optional.
+   */
+  setPeerUserTopicResolver(
+    fn: ((q: { threadId: string; peers: string[] }) => { topicId: number | null; via: string }) | null,
+  ): void {
+    this.peerUserTopic = fn;
+  }
+
+  /** The §2.6 topic hint for a spawn prompt, or '' when there is none. Never throws. */
+  private userTopicHint(threadId: string, remoteAgent: string, relayContext?: RelayMessageContext): string {
+    if (!this.peerUserTopic) return '';
+    try {
+      // Fingerprints only (the resolver ignores anything that is not the profile's own
+      // fingerprint): the relay-authenticated sender, else the thread's remote agent id.
+      const peers = [relayContext?.senderFingerprint, remoteAgent]
+        .filter((p): p is string => typeof p === 'string' && p.length > 0);
+      const r = this.peerUserTopic({ threadId, peers });
+      if (typeof r.topicId !== 'number' || r.via === 'existing') return '';
+      const where = r.via === 'homebase' ? `the topic for ${relayContext?.senderName ?? remoteAgent}` : 'the topic the operator bound this conversation to';
+      return `\n\nTelegram topic for this conversation: if you tell the user anything about it, or this agent's message needs the user, post in topic ${r.topicId} (${where}), never in another topic.`;
+    } catch {
+      return ''; // @silent-fallback-ok — no hint keeps the prompt as before
+    }
   }
 
   /** Fire a ledger event swallowing any exception (signal-only). */
@@ -1445,7 +1475,7 @@ export class ThreadlineRouter {
       .replaceAll('{history_section}', historySection)
       .replaceAll('{latest_message_id}', latestMessage.id)
       .replaceAll('{latest_subject}', latestMessage.subject)
-      .replaceAll('{latest_body}', latestBody);
+      .replaceAll('{latest_body}', latestBody) + this.userTopicHint(threadId, remoteAgent, relayContext);
 
     // If relay context is present, wrap with grounding preamble
     if (relayContext) {

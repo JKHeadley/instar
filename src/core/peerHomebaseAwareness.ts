@@ -15,6 +15,9 @@ export const PEER_HOMEBASE_AWARENESS_V1_LIMITS = `there is no
 export const PEER_HOMEBASE_AWARENESS_V2_LIMITS = `a failed
   creation is retried only at the next server start.`;
 
+/** A phrase only the current card carries; an installed card without it is refreshed in place. */
+export const PEER_HOMEBASE_AWARENESS_ROUTING_MARKER = 'Messages meant for the user land in the homebase';
+
 export function peerHomebaseAwareness(): string {
   return `### Where a peer agent's notices go (per-peer homebase topic)
 
@@ -30,10 +33,13 @@ after a request from peer \`pp\` landed in a Claude-quota conversation and he ne
   creation can fail (no forum, Telegram down) without failing anything; it retries on a later
   message after 10 minutes. No homebase ⇒ existing routing, which is the correct degraded
   state, not an error.
-- **Which topic a peer message actually lands in** is decided by the conversation's binding
-  first: a binding the **operator** chose always wins, and a binding whose origin is unknown is
-  **preserved** (it may be a deliberate choice made before provenance was recorded). The
-  homebase is where an **unbound** conversation goes.
+- **Messages meant for the user land in the homebase** (operator rule, 2026-10-31: "all
+  messages from an agent that are intended for the user show up in that topic"). The server
+  posts a user-visible peer message there itself, with a notification, including a reply on a
+  conversation you started from another topic (the reply still reaches the session that
+  asked). Only a binding the **operator** chose always wins over it. Other bindings, including
+  one whose origin is unknown, are **preserved** as records but no longer decide where the
+  user reads a peer. Agent-internal traffic keeps its existing routing.
 - **\`Conversation.boundTopicSource\`** records who chose it — \`operator\` | \`origin-inherited\` |
   \`peer-homebase\`, absent on older records. Never "fix" an absent one by overwriting it; that
   destroys exactly the operator choice the field exists to protect. Re-homing such a
@@ -45,7 +51,7 @@ after a request from peer \`pp\` landed in a Claude-quota conversation and he ne
 - **Honest limits, accepted deliberately** (spec section 6): topic identity rests on its name,
   and a crash between creating a topic and recording its id can leave a duplicate. Carried by
   CMT-014.
-- **When to use** (PROACTIVE): before telling the operator you have passed on a peer's request,
-  check that it went to the peer's homebase (or the conversation's bound topic) and not to
-  whatever topic the thread happened to start in. On by default; \`threadline.peerHomebase.enabled: false\` turns it off.`;
+- **When to use** (PROACTIVE): when you write to the user about a peer conversation, post in
+  that peer's homebase (a spawned session is told its topic id), never whatever topic the
+  thread happened to start in. On by default; \`threadline.peerHomebase.enabled: false\` turns it off.`;
 }
