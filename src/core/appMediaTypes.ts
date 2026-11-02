@@ -46,7 +46,7 @@ export function validateAttachments(raw: unknown, messageId: string): AppAttachm
   for (let i = 0; i < raw.length; i++) {
     const a = raw[i] as Record<string, unknown> | null;
     if (!a || typeof a !== 'object' || a.index !== i) return null;
-    const str = (v: unknown, max: number) => (typeof v === 'string' && v.length >= 1 && v.length <= max ? v : null);
+    const str = (v: unknown, max: number) => (typeof v === 'string' && v.length >= 1 && v.length <= max && !CONTROL_CHARS.test(v) ? v : null);
     const mediaType = str(a.mediaType, 128);
     const declaredType = str(a.declaredType, 128);
     const filename = str(a.filename, 255);
@@ -116,10 +116,18 @@ export function kindFromBytes(mediaType: string): MediaKind {
   return 'file';
 }
 
-/** The sniff table is the inline-safe list (§4.8): no HTML, SVG or script type can come out of it. */
+/** Exactly the types the sniff table can produce, except the fallback (§4.8). Nothing else is inline. */
+export const INLINE_SAFE_TYPES: ReadonlySet<string> = new Set([
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif',
+  'video/mp4', 'video/quicktime', 'video/x-m4v', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/wav', 'application/pdf',
+]);
+
 export function isInlineSafe(mediaType: string): boolean {
-  return mediaType.startsWith('image/') || mediaType.startsWith('video/') || mediaType.startsWith('audio/') || mediaType === 'application/pdf';
+  return INLINE_SAFE_TYPES.has(mediaType);
 }
+
+/** Control characters (CR and LF included) are never allowed in a stored type or file name. */
+export const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
 
 const EXTENSIONS: Readonly<Record<string, string>> = {
   'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'image/heif': 'heif',

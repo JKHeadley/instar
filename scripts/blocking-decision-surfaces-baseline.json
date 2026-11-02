@@ -72,7 +72,7 @@
   "nonBlocking": [
     {
       "path": "src/templates/scripts/app-reply.sh",
-      "sha256": "bf79d0c8ddc804d2e4492dcbd4dcef823050324d64f0dc72d9db7d3f663dc3e7",
+      "sha256": "d30678c344eb48bd753c2e487739bcaa08e561bbacb4c2e6d015edee66a9d769",
       "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file)."
     },
     {

@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AppMediaStore, Refusal } from './AppMediaStore.js';
 import { scanPrintableRuns, snapshotDescriptor, type HashedFile } from './appMediaWorker.js';
-import { MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_MESSAGE_BYTES } from './appMediaTypes.js';
+import { CONTROL_CHARS, MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_MESSAGE_BYTES } from './appMediaTypes.js';
 
 /** A home-level credential location, matched by path component inside the admitting root. */
 export function isCredentialPath(relative: string): boolean {
@@ -112,9 +112,13 @@ export async function prepareReplyFiles(
       media.discardSnapshot(snapshotPath);
       return abandon({ status: 413, error: 'file-grew', detail: 'That file grew while it was being copied.' });
     }
-    prepared.snapshots.push({ requested: h.requested, snapshotPath, hashed: copied, filename: path.basename(h.requested).slice(-255) });
+    const name = path.basename(h.requested).replace(new RegExp(CONTROL_CHARS.source, 'g'), '_').slice(-255) || 'file';
+    prepared.snapshots.push({ requested: h.requested, snapshotPath, hashed: copied, filename: name });
   }
   closeAll();
+  // The names reach the phone too: a credential in a file name is refused like one in the text.
+  const named = detect(prepared.snapshots.map((s) => s.filename).join('\n'));
+  if (named.detected) return abandon({ status: 422, error: 'credential-exposure-guard', detail: `A file name holds a live credential (${named.kind ?? 'credential'}) and was not sent. Rename the file and send it again.` });
   // Step 5: the live-credential wall over every snapshot.
   for (const s of prepared.snapshots) {
     let hit: string | null = null;

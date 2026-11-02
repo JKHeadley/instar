@@ -16,7 +16,7 @@ import { Router, type Request, type Response } from 'express';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
-import { CHUNK_BYTES, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
+import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
 import { canonicalConversationKey, isAppConversationKey, parseAppCanonicalKey } from '../core/appConversationText.js';
 import type { UploadRow } from '../core/AppMediaStore.js';
 
@@ -61,7 +61,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     const { conversationRef, size, sha256, declaredKind, declaredType, filename, requestId } = b;
     if (typeof conversationRef !== 'string' || typeof size !== 'number' || !Number.isSafeInteger(size) || !isSha256Hex(sha256)
       || typeof declaredKind !== 'string' || !MEDIA_KINDS.has(declaredKind) || typeof declaredType !== 'string' || declaredType.length < 1 || declaredType.length > 128
-      || typeof filename !== 'string' || filename.length < 1 || filename.length > 255) {
+      || typeof filename !== 'string' || filename.length < 1 || filename.length > 255 || CONTROL_CHARS.test(declaredType) || CONTROL_CHARS.test(filename)) {
       res.status(400).json({ error: 'bad-upload', detail: 'conversationRef, size, sha256, declaredKind, declaredType and filename are required.' });
       return;
     }
@@ -140,8 +140,9 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     if (!isSha256Hex(sha) || !key || !svc!.liveConversation(key)) { notFound(); return; }
     const att = svc!.store.mediaRefInConversation(key, sha);
     if (!att) { notFound(); return; }
-    if (media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on this machine and has been set aside.' }); return; }
     const blob = media.locateBlob(sha);
+    // A good copy held now wins over a quarantined older copy of the same hash.
+    if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on this machine and has been set aside.' }); return; }
     if (!blob) { res.status(404).json({ error: 'media-unavailable', detail: 'This file is on another of the agent\'s machines and has not been copied here yet.' }); return; }
     const ev = svc!.store.getMessageEvent(key, att.messageId);
     const attachment: AppAttachment | undefined = ev && ev.kind === 'media-message' ? ev.attachments[att.idx] : undefined;

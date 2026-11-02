@@ -20955,7 +20955,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Telegram and Slack reply paths; no other metadata field has any effect here.
     const replyMetadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
       ? req.body.metadata as Record<string, unknown> : undefined;
-    if (text.trim() && await checkOutboundMessage(text, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) {
+    // With no caption, the file names are what the operator reads: they go through the same check.
+    const outboundText = text.trim() ? text : (preparedFiles?.snapshots ?? []).map(s => s.filename).join('\n');
+    if (outboundText.trim() && await checkOutboundMessage(outboundText, 'app', res, { ...toneAdvisoryMetadata(replyMetadata) })) {
       if (preparedFiles) discardPrepared(app.media, preparedFiles);
       return;
     }

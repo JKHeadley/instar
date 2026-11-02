@@ -7,7 +7,8 @@
 #   Your reply text here
 #   EOF
 #   .instar/scripts/app-reply.sh "short reply"
-#   .instar/scripts/app-reply.sh --file /path/to/report.pdf "Here it is"    (up to 10 --file, before the text)
+#   .instar/scripts/app-reply.sh --file /path/to/report.pdf "Here it is"    (up to 10 --file, before the text;
+#   with --file the caption must be the text argument: stdin is not read)
 #
 # The session's bind token is the only destination authority: the script never names a
 # conversation itself. Spec: docs/specs/mobile-native-conversations.md §4.3.
@@ -35,7 +36,9 @@ done
 
 if [ $# -gt 0 ]; then
   MESSAGE="$*"
-elif [ ${#FILES[@]} -gt 0 ] && [ -t 0 ]; then
+elif [ ${#FILES[@]} -gt 0 ]; then
+  # Files with no text argument: no caption, and stdin is never read (a stdin that never closes
+  # would block here). Give a caption as the text argument after the --file flags.
   MESSAGE=""
 else
   MESSAGE="$(cat)"

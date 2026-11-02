@@ -100,6 +100,16 @@ describe('sniffing: the bytes decide', () => {
     expect(kindFromBytes('audio/ogg')).toBe('voice');
     expect(kindFromBytes('application/pdf')).toBe('file');
   });
+  it('inline-safe is exactly the sniff table, never SVG or other media-looking types', () => {
+    for (const t of ['image/svg+xml', 'image/x-icon', 'video/webm', 'audio/x-unknown', 'text/html']) expect(isInlineSafe(t), t).toBe(false);
+  });
+  it.each([
+    ['a line break in the file name', { filename: 'a\nb.png' }],
+    ['a carriage return in the media type', { mediaType: 'image/png\r' }],
+    ['a control character in the declared type', { declaredType: 'image/\x00png' }],
+  ])('a replicated attachment with %s is refused', (_n, over) => {
+    expect(validateAppEvent(media({ attachments: [att(over as Partial<AppAttachment>)] }))).toBeNull();
+  });
   it('inline-safe is the media and PDF types only', () => {
     expect(isInlineSafe('image/png')).toBe(true);
     expect(isInlineSafe('application/pdf')).toBe(true);

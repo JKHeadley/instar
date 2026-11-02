@@ -151,6 +151,16 @@ describe('uploads through the device authenticator', () => {
     expect((await signed(e, 'POST', '/mobile/media/uploads', { ...body, filename: 'other.png' })).status).toBe(409);
   });
 
+  it('refuses control characters in an upload\'s name or type', async () => {
+    const e = await setup();
+    const key = await newConversation(e);
+    const bytes = png();
+    for (const over of [{ filename: 'a\nb.png' }, { declaredType: 'image/png\r' }]) {
+      const r = await signed(e, 'POST', '/mobile/media/uploads', { conversationRef: `app:${key}`, ...describeFile(bytes, over), requestId: rid() });
+      expect(r.status).toBe(400);
+    }
+  });
+
   it('resumes after a dropped chunk, and an unknown upload answers 404 upload-unknown', async () => {
     const e = await setup();
     const key = await newConversation(e);

@@ -156,6 +156,7 @@ export class AppMediaStore {
       this.fsyncDir(this.blobsDir);
     }
     this.recordCheck(sha);
+    this.retireQuarantine(sha);
   }
 
   private moveBlob(from: string, to: string): void {
@@ -171,13 +172,25 @@ export class AppMediaStore {
     this.db.prepare('INSERT OR REPLACE INTO blob_checks (sha256, checkedAt, mtimeMs, size) VALUES (?, ?, ?, ?)').run(sha, this.now(), st.mtimeMs, st.size);
   }
 
-  /** The per-attachment byte fact of §4.13. */
+  /**
+   * The per-attachment byte fact of §4.13. A held copy whose hash was checked wins over an older
+   * quarantined copy of the same hash (publishing a verified copy also retires the quarantine).
+   */
   byteFact(sha: string, attachmentId: string): { bytes: 'verified' | 'not-here' | 'mismatch' | 'removed'; bytesCheckedAt?: string } {
     if (this.opts.store.isAttachmentPurged(attachmentId)) return { bytes: 'removed' };
-    if (this.isQuarantined(sha)) return { bytes: 'mismatch' };
     const check = this.db.prepare('SELECT checkedAt FROM blob_checks WHERE sha256 = ?').get(sha) as { checkedAt: number } | undefined;
-    if (!this.locateBlob(sha) || !check) return { bytes: 'not-here' };
-    return { bytes: 'verified', bytesCheckedAt: new Date(check.checkedAt).toISOString() };
+    if (this.locateBlob(sha) && check) return { bytes: 'verified', bytesCheckedAt: new Date(check.checkedAt).toISOString() };
+    if (this.isQuarantined(sha)) return { bytes: 'mismatch' };
+    return { bytes: 'not-here' };
+  }
+
+  /** A verified copy of this hash is held again: the quarantined copy is renamed aside (kept, never deleted). */
+  private retireQuarantine(sha: string): void {
+    const q = path.join(this.quarantineDir, sha);
+    if (!fs.existsSync(q)) return;
+    try { fs.renameSync(q, `${q}.superseded-${this.now()}`); } catch (err) {
+      this.report(`a superseded quarantined file could not be renamed aside: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ── Admission (§4.7) ─────────────────────────────────────────────────────────────
@@ -332,10 +345,10 @@ export class AppMediaStore {
       done = h;
     }
     const mediaType = sniffMediaType(Buffer.from(done.headB64, 'base64'));
-    fs.chmodSync(out, 0o400);
-    this.db.transaction(() => {
-      this.db.prepare(`UPDATE uploads SET state = 'complete', mediaType = ? WHERE uploadId = ?`).run(mediaType, uploadId);
-    })();
+    // Only an upload still assembling completes: one expired or discarded meanwhile stays so.
+    const r = this.db.prepare(`UPDATE uploads SET state = 'complete', mediaType = ? WHERE uploadId = ? AND state = 'assembling'`).run(mediaType, uploadId);
+    if (r.changes !== 1) return;
+    try { fs.chmodSync(out, 0o400); } catch { /* @silent-fallback-ok — the assembler already wrote it 0400 */ }
     this.removeChunks(uploadId);
   }
 
@@ -383,18 +396,42 @@ export class AppMediaStore {
     return true;
   }
 
-  /** Re-hash each assembled file off the event loop and rename it into the blob store. */
-  async publishClaimed(uploadIds: string[]): Promise<void> {
+  /** Re-hash each claimed upload's assembled file off the event loop (no publishing). */
+  async verifyClaimed(uploadIds: string[]): Promise<void> {
+    for (const id of uploadIds) {
+      const u = this.getUpload(id);
+      if (!u || u.state !== 'claimed') throw new Error('upload is not claimed');
+      if (u.blobReady === 1 && this.locateBlob(u.sha256)) continue;
+      const h = await hashFile(this.assembledPath(id));
+      if (h.sha256 !== u.sha256 || h.size !== u.size) throw new Error('a stored upload no longer matches its hash');
+    }
+  }
+
+  /**
+   * Rename each verified upload into the blob store. Synchronous on purpose: a caller appends
+   * the event right after it with no await between, so no purge or sweep runs in the gap.
+   */
+  publishVerified(uploadIds: string[]): void {
     for (const id of uploadIds) {
       const u = this.getUpload(id);
       if (!u) throw new Error('upload vanished');
       if (u.blobReady === 1 && this.locateBlob(u.sha256)) continue;
       const assembled = this.assembledPath(id);
-      const h = await hashFile(assembled);
-      if (h.sha256 !== u.sha256 || h.size !== u.size) throw new Error('a stored upload no longer matches its hash');
+      if (!fs.existsSync(assembled)) throw new Error('a claimed upload has neither its file nor its blob');
       this.publish(assembled, u.sha256);
       this.db.prepare('UPDATE uploads SET blobReady = 1 WHERE uploadId = ?').run(id);
     }
+  }
+
+  /** Verify, then publish (tests and recovery; the send route calls the two halves itself). */
+  async publishClaimed(uploadIds: string[]): Promise<void> {
+    await this.verifyClaimed(uploadIds);
+    this.publishVerified(uploadIds);
+  }
+
+  /** Whether an unfinished or unsent upload names this hash (its bytes must not be removed). */
+  private hashNamedByUpload(sha: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM uploads WHERE sha256 = ? AND state IN ('open','assembling','complete','claimed') LIMIT 1`).get(sha);
   }
 
   /** The event is durable: the uploads are finished and their staging is removed (the name too, §4.13). */
@@ -482,7 +519,9 @@ export class AppMediaStore {
         } else if (refs && refs.allRefs > 0) {
           if (dir === this.blobsDir) this.moveBlob(at, this.deletedPath(sha));
         } else if (refs) {
-          // Every reference was purged: the operator removed these bytes.
+          // Every reference was purged: the operator removed these bytes, unless an upload not yet
+          // sent names the same hash (a send in flight may already count on this blob).
+          if (this.hashNamedByUpload(sha)) continue;
           SafeFsExecutor.safeRmSync(at, { force: true, operation: `${OP}:purge` });
           this.db.prepare('DELETE FROM blob_checks WHERE sha256 = ?').run(sha);
         }

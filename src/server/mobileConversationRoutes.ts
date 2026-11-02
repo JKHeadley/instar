@@ -380,7 +380,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         res.status(409).json({ error: 'upload-already-sent', detail: 'One of these files was already sent.' });
         return;
       }
-      try { await s.media.publishClaimed(uploadIds); } catch (err) {
+      try { await s.media.verifyClaimed(uploadIds); } catch (err) {
         s.media.releaseClaim(uploadIds, messageId);
         requests.release(deviceId, requestId);
         s.deps.reportDegradation?.('AppMedia.publish', err instanceof Error ? err.message : String(err));
@@ -388,7 +388,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         return;
       }
     }
-    try { s.store.append(msg); } catch (err) {
+    // Publish and append with no await between them (media review finding 1): nothing can remove
+    // a blob after it is published and before the event that references it is stored.
+    try {
+      if (signedFiles) s.media.publishVerified(uploadIds);
+      s.store.append(msg);
+    } catch (err) {
       if (signedFiles) s.media.releaseClaim(uploadIds, messageId);
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));

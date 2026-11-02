@@ -116,6 +116,12 @@ describe('prepareReplyFiles', () => {
     expect(await e.prep([e.file('data.bin', bin)])).toMatchObject({ status: 422 });
   });
 
+  it('a credential in a file name is refused', async () => {
+    const e = setup();
+    expect(await e.prep([e.file(`${LIVE_KEY}.txt`, 'harmless content here')])).toMatchObject({ status: 422, error: 'credential-exposure-guard' });
+    expect(e.media.reservedBytes()).toBe(0);
+  });
+
   it('an ordinary binary with prose passes', async () => {
     const e = setup();
     const bin = Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from('the password requirements are listed here'), Buffer.from([0xff])]);

@@ -3,7 +3,7 @@
 **Version / slug:** `mobile-native-chat-media-inc1`
 **Date:** `2026-11-01`
 **Author:** `echo`
-**Second-pass reviewer:** `pending — required (inbound dispatch, a credential wall on a new input, device-auth changes); not yet run`
+**Second-pass reviewer:** `independent subagent, second pass, 2026-11-01 (concern; findings fixed, confirming pass pending)`
 
 ## Summary of the change
 
@@ -42,6 +42,13 @@ Builds the first part of increment 1 of `docs/specs/mobile-native-chat-media.md`
 - **A credential split across a non-printable byte** in a binary file is split into two runs and not matched.
 - **The admission cap is soft across machines** (spec §4.7): another machine's admissions count only after their events replicate. The per-machine disk floor is the hard protection.
 - **Blob tampering by the agent's own OS user** is detected (hourly on changed mtime/size, weekly in full) and quarantined, not prevented.
+
+### Declared limits (second-pass review, item 6; no code change)
+
+- **Reply-file parent-directory race.** The reply check resolves the path with `realpath`, then opens the file with `O_NOFOLLOW` and compares the descriptor's device and inode with the checked `stat`. `O_NOFOLLOW` covers only the last path component: a process that swaps a *parent* directory for a symlink between the `realpath` and the `open` can make the open reach a file outside the allowed roots, as long as that file is not itself a symlink and has one link. Only a process running as the agent's own OS user can do this, which is the session itself; the spec already states a session that sets out to send a file is not contained (§4.6, mobile-device-keys §2.2). Not closed here.
+- **Deleting a conversation does not free disk.** A tombstone moves the conversation's blobs to `app-media/deleted/`, which frees capacity under the cap but not disk space; only the operator's purge frees disk (spec §4.7). A machine below the disk floor stays there until files are purged, the disk is cleared, or the floor notice is acted on.
+- **Media off still builds the store and runs the sweep.** With `mobilePairing.native.media.enabled` off but native conversations on, `AppMediaStore` is still constructed and the hourly sweep still runs (expiry, purge application, orphan reclaim, integrity checks) over whatever is stored, so switching media off never strands a copy and a purge still completes. With nothing stored the sweep does no work.
+- **Flag read at different times.** The device routes and the send route read the flag once at boot; `POST /app/session-reply` (agent replies with `--file`) reads it per request. After a config edit without a restart the two disagree until the next boot: the agent can be refused (or allowed) to send files while the phone routes keep the boot-time setting. Both directions refuse or allow only this feature's own actions.
 
 ## 3. Level-of-abstraction fit
 
@@ -106,10 +113,15 @@ The review kept the feature's refusals to fixed invariants plus the existing cre
 
 ## Second-pass review (if required)
 
-**Reviewer:** pending — no independent review has been run yet; this change must not merge until one is recorded here.
-**Independent read of the artifact: pending**
+**Reviewer:** independent subagent, second pass, 2026-11-01
+**Independent read of the artifact: concern** (a confirming pass is still to be run; the findings below were each checked against the code and fixed in this change).
 
----
+- **Data loss: a purge in the send gap could delete a deduplicated blob.** `applyReferences` removed a blob once every reference was purged, without checking uploads still in flight, while the send path awaited a re-hash between claiming and publishing. Fixed: a hash named by an upload that is open, assembling, complete or claimed is never removed, and the send now hashes first (`verifyClaimed`, async) and then publishes and appends with no await between them (`publishVerified` then `append`). Test: a purge pass run between verify and publish leaves the blob in place, and it survives the event landing.
+- **An upload expired during assembly could come back as complete.** The finish update is now conditional on `state = 'assembling'`; an upload expired meanwhile stays expired and cannot be claimed. Test with the expiry landing while the worker hashes.
+- **A stale quarantine blocked a later good copy.** The download route and the byte fact now prefer a held, checked copy over a quarantined one, and publishing a verified copy renames the quarantined file aside (kept as `<sha>.superseded-<ms>`, never deleted). Test: quarantine, then a fresh upload of the same bytes reads `verified`.
+- **Inline types and control characters.** `isInlineSafe` is an exact allowlist equal to the sniff table (no SVG or other media-looking types); replicated attachments with a control character (CR and LF included) in the type or file name are refused, the upload start refuses them, and reply file names have them replaced. Tests for each.
+- **File names on replies.** File names go through the live-credential detector; a reply with files and no caption runs the outbound check on the file names. `app-reply.sh --file` with no text argument no longer reads stdin at all (the caption must be the text argument), so a stdin that never closes cannot hang it. Tests: a key in a file name is refused; the script returns with an open stdin.
+- **Declared, no code change:** the four limits under "Declared limits" in section 2.
 
 ## Evidence pointers
 

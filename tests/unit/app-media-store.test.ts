@@ -449,3 +449,55 @@ describe('capacity notices (the service latch)', () => {
     svc.stop();
   });
 });
+
+describe('second-pass review findings', () => {
+  it('a purge pass in the gap between hashing and publishing never removes the blob a claimed upload counts on', async () => {
+    const e = setup();
+    const bytes = png();
+    await storeBlob(e, bytes, 'm-a');
+    // Every reference purged, but the pass that removes the bytes has not run yet.
+    e.store.append({ eventId: 'p1', kind: 'purge', conversationKey: KEY, attachmentIds: [attachmentIdFor('m-a', 0)], at: new Date(e.clock.t).toISOString(), machineId: 'm1' });
+    const u = await completed(e, bytes);
+    expect(e.media.claimUploads([u.uploadId], 'm-b')).toBe(true);
+    await e.media.verifyClaimed([u.uploadId]);
+    e.media.applyReferences(); // the purge pass (or the hourly sweep) runs in the gap
+    expect(e.media.locateBlob(sha(bytes))).not.toBeNull();
+    e.media.publishVerified([u.uploadId]);
+    mediaEvent(e, 'm-b', bytes);
+    e.media.markSent([u.uploadId], 'm-b');
+    e.media.applyReferences();
+    expect(e.media.locateBlob(sha(bytes))).not.toBeNull();
+    expect(fs.readFileSync(e.media.locateBlob(sha(bytes))!).equals(bytes)).toBe(true);
+  });
+
+  it('an upload expired while it was assembling does not come back as complete', async () => {
+    const e = setup();
+    const bytes = png();
+    const u = start(e, bytes);
+    e.media.putChunk(u, 0, bytes); // last chunk: state assembling
+    fs.writeFileSync(path.join(e.media.root, 'uploads', u.uploadId, 'assembled'), bytes);
+    const running = e.media.finalizeUpload(u.uploadId); // awaits a hash in a worker
+    (e.media as unknown as { db: { prepare(s: string): { run(...a: unknown[]): unknown } } }).db
+      .prepare(`UPDATE uploads SET state = 'expired' WHERE uploadId = ?`).run(u.uploadId);
+    await running;
+    expect(e.media.getUpload(u.uploadId)!.state).toBe('expired');
+    expect(e.media.claimUploads([u.uploadId], 'm-x')).toBe(false);
+  });
+
+  it('a good copy published after a quarantine is served and reads verified', async () => {
+    const e = setup();
+    const a = png();
+    await storeBlob(e, a, 'm-a');
+    const p = e.media.locateBlob(sha(a))!;
+    fs.chmodSync(p, 0o600);
+    fs.writeFileSync(p, 'tampered bytes');
+    await e.media.sweep(() => true);
+    expect(e.media.byteFact(sha(a), attachmentIdFor('m-a', 0)).bytes).toBe('mismatch');
+    const u = await completed(e, a);
+    e.media.claimUploads([u.uploadId], 'm-b');
+    await e.media.publishClaimed([u.uploadId]);
+    expect(e.media.byteFact(sha(a), attachmentIdFor('m-a', 0)).bytes).toBe('verified');
+    expect(e.media.isQuarantined(sha(a))).toBe(false);
+    expect(fs.readdirSync(path.join(e.media.root, 'quarantine')).some((n) => n.startsWith(`${sha(a)}.superseded-`))).toBe(true);
+  });
+});
