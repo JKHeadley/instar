@@ -19740,7 +19740,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
 
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
-    const local = ctx.telegram.getTopicHistory(topicId, limit);
+    // E2E-PAIRING: EXEMPT — optional parameter on an existing route; covered end to end through createRoutes by tests/integration/topic-messages-before.test.ts.
+    // Scroll-back (`before`, an ISO time or epoch ms): entries logged strictly
+    // earlier, so History can reach past the current session's start.
+    let beforeMs: number | null = null;
+    if (req.query.before !== undefined) {
+      const raw = String(req.query.before);
+      beforeMs = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
+      if (!Number.isFinite(beforeMs)) { res.status(400).json({ error: '"before" must be an ISO time or epoch milliseconds' }); return; }
+    }
+    const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit) : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
@@ -19762,7 +19771,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
         if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
-        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}`, {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}`, {
           headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
         });
         if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }

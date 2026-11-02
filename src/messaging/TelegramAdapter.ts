@@ -4201,6 +4201,55 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** Full JSONL scan for a topic's most recent entries (the cache seed / fallback path). */
+  /**
+   * Older history for scroll-back: up to `limit` entries for the topic logged
+   * strictly before `beforeMs`, oldest first. Reads the log directly (the tail
+   * cache only holds recent entries); bounded by the log's rotation cap.
+   */
+  getTopicHistoryBefore(topicId: number, beforeMs: number, limit: number = 20): LogEntry[] {
+    if (!fs.existsSync(this.messageLogPath)) return [];
+    const matching: LogEntry[] = [];
+    // Read backwards in 1 MB chunks and stop once the page is full: the log can
+    // be well over 100 MB, and a scroll-back page usually needs only its tail.
+    const CHUNK = 1024 * 1024;
+    const fd = fs.openSync(this.messageLogPath, 'r');
+    try {
+      let pos = fs.fstatSync(fd).size;
+      // The partial first line of each chunk is kept as bytes and joined to the
+      // previous chunk before decoding, so a character split across chunks survives.
+      let carry = Buffer.alloc(0);
+      while (pos > 0 && matching.length < limit) {
+        const size = Math.min(CHUNK, pos);
+        pos -= size;
+        const read = Buffer.alloc(size);
+        fs.readSync(fd, read, 0, size, pos);
+        let buf = Buffer.concat([read, carry]);
+        if (pos > 0) {
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { carry = buf; continue; }
+          carry = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+        } else {
+          carry = Buffer.alloc(0);
+        }
+        const lines = buf.toString('utf-8').split('\n');
+        for (let i = lines.length - 1; i >= 0 && matching.length < limit; i--) {
+          if (!lines[i]) continue;
+          try {
+            const entry: LogEntry = JSON.parse(lines[i]);
+            const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+            if (entryTopicId !== topicId) continue;
+            const at = Date.parse(String(entry.timestamp));
+            if (Number.isFinite(at) && at < beforeMs) matching.unshift(entry);
+          } catch { /* skip malformed */ }
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    return this.authorshipJoin.join(matching);
+  }
+
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
