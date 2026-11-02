@@ -58,10 +58,10 @@ Operator decisions, 2026-11-02. They are constraints.
 1. One installer behind every way in, with one state machine and resumable steps.
 2. Three questions at most in the common case: name, purpose and, only when ambiguous, which AI door.
 3. A plain explanation before anything technical is asked.
-4. A first result the person actually receives within minutes, with no new account beyond the AI door's sign-in.
+4. A first result that demonstrably reaches the person's channel or screen within minutes, with no new account beyond the AI door's sign-in.
 5. An install slot for owner setup that later parts can fill without changing the flow.
 
-**Measure of success:** human actions, minutes and disk from first command to first delivered result, per path (section 11).
+**Measure of success:** human actions, minutes and disk from first command to first delivered result, per path (section 9).
 
 ## 4. Ways in
 
@@ -100,7 +100,7 @@ The Claude skill shrinks to voice and guidance only after a before-and-after com
 
 An AI tool can't answer prompts, and a command that waits for a person inside a tool call hangs. So:
 
-- The installer accepts an answers file for name, purpose and door. A harness can write it.
+- The installer accepts an answers file for name, purpose, door and autostart consent. A harness can write it.
 - At a step that needs the person (door sign-in, owner slot, address choice), the installer opens the browser itself, prints "finish in the window that opened", records `awaiting-person` in the ledger and **exits 0**. No link or token goes to output or logs.
 - `instar install --resume` continues, and the harness polls the ledger's status.
 - **With no browser on the machine**, the installer tells the person to run `instar install --resume` in their own terminal, for example over SSH. In that interactive mode it shows the AI door's device sign-in code, then the PIN or owner step, directly. The dashboard is then reached over a private address or an SSH tunnel, as the terminal explains.
@@ -152,17 +152,26 @@ The agent sets up the chosen option. The person only signs in where needed, thro
 
 **Default rule:** use what the person already has. A messaging service in use needs no address. Otherwise, offer Tailscale, and name same-network as the choice for anyone who'd rather not make an account. `hosted-relay.md` adds a further option.
 
-**Pairing change.** All three gates (mint, redeem, `stableOrigin()`) accept any proven own name, with the stored device origin following. The proof that this process answers on the name stays. Quick tunnels remain refused for phones.
+**Pairing change.** All three gates (mint, redeem, `stableOrigin()`) accept any proven own name, with the stored device origin following. A probe proves reachability, not the transport of a later redeem, so redeem checks a predicate per address type:
+
+| Address type | Redeem accepted when |
+|---|---|
+| Cloudflare named tunnel | Today's check: tunnel active and Host matches |
+| Tailscale serve | Arrives through this machine's own HTTPS front, with Host matching |
+| Same network | Direct TLS on the agent's own certificate |
+| Own domain through another proxy | Only with a configured trusted proxy; forwarded headers are otherwise ignored |
+
+Plain HTTP is refused everywhere. Quick tunnels remain refused for phones.
 
 **Same network.** The agent terminates TLS itself with its own certificate. A new version of the pairing link carries the certificate's public-key hash in the QR code on the computer's screen, and the phone checks it before redeeming and pins it. Until `owner-authentication.md` ships, a replaced certificate means pairing again. Older links stay valid for addresses with a public certificate.
 
-**A local name that survives address changes.** The agent advertises `<agent>.local` over mDNS and that name is the stored device origin, so a changed DHCP address doesn't break the phone. Device signatures bind to the name. Reconnection is tested after an address change and a restart.
+**A local name that survives address changes.** The agent advertises `<agent>-<machine>.local` over mDNS and that name is the stored device origin, so a changed DHCP address doesn't break the phone. Device signatures bind to the name. Reconnection is tested after an address change and a restart.
 
 ## 7. Reachability without messaging
 
 Messaging can't become optional until the floor has another carrier. The protected lifeline gains a dashboard and native-app conversation carrier, keyed the same way on a minted conversation id, and the cold-start fallback gains that delivery path. The first session and conversation are created by the installer. **Phase 1 cannot ship "messaging optional" without this.** Graduating `mobilePairing.native.enabled` to the fleet, including a live-channel proof, is a phase-1 exit criterion owned by the instar-developing agent. A no-channel install on phase 1 is reachable through the local dashboard, and through a phone once a private address exists.
 
-**Browser conversation routes.** The native routes are device-signed today. Phase 1 adds PIN-session routes for creating a conversation, sending and reading history, plus a display acknowledgment tied to a specific reply, re-sent on reconnect. A lost acknowledgment leaves the state `stored, not yet seen`, never failed.
+**Browser conversation routes.** The native routes are device-signed today. Phase 1 adds PIN-session routes for creating a conversation, sending and reading history, plus a display acknowledgment tied to a specific reply, re-sent on reconnect. A lost acknowledgment leaves the state `stored, not yet seen`, never failed. Create and send carry a browser-generated request id, stored per browser so it survives session renewal, and reuse the native rules for reservation, persistence before dispatch, replay and emergency stop. A lost response followed by a retry gives one conversation and one dispatch.
 
 **Who the dashboard speaks for.** Today the only conversation send route is device-signed. Phase 1 adds a browser send path behind a PIN session, and the PIN is readable by the agent. So dashboard messages are origin-tagged and never bind a verified operator. A no-channel, no-phone install has no verified operator until a channel or `owner-authentication.md` arrives, and operator-only conversational flows honestly wait.
 
@@ -195,14 +204,14 @@ Then a guided second level: a scheduled email report, calendar, another computer
 
 **Default jobs.** First-day job cost is measured in the live proof. Over 15% of a small plan's weekly quota, default jobs start after the first task completes rather than at install. Both branches get built.
 
-## 11. Testing and proof
+## 9. Testing and proof
 
 - **Unit and integration:** state machine and resume at every step, including `awaiting-person`; a full headless path with no browser on the target; substituted certificate refused at redeem; per-carrier delivery states with clients closed; token required on opened pages; door contracts on both sides of "signed in"; pairing on each address type at all three gates; no link or token in output in non-interactive mode; first-result timeout path.
 - **E2E:** clean install per door and address, with feature-alive checks, including the lifeline with no channel.
-- **Live-user-channel proof:** a stranger-shaped run per way in, on a clean machine and clean phone, recording actions, minutes and disk against 1.2. Includes the no-relay, no-phone path, which R2 makes mandatory.
+- **Live-user-channel proof:** a stranger-shaped run per way in, on a clean machine and clean phone, recording actions, minutes and disk against 1.2, with `platform-accepted` and `client-displayed` reported separately. Includes the no-relay, no-phone path, which R2 makes mandatory.
 - **Wizard quality comparison** before the Claude flow retires (4.2).
 
-## 12. Frontloaded Decisions
+## 10. Frontloaded Decisions
 
 1. **Install address:** `instar.sh/install` and `install.ps1`. A published address is never deleted; if it moves, a permanent redirect stays.
 2. **API and local doors:** the rule and Pi fallback in section 5. Both branches are buildable.
@@ -213,7 +222,7 @@ Then a guided second level: a scheduled email report, calendar, another computer
 
 **Operator boundary.** Enabling the money layer needs the operator's PIN, and API doors wait on it. Nothing else here waits.
 
-## 13. Decision points touched
+## 11. Decision points touched
 
 | Decision point | Class | Justification, or floor and arbiter |
 |---|---|---|
@@ -228,13 +237,13 @@ Then a guided second level: a scheduled email report, calendar, another computer
 
 **State versus symbol.** "First result delivered" reads the outcome record, not a send result. "Signed in" uses a live call. "Own name" uses a probe answered by this process. Each reports `unknown` when it can't be measured and never treats that as success.
 
-## 14. Rollout and migration
+## 12. Rollout and migration
 
 - **Existing agents.** Installer changes don't touch installed agents. `PostUpdateMigrator` delivers the pairing change and config defaults. `migrateClaudeMd` adds the door list and address options with a content-sniffed guard.
 - **Graduated rollout.** Each phase is development-agent-first. Any dry-run names its go-live condition and date in the phase's rollout note, so nothing is left dark by default.
 - **Backup.** The progress ledger is not backed up.
 
-## 15. Delivery phases
+## 13. Delivery phases
 
 Each ships on its own, and each has a complete fresh-install acceptance scenario.
 
@@ -242,7 +251,7 @@ Each ships on its own, and each has a complete fresh-install acceptance scenario
 2. **Addresses without Cloudflare:** pairing on any proven name, agent-run setup, same-network option. **Accept:** phone paired over Tailscale and over same-network, using today's dashboard PIN session for redeem.
 3. **All AI doors:** contracts, shipped door list, Pi proof, local checks. API doors wait on the money layer. **Accept:** each proven door installs and delivers a first result; an unproven door says "not yet".
 
-## 16. Instar 2
+## 14. Instar 2
 
 Instar 2 has its own fresh-install design in open pull requests (instar-2 #178 to #181). The user-facing behaviors in sections 4 to 6 and 8 are the shared contract. Each 1.x phase records what Instar 2 needs to match.
 
@@ -252,7 +261,7 @@ Instar 2 has its own fresh-install design in open pull requests (instar-2 #178 t
 |---|---|
 | Install progress ledger | machine-local-justification: physical-credential-locality (records setup of this disk's binaries and logins, and is meaningless elsewhere) |
 | Door sign-ins | machine-local-justification: physical-credential-locality |
-| Proven address names and agent TLS key | machine-local-justification: physical-credential-locality |
+| Proven address names and agent TLS private key | machine-local-justification: physical-credential-locality |
 | Native-conversation lifeline | Unified: one conversation identity, owned by the serving machine, using the existing pool routing |
 
 Single-machine agents are a no-op.

@@ -20,9 +20,9 @@ A stranger with an iPhone needs an address that works away from home, a way for 
 Open source and self-hostable by changing one address.
 
 1. **Addresses:** a stable, relay-assigned random name routed to the agent by **TLS passthrough**. The relay reads only the server name.
-   - **Connection:** the serving machine keeps an outbound connection that carries multiplexed inbound streams, authenticated by the agent's identity key, to which the name is bound, and reconnects with backoff. **One connection per name:** a connection with a higher lease epoch displaces the older one, and the loser gets a typed `displaced` signal, so a machine that has lost serving is fenced. This works behind NAT. Build or reuse is chosen at build time; the behavior is the contract.
+   - **Connection:** the serving machine keeps an outbound connection that carries multiplexed inbound streams, authenticated by the agent's identity key, to which the name is bound, and reconnects with backoff. **One connection per name:** the connection presents the agent's existing fenced serving lease (holder and epoch, issued by the mesh's lease layer, not the relay). The relay records the highest epoch seen per name. A higher epoch closes the older connection and its streams, sending a typed `displaced` signal when it can. A lower epoch is refused, so a stale machine that reconnects stays out. This works behind NAT. Build or reuse is chosen at build time; the behavior is the contract.
    - **Certificate:** the agent obtains its own through ACME TLS-ALPN-01 over that path. HTTP-01 and DNS-01 are ruled out, since DNS-01 would have the relay handle validation. The agent's key stays stable across renewals so the app's pin survives. A rotation or a machine takeover uses a signed owner-record entry, and the app verifies that entry against its existing trust before sending anything to the new key.
-   - **Domain:** the relay zone goes on the Public Suffix List before first deploy, for per-name certificate limits and cookie isolation. Listing takes weeks, so a CA rate-limit exemption or an issuance cap is the fallback at first deploy.
+   - **Domain:** the relay zone goes on the Public Suffix List before first deploy, for per-name certificate limits. Listing takes weeks, so a CA rate-limit exemption or an issuance cap is the launch fallback. Instar's own cookies are host-only regardless, so isolation doesn't depend on the listing.
 2. **Rendezvous:** one-time codes so a phone and computer can find each other. High-entropy, ten-minute life, nothing kept after use, with per-address limits on redemption. **A rendezvous code is never ownership proof.** Ownership uses the key-derived code in `owner-authentication.md` section 4.
 3. **Push:** forwarding content-free alerts through the App Store key the relay holds.
    - **Identity:** the phone registers its token with the relay under a relay-issued device credential, and tells its agent that credential's id. An agent is enrolled with its identity key, shared across its machines, and can only send a signed trigger naming a device that has authorized it. The relay refuses others, so one agent can't target another's phones or spend its allowance. Triggers carry a short validity window and an idempotency id, so a replay can't spend the allowance.
@@ -43,7 +43,7 @@ A relay controlling a name's DNS could obtain a certificate for it, so:
 - **The app pins the agent's certificate key at pairing.** A substituted one fails loudly.
 - **The browser dashboard on a relay address is view-only, and no browser page on a relay is trusted.** The legitimate server refuses all proof entry there (`owner-authentication.md` 3.1). A malicious relay could serve its own convincing page without contacting that server, so the product teaches one rule: on a relay address, secrets and approvals happen only in the app.
 - **No content promise.** Passthrough forwards any TLS server, so the view-only rule is enforced by the Instar server, not the relay.
-- **Certificate monitoring.** Agents compare newly logged certificates for their name against their own key. Their own renewals stay silent. Checks are deduped per certificate, and a breaker stops retries during log outages. A key mismatch is a security event and raises one item immediately.
+- **Certificate monitoring.** Agents compare newly logged certificates for their name against their own key. Their own renewals stay silent. Checks are deduped per certificate, and a breaker stops retries during log outages. A key the owner record doesn't authorize for that name is a security event and raises one item immediately, after a short grace for record entries still in flight. A takeover's new key is authorized by its signed entry, so it stays silent.
 
 ## 5. Failure
 
@@ -55,6 +55,7 @@ Proposed defaults, confirmed at the operator boundary:
 
 - One free name per owner, ten at most.
 - 60 pushes per device per day, plus a per-agent ceiling enforced at the relay.
+- **After a takeover, alerts stay generic** until the phone next registers with the new machine, because the read token's verifier lives on the old one. The phone re-registers when it next opens.
 - A signed owner request removes a name. A relay operator takedown path and abuse contact exist from day one, because a name under our domain could front phishing.
 
 ## 7. Disclosed exception to independence
@@ -84,6 +85,7 @@ Apple accepts alerts for the App Store app only when signed with the key of the 
 | Proof entry refused on relay origins | invariant | Structural origin check |
 | Push ceiling | invariant | Fixed numbers |
 | Name issuance and removal | invariant | Signed owner request |
+| Connection displacement by lease epoch | invariant | Existing fenced lease, no judgment |
 
 **State versus symbol.** Reachability uses the existing proof that this process answers on the name. A certificate that matches a logged entry isn't assumed to be ours until compared with our key. An unreachable log reads `unknown`, not clean.
 
