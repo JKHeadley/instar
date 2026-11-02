@@ -765,6 +765,9 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 /* ── Development (under-the-hood.md: Shipping + Feedback + Pace) ─────────── */
 .tiles-dev { margin-top: var(--s-3); }
 .dev-page .need-card { margin-bottom: var(--s-3); }
+.ideas-page .need-card { margin: var(--s-3) 0; }
+.ideas-page .need-sub { margin: 0; }
+.ideas-page .need-sub:empty { display: none; }
 .dev-page .older-line { margin: 0 0 var(--s-2); }
 .authority-card .plan-text { margin: 0; }
 .plan-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; color: var(--text-strong); padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--hairline-strong); background: var(--surface-raised); }

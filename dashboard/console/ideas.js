@@ -30,19 +30,19 @@ async function decide(request, status, refresh) {
 }
 
 function ideaCard(idea, refresh) {
-  const status = el('p', { class: 'card-note', role: 'status' });
+  const status = el('p', { class: 'need-sub', role: 'status' });
   const button = (label, action, extra) => {
-    const b = el('button', { class: 'btn-inline', type: 'button', text: label });
+    const b = el('button', { class: `${action === 'start-spec' && (idea.band === 'now' || idea.band === 'plan') ? 'btn-primary' : 'btn-quiet'} btn-inline`, type: 'button', text: label });
     b.addEventListener('click', () => decide(planRequest(action, idea, extra), status, refresh));
     return b;
   };
   const actions = idea.band === 'stopped' && idea.declined ? [] : [button('Start a spec', 'start-spec'), button('Decline', 'decline'), button('Later', 'later')];
-  return el('div', { class: 'need-card' },
+  return el('div', { class: idea.band === 'now' || idea.band === 'plan' ? 'need-card' : 'need-card muted-card' },
     el('span', { class: 'need-title', text: idea.claim }),
-    el('p', { class: 'card-note', text: `From ${idea.project}. ${idea.bandReason}.` }),
-    el('p', { class: 'card-note', text: classWords(idea.effectClass) }),
-    idea.goal ? el('p', { class: 'card-note', text: `A model's reading, not a measurement. Cost of not adopting: ${idea.goal.costOfNotAdopting}` }) : null,
-    el('div', { class: 'need-actions' }, actions),
+    el('p', { class: 'need-sub', text: `From ${idea.project}. ${idea.bandReason}.` }),
+    el('p', { class: 'need-sub', text: classWords(idea.effectClass) }),
+    idea.goal ? el('p', { class: 'need-sub', text: `A model's reading, not a measurement. Cost of not adopting: ${idea.goal.costOfNotAdopting}` }) : null,
+    el('div', { class: 'confirm-row' }, actions),
     status);
 }
 
@@ -59,32 +59,32 @@ export async function renderIdeas(main, api) {
   const parts = [
     pageHead({ eyebrow: 'Ideas', headline: headline(s), sub: 'A weekly look at similar projects. Advice only: nothing here changes any agent.' }),
     el('p', { text: funnelLine(s.funnel) }),
-    el('p', { class: 'card-note', text: admissionLine(s.admission) }),
+    el('p', { class: 'need-sub', text: admissionLine(s.admission) }),
   ];
   for (const band of BANDS) {
     const ideas = ideasInBand(s.ideas, band.id);
     if (!ideas.length) continue;
-    parts.push(el('h2', { class: 'eyebrow section-label', text: `${band.label} (${ideas.length})` }), el('p', { class: 'card-note', text: band.note }), ...ideas.map((i) => ideaCard(i, refresh)));
+    parts.push(el('h2', { class: 'eyebrow section-label', text: `${band.label} (${ideas.length})` }), el('p', { class: 'need-sub', text: band.note }), ...ideas.map((i) => ideaCard(i, refresh)));
   }
   parts.push(el('h2', { class: 'eyebrow section-label', text: 'Projects we review' }));
   for (const w of s.watchlist) {
-    const status = el('p', { class: 'card-note', role: 'status' });
-    const row = [el('span', { class: 'need-title', text: w.repo }), el('p', { class: 'card-note', text: projectLine(w) })];
+    const status = el('p', { class: 'need-sub', role: 'status' });
+    const row = [el('span', { class: 'need-title', text: w.repo }), el('p', { class: 'need-sub', text: projectLine(w) })];
     if (w.stalled) {
-      const retry = el('button', { class: 'btn-inline', type: 'button', text: 'Try again' });
+      const retry = el('button', { class: 'btn-quiet btn-inline', type: 'button', text: 'Try again' });
       retry.addEventListener('click', async () => { const d = await send('/ecosystem-ideas/projects/retry', { repo: w.repo }); status.textContent = d.status === 200 ? 'It will try at the next round.' : 'That did not go through.'; });
       row.push(retry);
     }
-    parts.push(el('div', { class: 'need-card' }, row, status));
+    parts.push(el('div', { class: 'need-card muted-card' }, row, status));
   }
   for (const p of s.proposals) {
-    const status = el('p', { class: 'card-note', role: 'status' });
-    const add = el('button', { class: 'btn-inline', type: 'button', text: 'Add to the list' });
+    const status = el('p', { class: 'need-sub', role: 'status' });
+    const add = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Add to the list' });
     add.addEventListener('click', () => decide({ action: 'watchlist-add', repo: p.repo, reason: p.reason }, status, refresh));
-    parts.push(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: `Suggested: ${p.repo}` }), el('p', { class: 'card-note', text: p.reason }), add, status));
+    parts.push(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: `Suggested: ${p.repo}` }), el('p', { class: 'need-sub', text: p.reason }), add, status));
   }
   if (s.lastTickError) parts.push(note(`The last round had a problem: ${s.lastTickError}`));
-  main.replaceChildren(...parts);
+  main.replaceChildren(el('div', { class: 'ideas-page' }, parts));
 }
 
 export function ideasTile(get) {
