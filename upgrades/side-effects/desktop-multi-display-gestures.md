@@ -60,6 +60,10 @@ Revert and release. No state or migration. Viewers fall back to the older-host b
 
 ## Second-pass review
 
+**Reviewer:** independent subagent, second pass of the merged branch, 2026-11-01
+
+That reviewer found the Windows relay script's two lists missing `displays`, which would have left Mama PC with no screen picker, and a failed read clearing a resumed screen choice. Both are fixed and it concurred after re-reading them. The two added skips are Mac-only and justified. Known gap: no test drives the resume path itself. A picked screen that the host refuses still shows "Showing X" for about a second before correcting; only the pointer moves.
+
 An independent reviewer read the diff and raised six concerns, all resolved before commit: a capture helper could start after Stop during the display re-read (fixed with a capture generation, tested); an empty list was read as a missing screen, which would drop the selection at a UAC prompt (fixed, tested); a tap during a switch could land off target (pointer presses are held until a new frame, tested); a mouse press did not clear the open-overview memory, so a button could send a stray Escape (fixed, tested); one failed read removed working controls (the last good list is kept, with a 30-second re-read, tested); and the spec disagreed with the code on a second swipe up (spec corrected). It found no defect in version skew, coordinate maths for negative origins, or the C#, by reading only.
 
 Concur with the review, after the fixes above.

@@ -3,7 +3,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$Address,
   [int]$Port = 44818,
-  [ValidateSet('probe','capture','cursor','input','start','heartbeat','stop','release')][string]$Operation,
+  [ValidateSet('probe','displays','capture','cursor','input','start','heartbeat','stop','release')][string]$Operation,
   # Relay mode: stay up, read one request per line, answer one line each.
   # Starting PowerShell from WSL costs about a second per process.
   [switch]$Serve
@@ -17,7 +17,7 @@ function Invoke-Relay([string]$line) {
   $op = $Operation
   if ($Serve) {
     $op = [string]$command.operation
-    if (@('probe','capture','cursor','input','start','heartbeat','stop','release') -notcontains $op) { throw 'request' }
+    if (@('probe','displays','capture','cursor','input','start','heartbeat','stop','release') -notcontains $op) { throw 'request' }
   }
   $script:phase = 'input-body'
   $body = [System.Text.Encoding]::UTF8.GetBytes([string]$command.body)

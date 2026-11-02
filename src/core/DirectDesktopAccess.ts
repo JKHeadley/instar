@@ -513,8 +513,9 @@ export class DirectDesktopAccess {
     finally { if (row.admitPending === indicatorPending) row.admitPending = undefined; }
     if (this.host.selectDisplay) {
       // A new grant starts on the default screen; a resumed one keeps its choice.
-      const select = (id: string | null) => this.host.selectDisplay!(id).catch(() => false); // @silent-fallback-ok — a screen that cannot be restored leaves the default showing.
-      if (row.displayId && !(await select(row.displayId))) {
+      const select = (id: string | null) => this.host.selectDisplay!(id).catch(() => null); // @silent-fallback-ok — a screen that cannot be restored leaves the default showing.
+      // Only a machine that says the screen is gone ends the choice; a failed read changes nothing.
+      if (row.displayId && (await select(row.displayId)) === false) {
         row.displayId = null;
         await select(null);
       } else if (!row.displayId) await select(null);

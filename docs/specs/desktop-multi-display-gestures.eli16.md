@@ -17,3 +17,5 @@ Justin tested the iPhone remote desktop on a laptop with three screens. Two thin
 **What has been checked.** Automated tests cover the new messages, the older-machine behaviour, and the server path. The Mac helper is compiled. The Windows helper cannot be compiled on this Mac, so it has not been built at all yet. None of this has been tried on a real screen: a live test on the three-screen laptop and on Mama PC is still needed before anyone should call it working.
 
 **To undo it:** revert the change. Nothing is stored, so nothing needs cleaning up.
+
+On Windows, the small relay script between the agent and the Windows helper now carries the list of screens too; without that, Mama PC would have shown no screen picker. If a session reconnects and the screen list cannot be read for a moment, the screen you picked is kept.
