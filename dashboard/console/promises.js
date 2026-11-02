@@ -1,7 +1,7 @@
 // Promises page (docs/specs/console-features/work.md, "Commitments → Promises").
 // Read with Home's rules; actions use the bearer token only (no PIN on these routes).
 
-import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor } from './promises-model.js';
+import { buildPromisesPage, storyOf, backstoryOf, updateQuestionOf, nextStepOf, actionsFor, canDecide, decideResultWords } from './promises-model.js';
 import { isInternalFollowUp } from './home-model.js';
 import { promiseActionLinks } from './promise-actions.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, actionButton, note, cantTell } from './ui.js';
@@ -131,7 +131,7 @@ function openPromise(r, { post, chatId, names, refresh }) {
       el('p', { class: 'promise-backstory-note', text: 'Copy this question and paste it in the conversation:' }),
       el('textarea', { class: 'promise-question', readonly: true }, question)) : null;
     if (fallback) blocks.push(fallback);
-    row.append(el('a', { class: `${actionLinks.length || !waitsOnYou ? 'btn-quiet' : 'btn-primary'} btn-inline`, href: link,
+    row.append(el('a', { class: `${actionLinks.length || !waitsOnYou || canDecide(c) ? 'btn-quiet' : 'btn-primary'} btn-inline`, href: link,
       target: '_blank', rel: 'noopener', text: waitsOnYou ? 'Reply in the conversation' : internal ? 'View source conversation' : 'Optional: copy a question and open chat',
       onclick: question ? () => {
         // Topic links open the right chat; Telegram does not document a draft
@@ -150,6 +150,18 @@ function openPromise(r, { post, chatId, names, refresh }) {
     if (x.ok) return { ok: true, message: path === 'deliver' ? 'Marked as done.' : path === 'withdraw' ? 'Dropped.' : 'Reminders resumed.' };
     return { ok: false, message: x.reason };
   };
+  if (canDecide(c)) {
+    const decide = async (decision, note) => {
+      const x = await post(`/commitments/${id}/decide${q}`, { decision, ...(note ? { note } : {}) });
+      const w = decideResultWords(decision, x);
+      return { ok: w.ok, message: w.text };
+    };
+    const after = () => setTimeout(() => { closeSheet(); refresh(); }, 1200);
+    const decideRow = el('div', { class: 'sheet-actions promise-decide' },
+      actionButton({ label: 'Approve', kind: 'primary', confirm: 'Approve this? The session goes ahead with it.', run: () => decide('approve'), done: after }),
+      actionButton({ label: 'Decline', kind: 'quiet', confirm: 'Decline this? The promise closes and the session is told not to do it.', run: () => decide('decline'), done: after }));
+    blocks.push(decideRow);
+  }
   if (acts.includes('deliver')) row.append(actionButton({ label: waitsOnYou ? 'I handled this' : 'Mark as done', kind: link ? 'quiet' : 'primary',
     confirm: waitsOnYou ? 'Close this reminder? This does not send a reply or perform the requested approval.' : 'Mark this promise as done?',
     run: () => result('deliver', {}), done: () => setTimeout(() => { closeSheet(); refresh(); }, 700) }));

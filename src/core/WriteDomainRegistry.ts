@@ -1069,6 +1069,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // even if that rule were violated: the CAS stamp makes a second writer a
   // no-op, so a duplicate reminder is impossible, only duplicated work.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/check-in-reminder/pass', domain: 'cluster-shared' });
+  // The dashboard's Approve / Decline on a promise waiting on the operator: the same
+  // owner-routed commitment mutation as /transition and /withdraw (a replica forwards
+  // to the machine that holds the promise).
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/decide', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });
