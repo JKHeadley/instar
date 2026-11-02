@@ -4,7 +4,7 @@ slug: "desktop-locked-screen"
 author: "echo"
 created: "2026-11-01"
 eli16-overview: "docs/specs/desktop-locked-screen.eli16.md"
-convergence-status: "failed-at-cap: round 8 of 8 raised one low-severity, marginally safety-related design finding; round 8 findings are in the report and NOT applied here; see docs/specs/reports/desktop-locked-screen-convergence.md"
+convergence-status: "failed: confirming round 9 raised three design findings, all about safety; they are in the report and NOT applied here; see docs/specs/reports/desktop-locked-screen-convergence.md"
 parent-principle: "The Agent Is Always Reachable"
 parent-principle-fit: "A Mac the operator cannot open is a Mac the agent cannot be rescued on. This gives the operator, never the agent, a way through the ordinary lock from a phone."
 lessons-engaged: >
@@ -67,7 +67,7 @@ New `src/core/DesktopLockState.ts`, fed by `probe`. The flag is an input, never 
 - **Lock-discriminating:** `CGSSessionScreenIsLocked`; a loginwindow-owned shield window, identified by the layer and bounds P9 measures, never by owner alone; lock and unlock notifications seen by a helper alive at the time.
 - **Session-only:** console user (`SCDynamicStoreCopyConsoleUser`), owner of `/dev/console`, `kCGSessionOnConsoleKey`, `kCGSessionLoginDoneKey`. These name whose session is on the console and stay true at the shield.
 
-Every input except notifications must be read in one sample no older than 2 s. A stale sample, a missing required input, or inputs that contradict each other give `unknown` before the table is consulted. Otherwise the first match wins, top to bottom.
+Every input except notifications and the policy must be read in one sample no older than 2 s. The policy has its own 60 s cache, is used only by the two policy rows, and reads as unreadable while a refresh after a state change is pending, which falls on the locked side. A notification corroborates only the state it announced, and only while it is the latest one and no flag or window change has followed it; an older one is ignored and never contradicts a fresh sample. A stale sample, a missing required input, or inputs that contradict each other give `unknown` before the table is consulted. Otherwise the first match wins, top to bottom.
 
 | State | Predicate |
 |---|---|
@@ -81,7 +81,7 @@ Every input except notifications must be read in one sample no older than 2 s. A
 
 **Locked-class** is `locked-in-session`, the policy row and `unknown`. A wrong "locked" costs refused typing; a wrong "unlocked" is today's exposure. A real frame, not a reading, proves capture. The probe path already spawns helpers on a 2 s timeout, so `sysadminctl -screenLock status` is cached for 60 s and refreshed on a state change; the flag and window read run per probe.
 
-**Proven versions.** A code-owned table lists the macOS major versions that passed the proof rows. Anything else reports `unsupported-macos` and the password path stays off, so a new macOS cannot fall through with undocumented keys. Versions without a test Mac stay unlisted; that blocks nothing else.
+**Proven versions.** A code-owned table lists the macOS major versions that passed the proof rows. Anything else reports `unsupported-macos` and the password path stays off, so a new macOS cannot fall through with undocumented keys. A macOS not in the table behaves as feature-off at every grant, with `unsupported-macos` on the card and status; the stored setting is kept and takes effect when the version is listed. Versions without a test Mac stay unlisted; that blocks nothing else.
 
 ### Turning it on
 
@@ -268,7 +268,7 @@ Status is `proxied-on-read`, dark peers shown with age. `remoteDesktop.lockedScr
 | Relock | Lock call made | Mac locked | Fresh reading | Retry, then security item |
 | Unlock cause | State became `unlocked` | Our `secretType` did it | Reserved attempt's Enter within 15 s; **timing only, not proof** | No such Enter: end grant. Any `secretType` sent: relock owed regardless |
 | Password producer stopped | Stop sent | No further key event | SIGKILL of the recorded pid and start time, confirmed gone; `enter-pending` watch; P15 | Duty stays held |
-| Pending duty | Marker `owed` or `executing` | A guard can still act | Same boot and session, within deadline, fresh heartbeat | Stops blocking, reports `relock-failed` |
+| Pending duty | Marker `owed` or `executing` | A guard can still act | Same boot and session, within deadline, fresh heartbeat | Block until guard termination is confirmed; then mark `relock-failed` |
 | Relock duty | Guard acknowledged | Guard will act | Its heartbeat, answered at each 10 s renewal; P12 | Replacement guard; no password until acknowledged |
 | Duty closed unneeded | Console or session differs | Someone else is there | Positive reading, never an unreadable one | Retry, then `relock-failed` |
 | Partial field cleared | Escape sent | Field empty | P14 proof; no live read exists | Keys stay blocked |
