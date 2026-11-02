@@ -2,9 +2,9 @@
 
 ## Cross-model review: codex-cli:gpt-6-astra
 
-A real GPT-tier external pass ran on all six rounds. Each returned "SERIOUS ISSUES". Gemini was unavailable (`gemini-not-authed`) and Grok is not enabled, so there was one external family.
+A real GPT-tier external pass ran on all eight rounds. Rounds 1 to 7 returned "SERIOUS ISSUES"; round 8 returned "MINOR ISSUES" with no design finding. Gemini was unavailable (`gemini-not-authed`) and Grok is not enabled, so there was one external family.
 
-**Verdict: NOT CONVERGED. Failed at the 6-round cap.** Round 6 raised one safety design finding and four others. No `review-convergence` tag and no `approved` tag were written, and `/instar-dev` will refuse to build from this spec.
+**Verdict: NOT CONVERGED. Failed at the 8-round cap the operator authorized.** Round 8 raised one design finding, low severity and marginally about safety. No `review-convergence` tag and no `approved` tag were written, and `/instar-dev` will refuse to build from this spec.
 
 ## ELI10 Overview
 
@@ -16,7 +16,7 @@ The split removed the root helper, the step-up, the certificate and the gate. It
 
 ## Iteration Summary
 
-Reviewers ran on the session model, claude-opus-5-5. Round 1 used four panels covering all six lenses. Round 2 used two panels, and rounds 3 to 6 one, all lenses named. Each round also had Codex.
+Reviewers ran on the session model, claude-opus-5-5. Round 1 used four panels covering all six lenses. Round 2 used two panels, and rounds 3 to 8 one, all lenses named. Each round also had Codex.
 
 | Round | Reviewers | Design findings (deduped, approximate) | Left behind | Spec changes | Gate |
 |---|---|---|---|---|---|
@@ -25,45 +25,48 @@ Reviewers ran on the session model, claude-opus-5-5. Round 1 used four panels co
 | 3 | 1 panel, Codex | 8, of which 5 about safety | 9 | Relock rewritten, dirty-field exits, display readiness | Standards-Conformance Gate: ran (0 flags) |
 | 4 | 1 panel, Codex | 7 | 9 | Guard kill and cap, marker generations, sweep, Forget tombstone, disable reach | Standards-Conformance Gate: ran (2 flags) |
 | 5 | 1 panel, Codex | 5 | 8 | Refused input, 15 s rule at Enter, relock-pending, build target | Standards-Conformance Gate: ran (2 flags) |
-| 6 | 1 panel, Codex | 5, of which 1 about safety | 7 | **None applied**; verbatim below | Standards-Conformance Gate: ran (2 flags) |
+| 6 | 1 panel, Codex | 5, of which 1 about safety | 7 | Typist stopped first, stale markers, control channel, held keys; operator-required P15 added | Standards-Conformance Gate: ran (2 flags) |
+| 7 | 1 panel, Codex | 3 | 10 | Guard death before admission, separate control direction, test-build route to P15 | Standards-Conformance Gate: ran (1 flag) |
+| 8 | 1 panel, Codex | 1, marginally about safety | 9 | **None applied**; verbatim below | Standards-Conformance Gate: ran (2 flags) |
 
 ## Proportion
 
-About 300 spec lines, 6 of 6 rounds. The run first stopped at 3 under a mistaken cap; the coordinator corrected it to the skill's 6 for a security-sensitive change. Findings fell 30, 8, 8, 7, 5, 5. They kept narrowing but never reached zero, and most late ones were lifecycle gaps at the edges of relock and input state.
+About 300 spec lines, 8 of 8 rounds. The run stopped at 3 under a mistaken cap, was corrected to 6, then the operator authorized 2 more with "go" in topic 134088 at 17:20 PST on 2026-11-01, checked in the topic history. Findings fell 30, 8, 8, 7, 5, 5, 3, 1.
 
-## Round 6 remaining findings, verbatim, not applied
+Disclosure: the round 8 panel brief said a behaviour settled by a proof row is not itself a design finding, which earlier briefs did not say. That may have reduced what it raised. Codex got no such steer.
 
-Codex, gpt-6-astra:
+## Round 8 remaining findings, verbatim, not applied
 
-**Verdict: SERIOUS ISSUES**
+Internal panel, claude-opus-5-5, the one design finding:
 
-- **DESIGN — “Relock,” “Password path,” and grant item 6: relock completion is not ordered after password-input termination.** The spec says Stop aborts typing between characters, the guard acts immediately, and an already-locked Mac closes the duty as `relocked` without a lock call. It does not require the guard to establish that the password producer has stopped before that terminal transition.
+**D1. An OS update can leave an enabled Mac on an unproven macOS (low severity; safety: yes, marginally; security: no; data loss: no).**
+- **Location:** line 84 against lines 172, 178, 195, and the "macOS version admitted" row at line 219.
+- **Problem:** the enable route refuses an unproven version, but the setting is stored and survives a macOS upgrade. Line 84 then turns off only the password path.
+- **Effect:** capture at the shield, the input allowlist and the lock reading keep running on a version where P6 and P13 never passed. That contradicts "No Mac is enabled on that macOS version" and "so a new macOS cannot fall through with undocumented keys".
+- **Limit:** no password is exposed, because the password path is off.
+- **Fix:** add to line 84: "A macOS not in the table behaves as feature-off at every grant, with `unsupported-macos` on the card and status; the stored setting is kept and takes effect when the version is listed."
 
-  A possible interleaving is: the helper passes its final check; Stop arrives; the guard observes the still-locked shield and records `relocked`; the helper posts Enter, or an already-posted Enter is delivered, unlocking the Mac after its relock duty has ended. Separate command reading and per-character checks do not establish the missing ordering.
+Codex, gpt-6-astra, verbatim (precision only):
 
-  **Resolution:** Specify a shutdown handshake that prevents further password events and accounts for pending submission before the guard may declare completion. If input termination or submission outcome remains uncertain, retain the duty and continue bounded observation/relock handling. Extend P12 with Stop, deadline expiry, and transport expiry immediately before and after Enter, including a suspended input helper.
+**Verdict: MINOR ISSUES**
 
-- **PRECISION — “Who this protects against” and “Honest limits”: absolute stolen-PIN claims contradict the documented timing exception.** These sections say a stolen PIN “cannot get in” without the password and “cannot get in through this path.” However, “A grant ends” explicitly allows continuation when a wrong remote submission coincides with a local unlock.
+Reviewed only the inlined specifications. No implementation or runtime measurements were supplied; the proof rows describe planned tests, not demonstrated results.
 
-  **Resolution:** Say the PIN alone cannot unlock macOS, while noting that the documented coincidence can allow control after someone locally unlocks it.
+- **PRECISION — “Lock reading”: freshness rules conflict.** The spec requires every non-notification input to come from a sample no older than 2 seconds, but explicitly caches `sysadminctl -screenLock status` for 60 seconds. A literal implementation could repeatedly classify an otherwise healthy Mac as `unknown`. Clarify that the policy value has a separate freshness allowance, specify which predicates require it, and define behavior while a state-change refresh is pending.
 
-These are observations about the supplied specification and a derived failure scenario, not measured runtime failures. No implementation source or proof results were supplied; the referenced platform behavior remains unverified here.
+- **PRECISION — “Verify the State,” pending-duty row: unsafe shorthand.** Its “Unmeasurable” cell says a pending duty “Stops blocking, reports `relock-failed`.” The detailed **Relock → Admission** rule instead requires confirmed guard termination and says admission remains blocked if termination cannot be confirmed. The detailed rule resolves the design, but the summary contradicts it. Replace the cell with “Block until guard termination is confirmed; then mark `relock-failed`.”
 
-Internal panel, claude-opus-5-5, condensed only where its evidence lists were long:
+- **PRECISION — “Lock reading”: notification lifetime is undefined.** Notifications are exempt from sample freshness, yet contradictory inputs produce `unknown`. The text does not define when a previously observed lock/unlock notification stops corroborating the current state. Specify transition ordering and expiration so an old notification cannot override a fresh flag/window sample indefinitely.
 
-**D1. `relock-pending` can block every desktop grant on a Mac indefinitely (medium; availability only).** Admission refuses on "any agent's marker" at `owed` or `executing`, but only the owning agent's server sweeps or replaces that marker. A guard dies at reboot or logout. If the owner never boots again (agent removed, stopped, or reverted to code that doesn't sweep), the marker stays `owed`. Every other agent on that Mac is then refused, including ordinary unlocked grants. The symbol says a duty is pending when no duty can run. Fix: admission ignores a marker from another boot or login session, and any agent's boot may close that marker `closed-not-applicable` through the flock verb. In the same boot, a marker past its deadline with a stale heartbeat also stops blocking. It reports `relock-failed`.
-
-**D2. The spec relies on a target-to-viewer control channel that does not exist (medium; fails closed).** `DesktopAead` has only `frame` and `input` directions. `DesktopStreamSession` has no outbound call other than frames. Frames pass through byte-budget and buffer checks that can drop them. The "new reply type" named covers helper to Node only. Current viewers treat unknown plaintext as bad video. Fix: define a tagged control record in the `frame` direction, sent outside the video budget and never dropped, only to a viewer that declared the capability at grant start. No control record, no sheet.
-
-**D3. A refused reply desynchronises held-input state (medium-low; not safety).** Both layers enforce down/up pairing and treat a mismatch as fatal. A key press refused at the shield, then a state change before release, sends an unmatched up and the grant dies. A control held before the lock has its up refused, Node forgets it, and a later SIGKILL leaves it down. Fix: releases of a control the helper actually holds are never refused, in any state. A refused reply leaves Node's and the stream manager's held sets unchanged. An up with no matching down is a refused no-op under the flag.
-
-**D4. With the feature on, secure input from any app applies the allowlist on an unlocked Mac (low-medium; not safety).** A website password field, Terminal with Secure Keyboard Entry, or an app that leaks secure input all hold it. Fix: say "secure input held by loginwindow, or an unreadable owner".
+The retained helper and detached relock guard add complexity, but the supplied permission-identity context and Node-failure requirements explain their purpose. The design uses deterministic checks rather than an LLM as an authorization authority; that model-family concern does not apply here.
 
 ## Left behind
 
 - **Mobile-Complete:** recorded in the spec as a conflict for the operator. P7 passing meets the standard; failing gates the per-Mac flip, never the build.
 - Conformance **fit: weak** on the parent principle in rounds 2 and 3, as before: this serves the operator's reach, not a session's.
 - Know Your Principal flag (rounds 1 and 2): the PIN is agent-readable. Enabling opens nothing without the password. The wider PIN class deserves its own item.
+- Precision from round 8: exempt the cached policy from the 2 s sample rule and say an unreadable policy is not a missing input; `control` must be binary with a discriminator, since `DesktopMeshStreamRelay` closes on non-binary, and the target holds the latest control state until the socket opens; the pending-duty table row disagrees with Admission; a delayed-password policy can end a grant at start; the unlock receipt has no proof row; a boot retry can lock a following session (safe direction, long-tail).
+- Precision from round 7: raised in the report's earlier rows and folded in.
 - Precision from round 6: the decision table still says `secretType` where the body says a reserved attempt's Enter; name `DesktopStreamManager`'s two terminal paths and `releaseBarrier`; terminal markers have no retention rule; `version` must be a helper constant; `relock-pending` applies with the feature off; item 5 should say locked-class; absolute "cannot get in" wording conflicts with the timing exception.
 - Precision from round 3: stamp the 15 s rule at Enter; a later `secretType` after `left-unlocked` needs a new marker; a replaced candidate must be strictly newer and the flip bound to the probed digest; enforce the allowlist in the helper and keep `activeSession()` on `type`; idle revoke's relock has no countdown; a Mac inside its delayed-lock window ends its own grant; cache the per-spawn hash; rebase over `f6f3700f0` and recheck the allowlist.
 - Precision from earlier rounds: the on-screen keyboard limit is now P13; check the guard's identity on a real Mac (P4, P12).
@@ -100,6 +103,6 @@ TeamViewer's own article is login-walled, and AnyDesk's file layout comes from a
 
 ## Convergence verdict
 
-Not converged at round 6 of 6. A safety design finding remained at the cap, so the spec carries no convergence tag and no approval, and `/instar-dev` will refuse to build from it. The round 6 findings are recorded above and were deliberately not applied, so the spec text is exactly what round 6 reviewed.
+Not converged at round 8 of 8. The criterion is a round with zero design findings, and round 8 had one. At the cap the skill sends a design finding about safety to the operator, and the panel marked this one safety, marginally. So no `review-convergence` or `approved` tag was written, and `/instar-dev` will refuse to build from this spec. The fix is one clause, but applying it and tagging would claim a review of text no reviewer saw, so it stays unapplied and the spec is exactly what round 8 reviewed.
 
-The standing rule that only constitution changes need the operator (operator directive, 2026-10-22) would let Echo approve a spec that converged. It does not apply here. `/spec-converge` sends an at-cap safety failure to the operator.
+Had it converged, the operator's "go" (topic 134088, 2026-11-01 17:20 PST) and the standing rule that only constitution changes need him (2026-10-22) would have covered approval. Neither replaces convergence.
