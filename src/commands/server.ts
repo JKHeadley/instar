@@ -8316,6 +8316,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Send-only still owns the attention store: run its hourly lifecycle
       // pass here too (start() is never called on this path). Idempotent.
       telegram.startSendOnlyMaintenance();
+      telegram.setMachineNameResolver((machineId) => _listPoolMachines?.().find((m) => m.machineId === machineId)?.nickname ?? null);
 
       // Resolve any topic names still using the fallback "topic-NNNN" pattern
       telegram.resolveUnknownTopicNames().catch(err => {
@@ -8434,6 +8435,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // When the user renames a Telegram forum topic, update the bound
       // session's display `name` ONLY (never tmuxSession or id). Fire-and-
       // forget; rename-display is non-critical.
+      telegram.setMachineNameResolver((machineId) => _listPoolMachines?.().find((m) => m.machineId === machineId)?.nickname ?? null);
       telegram.setTopicRenamedHandler((topicId, newName) => {
         const tmuxSession = telegram?.getSessionForTopic(topicId);
         if (!tmuxSession) return;

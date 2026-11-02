@@ -12,7 +12,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
-import { verifiedChannelIdentity } from './shared/channelIdentity.js';
+import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
 import path from 'node:path';
@@ -4409,7 +4409,23 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Create an attention item and its Telegram topic.
    */
-  async createAttentionItem(item: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+  /** Machine id → nickname, wired by the server once the pool registry exists. */
+  private machineNameResolver: ((machineId: string) => string | null | undefined) | null = null;
+  setMachineNameResolver(fn: (machineId: string) => string | null | undefined): void { this.machineNameResolver = fn; }
+
+  private nameAttentionString(text: string): string {
+    return nameIdsInText(text, { topicName: (id: number) => this.getTopicName(id), machineName: this.machineNameResolver ?? undefined });
+  }
+
+  /** Operator-facing attention text names topics and machines, never their ids. */
+  private nameAttentionText(item: AttentionObservation): AttentionObservation {
+    const fix = (v: unknown) => (typeof v === 'string' ? this.nameAttentionString(v) : v);
+    return { ...item, title: fix(item.title) as string, summary: fix(item.summary) as string,
+      ...(item.description !== undefined ? { description: fix(item.description) as string } : {}) };
+  }
+
+  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+    const item = this.nameAttentionText(rawItem);
     // One row per condition (attention-lifecycle-close-on-cause §3.1): an
     // observation that lands on an existing row refreshes/reopens it instead
     // of creating a sibling. Only a genuinely new condition reaches the
@@ -5137,8 +5153,15 @@ export class TelegramAdapter implements MessagingAdapter {
     // claiming "agent" must not keep reaching the hub through its old row.
     if (obs.sourceContext && obs.sourceContext !== row.sourceContext) row.sourceContext = obs.sourceContext;
 
-    const changed = row.title !== obs.title || row.summary !== obs.summary
-      || (row.description ?? '') !== (obs.description ?? '') || row.priority !== obs.priority;
+    // Compare with the stored text named the same way, so a row first stored
+    // with a raw id (or before its topic had a name) is not reposted as if the
+    // ask had changed. A naming-only difference refreshes the text quietly.
+    const named = (v: string | undefined) => this.nameAttentionString(v ?? '');
+    const changed = named(row.title) !== obs.title || named(row.summary) !== obs.summary
+      || named(row.description) !== (obs.description ?? '') || row.priority !== obs.priority;
+    if (!changed && (row.title !== obs.title || row.summary !== obs.summary || (row.description ?? '') !== (obs.description ?? ''))) {
+      Object.assign(row, { title: obs.title, summary: obs.summary, description: obs.description });
+    }
     if (isOpenAttentionStatus(row.status)) {
       if (changed) {
         // The required action changed (approve → tap the phone prompt now):
