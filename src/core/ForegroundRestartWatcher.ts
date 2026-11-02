@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { markPlannedRestartDeferred, plannedRestartVerifyState } from './PlannedRestartVerifyGuard.js';
 
 export interface RestartRequest {
   requestedAt: string;
@@ -29,6 +30,7 @@ export interface RestartRequest {
   targetVersion?: string;
   previousVersion?: string;
   plannedRestart?: boolean;
+  bypassHolds?: boolean;
   expiresAt?: string;
   pid?: number;
 }
@@ -52,6 +54,7 @@ export class ForegroundRestartWatcher extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private flagPath: string;
   private isShuttingDown = false;
+  private deferredRestartRequestedAt: string | null = null;
 
   constructor(config: ForegroundRestartWatcherConfig) {
     super();
@@ -87,6 +90,18 @@ export class ForegroundRestartWatcher extends EventEmitter {
 
       const raw = fs.readFileSync(this.flagPath, 'utf-8');
       const data: RestartRequest = JSON.parse(raw);
+
+      // The foreground consumer races the supervisor for the same flag. Both
+      // must honor the active full-suite child before either consumes it.
+      if (plannedRestartVerifyState(this.config.stateDir, data).hold
+        && markPlannedRestartDeferred(this.config.stateDir, data)) {
+        if (this.deferredRestartRequestedAt !== data.requestedAt) {
+          this.deferredRestartRequestedAt = data.requestedAt;
+          console.log('[ForegroundRestartWatcher] Planned restart deferred for active local verification');
+        }
+        return;
+      }
+      this.deferredRestartRequestedAt = null;
 
       // Check TTL — but DON'T silently ignore expired requests.
       // In foreground mode, the restart is critical. If the flag expired,

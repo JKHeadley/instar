@@ -35,6 +35,7 @@ import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 // process boundary, so the supervisor reads the file the server's SessionManager
 // mirrors on every depth transition.
 import { defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
+import { markPlannedRestartDeferred, plannedRestartVerifyState, recentlyRequestedPlannedRestart } from '../core/PlannedRestartVerifyGuard.js';
 
 /** Size cap for the appended server stderr crash log (see start()). */
 const SERVER_STDERR_MAX_BYTES = 4 * 1024 * 1024;
@@ -299,6 +300,7 @@ export class ServerSupervisor extends EventEmitter {
   private maintenanceWaitStartedAt = 0;
   private maintenanceWaitMs = 5 * 60_000; // 5 minutes default (configurable via maintenanceWaitMinutes)
   private pendingUpdateVersion: string | null = null; // Version being applied — triggers lifeline self-restart on recovery
+  private deferredRestartRequestedAt: string | null = null;
 
   // Agent hard-sleep (Stage B mechanism; docs/specs/agent-hard-sleep-mechanism.md).
   // When `slept` is true the server was INTENTIONALLY stopped to save resources —
@@ -1609,11 +1611,28 @@ export class ServerSupervisor extends EventEmitter {
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
 
     try {
-      if (!fs.existsSync(flagPath)) return;
+      if (!fs.existsSync(flagPath)) {
+        this.deferredRestartRequestedAt = null;
+        return;
+      }
       const data = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
 
+      // Every planned restart writer uses this file, while only AutoUpdater
+      // consults its in-process Local Verify hold. The verifier's durable
+      // in-flight marker closes that gap for this separate supervisor process.
+      const verify = plannedRestartVerifyState(this.stateDir, data);
+      if (verify.hold && markPlannedRestartDeferred(this.stateDir, data)) {
+        if (this.deferredRestartRequestedAt !== data.requestedAt) {
+          this.deferredRestartRequestedAt = data.requestedAt ?? null;
+          console.log('[Supervisor] Planned restart deferred for active local verification');
+        }
+        return; // leave the flag intact; the next health tick rechecks it
+      }
+      this.deferredRestartRequestedAt = null;
+
       // Check TTL
-      if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()) {
+      if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()
+        && !recentlyRequestedPlannedRestart(this.stateDir, data)) {
         try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:827' }); } catch { /* ignore */ }
         console.log('[Supervisor] Expired restart request — ignoring');
         return;

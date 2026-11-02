@@ -28,7 +28,7 @@ function makeRouter(over: Partial<SessionRouterDeps> = {}, registry: MachineCapa
     casClaimOwnership: vi.fn((_s: string, _m: string, e: number) => ({ ok: true, epoch: e + 1 })),
     deliverMessage: async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck,
     handleLocally: vi.fn(async () => {}),
-    spawnOnMachine: vi.fn(async () => {}),
+    spawnOnMachine: vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const })),
     queueMessage: vi.fn(() => 'refused' as const),
     raiseAttention: vi.fn(),
     markOwnerSuspect: vi.fn(),
@@ -84,12 +84,21 @@ describe('§2.A RouteOutcome ratchet — a refusal stays a refusal', () => {
     expect(casCalls).toBeGreaterThan(0);
   });
 
-  it('forceReplace returns true for a genuinely-handled re-place (regression guard for the boolean path)', async () => {
+  it('forceReplace returns true for a genuinely-handled REMOTE re-place (regression guard for the boolean path)', async () => {
+    const { router } = makeRouter({
+      resolveOwnership: () => ({ owner: null, epoch: 0, status: null }),
+      casClaimOwnership: (_s, _m, e) => ({ ok: true, epoch: e + 1 }),
+    }, [cap('m_other')]); // only a remote machine → placed there, spawn ACK queued
+    const res = await router.forceReplace(msg());
+    expect(res).toBe(true);
+  });
+
+  it('forceReplace placing on SELF returns `local`, never true (handleLocally is only a verdict; the drain must deliver)', async () => {
     const { router } = makeRouter({
       resolveOwnership: () => ({ owner: null, epoch: 0, status: null }),
       casClaimOwnership: (_s, _m, e) => ({ ok: true, epoch: e + 1 }),
     }, [cap(SELF)]); // self is the only machine → placed self → handled-locally
     const res = await router.forceReplace(msg());
-    expect(res).toBe(true);
+    expect(res).toBe('local');
   });
 });

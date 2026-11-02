@@ -600,12 +600,15 @@ async function api(path, method = 'GET', body, signal) {
   if (!response.ok) {
     const error = new Error(result.error || `Server answered ${response.status}`);
     error.httpStatus = response.status;
+    if (result.step) error.step = result.step;
     throw error;
   }
   return result;
 }
 
 function requirePinAgain() {
+  desktopSetup?.stop();
+  if ($('setup')) $('setup').hidden = true;
   token = '';
   operatorSession = '';
   $('retryButton').hidden = true;
@@ -614,7 +617,40 @@ function requirePinAgain() {
   status('Your dashboard session ended. Enter your PIN again.');
 }
 
-async function loadTargetsAndMaybeOpen() {
+let desktopSetup = null;
+async function refreshSetup() {
+  try {
+    if (!desktopSetup) {
+      const { createDesktopSetup } = await import('./desktop-setup.js');
+      desktopSetup = createDesktopSetup({
+        api, $,
+        onPinLost: () => requirePinAgain(),
+        onReady: async row => {
+          status(`${row.label} is ready.`);
+          await loadTargetsAndMaybeOpen({ open: false });
+        },
+      });
+    }
+    await desktopSetup.refresh();
+  } catch {
+    // @silent-fallback-ok — setup is an aid; the picker above it still works.
+  }
+}
+
+// Setup exists even while this machine's own desktop is off, which is exactly
+// when /desktop/targets answers 503.
+async function loadDesktopPage(options) {
+  try { await loadTargetsAndMaybeOpen(options); }
+  catch (error) {
+    if (error.httpStatus !== 503) throw error;
+    $('unlock').hidden = true;
+    $('request').hidden = true;
+    status('Remote Desktop is off here. Set it up below.');
+  }
+  await refreshSetup();
+}
+
+async function loadTargetsAndMaybeOpen({ open = true } = {}) {
   const targets = await api('/desktop/targets');
   const machines = targets.machines || [];
   $('machine').replaceChildren();
@@ -664,7 +700,7 @@ async function loadTargetsAndMaybeOpen() {
     return;
   }
   $('retryButton').hidden = true;
-  if (hasPreferredMachine || (machines.length === 1 && ready.length === 1)) {
+  if (open && (hasPreferredMachine || (machines.length === 1 && ready.length === 1))) {
     if (!hasPreferredMachine) $('machine').value = ready[0].value;
     status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
     await requestDesktop();
@@ -689,7 +725,7 @@ $('unlockButton').addEventListener('click', async () => {
     token = result.token;
     operatorSession = result.operatorSessionToken;
     $('pin').value = '';
-    await loadTargetsAndMaybeOpen();
+    await loadDesktopPage();
   } catch (error) {
     if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
     else status(error.message || 'Could not unlock.');
@@ -699,7 +735,7 @@ $('unlockButton').addEventListener('click', async () => {
 
 $('retryButton').addEventListener('click', async () => {
   $('retryButton').disabled = true;
-  try { await loadTargetsAndMaybeOpen(); }
+  try { await loadDesktopPage(); }
   catch (error) {
     if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
     else status(error.message || 'Could not check this machine.');

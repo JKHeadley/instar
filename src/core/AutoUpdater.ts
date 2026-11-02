@@ -814,6 +814,9 @@ export class AutoUpdater {
       if (holds.length > 0 && Date.now() >= holdCeiling) {
         console.log(`[AutoUpdater] Restart holds for v${newVersion} ignored: max deferral (${this.gate.getStatus().maxDeferralHours}h) reached (${holds.map((h) => h.name).join(', ')})`);
         holds = [];
+        // The supervisor's independent Local Verify guard must honor this
+        // same ceiling rather than adding another three-hour wait.
+        bypassHolds = true;
       }
       if (holds.length > 0) {
         const soonest = holds[0];
@@ -879,7 +882,7 @@ export class AutoUpdater {
       this.lastRestartRequestedVersion = newVersion;
       this.saveState();
       await new Promise(r => setTimeout(r, 2000));
-      if (!this.requestRestart(newVersion)) this.updateActivationPendingSince = null;
+      if (!this.requestRestart(newVersion, bypassHolds)) this.updateActivationPendingSince = null;
       return;
     }
 
@@ -987,7 +990,7 @@ export class AutoUpdater {
       this.saveState();
 
       await new Promise(r => setTimeout(r, 2000));
-      if (!this.requestRestart(newVersion)) this.updateActivationPendingSince = null;
+      if (!this.requestRestart(newVersion, bypassHolds)) this.updateActivationPendingSince = null;
       return;
     }
 
@@ -1239,7 +1242,7 @@ export class AutoUpdater {
    * a notice that a restart is needed. This is strictly better than attempting
    * self-restart, which can loop or leave the port bound.
    */
-  private requestRestart(newVersion: string): boolean {
+  private requestRestart(newVersion: string, bypassHolds = false): boolean {
     const previousVersion = this.updateChecker.getInstalledVersion();
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
     const data = {
@@ -1248,6 +1251,7 @@ export class AutoUpdater {
       targetVersion: newVersion,
       previousVersion,
       plannedRestart: true, // Signals lifeline/supervisor: this is maintenance, not a crash
+      bypassHolds, // Preserve the explicit forceRestart contract across processes.
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour TTL (was 10 min — too short for foreground mode)
       pid: process.pid,
     };
