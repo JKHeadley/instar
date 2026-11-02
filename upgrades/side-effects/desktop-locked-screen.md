@@ -100,6 +100,8 @@ A third, narrow check of the guard paths ended: "Concur with the review". Its on
 
 **Reviewer:** independent subagent, second pass of the merged branch, 2026-11-01
 
+**Confirming pass, 2026-11-02 01:03: concur.** The same reviewer re-read fixes 1-3 (99c95019e) and the merge with main (1de2f6550) and agreed. Still not built: lockedState, secretTypeCount and relock fields on the access audit (spec, Audit and status point 1). Follow-up: the lock-screen capture fallback (InstarDesktopHost.swift ~813) always records the main display; P1 and P2 must include a two-screen Mac, or the fallback must take the chosen screen.
+
 This pass read the branch after it was merged with `main`. It found three things, all fixed here:
 
 - Turning the feature off wrote the helper's Mac-wide off marker first. If that helper call threw or hung, the setting was never saved and open locked-screen sessions were never ended. Now the setting is saved and the sessions are ended first, and the marker is tried last with a 5-second limit. A marker failure is audited, named in the security item, and returned as an error. `tests/unit/DesktopLockedController.test.ts` covers a helper that throws and one that hangs.
