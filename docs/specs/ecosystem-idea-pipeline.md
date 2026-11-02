@@ -189,8 +189,6 @@ The first run reviews the ten lessons in `docs/research/ecosystem/life-distribut
 
 ## Decision points touched
 
-Nothing here gates a running agent. The one downstream block is the lint in section 8.
-
 | Decision point | Classification | Floor or justification |
 |---|---|---|
 | Gap verdict | judgment-candidate | Floor: cites what was read; two blind reads for Now. Arbiter: models. Fallback ends at `unverified`, which cannot rank |
@@ -205,6 +203,8 @@ Nothing here gates a running agent. The one downstream block is the lint in sect
 | Framework admission | invariant | Must-fail canary; a failed or unrunnable probe refuses the framework. Evidence only, no judgment |
 | Exception, watchlist yes, decline | invariant | The operator's act, by PIN |
 | Agent starting a spec | judgment-candidate | Floor: Now band only, one open at a time, reason recorded, operator can decline. Fallback: no spec. The operator may start one on any idea |
+
+Nothing here gates a running agent. The one downstream block is the lint in section 8.
 
 ## Multi-machine posture
 
