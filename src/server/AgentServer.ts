@@ -205,9 +205,12 @@ import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
+import { getInstarVersion } from '../core/Config.js';
+import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
-import { MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
+import { DEFAULT_MAC_DESKTOP_HELPER, MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
 import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
 import { isWslHost } from '../core/wslPlatform.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
@@ -457,6 +460,8 @@ export class AgentServer {
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
   private desktopStreamManager: DesktopStreamManager | null = null;
   private directDesktopAccess: DirectDesktopAccess | null = null;
+  private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
+  private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
   private desktopSetupTarget: DesktopSetupTarget | null = null;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
@@ -2834,9 +2839,17 @@ export class AgentServer {
           if (!publicKeyPem || !verifyMachinePayload(proof, signMachinePayload(proof, privateKey), publicKeyPem)) {
             throw new Error('machine signing key mismatch');
           }
-          const host: DesktopHost = process.platform === 'darwin'
-            ? new MacDesktopHost()
-            : (() => {
+          const helperRetention = process.platform === 'darwin'
+            ? new DesktopHelperRetention({
+              packagedBinary: DEFAULT_MAC_DESKTOP_HELPER, packageVersion: getInstarVersion(),
+              // Only a real install takes the Mac's one kept copy by default: a
+              // source checkout or a test must never replace what is granted.
+              enabled: options.config.remoteDesktop?.retainedHelper
+                ?? (!process.env.VITEST && DEFAULT_MAC_DESKTOP_HELPER.includes(`${path.sep}node_modules${path.sep}instar${path.sep}`)),
+            }) : null;
+          this.macDesktopHost = process.platform === 'darwin' ? new MacDesktopHost(undefined, helperRetention) : null;
+          const host: DesktopHost = this.macDesktopHost
+            ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
                 // PowerShell interop can reach the Windows-local companion even
                 // when WSL's TCP path to the host is filtered by Windows.
@@ -2868,6 +2881,24 @@ export class AgentServer {
           (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
         );
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
+        if (helperRetention) {
+          const access = this.directDesktopAccess;
+          const telegram = options.telegram;
+          this.desktopHelperNotice = new DesktopHelperPermissionNotice({
+            machineLabel: label, machineId: this.meshSelfId,
+            probe: () => access.probe(),
+            sourceHash: () => helperRetention.currentSourceHash(),
+            // An agent that cannot post must leave the notice for one that can.
+            claim: () => !!telegram && helperRetention.claimNotice(),
+            release: () => helperRetention.releaseNotice(),
+            raise: item => telegram!.createAttentionItem({
+              id: item.id, conditionKey: item.conditionKey, title: item.title, summary: item.body, description: item.body,
+              priority: 'HIGH', category: 'desktop', source: 'agent', needsUser: true, sourceContext: 'desktop-helper-permission',
+            } as Parameters<NonNullable<typeof telegram>['createAttentionItem']>[0]),
+            clear: (conditionKey, resolution) => { telegram?.clearAttentionCondition({ conditionKey }, resolution); },
+          });
+          if (!process.env.VITEST) this.desktopHelperNotice.start();
+        }
         } catch (error) {
           // @silent-fallback-ok — warn and leave desktop admission dark when target identity cannot be proven.
           console.warn('[instar] remote desktop target identity unavailable; access stays dark:', error instanceof Error ? error.message : String(error));
@@ -5320,6 +5351,10 @@ export class AgentServer {
             screenPermission: probe.screenPermission, inputPermission: probe.inputPermission,
             displayCount: probe.displayCount, sessionActive: probe.sessionActive,
             ...(probe.screenGrant ? { screenGrant: probe.screenGrant, inputGrant: probe.inputGrant } : {}),
+            ...(probe.helperSource ? { helperSource: probe.helperSource } : {}),
+            ...(probe.helperFallback ? { helperFallback: probe.helperFallback } : {}),
+            ...(probe.helperChange ? { helperChange: probe.helperChange,
+              permissionStep: desktopProbeUnavailableReason(probe) } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];
@@ -5708,7 +5743,9 @@ export class AgentServer {
       diagnostics: () => routeCtx.desktopLocalDiagnostics!(),
       requestPermission: routeCtx.desktopRequestPermission ?? null,
       requestRestart: () => this.requestSupervisedRestart('remote desktop guided setup', 'remote-desktop-setup'),
-      helperPath: () => (process.platform === 'darwin' ? macDesktopHelperPath() : null),
+      // The setup fallback must name the copy a permission request targets, which
+      // is the one this host serves right now, kept or installed.
+      helperPath: () => (process.platform === 'darwin' ? this.macDesktopHost?.servedHelperPath() ?? macDesktopHelperPath() : null),
       endLiveAccess: () => this.directDesktopAccess?.killSwitch(),
       onPeerEnable: async senderId => {
         const name = verifiedEntityName(senderId, options.listPoolMachines?.().find(peer => peer.machineId === senderId)?.nickname) ?? 'Another paired machine';
@@ -7935,6 +7972,7 @@ export class AgentServer {
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
     this.desktopStreamManager?.closeAll();
+    this.desktopHelperNotice?.stop();
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     try { this.agentIdentityRuntime?.coherence.stop(); } catch { /* best-effort teardown */ }
