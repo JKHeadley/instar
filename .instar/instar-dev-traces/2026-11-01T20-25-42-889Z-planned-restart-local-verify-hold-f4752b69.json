@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "slug": "planned-restart-local-verify-hold",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-11-01T20:25:42.889Z",
+  "artifactPath": "upgrades/side-effects/planned-restart-local-verify-hold.md",
+  "artifactSha256": "de3dd077694f1e5a4b1de2ff1c6bc980ed301439b5a8e68a0459b597857b6a6c",
+  "coveredFiles": [
+    "docs/specs/planned-restart-local-verify-hold.eli16.md",
+    "docs/specs/planned-restart-local-verify-hold.md",
+    "src/core/AutoUpdater.ts",
+    "src/core/ForegroundRestartWatcher.ts",
+    "src/core/PlannedRestartVerifyGuard.ts",
+    "src/lifeline/ServerSupervisor.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/monitoring/guardManifest.ts",
+    "tests/e2e/planned-restart-local-verify-lifecycle.test.ts",
+    "tests/e2e/update-apply-verification-hold-lifecycle.test.ts",
+    "tests/integration/planned-restart-local-verify.test.ts",
+    "tests/unit/AutoUpdater-restart-holds.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/planned-restart-verify-guard.test.ts",
+    "tests/unit/restart-window.test.ts",
+    "upgrades/next/planned-restart-local-verify-hold.md",
+    "upgrades/side-effects/planned-restart-local-verify-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow, reversible coordination fix: it changes when an already planned restart is consumed, preserves force and expiry bounds, and adds no merge authority or external API.",
+  "eli16Path": "docs/specs/planned-restart-local-verify-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/planned-restart-local-verify-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/planned-restart-verify-guard.test.ts",
+      "howCaught": "One unchanged restart request is rechecked only on existing ticks. Dead child or bounded request and run ages release the hold, and tests assert it is consumed once after the child exits or expires after the delivery window."
+    }
+  }
+}
