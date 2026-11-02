@@ -12,6 +12,13 @@ const skip = process.platform !== 'darwin' || !fs.existsSync(built);
 const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
+function cleanupScope(filename: string): { localVerifyScopeOk?: { verifyRoot: string } } {
+  const marker = `${path.sep}.worktrees${path.sep}.verify${path.sep}`;
+  const at = filename.indexOf(marker);
+  // Local verify runs in a disposable source-tree copy, which the destructive
+  // filesystem funnel admits only when that exact root is named.
+  return at < 0 ? {} : { localVerifyScopeOk: { verifyRoot: filename.slice(0, at + marker.length - 1) } };
+}
 
 // A real signed helper in a real universal wrapper, walked through an update:
 // this is the part a fake script cannot prove, that a copied helper still runs
@@ -26,7 +33,7 @@ describe.skipIf(skip)('kept Mac desktop helper across updates', () => {
     if (info.length > 1) expect(spawnSync('lipo', ['-thin', arch, built, '-output', thin]).status).toBe(0);
     else fs.copyFileSync(built, thin);
     expect(spawnSync('codesign', ['--force', '--identifier', identifier, '--sign', '-', thin]).status).toBe(0);
-    SafeFsExecutor.safeRmSync(packaged, { force: true, operation: 'tests/e2e/desktop-helper-retention-lifecycle.test.ts:ship' });
+    SafeFsExecutor.safeRmSync(packaged, { force: true, operation: 'tests/e2e/desktop-helper-retention-lifecycle.test.ts:ship', ...cleanupScope(packaged) });
     expect(spawnSync('lipo', ['-create', thin, '-output', packaged]).status).toBe(0);
     fs.chmodSync(packaged, 0o755);
     fs.writeFileSync(helperManifestPath(packaged), JSON.stringify({ sourceHash }));
@@ -40,7 +47,7 @@ describe.skipIf(skip)('kept Mac desktop helper across updates', () => {
   beforeAll(() => { fs.mkdirSync(hostRoot, { recursive: true, mode: 0o700 }); });
   afterAll(() => {
     for (const file of [packaged, helperManifestPath(packaged)]) {
-      SafeFsExecutor.safeRmSync(file, { force: true, operation: 'tests/e2e/desktop-helper-retention-lifecycle.test.ts:cleanup' });
+      SafeFsExecutor.safeRmSync(file, { force: true, operation: 'tests/e2e/desktop-helper-retention-lifecycle.test.ts:cleanup', ...cleanupScope(file) });
     }
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/e2e/desktop-helper-retention-lifecycle.test.ts:cleanup' });
   });

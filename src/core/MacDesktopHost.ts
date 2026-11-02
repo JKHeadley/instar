@@ -17,6 +17,7 @@ export type MacDesktopProbe = DesktopProbe;
 type HelperIdentity = 'inherited' | 'own';
 const HELPER_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 const OWN_PROBE_GRACE_MS = 30_000;
+const PACKAGED_PROBE_RETRY_MS = 5_000;
 const KEPT_PROBE_FAILURE_LIMIT = 3;
 
 const FRAME_LIMIT = 1_250_000;
@@ -53,7 +54,8 @@ export class MacDesktopHost implements DesktopHost {
   private screenIdentity: HelperIdentity = 'inherited';
   private inputIdentity: HelperIdentity = 'inherited';
   private lastOwnProbe: { value: MacDesktopProbe; at: number } | null = null;
-  private lastPackagedOwnProbe: { value: MacDesktopProbe | null; at: number } | null = null;
+  private lastPackagedOwnProbe: { value: MacDesktopProbe; at: number } | null = null;
+  private lastPackagedProbeFailureAt = 0;
   /** Set while the installed copy still holds a grant the kept copy lacks. */
   private servingPackaged = false;
   private keptProbeFailures = 0;
@@ -311,7 +313,9 @@ export class MacDesktopHost implements DesktopHost {
     if (!inputLive) this.inputIdentity = own?.inputPermission ? 'own' : 'inherited';
     const screenPermission = inherited.screenPermission || !!own?.screenPermission;
     const inputPermission = inherited.inputPermission || !!own?.inputPermission;
-    const helperChange = screenPermission && inputPermission ? null : this.retention?.permissionChange() ?? null;
+    // The kept copy's story applies only when the kept copy is what this agent runs.
+    const helperChange = screenPermission && inputPermission || resolution?.source !== 'retained'
+      ? null : this.retention?.permissionChange() ?? null;
     return {
       ...inherited,
       screenPermission,
@@ -324,15 +328,29 @@ export class MacDesktopHost implements DesktopHost {
     };
   }
 
-  /** Probed only while the kept copy lacks a grant, so at most one more helper
-   * start in each grace window on top of the 500 ms recheck. */
+  /** Probed only while the kept copy lacks a grant. A good reading is reused for
+   * one grace window, so that is one more helper start in that window on top of
+   * the 500 ms recheck. A failed refresh keeps it for one window more, retrying
+   * every few seconds: one slow start must not read as a lost grant and revoke a
+   * live session, and a failure never replaces a good reading. */
   private async packagedOwnProbe(): Promise<MacDesktopProbe | null> {
-    const cached = this.lastPackagedOwnProbe;
-    if (cached && Date.now() - cached.at < OWN_PROBE_GRACE_MS) return cached.value;
-    const value = await this.probeAs('own', this.packagedBinary()).catch(() => null); // @silent-fallback-ok — no packaged reading means no fallback; the kept copy's reading stands.
-    this.lastPackagedOwnProbe = { value, at: Date.now() };
-    return value;
+    const good = this.lastPackagedOwnProbe;
+    const age = good ? Date.now() - good.at : Infinity;
+    if (age < OWN_PROBE_GRACE_MS) return good!.value;
+    const held = age < 2 * OWN_PROBE_GRACE_MS ? good!.value : null;
+    if (Date.now() - this.lastPackagedProbeFailureAt < (held ? PACKAGED_PROBE_RETRY_MS : OWN_PROBE_GRACE_MS)) return held;
+    try {
+      const value = await this.probeAs('own', this.packagedBinary());
+      this.lastPackagedOwnProbe = { value, at: Date.now() };
+      return value;
+    } catch { // @silent-fallback-ok — the last good reading stands; with none, the kept copy's reading stands.
+      this.lastPackagedProbeFailureAt = Date.now();
+      return held;
+    }
   }
+
+  /** The copy a permission request or a capture would run right now. */
+  servedHelperPath(): string { return this.trustedBinary(); }
 
   /** Shows macOS's own prompts on the Mac and lists the helper in Privacy &
    * Security. Nothing is granted by this call; a person allows it there. */

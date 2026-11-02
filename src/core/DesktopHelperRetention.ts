@@ -28,6 +28,8 @@ export const HELPER_MANIFEST_SUFFIX = '.json';
 export const RETAINED_HELPER_NAME = 'instar-desktop-host';
 const RECORD_NAME = 'retained.json';
 const FAT_MAGIC = 0xcafebabe;
+const COPY_RETRY_FIRST_MS = 60_000;
+const COPY_RETRY_MAX_MS = 60 * 60_000;
 
 export type DesktopHelperFallback =
   | 'disabled' | 'no-manifest' | 'not-release-build' | 'older-than-retained'
@@ -92,6 +94,10 @@ export class DesktopHelperRetention {
   /** Verifying means hashing, so it reruns only when the kept file changes. */
   private verified: { size: number; mtimeMs: number; ino: number; resolution: DesktopHelperResolution } | null = null;
   private broken = false;
+  /** A failed copy waits before it is tried again, because probes run twice a second. */
+  private copyRetryAt = 0;
+  private copyRetryMs = COPY_RETRY_FIRST_MS;
+  private grantNoteFailed = false;
 
   constructor(private readonly options: DesktopHelperRetentionOptions) {
     this.root = options.root ?? path.join(os.homedir(), '.instar', 'desktop-helper');
@@ -180,10 +186,22 @@ export class DesktopHelperRetention {
     });
   }
 
-  /** Which helper to launch. Synchronous and cheap on the repeat path. */
+  /** Which helper to launch. Synchronous and cheap on the repeat path. Never
+   * throws: a probe that rejects reads as a lost grant and revokes a session. */
   resolve(): DesktopHelperResolution {
     if (!this.enabled) return this.packaged('disabled');
     if (this.broken) return this.packaged('retained-unrunnable');
+    if (Date.now() < this.copyRetryAt) return this.packaged('copy-failed');
+    try {
+      return this.resolveKept();
+    } catch (error) {
+      this.verified = null;
+      this.log(`[instar] could not check the Mac desktop helper copy: ${error instanceof Error ? error.message : String(error)}`);
+      return this.packaged('retained-unsafe'); // @silent-fallback-ok — logged above; diagnostics name the reason.
+    }
+  }
+
+  private resolveKept(): DesktopHelperResolution {
     try {
       const stat = fs.statSync(this.retainedPath);
       if (this.verified && this.verified.size === stat.size && this.verified.mtimeMs === stat.mtimeMs
@@ -197,6 +215,14 @@ export class DesktopHelperRetention {
       this.verified = null;
     }
     return resolution;
+  }
+
+  private matchesRecord(record: DesktopHelperRecord): boolean {
+    try {
+      return sha256(this.retainedPath) === record.binarySha256;
+    } catch {
+      return false; // @silent-fallback-ok — unreadable bytes are damaged bytes; resolveFully restores them.
+    }
   }
 
   private resolveFully(): DesktopHelperResolution {
@@ -213,7 +239,7 @@ export class DesktopHelperRetention {
       if (order === 0) return this.packaged('same-version-different-source');
     }
     const intact = !!record && record.sourceHash === sourceHash && fileExists
-      && this.safeToRun() && sha256(this.retainedPath) === record.binarySha256;
+      && this.safeToRun() && this.matchesRecord(record);
     if (intact) return { path: this.retainedPath, source: 'retained' };
     if (record?.sourceHash === sourceHash && fileExists) {
       this.log('[instar] retained Mac desktop helper failed its integrity check; restoring it from this package');
@@ -223,7 +249,11 @@ export class DesktopHelperRetention {
       // the helper changed. Restoring a damaged copy writes bytes macOS has not
       // seen, so the proof is gone and the Mac must say it needs a grant.
       this.install(sourceHash, record && record.sourceHash !== sourceHash ? record.grantedSourceHash : null);
+      this.copyRetryAt = 0;
+      this.copyRetryMs = COPY_RETRY_FIRST_MS;
     } catch (error) {
+      this.copyRetryAt = Date.now() + this.copyRetryMs;
+      this.copyRetryMs = Math.min(this.copyRetryMs * 2, COPY_RETRY_MAX_MS);
       this.log(`[instar] could not keep a Mac desktop helper copy: ${error instanceof Error ? error.message : String(error)}`);
       return this.packaged('copy-failed'); // @silent-fallback-ok — logged above; diagnostics name copy-failed.
     }
@@ -237,12 +267,21 @@ export class DesktopHelperRetention {
     this.log('[instar] retained Mac desktop helper would not run; using the installed copy');
   }
 
-  /** The kept copy holds its own grant for its current source. */
+  /** The kept copy holds its own grant for its current source. Failing to write
+   * that down costs nothing but a repeat at the next probe, so it never throws. */
   noteGranted(): void {
     const record = this.readRecord();
     if (!record || record.grantedSourceHash === record.sourceHash) return;
-    this.writeRecord({ ...record, grantedSourceHash: record.sourceHash });
-    this.releaseNotice();
+    try {
+      this.writeRecord({ ...record, grantedSourceHash: record.sourceHash });
+      this.releaseNotice();
+      this.grantNoteFailed = false;
+    } catch (error) {
+      if (!this.grantNoteFailed) {
+        this.log(`[instar] could not record the Mac desktop helper grant: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      this.grantNoteFailed = true;
+    }
   }
 
   /** Null when the missing permission has nothing to do with an update. */

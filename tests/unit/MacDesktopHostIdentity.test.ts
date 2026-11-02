@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
@@ -44,12 +44,12 @@ if (verb === 'probe') {
 }
 
 /** A second helper, standing in for the kept copy. */
-function kept(installed: { host: MacDesktopHost }, inherited: Grants, own: Grants | 'fails', change: unknown = null) {
+function kept(installed: { host: MacDesktopHost }, inherited: Grants, own: Grants | 'fails', change: unknown = null, disabled = false) {
   const donor = helper(inherited, own);
   const notes = { granted: 0, broken: 0 };
   let broken = false;
   const retention = {
-    resolve: () => broken
+    resolve: () => broken || disabled
       ? { path: 'packaged', source: 'packaged', reason: 'disabled' }
       : { path: donor.host['binary'], source: 'retained' },
     noteGranted: () => { notes.granted++; },
@@ -182,6 +182,79 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost permission identi
     expect(await host.probe()).toMatchObject({ screenPermission: true, inputPermission: true, helperSource: 'packaged' });
     await host.cancelInput();
     expect(installed.spawns()).toContain('release:own');
+  });
+
+  /** Fails only the probes of the installed copy, as a slow start would. */
+  function failInstalledProbes(host: MacDesktopHost, installed: { host: MacDesktopHost }) {
+    const packagedPath = fs.realpathSync(installed.host['binary']);
+    const realProbeAs = host['probeAs'];
+    host['probeAs'] = function (this: MacDesktopHost, identity: 'own' | 'inherited', binary?: string) {
+      if (binary === packagedPath) return Promise.reject(new Error('timeout'));
+      return realProbeAs.call(this, identity, binary);
+    } as typeof realProbeAs;
+    return () => { host['probeAs'] = realProbeAs; };
+  }
+
+  it('keeps a live session through a failed installed-copy probe', async () => {
+    const change = { kind: 'first-grant', version: '1.3.1580', helperPath: '/k' };
+    const installed = helper({ screen: false, input: false }, { screen: true, input: true });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false }, change);
+    expect(await host.probe()).toMatchObject({ screenPermission: true, helperSource: 'packaged' });
+    await host.input({ kind: 'keyDown', key: 'Shift' });
+    failInstalledProbes(host, installed);
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      clock += 31_000; // The good reading is due a refresh, and the refresh fails.
+      const probe = await host.probe();
+      expect(probe).toMatchObject({ screenPermission: true, inputPermission: true, screenGrant: 'own', helperSource: 'packaged' });
+      expect(probe.helperChange).toBeUndefined();
+      clock += 26_000; // Still inside the second window, on the retry path.
+      expect(await host.probe()).toMatchObject({ screenPermission: true });
+    } finally {
+      now.mockRestore();
+    }
+    await host.cancelInput();
+    expect(installed.spawns()).toContain('release:own');
+  });
+
+  it('does not keep a failed installed-copy reading past its grace, or cache a failure over it', async () => {
+    const installed = helper({ screen: false, input: false }, { screen: true, input: true });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false });
+    await host.probe();
+    const restore = failInstalledProbes(host, installed);
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      clock += 61_000;
+      expect(await host.probe()).toMatchObject({ screenPermission: false, helperSource: 'retained' });
+      restore();
+      clock += 31_000;
+      expect(await host.probe()).toMatchObject({ screenPermission: true, helperSource: 'packaged' });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('never tells the operator about the kept copy when this agent does not run it', async () => {
+    const change = { kind: 'source-changed', version: '1.3.1580', helperPath: '/k' };
+    const installed = helper({ screen: false, input: false }, { screen: false, input: false });
+    const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false }, change, true);
+    const probe = await host.probe();
+    expect(probe).toMatchObject({ screenGrant: 'none', helperSource: 'packaged' });
+    expect(probe.helperChange).toBeUndefined();
+  });
+
+  it('names the copy a permission request would run, kept or installed', async () => {
+    const installed = helper({ screen: false, input: false }, { screen: true, input: true });
+    const { host, spawns } = kept(installed, { screen: false, input: false }, { screen: false, input: false });
+    const keptPath = (host['retention']!.resolve() as { path: string }).path;
+    expect(host.servedHelperPath()).toBe(keptPath);
+    await host.probe(); // The installed copy holds the better grant, so it serves.
+    expect(host.servedHelperPath()).toBe(fs.realpathSync(installed.host['binary']));
+    await host.requestPermission();
+    expect(installed.spawns()).toContain('request-permission:own');
+    expect(spawns()).not.toContain('request-permission:own');
   });
 
   it('asks for permission only under the helper identity', async () => {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,7 @@ function world() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/DesktopHelperRetention.test.ts:cleanup' });
   }
@@ -193,6 +194,77 @@ describe('DesktopHelperRetention', () => {
     agent.resolve();
     agent.markBroken();
     expect(agent.resolve().reason).toBe('retained-unrunnable');
+  });
+
+  it('restores a kept copy it cannot read instead of rejecting the probe', () => {
+    const w = world();
+    w.ship('good', 'source-1');
+    w.agent('1.3.100').resolve();
+    fs.chmodSync(w.retained, 0o000);
+    // A fresh agent hashes; a running one would answer from its cache.
+    expect(w.agent('1.3.100').resolve()).toEqual({ path: w.retained, source: 'retained' });
+    expect(fs.readFileSync(w.retained).subarray(4).toString()).toBe('good');
+  });
+
+  it('falls back when the kept copy vanishes during the check', () => {
+    const w = world();
+    w.ship('good', 'source-1');
+    const agent = w.agent('1.3.100');
+    const real = fs.statSync;
+    vi.spyOn(fs, 'statSync').mockImplementation(((file: fs.PathLike, ...rest: []) => {
+      if (file === w.retained) throw new Error('gone');
+      return real(file, ...rest);
+    }) as typeof fs.statSync);
+    expect(agent.resolve()).toEqual({ path: w.packagedBinary, source: 'packaged', reason: 'retained-unsafe' });
+  });
+
+  it('survives a grant it cannot write down, and records it once it can', () => {
+    const w = world();
+    w.ship('good', 'source-1');
+    const agent = w.agent('1.3.100');
+    agent.resolve();
+    const root = path.join(w.dir, 'host');
+    fs.chmodSync(root, 0o500);
+    try {
+      expect(() => agent.noteGranted()).not.toThrow();
+      expect(agent.permissionChange()?.kind).toBe('first-grant');
+    } finally {
+      fs.chmodSync(root, 0o700);
+    }
+    agent.noteGranted();
+    expect(agent.permissionChange()).toBeNull();
+  });
+
+  it('waits longer after each failed copy, and stops waiting once one works', () => {
+    const w = world();
+    w.ship('x', 'source-1');
+    const blocker = path.join(w.dir, 'host');
+    fs.writeFileSync(blocker, 'a file where the folder belongs');
+    const logged: string[] = [];
+    const agent = new DesktopHelperRetention({ packagedBinary: w.packagedBinary, packageVersion: '1.3.100', root: blocker, log: message => logged.push(message) });
+    let clock = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const failed = { path: w.packagedBinary, source: 'packaged', reason: 'copy-failed' };
+    expect(agent.resolve()).toEqual(failed);
+    expect(agent.resolve()).toEqual(failed);
+    expect(logged).toHaveLength(1);
+    clock += 60_000;
+    expect(agent.resolve()).toEqual(failed);
+    expect(logged).toHaveLength(2);
+    clock += 60_000;
+    expect(agent.resolve()).toEqual(failed);
+    expect(logged).toHaveLength(2); // Second wait is two minutes.
+    clock += 60_000;
+    agent.resolve();
+    expect(logged).toHaveLength(3);
+    for (let i = 0; i < 12; i++) { clock += 60 * 60_000; agent.resolve(); }
+    const before = logged.length;
+    clock += 60 * 60_000; // The wait is capped at an hour, so it never stops retrying.
+    agent.resolve();
+    expect(logged.length).toBe(before + 1);
+    SafeFsExecutor.safeRmSync(blocker, { force: true, operation: 'tests/unit/DesktopHelperRetention.test.ts:unblock' });
+    clock += 60 * 60_000;
+    expect(agent.resolve().source).toBe('retained');
   });
 
   it('compares versions numerically', () => {

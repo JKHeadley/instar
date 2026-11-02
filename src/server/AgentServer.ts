@@ -460,7 +460,7 @@ export class AgentServer {
   private desktopStreamManager: DesktopStreamManager | null = null;
   private directDesktopAccess: DirectDesktopAccess | null = null;
   private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
-  private desktopHelperRetention: DesktopHelperRetention | null = null;
+  private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
   private desktopSetupTarget: DesktopSetupTarget | null = null;
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
@@ -2843,10 +2843,9 @@ export class AgentServer {
               enabled: options.config.remoteDesktop?.retainedHelper
                 ?? (!process.env.VITEST && DEFAULT_MAC_DESKTOP_HELPER.includes(`${path.sep}node_modules${path.sep}instar${path.sep}`)),
             }) : null;
-          this.desktopHelperRetention = helperRetention;
-          const host: DesktopHost = process.platform === 'darwin'
-            ? new MacDesktopHost(undefined, helperRetention)
-            : (() => {
+          this.macDesktopHost = process.platform === 'darwin' ? new MacDesktopHost(undefined, helperRetention) : null;
+          const host: DesktopHost = this.macDesktopHost
+            ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
                 // PowerShell interop can reach the Windows-local companion even
                 // when WSL's TCP path to the host is filtered by Windows.
@@ -5736,8 +5735,9 @@ export class AgentServer {
       diagnostics: () => routeCtx.desktopLocalDiagnostics!(),
       requestPermission: routeCtx.desktopRequestPermission ?? null,
       requestRestart: () => this.requestSupervisedRestart('remote desktop guided setup', 'remote-desktop-setup'),
-      // The setup fallback must name the copy macOS actually grants: the kept one when it serves.
-      helperPath: () => (process.platform === 'darwin' ? this.desktopHelperRetention?.resolve().path ?? macDesktopHelperPath() : null),
+      // The setup fallback must name the copy a permission request targets, which
+      // is the one this host serves right now, kept or installed.
+      helperPath: () => (process.platform === 'darwin' ? this.macDesktopHost?.servedHelperPath() ?? macDesktopHelperPath() : null),
       endLiveAccess: () => this.directDesktopAccess?.killSwitch(),
       onPeerEnable: async senderId => {
         const name = verifiedEntityName(senderId, options.listPoolMachines?.().find(peer => peer.machineId === senderId)?.nickname) ?? 'Another paired machine';

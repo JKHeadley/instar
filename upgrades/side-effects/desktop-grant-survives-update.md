@@ -37,7 +37,7 @@ Compliant. The notice and `helperChange` are signals. Copy choice follows macOS'
 ## 5. Interactions
 
 - Own/inherited identity: unchanged and per-capability; a held input keeps its program and identity through a probe.
-- Extra helper start: at most one packaged own-probe per 30 s while the kept copy lacks a grant, on top of the 500 ms recheck.
+- Extra helper start: at most one packaged own-probe per 30 s while the kept copy lacks a grant, on top of the 500 ms recheck; one per 5 s only while a failed refresh is holding a good reading, which lasts at most 30 s.
 - `desktop-locked-screen` (unapproved) plans digest-named directories; its spec should adopt this path. PRs #2557 and #2558 touch `MacDesktopHost.ts` and the Swift file; rebase conflicts are possible, and merging either is itself a source change that costs one re-grant.
 - `/desktop/request-permission` targets the kept copy, which is the right entry for future grants.
 - Test runs default off, so tests never touch a real kept copy.
@@ -59,6 +59,10 @@ Config flag or revert, next server start. Installed-copy grants are left untouch
 ## Second-pass review
 
 Independent reviewer raised seven concerns; all were addressed before commit. (1) A live session could lose a working installed-copy grant at the next recheck: the reading now follows the serving choice and a live stream pins it. (2) A probe cleared the serving choice before awaiting, so a spawn in that window used the ungranted copy: the choice now changes only after the readings. (3) Any probe failure abandoned the kept copy until restart: now three consecutive failures, with its own reason. (4) A notice claim could be consumed without an item: the claim is released on failure, an agent with no Telegram does not claim, and clearing no longer relies on memory. (5) Restoring a damaged copy kept the old proof, so a real loss was silent: restoring now clears the proof. (6) Notice claim was unlocked: now an atomic marker file. `retained.json` itself stays last-writer-wins; the worst case is one extra re-check. (7) A universal build from a source checkout could replace the kept copy: default now requires a `node_modules/instar` install.
+
+**Reviewer:** independent subagent, second pass of the merged branch, 2026-11-01
+
+The second pass raised six findings, all fixed in the following commit. (1) Blocker: a failed or timed-out probe of the installed copy was cached as null for 30 s with no last-good reading, so a Mac served by the installed copy's grant read as lost, a live session was revoked, and the notice check could raise a false item. A failure now never replaces a good reading: a failed refresh keeps it for one further 30 s window, retried every 5 s. (2) `helperChange` ignored whether the kept copy was in use, so after `retainedHelper: false` the operator was told to allow a path this agent does not launch. It now needs `resolution.source === 'retained'`. (3) Hashing, stat and record writes could throw and reject a probe. `resolve()` and `noteGranted()` no longer throw; unreadable kept bytes are restored from the package. (4) A failed copy retried on every resolve. It now waits one minute, doubling to a one-hour cap, and resets on success. (5) Guided setup's `helperPath` ignored the serving choice. It now reads the host's `servedHelperPath()`, the same choice `requestPermission` uses. (6) The retention e2e cleanup did not name the local-verify root; it now does, as its sibling tests do.
 
 ## Class-Closure Declaration
 
