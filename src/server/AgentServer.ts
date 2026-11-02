@@ -4998,6 +4998,7 @@ export class AgentServer {
         {
           now: () => options.windowLifecycleNow?.() ?? new Date().toISOString(),
           getLiveness: () => windowRunLivenessAuthority.status().state,
+          getLivenessAll: () => windowRunLivenessAuthority.status().states,
           canAct: (state) => {
             const registry = options.sessionOwnershipRegistry;
             if (!registry) return options.coordinator?.enabled !== true;
@@ -5020,7 +5021,7 @@ export class AgentServer {
             }), Buffer.from(identity.privateKey, 'base64'), Buffer.from(identity.publicKey, 'base64'));
           },
           findDeliveredSynthesis: ({ topicId, report, expectedText }) => {
-            const state = windowRunLivenessAuthority.status().state;
+            const state = windowRunLivenessAuthority.status(topicId).state;
             if (!state || !report.bodyHash || !report.producerSignature) return null;
             let publicKey: Buffer;
             try {
@@ -6046,12 +6047,9 @@ export class AgentServer {
       const watchdog = new PreparingRunWatchdog({
         store: new AutonomousRunStore(options.config.stateDir),
         notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
-        boundRun: () => {
-          const state = windowRunLivenessAuthority?.status().state;
-          return state && !['stalled', 'failed', 'closed'].includes(state.status)
-            ? { topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt }
-            : null;
-        },
+        boundRuns: () => (windowRunLivenessAuthority?.status().states ?? [])
+          .filter(state => !['stalled', 'failed', 'closed'].includes(state.status))
+          .map(state => ({ topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt })),
       });
       this.preparingRunWatchdog = watchdog;
       this.preparingRunWatchdogTimer = setInterval(() => {

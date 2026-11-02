@@ -57,6 +57,22 @@ describe('Window run liveness agent awareness migration', () => {
     expect(generateClaudeMd('instar', 'Echo', 4042, true)).toContain('**Registering a window:**');
   });
 
+  it('replaces the one-binding-per-agent register sentence with the per-topic one, once', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-per-topic-awareness-'));
+    dirs.push(projectDir);
+    const oldLine = '- **Registering a window:** POST /window-run-liveness/register takes exactly five fields. A finished (failed/stalled/closed) window does not block a new one; a different window that is still live does (`window-run-liveness-active-binding-exists`).';
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# Existing agent\n### Authoritative Window Run Liveness\n${oldLine}\n- W32 cadence executor: present\n`);
+    const first = migrate(projectDir);
+    expect(first.upgraded).toContain('CLAUDE.md: window-run-liveness holds one binding per topic');
+    const migrated = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8');
+    expect(migrated).toContain('Each topic keeps its own binding, so a run in one topic never blocks a run in another.');
+    expect(migrated).toContain('`window-run-liveness-window-bound-elsewhere`');
+    expect(migrated).not.toContain('a different window that is still live does (');
+    migrate(projectDir);
+    expect(fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8')).toBe(migrated);
+    expect(generateClaudeMd('instar', 'Echo', 4042, true)).toContain('Each topic keeps its own binding');
+  });
+
   it('backfills dark exact-cadence defaults without overwriting an operator override', () => {
     const freshTarget = {} as Record<string, unknown>;
     applyDefaults(freshTarget, getMigrationDefaults('managed-project'));
