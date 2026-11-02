@@ -346,6 +346,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'saved under the gitignored per-agent <stateDir>/state/dashboard-uploads/ for a session running on this machine; 30-day retention; another machine\'s session is refused',
   } });
+  // Locked-screen setting and Disable: each Mac owns its own setting and helper
+  // marker; the front relays the change to the target over the mesh, never replicates it.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/locked/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes this Mac\'s own locked-screen settings and helper marker; a peer\'s setting is changed by relaying to that Mac, never by syncing files',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/activate-config', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
