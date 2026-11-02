@@ -144,6 +144,17 @@ describe('native app conversations — production wiring', () => {
     ]);
     expect(hist.body.messages[0].originVerified).toBe('verified');
     expect(hist.body.messages[1].originVerified).toBe('none');
+    // The approval method rides the verified row (spec §4.6 display).
+    expect(hist.body.messages[0].originApprovedVia).toBe('telegram-dm');
+    // Pool reads are wired on the production server: a single machine answers with an empty
+    // pool.failed, the same rows, and one list cursor across every kind.
+    const poolHist = await send('GET', `/mobile/chat/app/${key}/messages?scope=pool`);
+    expect(poolHist.status).toBe(200);
+    expect(poolHist.body.pool).toEqual({ failed: [] });
+    expect(poolHist.body.messages.map((x: { text: string }) => x.text)).toEqual(hist.body.messages.map((x: { text: string }) => x.text));
+    const poolList = await send('GET', '/mobile/conversations?scope=pool');
+    expect(poolList.status).toBe(200);
+    expect(poolList.body).toMatchObject({ conversations: [expect.objectContaining({ id: key, platform: 'app' })], nextCursor: null, pool: { failed: [] } });
     const health = await auth(request(app).get('/health'));
     expect(health.body.appConversations).toMatchObject({ count: 1 });
 

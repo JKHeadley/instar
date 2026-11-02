@@ -18,7 +18,7 @@ import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegist
 import { AppConversationStore, type AppEvent } from './AppConversationStore.js';
 import { derivedEventId, isAppConversationKey } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
-import { verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
+import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
 import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
 import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
@@ -314,6 +314,18 @@ export class AppConversationService {
       this.report('verify', err);
       return 'unknown';
     }
+  }
+
+  /**
+   * How the phone that signed this record was approved (`telegram-dm` / `dashboard-pin`), from
+   * THIS machine's ledger, so the app can show "approved on dashboard" (§4.4, §4.6). Only for a
+   * record whose verdict is `verified` or `redacted`; otherwise (or unreadable) null.
+   */
+  originApprovedVia(record: Pick<VerifiableRecord, 'origin'>, verdict: OriginVerdict): string | null {
+    const o = record.origin as { keyHash?: unknown; deviceId?: unknown } | undefined;
+    if (!o || typeof o.keyHash !== 'string' || typeof o.deviceId !== 'string') return null;
+    if (verdict !== 'verified' && verdict !== 'redacted') return null;
+    try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.approvedVia ?? null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
   }
 
   /** Mint (idempotently) a local alias for every live conversation in the store. */

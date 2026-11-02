@@ -437,6 +437,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'A registered frontier-model triage authority decides work/hold/ignore within deterministic floors; provenance stores packet identity and enumerated options, never report text or model output.',
   },
   {
+    decisionPoint: 'ecosystem-idea-review',
+    component: 'EcosystemIdeaReview',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Advisory reads of ideas from other projects: gap verdict, goal review and effect class. They decide nothing alone; the ledger records each read, a monthly sampled audit counts overturned verdicts, and adoption predictions are graded.',
+  },
+  {
     decisionPoint: 'feedback-triage-second-opinion',
     component: 'FeedbackTriageSecondOpinion',
     status: 'pending:backlog:decision-quality-enrolment',

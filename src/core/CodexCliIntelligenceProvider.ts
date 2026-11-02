@@ -429,8 +429,11 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
 
   /** Hygiene args shared by BOTH modes (clean-call spec; pinned by the
    * both-modes unit test). */
-  private hygieneArgs(model: string, scratchDir: string): string[] {
+  private hygieneArgs(model: string, scratchDir: string, noLocalTools = false): string[] {
     return [
+      // A read-only sandbox can still read local files, so a call carrying outside text
+      // asks for no tools at all (docs/specs/ecosystem-idea-pipeline.md §1).
+      ...(noLocalTools ? ['--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use', '-c', 'mcp_servers={}'] : []),
       '--model',
       model,
       '--sandbox',
@@ -579,7 +582,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       const args = [
         'exec',
         ...(account && options?.requiredRoute ? ['-c', 'cli_auth_credentials_store="file"'] : []),
-        ...this.hygieneArgs(model, scratchDir),
+        ...this.hygieneArgs(model, scratchDir, options?.noLocalTools === true),
         // Pass the prompt as a positional arg. Codex CLI reads stdin
         // for very long prompts but the positional path is fine for the
         // narrow prompts reviewers/sentinels send (a few hundred tokens
@@ -700,7 +703,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         '--json',
         '--output-last-message',
         outFile,
-        ...this.hygieneArgs(model, scratchDir),
+        ...this.hygieneArgs(model, scratchDir, options?.noLocalTools === true),
         // The prompt moves OFF argv in --json mode (argv is world-readable
         // via `ps`; macOS ARG_MAX ~1 MB would hard-fail large prompts). The
         // positional becomes `-` and the prompt is written to stdin.

@@ -346,7 +346,9 @@ export class MacDesktopHost implements DesktopHost {
       const recent = this.lastOwnProbe && Date.now() - this.lastOwnProbe.at < OWN_PROBE_GRACE_MS;
       return recent ? this.lastOwnProbe!.value : null;
     });
+    let keptOwn: MacDesktopProbe | null = null;
     if (kept) {
+      keptOwn = own;
       const keptHoldsBoth = !!own?.screenPermission && !!own.inputPermission;
       if (keptHoldsBoth) this.retention!.noteGranted();
       if (!keptHoldsBoth || this.servingPackaged) {
@@ -366,8 +368,15 @@ export class MacDesktopHost implements DesktopHost {
     const screenPermission = inherited.screenPermission || !!own?.screenPermission;
     const inputPermission = inherited.inputPermission || !!own?.inputPermission;
     // The kept copy's story applies only when the kept copy is what this agent runs.
-    const helperChange = screenPermission && inputPermission || resolution?.source !== 'retained'
+    const change = screenPermission && inputPermission || resolution?.source !== 'retained'
       ? null : this.retention?.permissionChange() ?? null;
+    // While the installed copy serves on a grant the kept copy lacks, the kept
+    // copy needs every permission it is missing, not only the one missing overall.
+    const keptMissing = this.servingPackaged && kept
+      ? [!keptOwn?.screenPermission && 'Screen Recording', !keptOwn?.inputPermission && 'Accessibility']
+        .filter(Boolean).join(' and ')
+      : '';
+    const helperChange = change && keptMissing ? { ...change, keptMissing } : change;
     return {
       ...inherited,
       screenPermission,
@@ -403,6 +412,14 @@ export class MacDesktopHost implements DesktopHost {
 
   /** The copy a permission request or a capture would run right now. */
   servedHelperPath(): string { return this.trustedBinary(); }
+
+  /** The copy guided setup should name: the kept copy whenever this agent keeps
+   * one, even while the installed copy serves on a grant the kept copy lacks,
+   * so setup and the permission notice give the same instruction. */
+  setupHelperPath(): string {
+    const resolution = this.retention?.resolve();
+    return resolution?.source === 'retained' ? resolution.path : this.trustedBinary();
+  }
 
   /** Shows macOS's own prompts on the Mac and lists the helper in Privacy &
    * Security. Nothing is granted by this call; a person allows it there. */
