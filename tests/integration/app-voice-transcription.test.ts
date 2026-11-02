@@ -22,6 +22,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { AppMediaStore } from '../../src/core/AppMediaStore.js';
 
 const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -88,7 +89,7 @@ describe('app voice notes are transcribed with the Telegram transcriber', () => 
       stubProvider(() => (scenario === 'transcribed'
         ? new Response(JSON.stringify({ text: 'bring the blue folder' }), { status: 200 })
         : new Response('overloaded', { status: 503 })), seen);
-      const { server, spawned } = await boot(true);
+      const { server, stateDir, spawned } = await boot(true);
       const app = server.getApp();
       // Wiring integrity: the media store is real and the helper is installed at boot.
       expect(server.appConversations).not.toBeNull();
