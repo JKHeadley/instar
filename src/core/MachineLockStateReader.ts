@@ -119,8 +119,8 @@ export class MachineLockStateReader {
       };
     }
     const [probe, policyRaw] = await Promise.all([
-      this.runProbe().catch(() => null),
-      this.runPolicy().catch(() => null),
+      this.runProbe().catch(() => null), // @silent-fallback-ok — an unreadable input makes the verdict unknown, with the reason
+      this.runPolicy().catch(() => null), // @silent-fallback-ok — an unreadable input makes the verdict unknown, with the reason
     ]);
     const inputs = inputsFromProbe(probe, policyRaw === null ? null : parsePasswordRequired(policyRaw), this.now());
     const verdict = decideLockState(inputs);

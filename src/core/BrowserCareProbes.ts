@@ -56,11 +56,11 @@ export function makeDownloadCheck(freshMs: number, now: () => number = Date.now,
     const folder = downloadFolder(userDataDir, home);
     let names: string[];
     try { names = fs.readdirSync(folder); }
-    catch (err) { return (err as NodeJS.ErrnoException).code === 'ENOENT' ? false : null; }
+    catch (err) { return (err as NodeJS.ErrnoException).code === 'ENOENT' ? false : null; } // @silent-fallback-ok — null is reported as unreadable and keeps the browser
     for (const name of names) {
       if (!name.endsWith('.crdownload')) continue;
       try { if (now() - fs.statSync(path.join(folder, name)).mtimeMs < freshMs) return true; }
-      catch { return null; }
+      catch { return null; } // @silent-fallback-ok — null is reported as unreadable and keeps the browser
     }
     return false;
   };

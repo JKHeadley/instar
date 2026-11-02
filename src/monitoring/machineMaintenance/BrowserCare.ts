@@ -381,10 +381,10 @@ export class BrowserCareSweep {
     if (repair === null) return keep('sign-in-repair-unreadable');
     if (repair) return keep('sign-in-repair-open');
     if (!budget) return keep('check-budget');
-    const download = await this.deps.downloadActive(e.userDataDir).catch(() => null);
+    const download = await this.deps.downloadActive(e.userDataDir).catch(() => null); // @silent-fallback-ok — unknown download state keeps the browser
     if (download === null) return keep('download-unreadable');
     if (download) return keep('download-active');
-    const tabs = await this.deps.checkTabs(e.userDataDir).catch((): 'unreadable' => 'unreadable');
+    const tabs = await this.deps.checkTabs(e.userDataDir).catch((): 'unreadable' => 'unreadable'); // @silent-fallback-ok — unreadable tabs keep the browser
     if (tabs === 'unreadable' || tabs.includes('unreadable')) return keep('unreadable-tabs');
     if (tabs.includes('yes')) return keep('unsaved-input');
     return v;

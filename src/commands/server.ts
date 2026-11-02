@@ -23893,7 +23893,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             signInRepairOpen: () => {
               const runtime = subscriptionReloginRuntime;
               if (!runtime) return false;
-              try { return runtime.store.list({ limit: 500 }).some((e) => !['succeeded', 'refused', 'cancelled', 'failed'].includes(e.state)); } catch { return null; }
+              try { return runtime.store.list({ limit: 500 }).some((e) => !['succeeded', 'refused', 'cancelled', 'failed'].includes(e.state)); } catch { return null; } // @silent-fallback-ok — null reads as "repair state unknown", which keeps every browser
             },
             downloadActive: makeDownloadCheck(DOWNLOAD_FRESH_MS),
             checkTabs: makeTabChecker(projectDir),

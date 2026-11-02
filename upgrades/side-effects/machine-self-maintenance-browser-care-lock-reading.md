@@ -94,3 +94,5 @@ Machine-local by design (hardware-bound-resource): the ledger and verdicts descr
 **Reviewer:** independent subagent, second pass, 2026-11-02
 
 **Verdict: concur**, after a confirming pass on 58b722a80. Findings fixed: automation browsers (Chrome for Testing, Playwright) excluded from the sweep and scripts; the cannot-act test covers BrowserCareProbes.ts and MachineLockStateReader.ts; a lock shield with no password reads unknown. Known low items: the scripts exclude --remote-debugging- as a prefix while the parser lists port and pipe; chrome-close.sh records finished before its checks; a missing sign-in repair system reads as no repair open. The two skipIf(!HAS_PY) skips are justified: /usr/bin/python3 is what the scripts themselves require.
+
+**Suite ratchet, 2026-11-02:** no-silent-fallbacks flagged seven new catches. Each turns a failed read into an explicit unknown or unreadable that keeps the browser or makes the lock verdict unknown; they now carry the @silent-fallback-ok annotation. Comments only, no logic change.
