@@ -82,7 +82,7 @@ Two new Bearer+operator-session routes; `redeem` responses gain `approval: "tele
 
 ## 6b. Operator-surface quality (Operator-Surface Quality standard)
 
-Touches `dashboard/phones.js` (new) and `dashboard/index.html` (tab button, panel, registry entry, styles), `dashboard/glance.js` (adoption list).
+Touches `dashboard/phones.js` (new) and `dashboard/index.html` (tab button, panel, registry entry, styles), `dashboard/glance.js` (adoption list). The new console's navigation (`dashboard/console/nav-model.js`) lists the tab under People as "Phones" with a phone icon and a plain one-line description, so the console still links every legacy tab exactly once (its `console-nav-model` test).
 
 1. **Leads with the primary action?** Yes. The glance headline says whether a phone is waiting ("A phone is waiting to pair. Open Waiting to see the code."); the first tile is Waiting, and its drill shows the code first in large type, then one sentence on what to do with it. With no session, the first control is "Unlock with PIN to see pairing codes".
 2. **Zero raw internals as primary content?** Yes. The front layer carries fixed prose and two counts. The code is the content the operator came for; the key fingerprint is shown as a support line ("Phone key: … The app shows the same key; check they match"), no device ids, hashes or JSON.
