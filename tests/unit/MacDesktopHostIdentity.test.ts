@@ -218,6 +218,25 @@ describe.skipIf(process.platform !== 'darwin')('MacDesktopHost permission identi
     expect(installed.spawns()).toContain('release:own');
   });
 
+  it('never reports the kept copy as the source of a grant read from the installed copy', async () => {
+    // The installed copy holds the helper's own grants; the kept copy holds none.
+    const installed = helper({ screen: false, input: false }, { screen: true, input: true });
+    const { host, notes } = kept(installed, { screen: false, input: false }, { screen: false, input: false });
+    // A held control keeps the serving choice where it is during the probe.
+    host['heldRemoteKeys'].add('Shift');
+    const keptPath = (host['retention']!.resolve() as { path: string }).path;
+    const realProbeAs = host['probeAs'];
+    host['probeAs'] = function (this: MacDesktopHost, identity: 'own' | 'inherited', binary?: string) {
+      if (identity === 'inherited' && binary === keptPath) return Promise.reject(new Error('slow start'));
+      return realProbeAs.call(this, identity, binary);
+    } as typeof realProbeAs;
+    const probe = await host.probe();
+    expect(notes.broken).toBe(0); // One failure: the kept copy is not given up on.
+    expect(probe.inputGrant).toBe('own');
+    expect(probe.helperSource).toBe('packaged');
+    host['heldRemoteKeys'].clear();
+  });
+
   it('does not keep a failed installed-copy reading past its grace, or cache a failure over it', async () => {
     const installed = helper({ screen: false, input: false }, { screen: true, input: true });
     const { host } = kept(installed, { screen: false, input: false }, { screen: false, input: false });

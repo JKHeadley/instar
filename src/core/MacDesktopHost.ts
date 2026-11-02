@@ -320,6 +320,9 @@ export class MacDesktopHost implements DesktopHost {
     let resolution = this.retention?.resolve() ?? null;
     let kept = resolution?.source === 'retained' ? resolution.path : undefined;
     let inherited: MacDesktopProbe;
+    // Set when this probe's readings came from the installed copy, so its
+    // grants are never reported as the kept copy's.
+    let readPackaged = false;
     try {
       inherited = await this.probeAs('inherited', kept);
       this.keptProbeFailures = 0;
@@ -331,6 +334,7 @@ export class MacDesktopHost implements DesktopHost {
       if (++this.keptProbeFailures >= KEPT_PROBE_FAILURE_LIMIT) this.retention!.markBroken();
       resolution = this.retention!.resolve();
       kept = undefined;
+      readPackaged = true;
       if (!live) this.servingPackaged = true;
     }
     // Grants are rechecked every 500 ms, so one slow helper start must not read
@@ -370,7 +374,7 @@ export class MacDesktopHost implements DesktopHost {
       inputPermission,
       screenGrant: own?.screenPermission ? 'own' : inherited.screenPermission ? 'inherited' : 'none',
       inputGrant: own?.inputPermission ? 'own' : inherited.inputPermission ? 'inherited' : 'none',
-      ...(resolution ? { helperSource: this.servingPackaged ? 'packaged' as const : resolution.source } : {}),
+      ...(resolution ? { helperSource: this.servingPackaged || readPackaged ? 'packaged' as const : resolution.source } : {}),
       ...(resolution?.reason ? { helperFallback: resolution.reason } : {}),
       ...(helperChange ? { helperChange } : {}),
     };

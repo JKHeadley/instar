@@ -110,6 +110,8 @@ This pass read the branch after it was merged with `main`. It found three things
 
 The full verify also named two failures. Fifteen were the viewer calling three new listeners on elements older pages lack; those now use optional chaining. The other two were the silent-fallback ratchet (496 against a baseline of 494): the periodic sweep's failure and the security item's failure only logged a warning. Both now also report through `DegradationReporter`.
 
+After the PR 2562 merge, a reviewer concurred with one low follow-up, fixed here: when one probe of the kept helper failed, that probe read its grants from the installed copy but still reported `helperSource: retained`, so for that one probe the password check could pass on the installed copy's grant. That probe now reports `helperSource: packaged`. `tests/unit/MacDesktopHostIdentity.test.ts` covers it.
+
 **Known minor** (recorded by the reviewer, not changed here):
 
 - A setting flipped in the middle of a grant.
