@@ -677,7 +677,7 @@ describe('CoherenceJournal — getOwnAdvert (§3.4 rule 5)', () => {
     const j = makeJournal();
     // Nothing written yet → every kind advertises lastSeq 0.
     const empty = j.getOwnAdvert();
-    expect(Object.keys(empty).sort()).toEqual(['app-conversation-event', 'autonomous-run', 'class-review-record', 'evolution-action-record', 'guard-latch', 'knowledge-record', 'learning-record', 'mobile-device-key-ledger-row', 'pref-record', 'relationship-record', 'session-lifecycle', 'ssh-direction-proof', 'subscription-account-meta', 'threadline-conversation', 'threadline-pairing-record', 'topic-claim-annotation', 'topic-operator-record', 'topic-pin-record', 'topic-placement', 'user-record', 'working-set-artifact']);
+    expect(Object.keys(empty).sort()).toEqual(['app-conversation-event', 'autonomous-run', 'class-review-record', 'ecosystem-idea-event', 'evolution-action-record', 'guard-latch', 'knowledge-record', 'learning-record', 'mobile-device-key-ledger-row', 'pref-record', 'relationship-record', 'session-lifecycle', 'ssh-direction-proof', 'subscription-account-meta', 'threadline-conversation', 'threadline-pairing-record', 'topic-claim-annotation', 'topic-operator-record', 'topic-pin-record', 'topic-placement', 'user-record', 'working-set-artifact']);
     for (const kind of ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'class-review-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta'] as JournalKind[]) {
       expect(empty[kind].lastSeq).toBe(0);
     }

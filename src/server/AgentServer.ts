@@ -90,6 +90,7 @@ import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/Feedba
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
+import { buildEcosystemIdeas } from '../ecosystem/buildEcosystemIdeas.js';
 import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, executorUpdatePending, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
 import { resolveExecuteConfig } from '../feedback-factory/execute/executePolicy.js';
 import { BackupManager } from '../core/BackupManager.js';
@@ -534,6 +535,8 @@ export class AgentServer {
   /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
   private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
   /** Queue pace (docs/specs/queue-pace.md): tick-row sink, ledger, tuner and their timers. */
+  private ecosystemIdeas: import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null = null;
+  private ecosystemTimers: Array<ReturnType<typeof setInterval>> = [];
   private queuePaceTicks: QueuePaceTickLog | null = null;
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
@@ -1002,6 +1005,10 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
+    ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
+    /** Test seams for the idea pipeline: external I/O only. */
+    ecosystemDeps?: import('../ecosystem/buildEcosystemIdeas.js').BuildEcosystemInput['overrides'];
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
     /** U4.4 — the lease hand-back reconciler + the operator-flip latch levers. */
     leaseHandback?: {
@@ -5617,6 +5624,7 @@ export class AgentServer {
         });
       }
     }
+    this.startEcosystemIdeas(options, routeCtx);
     const routes = createRoutes(routeCtx);
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
@@ -7969,6 +7977,11 @@ export class AgentServer {
       clearInterval(this.feedbackExecuteDisarmTimer); // clearInterval cannot throw
       this.feedbackExecuteDisarmTimer = null;
     }
+    for (const t of this.ecosystemTimers) clearInterval(t); // clearInterval cannot throw
+    this.ecosystemTimers = [];
+    if (this.ecosystemIdeas && 'stop' in this.ecosystemIdeas) {
+      try { this.ecosystemIdeas.stop(); } catch { /* @silent-fallback-ok: closing a derived search index at shutdown */ }
+    }
     for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
     this.queuePaceTimers = [];
     if (this.followMeConsumerTimer) {
@@ -8061,6 +8074,46 @@ export class AgentServer {
   }
 
   /** Build the queue-pace ledger + tuner over the owners this machine actually runs. */
+  /** docs/specs/ecosystem-idea-pipeline.md: dev-gated server service; reviews run on the lease holder only. */
+  private startEcosystemIdeas(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): void {
+    const config = options.config;
+    if (!config.stateDir || !resolveDevAgentGate(config.ecosystemIdeas?.enabled, config)) return;
+    try {
+      const coordinator = options.coordinator;
+      const isHolder = () => { try { return coordinator?.enabled ? coordinator.holdsLease() : true; } catch { return false; } };
+      const built = buildEcosystemIdeas({
+        config,
+        ledger: options.ecosystemLedger,
+        machineId: () => this.meshSelfId ?? config.projectName,
+        isHolder,
+        holderName: () => { try { return coordinator?.enabled ? coordinator.getSyncStatus().leaseHolder ?? null : (this.meshSelfId ?? config.projectName); } catch { return null; } },
+        epoch: () => (coordinator?.enabled ? coordinator.getLeaseEpoch() : 0),
+        raiseAttention: async (notice) => {
+          const enqueue = this.telegramAdapter?.createAttentionItem;
+          if (!enqueue) throw new Error('durable attention enqueue unavailable');
+          await enqueue.call(this.telegramAdapter, notice);
+        },
+        closeAttention: async (conditionKey, resolution) => { this.telegramAdapter?.clearAttentionCondition({ conditionKey }, resolution); },
+        startSession: async (name, brief) => { await options.sessionManager.spawnSession({ name, prompt: brief }); },
+        sessionExists: async (name) => options.sessionManager.listRunningSessions().some((s) => s.name === name || s.tmuxSession === name),
+        overrides: options.ecosystemDeps,
+      });
+      this.ecosystemIdeas = built;
+      routeCtx.ecosystemIdeas = () => this.ecosystemIdeas;
+      if ('service' in built) {
+        const service = built.service;
+        const tick = () => { void service.tick(); };
+        const first = setTimeout(tick, 5 * 60_000);
+        first.unref?.();
+        const hourly = setInterval(tick, 60 * 60_000);
+        hourly.unref?.();
+        this.ecosystemTimers.push(hourly, first as unknown as ReturnType<typeof setInterval>);
+      }
+    } catch (error) { /* @silent-fallback-ok: logged; the routes answer 503 and nothing else depends on this */
+      console.warn(`[ecosystem-ideas] not started: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private startQueuePace(options: { config: InstarConfig; commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker; evolution?: EvolutionManager }): void {
     const config = options.config;
     if (!config.stateDir) return;

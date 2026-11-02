@@ -256,6 +256,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'ecosystemIdeas',
+    prefixes: ['/ecosystem-ideas'],
+    description: 'Ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md) — a weekly review of similar projects: each idea checked against our source and goals, ranked into bands. Advice only. 503 when dark or with no source roots.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /ecosystem-ideas', 'GET /ecosystem-ideas/:id/evidence', 'POST /ecosystem-ideas/tick', 'POST /ecosystem-ideas/plan', 'POST /ecosystem-ideas/commit', 'POST /ecosystem-ideas/projects/retry', 'POST /ecosystem-ideas/:id/adoption', 'POST /ecosystem-ideas/:id/outcome'],
+    }),
+  },
+  {
     key: 'mobilePairing',
     prefixes: ['/mobile'],
     description: 'Mobile pairing links and device keys (docs/specs/mobile-pairing-link.md, docs/specs/mobile-device-keys.md) — a one-time instar.sh link adds this agent to the Instar iPhone app. The phone registers its own Secure Enclave key; the owner receives a 6-digit code privately in Telegram and types it into the app; only then does the phone become active. Phones never receive the API token or an operator session and may only make a fixed list of signed requests. POST /mobile/pairing-codes (Bearer) mints the link; public POST /mobile/pairing-codes/redeem registers the pending phone over the named tunnel; POST /mobile/device/confirm and GET /mobile/device are device-signed; GET /mobile/devices (?scope=pool) lists phones; POST /mobile/devices/:id/revoke revokes one. POST /mobile/chat/:topicId (device-signed only, docs/specs/mobile-operator-chat.md) delivers an app message into a topic through the same inbound path as the owner\'s Telegram message, idempotent by requestId; GET /telegram/topics/:topicId/messages?scope=pool reads that topic across machines. Dev-gated (mobilePairing.enabled, chat also mobilePairing.chat.enabled); 503 when dark.',

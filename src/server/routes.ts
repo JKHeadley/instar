@@ -1,3 +1,4 @@
+import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { stripViewSignatures } from './mobilePairingRoutes.js';
 import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
@@ -1515,6 +1516,8 @@ export interface RouteContext {
   routingSpendCapsStore?: import('../core/RoutingSpendCapsStore.js').RoutingSpendCapsStore | null;
   meteredSpendGate?: import('../core/MeteredSpendGate.js').MeteredSpendGate | null;
   spendPlanStore?: import('../core/RenderedPlanStore.js').RenderedPlanStore | null;
+  /** docs/specs/ecosystem-idea-pipeline.md. Null when dark; the routes answer 503. */
+  ecosystemIdeas?: () => import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null;
   /**
    * The money-layer OPERATOR ENABLE surface
    * (docs/specs/money-layer-operator-enable-surface.md). Unlike every field
@@ -15509,6 +15512,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const plan = ctx.feedbackTriage!.store.createPlan({ action: 'ignore-live', payload: { enabled }, renderedText });
     res.json({ action: 'ignore-live', ...plan });
   });
+
+  registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
 
   router.post('/feedback-factory/triage/commit', (req, res) => {
     if (triageUnavailable(res)) return;

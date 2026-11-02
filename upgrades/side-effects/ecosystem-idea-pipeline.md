@@ -51,6 +51,10 @@ The shared `state/semantic.db` is untouched: this has its own index. `RenderedPl
 
 Reads public GitHub repos on a weekly tick, on the lease holder, on agents where it is enabled. Spends model tokens within limits: 300k per project, 600k per run, paused at 75% quota. It raises at most three keyed attention items. Sends no message to any other project.
 
+## 6b. Operator-surface quality
+
+The Ideas page leads with one sentence saying whether anything is ready, then the ideas by band, each with its plain reason and Start a spec, Decline and Later. Raw internals (commits, hashes, model output fields) are not primary content; a goal review is one labelled line. Decline sits beside Start without emphasis and asks for the PIN, showing the server's own wording first, and it is reversible by new evidence. Plain language at phone width, using the console's existing cards. Not yet looked at on a real phone: the page was tested by its model and imports only, so this needs a look on the dev console before merge.
+
 ## 7. Multi-machine posture
 
 `unified`. Ledger events replicate as the `ecosystemIdeas` store with a new journal kind, injected whenever the feature is on. Reviews, decisions and notices run on the lease holder, epoch-fenced; a non-holder answers 409 naming it. The search index, source mirrors and clones are derived or disposable. `admission.json` and `notices.json` are per machine: a new holder re-probes and may repeat a notice once, keyed by condition.
@@ -64,3 +68,12 @@ Reads public GitHub repos on a weekly tick, on the lease holder, on agents where
 Independent reviewer: Codex (`gpt-6-astra`), through the spec-converge reviewer door, reading the code. Five rounds. The first three raised, and this change fixed: stale writes from a lost lease; new revisions inheriting judgments; PIN approval not binding the displayed revision; launch recovery able to start twice; incomplete payload validation; empty paths passing the lint; unfinished ideas bypassing failure backoff; automatic launches going stale across awaits; partial scans given a full week. Round 4 raised two consequences of those fixes, also fixed. Round 5 concurred on those two changes, reading the service file only, by static inspection; its boundary note is that the ledger's part is shown by tests rather than that read.
 
 The reviewer was a different model family and saw the code, not this author's conclusions. It was a cross-model script rather than a same-model subagent, so that the author's context could not lead it.
+
+## Class-Closure Declaration
+
+`unbounded-self-action`: closure `guard`, citing `tests/unit/self-action-convergence.test.ts` (ratchet). Retrying a failed project review is registered as `ecosystem-idea-review`: at most 3 attempts per cycle with backoff, a durable week, then a breaker after 3 cycles. Nine attempts in total, then silence until a person retries. The durable counters live in the replicated ledger, so a restart buys none back.
+
+## Build steps
+
+1. A no-tools call form for prompts holding outside text.
+- feat(ecosystem): the idea pipeline service, ledger and routes

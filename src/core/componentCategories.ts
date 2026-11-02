@@ -81,6 +81,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   TaskClassifier: 'gate',
   FeedbackReadinessArbiter: 'gate',
   FeedbackTriageArbiter: 'gate',
+  EcosystemIdeaReview: 'reflector',
   FeedbackTriageSecondOpinion: 'gate',
   'subscription-relogin-supervisor': 'gate', // closed-action validator over provider browser state
 
