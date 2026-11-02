@@ -157,11 +157,13 @@ The agent sets up the chosen option. The person only signs in where needed, thro
 | Address type | Redeem accepted when |
 |---|---|
 | Cloudflare named tunnel | Today's check: tunnel active and Host matches |
-| Tailscale serve | Arrives through this machine's own HTTPS front, with Host matching |
+| Tailscale serve | Arrives through this machine's own Tailscale HTTPS front, with Host matching |
 | Same network | Direct TLS on the agent's own certificate |
 | Own domain through another proxy | Only with a configured trusted proxy; forwarded headers are otherwise ignored |
 
-Plain HTTP is refused everywhere. Quick tunnels remain refused for phones.
+Plain HTTP is refused for pairing. Quick tunnels remain refused for phones.
+
+**The dashboard on a clean browser.** Loopback HTTP is allowed for the dashboard, including through SSH port forwarding, so no certificate trust is needed for local or headless first use. Other addresses use HTTPS with a certificate the browser already trusts, such as a Tailscale name. A self-signed same-network certificate is for the pinned app only.
 
 **Same network.** The agent terminates TLS itself with its own certificate. A new version of the pairing link carries the certificate's public-key hash in the QR code on the computer's screen, and the phone checks it before redeeming and pins it. Until `owner-authentication.md` ships, a replaced certificate means pairing again. Older links stay valid for addresses with a public certificate.
 
@@ -171,7 +173,7 @@ Plain HTTP is refused everywhere. Quick tunnels remain refused for phones.
 
 Messaging can't become optional until the floor has another carrier. The protected lifeline gains a dashboard and native-app conversation carrier, keyed the same way on a minted conversation id, and the cold-start fallback gains that delivery path. The first session and conversation are created by the installer. **Phase 1 cannot ship "messaging optional" without this.** Graduating `mobilePairing.native.enabled` to the fleet, including a live-channel proof, is a phase-1 exit criterion owned by the instar-developing agent. A no-channel install on phase 1 is reachable through the local dashboard, and through a phone once a private address exists.
 
-**Browser conversation routes.** The native routes are device-signed today. Phase 1 adds PIN-session routes for creating a conversation, sending and reading history, plus a display acknowledgment tied to a specific reply, re-sent on reconnect. A lost acknowledgment leaves the state `stored, not yet seen`, never failed. Create and send carry a browser-generated request id, stored per browser so it survives session renewal, and reuse the native rules for reservation, persistence before dispatch, replay and emergency stop. A lost response followed by a retry gives one conversation and one dispatch.
+**Browser conversation routes.** The native routes are device-signed today. Phase 1 adds PIN-session routes for creating a conversation, sending and reading history, plus a display acknowledgment tied to a specific reply, re-sent on reconnect. A lost acknowledgment leaves the state `stored, not yet seen`, never failed. Create and send carry a browser-generated operation id in a machine-wide namespace, with a payload hash. Any valid PIN session may retry it, a reused id with a different payload is refused, and entries expire on the native rules' retention bound. Otherwise they reuse the native rules for reservation, persistence before dispatch, replay and emergency stop. A lost response followed by a retry gives one conversation and one dispatch.
 
 **Who the dashboard speaks for.** Today the only conversation send route is device-signed. Phase 1 adds a browser send path behind a PIN session, and the PIN is readable by the agent. So dashboard messages are origin-tagged and never bind a verified operator. A no-channel, no-phone install has no verified operator until a channel or `owner-authentication.md` arrives, and operator-only conversational flows honestly wait.
 
@@ -235,12 +237,12 @@ Then a guided second level: a scheduled email report, calendar, another computer
 | Which door to offer first | judgment-candidate | Floor: only detected doors. Default: the harness running the installer. Arbiter: the setup flow. Fallback: ask the one question |
 | First tasks from purpose | judgment-candidate | Floor: the three named tasks. Arbiter: the agent. Fallback: offer all three |
 
-**State versus symbol.** "First result delivered" reads the outcome record, not a send result. "Signed in" uses a live call. "Own name" uses a probe answered by this process. Each reports `unknown` when it can't be measured and never treats that as success.
+**State versus symbol.** "First result delivered" reads the outcome record, not a send result. "Signed in" uses a live call. "Own name" uses a probe answered by this process, which shows observed reachability, not exclusive control; one machine fronting a name remains a stated deployment rule. Each reports `unknown` when it can't be measured and never treats that as success.
 
 ## 12. Rollout and migration
 
 - **Existing agents.** Installer changes don't touch installed agents. `PostUpdateMigrator` delivers the pairing change and config defaults. `migrateClaudeMd` adds the door list and address options with a content-sniffed guard.
-- **Graduated rollout.** Each phase is development-agent-first. Any dry-run names its go-live condition and date in the phase's rollout note, so nothing is left dark by default.
+- **Graduated rollout.** Each phase goes through a throwaway test agent, then the development agent, then the fleet. Any dry-run names its go-live condition and date in the phase's rollout note, so nothing is left dark by default.
 - **Backup.** The progress ledger is not backed up.
 
 ## 13. Delivery phases
@@ -272,6 +274,7 @@ Single-machine agents are a no-op.
 
 ## Left behind
 
+- Standards gate: headless setup needs a terminal, and installing needs a computer. A first install on a computer can't be phone-only, so this is accepted; everything after it is phone-completable.
 - Exact local-model hardware thresholds are set during phase 3.
 - `detectPlatform` returns `unknown` on win32 and gets corrected in phase 1.
 - `checkMandatePin`-family count differs by grep (44 to 52); the owner spec's inventory settles it.

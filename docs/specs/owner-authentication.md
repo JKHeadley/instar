@@ -21,7 +21,7 @@ The dashboard PIN is treated as proof that a human approved something, but the a
 2. Available from a phone or a computer, with no hosted service.
 3. Simple: one tap in the common case.
 4. One owner across machines and agents.
-5. Nobody locked out by migration, by strangers, or by a lost device.
+5. Nobody locked out by migration, by strangers guessing, or by a lost device. Section 4 states the one case where the remedy is a new agent.
 6. The next agent or machine created by asking, with owner approval.
 
 ## 3. Owner proofs
@@ -43,7 +43,7 @@ The rule depends on who could serve altered pages.
 
 | Origin | Passphrase | Passkey | Phone app |
 |---|---|---|---|
-| The agent terminates TLS: loopback, same network, Tailscale | Yes | Yes | Yes |
+| The agent's own machine terminates TLS: loopback, same network, Tailscale | Yes | Yes | Yes |
 | Person's own third-party front, such as their own Cloudflare tunnel | No | Yes: non-replayable, and they chose this provider | Yes |
 | Instar relay | No | No | Yes |
 | Quick tunnel | No | No | Yes |
@@ -77,14 +77,16 @@ Prompts render server-canonical structured fields. The agent cannot author the w
 - **The owner record is a trust anchor beside `identity.json`.** It never travels through ordinary state sync.
 - **Structure:** a signed linear chain. Each entry (add key, revoke key, add machine key) cites the head it was signed against. One human with a few devices rarely forks it, so forks get a simple safe rule rather than a general merge.
 - **Fork rule, the same on every machine and in any merge order:**
-  - **Revocations always count.** A revocation counts from any key that was ever valid, unless that key's own revocation was already in the head it signed against. This covers any cycle: A, B and C revoking each other revokes all three.
-  - **Additions on a forked branch are held,** not applied, until a still-valid key re-signs them. Additions already on the common chain stand.
+  - **Each branch is checked from the start of the chain.** An entry is authentic if its signer was valid in that entry's own ancestry.
+  - **Revocations always count,** if authentic, unless the signer's own revocation was already in the head it signed against. This fails safe: a key added on a held branch can still revoke, and A, B and C revoking each other revokes all three. A just-revoked stolen key citing an old head can force mutual revocation too, and the outcome is the reset.
+  - **Additions on a forked branch are held,** not applied, until a still-valid key signs a merge entry citing all branch tips. Additions already on the common chain stand. Until then the head is the sorted set of tips, and no new additions are accepted.
+  - **Machines may see branches in any order** and reach the same result, because all of this is recomputed from the full entry set.
   - **If no valid key remains,** the owner uses the reset, and every proof holder is alerted.
 - **Each signed action carries the record head the signer holds.** A machine accepts when the signature verifies against the merged record and adopts newer entries from it. No peer is needed, so a sole surviving machine keeps working.
 - **Already-paired machines at first enrollment:** a machine whose identity is already verified accepts the owner-signed record root over the mesh once. Its first-seen record is pinned.
 - **New machine or agent:** an enrolled machine gives a one-time code. The approval prompt shows the new machine's key fingerprint, and the new machine's terminal shows the same words to compare. Only then is the record sent.
 - **Phones across machines:** the record lists device keys, so a paired phone is accepted by all of the owner's machines. This closes the `401` on a tunnel move. Today, device records are machine-local and a key ledger replicates. At first enrollment, the devices from every reachable machine are gathered and the owner approves the list once; a machine offline then contributes its list on return, with the same approval. After that, the record is authoritative, the ledger is a projection of it, and a revocation writes both.
-- **Machine keys.** The approval that admits a machine (below) adds its identity key to the record. That machine key may sign its own TLS-key entries without an owner tap, and the app verifies them through that chain. So a certificate-key change or takeover doesn't mean pairing again, and doesn't wait for a tap.
+- **Machine keys.** The approval that admits a machine adds its identity key to the record. **A machine key signs only TLS-key entries for its own machine, and any other entry kind from a machine key is rejected.** The app verifies those entries through that chain. So a certificate-key change or takeover doesn't mean pairing again, and doesn't wait for a tap.
 - **Owner and operator.** The owner approves risky actions. The topic's verified operator remains the conversational principal. Where both exist, the owner record wins.
 - **Honest limit on revocation:** a machine that hasn't seen a revocation would still accept that key until it syncs. Revocations are pushed to all peers with retries, and the owner sees which machines have confirmed.
 
@@ -112,8 +114,9 @@ Owner-record change alerts, decline pauses and reset notices are security events
 
 ## 9. Migration
 
+- Each stage goes through a throwaway test agent, then the development agent, then the fleet.
 - `PostUpdateMigrator` moves the PIN to a hash idempotently and keeps it working.
-- **Per owner:** risky actions accept the old PIN and existing Telegram approvals until that owner enrolls a proof, with a visible prompt. The first proof ends them for that owner.
+- **Per owner:** risky actions accept the old PIN and existing Telegram approvals until that owner enrolls a proof, with a visible prompt. The first proof ends them for that owner: legacy unlock stops returning the master token, the master token rotates, and outstanding sessions drop to viewing. Every risky endpoint then requires an action-bound owner signature, whatever other credential a request carries. The agent's own API token continues for non-risky work.
 - The agent offers enrollment conversationally, through a loopback, same-network or private-address page.
 - **Phones paired earlier** are imported at first enrollment, signed by the new proof.
 - The enrolled state has no off switch. Removing a proof is a signed record change. Approval prompts and unlock v2 have their own rollout switches before enrollment.
@@ -133,7 +136,7 @@ The agent runs as the same operating-system user as the code that checks signatu
 
 ## 12. Testing and proof
 
-- **Unit and integration:** `ownerProof` per proof type; the fork rule with its examples in section 6, including a three-key revocation cycle and an add concurrent with its signer's revocation, with the same result in any merge order; machine-key TLS entries; approval envelope replay under concurrency and restart, and on another machine; approval text binding, pending cap and decline pause; origin refusal for proof entry on relay and quick-tunnel addresses; enrollment theft followed by self-promotion, then an admin reset that can't be vetoed; an ordinary reset vetoed by an aged key; an action crash leaving `uncertain` with no re-run; repeated resets; first-seen root on paired machines; unlock v2; PIN migration with no re-mint.
+- **Unit and integration:** `ownerProof` per proof type; the fork rule with its examples in section 6, including a three-key revocation cycle and an add concurrent with its signer's revocation, with the same result in any merge order; machine-key TLS entries, with other entry kinds from a machine key rejected; a key added on a held branch revoking another key, seen in opposite orders; the legacy unlock path after first enrollment; approval envelope replay under concurrency and restart, and on another machine; approval text binding, pending cap and decline pause; origin refusal for proof entry on relay and quick-tunnel addresses; enrollment theft followed by self-promotion, then an admin reset that can't be vetoed; an ordinary reset vetoed by an aged key; an action crash leaving `uncertain` with no re-run; repeated resets; first-seen root on paired machines; unlock v2; PIN migration with no re-mint.
 - **Wiring integrity:** every migrated consumer reaches `ownerProof`; the lint fails a new direct comparison.
 - **E2E:** feature-alive for each proof; sole surviving machine still accepts owner actions; phone accepted after a machine move.
 - **Live-user-channel proof:** enrollment and a risky action on phone, passkey and passphrase, with no hosted service. A Telegram-only migration path.
@@ -183,5 +186,7 @@ Single-machine agents have no replication.
 
 ## Left behind
 
+- Standards gate: repeated reset notices. They are the veto control for a security event, not repeated requests for input, so they're accepted.
+- Goes to the operator: section 7's exception to Mobile-Complete Operator Actions. See the convergence report.
 - Argon2id parameters are set by measurement on iOS Safari and older laptops during the build.
 - Backup: the owner record holds only public keys and is backed up. Private keys live on the owner's devices.
