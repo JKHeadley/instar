@@ -1485,6 +1485,24 @@
       "grandfathered": false
     },
     {
+      "category": "session-monitor-dead-notified",
+      "description": "Persisted 'session has stopped' notice ledger - topicId -> {sessionName, userMessageAt, at} last announced as dead, so one death is announced once across server restarts (2026-11-02: a Slack agent re-posted the notice a dozen times in one morning as each boot forgot the in-memory guards). Machine-local, single-writer (SessionMonitor), pruned at 7 days on load; at most one entry per monitored topic.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/session-monitor-dead-notified.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "domain-cardinality",
+        "note": "One entry per monitored topic (overwritten, never appended); entries older than 7 days are pruned on load, so the file tracks topics, never history."
+      }
+    },
+    {
       "category": "stream-tickets",
       "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC \u00a72.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
       "scope": "machine-local",

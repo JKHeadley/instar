@@ -559,6 +559,23 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   /**
+   * Was this cached channel message written by a user the agent answers?
+   * False for the agent's own posts (its notices included), any other bot,
+   * people who are not authorized, and messages the agent deliberately did
+   * not take (a mention-only channel's unaddressed chatter). When the agent's own user id is not
+   * known yet, the answer is false: a monitor must never invent a waiting
+   * user (2026-11-02: every message, the agent's own included, counted as a
+   * user message, so the agent's notice re-armed itself forever).
+   */
+  isMessageFromUser(m: Pick<SlackMessage, 'user' | 'bot_id' | 'unaddressed' | 'subtype'>): boolean {
+    if (m.bot_id || m.unaddressed) return false;
+    if (m.subtype && m.subtype !== 'file_share') return false; // joins, edits, system events
+    if (!m.user || m.user.startsWith('B')) return false;
+    if (!this.botUserId || m.user === this.botUserId) return false;
+    return this.isAuthorized(m.user);
+  }
+
+  /**
    * Send a message to a specific channel.
    *
    * Thread→session safety (§5.3): the first argument is normally a raw Slack channel
@@ -1135,7 +1152,7 @@ export class SlackAdapter implements MessagingAdapter {
     // This ensures spawned sessions see the full conversation (both sides).
     if (event.bot_id) {
       const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
-      buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
+      buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs, bot_id: event.bot_id as string });
       this.channelHistory.set(channelId, buffer);
       // Bot replied in this channel — clear stall tracking (the agent answered)
       this.clearStallTracking(channelId);
@@ -1206,8 +1223,10 @@ export class SlackAdapter implements MessagingAdapter {
 
       if (!ambientSpeak) {
         // Still populate ring buffer for context, but don't process
+        // Marked unaddressed: the agent deliberately did not take this message,
+        // so it must never read as "a user is waiting for a reply".
         const buffer = this.channelHistory.get(channelId) ?? new RingBuffer<SlackMessage>(RING_BUFFER_CAPACITY);
-        buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs });
+        buffer.push({ ts, user: userId, text, channel: channelId, thread_ts: threadTs, unaddressed: true });
         this.channelHistory.set(channelId, buffer);
         return;
       }
@@ -2053,7 +2072,7 @@ export class SlackAdapter implements MessagingAdapter {
           if (!user || !ts) continue;
           // Skip join/leave subtypes
           if (subtype && subtype !== 'file_share') continue;
-          buffer.push({ ts, user, text, channel: channelId });
+          buffer.push({ ts, user, text, channel: channelId, bot_id: m.bot_id as string | undefined });
           count++;
         }
         this.channelHistory.set(channelId, buffer);
@@ -2206,7 +2225,10 @@ export class SlackAdapter implements MessagingAdapter {
               const user = m.user as string ?? m.bot_id as string;
               const ts = m.ts as string;
               if (!user || !ts) continue;
-              buffer.push({ ts, user, text: m.text as string ?? '', channel: channelId });
+              const subtype = m.subtype as string | undefined;
+              const rawText = m.text as string ?? '';
+              const unaddressed = this.respondMode === 'mention-only' && !channelId.startsWith('D') && !this._isBotMentioned(rawText);
+              buffer.push({ ts, user, text: rawText, channel: channelId, bot_id: m.bot_id as string | undefined, ...(unaddressed ? { unaddressed: true } : {}), ...(subtype ? { subtype } : {}) });
             }
             this.channelHistory.set(channelId, buffer);
 
