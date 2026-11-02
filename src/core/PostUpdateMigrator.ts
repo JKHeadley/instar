@@ -18601,11 +18601,23 @@ echo "=== END IDENTITY RECOVERY ==="
 // as \`cat <<'EOF' | <reply script> N\` + text + \`EOF\`, and recording the whole command
 // put shell wrapping and signed links on the dashboard (2026-11-02). Take the heredoc
 // body when there is one and mask credential-looking query values.
-function blockerTextOf(command) {
+function blockerTextOf(command, isComm) {
   const s = String(command || '');
-  const doc = /<<-?\\s*['"]?(\\w+)['"]?[^\\n]*\\n([\\s\\S]*?)(?:\\n[ \\t]*\\1[ \\t]*(?:\\n|$)|$)/.exec(s);
-  const body = doc ? doc[2] : s;
+  const re = /^([^\\n]*<<-?\\s*['"]?(\\w+)['"]?[^\\n]*)\\n([\\s\\S]*?)(?:\\n[ \\t]*\\2[ \\t]*(?=\\n|$)|$)/gm;
+  let pick = null; let first = null; let m;
+  while ((m = re.exec(s))) {
+    if (first === null) first = m[3];
+    if (isComm && isComm(m[1])) { pick = m[3]; break; }
+  }
+  const body = pick !== null ? pick : (first !== null ? first : s);
   return body.replace(/([?&](?:sig|signature|token|key|auth|access_token)[^=&\\s]*=)[^&\\s]+/gi, '$1…').trim();
+}
+
+// A command is a message only when the reply/send script is invoked OUTSIDE heredoc
+// bodies: a command that writes a file whose text mentions the script (code, docs,
+// tests) is not a message (2026-11-02: such commands opened "Just spotted" blockers).
+function withoutHeredocBodies(command) {
+  return String(command || '').replace(/(<<-?\\s*['"]?(\\w+)['"]?[^\\n]*)\\n[\\s\\S]*?\\n[ \\t]*\\2[ \\t]*(?=\\n|$)/g, '$1');
 }
 
 function autoOpenBlocker(detectedText, origin) {
@@ -18660,7 +18672,8 @@ process.stdin.on('end', () => {
       /telegram-reply/i, /send-email/i, /send-message/i,
       /POST.*\\/telegram\\/reply/i, /slack.*send/i
     ];
-    if (!commPatterns.some(p => p.test(command))) process.exit(0);
+    const isComm = (text) => commPatterns.some(p => p.test(text));
+    if (!isComm(withoutHeredocBodies(command))) process.exit(0);
 
     // Exempt: genuinely human-only actions
     if (/password|captcha|legal|billing|payment credential/i.test(command)) process.exit(0);
@@ -18840,7 +18853,7 @@ process.stdin.on('end', () => {
     // already been written. We hold the process open just long enough to flush the
     // fire-and-forget POST, then exit. A failure (503 dark / no server) is silent.
     if (inabilityMatches.length > 0) {
-      autoOpenBlocker(blockerTextOf(command), 'deferral-detector');
+      autoOpenBlocker(blockerTextOf(command, isComm), 'deferral-detector');
       setTimeout(() => process.exit(0), 200);
       return;
     }

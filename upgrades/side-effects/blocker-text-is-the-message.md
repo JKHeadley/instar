@@ -1,16 +1,18 @@
 # Side-effects review: blocker entries record the message, not the shell command
 
 ## Change
-- `src/core/PostUpdateMigrator.ts` (deferral-detector hook template): `blockerTextOf(command)` takes the heredoc body of a reply command and masks credential-looking query values (`sig`, `signature`, `token`, `key`, `auth`, `access_token`); the auto-opened blocker posts that instead of the whole command.
+- `src/core/PostUpdateMigrator.ts` (deferral-detector hook template): `blockerTextOf(command)` takes the heredoc body of a reply command and masks credential-looking query values (`sig`, `signature`, `token`, `key`, `auth`, `access_token`); the auto-opened blocker posts that instead of the whole command. With several heredocs it takes the one whose header line invokes the reply/send script.
+- Same hook: a command counts as a message only when the reply/send script appears OUTSIDE heredoc bodies (`withoutHeredocBodies`). A command that writes a file whose text mentions the script (code, docs, tests) is no longer treated as a message; on 2026-11-02 two such code-writing commands opened new "Just spotted" rows within minutes.
 - `dashboard/console/plans-model.js`: `blockerText()` applies the same reading to stored rows (first non-empty line, masked, capped at 220 chars); a command with no message text reads "Flagged in a command I ran (no message text)".
 
 ## Evidence
 On the Studio (2026-11-02) all 50 `/blockers` entries were `candidate` rows from `deferral-detector` whose `detectedText` began `cat <<'EOF' | .claude/scripts/telegram-reply.sh <topic>`; the console Plans page printed them verbatim, including a private-view link with its `sig=` value.
 
 ## 1. Over-block
-None; detection is unchanged (it still scans the whole command).
+None added. The comm check is narrower, so fewer commands are checked at all.
 
 ## 2. Under-block
+A message sent from inside a script that is itself a heredoc (e.g. `python3 - <<EOF` calling the reply script) is no longer checked by this hook; the outbound tone gate still reviews every message that is actually sent.
 A credential not in a query parameter is not masked here; the outbound credential wall still governs what is sent. Stored rows keep their raw text in the ledger; only the display is cleaned.
 
 ## 3. Level-of-abstraction fit

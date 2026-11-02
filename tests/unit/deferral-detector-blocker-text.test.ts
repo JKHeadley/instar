@@ -60,6 +60,22 @@ describe('deferral detector blocker text', () => {
   });
 });
 
+describe('deferral detector: only an invoked reply is a message', () => {
+  it('a command that writes a file mentioning the reply script opens no blocker', async () => {
+    posted.length = 0;
+    await runHook(`cat > notes.md <<'EOF'\nThe ${reply} path: I can't proceed without the release blocker fix.\nEOF`);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(posted).toHaveLength(0);
+  });
+
+  it('with several heredocs, the one piped into the reply script is recorded', async () => {
+    posted.length = 0;
+    await runHook(`cat > a.txt <<'A'\nnot this one\nA\ncat <<'EOF' | .claude/scripts/${reply} 1\nI cannot reach the Laptop right now.\nEOF`);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(posted.map((p) => p.detectedText)).toEqual(['I cannot reach the Laptop right now.']);
+  });
+});
+
 describe('console blockerText (rows recorded before the hook fix)', () => {
   it('shows the first line of the message, masks signatures, and names a bare command', () => {
     expect(blockerText(`cat <<'EOF' | .claude/scripts/${reply} 52075\n14:10 status: see https://h.example/v?sig=abc&t=1\nmore\nEOF`)).toBe('14:10 status: see https://h.example/v?sig=…&t=1');

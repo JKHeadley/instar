@@ -1,6 +1,6 @@
 ## What Changed
 
-- Possible blockers that the deferral checker records now hold the message text, not the whole command that sent it, and link signatures or tokens are masked. The dashboard's Plans page shows older entries the same tidy way.
+- Possible blockers that the deferral checker records now hold the message text, not the whole command that sent it, and link signatures or tokens are masked. A command that only writes text mentioning the reply script (code, docs) is no longer mistaken for a message. The dashboard's Plans page shows older entries the same tidy way.
 
 ## What to Tell Your User
 
