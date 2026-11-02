@@ -34,4 +34,6 @@ Revert.
 unbounded-self-action: n/a. Narrows an existing selection; adds no action.
 
 ## Second-pass review
+**Reviewer:** independent Claude Opus 5.5 subagent (general-purpose), given the diff and the write-up, not the conclusion.
+
 Concur with the review. `hasRecord` is consumed only by `GreenPrAutoMerger.recordFor` (acting pass, hand-off, not-agent-owned audit label, `requestVerifies`); nothing relies on a failed record counting as true. The change only narrows (`classifyCandidate` requires `hasRecord === true`; safe-merge already refused failed records). No re-verify loop: a non-explicit request on a failed same-head record returns `recorded` early. The per-tick read cost noted in section 5 is from this review.
