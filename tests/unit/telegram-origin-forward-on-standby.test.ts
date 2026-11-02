@@ -404,8 +404,8 @@ describe('item collapse + wording + notice', () => {
   it('expiry wording is honest about what is known', () => {
     const base: HeldOperationRow = { operationId: 'o', originId: 'o', state: 'expired', holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: null, preparedAt: 0, deadlineAt: 6 * 3_600_000,
       executionOwnerMachineId: 'h', destination: { accountId: '1', chatId: '-1', topicId: '42' }, recovery: null, expiryReportedAt: null };
-    expect(expiredForwardWording(base)).toBe('I could not deliver my reply to topic 42 within 6 h.');
-    expect(expiredForwardWording({ ...base, holdDetail: { lastAttempt: 'outcome-unknown' } })).toBe('My reply to topic 42 may or may not have been delivered; the sending machine did not confirm within 6 h.');
+    expect(expiredForwardWording(base)).toBe('I could not deliver my reply to topic 42 (name unresolved) within 6 h.');
+    expect(expiredForwardWording({ ...base, holdDetail: { lastAttempt: 'outcome-unknown' } })).toBe('My reply to topic 42 (name unresolved) may or may not have been delivered; the sending machine did not confirm within 6 h.');
     expect(heldForwardNoticeText('the Mini')).toBe('I have your message; my reply is delayed while it is routed through the Mini.');
   });
 });

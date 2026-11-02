@@ -47,6 +47,7 @@ import type { IntelligenceProvider } from '../core/types.js';
 import type { HubCommand } from './hubCommands.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_HUB_INTENT_CLASSIFY } from '../data/provenanceCoverage.js';
+import { topicNameFor, topicRef } from '../messaging/shared/topicRef.js';
 
 export const HUB_INTENT_PROMPT_ID = 'hub-intent-v1';
 
@@ -148,7 +149,7 @@ function normalizeTopics(topics: HubTopicCandidate[], max: number): HubTopicCand
   for (const t of topics) {
     if (!t || typeof t.topicId !== 'number' || !Number.isFinite(t.topicId)) continue;
     if (seen.has(t.topicId)) continue;
-    const name = typeof t.topicName === 'string' && t.topicName.trim() ? t.topicName.trim() : `topic ${t.topicId}`;
+    const name = typeof t.topicName === 'string' && t.topicName.trim() ? t.topicName.trim() : (topicNameFor(t.topicId) ?? topicRef(t.topicId));
     seen.add(t.topicId);
     out.push({ topicId: t.topicId, topicName: name });
     if (out.length >= max) break;

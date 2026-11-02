@@ -45,6 +45,7 @@ import type { TelegramOriginService } from '../messaging/telegram-origin/Telegra
 import { withThreadlineForwardedAuthor } from './TelegramOriginAttribution.js';
 import { TOPIC_REPLY_BUDGET_MS, type TopicOwnerAskResult } from './relayForward.js';
 import type { TopicRespawnResult } from './topicRespawnHook.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -1016,12 +1017,16 @@ export class TopicLinkageHandler {
       ? '(no prior thread history available)'
       : history.map(h => `  [${h.createdAt ?? ''}] ${h.from}: ${h.body.slice(0, 240)}`).join('\n');
 
+    // The topic name rides beside every id (operator rule 2026-11-02: "the name and ID should be
+    // inseparable"), so the session never has to tell the user it cannot see a topic's name.
+    const userTopic = topicRef(userTopicId);
+    const originTopic = topicRef(topicId);
     const visibilityLine = userTopicId !== topicId
       ? (verdict === 'user-visible'
-        ? `Salience: user-visible — the server posted this reply to topic ${userTopicId}, ${message.from.agent}'s own topic, where the user reads this agent. If you tell the user anything about it, post in topic ${userTopicId}, not here.`
-        : `Salience: agent-internal — the user has NOT been notified. If this later needs the user, post in topic ${userTopicId} (${message.from.agent}'s own topic), not here.`)
+        ? `Salience: user-visible — the server posted this reply to ${userTopic}, ${message.from.agent}'s own topic, where the user reads this agent. If you tell the user anything about it, post in ${userTopic}, not here (${originTopic}).`
+        : `Salience: agent-internal — the user has NOT been notified. If this later needs the user, post in ${userTopic} (${message.from.agent}'s own topic), not here (${originTopic}).`)
       : verdict === 'user-visible'
-        ? `Salience: user-visible — a Telegram notification was sent to topic ${topicId}.`
+        ? `Salience: user-visible — a Telegram notification was sent to ${originTopic}.`
         : `Salience: agent-internal — the user has NOT been notified. Handle without surfacing unless needed.`;
 
     // SECURITY: remote reply body is untrusted data. Wrap it in a hard-to-spoof

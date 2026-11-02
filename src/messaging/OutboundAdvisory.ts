@@ -46,6 +46,7 @@ import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
 import { detectTimeClaimContradiction, type TimeClaimClock } from '../core/time-claim.js';
+import { topicRef } from './shared/topicRef.js';
 
 // ── Advisory composition ────────────────────────────────────────────────
 
@@ -506,7 +507,7 @@ export class OutboundAdvisoryAudit {
           id: `outbound-advisory:ignored:${sig.jobSlug}:${sig.topicId}:${sig.codesKey}`,
           title: `Job "${sig.jobSlug}" is dropping its own messages after advisories`,
           summary:
-            `${sig.unresolved.length} automated message(s) from job "${sig.jobSlug}" (topic ${sig.topicId}) were flagged by the outbound advisory ` +
+            `${sig.unresolved.length} automated message(s) from job "${sig.jobSlug}" (${topicRef(sig.topicId)}) were flagged by the outbound advisory ` +
             `[${sig.codesKey}] and never re-sent — the sender is silently dropping them instead of fixing or acknowledging. ` +
             `The advisory layer never blocks; this is the sender ignoring its own feedback.`,
           category: 'health',
@@ -559,7 +560,7 @@ export class OutboundAdvisoryAudit {
           id: `outbound-advisory:habitual-ack:${sig.jobSlug}:${sig.topicId}:${sig.codesKey}`,
           title: `Job "${sig.jobSlug}" habitually overrides advisories instead of fixing`,
           summary:
-            `${sig.consecutiveAcksWithAdvisories} consecutive sends from job "${sig.jobSlug}" (topic ${sig.topicId}) acknowledged ` +
+            `${sig.consecutiveAcksWithAdvisories} consecutive sends from job "${sig.jobSlug}" (${topicRef(sig.topicId)}) acknowledged ` +
             `non-empty advisories [${sig.codesKey}] with --ack-advisory rather than fixing the message. The messages ARE delivering; ` +
             `this is a quality signal, not a delivery failure.`,
           category: 'health',

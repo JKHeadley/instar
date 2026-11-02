@@ -29,6 +29,7 @@
  */
 
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
+import { topicNameFor, TOPIC_NAME_UNRESOLVED } from '../messaging/shared/topicRef.js';
 
 // ── Stage 1: Telegram Inbound ─────────────────────────────────────
 
@@ -284,7 +285,11 @@ export function buildInjectionTag(
 ): string {
   const uidSuffix = telegramUserId ? ` (uid:${telegramUserId})` : '';
   const reDeliverySuffix = reDelivered === true ? ` — ${RE_DELIVERY_MARKER}` : '';
-  const topicPart = topicName ? ` "${topicName}"` : '';
+  // The name and the id are inseparable (operator rule 2026-11-02): the verified name from the
+  // topic registry when the caller has none, else an explicit "(name unresolved)" — never a
+  // bare id the session has to guess a name for. Parsers anchor on `^\[telegram:(\d+)`.
+  const verifiedName = topicNameFor(topicId, topicName);
+  const topicPart = verifiedName ? ` "${verifiedName}"` : ` (${TOPIC_NAME_UNRESOLVED})`;
 
   // Agent-signed provenance (ASP). `signedByAgent` is an IN-PROCESS parameter
   // carried from the classifier's own verdict — never parsed from content, so a

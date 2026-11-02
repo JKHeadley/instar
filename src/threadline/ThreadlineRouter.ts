@@ -27,6 +27,7 @@ import { buildRelayGroundingPreamble, tagExternalMessage, RELAY_HISTORY_LIMITS }
 import type { RelayGroundingContext } from './RelayGroundingPreamble.js';
 import { WarmSessionPeerConflictError } from './WarmSessionPool.js';
 import type { WarmSessionPool } from './WarmSessionPool.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -543,14 +544,17 @@ export class ThreadlineRouter {
       if (typeof r.topicId !== 'number' || r.via === 'existing') return '';
       const name = relayContext?.senderName ?? remoteAgent;
       const where = r.via === 'homebase' ? `the topic for ${name}` : 'the topic the operator bound this conversation to';
+      // The name rides beside the id (operator rule 2026-11-02): the session can always tell the
+      // user which topic, by name, or say plainly that the name is unresolved.
+      const ref = topicRef(r.topicId);
       let serverPosts = false;
       try { serverPosts = r.via === 'homebase' && this.serverPostsUserMeant?.(threadId) === true; } catch { serverPosts = false; /* @silent-fallback-ok — no claim the server posts */ }
       if (serverPosts) {
         // True by construction: the PeerHomebaseRelay judges every inbound message of this
         // unbound conversation and posts each one meant for the user into this topic itself.
-        return `\n\nTelegram topic for this conversation: topic ${r.topicId} (${where}). The server already posts each message from ${name} that it judges meant for the user into that topic, so do not repost, forward or summarise ${name}'s messages there. If you have something of your own to tell the user about this conversation (including a point you think the user still needs), post it in your own words in topic ${r.topicId}, never in another topic.`;
+        return `\n\nTelegram topic for this conversation: ${ref} (${where}). The server already posts each message from ${name} that it judges meant for the user into that topic, so do not repost, forward or summarise ${name}'s messages there. If you have something of your own to tell the user about this conversation (including a point you think the user still needs), post it in your own words in ${ref}, never in another topic.`;
       }
-      return `\n\nTelegram topic for this conversation: if you tell the user anything about it, or this agent's message needs the user, post in topic ${r.topicId} (${where}), never in another topic.`;
+      return `\n\nTelegram topic for this conversation: if you tell the user anything about it, or this agent's message needs the user, post in ${ref} (${where}), never in another topic.`;
     } catch {
       return ''; // @silent-fallback-ok — no hint keeps the prompt as before
     }

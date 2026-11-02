@@ -15,6 +15,7 @@ import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 export type OriginSendPolicyRefusalDecision = Extract<OriginSendPolicyDecision, { ok: false }>;
 import type { HeldOperationRow } from './StoreTypes.js';
+import { topicRef } from '../shared/topicRef.js';
 
 export const HOLD_REASON_LEASE_NOT_HELD = 'lease-not-held';
 /** Execution owner recorded on a hold taken while NO holder could be named.
@@ -476,6 +477,6 @@ export function expiredForwardWording(row: HeldOperationRow): string {
   const topic = row.destination.topicId ?? 'the topic';
   const hours = Math.max(1, Math.round((row.deadlineAt - row.preparedAt) / 3_600_000));
   return detail?.lastAttempt === 'outcome-unknown' || detail?.lastAttempt === 'local-sent'
-    ? `My reply to topic ${topic} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
-    : `I could not deliver my reply to topic ${topic} within ${hours} h.`;
+    ? `My reply to ${topicRef(topic)} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
+    : `I could not deliver my reply to ${topicRef(topic)} within ${hours} h.`;
 }

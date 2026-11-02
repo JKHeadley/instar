@@ -1,3 +1,4 @@
+import { topicRef } from '../messaging/shared/topicRef.js';
 /**
  * AutonomousLivenessReconciler — a level-triggered control loop that self-heals
  * an autonomous run whose state file says ACTIVE (with time remaining) but has
@@ -458,7 +459,7 @@ export class AutonomousLivenessReconciler {
           this.ambiguousSurfaced.add(topicId);
           this.deps.raiseAggregated(
             'liveness-ambiguous-binding',
-            `topic ${topicId} looks orphaned but its session↔topic binding is ambiguous — needs your eyes (not auto-respawning).`,
+            `${topicRef(topicId)} looks orphaned but its session↔topic binding is ambiguous — needs your eyes (not auto-respawning).`,
           );
         }
         this.deps.audit({ ts: new Date(now).toISOString(), event: 'ambiguous-binding', topicId });
@@ -543,7 +544,7 @@ export class AutonomousLivenessReconciler {
         this.cappedSurfaced.add(topicId);
         this.deps.raiseAggregated(
           'liveness-cap',
-          `autonomous run on topic ${topicId} hit the respawn cap (${this.cfg.respawnCapPerWindow} in ${Math.round(
+          `autonomous run on ${topicRef(topicId)} hit the respawn cap (${this.cfg.respawnCapPerWindow} in ${Math.round(
             this.cfg.respawnCapWindowSec / 3600,
           )}h) and keeps dying — not auto-respawning again; needs your eyes.`,
         );
@@ -567,7 +568,7 @@ export class AutonomousLivenessReconciler {
         this.spawnFailSurfaced.add(topicId);
         this.deps.raiseAggregated(
           'liveness-respawn-failed',
-          `respawn of autonomous run on topic ${topicId} keeps failing before any session exists (${this.cfg.spawnFailureRetryCeiling} attempts) — likely infra; needs your eyes.`,
+          `respawn of autonomous run on ${topicRef(topicId)} keeps failing before any session exists (${this.cfg.spawnFailureRetryCeiling} attempts) — likely infra; needs your eyes.`,
         );
       }
       this.deps.audit({ ts: new Date(now).toISOString(), event: 'spawn-failure-ceiling', topicId });
@@ -600,7 +601,7 @@ export class AutonomousLivenessReconciler {
           this.pressureSurfaced.add(topicId);
           this.deps.raiseAggregated(
             'liveness-sustained-pressure',
-            `topic ${topicId} is orphaned but the machine is under sustained pressure — needs your eyes.`,
+            `${topicRef(topicId)} is orphaned but the machine is under sustained pressure — needs your eyes.`,
           );
         }
         this.deps.audit({
@@ -640,7 +641,7 @@ export class AutonomousLivenessReconciler {
     // binding and uses the same spawn/ownership gates as operator refreshes.
     if (idleSession) {
       if (!this.deps.recoverIdle) {
-        this.deps.raiseAggregated('liveness-idle-recovery-unwired', `topic ${topicId} has an active run at a completed turn, but idle recovery is unavailable.`);
+        this.deps.raiseAggregated('liveness-idle-recovery-unwired', `${topicRef(topicId)} has an active run at a completed turn, but idle recovery is unavailable.`);
         this.deps.audit({ ts: new Date(now).toISOString(), event: 'idle-recovery-unwired', topicId });
         return false;
       }
@@ -707,7 +708,7 @@ export class AutonomousLivenessReconciler {
       } catch (err) {
         this.recordSpawnFailure(topicId, now);
         this.deps.audit({ ts: new Date(now).toISOString(), event: 'idle-recovery-failed', topicId, error: this.scrub(err) });
-        this.deps.raiseAggregated('liveness-idle-recovery-failed', `topic ${topicId} remained active after its turn completed, and canonical refresh failed — needs your eyes.`);
+        this.deps.raiseAggregated('liveness-idle-recovery-failed', `${topicRef(topicId)} remained active after its turn completed, and canonical refresh failed — needs your eyes.`);
         return true;
       } finally {
         this.deps.releaseClaim(topicId);
@@ -721,7 +722,7 @@ export class AutonomousLivenessReconciler {
         this.missingUuidSurfaced.add(topicId);
         this.deps.raiseAggregated(
           'liveness-missing-resume',
-          `can't resume topic ${topicId} — no resume UUID on the canonical resume map; not respawning (would lose prior context). Needs your eyes.`,
+          `can't resume ${topicRef(topicId)} — no resume UUID on the canonical resume map; not respawning (would lose prior context). Needs your eyes.`,
         );
       }
       this.deps.audit({ ts: new Date(now).toISOString(), event: 'missing-resume-uuid', topicId });
@@ -734,7 +735,7 @@ export class AutonomousLivenessReconciler {
       // binding, or realpath escaping the agent home) must never spawn against a guess.
       this.deps.raiseAggregated(
         'liveness-bad-cwd',
-        `can't resume topic ${topicId} — its working directory can't be safely resolved; not respawning. Needs your eyes.`,
+        `can't resume ${topicRef(topicId)} — its working directory can't be safely resolved; not respawning. Needs your eyes.`,
       );
       this.deps.audit({ ts: new Date(now).toISOString(), event: 'unsafe-cwd', topicId });
       this.observed.delete(topicId);

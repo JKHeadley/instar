@@ -43,6 +43,7 @@ import { compareHlc } from './TopicPinReplicatedStore.js';
 import { claimSuspensionExcludesPin } from './TopicClaimAnnotationStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import type { StaleOwnerReleaseEngine } from './StaleOwnerReleaseEngine.js';
+import { TopicRef } from '../messaging/shared/topicRef.js';
 
 export interface ReconcilerMachineView {
   machineId: string;
@@ -704,8 +705,8 @@ export class OwnershipReconciler {
       try {
         raise({
           id: `u41:pin-diverged:${sessionKey}`,
-          title: `Topic ${sessionKey} placement diverged from its pin`,
-          body: `Topic ${sessionKey} is pinned to ${pin.preferredMachine} but has been running elsewhere for over ${Math.round(divergedWindow / 60000)} minutes. The reconciler keeps converging it; if this persists, the pinned machine may be refusing the topic — check GET /pool/placement?topic=${sessionKey} and GET /pool/reconciler?topic=${sessionKey}.`,
+          title: `${TopicRef(sessionKey)} placement diverged from its pin`,
+          body: `${TopicRef(sessionKey)} is pinned to ${pin.preferredMachine} but has been running elsewhere for over ${Math.round(divergedWindow / 60000)} minutes. The reconciler keeps converging it; if this persists, the pinned machine may be refusing the topic — check GET /pool/placement?topic=${sessionKey} and GET /pool/reconciler?topic=${sessionKey}.`,
           priority: 'medium',
           sourceContext: 'ws13-pin-persistence',
         });
@@ -718,8 +719,8 @@ export class OwnershipReconciler {
       try {
         raise({
           id: `u41:pin-pending-aged:${sessionKey}`,
-          title: `Topic ${sessionKey}'s pin has waited ${Math.round(pinAge / 3600000)}h unfulfilled`,
-          body: `Topic ${sessionKey} is pinned to ${pin.preferredMachine} but the pin has not been fulfilled for over ${Math.round(maxPendingAge / 3600000)} hours (the machine may be offline, decommissioned, or the topic is deferring on live work). Fulfil it (bring ${pin.preferredMachine} back / free the topic) or unpin via POST /pool/unpin {"topic":${JSON.stringify(sessionKey)}}.`,
+          title: `${TopicRef(sessionKey)}'s pin has waited ${Math.round(pinAge / 3600000)}h unfulfilled`,
+          body: `${TopicRef(sessionKey)} is pinned to ${pin.preferredMachine} but the pin has not been fulfilled for over ${Math.round(maxPendingAge / 3600000)} hours (the machine may be offline, decommissioned, or the topic is deferring on live work). Fulfil it (bring ${pin.preferredMachine} back / free the topic) or unpin via POST /pool/unpin {"topic":${JSON.stringify(sessionKey)}}.`,
           priority: 'medium',
           sourceContext: 'ws13-pin-persistence',
         });
