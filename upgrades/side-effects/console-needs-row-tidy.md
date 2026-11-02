@@ -5,6 +5,7 @@
 - Every Home card: a footer with nothing in it is hidden (it left a blank band with a divider under the rows).
 - Work / Capacity / People / Settings pages: the subtitle "Each of these opens in the dashboard, where everything works exactly as before." is removed (most tiles now open native console pages), and the footer reads "The older dashboard is still available: open the legacy dashboard." instead of claiming everything is still there.
 - Promises page: the empty "Waiting on you" card is not shown when nothing waits (the headline already says "Nothing is waiting on you.").
+- Messages page: with nothing held, the headline is "Messages to you" (locked and unlocked views) instead of "No messages are held."; held replies are a fault to fix, not something the page should lead with. When some are held, the existing count headline still shows.
 - Pace card (Work): each line's dot stays beside its text at phone width (grid instead of a wrapping flex row), and queues with nothing coming in, nothing done and nothing open are not listed. A queue with no flow but items still open no longer reads "0 a day in, 0 done — holding steady"; it says "nothing came in or got done this week; N still open" (on 2026-11-02, Mac Mini and Laptop held 93–100 open promises and 1,161–1,271 open self-improvement items with no movement).
 
 ## Evidence

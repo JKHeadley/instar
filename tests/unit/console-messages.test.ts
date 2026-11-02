@@ -92,7 +92,7 @@ describe('messages page in a DOM', () => {
     (doc.querySelector('.pin-input') as HTMLInputElement).value = '123456';
     (doc.querySelector('.pin-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
     await tick(15);
-    expect(doc.querySelector('.page-title')!.textContent).toBe('No messages are held.');
+    expect(doc.querySelector('.page-title')!.textContent).toBe('Messages to you');
     ([...doc.querySelectorAll('.acct-row')].find((b) => b.textContent!.includes('footer')) as HTMLButtonElement).click();
     await tick(2);
     (doc.querySelector('#od-model') as HTMLInputElement).checked = false;
