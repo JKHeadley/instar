@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const DESKTOP_HOST_IDENTIFIER = 'ai.instar.desktop-host';
 // Change this when the build itself changes what the helper does: installed
 // Macs keep their copy until this hash moves, and moving it costs a macOS grant.
-const BUILD_RECIPE = `v1 -parse-as-library -O ${DESKTOP_HOST_IDENTIFIER}`;
+const BUILD_RECIPE = `v2 -parse-as-library -O -target macosx13.0 ${DESKTOP_HOST_IDENTIFIER}`;
 const releaseUniversal = process.argv.includes('--release-universal');
 const universal = releaseUniversal || (process.env.INSTAR_RELEASE_BUILD === '1' && process.platform === 'darwin');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

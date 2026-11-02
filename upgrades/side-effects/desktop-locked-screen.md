@@ -46,9 +46,9 @@ All decision points are deterministic safety floors over identity, state and cre
 
 ## 5. Interactions
 
-- Grant retained helper: until PR 2562 lands `helperSource` is absent, so the password path reads `retained-helper-required`. Both change `MacDesktopHost.ts`, `DesktopHost.ts`, `types.ts` and the build script, so whichever lands second resolves small conflicts.
-- The `-target` pin changes local helper builds. `BUILD_RECIPE` in PR 2562 hashes the recipe, so the second to land should include the target in it.
-- The Swift source changed, so PR 2562's source hash moves and Macs need the helper grant once more.
+- Grant retained helper (PR 2562, merged): every locked-screen helper call (`state-op`, `relock-guard`, the input stream that types the password) runs the copy the host serves, through the same `trustedBinary()` as capture and probe. The password path needs `helperSource: retained`, so a Mac serving the installed copy (kept copy missing its grant) or with no kept copy reads `retained-helper-required`.
+- The `-target` pin changes local helper builds, so `BUILD_RECIPE` now names the target (v2); the hash moves once, together with the Swift change below.
+- The Swift source changed, so the kept helper's source hash moves and each Mac needs the helper grant once more.
 - `input` now returns `void | { refused }`. Existing hosts return void, so they are unaffected.
 - The reply parser accepts `refused` and `sealKey` only under locked mode. Off keeps today's strict parse and 128-byte limit.
 
