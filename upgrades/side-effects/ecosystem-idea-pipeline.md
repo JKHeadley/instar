@@ -79,3 +79,4 @@ The reviewer was a different model family and saw the code, not this author's co
 - feat(ecosystem): the idea pipeline service, ledger and routes
 - feat(ecosystem): the adoption lint on tagged specs
 - feat(console): the Ideas page in the Work group
+- feat(ecosystem): agent awareness, new and existing agents
