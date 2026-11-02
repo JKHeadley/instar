@@ -46,7 +46,7 @@ async function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msigned-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: 'test machine' });
-  const config = { projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true, sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' } };
+  const config = { projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } }, sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' } };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true });
   const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => true };
   const pairing = new MobilePairingService(deps);

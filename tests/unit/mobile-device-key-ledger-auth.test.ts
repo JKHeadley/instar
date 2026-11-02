@@ -32,7 +32,7 @@ function setup() {
   const hash = signerKeyHashOf(kp.publicKey);
   const signer: MachineSigner = { machineId: () => 'm_alpha', signerKeyHash: () => hash, sign: (p) => ({ machineId: 'm_alpha', signerKeyHash: hash, sig: edSign(p, kp.privateKey) }) };
   const keyLookup: MachineKeyLookup = (m, h) => (m === 'm_alpha' && h === hash ? { status: 'ok', publicKeyPem: kp.publicKey } : { status: 'unknown' });
-  const pairing = new MobilePairingService({ config: { projectName: 'echo', developmentAgent: true } as never, stateDir: dir, holdsLease: () => true });
+  const pairing = new MobilePairingService({ config: { projectName: 'echo', developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } } } as never, stateDir: dir, holdsLease: () => true });
   stops.push(() => pairing.stop());
   const ledger = new MobileDeviceKeyLedger({ stateDir: dir, signer, keyLookup });
   pairing.keyLedger = ledger;
