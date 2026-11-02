@@ -15,7 +15,7 @@ export function telegramOriginCertificationAwareness(): string {
 }
 
 export function telegramOriginLeaseAwareness(): string {
-  return 'Origin lease renewal dependency: an enabled Telegram origin writer enrolls the existing current-holder renewal timer so ordinary installations keep a confirmed lease beyond its TTL. Explicit `multiMachine.leaseSelfHeal.resilientRenew.enabled: false` remains an opt-out; lease expiry still holds sends. Observe-only roles, higher-epoch holders and failed partition confirmations remain fenced. Without an origin writer, the standalone renewal feature keeps its development-agent default. Never change identity records or bypass `holdsLease` to clear a delivery hold.\n';
+  return 'Origin lease renewal dependency: an enabled Telegram origin writer enrolls the existing current-holder renewal timer so ordinary installations keep a confirmed lease beyond its TTL. Explicit `multiMachine.leaseSelfHeal.resilientRenew.enabled: false` remains an opt-out; lease expiry still holds sends. Observe-only roles, higher-epoch holders and failed partition confirmations remain fenced. Native app conversations enroll the same timer, so an agent without Telegram keeps its lease for the iPhone app; with neither, the standalone renewal feature keeps its development-agent default. Never change identity records or bypass `holdsLease` to clear a delivery hold.\n';
 }
 
 export function telegramOriginRecoveryAwareness(): string {
@@ -104,6 +104,14 @@ export function refreshOriginCanaryCleanupAwareness(content: string): string {
     paragraph.includes('Owned contract checks have six seconds per attempt,') ? paragraph :
       paragraph.replace('Successful checks grant no send or ownership permission.',
         'Owned contract checks have six seconds per attempt, followed by up to 30 seconds for verified cleanup. Health remains running during cleanup and cannot pass until the worker exits and its fixture is removed. A cleanup failure latches unavailable health and prevents further attempts in that instance. Successful checks grant no send or ownership permission.'));
+}
+
+/** The pre-app lease-dependency sentence, refreshed in place on update. Idempotent. */
+export const ORIGIN_LEASE_LEGACY_SENTENCE = 'Without an origin writer, the standalone renewal feature keeps its development-agent default.';
+export const ORIGIN_LEASE_APP_SENTENCE = 'Native app conversations enroll the same timer, so an agent without Telegram keeps its lease for the iPhone app; with neither, the standalone renewal feature keeps its development-agent default.';
+export function refreshOriginLeaseAwareness(content: string): string {
+  return content.replace(/^Origin lease renewal dependency:[^\r\n]*$/gm, paragraph =>
+    paragraph.split(ORIGIN_LEASE_LEGACY_SENTENCE).join(ORIGIN_LEASE_APP_SENTENCE));
 }
 
 /** Patch only the exact shipped sentence; retain custom instructions. */

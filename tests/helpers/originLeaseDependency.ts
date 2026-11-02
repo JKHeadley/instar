@@ -11,7 +11,9 @@ import { HttpLeaseTransport, type LeasePeer } from '../../src/core/HttpLeaseTran
 import { PeerEndpointResolver } from '../../src/core/PeerEndpointResolver.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-export async function originLeaseDependencyFixture(options: { enroll?: boolean; enabled?: boolean; developmentAgent?: boolean;
+export async function originLeaseDependencyFixture(options: { enroll?: boolean;
+  /** Enroll this named lease-renewal dependency instead of the Telegram origin writer. */
+  dependency?: string; enabled?: boolean; developmentAgent?: boolean;
   clock?: { value: number }; observeOnly?: boolean;
   /** lease-renew-unreachable-peers: peers the renewal broadcast dials, over this fetch. */
   peers?: LeasePeer[]; fetchImpl?: typeof fetch; broadcastDeadlineMs?: number;
@@ -56,7 +58,8 @@ export async function originLeaseDependencyFixture(options: { enroll?: boolean; 
       ...(options.observeOnly ? { leaseRole: 'observe-only' as const } : {}) } } };
   const coordinator = new MultiMachineCoordinator(new StateManager(stateDir), config);
   coordinator.start();
-  const release = options.enroll === false ? () => undefined : coordinator.enrollOriginWriterLeaseRenewal();
+  const release = options.enroll === false ? () => undefined
+    : options.dependency ? coordinator.enrollLeaseRenewalDependency(options.dependency) : coordinator.enrollOriginWriterLeaseRenewal();
   coordinator.attachLeaseCoordinator(lc);
   await coordinator.initializeLease();
   const peerPrivateKeyPem = peerKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();

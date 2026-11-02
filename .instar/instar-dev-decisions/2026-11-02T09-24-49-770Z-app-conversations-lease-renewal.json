@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-02T09:24:49.770Z",
+  "slug": "app-conversations-lease-renewal",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 82,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/server/leaseRenewalDependencies.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

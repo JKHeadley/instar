@@ -4829,16 +4829,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       onLeasePullTick: () => _leaseHandbackReconciler?.observe(),
     });
     const machineRole = coordinator.start();
-    // The origin writer below requires a current lease even on ordinary,
-    // non-development installations. Enroll its renewal carrier before lease
-    // initialization; this does not bypass explicit opt-outs or lease fences.
-    const originLeaseRenewal = config.messaging.some(m => m.type === 'telegram' && m.enabled)
-      ? coordinator.enrollOriginWriterLeaseRenewal() : undefined;
+    // The origin writer and native app conversations require a current lease even
+    // on ordinary, non-development installations (without Telegram, the app was
+    // the only surface and its lease lapsed at TTL between 2-minute heartbeats).
+    // Enroll the renewal carrier before lease initialization; this does not bypass
+    // explicit opt-outs or lease fences.
+    const { leaseRenewalDependencies } = await import('../server/leaseRenewalDependencies.js');
+    const leaseRenewalReleases = leaseRenewalDependencies(config).map((name) => coordinator.enrollLeaseRenewalDependency(name));
     const releaseOriginLeaseRenewal = () => {
-      originLeaseRenewal?.();
+      for (const release of leaseRenewalReleases.splice(0)) release();
       process.removeListener('exit', releaseOriginLeaseRenewal);
     };
-    if (originLeaseRenewal) process.once('exit', releaseOriginLeaseRenewal);
+    if (leaseRenewalReleases.length > 0) process.once('exit', releaseOriginLeaseRenewal);
     if (coordinator.enabled) {
       console.log(pc.green(`  Multi-machine: ${pc.bold(machineRole)} (${coordinator.identity!.machineId.slice(0, 12)}...)`));
       if (machineRole === 'standby') {
