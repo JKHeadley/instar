@@ -279,8 +279,13 @@ export class MobilePairingService {
     for (const [id, e] of this.dashboardCodes) {
       if (e.expiresAt <= t) { this.dashboardCodes.delete(id); continue; }
       let d: DeviceRecord | null = null;
-      try { d = this.devices.get(id); } catch { d = null; } // @silent-fallback-ok — an unreadable registry drops the code (fail closed: it is never shown)
-      if (!d || d.status !== 'pending') this.dashboardCodes.delete(id);
+      try { d = this.devices.get(id); } catch { d = null; } // @silent-fallback-ok — an unreadable registry drops the code (fail closed: it is never shown, and never confirmable)
+      if (!d || d.status !== 'pending') {
+        // Drop BOTH copies: a dashboard code that is no longer shown must also never confirm, so a
+        // decline whose registry write failed (or an unreadable registry) leaves nothing live.
+        this.dashboardCodes.delete(id);
+        this.confirm.drop(id);
+      }
     }
   }
 
