@@ -18260,10 +18260,39 @@ export async function startServer(options: StartOptions): Promise<void> {
       profileFor: (peer) => _peerProfileFor?.(peer) ?? null,
       conversationFor: (threadId) => conversationStore.get(threadId) ?? null,
     });
+    // §2.7: "meant for the user?" is judged PER MESSAGE (Jev first, then the Codex fast tier,
+    // then the shared provider — so a Claude-only agent still judges; no verdict posts). Read
+    // live: `threadline.peerHomebase.perMessageClassification: false` restores first-only.
+    let peerUserMeantJudge: import('../threadline/PeerUserMeantJudge.js').PeerUserMeantJudge | null = null;
+    try {
+      const { buildPeerUserMeantJudge } = await import('../threadline/PeerUserMeantJudge.js');
+      const { getFeatureMetricsRecorder } = await import('../core/CircuitBreakingIntelligenceProvider.js');
+      const { SecretStore } = await import('../core/SecretStore.js');
+      let userMeantCodex: import('../core/types.js').IntelligenceProvider | null = null;
+      try {
+        const { LlmCircuitBreaker } = await import('../core/LlmCircuitBreaker.js');
+        const { buildIntelligenceProvider: buildUserMeantReferee } = await import('../core/intelligenceProviderFactory.js');
+        userMeantCodex = buildUserMeantReferee({ framework: 'codex-cli', breaker: new LlmCircuitBreaker() });
+      } catch { /* @silent-fallback-ok — no Codex CLI; the shared provider is the next referee */ }
+      peerUserMeantJudge = buildPeerUserMeantJudge({
+        readPeerHomebaseBlock: () => liveConfig.get<unknown>('threadline.peerHomebase', undefined),
+        readSecret: (name) => new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name),
+        referees: () => [
+          ...(userMeantCodex ? [{ name: 'codex', provider: userMeantCodex }] : []),
+          ...(sharedIntelligence ? [{ name: 'shared', provider: sharedIntelligence }] : []),
+        ],
+        stateDir: config.stateDir,
+        metrics: { record: (r) => getFeatureMetricsRecorder()?.record(r as never) },
+      });
+      console.log(pc.dim(`  Peer user-meant judge: constructed (referees: ${[userMeantCodex ? 'codex' : null, sharedIntelligence ? 'shared' : null].filter(Boolean).join(', ') || 'none'})`));
+    } catch (err) {
+      console.log(pc.yellow(`  Peer user-meant judge: not constructed (${(err as Error)?.message ?? 'unknown'}) — first-only rule applies`));
+    }
     const peerHomebaseRelay = telegram
       ? new PeerHomebaseRelay({
         resolve: peerUserTopic,
         salienceGate: new (await import('../threadline/SalienceGate.js')).SalienceGate(),
+        userMeantJudge: peerUserMeantJudge,
         sendToTopic: (topicId, text) => withThreadlineForwardedAuthor(telegramOriginBoot?.runtime.service, 'inbound', topicId, text,
           () => telegram.sendToTopic(topicId, text)),
         log: (m) => console.log(m),
@@ -18885,7 +18914,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     );
     const salienceGate = new SalienceGate(); // fallback-only for v1; spec §5.4
     // §2.6: tell a spawned thread session which topic to use for the user.
-    threadlineRouter.setPeerUserTopicResolver((q) => peerUserTopic({ threadId: q.threadId, peers: q.peers }));
+    threadlineRouter.setPeerUserTopicResolver((q) => peerUserTopic({ threadId: q.threadId, peers: q.peers }), {
+      // §2.7: only where the relay has actually taken this thread under per-message judging.
+      serverPostsUserMeant: (threadId) => peerHomebaseRelay?.postsUserMeantFor(threadId) === true
+        && conversationStore.get(threadId)?.boundTopicId == null,
+    });
     let topicLinkageHandler: import('../threadline/TopicLinkageHandler.js').TopicLinkageHandler | null = null;
     if (commitmentTracker) {
       topicLinkageHandler = new TopicLinkageHandler({
@@ -18937,6 +18970,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         resolveUserTopic: (q) => {
           const r = peerUserTopic({ threadId: q.threadId, peers: q.peers, existingTopicId: q.originTopicId });
           return r.topicId;
+        },
+        // §2.7: a reply redirected to the homebase is judged per message (null when switched off).
+        judgeUserMeant: async (q) => {
+          if (!peerUserMeantJudge || !peerUserMeantJudge.enabled()) return null;
+          const v = await peerUserMeantJudge.judge({ threadId: q.threadId, peer: q.peers[0] ?? '', senderName: q.senderName, text: q.text, deadlineMs: q.deadlineMs });
+          if (v.firstOnly) return null; // the judge's budget is spent: the SalienceGate (first-only) decides
+          return { verdict: v.userMeant ? 'user-visible' : 'agent-internal', reason: `per-message: ${v.decidedBy}/${v.reason}` };
         },
         onRemoteReplyEvent: (event) => {
           if (event === 'ask') a2aRelayForwardCtx.counters.replyAsks++;
@@ -19802,6 +19842,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   peers: [senderFingerprint],
                   senderName,
                   text: textContent,
+                  messageType: typeof msgType === 'string' ? msgType : null,
                 }).then((r) => { if (!r.posted) hubSurface(); }, () => hubSurface());
               } else {
                 hubSurface();

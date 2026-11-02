@@ -244,6 +244,55 @@ describe('TopicLinkageHandler — §2.6 user-facing post goes to the peer topic'
     expect(send).not.toHaveBeenCalled();
   });
 
+  // §2.7: a redirected reply is judged per message.
+  it('per-message judge says agent-internal on a redirected reply → not posted, even the first', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const judge = vi.fn(async () => ({ verdict: 'agent-internal' as const, reason: 'per-message: referee/referee' }));
+    const d = deps({ sendTelegramToTopic: send, resolveUserTopic: () => 50, judgeUserMeant: judge });
+    const h = new TopicLinkageHandler(d);
+    h.captureOriginOnSend({ threadId: 'tl7', remoteAgent: 'scout', originTopicId: 9210 });
+    await h.tryRouteReplyToTopic({ envelope: envelope('tl7', 'schema synced'), threadEntry: { remoteAgent: 'scout', originTopicId: 9210 } });
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('per-message judge: two user-meant replies on one redirected thread inside a minute are BOTH posted', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const judge = vi.fn(async () => ({ verdict: 'user-visible' as const, reason: 'per-message: jev/jev-confident' }));
+    const d = deps({ sendTelegramToTopic: send, resolveUserTopic: () => 50, judgeUserMeant: judge });
+    const h = new TopicLinkageHandler(d);
+    h.captureOriginOnSend({ threadId: 'tl8', remoteAgent: 'scout', originTopicId: 9210 });
+    await h.tryRouteReplyToTopic({ envelope: envelope('tl8', 'Justin: the invoice is ready'), threadEntry: { remoteAgent: 'scout', originTopicId: 9210 } });
+    await h.tryRouteReplyToTopic({ envelope: envelope('tl8', 'Justin: and it needs your approval'), threadEntry: { remoteAgent: 'scout', originTopicId: 9210 } });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.every((c) => c[0] === 50)).toBe(true);
+  });
+
+  it('the judge is not consulted when nothing is redirected, and a null (switched off) judge leaves the SalienceGate deciding', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const judge = vi.fn(async () => ({ verdict: 'agent-internal' as const, reason: 'x' }));
+    const h1 = new TopicLinkageHandler(deps({ sendTelegramToTopic: send, resolveUserTopic: () => null, judgeUserMeant: judge }));
+    h1.captureOriginOnSend({ threadId: 'tl9', remoteAgent: 'scout', originTopicId: 9210 });
+    await h1.tryRouteReplyToTopic({ envelope: envelope('tl9'), threadEntry: { remoteAgent: 'scout', originTopicId: 9210 } });
+    expect(judge).not.toHaveBeenCalled();
+    const off = vi.fn(async () => null);
+    const h2 = new TopicLinkageHandler(deps({ sendTelegramToTopic: send, resolveUserTopic: () => 50, judgeUserMeant: off }));
+    h2.captureOriginOnSend({ threadId: 'tl10', remoteAgent: 'scout', originTopicId: 9210 });
+    await h2.tryRouteReplyToTopic({ envelope: envelope('tl10'), threadEntry: { remoteAgent: 'scout', originTopicId: 9210 } });
+    expect(off).toHaveBeenCalledTimes(1);
+    // SalienceGate fallback: first reply → user-visible → posted to the homebase.
+    expect(send).toHaveBeenCalledWith(50, expect.any(String));
+  });
+
+  it('a throwing judge fails toward the user (posted)', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const d = deps({ sendTelegramToTopic: send, resolveUserTopic: () => 50, judgeUserMeant: async () => { throw new Error('boom'); } });
+    const h = new TopicLinkageHandler(d);
+    h.captureOriginOnSend({ threadId: 'tl11', remoteAgent: 'scout', originTopicId: 9210 });
+    await h.tryRouteReplyToTopic({ envelope: envelope('tl11'), threadEntry: { remoteAgent: 'scout', originTopicId: 9210 } });
+    expect(send).toHaveBeenCalledWith(50, expect.any(String));
+  });
+
   it('a throwing resolver keeps today\'s destination', async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const d = deps({ sendTelegramToTopic: send, injectIntoSession: vi.fn().mockReturnValue(false), resolveUserTopic: () => { throw new Error('x'); } });

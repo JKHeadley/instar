@@ -17,6 +17,8 @@ export const PEER_HOMEBASE_AWARENESS_V2_LIMITS = `a failed
 
 /** A phrase only the current card carries; an installed card without it is refreshed in place. */
 export const PEER_HOMEBASE_AWARENESS_ROUTING_MARKER = 'Messages meant for the user land in the homebase';
+/** §2.7 (per-message judging): an installed card without this phrase is refreshed in place too. */
+export const PEER_HOMEBASE_AWARENESS_PER_MESSAGE_MARKER = 'judged one message at a time';
 
 export function peerHomebaseAwareness(): string {
   return `### Where a peer agent's notices go (per-peer homebase topic)
@@ -40,6 +42,16 @@ after a request from peer \`pp\` landed in a Claude-quota conversation and he ne
   asked). Only a binding the **operator** chose always wins over it. Other bindings, including
   one whose origin is unknown, are **preserved** as records but no longer decide where the
   user reads a peer. Agent-internal traffic keeps its existing routing.
+- **"Meant for the user" is judged one message at a time** (not just the first message of a
+  conversation): Jev first, then the Codex fast tier, then the agent's own provider, by meaning
+  (a peer writing "tell Justin…" or "for your person" counts). Delivery receipts and other
+  protocol traffic are never posted. When no verdict can be had the message IS posted (a
+  duplicate beats a missed notice). So when your prompt says the server already posts this
+  peer's user-meant messages, do not repost them; post only what you yourself add. Audit:
+  \`logs/peer-user-meant.jsonl\` (content-free); the scrubbed message text is sent to Jev
+  (TypeSafe) or the answering model's vendor. Bounded: 300 model calls a day, 30 per peer an
+  hour; past either, only a conversation's first message is posted. Off switch (back to first-message-only):
+  \`threadline.peerHomebase.perMessageClassification: false\`.
 - **\`Conversation.boundTopicSource\`** records who chose it — \`operator\` | \`origin-inherited\` |
   \`peer-homebase\`, absent on older records. Never "fix" an absent one by overwriting it; that
   destroys exactly the operator choice the field exists to protect. Re-homing such a

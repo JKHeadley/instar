@@ -24,6 +24,7 @@ import { verify } from './ThreadlineCrypto.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { recordInboundAck, type InboundAckDeps } from './recordInboundAck.js';
 import { isAutoAckBody, autoAckBodyRecognition } from './autoAck.js';
+import { wireTypeOf } from './PeerUserMeantJudge.js';
 import { computeFingerprint } from './client/MessageEncryptor.js';
 import { recordThreadMessage } from './recordThreadMessage.js';
 import { honorPeerThreadSync, serveBackfill, type SymmetryDeps } from './threadSymmetry.js';
@@ -65,7 +66,7 @@ export interface ThreadlineEndpointsConfig {
    * unbound conversation into that peer's own topic. Optional; absent ⇒ no post (as before).
    */
   peerHomebaseRelay?: {
-    relayInbound(input: { threadId: string; peers: Array<string | undefined | null>; senderName: string; text: string }): Promise<{ posted: boolean }>;
+    relayInbound(input: { threadId: string; peers: Array<string | undefined | null>; senderName: string; text: string; messageType?: string | null }): Promise<{ posted: boolean }>;
   };
   /** Is this conversation already bound to a topic (then TopicLinkageHandler owns its posts)? */
   conversationBound?: (threadId: string) => boolean;
@@ -792,6 +793,7 @@ export function createThreadlineRoutes(
             peers: [hbFp],
             senderName: typeof body.message?.from?.agent === 'string' ? body.message.from.agent : hbFp,
             text: hbText,
+            messageType: wireTypeOf(body.message?.body),
           }).catch(() => { /* @silent-fallback-ok — the relay logs; delivery to the session is unaffected */ });
         }
       } catch { /* @silent-fallback-ok: a homebase post never blocks inbound routing */ }
