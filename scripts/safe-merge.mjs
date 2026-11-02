@@ -211,6 +211,7 @@ export function capabilities() {
       'reviews-required-refusal', 'classified-exits', 'delete-branch', 'deadline-ms',
       'native-auto-merge', 'auto-arm-unavailable-detection',
       'approval-required-refusal', 'request-review-from', 'local-floor', 'attempt-token',
+      'non-main-base-refusal',
     ],
     floorModes: [...MERGE_FLOOR_MODES],
     exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4, autoMergeArmed: 5 },
@@ -885,6 +886,32 @@ export function noActionsChecksRan(checkRuns) {
   return !(checkRuns ?? []).some(cr => cr?.appSlug === 'github-actions');
 }
 
+/**
+ * The one base a PR may merge into (ACT-053, 2026-11-02). ci.yml runs the
+ * suite only for PRs into main and the required checks are scoped to main, so
+ * a PR into a feature branch (a stacked PR) runs no suite on GitHub yet shows
+ * mergeStateStatus CLEAN — and `--auto` would let GitHub merge it at once
+ * (PR #2202 merged branch-to-branch on 2026-10-19). Stacks still work: review
+ * them in place, then merge the bottom PR into main; the next PR is retargeted
+ * to main and verified there. Running the full suite on every stacked push
+ * would double CI load on an allowance already saturated (see ci.yml).
+ */
+export const MERGE_BASE = 'main';
+
+/** Pure: null when the base is mergeable, else the refusal for it. */
+export function nonMainBaseRefusal(baseRefName) {
+  const base = typeof baseRefName === 'string' ? baseRefName : '';
+  if (base === MERGE_BASE) return null;
+  return {
+    result: 'refused:non-main-base',
+    base: base || null,
+    message: `safe-merge: REFUSING — this PR's base is ${base ? `"${base}"` : 'unreadable'}, not ${MERGE_BASE}. ` +
+      `Nothing runs the test suite on GitHub for a PR into a feature branch, so a green badge there means nothing. ` +
+      `Merge the PR below it into ${MERGE_BASE} first, then retarget this PR to ${MERGE_BASE} (gh pr edit <PR#> --base ${MERGE_BASE}). ` +
+      `Retargeting alone starts no CI run: push a commit (e.g. rebase onto ${MERGE_BASE}) or close and reopen the PR, then retry once CI is green.`,
+  };
+}
+
 function refuseNoChecksRan(pr, head) {
   result({ result: 'refused:no-checks-ran', pr: Number(pr), head });
   console.error(`safe-merge: REFUSING — NO GitHub Actions checks ran on head ${String(head).slice(0, 12)}. This is NOT green. CI never started (a conflict with main can suppress pull_request); rebase or trigger the workflow, then retry.`);
@@ -1134,6 +1161,14 @@ async function main() {
   }
   if (view.isDraft) {
     result({ result: 'refused:draft', pr: Number(pr) });
+    process.exit(1);
+  }
+  // Before every floor and before --auto: a feature-branch base is never a
+  // landing, and GitHub requires nothing of it (ACT-053).
+  const baseRefusal = nonMainBaseRefusal(view.baseRefName);
+  if (baseRefusal) {
+    result({ result: baseRefusal.result, pr: Number(pr), base: baseRefusal.base });
+    console.error(baseRefusal.message);
     process.exit(1);
   }
   const pinnedHead = args.matchHeadCommit ?? view.headRefOid;

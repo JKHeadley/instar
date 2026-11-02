@@ -55,10 +55,19 @@ concurrency:
   # the evidence a merge was sound. Only branch/PR runs supersede.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# EVERY JOB DECLARES timeout-minutes (ACT-059). Without one a job inherits
+# GitHub's 6-hour default, and on 2026-10-08 a hung unit shard held PR 2141
+# BLOCKED for 6h00m while every other check was green. Limits are about twice
+# the slowest run of that job across 79 runs measured 2026-11-02 (slowest:
+# unit shard 29.6 min, integration 24.4, e2e 34.9, desktop packages 3.9, every
+# other gate 2.3), so slow work still finishes and a hang fails within the hour.
+# Raise a limit when the job genuinely grows; tests/unit/ci-workflow-timeouts
+# fails if a job is added without one.
 jobs:
   desktop-windows-package:
     name: Desktop Windows package
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -147,6 +156,7 @@ jobs:
   desktop-macos-package:
     name: Desktop Mac package
     runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -164,6 +174,7 @@ jobs:
   invariants:
     name: Repo Invariants
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -175,6 +186,7 @@ jobs:
   docs-coverage:
     name: Docs Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -196,6 +208,7 @@ jobs:
   cartographer-freshness:
     name: Cartographer Freshness
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -217,6 +230,7 @@ jobs:
   standards-coverage:
     name: Standards Enforcement Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Least privilege, made EXPLICIT rather than inherited (second-pass finding 2):
     # path B calls GET /commits/{sha}/pulls, which needs pull-requests:read. With no
     # permissions block the job runs on the repository's DEFAULT workflow permission
@@ -395,6 +409,7 @@ jobs:
   lint:
     name: Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         # ROUND-20: the deferral-carrier lint scopes its ratchet to the PR's
@@ -417,6 +432,7 @@ jobs:
   unit:
     name: Unit Tests (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       # Don't cancel other shards if one fails — we want the full picture.
       fail-fast: false
@@ -466,6 +482,7 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     # Independent checkout and runner: start alongside unit shards. Both
     # results remain required branch checks before a PR can merge.
     steps:
@@ -495,6 +512,7 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 70
     # Independent checkout and runner: start alongside unit shards. This
     # removes a serial CI phase without weakening the merge gate.
     steps:
@@ -531,6 +549,7 @@ jobs:
   contract:
     name: Contract Tests (Live API)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: unit
     # Only run when adapter source files or contract tests change
     if: >
@@ -557,6 +576,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [lint, unit]
     steps:
       - uses: actions/checkout@v4
