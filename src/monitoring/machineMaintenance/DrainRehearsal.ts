@@ -187,7 +187,12 @@ export class DrainRehearsal {
     if (!this.deps.enabled()) return;
     const now = this.now();
     const cfg = this.deps.settings();
-    if (this.open && now >= this.open.windowEnd) this.finish(null);
+    if (this.open && now >= this.open.windowEnd) {
+      // Phases that never ran measured nothing, so a night that slept through them is not evidence.
+      const open = this.open;
+      open.phasesLate.push(...DRAIN_PHASES.map((p) => p.id).filter((id) => !open.phasesDone.includes(id) && !open.phasesLate.includes(id)));
+      this.finish(null);
+    }
 
     const window = windowFor(now, cfg.window);
     const opensAt = phaseTime(window.restartAt, OPEN_FROM_MINUTES);
@@ -281,7 +286,7 @@ export class DrainRehearsal {
       if (row.reachedAt !== null || row.vanished) continue;
       const item = live.get(row.key);
       if (!item) {
-        if (row.key.startsWith('session:') || row.key.startsWith('job:')) row.vanished = true;
+        if (row.key.startsWith('session:') || row.key.startsWith('slack-session:') || row.key.startsWith('job:')) row.vanished = true;
         else row.reachedAt = now;
       } else if (item.atBoundary === true) {
         if (row.boundaryAt !== null) row.reachedAt = now;
@@ -352,11 +357,13 @@ export class DrainRehearsal {
 
     const acks = Object.fromEntries(Object.entries(this.deps.store.readAcks(open.episodeId, open.generation)).filter(([, a]) => now - a.at < ACK_FRESH_MS));
     const claimed = Object.values(acks).flatMap((a) => a.delaysClaimed);
-    const silent = now >= phaseTime(open.originalRestartAt, 5)
-      ? this.deps.coResidentAgents().filter((a) => a !== this.deps.agentName && !acks[a])
-      : [];
+    const silenceRead = now >= phaseTime(open.originalRestartAt, 5);
+    const silent = silenceRead ? this.deps.coResidentAgents().filter((a) => a !== this.deps.agentName && !acks[a]) : [];
     const d3 = this.delays.find((d) => d.id === 'D3');
-    if (d3) { d3.active = silent.length > 0; d3.evidence = silent.join(', ') || 'none'; }
+    if (d3) {
+      d3.active = silenceRead ? silent.length > 0 : null;
+      d3.evidence = silenceRead ? silent.join(', ') || 'none' : 'read from T-5';
+    }
     const active = silent.length > 0 ? [...claimed, 'D3'] : claimed;
     const step = stepDelays({
       restartAt: plan.restartAt,

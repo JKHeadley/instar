@@ -84,6 +84,10 @@ machine-local-justification: hardware-bound-resource
 
 ## Second-pass review
 
+**Reviewer:** independent subagent, second pass of the merged branch, 2026-11-01
+
+A third independent reviewer read the merged branch on 2026-11-01 and raised four concerns in the watch-only evidence and docs, none able to restart a machine: a night slept through counted as evidence (fixed: unrun phases mark the night late), a vanished Slack session counted as a fast yield (fixed), D3 read as clear before T-5 (fixed: not read until then), and the migrator hard-coded port 4040 (fixed). Each has a test.
+
 Independent reviewer, reading the code with no conclusion supplied. Raised a concern: no path to action, but evidence that could read better than the truth, and lint holes. All resolved before commit except the Slack identity false alarm, stated in section 2: idle sessions no longer sampled; a vanished session is not a yield, and one prompt read is not enough; late phases measure nothing; only whole nights count, deduped by episode; unreadable tmux reads as not read; stale acks ignored; slowest samples kept; `holds` written to the record; lock wait bounded and sleeping; boundary reads stop at T-0, read the tail and run async; commands reduced to a named table with exact arguments; lint changed from a denylist to an import allowlist. The fixes themselves were not re-read by the reviewer.
 
 ---

@@ -11549,7 +11549,7 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
     // Machine self-maintenance, watch-only (machine-self-maintenance spec). Idempotent
     // via content-sniffing on the route path.
     if (!content.includes('/machine-maintenance')) {
-      content += '\n' + MACHINE_MAINTENANCE_CLAUDEMD_SECTION(4040);
+      content += '\n' + MACHINE_MAINTENANCE_CLAUDEMD_SECTION(this.config.port ?? 4040);
       patched = true;
       result.upgraded.push('CLAUDE.md: added machine self-maintenance section');
     } else {

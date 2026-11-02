@@ -383,6 +383,31 @@ describe('DrainRehearsal', () => {
     expect(r.evidence()).toMatchObject({ nights: 0, nightsRecorded: 1 });
   });
 
+  it('does not count a night it slept through, even with nothing to delay it', async () => {
+    const r = make();
+    await run(r, t0 - 68 * MIN, t0 - 68 * MIN);
+    now = t0 + 3 * 60 * MIN;
+    await r.tick();
+    expect((r.status().lastRehearsal as { phasesLate: string[] }).phasesLate.length).toBeGreaterThan(0);
+    expect(r.evidence().nights).toBe(0);
+  });
+
+  it('treats a Slack session that disappears as vanished, not yielded', async () => {
+    census.sessions = [{ name: 's', tmuxSession: 't', slackRoutingKey: 'T1:C1', atBoundary: false }];
+    const r = make();
+    await run(r, t0 - 71 * MIN, t0 - 10 * MIN);
+    census.sessions = [];
+    await run(r, t0 - 9 * MIN, t0 + MIN);
+    const stats = (r.status().lastRehearsal as { kinds: Array<Record<string, unknown>> }).kinds.find((k) => k.kind === 'slack-session');
+    expect(stats).toMatchObject({ vanished: 1 });
+  });
+
+  it('reports D3 as not read before T-5, never as clear', async () => {
+    const r = make();
+    await run(r, t0 - 71 * MIN, t0 - 30 * MIN);
+    expect((r.status().delays as Array<{ id: string; active: boolean | null }>).find((d) => d.id === 'D3')?.active).toBeNull();
+  });
+
   it('reads an unreadable tmux as not read, never as clear, and does not count that night', async () => {
     signals.tmuxSessions = null;
     const r = make();
