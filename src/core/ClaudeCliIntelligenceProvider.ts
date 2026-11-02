@@ -84,9 +84,11 @@ export function buildClaudeReviewerChildEnv(
  * `--strict-mcp-config` refuses user MCP servers. `--setting-sources user`
  * excludes project/local CLAUDE.md (kept from the base door).
  */
-export function buildClaudeReviewerArgs(model: string, jsonSchema?: string): string[] {
+export function buildClaudeReviewerArgs(model: string, jsonSchema?: string, noTools = false): string[] {
   return [
     '--print',
+    // An empty allow-list still lets a model ATTEMPT a tool; --tools '' offers it none.
+    ...(noTools ? ['--tools', ''] : []),
     '--allowedTools', '',
     '--strict-mcp-config',
     '--model', model,
@@ -125,7 +127,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
 
     return new Promise((resolve, reject) => {
       const args = hardened
-        ? buildClaudeReviewerArgs(model, hardened.jsonSchema)
+        ? buildClaudeReviewerArgs(model, hardened.jsonSchema, hardened.noTools === true)
         : [
             '-p', prompt,
             '--model', model,

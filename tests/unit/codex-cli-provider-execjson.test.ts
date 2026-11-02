@@ -121,6 +121,18 @@ exit 0
     ]);
   });
 
+  it('noLocalTools disables the local tools for that call only (docs/specs/ecosystem-idea-pipeline.md §1)', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: writeFakeCodex() });
+    await provider.evaluate('plain call', { attribution: { component: 'test' } });
+    expect(readArgv()).not.toContain('--disable');
+    await provider.evaluate('outside text', { noLocalTools: true, attribution: { component: 'test' } });
+    const argv = readArgv();
+    expect(argv[argv.indexOf('--disable') + 1]).toBe('shell_tool');
+    expect(argv).toContain('unified_exec');
+    expect(argv).toContain('mcp_servers={}');
+    expect(argv).toContain('read-only');
+  });
+
   it('passes --json + absolute --output-last-message, keeps ALL hygiene args, moves the prompt to stdin', async () => {
     const provider = new CodexCliIntelligenceProvider({ codexPath: writeFakeCodex() });
     const usages: Array<{ inputTokens: number; outputTokens: number; cachedTokens?: number }> = [];
