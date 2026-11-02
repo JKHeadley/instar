@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "ecosystem-idea-pipeline-spec",
+  "sessionId": "18604a86-3b10-4658-ba57-581bcce3d6ca",
+  "timestamp": "2026-11-02T01:39:08.489Z",
+  "artifactPath": "upgrades/side-effects/ecosystem-idea-pipeline-spec.md",
+  "artifactSha256": "28b13bacc4165db0b5f0ae630b0f1420e6e3d92e9c642248ceb2745a8d14aa54",
+  "coveredFiles": [
+    "docs/specs/ecosystem-idea-pipeline.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation only: convergence stamp on a spec under review.",
+  "eli16Path": "docs/specs/ecosystem-idea-pipeline.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ecosystem-idea-pipeline-spec.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
