@@ -11,6 +11,7 @@ import {
   failure, ago, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
   machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
   combineNeeds, machineNames, machineLabel,
+  needAction,
 } from '../../dashboard/console/home-model.js';
 import { topicNameMap } from '../../dashboard/console/topic-names.js';
 
@@ -360,9 +361,30 @@ describe('headline()', () => {
     ], pool: { failed: [] } }), NOW);
     const h = headline({ needs: n, promised: card('ok', '', 0) });
     expect(h.text).toBe('Approve the deploy');
-    expect(h.sub).toBe('2 more things need you, listed below.');
+    expect(h.sub).toBe('Tap to review and respond. 2 more things need you, listed below.');
   });
   it('all quiet only when everything is known and fine', () => {
     expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');
+  });
+});
+
+describe('every "needs you" row has somewhere to act', () => {
+  const open = (i: Record<string, unknown>) => ({ status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'T', ...i });
+  it('a conversation item opens its conversation', () => {
+    expect(needAction(open({ topicId: 127504 }))).toEqual({ kind: 'topic', topicId: 127504 });
+  });
+  it('a desktop item opens the Desktop page for its machine', () => {
+    expect(needAction(open({ category: 'desktop', machineId: 'm_ab' }))).toEqual({ kind: 'href', href: '/dashboard/desktop.html?machineId=m_ab' });
+  });
+  it('a sign-in item opens Accounts', () => {
+    expect(needAction(open({ category: 'sign-in' }))).toEqual({ kind: 'href', href: '#/capacity/accounts' });
+  });
+  it('anything else opens the Attention topic, never nothing', () => {
+    expect(needAction(open({ category: 'general' }))).toEqual({ kind: 'attention' });
+  });
+  it('buildNeeds gives every row an action', () => {
+    const items = [open({ category: 'desktop', machineId: 'm1', title: 'A' }), open({ category: 'general', title: 'B' }), open({ topicId: 5, title: 'C' })];
+    const card = buildNeeds({ ok: true, data: { items } }, Date.now());
+    expect(card.all.every((r: { action: unknown }) => r.action)).toBe(true);
   });
 });
