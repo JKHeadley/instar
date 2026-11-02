@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "origin-legacy-boot-beacon-replay",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T19:48:16.247Z",
+  "artifactPath": "upgrades/side-effects/origin-legacy-boot-beacon-replay.md",
+  "artifactSha256": "25bb5795ba4e3dadfa09aa76a8f90243b786d937dfc7d814c556acd3975031f3",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginLegacy.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/next/origin-legacy-boot-beacon-replay.md",
+    "upgrades/side-effects/origin-legacy-boot-beacon-replay.eli16.md",
+    "upgrades/side-effects/origin-legacy-boot-beacon-replay.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one evidence class in the legacy replay check; deterministic; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/origin-legacy-boot-beacon-replay.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/origin-legacy-boot-beacon-replay.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
