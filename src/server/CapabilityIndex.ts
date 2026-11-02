@@ -163,7 +163,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: ['GET /desktop/setup', 'GET /desktop/setup/:machineId', 'POST /desktop/setup/:machineId',
         'GET /desktop/diagnostics', 'POST /desktop/request-permission', 'GET /desktop/availability', 'GET /desktop/targets', 'POST /desktop/requests',
         'GET /desktop/locked/status', 'POST /desktop/locked/settings', 'POST /desktop/locked/disable',
-        'GET /desktop/requests/:id', 'POST /desktop/requests/:id/ticket',
+        'GET /desktop/requests/:id', 'GET /desktop/requests/:id/displays', 'POST /desktop/requests/:id/ticket',
         'POST /desktop/requests/:id/revoke', 'WebSocket /desktop-stream'],
     }),
   },

@@ -36,6 +36,7 @@ namespace InstarDesktop {
     static volatile bool BannerShown;
     static long LastHeartbeat;
     static Form Banner;
+    static Point? BannerPlace;
     static Thread BannerThread;
 
     [DllImport("kernel32.dll")] static extern uint WTSGetActiveConsoleSessionId();
@@ -49,6 +50,15 @@ namespace InstarDesktop {
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct DISPLAY_DEVICE {
+      public int cb;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+      public int StateFlags;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplayDevices(string device, uint index, ref DISPLAY_DEVICE info, uint flags);
     [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public INPUTUNION data; }
     [StructLayout(LayoutKind.Explicit)] struct INPUTUNION {
       [FieldOffset(0)] public KEYBDINPUT keyboard;
@@ -183,7 +193,7 @@ namespace InstarDesktop {
         string[] first = lines[0].Split(' ');
         if (first.Length != 3 || first[0] != "POST" || !first[1].StartsWith("/") || first[2] != "HTTP/1.1") return;
         string op = first[1].Substring(1);
-        if (op != "probe" && op != "capture" && op != "cursor" && op != "input"
+        if (op != "probe" && op != "displays" && op != "capture" && op != "cursor" && op != "input"
           && op != "start" && op != "heartbeat" && op != "stop" && op != "release"
           && op != "prepare-update" && op != "cancel-update" && op != "commit-update") return;
         Dictionary<string,string> headers = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
@@ -202,8 +212,9 @@ namespace InstarDesktop {
         try {
           Dictionary<string,object> command = Parse(Encoding.UTF8.GetString(body));
           bool updateOperation = op == "prepare-update" || op == "cancel-update" || op == "commit-update";
-          string lease = op == "probe" || updateOperation ? "" : Text(command, "leaseId");
-          if (op != "probe" && !updateOperation && !ValidLease(lease)) throw new InvalidDataException();
+          bool leaseless = op == "probe" || op == "displays" || updateOperation;
+          string lease = leaseless ? "" : Text(command, "leaseId");
+          if (!leaseless && !ValidLease(lease)) throw new InvalidDataException();
           object result; string type = "application/json";
           bool exitAfterWrite = false;
           lock (Gate) {
@@ -214,6 +225,8 @@ namespace InstarDesktop {
               result = Reply(new { screenPermission = ready, inputPermission = ready,
                 sessionActive = ready, displayCount = ready ? Screen.AllScreens.Length : 0,
                 controlActive = Active, updatePrepared = Updating });
+            } else if (op == "displays") {
+              result = Reply(new { displays = !Updating && InteractiveDesktop() ? DisplayRows() : new object[0] });
             } else if (op == "prepare-update") {
               if (Active || Updating) throw new InvalidOperationException();
               Updating = true;
@@ -246,17 +259,18 @@ namespace InstarDesktop {
               ReleaseHeld(); result = Reply(new { ok = true });
             } else {
               if (!OwnsLease(lease) || !InteractiveDesktop()) throw new InvalidOperationException();
-              if (op == "capture") { result = Capture(); type = "image/jpeg"; }
+              Rectangle shown = ShownArea(command);
+              if (op == "capture") { result = Capture(shown); type = "image/jpeg"; }
               else if (op == "cursor") {
                 Point point; if (!GetCursorPos(out point)) throw new InvalidOperationException();
-                Rectangle screen = SystemInformation.VirtualScreen;
+                Rectangle screen = shown;
                 result = Reply(new { x = Math.Max(0, Math.Min(1, (double)(point.X - screen.Left) / Math.Max(1, screen.Width - 1))),
                   y = Math.Max(0, Math.Min(1, (double)(point.Y - screen.Top) / Math.Max(1, screen.Height - 1))) });
               } else {
                 object actionValue; if (!command.TryGetValue("action", out actionValue)) throw new InvalidDataException();
                 Dictionary<string,object> action = actionValue as Dictionary<string,object>;
                 if (action == null) throw new InvalidDataException();
-                Input(action); result = Reply(new { ok = true });
+                Input(action, shown); result = Reply(new { ok = true });
               }
             }
           }
@@ -265,8 +279,34 @@ namespace InstarDesktop {
         } catch { Write(stream, 400, "application/json", Reply(new { error = "desktop-unavailable" })); }
       }
     }
-    static byte[] Capture() {
-      Rectangle bounds = SystemInformation.VirtualScreen;
+    // A stable short id: "\\\\.\\DISPLAY1" is not safe to carry as viewer text.
+    static string DisplayId(Screen screen) { return screen.DeviceName.TrimStart('\\', '.'); }
+    static string DisplayName(Screen screen, int index) {
+      DISPLAY_DEVICE device = new DISPLAY_DEVICE();
+      device.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+      string monitor = EnumDisplayDevices(screen.DeviceName, 0, ref device, 0) ? device.DeviceString : null;
+      if (String.IsNullOrEmpty(monitor) || monitor.IndexOf("Generic", StringComparison.OrdinalIgnoreCase) >= 0) {
+        return "Display " + (index + 1);
+      }
+      return monitor;
+    }
+    static object[] DisplayRows() {
+      Screen[] screens = Screen.AllScreens;
+      object[] rows = new object[Math.Min(screens.Length, 16)];
+      for (int i = 0; i < rows.Length; i++) {
+        rows[i] = new { id = DisplayId(screens[i]), name = DisplayName(screens[i], i),
+          width = screens[i].Bounds.Width, height = screens[i].Bounds.Height, main = screens[i].Primary };
+      }
+      return rows;
+    }
+    // Without a displayId this is the whole virtual screen, as it always was.
+    static Rectangle ShownArea(Dictionary<string,object> command) {
+      if (!command.ContainsKey("displayId")) return SystemInformation.VirtualScreen;
+      string id = Text(command, "displayId");
+      foreach (Screen screen in Screen.AllScreens) if (DisplayId(screen) == id) return screen.Bounds;
+      throw new InvalidOperationException();
+    }
+    static byte[] Capture(Rectangle bounds) {
       if (bounds.Width < 1 || bounds.Height < 1 || bounds.Width > 16000 || bounds.Height > 16000
         || (long)bounds.Width * bounds.Height > 33177600) throw new InvalidOperationException();
       using (Bitmap full = new Bitmap(bounds.Width, bounds.Height)) {
@@ -328,9 +368,10 @@ namespace InstarDesktop {
       input.data.mouse.mouseData = data; input.data.mouse.flags = flags;
       if (SendInput(1, new INPUT[] { input }, Marshal.SizeOf(typeof(INPUT))) != 1) throw new InvalidOperationException();
     }
-    static void MoveTo(double fx, double fy) {
+    static void MoveTo(double fx, double fy, Rectangle shown) {
+      // The absolute scale is always the whole virtual desktop, whichever screen is shown.
       Rectangle bounds = SystemInformation.VirtualScreen;
-      int x = Coordinate(fx, bounds.Left, bounds.Width), y = Coordinate(fy, bounds.Top, bounds.Height);
+      int x = Coordinate(fx, shown.Left, shown.Width), y = Coordinate(fy, shown.Top, shown.Height);
       int ax = (int)Math.Round((x - bounds.Left) * 65535.0 / Math.Max(1, bounds.Width - 1));
       int ay = (int)Math.Round((y - bounds.Top) * 65535.0 / Math.Max(1, bounds.Height - 1));
       SendMouse(0x0001u | 0x4000u | 0x8000u, ax, ay, 0);
@@ -344,7 +385,7 @@ namespace InstarDesktop {
       SendMouse(flag, 0, 0, 0);
       if (down) HeldButtons.Add(button); else HeldButtons.Remove(button);
     }
-    static void Input(Dictionary<string,object> action) {
+    static void Input(Dictionary<string,object> action, Rectangle shown) {
       string kind = Text(action, "kind");
       if (kind == "move" || kind == "click" || kind == "buttonDown" || kind == "buttonUp") {
         string button = kind == "move" ? null : Text(action,"button");
@@ -355,7 +396,7 @@ namespace InstarDesktop {
           if (c != 1 && c != 2 && c != 3) throw new InvalidDataException();
           count = (int)c;
         }
-        MoveTo(Number(action,"x"), Number(action,"y"));
+        MoveTo(Number(action,"x"), Number(action,"y"), shown);
         if (kind == "click") {
           // Repeated press/release at one point inside the double-click time is
           // what Windows itself turns into a double or triple click.
@@ -389,6 +430,16 @@ namespace InstarDesktop {
         keybd_event(Key(key), 0, 0x0002u | KeyFlags(key), UIntPtr.Zero); HeldKeys.Remove(key);
       }
     }
+    static Point BannerStart(Rectangle area, Size size) {
+      if (BannerPlace.HasValue) return KeepOnScreen(BannerPlace.Value, size);
+      return new Point(area.Right - size.Width, area.Bottom - size.Height);
+    }
+    // A screen unplugged since the last move must not hide the signal.
+    static Point KeepOnScreen(Point at, Size size) {
+      Rectangle area = Screen.GetWorkingArea(at);
+      return new Point(Math.Max(area.Left, Math.Min(area.Right - size.Width, at.X)),
+        Math.Max(area.Top, Math.Min(area.Bottom - size.Height, at.Y)));
+    }
     static void StartBanner(string ownerLease) {
       ManualResetEvent ready = new ManualResetEvent(false);
       BannerShown = false;
@@ -399,15 +450,32 @@ namespace InstarDesktop {
           // picture, so the viewer looked frozen and input appeared to do nothing.
           // The request belongs to this thread and ends when the banner closes.
           SetThreadExecutionState(0x80000000u | 0x00000002u | 0x00000001u);
+          // The safety signal stays on top and on screen, but it must not sit on
+          // window buttons: a small strip at the bottom right that either the
+          // person at this machine or the viewer can drag somewhere else.
           Form form = new Form(); form.Text = "Instar remote control active";
-          form.Width = 260; form.Height = 48; form.FormBorderStyle = FormBorderStyle.FixedToolWindow;
+          form.FormBorderStyle = FormBorderStyle.None;
           form.ControlBox = false; form.ShowInTaskbar = false; form.TopMost = true;
           form.BackColor = Color.DarkRed; form.ForeColor = Color.White;
-          Rectangle area = Screen.PrimaryScreen.WorkingArea;
-          form.StartPosition = FormStartPosition.Manual;
-          form.Location = new Point(area.Right - form.Width, area.Top);
           Label label = new Label(); label.Text = "Instar remote control active";
           label.TextAlign = ContentAlignment.MiddleCenter; label.Dock = DockStyle.Fill;
+          label.Cursor = Cursors.SizeAll;
+          Size text = TextRenderer.MeasureText(label.Text, label.Font);
+          form.Size = new Size(text.Width + 16, text.Height + 8);
+          Rectangle area = Screen.PrimaryScreen.WorkingArea;
+          form.StartPosition = FormStartPosition.Manual;
+          form.Location = BannerStart(area, form.Size);
+          Point grab = Point.Empty; bool dragging = false;
+          label.MouseDown += (sender, args) => {
+            if (args.Button == MouseButtons.Left) { dragging = true; grab = args.Location; }
+          };
+          label.MouseMove += (sender, args) => {
+            if (!dragging) return;
+            Point at = form.Location; at.Offset(args.X - grab.X, args.Y - grab.Y);
+            form.Location = KeepOnScreen(at, form.Size);
+            BannerPlace = form.Location;
+          };
+          label.MouseUp += (sender, args) => { dragging = false; };
           form.Controls.Add(label); Banner = form;
           form.Shown += (sender, args) => { BannerShown = true; ready.Set(); };
           Application.Run(form);
