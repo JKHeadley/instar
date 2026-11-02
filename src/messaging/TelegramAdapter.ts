@@ -5133,6 +5133,9 @@ export class TelegramAdapter implements MessagingAdapter {
     row.lastSeenAt = nowIso;
     if (obs.conditionKey && !row.conditionKey) row.conditionKey = obs.conditionKey;
     if (obs.sticky) row.sticky = true;
+    // The latest raise decides who the row is from: a producer that stopped
+    // claiming "agent" must not keep reaching the hub through its old row.
+    if (obs.sourceContext && obs.sourceContext !== row.sourceContext) row.sourceContext = obs.sourceContext;
 
     const changed = row.title !== obs.title || row.summary !== obs.summary
       || (row.description ?? '') !== (obs.description ?? '') || row.priority !== obs.priority;

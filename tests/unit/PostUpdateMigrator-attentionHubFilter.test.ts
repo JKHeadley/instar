@@ -54,4 +54,29 @@ describe('PostUpdateMigrator — Attention hub filter', () => {
     expect(md).toContain('queue an item only when the user must decide, tap or act');
     expect(md).not.toContain('failed jobs, CI failures, overdue actions');
   });
+
+  const JOB_LABEL = 'CLAUDE.md: added scheduled-job attention source bullet';
+  const JOB_SNIFF = 'never claims `source: "agent"`';
+
+  it('adds the scheduled-job source bullet after the hub bullet, once (operator report 2026-11-02)', () => {
+    fs.writeFileSync(claudeMdPath, [
+      '# CLAUDE.md', '',
+      '**Attention Queue** — Signal important items to the user.',
+      "- **Proactive use**: when you detect something the user should know (stale relationships, failed jobs, CI failures, overdue actions), don't just log it — queue it so it gets seen.",
+      '',
+    ].join('\n'));
+    const first = run();
+    expect(first.upgraded).toContain(JOB_LABEL);
+    const after = fs.readFileSync(claudeMdPath, 'utf8');
+    expect(after.indexOf(JOB_SNIFF)).toBeGreaterThan(after.indexOf('logs/attention-hub-held.jsonl'));
+    expect(run().upgraded).not.toContain(JOB_LABEL);
+    expect(fs.readFileSync(claudeMdPath, 'utf8').split(JOB_SNIFF).length).toBe(2);
+  });
+
+  it('new agents get the scheduled-job source bullet from the template, so the migration skips them', () => {
+    const md = generateClaudeMd('test', 'Test', 4321, true);
+    expect(md.split(JOB_SNIFF).length).toBe(2);
+    fs.writeFileSync(claudeMdPath, md);
+    expect(run().upgraded).not.toContain(JOB_LABEL);
+  });
 });
