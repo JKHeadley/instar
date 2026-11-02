@@ -4,7 +4,7 @@
 
 A real GPT-tier external pass ran on all ten rounds. Rounds 1 to 7, 9 and 10 returned "SERIOUS ISSUES"; round 8 returned "MINOR ISSUES" with no design finding. Gemini was unavailable (`gemini-not-authed`) and Grok is not enabled, so there was one external family.
 
-**Verdict: NOT CONVERGED after 10 rounds.** Round 10 raised two design findings, both about safety. The operator accepted a weaker relock guarantee (17:44 PST, topic 134088), and neither finding questions that. No `review-convergence` tag and no `approved` tag were written, and `/instar-dev` will refuse to build from this spec.
+**Verdict: DID NOT CONVERGE at round 10. The operator accepted building behind proof gates P12 and P15.** Round 10 raised two design findings, both about safety. Their fixes are written and unreviewed. The convergence tag on this spec records that decision, not a quiet final round. His words, topic 134088, 2026-11-01: "go" at 17:20 PST, "2 minutes" at 17:44 PST accepting "relocks, and tells you if it couldn't", and "Build" at 18:11 PST. No `review-convergence` tag and no `approved` tag were written, and `/instar-dev` will refuse to build from this spec.
 
 ## ELI10 Overview
 
@@ -37,7 +37,7 @@ About 300 spec lines, 8 of 8 rounds. The run stopped at 3 under a mistaken cap, 
 
 Disclosure: the round 8 panel brief said a behaviour settled by a proof row is not itself a design finding, which earlier briefs did not say. That may have reduced what it raised. Codex got no such steer. Rounds 9 and 10 used the neutral brief. Round 10 was ordered by the coordinator after the operator chose the 2-minute watch. Its panel brief added that the weaker promise itself is not a finding, while whether the design delivers it is.
 
-## Round 10 findings, verbatim, not applied
+## Round 10 findings, verbatim, fixes applied but not re-reviewed
 
 Codex, gpt-6-astra:
 
@@ -105,6 +105,8 @@ TeamViewer's own article is login-walled, and AnyDesk's file layout comes from a
 
 ## Convergence verdict
 
-Not converged after 10 rounds. Round 10 raised two new safety design findings, so no `review-convergence` or `approved` tag was written, and no build started. As instructed, the findings are unapplied and the spec is exactly what round 10 reviewed. The operator accepted "relocks, and tells you if it couldn't" on 2026-11-01 at 17:44 PST in topic 134088; both findings say the current text does not yet deliver that promise.
+**This spec did not converge.** The criterion is a round with zero design findings, and round 10, the last, had two, both about safety. The operator was offered: apply both fixes, then build it switched off on every machine, with no Mac able to turn it on until the crash and Stop tests pass on real hardware. He answered "Build" at 18:11 PST on 2026-11-01 in topic 134088. No further review round ran, by that decision.
 
-His "go" at 17:20 PST and the standing rule that only constitution changes need him would cover approval of a converged spec. Neither replaces convergence.
+The two fixes and the pre-lock \`watching\` item are in the spec, and no reviewer has read them. P12 and P15 are required gates with no fallback, and the enable route refuses a macOS version without both passes. Real-hardware tests of those two rows now stand in for the review that did not finish.
+
+Approval rests on his messages above and on the standing rule that only constitution changes need him (2026-10-22). Neither says the spec converged. Machine-readable tags here mean "cleared to build dark", and a reader should trust this paragraph over the tag name.
