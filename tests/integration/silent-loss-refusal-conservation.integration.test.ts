@@ -77,7 +77,7 @@ function buildIngressRouter(handler: MeshCommandHandler) {
     // Bridge the mesh hop in-process: call the OWNER's real handler.
     deliverMessage: async (_target, env) => callHandler(handler, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, senderEnvelope: env.senderEnvelope } as MeshCommand),
     handleLocally: vi.fn(async () => {}),
-    spawnOnMachine: vi.fn(async () => {}),
+    spawnOnMachine: vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const })),
     queueMessage: () => 'refused',
     raiseAttention: () => {},
     sleep: async () => {},
@@ -184,7 +184,7 @@ describe('silent-loss refusal conservation — integration', () => {
       casClaimOwnership: () => ({ ok: false, epoch: 1 }), // force the CAS-lost → forwardToOwner arm
       deliverMessage: async (_t, env) => callHandler(handler, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, senderEnvelope: env.senderEnvelope } as MeshCommand),
       handleLocally: vi.fn(async () => {}),
-      spawnOnMachine: vi.fn(async () => {}),
+      spawnOnMachine: vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const })),
       queueMessage: () => 'refused',
       raiseAttention: () => {},
       sleep: async () => {},

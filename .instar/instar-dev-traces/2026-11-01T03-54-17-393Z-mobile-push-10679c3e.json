@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mobile-push",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T03:54:17.393Z",
+  "artifactPath": "upgrades/side-effects/mobile-push.md",
+  "artifactSha256": "be0e64663eab4dade89e2b63f3e8233b67396c86e850e73cbfce389463990de4",
+  "specPath": "docs/specs/mobile-push.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "upgrades/side-effects/mobile-push.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up: wording change in an awareness section to avoid a migration sniff collision",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

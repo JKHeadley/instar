@@ -48,6 +48,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
@@ -2051,17 +2052,21 @@ export class LocalVerifyService {
     return true;
   }
 
-  /** Rule (b): is starting a new verify paused for a pending update right now? Also accrues paused time. */
+  /** Pause new work while an update or other planned restart waits on a running verify. */
   private notePause(): boolean {
     const now = this.now();
     let state: UpdatePendingState | null = null;
     try { state = (this.updateProvider ?? this.seams.updatePending)?.() ?? null; } catch { state = null; }
-    const paused = decideUpdatePause(state, now);
+    const restart = readPlannedRestartVerifyState(this.cfg.stateDir, now);
+    const plannedRestartPause = restart.pending && (restart.deferredDelivery === true
+      || (restart.pendingSinceMs !== null
+        && decideUpdatePause({ pending: true, pendingSinceMs: restart.pendingSinceMs, otherBlockers: false }, now, VERIFY_RESTART_HOLD_MS)));
+    const paused = decideUpdatePause(state, now) || plannedRestartPause;
     if (this.pausedSince !== null) {
       const dt = Math.max(0, now - this.pausedSince);
       for (const e of this.queue) if (e.kind !== 'main') e.pausedMs = (e.pausedMs ?? 0) + dt;
     }
-    if (paused && this.pausedSince === null) this.audit({ event: 'update-pause', pendingSinceMs: state?.pendingSinceMs ?? null });
+    if (paused && this.pausedSince === null) this.audit({ event: 'update-pause', pendingSinceMs: state?.pendingSinceMs ?? restart.pendingSinceMs ?? null });
     if (!paused && this.pausedSince !== null) this.audit({ event: 'update-pause-ended' });
     this.pausedSince = paused ? now : null;
     return paused;

@@ -111,7 +111,7 @@ describe('SessionRouter integration (the breaker composition + chains hygiene)',
       casClaimOwnership: vi.fn(() => ({ ok: true, epoch: 1 })),
       deliverMessage: async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck,
       handleLocally: vi.fn(async () => {}),
-      spawnOnMachine: vi.fn(async () => {}),
+      spawnOnMachine: vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const })),
       queueMessage: vi.fn(() => 'refused' as const),
       raiseAttention: vi.fn(),
       sleep: vi.fn(async () => {}),
@@ -144,7 +144,7 @@ describe('SessionRouter integration (the breaker composition + chains hygiene)',
   it('END-TO-END: retry exhaustion marks suspect; the composed isMachineAlive short-circuits the NEXT message straight to re-place (no second retry tax)', async () => {
     const { b } = (() => { const r = make({ ttl: 30_000 }); return { b: r.b, setNow: r.setNow }; })();
     const deliver = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
-    const spawnOnMachine = vi.fn(async () => {});
+    const spawnOnMachine = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' as const }));
     const { router } = makeRouter({
       resolveOwnership: () => ({ owner: 'm_slow', epoch: 7, status: 'active' }),
       // The production composition: capacity-online AND not suspect.

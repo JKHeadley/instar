@@ -40,7 +40,7 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
   const config = {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true,
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' },
-    mobilePairing: opts.chatEnabled === false ? { chat: { enabled: false } } : undefined,
+    mobilePairing: { ...(opts.chatEnabled === false ? { chat: { enabled: false } } : {}), multiRoute: { enabled: false } },
   };
   const ctx = {
     config, startTime: new Date(), scheduler: null, meshSelfId: 'm_self',

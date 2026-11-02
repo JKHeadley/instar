@@ -30,6 +30,7 @@ async function boot(developmentAgent: boolean) {
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
   const config = {
     projectName: 'mp-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
+    mobilePairing: { multiRoute: { enabled: false } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -94,6 +95,15 @@ describe('mobile pairing — production wiring', () => {
     expect(chat.body.error).toBe('chat-unavailable');
     const bearer = await request(app).post('/mobile/chat/1').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e').send({ text: 'x', requestId: rid });
     expect(bearer.body.error).toBe('operator-device-required');
+    // Mobile push (mobile-push): the registration route is mounted and device-signed; the service
+    // is built (not null) and with no APNs key in the vault reports keyConfigured false.
+    const hash = crypto.createHash('sha256').update('read').digest('hex');
+    const pushReg = await send('POST', '/mobile/device/push', { token: 'a'.repeat(64), environment: 'sandbox', notifyTokenHash: hash, revision: 1 });
+    expect(pushReg.status).toBe(200);
+    const st = await request(app).get('/mobile/push').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e');
+    expect(st.status).toBe(200);
+    expect(st.body).toMatchObject({ enabled: true, keyConfigured: false });
+    expect(server.mobilePairing!.push).not.toBeNull();
   });
 
   it('is off on a fleet agent: 503', async () => {

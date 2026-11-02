@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-01T22:38:24.239Z",
+  "slug": "lifeline-noise-routine-notices",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 241,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AutonomousSessions.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/ReapNotifier.ts",
+      "src/monitoring/StopNotifier.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 170,
+    "deletedLines": 71
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

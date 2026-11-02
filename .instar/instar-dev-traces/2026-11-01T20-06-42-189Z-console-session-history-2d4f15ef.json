@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "console-session-history",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-11-01T20:06:42.189Z",
+  "artifactPath": "upgrades/side-effects/console-session-history.md",
+  "artifactSha256": "79fd17ee68cd9efc29dae6e9cbcd1525fd34fef7f9c3ed8452c52c5e5ab715d3",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/sessions-model.js",
+    "dashboard/console/sessions.js",
+    "src/core/SessionTranscriptReader.ts",
+    "src/server/routes.ts",
+    "tests/unit/console-sessions.test.ts",
+    "tests/unit/session-transcript-reader.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only route and console view; revert undoes",
+  "eli16Path": "upgrades/side-effects/console-session-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-session-history.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

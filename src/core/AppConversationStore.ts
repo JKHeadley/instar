@@ -37,7 +37,7 @@ export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'deli
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
-/** The signed-origin fields of spec §4.6 that increment 1 stores (the receipt lands in increment 2). */
+/** The signed-origin fields of spec §4.6 (the machine receipt rides beside it on the message). */
 export interface DeviceSignedOrigin {
   kind: 'device-signed';
   v: 1;
@@ -52,9 +52,15 @@ export interface DeviceSignedOrigin {
   bodyB64?: string;
   bodySha256: string;
   sig: string;
-  /** Present only when redacted. Increment 2 adds the accepting machine's signature. */
-  redaction?: { kinds: string[]; machineId: string };
+  /**
+   * Present only when redacted: the accepting machine's identity-key signature over
+   * (bodySha256, sha256(stored text), kinds) — the removed token itself is never stored.
+   */
+  redaction?: { kinds: string[]; machineId: string; signerKeyHash?: string; sig?: string };
 }
+
+/** The accepting machine's receipt (§4.6): its signature over (sha256(canonical request), receivedAt, machineId). */
+export interface MachineReceipt { machineId: string; signerKeyHash: string; sig: string }
 
 export interface AppEventBase {
   eventId: string;
@@ -74,6 +80,7 @@ export interface MessageEvent extends AppEventBase {
   text: string;
   origin?: DeviceSignedOrigin;
   receivedAt?: string;
+  receipt?: MachineReceipt;
 }
 export interface DeliveryEvent extends AppEventBase { kind: 'delivery'; messageId: string; state: DeliveryEventState }
 export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent;
@@ -99,6 +106,7 @@ export interface BrowsedMessage {
   deliveryState: ReducedDeliveryState;
   origin?: DeviceSignedOrigin;
   receivedAt?: string;
+  receipt?: MachineReceipt;
 }
 
 export const MAX_STORED_TEXT = 16_000;
@@ -167,6 +175,8 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (origin) out.origin = origin;
       const receivedAt = str(r.receivedAt, 64);
       if (receivedAt) out.receivedAt = receivedAt;
+      const receipt = validateReceipt(r.receipt);
+      if (receipt) out.receipt = receipt;
       return out;
     }
     case 'delivery': {
@@ -197,9 +207,24 @@ function validateOrigin(raw: unknown): DeviceSignedOrigin | undefined {
     const rd = o.redaction as Record<string, unknown>;
     const kinds = Array.isArray(rd.kinds) ? rd.kinds.filter((k): k is string => typeof k === 'string' && k.length <= 32).slice(0, 8) : [];
     const machineId = s(rd.machineId, 256);
-    if (machineId) out.redaction = { kinds, machineId };
+    if (machineId) {
+      out.redaction = { kinds, machineId };
+      const signerKeyHash = s(rd.signerKeyHash, 64);
+      const sig = s(rd.sig, 512);
+      if (signerKeyHash && sig) { out.redaction.signerKeyHash = signerKeyHash; out.redaction.sig = sig; }
+    }
   }
   return out;
+}
+
+function validateReceipt(raw: unknown): MachineReceipt | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const s = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
+  const machineId = s(o.machineId, 256);
+  const signerKeyHash = s(o.signerKeyHash, 64);
+  const sig = s(o.sig, 512);
+  return machineId && signerKeyHash && sig ? { machineId, signerKeyHash, sig } : undefined;
 }
 
 export interface AppConversationStoreOptions {
@@ -500,6 +525,13 @@ export class AppConversationStore {
     } catch { return null; } finally { fs.closeSync(fd); } // @silent-fallback-ok — an unreadable row reads as absent
   }
 
+  /** One event by id (the Telegram history join, §4.9), or null. */
+  getEvent(conversationKey: string, eventId: string): StoredAppEvent | null {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const loc = this.db.prepare('SELECT byteOffset, byteLength FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, eventId) as { byteOffset: number; byteLength: number } | undefined;
+    return loc ? this.readEventAt(canonicalKey, loc.byteOffset, loc.byteLength) : null;
+  }
+
   hasEvent(conversationKey: string, eventId: string): boolean {
     return !!this.db.prepare('SELECT 1 FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalConversationKey(conversationKey), eventId);
   }
@@ -510,7 +542,10 @@ export class AppConversationStore {
     return r ? toSummary(r) : null;
   }
 
-  /** Live (not deleted) conversations, newest activity first; keyset cursor `<activity>|<canonicalKey>`. */
+  /**
+   * Live (not deleted) NATIVE app conversations, newest activity first; keyset cursor
+   * `<activity>|<canonicalKey>`. App-sent Telegram/Slack messages kept here (§4.9) are not listed.
+   */
   listConversations(opts: { limit?: number; cursor?: string | null } = {}): { conversations: ConversationSummary[]; nextCursor: string | null } {
     const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
     let rows: Array<Record<string, unknown>>;
@@ -519,9 +554,9 @@ export class AppConversationStore {
       const i = opts.cursor.lastIndexOf('|');
       const ca = opts.cursor.slice(0, i);
       const ck = opts.cursor.slice(i + 1);
-      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND (${act} < ? OR (${act} = ? AND canonicalKey < ?)) ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(ca, ca, ck, limit + 1) as Array<Record<string, unknown>>;
+      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' AND (${act} < ? OR (${act} = ? AND canonicalKey < ?)) ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(ca, ca, ck, limit + 1) as Array<Record<string, unknown>>;
     } else {
-      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(limit + 1) as Array<Record<string, unknown>>;
+      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(limit + 1) as Array<Record<string, unknown>>;
     }
     const more = rows.length > limit;
     const page = rows.slice(0, limit).map(toSummary);
@@ -596,6 +631,7 @@ export class AppConversationStore {
         eventId: ev.eventId, messageId: ev.messageId, role: ev.role, text: ev.text, at: ev.at, machineId: ev.machineId,
         deliveryState: this.deliveryState(ev.messageId) ?? 'pending',
         ...(ev.origin ? { origin: ev.origin } : {}), ...(ev.receivedAt ? { receivedAt: ev.receivedAt } : {}),
+        ...(ev.receipt ? { receipt: ev.receipt } : {}),
       });
     }
     out.reverse();
@@ -611,7 +647,7 @@ export class AppConversationStore {
         for (const n of fs.readdirSync(dir)) if (n.endsWith('.jsonl')) bytes += fs.statSync(path.join(dir, n)).size;
       } catch { /* @silent-fallback-ok — observability only */ }
     }
-    const count = (this.db.prepare('SELECT COUNT(*) AS c FROM conversations WHERE tombstoned = 0').get() as { c: number }).c;
+    const count = (this.db.prepare("SELECT COUNT(*) AS c FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%'").get() as { c: number }).c;
     return { bytes, count };
   }
 

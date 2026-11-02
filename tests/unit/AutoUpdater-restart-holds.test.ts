@@ -183,6 +183,7 @@ describe('AutoUpdater restart holds', () => {
     expect(fs.existsSync(restartFile())).toBe(false);
     await vi.advanceTimersByTimeAsync(20 * 60_000);
     expect(fs.existsSync(restartFile())).toBe(true);
+    expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8')).bypassHolds).toBe(true);
     expect(log.mock.calls.some((c) => String(c[0]).includes('Restart holds for v0.9.9 ignored: max deferral (4h) reached'))).toBe(true);
     u.stop();
   });
@@ -199,6 +200,7 @@ describe('AutoUpdater restart holds', () => {
     await gated(u);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(fs.existsSync(restartFile())).toBe(true);
+    expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8')).bypassHolds).toBe(true);
     u.stop();
   });
 
@@ -270,6 +272,7 @@ describe('AutoUpdater restart holds', () => {
     await u.applyPendingUpdate({ bypassWindow: true, bypassHolds: true });
     await vi.advanceTimersByTimeAsync(3_000);
     expect(fs.existsSync(restartFile())).toBe(true);
+    expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8')).bypassHolds).toBe(true);
     expect(u.getStatus().restartDeferral).toBeNull();
     u.stop();
   });

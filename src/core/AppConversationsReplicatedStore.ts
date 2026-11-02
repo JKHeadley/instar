@@ -25,7 +25,7 @@ export const APP_CONVERSATION_RECORD_KIND = 'app-conversation-event';
 export const APP_CONVERSATIONS_STORE_KEY = 'appConversations';
 export const APP_CONVERSATIONS_IMPACT_TIER: ImpactTier = 'low';
 
-const KNOWN = ['eventId', 'eventKind', 'conversationKey', 'at', 'machineId', 'title', 'setAt', 'messageId', 'role', 'text', 'signedOrigin', 'receivedAt', 'state'] as const;
+const KNOWN = ['eventId', 'eventKind', 'conversationKey', 'at', 'machineId', 'title', 'setAt', 'messageId', 'role', 'text', 'signedOrigin', 'receivedAt', 'receipt', 'state'] as const;
 
 export function deriveAppConversationRecordKey(conversationKey: string, eventId: string): string {
   return crypto.createHash('sha256').update(`${canonicalConversationKey(conversationKey)}\u0000${eventId}`).digest('hex');

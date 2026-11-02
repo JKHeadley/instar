@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import { markPlannedRestartDeferred, VERIFY_RESTART_HOLD_MS } from '../../../src/core/PlannedRestartVerifyGuard.js';
 import {
   LocalVerifyService, checkEligibility, decideBaseRefresh, decideMergeHandoff, decideStarved, INTERRUPTION_LIMITS, MERGE_LINE,
   MERGE_THROUGHPUT_LABEL, QUEUE_PRIORITY, capFor, THROUGHPUT_AGING_MS, effectivePriority, prPriority,
@@ -1945,6 +1946,50 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
 // ── 2026-10-25: a restart deferred only for this verifier pauses new starts; closed PRs are skipped ──
 
 describe('a deferred restart is a pending update (the applied-but-not-restarted gap)', () => {
+  it('a planned restart from another writer holds the next PR until the flag is consumed', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    expect(s.spawned).toHaveLength(1);
+    const flagPath = path.join(s.stateDir, 'state', 'restart-requested.json');
+    fs.writeFileSync(flagPath, JSON.stringify({
+      requestedAt: '2026-10-21T10:00:00.000Z',
+      expiresAt: '2026-10-21T11:00:00.000Z',
+      plannedRestart: true,
+      requestedBy: 'setting-change',
+    }));
+    await s.finish(0, ok(record()));
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1);
+    expect(s.svc.snapshot().queue.map((entry) => entry.pr)).toEqual([2]);
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1); // the request survives the original one-hour TTL
+    SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'LocalVerifyService.test.ts:planned-restart-consumed' }); // the supervisor consumed the request
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(2);
+  });
+
+  it('a genuinely deferred request keeps the queue paused through its delivery window', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s.svc.request(1);
+    await s.svc.request(2);
+    const flagPath = path.join(s.stateDir, 'state', 'restart-requested.json');
+    const markerPath = path.join(s.stateDir, 'state', 'local-verify', 'inflight.json');
+    const flag = { requestedAt: new Date(T0).toISOString(), expiresAt: new Date(T0 + 60 * 60_000).toISOString(), plannedRestart: true };
+    fs.writeFileSync(flagPath, JSON.stringify(flag));
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    fs.writeFileSync(markerPath, JSON.stringify({ ...marker, pid: process.pid }));
+    expect(markPlannedRestartDeferred(s.stateDir, flag, T0)).toBe(true);
+    await s.finish(0, ok(record()));
+    s.advance(VERIFY_RESTART_HOLD_MS + 1);
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1); // the supervisor is due to consume this request
+    SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'LocalVerifyService.test.ts:deferred-restart-consumed' });
+    await s.svc.tick();
+    await s.flush();
+    expect(s.spawned).toHaveLength(2);
+  });
+
   it('pauses during install and until this process restarts, even for a manual apply with no deferral', () => {
     const base = { config: { autoApply: false }, pendingUpdate: null, coalescingUntil: null,
       pendingUpdateDetectedAt: '2026-10-21T08:00:00.000Z', restartDeferral: null };

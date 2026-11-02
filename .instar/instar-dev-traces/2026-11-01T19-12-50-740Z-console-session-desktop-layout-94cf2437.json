@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-session-desktop-layout",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-11-01T19:12:50.740Z",
+  "artifactPath": "upgrades/side-effects/console-session-desktop-layout.md",
+  "artifactSha256": "d623b62032ae5d2fc62ac14340e856a57a9650f7d2227ceaacadb4b15008a4ba",
+  "coveredFiles": [
+    "dashboard/console/console.css"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CSS-only layout change, revert fully undoes",
+  "eli16Path": "upgrades/side-effects/console-session-desktop-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-session-desktop-layout.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

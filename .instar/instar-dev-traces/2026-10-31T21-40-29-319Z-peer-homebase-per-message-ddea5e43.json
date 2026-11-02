@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "peer-homebase-per-message",
+  "sessionId": "bc2c60e9-701a-4ead-9298-ca496c62ebd0",
+  "timestamp": "2026-10-31T21:40:29.319Z",
+  "artifactPath": "upgrades/side-effects/peer-homebase-per-message.md",
+  "artifactSha256": "6b6bf166a334ad479139d8632b322aaec71fa01283470c987bb3facc437d76e1",
+  "specPath": "docs/specs/peer-conversation-homebase-topic.md",
+  "coveredFiles": [
+    "docs/specs/peer-conversation-homebase-topic.eli16.md",
+    "docs/specs/peer-conversation-homebase-topic.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/peerHomebaseAwareness.ts",
+    "src/server/routes.ts",
+    "src/threadline/PeerUserMeantJudge.ts",
+    "src/threadline/ThreadlineEndpoints.ts",
+    "src/threadline/ThreadlineRouter.ts",
+    "src/threadline/TopicLinkageHandler.ts",
+    "src/threadline/peerHomebaseRelay.ts",
+    "tests/e2e/threadline/peer-homebase-user-routing-alive.test.ts",
+    "tests/integration/threadline/peer-homebase-per-message.test.ts",
+    "tests/unit/PostUpdateMigrator-peerHomebaseRefresh.test.ts",
+    "tests/unit/peer-homebase-user-routing.test.ts",
+    "tests/unit/peer-user-meant-judge.test.ts",
+    "upgrades/next/peer-homebase-per-message.md",
+    "upgrades/side-effects/peer-homebase-per-message.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds an LLM judgment point that decides operator-facing Telegram posts and sends message text to external models; full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot reaction per inbound peer message: one model decision (daily-capped) and one post plus at most two bounded retries (max 50 pending); nothing re-triggers it"
+  }
+}

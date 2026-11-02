@@ -113,6 +113,10 @@ matches the plist label written by `installMacOSLaunchAgent`.
 - Lock-acquire: if the lock-holder PID is in 'S' (sleeping) state with
   the lock written >5 minutes ago, send SIGTERM, poll for exit up to
   3s, then SIGKILL. Take the lock.
+- Superseded for holders that heartbeat (issue #2485): a healthy idle Node
+  process sits in 'S' nearly all the time, so this test also matched healthy
+  lifelines. A holder now touches the lock's mtime every 30s and is judged by
+  that. See `upgrades/side-effects/lifeline-lock-heartbeat.md`.
 
 ### Change 5 — `--build-from-source` on native rebuild
 

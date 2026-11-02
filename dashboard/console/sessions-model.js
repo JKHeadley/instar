@@ -102,7 +102,52 @@ function nicknameOf(pool, machineId) {
  * The whole list. sessionsRes is the GET /sessions?scope=pool read; ws is the live
  * socket's list for this machine (null when the socket has not sent one).
  */
-export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicNames = {} } = {}) {
+/** The message a session receives for attached files: the operator's text, then one
+ *  line per file naming where it was saved, so the session can open it. */
+export function attachmentMessage(text, paths) {
+  const lines = paths.map((p) => `[Attached file from the dashboard: ${p} (read it to see what I sent)]`);
+  return [String(text || '').trim(), ...lines].filter(Boolean).join('\n');
+}
+
+/** `triggeredBy` on a session the operator created from the dashboard's New session box. */
+export const OPERATOR_CREATED = 'dashboard-operator';
+
+/** Internal = machinery the operator did not start: scheduled jobs, and helper sessions
+ *  the agent spawned for itself (no chat attached, not created from the dashboard). A
+ *  conversation (Telegram, Slack, ...) is never internal. Hidden by default, one toggle away. */
+export function isInternalSession(s) {
+  if (!s) return false;
+  if (s.jobSlug || s.type === 'job') return true;
+  return (s.platform || 'headless') === 'headless' && s.triggeredBy !== OPERATOR_CREATED;
+}
+
+/** The History read for a session: its conversation record, a page at a time. A session
+ *  on another machine is read through this machine, which asks the owner. */
+export const HISTORY_PAGE = 150;
+export function historyUrl(s, before = null) {
+  const q = new URLSearchParams({ limit: String(HISTORY_PAGE) });
+  if (before != null) q.set('before', String(before));
+  if (s.remote && s.machineId) q.set('machineId', s.machineId);
+  return `/sessions/${encodeURIComponent(s.tmuxSession)}/transcript?${q}`;
+}
+
+/** Words for a failed History read: never "no history" when the read failed. */
+export function historyErrorWords(res) {
+  const d = (res && res.data) || {};
+  if (d.reason === 'no-transcript') return 'This session has no conversation record yet.';
+  if (d.reason === 'peer-unreachable' || d.reason === 'peer-unknown') return `Can’t tell: ${d.error || 'the session’s machine did not answer'}.`;
+  const why = d.error || (res && res.reason) || (res && res.status ? `the server answered ${res.status}` : 'the server could not be reached');
+  return `Can’t tell: ${String(why).replace(/\.$/, '')}.`;
+}
+
+/** A user line from a chat bridge carries a routing prefix; show only what was said. */
+export function historyText(e) {
+  let t = String((e && e.text) || '');
+  if (e && e.role === 'user') t = t.replace(/^\[(telegram|slack|whatsapp):[^\]]*\]\s*/, '');
+  return t;
+}
+
+export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicNames = {}, showInternal = false } = {}) {
   if (!sessionsRes || !sessionsRes.ok) return { ok: false, reason: `Couldn’t list sessions: ${(sessionsRes && sessionsRes.reason) || 'no answer'}.` };
   const data = sessionsRes.data || {};
   if (!Array.isArray(data.sessions)) return { ok: false, reason: 'The session list answered without sessions.' };
@@ -114,7 +159,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicN
   const duplicateConversations = new Set((Array.isArray(pool.duplicateTopics) ? pool.duplicateTopics : [])
     .filter((d) => typeof d.platform === 'string' && d.platformId != null)
     .map((d) => `${d.platform}:${String(d.platformId)}`));
-  const rows = [...local.map((s) => ({ ...s, machineNickname: s.machineNickname || selfName })), ...remote].map((s) => {
+  const allRows = [...local.map((s) => ({ ...s, machineNickname: s.machineNickname || selfName })), ...remote].map((s) => {
     const a = activity(s, now);
     const duplicate = s.duplicateTopic === true || (typeof s.platform === 'string' && s.platformId != null
       && duplicateConversations.has(`${s.platform}:${String(s.platformId)}`));
@@ -123,15 +168,18 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicN
     const running = Number.isFinite(started) ? spanWords(now - started) : null;
     const sub = [machine, running && running !== 'now' ? running : running ? 'just started' : null, duplicate ? 'running on two machines at once' : a.state === 'no-reading' ? null : a.words].filter(Boolean).join(' · ');
     return {
-      key: sessionKey(s), title: sessionTitle(s, topicNames), sub, end: a.end, activity: a.state, duplicate,
+      key: sessionKey(s), title: sessionTitle(s, topicNames), sub, end: a.end, activity: a.state, duplicate, internal: isInternalSession(s),
       tone: duplicate ? 'bad' : a.state === 'quiet' ? 'attn' : a.state === 'no-reading' ? 'unknown' : null,
       machine, remote: s.remote === true, model: modelWords(s.model),
-      session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
+      session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), internal: isInternalSession(s), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
     };
   });
   // Most recently active first inside each group.
   const lastOf = (r) => Date.parse(r.session.telemetry && r.session.telemetry.lastActivity) || Date.parse(r.session.startedAt) || 0;
-  rows.sort((x, y) => lastOf(y) - lastOf(x));
+  allRows.sort((x, y) => lastOf(y) - lastOf(x));
+  const hiddenInternal = showInternal ? 0 : allRows.filter((r) => r.internal).length;
+  const internalCount = allRows.filter((r) => r.internal).length;
+  const rows = showInternal ? allRows : allRows.filter((r) => !r.internal);
   const needsLook = rows.filter((r) => r.duplicate || r.activity === 'quiet');
   const working = rows.filter((r) => !needsLook.includes(r));
   const failedIds = new Set((Array.isArray(pool.failed) ? pool.failed : []).map((f) => f.machineId));
@@ -148,7 +196,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicN
   })) : [];
   const machineCount = multi ? machines.length : 1;
   return {
-    ok: true, rows, needsLook, working, idleMachines, unanswered, multi, selfName,
+    ok: true, rows, allRows, hiddenInternal, internalCount, showInternal, needsLook, working, idleMachines, unanswered, multi, selfName,
     selfMachineId: pool.selfMachineId || null,
     counts: { running: rows.length, quiet: rows.filter((r) => r.activity === 'quiet').length, duplicate: rows.filter((r) => r.duplicate).length, machines: machineCount, answering: machineCount - unanswered.length },
   };
