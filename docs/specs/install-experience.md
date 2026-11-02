@@ -6,6 +6,7 @@ author: "echo"
 parent-principle: "The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred"
 eli16-overview: "install-experience.eli16.md"
 status: "draft"
+lessons-engaged: "Migration Parity; The Agent Is Always Reachable; a send result is not a delivery; Mobile-Complete Operator Actions; never probe with a mutating call"
 ---
 
 **Part 1 of 3.** This spec covers the installer, AI doors, addresses, reachability and first tasks. It ships without the other two. [`owner-authentication.md`](owner-authentication.md) replaces the PIN for risky actions and adds creating the next agent. [`hosted-relay.md`](hosted-relay.md) adds the optional relay and phone-first install.
@@ -68,7 +69,7 @@ All paths run the same installer. Each states what it depends on.
 
 | Way in | First human step | Depends on |
 |---|---|---|
-| One-liner alone | Run the command | Nothing hosted |
+| One-liner alone | Run the command | Nothing hosted after install; the download host must be up at install time |
 | Existing AI tool | Paste one sentence into Claude Code, Codex or another harness | The tool, and the contract in 4.3 |
 | npm | `npx instar@latest` | Node already installed |
 | iPhone app | Install on the computer, then scan its QR code on the same network or over a private address | The App Store or TestFlight app |
@@ -80,7 +81,7 @@ Windows runs through the same installer inside WSL. Enabling WSL needs an admini
 ### 4.1 The installer
 
 - **Published and verifiable.** `instar.sh/install` and `install.ps1`, with the same bytes in the npm package and a detached signature checked by the bootstrap where a verifier exists. The script takes **no parameter that sets ownership**.
-- **Plain consent.** It says what it will install and asks once. `--yes` is explicit. It never runs `sudo` without saying so. This follows `GUIDED-SETUP-SPEC` principle 7: stated consent counts, and silent installs stay forbidden.
+- **Plain consent.** It says what it will install and that this creates a new agent ("to put an existing agent here, ask that agent"), and asks once. `--yes` is explicit. It never runs `sudo` without saying so. This follows `GUIDED-SETUP-SPEC` principle 7: stated consent counts, and silent installs stay forbidden.
 - **Checks first.** Disk space with a plain refusal, supported platform, and existing tools, including common version-manager locations, because `curl | sh` runs without the person's shell profile. It asks before installing a second copy of anything.
 - **Installs the chosen AI door.** No agent exists yet, so the deterministic installer does this. When it can't, it stops with a plain next step and a resume point.
 - **Default home.** `~/.instar/agents/<name>`, never the current directory, so the macOS protected-folder refusal can't surprise anyone.
@@ -101,7 +102,8 @@ An AI tool can't answer prompts, and a command that waits for a person inside a 
 - The installer accepts an answers file for name, purpose and door. A harness can write it.
 - At a step that needs the person (door sign-in, owner slot, address choice), the installer opens the browser itself, prints "finish in the window that opened", records `awaiting-person` in the ledger and **exits 0**. No link or token goes to output or logs.
 - `instar install --resume` continues, and the harness polls the ledger's status.
-- If no browser can open, as on a headless machine, the installer tells the person to run the command in their own terminal.
+- **With no browser on the machine**, the installer tells the person to run `instar install --resume` in their own terminal, for example over SSH. In that interactive mode it shows the AI door's device sign-in code, then the PIN or owner step, directly. The dashboard is then reached over a private address or an SSH tunnel, as the terminal explains.
+- **Pages opened for the person need an installer-minted, single-use, short-lived token.** Source address grants nothing, because behind a tunnel every caller is loopback.
 
 **Limit.** A program running as that user can read local state and open local pages, so this design stops accidents and casual injection rather than a determined local program. An ownership step taken this way is still visible to the person: the agent's first message states when the owner was set.
 
@@ -119,7 +121,7 @@ Until `owner-authentication.md` ships, this step shows the viewing PIN once, on 
 
 Setup asks "which AI do you want to use?", offering what it detects first. Each door declares a contract:
 
-- **Detect** and **Signed in.** Signed in is proven by one live authenticated call. `claude auth status` is not proof, because it reports signed in for expired sessions. An unreadable credential store (such as a locked keychain) reads `unknown`: setup says "can't tell" and never re-signs in over a possibly working login.
+- **Detect** and **Signed in.** Signed in is proven by one live authenticated call that is read-only and spends nothing, such as the pool's usage read or the Codex app-server read. `claude auth status` is not proof, because it reports signed in for expired sessions. An unreadable credential store (such as a locked keychain) reads `unknown`: setup says "can't tell" and never re-signs in over a possibly working login.
 - **Install**, by the deterministic installer.
 - **Sign in**, through browser or device login, an API key through Secret Drop, or nothing for a local model.
 - **Runs sessions:** which harness carries agent sessions.
@@ -132,7 +134,7 @@ Setup asks "which AI do you want to use?", offering what it detects first. Each 
 | API key | OpenRouter, direct provider keys | **Not offered until the money layer is live and a limit is set in the same flow.** Until then setup says so in one sentence |
 | Local model | Ollama, LM Studio, llama.cpp | Check RAM or VRAM against model size, and measure CPU speed. Marked "not yet" until proven |
 
-Pi is the candidate harness for API and local doors, and needs a live proof in phase 5. If it fails, API doors route through Codex CLI provider configuration where a proof passes, and local doors stay "not yet". The doorway manifest ships in the package.
+Pi is the candidate harness for API and local doors, and needs a live proof in phase 3. If it fails, API doors route through Codex CLI provider configuration where a proof passes, and local doors stay "not yet". The doorway manifest ships in the package.
 
 **Internal checks on a first install.** Background gates fail closed, so a weak or rate-limited door could hold the first message. Each door's first-hour posture is declared: heuristic-first where allowed, off-Claude per the existing provider-fallback policy where available. The credential wall and self-stop floors never relax. The person is told plainly when a door can't carry gates.
 
@@ -140,7 +142,7 @@ Pi is the candidate harness for API and local doors, and needs a live proof in p
 
 The agent sets up the chosen option. The person only signs in where needed, through a link.
 
-| Option | Needs | Away from home | Hosted service |
+| Option | Needs | Away from home | Instar-hosted service required |
 |---|---|---|---|
 | Tailscale | Free account, app on phone | Yes | No |
 | Own Cloudflare or domain | Account and domain | Yes | No |
@@ -151,11 +153,13 @@ The agent sets up the chosen option. The person only signs in where needed, thro
 
 **Pairing change.** All three gates (mint, redeem, `stableOrigin()`) accept any proven own name, with the stored device origin following. The proof that this process answers on the name stays. Quick tunnels remain refused for phones.
 
-**Same network.** The agent terminates TLS itself with its own certificate. The phone pins it through the pairing link and the code in 8.2.
+**Same network.** The agent terminates TLS itself with its own certificate. A new version of the pairing link carries the certificate's public-key hash in the QR code on the computer's screen, and the phone checks it before redeeming and pins it. A replaced certificate means pairing again. Older links stay valid for addresses with a public certificate.
 
 ## 7. Reachability without messaging
 
 Messaging can't become optional until the floor has another carrier. The protected lifeline gains a dashboard and native-app conversation carrier, keyed the same way on a minted conversation id, and the cold-start fallback gains that delivery path. The first session and conversation are created by the installer. **Phase 1 cannot ship "messaging optional" without this.** Graduating `mobilePairing.native.enabled` to the fleet, including a live-channel proof, is a phase-1 exit criterion owned by the instar-developing agent. A no-channel install on phase 1 is reachable through the local dashboard, and through a phone once a private address exists.
+
+**Who the dashboard speaks for.** Today the only conversation send route is device-signed. Phase 1 adds a browser send path behind a PIN session, and the PIN is readable by the agent. So dashboard messages are origin-tagged and never bind a verified operator. A no-channel, no-phone install has no verified operator until a channel or `owner-authentication.md` arrives, and operator-only conversational flows honestly wait.
 
 ## 8. Getting started
 
@@ -165,7 +169,14 @@ The agent's first message offers three tasks based on the stated purpose. Each n
 2. **Memory:** tell it a preference, open a new conversation, and see it remembered.
 3. **A promise:** a dated reminder that really fires.
 
-**Delivery, not a send result.** First-result success reads the delivery outcome record, because lease holds and gate holds both produce "job ran, person saw nothing".
+**Delivery, not a send result.** Lease holds and gate holds both produce "job ran, person saw nothing", so success is defined per carrier:
+
+| Carrier | Counts as delivered |
+|---|---|
+| Telegram, Slack, WhatsApp | The platform accepted it and returned a message id, read from the outbound outcome record |
+| Dashboard or app | The reply is stored **and** a connected client confirmed displaying it |
+
+With the dashboard closed and the phone disconnected, the state is `stored, not yet seen`. The installer says that and points to where to read it.
 
 **A floor for the first minute.**
 
@@ -181,7 +192,7 @@ Then a guided second level: a scheduled email report, calendar, another computer
 
 ## 11. Testing and proof
 
-- **Unit and integration:** state machine and resume at every step, including `awaiting-person`; door contracts on both sides of "signed in"; pairing on each address type at all three gates; no link or token in output in non-interactive mode; first-result timeout path.
+- **Unit and integration:** state machine and resume at every step, including `awaiting-person`; a full headless path with no browser on the target; substituted certificate refused at redeem; per-carrier delivery states with clients closed; token required on opened pages; door contracts on both sides of "signed in"; pairing on each address type at all three gates; no link or token in output in non-interactive mode; first-result timeout path.
 - **E2E:** clean install per door and address, with feature-alive checks, including the lifeline with no channel.
 - **Live-user-channel proof:** a stranger-shaped run per way in, on a clean machine and clean phone, recording actions, minutes and disk against 1.2. Includes the no-relay, no-phone path, which R2 makes mandatory.
 - **Wizard quality comparison** before the Claude flow retires (4.2).

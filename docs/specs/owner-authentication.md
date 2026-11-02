@@ -5,6 +5,7 @@ author: "echo"
 parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
 eli16-overview: "owner-authentication.eli16.md"
 status: "draft"
+lessons-engaged: "Know Your Principal; Signal vs Authority; chat approval is not PIN authorization; Bounded Blast Radius; Migration-Consumer Completeness"
 related-specs: "install-experience.md, hosted-relay.md"
 ---
 
@@ -42,7 +43,7 @@ Relay addresses and Cloudflare quick tunnels never accept proof entry. Their ope
 
 ### 3.2 Telegram is not proof
 
-A bot token is readable by the agent, so a button tap can't prove a human. A Telegram-only person does risky actions from a loopback or same-network page, or adds a phone or private address, which the agent offers to set up. Existing Telegram approvals keep working until that owner enrolls a proof (section 9).
+A bot token is readable by the agent, so a button tap can't prove a human. A Telegram-only person does risky actions from a loopback or same-network page, or adds a phone or private address, which the agent offers to set up. SSH counts as local. A Telegram-only owner on a remote server stays on PIN and Telegram approvals until they add one. Existing approvals keep working until that owner enrolls a proof (section 9).
 
 ## 4. Enrollment
 
@@ -52,11 +53,11 @@ A bot token is readable by the agent, so a button tap can't prove a human. A Tel
 
 **Headless machine:** enrollment over same-network or a private address, using the phone flow or a browser on another computer with the same key-derived code. Never through a quick tunnel.
 
-**Limit and recovery.** A local program could race the person to enrollment. So the agent's first message states when the owner was set and the key's fingerprint, and **a proof younger than 24 hours can't veto a local reset** (section 7). A stolen first-owner slot is therefore recoverable.
+**Limit and recovery.** A local program could race the person to enrollment. So the agent's first message states when the owner was set and the key's fingerprint, and a **provisional** proof can't veto a reset (section 7). A stolen first-owner slot is therefore recoverable.
 
 ## 5. Approval requests
 
-Prompts render server-canonical structured fields, and the signed challenge is the canonical action hash. The agent cannot author the wording. Each has an expiry. At most three may be pending per agent per machine, and three declines in a row pause requests and alert the owner.
+Prompts render server-canonical structured fields. The agent cannot author the wording. Every approval signs a versioned envelope binding owner, target machine and agent, exact action parameters, a unique nonce, an expiry and the record head. Consuming the nonce is atomic with running the action, and durable across restarts, so an approval can't run twice or on another machine. At most three may be pending per agent per machine, and three declines in a row pause requests and alert the owner.
 
 **Risky actions:** approvals, money, arming, remote desktop, revoking, creating an agent, and changing the owner record. Viewing only needs a PIN session or any proof.
 
@@ -65,23 +66,34 @@ Prompts render server-canonical structured fields, and the signed challenge is t
 ## 6. One owner across machines and agents
 
 - **The owner record is a trust anchor beside `identity.json`.** It never travels through ordinary state sync.
-- **Structure:** a grow-only set of signed entries (add key, revoke key). Revocations always win. Disconnected machines merge deterministically, with no central authority.
-- **Each signed action carries the record head the signer holds.** A machine accepts when the signature verifies against the merged set and adopts newer entries from it. No peer is needed, so a sole surviving machine keeps working.
+- **Structure:** signed entries (add key, revoke key, new epoch), each citing its signing key and the causal heads it saw. Disconnected machines merge deterministically, with no central authority.
+- **Authorization rules, checked on every merge:**
+  - An add stands if its signer was valid at that causal point.
+  - Revoking key A voids what A signed concurrently with or after the revocation. What A signed causally before it stands. So B added by A while disconnected, concurrent with A's revocation, is void and must be added again.
+  - If A and B revoke each other concurrently, both are revoked. If that leaves no key, the owner uses the reset, and every proof holder is alerted.
+- **Each signed action carries the record head the signer holds.** A machine accepts when the signature verifies against the merged record and adopts newer entries from it. No peer is needed, so a sole surviving machine keeps working.
+- **Already-paired machines at first enrollment:** a machine whose identity is already verified accepts the owner-signed record root over the mesh once. Its first-seen record is pinned.
 - **New machine or agent:** an enrolled machine gives a one-time code. The approval prompt shows the new machine's key fingerprint, and the new machine's terminal shows the same words to compare. Only then is the record sent.
-- **Phones across machines:** the record lists device keys, so a paired phone is accepted by all of the owner's machines. This closes the `401` on a tunnel move.
+- **Phones across machines:** the record lists device keys, so a paired phone is accepted by all of the owner's machines. This closes the `401` on a tunnel move. After first enrollment the record is authoritative for phones. The existing replicated device ledger becomes a projection of it, and a revocation writes both.
 - **Honest limit on revocation:** a machine that hasn't seen a revocation would still accept that key until it syncs. Revocations are pushed to all peers with retries, and the owner sees which machines have confirmed.
 
 ## 7. Recovery
 
 - **New device:** approved from an existing proof.
 - **Lost device, with recovery key:** replaces the lost entry. This supersedes the recovery key in `MULTI-USER-SETUP-SPEC` (stored hashed, displayed by the agent, 24-hour hold), because this key is a signing key that never touched the machine.
-- **Lost everything:** "Start over" on a loopback or same-network dashboard page, or a local command. **72-hour wait**, with notices on every channel at the start, at 24 hours and at 1 hour. Any proof at least 24 hours old cancels it. All audited. Never available on a relay origin. A remote operator with a closet computer uses a private address they already set up. **Physical or network access is an accepted exception to Mobile-Complete Operator Actions**: allowing it from a phone alone would let anyone reset ownership.
+- **Lost everything:** "Start over" on a loopback or same-network dashboard page, or a local command. SSH counts as local. Rules:
+  - **One pending reset at a time, with a 72-hour wait.** Notices go to every channel at the start, at 24 hours and at 1 hour.
+  - **Veto eligibility freezes when the reset starts.** A key may cancel only if it existed at least 24 hours before the request and isn't provisional. A key is provisional from local-page enrollment until it has approved a risky action or admitted a second device.
+  - **A veto locks local resets for 7 days,** so a misbehaving agent can't keep starting them.
+  - **Completing it takes a second local act after the wait.** A missed notice alone can't hand over ownership.
+  - **Effect: a new epoch entry.** It voids every earlier key, however late earlier entries merge, and re-enrollment opens. A peer machine applies it only after its own 72-hour wait from receiving it, under the same veto rule. With two epochs on disconnected machines, the higher number wins. A tie voids both and requires fresh enrollment.
+  - All audited, and never available on a relay origin. **Physical or network access is an accepted exception to Mobile-Complete Operator Actions**: allowing it from a phone alone would let anyone reset ownership.
 
 Owner-record change alerts, decline pauses and reset notices are security events whose arbiter is the owner, so they escalate immediately. They aren't subject to self-heal-first.
 
 ## 8. PIN changes
 
-- One funnel, `ownerProof`, replaces all PIN-gated authority. An inventory of every consumer is a deliverable of this spec, and a lint refuses new direct PIN comparisons.
+- One funnel, `ownerProof`, replaces all PIN-gated authority and operator-session authority (about 46 `checkMandatePin` sites and `operatorSessionStore.validate` consumers in 12 files). An inventory of every consumer is a deliverable of this spec, and a lint refuses new direct uses of either. Cross-machine routes such as `issue-for-machine`, passkey `cell-action` and `repair-cell` carry the owner signature, and the peer verifies it against its own merged record rather than trusting a machine relay.
 - The PIN stays for viewing only, per machine, stored as a slow hash in a worker so a burst can't block the server. The cross-machine credential is the owner proof.
 - `POST /dashboard/unlock?v=2` returns only a scoped session: dashboard reads, with a fixed limit, invalidated when the PIN changes. The old response stays for one minor series so all five front-ends and the app can move, using the session-only adapter in `console/ui.js`.
 - Client address comes from `CF-Connecting-IP` only on tunnel arrivals. A stronger proof bypasses the PIN limit, so strangers can't lock an owner out.
@@ -110,7 +122,7 @@ The agent runs as the same operating-system user as the code that checks signatu
 
 ## 12. Testing and proof
 
-- **Unit and integration:** `ownerProof` per proof type; merge, revocation-wins and head adoption; concurrent changes on disconnected machines; approval text binding, pending cap and decline pause; origin refusal for proof entry on relay and quick-tunnel addresses; veto age rule; unlock v2; PIN migration with no re-mint.
+- **Unit and integration:** `ownerProof` per proof type; merge rules with the adversarial examples in section 6, including cross-revocation and an add concurrent with its signer's revocation; epoch merge; approval envelope replay under concurrency and restart, and on another machine; approval text binding, pending cap and decline pause; origin refusal for proof entry on relay and quick-tunnel addresses; enrollment theft followed by a reset and an attempted veto after 24 hours; repeated resets; first-seen root on paired machines; unlock v2; PIN migration with no re-mint.
 - **Wiring integrity:** every migrated consumer reaches `ownerProof`; the lint fails a new direct comparison.
 - **E2E:** feature-alive for each proof; sole surviving machine still accepts owner actions; phone accepted after a machine move.
 - **Live-user-channel proof:** enrollment and a risky action on phone, passkey and passphrase, with no hosted service. A Telegram-only migration path.
@@ -118,7 +130,7 @@ The agent runs as the same operating-system user as the code that checks signatu
 ## 13. Frontloaded Decisions
 
 1. **Passkeys across addresses:** register per address, forward to a trusted device otherwise. Related Origin Requests deferred.
-2. **Recovery wait:** 72 hours, with the 24-hour veto age.
+2. **Reset rules:** section 7's wait, frozen veto eligibility, provisional keys, 7-day lock, second local act, epoch merge.
 3. **Recovery key timing:** not during install.
 4. **PIN retirement:** per owner, on first proof.
 5. **Unlock response:** versioned.
@@ -132,9 +144,10 @@ No operator boundary. The `a2a-pairing-invite-link.md` amendment is a spec chang
 |---|---|---|
 | Risky action requires an owner signature | invariant | Identity gate, verified cryptographically |
 | Owner-record change requires an existing proof | invariant | Same |
-| Revocation wins on merge | invariant | Deterministic safety rule |
+| Merge authorization rules | invariant | Deterministic, stated with examples |
 | Proof entry refused on untrusted origins | invariant | Structural origin check |
-| Recovery wait and veto age | invariant | Identity, fixed |
+| Reset wait, veto eligibility and epoch merge | invariant | Identity, fixed |
+| Approval nonce consumption | invariant | Atomic and durable, no judgment |
 | Approval cap and decline pause | invariant | Fixed numbers, bounded blast radius |
 | Agent creation cap | invariant | Fixed number, bounded blast radius |
 
