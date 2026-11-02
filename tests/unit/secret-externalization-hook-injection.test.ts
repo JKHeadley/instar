@@ -72,11 +72,12 @@ describe('telegram-topic-context.sh: secret-externalization survivability', () =
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid auth token' }));
       });
-      // Bind to all interfaces. The hook uses `http://localhost:...` which
+      // Bind to all interfaces, by name: a bare listen(0) lands on 127.0.0.1
+      // under tests/vitest-setup.ts. The hook uses `http://localhost:...` which
       // can resolve to ::1 on Node 25+ which prefers IPv6; a 127.0.0.1-only
       // bind silently refuses those connections and the test hangs until
       // execFileSync's timeout fires.
-      server.listen(0, () => {
+      server.listen(0, '::', () => {
         port = (server.address() as { port: number }).port;
         resolve();
       });

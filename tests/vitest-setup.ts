@@ -1,6 +1,7 @@
 // Global vitest setup. Runs once before any test file loads.
 
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -61,6 +62,36 @@ for (const key of Object.keys(process.env)) {
   if (key.startsWith('INSTAR_') && !INSTAR_ENV_ALLOWLIST.has(key)) {
     delete process.env[key];
   }
+}
+
+// Bind every test's ephemeral server to loopback only.
+//
+// `server.listen(0)` with no host binds the wildcard address, but test clients
+// connect to 127.0.0.1. On macOS and BSD, Node's SO_REUSEADDR lets a wildcard
+// socket share a port number with another process's 127.0.0.1 socket, and the
+// kernel hands connections to the MORE SPECIFIC socket. So with suites running
+// side by side, a test could ask its own fixture a question and get the answer
+// from a stranger's server: "expected 401 to be 201", "expected 404 to be 201",
+// on files that pass alone. Measured on macOS with 4000 ports held on 127.0.0.1
+// by a second process: 2313 of 25000 wildcard servers had their request answered
+// by that process; bound to 127.0.0.1, 0 of 6000 were. Two sockets cannot share
+// one specific address, so an explicit bind closes the class for every test,
+// present or future. An explicit host or a fixed port is left alone.
+// Guard: tests/unit/test-setup-loopback-bind.test.ts.
+//
+// The patch sits on `_listen2`, the step after address resolution, not on
+// `listen`: passing a host to `listen` defers the bind by a tick, and many
+// callers read `server.address()` straight after `listen(0)`. No address plus
+// port 0 reaches here only for an ephemeral bind with no host.
+{
+  type Listen2 = (address: string | null, port: number, addressType: number, ...rest: unknown[]) => unknown;
+  const proto = net.Server.prototype as unknown as { _listen2: Listen2 };
+  const realListen2 = proto._listen2;
+  proto._listen2 = function bindEphemeralToLoopback(this: net.Server, address, port, addressType, ...rest) {
+    return address === null && port === 0
+      ? realListen2.call(this, '127.0.0.1', 0, 4, ...rest)
+      : realListen2.call(this, address, port, addressType, ...rest);
+  };
 }
 
 // Force the Codex user-config home onto a per-process temp dir. Every test
