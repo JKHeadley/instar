@@ -3613,6 +3613,8 @@ export interface InstarConfig {
     peerClaimRefused?: boolean;
     /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
     guidedSetup?: { enabled?: boolean };
+    /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
+    lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
   };
   /** Project name (used in logging, tmux session names, etc.) */
   projectName: string;

@@ -58,6 +58,14 @@ export function validDesktopInput(action: DesktopInput): boolean {
     && action.text.length > 0 && action.text.length <= 1_024 && !action.text.includes('\0');
 }
 
+/** Sealed to the input-stream helper's key. Node carries bytes it cannot read. */
+export interface DesktopSealedSecret {
+  ephemeral: string;
+  iv: string;
+  ct: string;
+  seq: number;
+}
+
 export interface DesktopProbe {
   screenPermission: boolean;
   inputPermission: boolean;
@@ -68,6 +76,9 @@ export interface DesktopProbe {
   onConsole?: boolean;
   loginDone?: boolean;
   screenLocked?: boolean;
+  osMajor?: number;
+  /** The classified lock reading, when the locked-screen controller exists. */
+  lockState?: import('./DesktopLockState.js').DesktopLockState;
   /** macOS only: which identity holds the permission. `own` is the helper
    * itself; `inherited` depends on what started this server's process tree. */
   screenGrant?: 'own' | 'inherited' | 'none';
@@ -76,6 +87,8 @@ export interface DesktopProbe {
   helperSource?: 'retained' | 'packaged';
   helperFallback?: string;
   helperChange?: DesktopHelperPermissionChange;
+  /** macOS only, while the locked-screen feature is on. */
+  lockInputs?: import('./DesktopLockState.js').DesktopLockInputs;
 }
 
 export type DesktopPlatform = 'macos' | 'windows';
@@ -137,7 +150,12 @@ export interface DesktopHost {
   captureTiming?(): { count: number; totalMs: number; maxMs: number };
   captureH264?(forceKeyframe: boolean): Promise<import('./DesktopVideo.js').DesktopH264Frame | null>;
   cursor?(): Promise<{ x: number; y: number }>;
-  input(action: DesktopInput): Promise<void>;
+  /** A `refused` reply is not a failure: the helper did nothing and lives on. */
+  input(action: DesktopInput): Promise<void | { refused: string }>;
+  secretType?(input: { requestId: string; key: string; secret: DesktopSealedSecret }): Promise<void | { refused: string }>;
+  abortInput?(): void;
+  ensureInputStream?(): void;
+  setSealKeyHandler?(handler: (key: string) => void): void;
   cancelInput(): void;
   setInputFailureHandler?(handler: () => void): void;
   startIndicator(onUnexpectedExit: () => void): Promise<void>;

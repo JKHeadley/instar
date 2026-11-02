@@ -210,7 +210,11 @@ import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
 import { dashboardUnlockRefused, isLoopbackPeer, wslWindowsHostAddress } from '../core/desktopTransport.js';
 import { mountDashboardPreview } from './dashboardPreview.js';
+import { execFile } from 'node:child_process';
 import { DEFAULT_MAC_DESKTOP_HELPER, MacDesktopHost, macDesktopHelperPath } from '../core/MacDesktopHost.js';
+import { DesktopLockedController, type DesktopLockedSettings } from '../core/DesktopLockedController.js';
+import { parseScreenLockPolicy } from '../core/DesktopLockState.js';
+import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../core/DesktopOperatorAssertion.js';
 import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
 import { isWslHost } from '../core/wslPlatform.js';
 import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
@@ -460,6 +464,8 @@ export class AgentServer {
   private poolStreamConnector?: import('./WebSocketManager.js').PoolStreamConnector;
   private desktopStreamManager: DesktopStreamManager | null = null;
   private directDesktopAccess: DirectDesktopAccess | null = null;
+  private desktopLockedController: DesktopLockedController | null = null;
+  private desktopLockedOsMajor: number | undefined;
   private desktopHelperNotice: DesktopHelperPermissionNotice | null = null;
   private macDesktopHost: MacDesktopHost | null = null;
   private desktopMeshBroker: DesktopMeshBroker | null = null;
@@ -810,6 +816,33 @@ export class AgentServer {
       this.machineRouteContext.authDeps.onSignatureInvalid = runtime.onMachineAuthSignatureInvalid;
       this.machineRouteContext.authDeps.onVerified = runtime.onMachineAuthVerified;
     }
+  }
+
+
+  /** The target's three levers. Null where the feature cannot exist. */
+  private desktopLockedLevers(): NonNullable<import('./routes.js').RouteContext['desktopLocked']> | null {
+    const controller = this.desktopLockedController;
+    const access = this.directDesktopAccess;
+    const machineId = this.meshSelfId;
+    if (!controller || !access || !machineId) return null;
+    const osMajor = async () => {
+      this.desktopLockedOsMajor ??= (await access.probe()).osMajor;
+      return this.desktopLockedOsMajor;
+    };
+    return {
+      machineId,
+      status: async () => controller.status(await osMajor()),
+      settings: async patch => {
+        if (patch.enabled === true) {
+          const refusal = controller.enableRefusal(await osMajor());
+          if (refusal) throw new Error(refusal);
+        }
+        return { ...await controller.applySettings(patch) };
+      },
+      disable: async () => {
+        await controller.disable(() => access.endLockedGrants());
+      },
+    };
   }
 
   constructor(options: {
@@ -1706,13 +1739,37 @@ export class AgentServer {
               operatorSessionToken: delegated.token, browserPublicKey,
               browserEcdhPublicKey: typeof body?.browserEcdhPublicKey === 'string' ? body.browserEcdhPublicKey : '',
               browserNonce, videoCodec: body?.videoCodec === 'h264' ? 'h264' : 'jpeg',
-              scopeConfirmed: true,
+              scopeConfirmed: true, client: body?.client === 'app' ? 'app' : 'browser',
+              controlRecords: body?.controlRecords === true,
             });
             return { ...result, targetSessionToken: delegated.token };
           } catch (error) {
             this.desktopDelegatedSessions.revoke(delegated.token);
             throw error;
           }
+        },
+        onDesktopOperatorLocked: async (untrustedBody, frontId) => {
+          const levers = this.desktopLockedLevers();
+          if (!levers || !this.meshSelfId || options.config.remoteDesktop?.frontMachineId !== frontId) {
+            throw new Error('desktop pool front not authorized');
+          }
+          const body = untrustedBody as Record<string, unknown> | null;
+          if (body?.status === true) return levers.status();
+          const assertion = body?.assertion as DesktopLockedAssertion | undefined;
+          const settings = (body?.settings ?? {}) as Record<string, unknown>;
+          this.desktopAssertionReplay ??= new DesktopAssertionReplayStore(
+            path.join(options.config.stateDir, 'state', 'desktop-operator-replay.json'));
+          const verdict = verifyDesktopLockedAssertion({
+            assertion: assertion!, expectedTargetMachineId: this.meshSelfId, expectedIssuerMachineId: frontId,
+            settings, nowMs: Date.now(),
+            resolveIssuerKey: machineId => coord.managers.identityManager.getSigningPublicKeyPem(machineId),
+            verifySignature: (canonical, signature, publicKey) => verifyMachinePayload(canonical, signature, publicKey),
+            seenJti: jti => this.desktopAssertionReplay!.seen(jti),
+          });
+          if (!verdict.ok) throw new Error(`desktop-operator-${verdict.reason}`);
+          this.desktopAssertionReplay.record(verdict.jti, assertion!.expiresAtMs);
+          if (assertion!.operation === 'locked-disable') { await levers.disable(); return { disabled: true }; }
+          return levers.settings(settings);
         },
         onDesktopOperatorKeepAlive: (untrustedBody, frontId) => {
           const body = untrustedBody as Record<string, unknown> | null;
@@ -2848,7 +2905,48 @@ export class AgentServer {
                 ?? (!process.env.VITEST && DEFAULT_MAC_DESKTOP_HELPER.includes(`${path.sep}node_modules${path.sep}instar${path.sep}`)),
             }) : null;
           this.macDesktopHost = process.platform === 'darwin' ? new MacDesktopHost(undefined, helperRetention) : null;
-          const host: DesktopHost = this.macDesktopHost
+          const macHost = this.macDesktopHost;
+          const lockedSettings = (): DesktopLockedSettings => {
+            const stored = (typeof options.liveConfig?.get === 'function'
+              ? options.liveConfig.get<DesktopLockedSettings | undefined>('remoteDesktop.lockedScreen', undefined)
+              : undefined) ?? options.config.remoteDesktop?.lockedScreen;
+            return { enabled: stored?.enabled === true, browserBox: stored?.browserBox === true, chime: stored?.chime !== false };
+          };
+          this.desktopLockedController = macHost ? new DesktopLockedController({
+            host: macHost, agentId: options.config.projectName ?? 'agent', settings: lockedSettings,
+            saveSettings: next => {
+              options.liveConfig?.set('remoteDesktop.lockedScreen', next);
+              if (options.config.remoteDesktop) options.config.remoteDesktop.lockedScreen = next;
+            },
+            readPolicy: () => new Promise((resolve, reject) => {
+              execFile('/usr/sbin/sysadminctl', ['-screenLock', 'status'], { timeout: 3_000 }, (error: Error | null, stdout: string, stderr: string) => {
+                if (error) reject(error);
+                else resolve(parseScreenLockPolicy(`${stdout}${stderr}`));
+              });
+            }),
+            tunnelFirstTierActive: () => {
+              const lifecycle = options.tunnel?.lifecycleState;
+              return lifecycle?.lastState === 'active' && String(lifecycle.activeProvider).startsWith('cloudflare');
+            },
+            raiseSecurity: async item => {
+              if (!this.telegramAdapter) { console.warn('[instar] locked-screen security item has no attention surface'); return false; }
+              try {
+                await this.telegramAdapter.createAttentionItem({ id: `agent:${item.key}`, conditionKey: item.key,
+                  title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
+                  category: 'security', sourceContext: 'desktop-locked' } as never);
+                return true;
+              } catch (error) {
+                console.warn('[instar] locked-screen security item could not be raised; the next sweep tries again');
+                DegradationReporter.getInstance().report({ feature: 'DesktopLocked.securityItem',
+                  primary: 'Locked-screen security item on the attention surface', fallback: 'Retried by the next locked-screen sweep',
+                  reason: `attention item failed: ${error instanceof Error ? error.message : String(error)}`,
+                  impact: 'The owner is not yet told about a locked-screen security event.' });
+                return false;
+              }
+            },
+          }) : null;
+          if (macHost && this.desktopLockedController) macHost.setLockedRoot(this.desktopLockedController.root);
+          const host: DesktopHost = macHost
             ?? (() => {
                 const companion = discoverWindowsDesktopCompanion();
                 // PowerShell interop can reach the Windows-local companion even
@@ -2879,7 +2977,9 @@ export class AgentServer {
           new DesktopAccessAudit(options.config.stateDir),
           'pin',
           (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
+          this.desktopLockedController,
         );
+        void this.desktopLockedController?.sweep(true).catch(() => { console.warn('[instar] locked-screen boot sweep failed'); });
         this.desktopStreamManager = new DesktopStreamManager(request => this.directDesktopAccess!.admit(request));
         if (helperRetention) {
           const access = this.directDesktopAccess;
@@ -5335,6 +5435,8 @@ export class AgentServer {
       completionClaimVerifier: this.completionClaimVerifier,
       blockerLedger: this.blockerLedger,
       ...desktopRouteAccess(this.directDesktopAccess, options.config.remoteDesktop?.frontMachineId, this.meshSelfId),
+      desktopLocked: this.desktopLockedLevers(),
+      desktopTargets: () => (options.resolvePeerUrls?.() ?? []).map(peer => peer.machineId),
       desktopLocalDiagnostics: async () => {
         const configured = options.config.remoteDesktop?.enabled === true;
         if (!configured || !this.directDesktopAccess) {

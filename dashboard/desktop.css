@@ -41,3 +41,11 @@ body.desktop-live #localCursor{display:block}
 .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .setup-note:empty { display: none; }
 .setup-quiet { background: none; border: none; color: inherit; opacity: 0.7; text-decoration: underline; }
+
+#lockedPassword{position:absolute;z-index:8;left:max(.5rem,env(safe-area-inset-left));right:max(.5rem,env(safe-area-inset-right));top:max(.5rem,env(safe-area-inset-top));display:grid;gap:.4rem;padding:.6rem;background:#111827f2;border:1px solid #64748b;border-radius:10px;color:#f1f5f9}
+#lockedPassword[hidden],#leaveUnlockedButton[hidden]{display:none}
+#lockedPassword input{width:100%;font-size:16px;padding:.55rem}
+#lockedPassword p{margin:0;font-size:.8rem}
+#leaveUnlockedButton{position:absolute;z-index:8;right:max(.5rem,env(safe-area-inset-right));bottom:4rem;padding:.55rem .8rem}
+#lockedCard{margin-top:.8rem}
+#lockedCard[hidden]{display:none}
