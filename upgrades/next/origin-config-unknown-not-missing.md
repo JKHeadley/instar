@@ -1,7 +1,7 @@
 ## What Changed
 
 - When a machine briefly cannot read its own messaging config (seen on a busy standby whose server stalled for tens of seconds), a message to a bug-group topic was refused with "this process has no messaging config issuesChatId", although the config holds it. The refusal now says what happened: the config could not be read. It is a retryable `503 origin-config-unavailable` with the reason (for example `origin-config-reader-timeout`).
-- Messages refused this way, and the older "issues-chat-not-configured" refusals already in the queue, were later marked "may already be delivered" and never sent. Both refusals happen before anything is sent, so recovery now replays them once config reads again, through the normal tone review, duplicate check and 6-hour deadline.
+- Messages refused this way, and the older "issues-chat-not-configured" and bare "origin-display-authority-unavailable" refusals already in the queue, were later marked "may already be delivered" and never sent. Both refusals happen before anything is sent, so recovery now replays them once config reads again, through the normal tone review, duplicate check and 6-hour deadline.
 - The server log now records why a config refresh failed (`[telegram-origin] config snapshot unavailable: <reason>`) and when it recovered. Before, the reason was discarded.
 
 ## What to Tell Your User

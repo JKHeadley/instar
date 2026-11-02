@@ -8,7 +8,7 @@ Those refused messages were saved for a retry. But the retry step only trusts a 
 
 After this change:
 - If the settings can't be read, the refusal says so honestly ("could not read config", with the reason), and it is marked as safe to retry.
-- The retry step recognises this refusal, and the old misleading one, as "definitely not sent", so the message goes out once the settings read again. It still passes the usual tone check and duplicate check, and it still expires after 6 hours.
+- The retry step recognises this refusal, and the two older ones (the misleading "no bug group" one, and the bare "display authority unavailable" one that hit a message on the Studio today), as "definitely not sent", so the message goes out once the settings read again. It still passes the usual tone check and duplicate check, and it still expires after 6 hours.
 - The server log now says why a settings read failed, so the next time this happens the cause is written down.
 
 Nothing changes about the safety rule that a bug-topic message is never sent to the main group by mistake.
