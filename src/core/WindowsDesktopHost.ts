@@ -61,6 +61,13 @@ export class WindowsDesktopHost implements DesktopHost {
     return this.selectedDisplayId === null ? payload : { ...payload, displayId: this.selectedDisplayId };
   }
 
+  private readonly captureWindowsMs = { count: 0, total: 0, max: 0 };
+
+  /** Running totals of how long captures took on the Windows side. */
+  captureTiming(): { count: number; totalMs: number; maxMs: number } {
+    return { count: this.captureWindowsMs.count, totalMs: this.captureWindowsMs.total, maxMs: this.captureWindowsMs.max };
+  }
+
   async capture(): Promise<Buffer> {
     let frame: Buffer;
     const displayId = this.selectedDisplayId;
@@ -204,6 +211,12 @@ export class WindowsDesktopHost implements DesktopHost {
       });
       if (!response.ok || response.headers.get('content-type')?.split(';')[0] !== contentType) {
         throw new Error('windows-desktop-companion-refused');
+      }
+      const relayMs = Number(response.headers.get('x-instar-relay-ms'));
+      if (op === 'capture' && Number.isFinite(relayMs) && relayMs >= 0) {
+        this.captureWindowsMs.count++;
+        this.captureWindowsMs.total += relayMs;
+        this.captureWindowsMs.max = Math.max(this.captureWindowsMs.max, relayMs);
       }
       const reader = response.body?.getReader();
       if (!reader) throw new Error('windows-desktop-reply-empty');
