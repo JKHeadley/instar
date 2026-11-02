@@ -54,9 +54,9 @@ describe('telegram origin: unreadable config is unknown, not missing', () => {
     // The config becomes unreadable (a failed read, as a timed-out one does).
     await writeFile(configPath, '{ not json');
     const refusal = await waitFor(() => { try { send(); return undefined; } catch (error) { return error; } });
+    expect((refusal as Error).message).not.toMatch(/issues-chat-not-configured/);
     expect(refusal).toBeInstanceOf(OriginConfigUnavailableError);
     expect((refusal as OriginConfigUnavailableError).reason).toBe('origin-config-unparseable');
-    expect((refusal as Error).message).not.toMatch(/issues-chat-not-configured/);
     expect(() => options.display({ accountId: '123', chatId: '-100999', topicId: '5' })).toThrow(OriginConfigUnavailableError);
 
     // Through the real reply route: a retryable 503 whose exact body the
