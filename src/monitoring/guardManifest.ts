@@ -823,6 +823,16 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'CPU/memory sampling + rate-limit-event ledger (read-only observability).',
   },
   {
+    key: 'machineMaintenance.enabled',
+    kind: 'config',
+    configPath: 'machineMaintenance.enabled',
+    defaultEnabled: false, // dark on the fleet; ON for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'DrainRehearsal',
+    description: 'Machine self-maintenance, watch-only: a nightly paper drain records what a scheduled restart would have done. It cannot restart a machine or stop work.',
+  },
+  {
     key: 'monitoring.workAdmission.enabled',
     kind: 'config',
     configPath: 'monitoring.workAdmission.enabled',
