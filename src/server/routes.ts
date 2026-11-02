@@ -228,6 +228,7 @@ import {
   type PeerPresenceRead,
 } from '../threadline/peerDark.js';
 import { buildTopicProfileOptions, validateDashboardProfileChoice, seedTopicProfileAtCreation, claimDashboardCreatedTopic, settleDashboardCreatedTopic, frameworkLabel } from '../core/dashboardTopicProfile.js';
+import { createDesktopSetupRoutes } from './desktopSetupRoutes.js';
 import { hasMachinePick, resolveCreateMachineChoice, safeMachineLabel, type CreateMachineChoice, type DashboardCreateStart } from '../core/dashboardMachineChoice.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
@@ -1696,6 +1697,9 @@ export interface RouteContext {
   desktopMeshBroker?: import('./DesktopMeshBroker.js').DesktopMeshBroker | null;
   desktopTargetSigningKey?: (machineId: string) => string | null;
   desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
+  /** Guided setup: reachable with desktop off, because it is how desktop comes on. */
+  desktopSetupTarget?: import('../core/DesktopSetupTarget.js').DesktopSetupTarget | null;
+  desktopSetupPeerCall?: (machineId: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   /** Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5/§7).
    *  Null/absent when monitoring.blockerLedger.selfUnblockChecklist.enabled is false
    *  (default, ships dark) → GET /blockers/self-unblock-runs 503s (after auth). The
@@ -13217,6 +13221,23 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'Supervised restart is unavailable' });
     }
   });
+  router.use(createDesktopSetupRoutes({
+    enabled: () => resolveDevAgentGate(ctx.config.remoteDesktop?.guidedSetup?.enabled, ctx.config),
+    selfMachineId: () => ctx.meshSelfId ?? undefined,
+    selfLabel: () => verifiedEntityName(ctx.meshSelfId ?? '', ctx.listPoolMachines?.().find(machine => machine.machineId === ctx.meshSelfId)?.nickname) ?? 'This machine',
+    frontMachineId: () => ctx.config.remoteDesktop?.frontMachineId,
+    target: () => ctx.desktopSetupTarget ?? null,
+    peers: () => (ctx.listPoolMachines?.() ?? []).map(({ machineId, nickname }) =>
+      ({ machineId, nickname: verifiedEntityName(machineId, nickname) ?? undefined })),
+    peerCall: (id, body) => {
+      if (!ctx.desktopSetupPeerCall) throw new Error('desktop-setup-peer-unavailable');
+      return ctx.desktopSetupPeerCall(id, body);
+    },
+    frontActive: () => !!ctx.desktopMeshBroker,
+    targetKey: id => ctx.desktopTargetSigningKey?.(id) ?? null,
+    verifySession: token => ctx.verifyDashboardOperatorSession?.(token) === true,
+    transportAllowed: req => req.secure || isLoopbackPeer(req.socket.remoteAddress),
+  }));
   router.get('/desktop/targets', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
@@ -13232,7 +13253,9 @@ export function createRoutes(ctx: RouteContext): Router {
     const peerMachines = await Promise.all(knownPeers.map(async peer => {
       try {
         if (!ctx.desktopMeshBroker || !ctx.desktopProbePeer) throw new Error('desktop-peer-unavailable');
-        return await ctx.desktopProbePeer(peer.machineId);
+        // The pool's name wins: a peer's own copy of the registry can lag a rename.
+        const probed = await ctx.desktopProbePeer(peer.machineId);
+        return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
       } catch {
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
           unavailableReason: 'Remote desktop is not ready on this machine.' };
@@ -13254,7 +13277,7 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   router.post('/desktop/requests', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
+    if (!ctx.directDesktopAccess || ctx.config.remoteDesktop?.enabled === false) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);

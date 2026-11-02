@@ -59,6 +59,8 @@ export interface MachineRouteContext {
   onDesktopOperatorKeepAlive?: (body: unknown, authenticatedFrontId: string) => boolean;
   onDesktopAvailability?: () => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
   onDesktopOperatorCommand?: (body: unknown, authenticatedFrontId: string) => Promise<unknown>;
+  /** Guided setup from the front. Reachable while desktop is off: this is how it comes on. */
+  onDesktopSetup?: (body: unknown, authenticatedSenderId: string) => Promise<unknown>;
   /**
    * Agent state dir + agent name, for the agent-identity handover on pairing
    * (docs/specs/agent-identity-continuity-on-expansion.md §1). Optional so an
@@ -173,6 +175,19 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     if (!ctx.onDesktopAvailability) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
     try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopAvailability()); }
     catch { res.status(503).json({ error: 'Remote desktop is unavailable on this machine' }); }
+  });
+
+  // E2E-PAIRING: tests/e2e/desktop-setup-boot-lifecycle.test.ts
+  router.post('/api/desktop/setup', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.onDesktopSetup) { res.status(503).json({ error: 'Remote desktop setup is unavailable on this machine' }); return; }
+    const senderId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.json(await ctx.onDesktopSetup(req.body, senderId)); }
+    catch (error) {
+      const { httpStatus, code } = error as { httpStatus?: unknown; code?: unknown };
+      res.status(typeof httpStatus === 'number' ? httpStatus : 403).json({ error: 'Desktop setup refused',
+        ...(typeof code === 'string' ? { code } : {}) });
+    }
   });
 
   router.post('/api/desktop/operator-begin', authMiddleware, async (req, res) => {

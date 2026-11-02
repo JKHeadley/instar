@@ -870,6 +870,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Phones never receive the API token or an operator session and may only make a fixed allowlist of signed requests (the one non-idempotent entry, chat, is made idempotent by requestId and never binds the topic operator); a phone becomes active only with a code sent privately to the owner. Dark on the fleet until the development-agent live proof passes.',
   },
   {
+    name: 'desktopGuidedSetup',
+    configPath: 'remoteDesktop.guidedSetup.enabled',
+    description: 'Guided Remote Desktop setup (docs/specs/desktop-guided-setup.md): a per-machine Set up flow on the Desktop page and in the app, driven by each machine\'s live check.',
+    justification: 'Every action needs a press behind the dashboard PIN session; nothing runs by itself. A paired machine can claim a machine with no front, so it stays dark on the fleet until proven on the development agent.',
+  },
+  {
     name: 'mobilePairingNative',
     configPath: 'mobilePairing.native.enabled',
     description: 'Native app conversations (docs/specs/mobile-native-conversations.md): the iPhone app starts, lists, reads and writes conversations stored by Instar itself (POST/GET /mobile/conversations, POST /mobile/chat/app/:key, its messages/events reads), the agent answers through app-reply.sh (POST /app/session-reply), and every app message is stored with its device signature and this machine\'s signed receipt, checked against a replicated, machine-signed device-key ledger (originVerified in history). The store and the ledger replicate to every machine whenever this is on.',
