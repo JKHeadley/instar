@@ -2007,6 +2007,46 @@
       }
     },
     {
+      "category": "app-media",
+      "description": "Bytes behind app conversations (docs/specs/mobile-native-chat-media.md §4.1, §4.7): content-addressed blobs, blobs of deleted conversations, quarantined blobs, staged uploads, session copies and the agent outbox. Never in a journal or log. The events that name these files replicate through the appConversations kind; the bytes reach other machines by verified pull (the next increment).",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "app-media/blobs/",
+        "app-media/deleted/",
+        "app-media/quarantine/",
+        "app-media/uploads/",
+        "app-media/session-files/",
+        "app-media/outbox/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "note": "Blobs are capped by mobilePairing.native.media.maxStoreBytes and a free-disk floor, and removed only by the operator's purge from the app or the 7-day orphan rule. Uploads expire after 24 hours, session copies after 30 days. Sizes are in the authenticated /health (appMedia)."
+      }
+    },
+    {
+      "category": "app-media-index",
+      "description": "Upload, chunk and blob-check state for app media (SQLite, WAL + busy_timeout). Machine-local: an upload is authorized by a phone's device record, which is bound to this machine.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "app-media/uploads/index.sqlite"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "note": "Upload rows are dropped 7 days after they expire or are sent; blob checks follow their blobs."
+      }
+    },
+    {
       "category": "app-session-registry",
       "description": "Which session serves which native app conversation on this machine (local alias → tmux session name). Machine-local: a session runs on one machine.",
       "scope": "machine-local",

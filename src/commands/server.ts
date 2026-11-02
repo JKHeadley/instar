@@ -9191,6 +9191,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             try { stopAutonomousTopic(config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
             try { recordOperatorStop(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
           },
+          mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
+          raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
+          clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
           reportDegradation: (what, detail) => degradationReporter.report({
             feature: what, primary: 'record and deliver native app conversations', fallback: 'the request was refused or reported outcome-unknown',
             reason: detail, impact: 'An app conversation step needs attention.',

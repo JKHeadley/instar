@@ -150,6 +150,7 @@ const DEFAULT_GENERATED_PATTERNS = [
   '.instar/sessions/',
   '.instar/shadow-install*',
   '.instar/telegram-images/',
+  '.instar/app-media/',
   '.instar/telegram-inbound/',
   '.instar/threadline/',
   '.instar/views/',

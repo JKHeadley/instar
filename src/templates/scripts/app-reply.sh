@@ -7,11 +7,13 @@
 #   Your reply text here
 #   EOF
 #   .instar/scripts/app-reply.sh "short reply"
+#   .instar/scripts/app-reply.sh --file /path/to/report.pdf "Here it is"    (up to 10 --file, before the text)
 #
 # The session's bind token is the only destination authority: the script never names a
 # conversation itself. Spec: docs/specs/mobile-native-conversations.md §4.3.
 # app-reply-feature: session-bound-v1
 # app-reply-feature: delivery-id
+# app-reply-feature: file-attachments
 
 set -euo pipefail
 
@@ -20,12 +22,25 @@ set -euo pipefail
 CONVERSATION_ID="${INSTAR_CONVERSATION_ID:-0}"
 [[ "$CONVERSATION_ID" =~ ^-?[0-9]+$ ]] || CONVERSATION_ID=0
 
+# Flags go before the text: parsing stops at the first argument that is not a flag.
+FILES=()
+while [ $# -gt 0 ] && [ "$1" = "--file" ]; do
+  if [ -z "${2:-}" ]; then
+    echo "Error: --file needs a path" >&2
+    exit 1
+  fi
+  FILES+=("$2")
+  shift 2
+done
+
 if [ $# -gt 0 ]; then
   MESSAGE="$*"
+elif [ ${#FILES[@]} -gt 0 ] && [ -t 0 ]; then
+  MESSAGE=""
 else
   MESSAGE="$(cat)"
 fi
-if [ -z "$MESSAGE" ]; then
+if [ -z "$MESSAGE" ] && [ ${#FILES[@]} -eq 0 ]; then
   echo "Error: no message text provided" >&2
   exit 1
 fi
@@ -60,7 +75,18 @@ ESCAPED=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" <<< 
 if [ -z "$ESCAPED" ]; then
   ESCAPED="\"$(echo "$MESSAGE" | sed 's/\\/\\\\/g; s/"/\\"/g')\""
 fi
-BODY_JSON="{\"text\": ${ESCAPED}, \"conversationId\": ${CONVERSATION_ID}}"
+FILES_JSON=""
+MAX_TIME=35
+if [ ${#FILES[@]} -gt 0 ]; then
+  # The server checks each file (and scans it), so a large reply takes longer than text.
+  MAX_TIME=180
+  FILES_JSON=$(python3 -c 'import json,os,sys; print(json.dumps([{"path": os.path.abspath(p)} for p in sys.argv[1:]]))' "${FILES[@]}")
+  if [ -z "$FILES_JSON" ]; then
+    echo "Error: could not read the --file paths" >&2
+    exit 1
+  fi
+fi
+BODY_JSON="{\"text\": ${ESCAPED}, \"conversationId\": ${CONVERSATION_ID}${FILES_JSON:+, \"files\": ${FILES_JSON}}}"
 
 # A delivery id minted BEFORE the POST: the server derives the reply's event id from it, so a
 # resend of the same attempt is answered idempotent instead of appending a second copy.
@@ -69,7 +95,7 @@ DELIVERY_ID="${INSTAR_DELIVERY_ID:-}"
 [ -n "$DELIVERY_ID" ] || DELIVERY_ID=$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)
 
 set +e
-RESPONSE=$(curl -sS --connect-timeout 3 --max-time 35 -w "\n%{http_code}" -X POST \
+RESPONSE=$(curl -sS --connect-timeout 3 --max-time "$MAX_TIME" -w "\n%{http_code}" -X POST \
   "http://localhost:${PORT}/app/session-reply" \
   -H "Content-Type: application/json" \
   ${AUTH:+-H "Authorization: Bearer $AUTH"} \
@@ -90,9 +116,12 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
-  echo "Sent ${#MESSAGE} chars to the app conversation"
+  echo "Sent ${#MESSAGE} chars and ${#FILES[@]} file(s) to the app conversation"
 elif [ "$HTTP_CODE" = "409" ]; then
   echo "NOT SENT (HTTP 409): this machine does not run this app conversation right now: ${BODY}" >&2
+  exit 1
+elif [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "413" ] || [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "507" ]; then
+  echo "NOT SENT (HTTP ${HTTP_CODE}): ${BODY}" >&2
   exit 1
 elif [ "$HTTP_CODE" = "422" ]; then
   ISSUE=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("issue","unknown"))' 2>/dev/null || echo "unknown")

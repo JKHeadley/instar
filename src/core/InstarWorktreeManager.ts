@@ -1010,7 +1010,7 @@ export function ensureClaudeTranscriptSpotlightExclusion(
  * None of these are usefully Spotlight-searchable (instar reads them via fs, not
  * mdfind), so excluding them is pure OS hygiene.
  */
-const AGENT_DATA_SPOTLIGHT_SUBDIRS = ['telegram-images', 'server-data', 'logs', 'state'];
+const AGENT_DATA_SPOTLIGHT_SUBDIRS = ['telegram-images', 'app-media', 'server-data', 'logs', 'state'];
 
 /**
  * Drop a `.metadata_never_index` marker in each high-churn subdir of the agent's

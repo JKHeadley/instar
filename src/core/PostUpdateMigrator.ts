@@ -954,6 +954,24 @@ The session's bind token is the only destination; the script takes no conversati
 `;
 }
 
+export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
+
+/**
+ * CLAUDE.md awareness block for media in app conversations (docs/specs/mobile-native-chat-media.md).
+ * Its own section, sniffed by its exact heading.
+ */
+export function APP_MEDIA_CLAUDEMD_SECTION(): string {
+  return `\n${APP_MEDIA_CLAUDEMD_MARKER}
+
+App messages may carry files. Each arrives as one line before the caption, with a local path: \`[image:<path>]\`, \`[document:<path>] (<name>, <type>, <size>)\`, \`[video:<path>]\`, \`[voice:<path>] <transcript>\`. Read the file at that path; the copy is mine and a change to it never touches the stored file.
+- **Earlier files** are listed in the context file by name with an attachment id. Open one with \`.instar/scripts/app-media-path <attachment id>\`, which prints a path.
+- **Reply with files**: \`.instar/scripts/app-reply.sh --file <path> "Here it is"\` (up to 10 \`--file\`, before the text; 50 MiB each, 64 MiB per reply). Put a generated file in \`.instar/app-media/outbox/\`, the project or the temporary directory.
+- **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
+- Sizes and counts are in the authenticated \`/health\` → \`appMedia\`; a count reading null has not been measured yet. Gate: \`mobilePairing.native.media.enabled\` (omitted ⇒ the development-agent gate; needs \`mobilePairing.native.enabled\`); \`mobilePairing.native.media.maxStoreBytes\` caps the store (default 20 GiB).
+- **When to use** (PROACTIVE): the operator asks for a file, a document or an image in an app conversation → send it with \`--file\` rather than describing it. "Is my file intact?" → history shows each file's \`bytes\` (\`verified\`, \`not-here\`, \`mismatch\`, \`removed\`). A file on another of my machines reads \`not-here\` until copies between machines ship.
+`;
+}
+
 /**
  * CLAUDE.md awareness block for several routes per agent (docs/specs/mobile-multi-route.md).
  * Unique content-sniff marker: `Mobile app routes`.
@@ -8619,6 +8637,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Native app conversations (docs/specs/mobile-native-conversations.md) — Agent Awareness + Migration Parity.
+    // Media in app conversations (docs/specs/mobile-native-chat-media.md): its own section, by exact heading.
+    if (!content.includes(APP_MEDIA_CLAUDEMD_MARKER)) {
+      content += APP_MEDIA_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added App conversation media section');
+    }
     if (!content.includes('Native app conversations')) {
       content += APP_CONVERSATIONS_CLAUDEMD_SECTION(port);
       patched = true;
