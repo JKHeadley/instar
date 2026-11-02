@@ -104,7 +104,7 @@ describe('W32 cadence receipts feed lifecycle close proofs', () => {
       commitmentTracker: { getAll: () => [{ id: 'executor:w32.close.independent-loss-verification', externalKey: 'w32.close.independent-loss-verification', beaconEnabled: true, createdAt: new Date(BASE).toISOString(), boundBy: 'session:observer-2-session', sessionEpoch: 'observer-2-epoch', status: 'pending', topicId: 43003, lastHeartbeatAt: NOW, nextUpdateDueAt: NOW }], getActive: () => [] } as never,
       telegram: { getTopicHistory: (topicId: number) => history.filter(item => item.topicId === topicId), getStatus: () => ({ started: true, fatalReason: null, lastError: null, consecutivePollErrors: 0 }), sendToTopic: async () => ({ messageId: 9999 }) } as never,
       windowLifecycleNow: () => NOW,
-      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: livenessDryRun, config: {}, state: liveness }), tick: async () => liveness } as never,
+      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: livenessDryRun, config: {}, state: liveness, states: [liveness] }), tick: async () => liveness } as never,
       windowRunCadenceExecutor: { status: () => ({ enabled: true, dryRun: cadenceDryRun, config: { receiptIntervalMs: 30 * 60_000, reportIntervalMs: 3 * 60 * 60_000, checkpointLeadMs: 5 * 60_000, receiptGraceMs: 5 * 60_000 }, state: cadence }), tick: async () => cadence } as never,
     });
     await server.start();

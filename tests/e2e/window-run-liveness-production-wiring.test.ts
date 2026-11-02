@@ -269,7 +269,7 @@ describe('window run liveness observe-only production boundary', () => {
         getStatus: () => ({ started: true, fatalReason: null, lastError: null, consecutivePollErrors: 0 }),
       } as never,
       windowLifecycleNow: () => new Date(baseMs + 1).toISOString(),
-      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness }), tick: async () => liveness } as never,
+      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness, states: [liveness] }), tick: async () => liveness } as never,
     });
     await server.start();
     try {

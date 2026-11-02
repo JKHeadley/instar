@@ -75,3 +75,7 @@ Second pass on the fixes: **Concur.** One minor note, also fixed: the set-aside 
 ## Follow-up: fallback-ratchet tags
 
 Local Verify failed `tests/unit/no-silent-fallbacks.test.ts` (496 over the 494 baseline). No new catch was counted. The new `windowRunTopicQuery` helper's `return undefined;` fell inside the scanner's 20-line window for two existing catches (`/window-lifecycle/rollback` and `/window-lifecycle/reenable`). Both return the error as HTTP 409, so they now carry `@silent-fallback-ok` like the waiver route next to them. Comment-only change; behaviour unchanged. The scanner reports 494 again.
+
+## Follow-up: test doubles and the start-status test
+
+Six integration and two e2e tests failed on this branch and passed on main. Seven came from hand-written liveness doubles that still returned the old `status()` shape (`state` only). The window-close proof helpers now read `states`, so those doubles now return `states` as well. The real authority always returned it; production code is unchanged. The eighth was `autonomous-register-start-status`, which still expected the old agent-wide rule (a run starts active when another topic holds the window). It now asserts the per-topic rule from §2: a topic with no binding of its own prepares, and a topic whose binding is live starts active. Promotion for such a run comes from registering its own binding, admitted through `ordinaryRunLifecycle`, which is on for Echo.

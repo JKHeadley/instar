@@ -59,9 +59,15 @@ describe('POST /autonomous/register start status (enforcing liveness on Echo)', 
     expect(res.body).toMatchObject({ initialStatus: 'preparing', preparationRequired: true });
   });
 
-  it('starts active when another topic holds the open window\'s liveness slot', async () => {
-    authority.register({ windowId: 'w-open', topicId: 36966, autonomousRunId: 'run-held', lifecycleRunId: 'run-held', executorId: 'echo-topic-36966' });
-    const res = await register(4242);
-    expect(res.body).toMatchObject({ initialStatus: 'active', preparationRequired: false });
+  // Liveness holds one binding per topic (topic 10000001256): another topic's
+  // binding no longer decides this run. A topic with no binding of its own
+  // prepares until its run registers one; a topic whose binding is live starts
+  // active, since a second run there could never take the binding.
+  it('prepares when another topic holds the open window, starts active when its own topic is bound', async () => {
+    authority.register({ windowId: 'w-open', topicId: 5151, autonomousRunId: 'run-held', lifecycleRunId: 'run-held', executorId: 'echo-topic-5151' });
+    const other = await register(4242);
+    expect(other.body).toMatchObject({ initialStatus: 'preparing', preparationRequired: true });
+    const same = await register(5151);
+    expect(same.body).toMatchObject({ initialStatus: 'active', preparationRequired: false });
   });
 });

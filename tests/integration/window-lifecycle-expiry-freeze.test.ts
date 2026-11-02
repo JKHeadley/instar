@@ -74,7 +74,7 @@ describe('W32 lifecycle expiry freeze integration', () => {
     const predicates = { 'executor-bound-running': { ok: true, observed: 'running' } };
     let liveness: any = { windowId: 'w32', lifecycleRunId: ledger.lifecycleRunId, autonomousRunId: 'run-w32', status: 'active', predicates };
     const authority = {
-      status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness }), tick: async () => liveness,
+      status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness, states: [liveness] }), tick: async () => liveness,
       freeze: (reason: string, status: 'closed' | 'failed' = 'closed') => {
         if (!liveness.finalSnapshot) {
           freezeMutations++;
@@ -101,7 +101,7 @@ describe('W32 lifecycle expiry freeze integration', () => {
     new EchoWindowLedgerStore(project.stateDir).save(ledger);
     let freezeCalls = 0;
     const authority = {
-      status: () => ({ enabled: true, dryRun: false, config: {}, state: { windowId: 'w32', lifecycleRunId: ledger.lifecycleRunId, status: 'active' } }), tick: async () => null,
+      status: () => ({ enabled: true, dryRun: false, config: {}, state: { windowId: 'w32', lifecycleRunId: ledger.lifecycleRunId, status: 'active' }, get states() { return [this.state]; } }), tick: async () => null,
       freeze: () => { freezeCalls++; throw new Error('must not freeze before preflight'); },
     };
     const server = new AgentServer({ config: config(project), sessionManager: createMockSessionManager() as never, state: project.state, windowLifecycleNow: () => START, windowRunLivenessAuthority: authority as never });
@@ -132,7 +132,7 @@ describe('W32 lifecycle expiry freeze integration', () => {
       legacyProjection: { status: 'failed', at: START, receipt: 'projection:failed' },
       finalSnapshot: { frozenAt: START, reason: 'liveness-failed', statusBeforeFreeze: 'active', predicateDigest: crypto.createHash('sha256').update('{}').digest('hex'), exitProof: {} },
     };
-    const authority = { status: () => ({ enabled: true, dryRun: false, config: {}, state: failed }), tick: async () => failed, freeze: () => failed };
+    const authority = { status: () => ({ enabled: true, dryRun: false, config: {}, state: failed, states: [failed] }), tick: async () => failed, freeze: () => failed };
     const server = new AgentServer({ config: config(project), sessionManager: createMockSessionManager() as never, state: project.state, windowLifecycleNow: () => START, windowRunLivenessAuthority: authority as never });
     servers.push(server); await server.start();
     const refused = await request(server.getApp()).post('/window-lifecycle/transition').set('Authorization', 'Bearer w32-expiry-freeze').send({ agentId: 'echo', scope: 'echo-window-lifecycle', target: 'delivered_pending_post_live' }).expect(409);
@@ -149,7 +149,7 @@ describe('W32 lifecycle expiry freeze integration', () => {
     new EchoWindowLedgerStore(project.stateDir).save(ledger);
     let freezeCalls = 0;
     const authority = {
-      status: () => ({ enabled: true, dryRun: false, config: {}, state: { windowId: 'w31', lifecycleRunId: ledger.lifecycleRunId, status: 'active' } }),
+      status: () => ({ enabled: true, dryRun: false, config: {}, state: { windowId: 'w31', lifecycleRunId: ledger.lifecycleRunId, status: 'active' }, get states() { return [this.state]; } }),
       tick: async () => null,
       freeze: () => { freezeCalls++; throw new Error('legacy terminal state must not freeze W32 liveness'); },
     };
@@ -174,7 +174,7 @@ describe('W32 lifecycle expiry freeze integration', () => {
       predicates: {}, transitions: [], executorBindingReceipts: [], audit: { entries: [], headDigest: null },
     };
     const authority = {
-      status: () => ({ enabled: true, dryRun: false, config: { heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 60_000, recoveryCeilingMs: 60_000 }, state: liveness }),
+      status: () => ({ enabled: true, dryRun: false, config: { heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 60_000, recoveryCeilingMs: 60_000 }, state: liveness, states: [liveness] }),
       tick: async () => liveness,
       freeze: (reason: string, status: 'closed' | 'failed' = 'closed') => {
         if (!liveness.finalSnapshot) {
@@ -214,7 +214,7 @@ describe('W32 lifecycle expiry freeze integration', () => {
     const project = createTempProject(); cleanups.push(project.cleanup);
     const ledger = writeW32Ledger(project);
     const authority = {
-      status: () => ({ enabled: true, dryRun: false, config: {}, state: { windowId: 'w32', lifecycleRunId: ledger.lifecycleRunId, status: 'active' } }),
+      status: () => ({ enabled: true, dryRun: false, config: {}, state: { windowId: 'w32', lifecycleRunId: ledger.lifecycleRunId, status: 'active' }, get states() { return [this.state]; } }),
       tick: async () => null,
       freeze: () => { throw new Error('projection-revocation-failed'); },
     };
@@ -235,7 +235,7 @@ describe('W32 lifecycle expiry freeze integration', () => {
     new EchoWindowLedgerStore(project.stateDir).save(ledger);
     let freezeCalls = 0;
     const authority = {
-      status: () => ({ enabled: true, dryRun, config: {}, state: { windowId: 'w32', lifecycleRunId: ledger.lifecycleRunId, status: 'active' } }),
+      status: () => ({ enabled: true, dryRun, config: {}, state: { windowId: 'w32', lifecycleRunId: ledger.lifecycleRunId, status: 'active' }, get states() { return [this.state]; } }),
       tick: async () => null,
       freeze: () => { freezeCalls++; throw new Error('must not freeze'); },
     };
