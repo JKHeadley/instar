@@ -11417,7 +11417,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
   // Console composer attachments: a screenshot or file the operator attaches to a
   // message for a session on THIS machine. The bytes are saved under
-  // <stateDir>/dashboard-uploads/ and the absolute path is returned; the console
+  // <stateDir>/state/dashboard-uploads/ and the absolute path is returned; the console
   // then sends the message with that path so the session can read the file
   // (the same shape as a Telegram photo). A session on another machine is
   // refused: the file would land on the wrong disk.
@@ -11432,7 +11432,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!running) { res.status(404).json({ error: `Session "${req.params.name}" is not running on this machine` }); return; }
     const rawName = typeof body.filename === 'string' ? body.filename : 'file';
     const safeName = path.basename(rawName).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(-100) || 'file';
-    const dir = path.join(ctx.config.stateDir, 'dashboard-uploads');
+    const dir = path.join(ctx.config.stateDir, 'state', 'dashboard-uploads');
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       // Bounded retention: attachments older than 30 days go (a few per upload).

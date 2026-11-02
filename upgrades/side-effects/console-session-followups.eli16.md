@@ -14,3 +14,5 @@ always shown. A line under the list says how many are hidden and shows them with
 
 Third, the "Paste long text" button is gone. It came from the old dashboard; the message
 box already takes long text.
+
+The saved files live in this agent's own per-machine state folder, which is never copied to your other machines, and older ones are removed after 30 days.

@@ -2,7 +2,7 @@
 
 ## Changes
 - `POST /sessions/:name/attachments` (Bearer, like every session route): saves a base64 file
-  (≤ 8 MB decoded) for a session running on THIS machine under `<stateDir>/dashboard-uploads/`
+  (≤ 8 MB decoded) for a session running on THIS machine under `<stateDir>/state/dashboard-uploads/`
   (0600, dir 0700) and returns its path. Files older than 30 days are removed on later uploads.
 - Console composer: an attach button, image paste and drag-and-drop. On Send it uploads each
   file, then sends the text plus one line per file naming the saved path. Remote sessions show

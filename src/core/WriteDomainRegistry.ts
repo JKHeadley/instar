@@ -338,6 +338,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
   } });
+  // Console composer attachments: the file must sit on the disk of the machine
+  // running the session, which reads it by path. Never converges across machines.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/sessions/:name/attachments', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'saved under the gitignored per-agent <stateDir>/state/dashboard-uploads/ for a session running on this machine; 30-day retention; another machine\'s session is refused',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/activate-config', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
