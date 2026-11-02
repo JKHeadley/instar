@@ -629,6 +629,11 @@ export class AppConversationStore {
     return r ? this.mediaRef(r.attachmentId) : null;
   }
 
+  /** The conversations (canonical keys) with an unpurged attachment of this hash. */
+  mediaConversationsFor(sha256: string): string[] {
+    return (this.db.prepare('SELECT DISTINCT canonicalKey FROM media_refs WHERE sha256 = ? AND purged = 0 ORDER BY canonicalKey').all(sha256) as Array<{ canonicalKey: string }>).map((r) => r.canonicalKey);
+  }
+
   /** Unpurged attachments held for a conversation right now (the exact set a purge names). */
   mediaAttachmentIds(conversationKey: string): string[] {
     return (this.db.prepare('SELECT attachmentId FROM media_refs WHERE canonicalKey = ? AND purged = 0 ORDER BY attachmentId').all(canonicalConversationKey(conversationKey)) as Array<{ attachmentId: string }>).map((r) => r.attachmentId);

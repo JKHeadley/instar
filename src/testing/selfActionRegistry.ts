@@ -793,6 +793,43 @@ const appMediaCapacityNotice: SelfActionController = {
   },
 };
 
+/**
+ * app-media-replication — the app media copier's self-raised actions (mobile-native-chat-media
+ * §4.12, AppMediaReplicator.evaluateAlarms / evaluateUnrecoverable / verifyFailure). Under the
+ * pinned worst case (a file held on one machine forever while every peer is online, polled every
+ * hour) the copier nudges each peer ONCE per episode (`nudgedAt` is set before the sends and is
+ * reset only when the count clears) and raises the single-copy notice ONCE (the `raised` latch,
+ * keyed by condition and reason; re-armed only when the condition clears). Per-blob pull retries
+ * are bounded by the 30 s → 1 h backoff and the 7-day give-up, and are not notices.
+ */
+const appMediaReplication: SelfActionController = {
+  id: 'app-media-replication',
+  actionVerb: 'nudge-and-notify',
+  models: 'src/core/AppMediaReplicator.ts (evaluateAlarms: nudgedAt once per episode, raised latch per condition+reason)',
+  modelsPath: 'src/core/AppMediaReplicator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'After a restart the latch and episode clocks are empty: the count must be measured fresh (null until peer inventories arrive), then at most one nudge and one notice per episode; the attention item is deduplicated by its condition key.' },
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 48,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    let nudged = false;
+    const raised = new Set<string>();
+    let hours = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        hours += 1; // the pinned pressure: one file held alone, every peer online, forever
+        if (hours >= 2 && !nudged) { nudged = true; sink.emit({ verb: 'nudge-and-notify', target: 'peer-B' }); return; }
+        if (nudged && hours >= 3 && !raised.has('app-media:single-copy:A')) {
+          raised.add('app-media:single-copy:A');
+          sink.emit({ verb: 'nudge-and-notify', target: 'app-media:single-copy:A' });
+        }
+      },
+    };
+  },
+};
+
 const evolutionActionExpirySweep: SelfActionController = {
   id: 'evolution-action-expiry-sweep',
   actionVerb: 'reap-expired-actions',
@@ -3515,6 +3552,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   standDownMaintenance,
   evolutionActionExpirySweep,
   appMediaCapacityNotice,
+  appMediaReplication,
   spendReconSweep,
   spendDoorDarkBrakes,
   spendFallbackSpike,

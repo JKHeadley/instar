@@ -190,6 +190,7 @@ import { verifyConversationBind } from '../core/conversationBindGate.js';
 import { derivedEventId } from '../core/appConversationText.js';
 import { attachmentIdFor, kindFromBytes, sniffMediaType } from '../core/appMediaTypes.js';
 import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.js';
+import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import { joinTelegramHistory } from './mobileConversationRoutes.js';
@@ -5690,6 +5691,26 @@ export function createRoutes(ctx: RouteContext): Router {
           isDegraded = true;
         }
       }
+    }
+    // Media (mobile-native-chat-media §4.7): `?scope=pool` adds every machine's appMedia,
+    // proxied on read (peers are asked for their plain /health); an unreachable machine is `failed`.
+    if (req.query.scope === 'pool' && isAuthed && ctx.appConversations) {
+      reaperPoolLimiter(req, res, () => {
+        void (async () => {
+          try {
+            const { peers, failed, peersQueried } = await readReaperPoolPeers('/health', (b) => typeof b.status === 'string');
+            const selfId = ctx.meshSelfId ?? 'local';
+            base.appMediaPool = {
+              machines: [{ machineId: selfId, appMedia: base.appMedia ?? null }, ...peers.map((p) => ({ machineId: p.machineId, nickname: p.nickname, appMedia: (p.body.appMedia && typeof p.body.appMedia === 'object') ? p.body.appMedia : null }))],
+              failed, pool: { selfMachineId: selfId, peersQueried, peersOk: peers.length },
+            };
+          } catch (err) {
+            base.appMediaPool = { error: 'pool read failed', detail: err instanceof Error ? err.message : String(err) };
+          }
+          res.json(base);
+        })();
+      });
+      return;
     }
     res.json(base);
   });
@@ -21142,8 +21163,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const ev = app.store.getMessageEvent(key, ref.messageId);
     const attachment = ev && ev.kind === 'media-message' ? ev.attachments[ref.idx] : undefined;
     if (!attachment) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
-    const copied = await app.media.sessionCopy(ref.messageId, attachment);
-    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: 'this file is not on this machine yet' }); return; }
+    let copied = await app.media.sessionCopy(ref.messageId, attachment);
+    // §4.5: a file not here yet is pulled for at most 30 seconds; the helper never hangs.
+    if (!copied && !app.media.locateBlob(attachment.sha256) && await app.replicator.awaitBlob(attachment.sha256, MEDIA_PATH_WAIT_MS)) {
+      copied = await app.media.sessionCopy(ref.messageId, attachment);
+    }
+    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file is not on this machine yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
     res.json({ path: copied });
   });
 

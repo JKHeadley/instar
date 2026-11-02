@@ -955,6 +955,9 @@ The session's bind token is the only destination; the script takes no conversati
 }
 
 export const APP_MEDIA_CLAUDEMD_MARKER = '### App conversation media';
+/** The section's last sentence before copies between machines shipped (refreshed in place on update). */
+export const APP_MEDIA_STALE_COPY_LINE = 'A file on another of my machines reads `not-here` until copies between machines ship.';
+export const APP_MEDIA_CURRENT_COPY_LINE = 'A file on another of my machines is copied here by itself, checked against its hash: while it copies, history reads `not-here` and a download answers 202 `fetching`. A message whose file has not arrived reads `[file still copying: <name>]`, and one `[file now available: <path>]` line follows when it lands. `/health?scope=pool` → `appMediaPool` shows every machine; `singleCopyBlobs` counts files only this machine holds (null when it cannot be measured, never a guessed 0).';
 
 /**
  * CLAUDE.md awareness block for media in app conversations (docs/specs/mobile-native-chat-media.md).
@@ -968,7 +971,7 @@ App messages may carry files. Each arrives as one line before the caption, with 
 - **Reply with files**: \`.instar/scripts/app-reply.sh --file <path> "Here it is"\` (up to 10 \`--file\`, before the text; the caption is the text argument or piped in, read with a bounded wait; 50 MiB each, 64 MiB per reply). Put a generated file in \`.instar/app-media/outbox/\`, the project or the temporary directory.
 - **Refused, and why:** files outside the project, the outbox and the temporary directory (403 \`path-not-allowed\`), key-material paths (403 \`key-material\`), hard links (403 \`hard-link\`), and any file holding a live credential in its text or a printable run (the non-overridable 422 credential wall). Compressed or encrypted contents cannot be inspected, so never attach an archive of credentials.
 - Sizes and counts are in the authenticated \`/health\` → \`appMedia\`; a count reading null has not been measured yet. Gate: \`mobilePairing.native.media.enabled\` (omitted ⇒ the development-agent gate; needs \`mobilePairing.native.enabled\`); \`mobilePairing.native.media.maxStoreBytes\` caps the store (default 20 GiB).
-- **When to use** (PROACTIVE): the operator asks for a file, a document or an image in an app conversation → send it with \`--file\` rather than describing it. "Is my file intact?" → history shows each file's \`bytes\` (\`verified\`, \`not-here\`, \`mismatch\`, \`removed\`). A file on another of my machines reads \`not-here\` until copies between machines ship.
+- **When to use** (PROACTIVE): the operator asks for a file, a document or an image in an app conversation → send it with \`--file\` rather than describing it. "Is my file intact?" → history shows each file's \`bytes\` (\`verified\`, \`not-here\`, \`mismatch\`, \`removed\`). A file on another of my machines is copied here by itself, checked against its hash: while it copies, history reads \`not-here\` and a download answers 202 \`fetching\`. A message whose file has not arrived reads \`[file still copying: <name>]\`, and one \`[file now available: <path>]\` line follows when it lands. \`/health?scope=pool\` → \`appMediaPool\` shows every machine; \`singleCopyBlobs\` counts files only this machine holds (null when it cannot be measured, never a guessed 0).
 `;
 }
 
@@ -8687,6 +8690,13 @@ setTimeout(() => process.exit(0), 2000);
     }
     // Increment 2 (signed records): the section's "this agent does not check signatures yet" bullet is
     // now false. Refresh that one line in place (content-sniffed; idempotent).
+    // Copies between machines (media spec §4.12): the media section's "until copies ship" line is
+    // now false. Refresh that one line in place (content-sniffed; idempotent).
+    if (content.includes(APP_MEDIA_STALE_COPY_LINE)) {
+      content = content.replace(APP_MEDIA_STALE_COPY_LINE, APP_MEDIA_CURRENT_COPY_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated the App conversation media copy line');
+    }
     if (content.includes(APP_CONVERSATIONS_STALE_VERDICT_LINE)) {
       content = content.replace(APP_CONVERSATIONS_STALE_VERDICT_LINE, APP_CONVERSATIONS_CURRENT_VERDICT_LINE);
       patched = true;

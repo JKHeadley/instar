@@ -144,7 +144,15 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
     if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on this machine and has been set aside.' }); return; }
-    if (!blob) { res.status(404).json({ error: 'media-unavailable', detail: 'This file is on another of the agent\'s machines and has not been copied here yet.' }); return; }
+    if (!blob) {
+      // §4.8/§4.12: start (or hurry) the copy from another machine and tell the app to poll.
+      const rep = svc!.replicator;
+      if (rep.isUnrecoverable(sha)) { res.status(404).json({ error: 'media-unavailable', detail: 'None of the agent\'s machines has been able to provide this file for 7 days.' }); return; }
+      if (!rep.hasTransport()) { res.status(404).json({ error: 'media-unavailable', detail: 'This file is on another of the agent\'s machines, and this machine is not connected to them.' }); return; }
+      rep.want(sha);
+      res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
+      return;
+    }
     const ev = svc!.store.getMessageEvent(key, att.messageId);
     const attachment: AppAttachment | undefined = ev && ev.kind === 'media-message' ? ev.attachments[att.idx] : undefined;
     const mediaType = attachment?.mediaType ?? 'application/octet-stream';

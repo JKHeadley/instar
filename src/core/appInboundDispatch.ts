@@ -30,6 +30,11 @@ export interface AppDispatchInput {
   ownerName: string;
   /** The origin verdict; increment 1 always passes 'unknown' (never 'verified'). */
   originVerdict: 'verified' | 'redacted' | 'failed' | 'unknown' | 'none';
+  /**
+   * Lines the session missed (media spec §4.12): files that finished copying after an earlier
+   * delivery with no live session to tell, and files that could not be copied within 7 days.
+   */
+  notes?: string[];
 }
 
 export type AppDispatchOutcome = 'delivered' | 'refused';
@@ -70,6 +75,19 @@ export function appInjectionTag(alias: number, title: string, ownerName: string,
   return `[app:${alias} "${t}" from ${o}${verdict === 'verified' ? ' (📱 signed)' : ''}]`;
 }
 
+/**
+ * One line into the conversation's LIVE session, never a spawn (the "now available" follow-up of
+ * media spec §4.12). False when no live session serves the conversation; the line then waits for
+ * the next delivery's context.
+ */
+export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSessions, 'listRunningSessions' | 'injectMessage'>; channels: SessionChannelRegistry }): (alias: number, line: string) => boolean {
+  return (alias, line) => {
+    const name = deps.channels.getSessionForChannel(String(alias));
+    if (!name || !deps.sessions.listRunningSessions().some((s) => s.tmuxSession === name)) return false;
+    try { return deps.sessions.injectMessage(name, line, { conversationId: String(alias) }); } catch { return false; } // @silent-fallback-ok — false keeps the line for the next delivery
+  };
+}
+
 export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
   const log = deps.log ?? (() => undefined);
   return async (input) => {
@@ -80,6 +98,12 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
       .filter((m) => m.messageId !== input.messageId);
     const lines: string[] = [];
+    if (input.notes && input.notes.length > 0) {
+      lines.push('--- Files from earlier messages ---');
+      for (const n of input.notes) lines.push(n);
+      lines.push('---');
+      lines.push('');
+    }
     if (history.length > 0) {
       lines.push('CONTINUATION — You are resuming an EXISTING app conversation. Read the context below before responding. Do NOT ask what was being discussed.');
       lines.push('');
