@@ -23,7 +23,7 @@ Today your dashboard PIN is what proves a person approved something risky. But y
 - No phone and no hosted service are needed.
 - You type a passphrase only on a page from your own machine or private network. On a relay address, secrets and approvals happen only in the app.
 - A copied install command can't make someone else the owner.
-- If something grabs ownership first, you can usually take it back: a reset takes 72 hours, tells you everywhere, and a newly set-up proof can't cancel it. The last resort is installing a new agent.
+- If something grabs ownership first, you can take it back with your computer's administrator password: a reset takes 72 hours and tells you everywhere. Without an administrator prompt, a proof at least a day old can cancel a reset, and the last resort is installing a new agent.
 - An approval works once, on the exact machine and action you saw. If a crash leaves an action unclear, it isn't re-run; you're told and you decide.
 - Existing agents keep working. The old PIN and Telegram approvals keep working until you set up a stronger proof.
 
